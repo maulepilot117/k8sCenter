@@ -10,354 +10,135 @@ KubeCenter is a web-based Kubernetes management platform that delivers vCenter-l
 
 | Layer | Technology | Version |
 |---|---|---|
-| Backend API | Go | 1.25.x |
-| Kubernetes Client | client-go, controller-runtime | Latest stable matching target k8s version |
-| HTTP Router | chi (go-chi/chi/v5) | v5.x |
-| WebSocket | gorilla/websocket | v1.5.x |
-| Frontend Runtime | Deno | 2.x (latest stable) |
-| Frontend Framework | Fresh | 2.x (Deno-native, islands architecture) |
-| Language | TypeScript | Strict mode, ESM only |
-| CSS | Tailwind CSS | v4.x |
-| YAML Editor | Monaco Editor | Latest (via ESM CDN import) |
-| Charts (custom) | Apache ECharts or Chart.js | Latest |
-| Monitoring | Prometheus + Grafana | kube-prometheus-stack compatible |
-| Alerting | Prometheus Alertmanager + SMTP | Via Go SMTP client |
-| Auth | OIDC / LDAP / Local (Argon2id) | Go packages: coreos/go-oidc, go-ldap |
-| Deployment | Helm | v3.x chart |
+| Backend API | Go | 1.26.x |
+| Kubernetes Client | client-go | v0.35.2 (k8s.io/api, apimachinery, client-go) |
+| HTTP Router | chi (go-chi/chi/v5) | v5.2.5 |
+| JWT | golang-jwt/jwt/v5 | v5.3.1 |
+| Password Hashing | golang.org/x/crypto (Argon2id) | v0.49.0 |
+| Configuration | koanf/v2 | v2.3.3 (YAML file + env vars) |
+| WebSocket | gorilla/websocket | v1.5.x (planned) |
+| Frontend Runtime | Deno | 2.x (planned — Step 4+) |
+| Frontend Framework | Fresh | 2.x via JSR @fresh/core (planned — Step 4+) |
+| Language | TypeScript | Strict mode, ESM only (planned) |
+| CSS | Tailwind CSS | v4.x (planned) |
+| YAML Editor | Monaco Editor | Latest (planned) |
+| Monitoring | Prometheus + Grafana | kube-prometheus-stack compatible (planned — Step 9) |
+| Alerting | Prometheus Alertmanager + SMTP | Via Go SMTP client (planned — Step 11) |
+| Auth | Local (Argon2id) implemented; OIDC / LDAP planned (Step 12) | golang-jwt/jwt/v5, golang.org/x/crypto |
+| Deployment | Helm | v3.x chart (skeleton deployed) |
 | Container | Distroless / Alpine-based multi-stage | Scratch for Go, Deno slim for frontend |
 
 ---
 
-## Project Structure
+## Project Structure (Actual — as of Step 2 completion)
+
+Files marked with `[planned]` do not exist yet and will be created in later steps.
 
 ```
 kubecenter/
 ├── CLAUDE.md                          # This file — project context for Claude Code
 ├── README.md                          # User-facing documentation
+├── LICENSE                            # Apache 2.0
+├── SECURITY.md                        # Security policy
 ├── Makefile                           # Build, test, lint, Docker targets
-├── docker-compose.dev.yml             # Local dev environment
+├── .gitignore
 │
-├── backend/                           # Go 1.25 backend
-│   ├── go.mod
+├── backend/                           # Go 1.26 backend
+│   ├── go.mod                         # Module: github.com/kubecenter/kubecenter, go 1.26.1
 │   ├── go.sum
 │   ├── cmd/
 │   │   └── kubecenter/
-│   │       └── main.go                # Entrypoint — starts HTTP server, k8s informers, WS hub
+│   │       └── main.go                # Entrypoint — HTTP server, k8s client, informers, auth init
 │   ├── internal/
 │   │   ├── server/
-│   │   │   ├── server.go              # HTTP server setup, middleware chain, route registration
-│   │   │   ├── routes.go              # All route definitions (delegates to handlers)
+│   │   │   ├── server.go              # Server struct + Deps, chi router, global middleware chain
+│   │   │   ├── routes.go              # Route registration (per-group auth/CSRF, not global skip list)
+│   │   │   ├── response.go            # writeJSON, setRefreshCookie, newAuditEntry, issueTokenPair
+│   │   │   ├── handle_auth.go         # Login, refresh, logout, providers, /auth/me handlers
+│   │   │   ├── handle_auth_test.go    # 19 httptest integration tests (68% server coverage)
+│   │   │   ├── handle_setup.go        # POST /setup/init — first admin creation (one-time)
+│   │   │   ├── handle_health.go       # GET /healthz, GET /readyz
+│   │   │   ├── handle_cluster.go      # GET /cluster/info (version, node count, KubeCenter version)
 │   │   │   └── middleware/
-│   │   │       ├── auth.go            # JWT validation, RBAC enforcement middleware
-│   │   │       ├── audit.go           # Audit logging middleware
-│   │   │       ├── ratelimit.go       # Rate limiting
+│   │   │       ├── auth.go            # JWT validation middleware + CSRF (X-Requested-With header)
+│   │   │       ├── auth_test.go       # Middleware unit tests
+│   │   │       ├── ratelimit.go       # Rate limiting (5 req/min per IP, global bucket across endpoints)
+│   │   │       ├── ratelimit_test.go  # Rate limiter tests
 │   │   │       └── cors.go            # CORS configuration
 │   │   │
 │   │   ├── auth/
-│   │   │   ├── provider.go            # Auth provider interface
-│   │   │   ├── local.go               # Local account provider (Argon2id)
-│   │   │   ├── oidc.go                # OIDC provider (coreos/go-oidc/v3)
-│   │   │   ├── ldap.go                # LDAP provider (go-ldap/ldap/v3)
-│   │   │   ├── jwt.go                 # JWT token creation, validation, refresh
-│   │   │   ├── rbac.go                # Map GUI users → k8s RBAC via impersonation
-│   │   │   └── session.go             # Session management, token store
+│   │   │   ├── provider.go            # AuthProvider interface + StoredUser/User types
+│   │   │   ├── provider_test.go
+│   │   │   ├── local.go               # Local account provider (Argon2id, semaphore-limited concurrency)
+│   │   │   ├── local_test.go
+│   │   │   ├── jwt.go                 # JWT TokenManager — HMAC-SHA256, 15min access, 7day refresh
+│   │   │   ├── jwt_test.go
+│   │   │   ├── rbac.go                # RBACChecker — SelfSubjectRulesReview (1 call/ns, cached 60s)
+│   │   │   ├── session.go             # SessionStore — in-memory refresh tokens, rotation on use
+│   │   │   └── session_test.go
+│   │   │   # [planned] oidc.go        # OIDC provider (Step 12)
+│   │   │   # [planned] ldap.go        # LDAP provider (Step 12)
 │   │   │
 │   │   ├── k8s/
-│   │   │   ├── client.go              # Kubernetes client factory, kubeconfig loading
-│   │   │   ├── informers.go           # Shared informer factory, cache warming
-│   │   │   ├── impersonation.go       # User impersonation for RBAC-scoped k8s calls
-│   │   │   ├── resources/
-│   │   │   │   ├── deployments.go     # CRUD + scale + rollback for Deployments
-│   │   │   │   ├── statefulsets.go    # StatefulSet operations
-│   │   │   │   ├── daemonsets.go      # DaemonSet operations
-│   │   │   │   ├── pods.go            # Pod list, logs, exec, delete
-│   │   │   │   ├── services.go        # Service CRUD (ClusterIP, NodePort, LoadBalancer)
-│   │   │   │   ├── ingresses.go       # Ingress/IngressClass management
-│   │   │   │   ├── configmaps.go      # ConfigMap CRUD
-│   │   │   │   ├── secrets.go         # Secret CRUD (values masked in API responses)
-│   │   │   │   ├── namespaces.go      # Namespace lifecycle
-│   │   │   │   ├── nodes.go           # Node list, cordon, drain, labels
-│   │   │   │   ├── pvcs.go            # PVC management, storage class binding
-│   │   │   │   ├── jobs.go            # Job and CronJob operations
-│   │   │   │   ├── networkpolicies.go # NetworkPolicy CRUD
-│   │   │   │   ├── rbac.go            # Roles, ClusterRoles, Bindings viewer
-│   │   │   │   ├── crds.go            # CRD discovery and generic CR management
-│   │   │   │   └── generic.go         # Generic resource handler for unstructured objects
-│   │   │   ├── storage/
-│   │   │   │   ├── csi.go             # CSI driver discovery, StorageClass management
-│   │   │   │   ├── csi_wizard.go      # Structured CSI configuration logic
-│   │   │   │   └── snapshot.go        # VolumeSnapshot operations
-│   │   │   └── networking/
-│   │   │       ├── cni.go             # CNI detection (Cilium, Calico, Flannel)
-│   │   │       ├── cilium.go          # Cilium-specific: CiliumNetworkPolicy, Hubble, ClusterMesh
-│   │   │       └── cni_wizard.go      # CNI configuration wizard backend logic
+│   │   │   ├── client.go              # ClientFactory — in-cluster/kubeconfig, impersonation cache (sync.Map, 5-min TTL)
+│   │   │   └── informers.go           # InformerManager — pods, deployments, services, namespaces, nodes
+│   │   │   # [planned] resources/     # Resource handlers (Step 3)
+│   │   │   # [planned] storage/       # CSI/StorageClass (Step 10)
+│   │   │   # [planned] networking/    # CNI detection (Step 10)
 │   │   │
-│   │   ├── monitoring/
-│   │   │   ├── discovery.go           # Auto-discover existing Prometheus/Grafana in cluster
-│   │   │   ├── prometheus.go          # Prometheus client — PromQL queries, range queries
-│   │   │   ├── grafana.go             # Grafana API client — dashboard provisioning, org/user setup
-│   │   │   ├── metrics.go             # Pre-built metric query definitions for each resource type
-│   │   │   ├── dashboards/            # Grafana dashboard JSON provisioning templates
-│   │   │   │   ├── cluster_overview.json
-│   │   │   │   ├── node_detail.json
-│   │   │   │   ├── pod_detail.json
-│   │   │   │   ├── deployment_detail.json
-│   │   │   │   ├── pvc_storage.json
-│   │   │   │   ├── service_networking.json
-│   │   │   │   └── cilium_networking.json
-│   │   │   └── alerts/
-│   │   │       ├── rules.go           # Default PrometheusRule definitions
-│   │   │       └── defaults.yaml      # Baseline alert rules YAML
-│   │   │
-│   │   ├── alerting/
-│   │   │   ├── manager.go             # Alert pipeline — receives from Alertmanager webhook
-│   │   │   ├── smtp.go                # SMTP email sender (Go net/smtp + TLS)
-│   │   │   ├── templates/             # Go html/template email templates
-│   │   │   │   ├── alert.html
-│   │   │   │   └── digest.html
-│   │   │   └── store.go              # Alert history persistence (SQLite or in-cluster ConfigMap)
-│   │   │
-│   │   ├── yaml/
-│   │   │   ├── parser.go             # Multi-doc YAML parsing and validation
-│   │   │   ├── validator.go           # Schema validation against OpenAPI specs from API server
-│   │   │   ├── applier.go            # Server-side apply logic for arbitrary YAML
-│   │   │   └── differ.go             # YAML diff engine for showing changes before apply
-│   │   │
-│   │   ├── websocket/
-│   │   │   ├── hub.go                # Connection hub — fan-out resource events to subscribers
-│   │   │   ├── client.go             # Per-connection client, auth, subscriptions
-│   │   │   └── events.go             # Event types: resource updates, log streams, alerts
+│   │   │   # [planned] monitoring/    # Prometheus/Grafana integration (Step 9)
+│   │   │   # [planned] alerting/      # Alertmanager webhook, SMTP (Step 11)
+│   │   │   # [planned] yaml/          # YAML parse, validate, apply, diff (Step 7)
+│   │   │   # [planned] websocket/     # WS hub, client, events (Step 5)
 │   │   │
 │   │   ├── audit/
-│   │   │   ├── logger.go             # Structured audit log (who did what, when, to which resource)
-│   │   │   └── store.go              # Audit log persistence
+│   │   │   ├── logger.go              # Audit Logger interface + SlogLogger implementation
+│   │   │   └── logger_test.go
+│   │   │   # [planned] store.go       # SQLite persistence (Step 14)
 │   │   │
 │   │   └── config/
-│   │       ├── config.go             # App configuration struct, env + file loading
-│   │       └── defaults.go           # Sensible defaults
+│   │       ├── config.go              # Config struct — koanf (YAML + env), validation
+│   │       ├── defaults.go            # Default values
+│   │       └── config_test.go
 │   │
-│   ├── pkg/                          # Public packages (potentially shared with CLI later)
+│   ├── pkg/
 │   │   ├── api/
-│   │   │   └── types.go              # Shared API request/response types
+│   │   │   └── types.go               # Shared API request/response types (APIResponse, APIError)
 │   │   └── version/
-│   │       └── version.go            # Build version info (ldflags)
+│   │       ├── version.go             # Build version info (ldflags)
+│   │       └── version_test.go
 │   │
-│   └── Dockerfile                    # Multi-stage: Go build → distroless/static
+│   └── Dockerfile                     # Multi-stage: Go build → distroless/static
 │
-├── frontend/                         # Deno 2.x + Fresh 2.x frontend
-│   ├── deno.json                     # Deno config: compilerOptions, imports, tasks
-│   ├── deno.lock
-│   ├── main.ts                       # Fresh app entrypoint
-│   ├── fresh.config.ts               # Fresh configuration
-│   ├── tailwind.config.ts            # Tailwind v4 configuration
-│   ├── static/
-│   │   ├── favicon.ico
-│   │   ├── logo.svg
-│   │   └── styles/
-│   │       └── global.css            # Tailwind directives + custom properties
-│   │
-│   ├── routes/                       # Fresh file-based routing
-│   │   ├── _app.tsx                  # Root layout — sidebar nav, top bar, auth context
-│   │   ├── _layout.tsx               # Authenticated layout wrapper
-│   │   ├── index.tsx                 # Dashboard home — cluster overview
-│   │   ├── login.tsx                 # Login page (local + SSO options)
-│   │   │
-│   │   ├── cluster/
-│   │   │   ├── index.tsx             # Cluster overview — nodes, health, capacity
-│   │   │   ├── nodes/
-│   │   │   │   ├── index.tsx         # Node list with status, resources
-│   │   │   │   └── [name].tsx        # Node detail — metrics, pods, labels, taints
-│   │   │   └── events.tsx            # Cluster events stream
-│   │   │
-│   │   ├── workloads/
-│   │   │   ├── index.tsx             # Workloads overview — all deployment types
-│   │   │   ├── deployments/
-│   │   │   │   ├── index.tsx         # Deployment list
-│   │   │   │   ├── [ns]/[name].tsx   # Deployment detail + performance tab
-│   │   │   │   └── create.tsx        # CREATE WIZARD: repo, image, replicas, resources, env, volumes
-│   │   │   ├── statefulsets/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx
-│   │   │   ├── daemonsets/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx
-│   │   │   ├── jobs/
-│   │   │   │   ├── index.tsx
-│   │   │   │   └── [ns]/[name].tsx
-│   │   │   └── pods/
-│   │   │       ├── index.tsx         # Pod list, filterable by namespace/label
-│   │   │       └── [ns]/[name].tsx   # Pod detail — logs, exec terminal, events, metrics
-│   │   │
-│   │   ├── networking/
-│   │   │   ├── index.tsx             # Networking overview
-│   │   │   ├── services/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx        # Service creation wizard
-│   │   │   ├── ingresses/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx
-│   │   │   ├── policies/
-│   │   │   │   ├── index.tsx         # NetworkPolicy + CiliumNetworkPolicy list
-│   │   │   │   └── create.tsx        # Policy wizard — visual rule builder
-│   │   │   └── cni/
-│   │   │       ├── index.tsx         # CNI status, detected plugin
-│   │   │       └── configure.tsx     # CNI CONFIGURATION WIZARD (Cilium, Calico, etc.)
-│   │   │
-│   │   ├── storage/
-│   │   │   ├── index.tsx             # Storage overview — PVCs, PVs, StorageClasses
-│   │   │   ├── pvcs/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx
-│   │   │   ├── classes/
-│   │   │   │   ├── index.tsx         # StorageClass list
-│   │   │   │   └── create.tsx        # StorageClass wizard
-│   │   │   └── csi/
-│   │   │       ├── index.tsx         # CSI driver status, health
-│   │   │       └── configure.tsx     # CSI CONFIGURATION WIZARD
-│   │   │
-│   │   ├── config/
-│   │   │   ├── configmaps/
-│   │   │   │   ├── index.tsx
-│   │   │   │   ├── [ns]/[name].tsx
-│   │   │   │   └── create.tsx
-│   │   │   ├── secrets/
-│   │   │   │   ├── index.tsx         # Secret list (values hidden)
-│   │   │   │   ├── [ns]/[name].tsx   # Secret detail (reveal on click with audit)
-│   │   │   │   └── create.tsx
-│   │   │   └── rbac/
-│   │   │       ├── index.tsx         # Roles, ClusterRoles, Bindings viewer
-│   │   │       └── create.tsx
-│   │   │
-│   │   ├── monitoring/
-│   │   │   ├── index.tsx             # PERFORMANCE TAB — cluster-wide Grafana dashboards
-│   │   │   ├── dashboards.tsx        # Grafana dashboard browser/embed
-│   │   │   ├── alerts/
-│   │   │   │   ├── index.tsx         # Active alerts, alert history
-│   │   │   │   ├── rules.tsx         # Alert rule management
-│   │   │   │   └── settings.tsx      # SMTP config, notification routing
-│   │   │   └── prometheus.tsx        # Direct PromQL query interface (power users)
-│   │   │
-│   │   ├── yaml/
-│   │   │   ├── apply.tsx             # YAML apply page — upload or paste, validate, diff, apply
-│   │   │   └── editor.tsx            # Full Monaco YAML editor with k8s schema completion
-│   │   │
-│   │   ├── settings/
-│   │   │   ├── index.tsx             # App settings overview
-│   │   │   ├── auth.tsx              # Auth provider config (OIDC, LDAP, local users)
-│   │   │   ├── monitoring.tsx        # Prometheus/Grafana connection settings
-│   │   │   └── about.tsx             # Version, cluster info, license
-│   │   │
-│   │   └── api/                      # Fresh API routes (BFF pattern — proxy to Go backend)
-│   │       └── [...path].ts          # Catch-all API proxy to Go backend
-│   │
-│   ├── islands/                      # Fresh interactive islands (hydrated on client)
-│   │   ├── Sidebar.tsx               # Navigation sidebar — resource tree like vCenter
-│   │   ├── TopBar.tsx                # Namespace selector, user menu, cluster indicator
-│   │   ├── ResourceTable.tsx         # Generic sortable/filterable table for any k8s resource
-│   │   ├── ResourceDetail.tsx        # Generic resource detail with tabbed view
-│   │   ├── PerformancePanel.tsx      # Grafana embed + custom ECharts metrics panel
-│   │   ├── YamlEditor.tsx            # Monaco editor island for YAML editing
-│   │   ├── YamlDiffViewer.tsx        # Side-by-side diff view before applying changes
-│   │   ├── TerminalEmbed.tsx         # xterm.js pod exec terminal
-│   │   ├── LogViewer.tsx             # Real-time log streaming viewer
-│   │   ├── WizardStepper.tsx         # Reusable multi-step wizard component
-│   │   ├── DeploymentWizard.tsx      # Step-by-step deployment creation
-│   │   ├── CsiWizard.tsx             # CSI driver configuration wizard
-│   │   ├── CniWizard.tsx             # CNI configuration wizard (Cilium-aware)
-│   │   ├── ServiceWizard.tsx         # Service creation wizard
-│   │   ├── AlertBanner.tsx           # Real-time alert notification banner
-│   │   ├── EventStream.tsx           # Live cluster event feed
-│   │   └── ResourceTopology.tsx      # Visual resource relationship graph (D3-based)
-│   │
-│   ├── components/                   # Non-interactive shared components (SSR-safe)
-│   │   ├── ui/                       # Base UI primitives
-│   │   │   ├── Button.tsx
-│   │   │   ├── Input.tsx
-│   │   │   ├── Select.tsx
-│   │   │   ├── Modal.tsx
-│   │   │   ├── Tabs.tsx
-│   │   │   ├── Badge.tsx
-│   │   │   ├── Card.tsx
-│   │   │   ├── Toast.tsx
-│   │   │   ├── Tooltip.tsx
-│   │   │   ├── DataTable.tsx
-│   │   │   └── Pagination.tsx
-│   │   ├── layout/
-│   │   │   ├── PageHeader.tsx
-│   │   │   ├── Section.tsx
-│   │   │   └── EmptyState.tsx
-│   │   └── k8s/                      # Kubernetes-specific display components
-│   │       ├── StatusBadge.tsx        # Pod phase, deployment status indicators
-│   │       ├── ResourceIcon.tsx       # Icons for each k8s resource type
-│   │       ├── NamespaceSelector.tsx
-│   │       ├── LabelSelector.tsx
-│   │       └── ResourceLink.tsx       # Clickable link to any k8s resource
-│   │
-│   ├── lib/                          # Shared utilities
-│   │   ├── api.ts                    # API client — typed fetch wrapper to backend
-│   │   ├── ws.ts                     # WebSocket client — connect, subscribe, reconnect
-│   │   ├── auth.ts                   # Auth context, token management, login/logout
-│   │   ├── k8s-types.ts             # TypeScript types mirroring k8s API objects
-│   │   ├── formatters.ts            # CPU, memory, age, status formatters
-│   │   ├── yaml-utils.ts            # YAML parse/stringify helpers
-│   │   └── constants.ts             # Route paths, resource kinds, default values
-│   │
-│   └── Dockerfile                    # Deno-based container image
+│   # [planned] frontend/              # Deno 2.x + Fresh 2.x frontend (Step 4+)
 │
 ├── helm/
-│   └── kubecenter/
+│   └── kubecenter/                    # Helm chart (skeleton — Step 1)
 │       ├── Chart.yaml
-│       ├── values.yaml               # Comprehensive defaults with documentation
-│       ├── values.schema.json         # JSON schema for values validation
+│       ├── values.yaml
 │       ├── templates/
 │       │   ├── _helpers.tpl
-│       │   ├── namespace.yaml
 │       │   ├── deployment-backend.yaml
-│       │   ├── deployment-frontend.yaml
 │       │   ├── service-backend.yaml
-│       │   ├── service-frontend.yaml
-│       │   ├── ingress.yaml
 │       │   ├── serviceaccount.yaml
-│       │   ├── clusterrole.yaml       # Read/write permissions for managed resources
-│       │   ├── clusterrolebinding.yaml
-│       │   ├── configmap-app.yaml     # Application configuration
-│       │   ├── secret-app.yaml        # Sensitive config (JWT secret, SMTP creds)
-│       │   ├── networkpolicy.yaml     # Restrict traffic to/from KubeCenter pods
-│       │   ├── poddisruptionbudget.yaml
-│       │   │
-│       │   ├── monitoring/            # Conditional: deploy monitoring stack
-│       │   │   ├── prometheus-values.yaml   # Values override for kube-prometheus-stack subchart
-│       │   │   ├── grafana-datasource.yaml
-│       │   │   ├── grafana-dashboards-cm.yaml
-│       │   │   └── alertmanager-config.yaml
-│       │   │
-│       │   └── tests/
-│       │       └── test-connection.yaml
-│       │
-│       └── charts/                    # Subcharts (conditional)
-│           └── .gitkeep               # kube-prometheus-stack added as dependency in Chart.yaml
+│       │   ├── clusterrole.yaml
+│       │   └── clusterrolebinding.yaml
+│       # [planned] ingress, networkpolicy, frontend templates (Step 13)
 │
-├── docs/
-│   ├── architecture.md               # Detailed architecture document
-│   ├── api-reference.md              # REST API documentation
-│   ├── development.md                # Developer setup guide
-│   ├── deployment.md                 # Production deployment guide
-│   └── security.md                   # Security model documentation
+├── plans/
+│   └── feat-kubecenter-phase1-mvp.md  # Full 15-step implementation plan with progress tracker
 │
-├── scripts/
-│   ├── dev-setup.sh                  # Bootstrap local dev environment
-│   ├── generate-certs.sh             # Self-signed TLS certs for dev
-│   └── seed-demo-data.sh             # Populate cluster with demo workloads
+├── todos/                             # Tracked findings and improvements (file-based todo system)
+│   ├── 001-014: complete              # First review — all fixed
+│   ├── 015-020, 022-023: pending      # Re-review findings — deferred
+│   └── 021: complete                  # Handler integration tests
 │
-└── .github/
-    └── workflows/
-        ├── ci.yml                    # Lint, test, build
-        └── release.yml               # Build images, push to registry, Helm package
+├── .github/
+│   └── workflows/
+│       └── ci.yml                     # go vet + go test -race + go build
+│
+# [planned] docs/                      # Architecture, API reference, deployment docs
+# [planned] scripts/                   # Dev setup, cert generation, demo data
 ```
 
 ---
@@ -370,7 +151,7 @@ kubecenter/
 - **Informers for read, direct API calls for write.** Use `SharedInformerFactory` with label/field selectors to maintain an in-memory cache of cluster state. All list/get operations read from the informer cache. All create/update/delete operations go through the API server directly, with impersonation.
 - **Server-side apply for all YAML operations.** Use `PATCH` with `application/apply-patch+yaml` content type. Never use `kubectl apply` under the hood.
 - **WebSocket hub pattern for real-time updates.** A central hub goroutine receives events from informers and fans them out to connected WebSocket clients. Clients subscribe to specific resource types and namespaces. Authenticate WebSocket connections with the same JWT used for REST.
-- **Structured logging with slog.** Use Go 1.25's `log/slog` package with JSON output. Include request ID, user identity, resource kind, namespace, and name in all log entries.
+- **Structured logging with slog.** Use Go 1.26's `log/slog` package with JSON output. Include request ID, user identity, resource kind, namespace, and name in all log entries.
 - **Error handling: never expose internal errors to users.** Wrap k8s API errors into user-friendly messages. Return appropriate HTTP status codes. Log full error details server-side.
 - **Configuration via environment variables with YAML file fallback.** Use a single config struct loaded at startup. Env vars override YAML file values. All secrets come from env vars or k8s Secrets, never config files.
 
@@ -406,14 +187,31 @@ kubecenter/
 
 ## API Design
 
-### REST Endpoints (Go Backend)
+### Implemented Endpoints (as of Step 2)
+
+```
+# Public (no auth)
+GET    /healthz                        # Liveness probe (always 200)
+GET    /readyz                         # Readiness probe (checks informer sync)
+POST   /api/v1/setup/init              # Create first admin account (one-time, rate limited)
+POST   /api/v1/auth/login              # Local login — returns JWT access token + refresh cookie (rate limited)
+POST   /api/v1/auth/refresh            # Refresh access token using httpOnly cookie (rate limited)
+POST   /api/v1/auth/logout             # Invalidate refresh token
+GET    /api/v1/auth/providers          # List configured auth providers (currently: ["local"])
+
+# Authenticated (requires Bearer token + X-Requested-With header for CSRF)
+GET    /api/v1/auth/me                 # Current user info + k8s RBAC summary (SelfSubjectRulesReview)
+GET    /api/v1/cluster/info            # Cluster version, node count, KubeCenter version
+```
+
+### Full Planned REST Endpoints (Go Backend)
 
 All endpoints are prefixed with `/api/v1`.
 
 ```
 # Authentication
 POST   /api/v1/auth/login            # Local login (username + password)
-POST   /api/v1/auth/oidc/callback    # OIDC callback
+POST   /api/v1/auth/oidc/callback    # OIDC callback [planned]
 POST   /api/v1/auth/refresh           # Refresh access token
 POST   /api/v1/auth/logout            # Invalidate session
 GET    /api/v1/auth/providers         # List configured auth providers
@@ -525,6 +323,8 @@ WS /api/v1/ws/alerts       # Real-time alert notifications
 
 ### Wizard → YAML Pipeline
 
+**Decision from plan review:** Form-to-YAML only (no bidirectional YAML→form sync — too complex, deferred).
+
 Every wizard follows this data flow:
 1. User fills in wizard steps (frontend form state)
 2. Frontend serializes form state into a structured JSON payload
@@ -533,7 +333,6 @@ Every wizard follows this data flow:
 5. Backend returns the YAML to the frontend for preview
 6. User reviews YAML in Monaco editor (can edit)
 7. User clicks "Apply" — backend validates and applies via server-side apply
-8. If the user toggled to YAML mode at any point, the form state is repopulated by parsing the YAML back into the structured payload
 
 ### Monitoring Bootstrap Sequence (on Helm install)
 
@@ -557,118 +356,136 @@ Every wizard follows this data flow:
 
 ## Build System
 
-### Makefile Targets
+### Makefile Targets (actual)
 
 ```makefile
-# Development
-make dev              # Start backend + frontend in dev mode with hot reload
-make dev-backend      # Backend only with air (hot reload)
-make dev-frontend     # Frontend only with Deno --watch
-
-# Build
-make build            # Build both backend and frontend
-make build-backend    # go build -o bin/kubecenter ./cmd/kubecenter
-make build-frontend   # deno task build (Fresh static export)
-
-# Docker
-make docker-build     # Build both container images
-make docker-push      # Push to registry
-
-# Testing
-make test             # Run all tests
-make test-backend     # go test ./... -race -cover
-make test-frontend    # deno test
-make test-e2e         # End-to-end tests against a kind cluster
-make lint             # golangci-lint + deno lint + deno fmt --check
-
-# Helm
-make helm-lint        # helm lint
-make helm-template    # helm template (dry-run render)
-make helm-package     # helm package
+make dev              # Alias for dev-backend
+make dev-backend      # cd backend && go run ./cmd/kubecenter --config ""
+make build            # Alias for build-backend
+make build-backend    # go build with ldflags (version, commit, date) → bin/kubecenter
+make test             # Alias for test-backend
+make test-backend     # go test ./... -race -cover -count=1
+make lint             # go vet ./...
+make docker-build     # Docker build for backend
+make helm-lint        # helm lint helm/kubecenter
+make helm-template    # helm template (dry-run)
+make clean            # rm -rf backend/bin
 ```
+
+Targets not yet added (planned for later steps):
+- `make dev-frontend` (Step 4)
+- `make build-frontend` (Step 4)
+- `make test-frontend` (Step 4)
+- `make test-e2e` (Step 15)
+- `make docker-push` (Step 13)
 
 ### Go Module (backend/go.mod)
 
 ```
 module github.com/kubecenter/kubecenter
 
-go 1.25
+go 1.26.1
 
 require (
-    k8s.io/client-go            v0.32.x
-    k8s.io/apimachinery          v0.32.x
-    k8s.io/api                   v0.32.x
-    sigs.k8s.io/controller-runtime v0.20.x
-    github.com/go-chi/chi/v5     v5.x
-    github.com/gorilla/websocket  v1.5.x
-    github.com/coreos/go-oidc/v3  v3.x
-    github.com/go-ldap/ldap/v3    v3.x
-    github.com/golang-jwt/jwt/v5  v5.x
-    golang.org/x/crypto           latest   // Argon2id
-    github.com/prometheus/client_golang  latest
-    github.com/grafana/grafana-api-golang-client latest
-    gopkg.in/yaml.v3               v3.x
-    github.com/santhosh-tekuri/jsonschema/v6 latest
+    github.com/go-chi/chi/v5     v5.2.5
+    github.com/go-chi/cors        v1.2.2
+    github.com/golang-jwt/jwt/v5  v5.3.1
+    github.com/knadh/koanf/v2     v2.3.3   // Config: YAML file + env vars
+    golang.org/x/crypto           v0.49.0  // Argon2id password hashing
+    k8s.io/api                    v0.35.2
+    k8s.io/apimachinery           v0.35.2
+    k8s.io/client-go              v0.35.2
 )
 ```
 
-### Deno Config (frontend/deno.json)
+Dependencies not yet added (will be added in later steps):
+- `gorilla/websocket` (Step 5: WebSocket hub)
+- `coreos/go-oidc/v3` (Step 12: OIDC auth)
+- `go-ldap/ldap/v3` (Step 12: LDAP auth)
+- `prometheus/client_golang` (Step 9: monitoring)
+- `grafana-api-golang-client` (Step 9: Grafana integration)
+- `mattn/go-sqlite3` or `modernc.org/sqlite` (Step 14: audit persistence)
 
-```json
-{
-  "compilerOptions": {
-    "jsx": "react-jsx",
-    "jsxImportSource": "preact",
-    "strict": true
-  },
-  "nodeModulesDir": "auto",
-  "imports": {
-    "preact": "https://esm.sh/preact@10.x",
-    "preact/": "https://esm.sh/preact@10.x/",
-    "@preact/signals": "https://esm.sh/@preact/signals@2.x",
-    "$fresh/": "https://deno.land/x/fresh@2.x/",
-    "echarts": "https://esm.sh/echarts@5.x",
-    "monaco-editor": "https://esm.sh/monaco-editor@latest"
-  },
-  "tasks": {
-    "dev": "deno run -A --watch main.ts",
-    "build": "deno run -A main.ts build",
-    "preview": "deno run -A main.ts preview",
-    "lint": "deno lint",
-    "fmt": "deno fmt",
-    "test": "deno test -A"
-  }
-}
-```
+### Deno Config (frontend/deno.json) — PLANNED, not yet created
+
+**NOTE:** The plan identified corrections from the original spec. The actual deno.json when created should use:
+- `"jsx": "precompile"` (NOT `"react-jsx"`) for Fresh 2 SSR performance
+- `jsr:` and `npm:` specifiers (NOT `https://esm.sh/` or `https://deno.land/x/`)
+- Fresh 2.x from JSR `@fresh/core` (NOT `$fresh/`)
+- Requires `vite.config.ts` and `client.ts` at frontend root (Fresh 2 uses Vite)
+- No `fresh.config.ts` or `tailwind.config.ts` (Tailwind v4 is CSS-first via `@theme`)
 
 ---
+
+## Configuration
+
+### Environment Variables (koanf)
+
+Configuration uses [koanf](https://github.com/knadh/koanf) with `KUBECENTER_` prefix. The underscore-separated env var name maps to the nested config struct path. **This is a common gotcha** — the env var name uses the struct field path, not a flat name.
+
+```bash
+# Config struct path        → Env var name
+# Config.Server.Port        → KUBECENTER_SERVER_PORT
+# Config.Auth.JWTSecret     → KUBECENTER_AUTH_JWTSECRET
+# Config.Auth.SetupToken    → KUBECENTER_AUTH_SETUPTOKEN
+# Config.Log.Level           → KUBECENTER_LOG_LEVEL
+# Config.Log.Format          → KUBECENTER_LOG_FORMAT
+# Config.Dev                 → KUBECENTER_DEV
+# Config.ClusterID           → KUBECENTER_CLUSTERID
+# Config.CORS.AllowedOrigins → KUBECENTER_CORS_ALLOWEDORIGINS
+```
+
+**IMPORTANT:** `KUBECENTER_JWT_SECRET` does NOT work. The correct name is `KUBECENTER_AUTH_JWTSECRET` (maps to `Config.Auth.JWTSecret`). Same for setup token: `KUBECENTER_AUTH_SETUPTOKEN` not `KUBECENTER_SETUP_TOKEN`.
+
+### Running Locally
+
+```bash
+# Start backend against a kind cluster
+KUBECENTER_DEV=true \
+KUBECENTER_AUTH_JWTSECRET="your-secret-minimum-32-bytes-long" \
+KUBECENTER_AUTH_SETUPTOKEN="your-setup-token" \
+  go run ./cmd/kubecenter
+
+# Or use make (uses default config, no JWT secret = random key per restart)
+make dev-backend
+```
+
+When `KUBECENTER_DEV=true`, the k8s client uses kubeconfig (~/.kube/config) instead of in-cluster config.
+
+If no JWT secret is configured, a random key is generated (tokens won't survive restarts).
+
+### Rate Limiter Behavior
+
+The rate limiter uses a **single 5 req/min bucket per IP** shared across ALL rate-limited endpoints (login, refresh, setup). In local development from localhost, all requests share one bucket. Restart the backend to reset.
 
 ## Development Setup
 
 ### Prerequisites
-- Go 1.25+
-- Deno 2.x+
-- Docker + Docker Compose
+- Go 1.26+
 - kind (Kubernetes in Docker) for local testing
 - Helm 3.x
 - kubectl
 
 ### Local Development Flow
 ```bash
-# 1. Create local kind cluster with ingress
-kind create cluster --config scripts/kind-config.yaml
+# 1. Create local kind cluster
+kind create cluster --name kubecenter
 
-# 2. Deploy monitoring stack (optional, for full feature testing)
-helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+# 2. Start backend in dev mode (connects to kind cluster via kubeconfig)
+KUBECENTER_DEV=true \
+KUBECENTER_AUTH_JWTSECRET="test-secret-for-dev-minimum-32-bytes" \
+KUBECENTER_AUTH_SETUPTOKEN="dev-setup-token" \
+  cd backend && go run ./cmd/kubecenter
 
-# 3. Start backend in dev mode (connects to kind cluster via kubeconfig)
-cd backend && air  # or: go run ./cmd/kubecenter --dev
-
-# 4. Start frontend in dev mode (proxies API to backend)
-cd frontend && deno task dev
-
-# 5. Access at http://localhost:8000 (Fresh dev server)
-#    Backend API at http://localhost:8080/api/v1
+# 3. Backend API at http://localhost:8080
+#    Health: curl http://localhost:8080/healthz
+#    Setup:  curl -X POST http://localhost:8080/api/v1/setup/init \
+#              -H "Content-Type: application/json" \
+#              -d '{"username":"admin","password":"changeme123"}'
+#    Login:  curl -X POST http://localhost:8080/api/v1/auth/login \
+#              -H "Content-Type: application/json" \
+#              -H "X-Requested-With: XMLHttpRequest" \
+#              -d '{"username":"admin","password":"changeme123"}'
 ```
 
 ---
