@@ -12,23 +12,25 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 )
 
 // Server holds all dependencies needed by HTTP handlers.
 type Server struct {
-	Router       *chi.Mux
-	Config       *config.Config
-	K8sClient    *k8s.ClientFactory
-	Informers    *k8s.InformerManager
-	Logger       *slog.Logger
-	TokenManager *auth.TokenManager
-	LocalAuth    *auth.LocalProvider
-	Sessions     *auth.SessionStore
-	RBACChecker  *auth.RBACChecker
-	AuditLogger  audit.Logger
-	RateLimiter  *middleware.RateLimiter
-	ready        func() bool
+	Router          *chi.Mux
+	Config          *config.Config
+	K8sClient       *k8s.ClientFactory
+	Informers       *k8s.InformerManager
+	Logger          *slog.Logger
+	TokenManager    *auth.TokenManager
+	LocalAuth       *auth.LocalProvider
+	Sessions        *auth.SessionStore
+	RBACChecker     *auth.RBACChecker
+	AuditLogger     audit.Logger
+	RateLimiter     *middleware.RateLimiter
+	ResourceHandler *resources.Handler
+	ready           func() bool
 }
 
 // Deps holds all dependencies needed to create a Server.
@@ -61,6 +63,18 @@ func New(deps Deps) *Server {
 		AuditLogger:  deps.AuditLogger,
 		RateLimiter:  deps.RateLimiter,
 		ready:        deps.ReadyFn,
+	}
+
+	// Build resource handler if k8s dependencies are available (not in auth-only tests)
+	if deps.K8sClient != nil && deps.Informers != nil {
+		s.ResourceHandler = &resources.Handler{
+			K8sClient:     deps.K8sClient,
+			Informers:     deps.Informers,
+			AccessChecker: resources.NewAccessChecker(deps.K8sClient, deps.Logger),
+			AuditLogger:   deps.AuditLogger,
+			Logger:        deps.Logger,
+			TaskManager:   resources.NewTaskManager(),
+		}
 	}
 
 	// Global middleware chain — order matters.
