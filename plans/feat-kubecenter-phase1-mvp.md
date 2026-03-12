@@ -4,7 +4,29 @@
 
 KubeCenter is a web-based Kubernetes management platform delivering vCenter-level functionality for Kubernetes clusters. This plan covers the complete Phase 1 MVP: a working single-cluster management UI with GUI wizards, real-time updates, monitoring integration, and RBAC-aware multi-tenancy.
 
-The project is **greenfield** — only `CLAUDE.md` exists today. This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking changes, and 62 specification gaps identified during analysis.
+This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking changes, and 62 specification gaps identified during analysis.
+
+---
+
+## Progress Tracker
+
+| Step | Name | Status | PR | Notes |
+|------|------|--------|-----|-------|
+| 1 | Backend Skeleton | Done | #1 | HTTP server, k8s client, informers, Helm skeleton, CI |
+| 2 | Auth System | Done | #2 | JWT, local auth, RBAC, audit interface, middleware. 14 review findings fixed, 9 deferred (todos 015-023) |
+| 3 | Resource Listing | Not started | — | |
+| 4 | Frontend Skeleton | Not started | — | |
+| 5 | Resource Browser | Not started | — | |
+| 6 | Resource Detail | Not started | — | |
+| 7 | YAML Apply | Not started | — | |
+| 8 | Resource Creation Wizards | Not started | — | |
+| 9 | Monitoring Integration | Not started | — | |
+| 10 | CSI/CNI Wizards | Not started | — | |
+| 11 | Alerting | Not started | — | |
+| 12 | OIDC/LDAP Auth | Not started | — | |
+| 13 | Helm Chart — Production | Not started | — | |
+| 14 | Audit Logging (SQLite) | Not started | — | |
+| 15 | Polish | Not started | — | |
 
 ---
 
@@ -253,16 +275,16 @@ helm/kubecenter/          # Skeleton Helm chart (production hardening in Step 13
 - Helm jobs added in Step 13: `helm lint`, `helm template`
 
 **Acceptance criteria:**
-- [ ] `go build ./cmd/kubecenter` compiles
-- [ ] Server starts, connects to k8s (kind cluster in dev)
-- [ ] `/healthz` returns 200 immediately
-- [ ] `/readyz` returns 200 after informer sync, 503 before
-- [ ] `GET /api/v1/cluster/info` returns cluster version and node count
-- [ ] Graceful shutdown completes within 30s
-- [ ] Structured JSON logs via slog with request IDs
-- [ ] `make build-backend`, `make test-backend`, `make lint` all pass
-- [ ] Helm skeleton deploys to kind cluster: `helm install kubecenter ./helm/kubecenter`
-- [ ] CI pipeline runs on push and passes
+- [x] `go build ./cmd/kubecenter` compiles
+- [x] Server starts, connects to k8s (kind cluster in dev)
+- [x] `/healthz` returns 200 immediately
+- [x] `/readyz` returns 200 after informer sync, 503 before
+- [x] `GET /api/v1/cluster/info` returns cluster version and node count
+- [x] Graceful shutdown completes within 30s
+- [x] Structured JSON logs via slog with request IDs
+- [x] `make build-backend`, `make test-backend`, `make lint` all pass
+- [x] Helm skeleton deploys to kind cluster: `helm install kubecenter ./helm/kubecenter`
+- [x] CI pipeline runs on push and passes
 
 ---
 
@@ -354,15 +376,25 @@ type User struct {
 - Persistence layer swapped to SQLite in step 14
 
 **Acceptance criteria:**
-- [ ] `POST /api/v1/setup/init` creates first admin (only when no users exist)
-- [ ] `POST /api/v1/auth/login` returns JWT access token
-- [ ] Refresh token set as httpOnly cookie
-- [ ] `POST /api/v1/auth/refresh` issues new access token (requires CSRF header)
-- [ ] Auth middleware rejects requests without valid JWT
-- [ ] Rate limiter blocks after 5 failed login attempts per minute per IP
-- [ ] `GET /api/v1/auth/me` returns user info with RBAC summary
-- [ ] Audit middleware logs all write operations to stdout
-- [ ] All endpoints except auth and health require authentication
+- [x] `POST /api/v1/setup/init` creates first admin (only when no users exist)
+- [x] `POST /api/v1/auth/login` returns JWT access token
+- [x] Refresh token set as httpOnly cookie
+- [x] `POST /api/v1/auth/refresh` issues new access token (requires CSRF header)
+- [x] Auth middleware rejects requests without valid JWT
+- [x] Rate limiter blocks after 5 failed login attempts per minute per IP
+- [x] `GET /api/v1/auth/me` returns user info with RBAC summary
+- [x] Audit middleware logs all write operations to stdout
+- [x] All endpoints except auth and health require authentication
+
+**Implementation notes (deviations from plan):**
+- Auth middleware uses chi route groups instead of skip-path list (cleaner, see todo 007)
+- RBAC uses `SelfSubjectRulesReview` (1 call/namespace) instead of per-resource `SelfSubjectAccessReview` (see todo 004)
+- Argon2id concurrency limited to 3 simultaneous hashes (~64MB each) to prevent OOM
+- User store is in-memory (not k8s Secret) — persistence comes in Step 14
+- Refresh tokens use single-use rotation with automatic cleanup goroutine
+- `Provider` field added to User, JWT claims, and sessions for OIDC readiness
+- Handler files split by domain: `handle_auth.go`, `handle_setup.go`, `handle_cluster.go`, `handle_health.go`, `response.go`
+- 14 code review findings fixed across 3 commits; 9 follow-up findings deferred as todos 015-023
 
 ---
 

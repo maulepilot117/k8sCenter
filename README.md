@@ -65,7 +65,18 @@ make dev-backend
 
 # Backend API available at http://localhost:8080
 # Health check: curl http://localhost:8080/healthz
-# Cluster info: curl http://localhost:8080/api/v1/cluster/info
+# Cluster info (requires auth): curl http://localhost:8080/api/v1/cluster/info
+
+# Set up the first admin account
+curl -X POST http://localhost:8080/api/v1/setup/init \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"changeme","setupToken":"your-token"}'
+
+# Login
+curl -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -H "X-Requested-With: XMLHttpRequest" \
+  -d '{"username":"admin","password":"changeme"}'
 ```
 
 ### Deploy to Cluster
@@ -98,14 +109,20 @@ All endpoints are prefixed with `/api/v1`. Responses use a standard envelope:
 
 Key endpoints:
 
-| Method | Path | Description |
-|---|---|---|
-| GET | `/healthz` | Liveness probe |
-| GET | `/readyz` | Readiness probe |
-| GET | `/api/v1/cluster/info` | Cluster version, node count, KubeCenter version |
-| GET | `/api/v1/resources/:kind/:namespace` | List resources by kind and namespace |
-| POST | `/api/v1/yaml/apply` | Validate and apply YAML (server-side apply) |
-| WS | `/api/v1/ws/resources` | Real-time resource event stream |
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/healthz` | No | Liveness probe |
+| GET | `/readyz` | No | Readiness probe |
+| POST | `/api/v1/setup/init` | No | Create first admin account (one-time) |
+| POST | `/api/v1/auth/login` | No | Login, returns JWT access token |
+| POST | `/api/v1/auth/refresh` | No | Refresh access token (httpOnly cookie) |
+| POST | `/api/v1/auth/logout` | No | Invalidate refresh token |
+| GET | `/api/v1/auth/providers` | No | List configured auth providers |
+| GET | `/api/v1/auth/me` | Yes | Current user info + RBAC summary |
+| GET | `/api/v1/cluster/info` | Yes | Cluster version, node count, KubeCenter version |
+| GET | `/api/v1/resources/:kind/:namespace` | Yes | List resources by kind and namespace |
+| POST | `/api/v1/yaml/apply` | Yes | Validate and apply YAML (server-side apply) |
+| WS | `/api/v1/ws/resources` | Yes | Real-time resource event stream |
 
 See [CLAUDE.md](CLAUDE.md) for the complete API reference.
 
@@ -128,10 +145,17 @@ See [SECURITY.md](SECURITY.md) for the full security policy and vulnerability re
 kubecenter/
 ├── backend/              # Go 1.26 backend
 │   ├── cmd/kubecenter/   # Entrypoint
-│   ├── internal/         # Private packages (server, k8s, config, auth, ...)
+│   ├── internal/
+│   │   ├── server/       # HTTP server, routes, handlers
+│   │   │   └── middleware/ # Auth, CSRF, rate limiting, CORS
+│   │   ├── auth/         # JWT, local accounts, RBAC, sessions
+│   │   ├── audit/        # Audit logging interface + slog impl
+│   │   ├── k8s/          # Client factory, informers
+│   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x (Phase 1, Step 4+)
 ├── helm/kubecenter/      # Helm chart
+├── todos/                # Tracked findings and improvements
 ├── .github/workflows/    # CI pipeline
 └── plans/                # Implementation plans
 ```
