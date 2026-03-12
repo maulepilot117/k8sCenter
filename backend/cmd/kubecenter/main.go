@@ -53,16 +53,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Start informers
-	baseCS, err := k8sClient.BaseClientset()
-	if err != nil {
-		logger.Error("failed to create base clientset", "error", err)
-		os.Exit(1)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Start cache sweeper for impersonating clients
+	k8sClient.StartCacheSweeper(ctx)
+
+	// Start informers
+	baseCS := k8sClient.BaseClientset()
 	informerMgr := k8s.NewInformerManager(baseCS, logger)
 	informerMgr.Start(ctx)
 
@@ -79,18 +77,25 @@ func main() {
 	srv := server.New(cfg, k8sClient, informerMgr, logger, ready.Load)
 	httpServer := srv.HTTPServer()
 
-	// Start HTTP server
+	// Start HTTP server — use errCh instead of os.Exit in goroutine
+	// to avoid bypassing defers
+	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("http server listening", "port", cfg.Server.Port)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server error", "error", err)
-			os.Exit(1)
+			errCh <- err
 		}
 	}()
 
-	// Wait for shutdown signal
-	<-ctx.Done()
-	logger.Info("shutdown signal received")
+	// Wait for shutdown signal or server error
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received")
+	case err := <-errCh:
+		logger.Error("http server error", "error", err)
+		stop()
+	}
+
 	ready.Store(false)
 
 	// Graceful shutdown

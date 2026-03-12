@@ -16,7 +16,7 @@ rules:
       - pods/log
       - services
       - configmaps
-      - secrets
+      # secrets are fetched on-demand via impersonated client, not cached in informer
       - namespaces
       - nodes
       - persistentvolumeclaims

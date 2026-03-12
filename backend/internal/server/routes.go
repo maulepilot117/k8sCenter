@@ -43,14 +43,7 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 // handleClusterInfo returns basic cluster information.
 func (s *Server) handleClusterInfo(w http.ResponseWriter, r *http.Request) {
-	cs, err := s.K8sClient.BaseClientset()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, api.Response{
-			Error: &api.APIError{Code: 500, Message: "failed to create kubernetes client"},
-		})
-		s.Logger.Error("failed to create base clientset", "error", err)
-		return
-	}
+	cs := s.K8sClient.BaseClientset()
 
 	serverVersion, err := cs.Discovery().ServerVersion()
 	if err != nil {

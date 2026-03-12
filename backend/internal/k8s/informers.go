@@ -28,7 +28,9 @@ func NewInformerManager(clientset *kubernetes.Clientset, logger *slog.Logger) *I
 	factory.Core().V1().Pods().Informer()
 	factory.Core().V1().Services().Informer()
 	factory.Core().V1().ConfigMaps().Informer()
-	factory.Core().V1().Secrets().Informer()
+	// Secrets are intentionally NOT cached in the informer. They are fetched
+	// on-demand via the impersonated client to avoid holding all cluster
+	// secrets in process memory.
 	factory.Core().V1().Namespaces().Informer()
 	factory.Core().V1().Nodes().Informer()
 	factory.Core().V1().PersistentVolumeClaims().Informer()
@@ -48,7 +50,7 @@ func NewInformerManager(clientset *kubernetes.Clientset, logger *slog.Logger) *I
 	factory.Networking().V1().NetworkPolicies().Informer()
 
 	logger.Info("informer manager created",
-		"resourceTypes", 15,
+		"resourceTypes", 14,
 		"resyncPeriod", defaultResyncPeriod,
 	)
 
