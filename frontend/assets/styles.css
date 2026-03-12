@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@theme {
+  /* Status colors — consistent k8s resource state mapping */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+
+  /* Surface colors */
+  --color-surface: #ffffff;
+  --color-surface-secondary: #f8fafc;
+  --color-surface-dark: #0f172a;
+  --color-surface-dark-secondary: #1e293b;
+
+  /* Sidebar */
+  --color-sidebar: #1e293b;
+  --color-sidebar-hover: #334155;
+  --color-sidebar-active: #3b82f6;
+
+  /* Brand */
+  --color-brand: #3b82f6;
+  --color-brand-dark: #2563eb;
+}
