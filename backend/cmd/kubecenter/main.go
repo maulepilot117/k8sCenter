@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"log/slog"
@@ -11,9 +12,12 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/version"
 )
 
@@ -69,12 +73,46 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize JWT signing key
+	jwtSecret := []byte(cfg.Auth.JWTSecret)
+	if len(jwtSecret) == 0 {
+		// Generate a random key if not configured (development mode)
+		jwtSecret = make([]byte, 32)
+		if _, err := rand.Read(jwtSecret); err != nil {
+			logger.Error("failed to generate JWT secret", "error", err)
+			os.Exit(1)
+		}
+		logger.Warn("no JWT secret configured, using random key (tokens will not survive restarts)")
+	}
+
+	// Initialize auth components
+	tokenManager := auth.NewTokenManager(jwtSecret)
+	localAuth := auth.NewLocalProvider(logger)
+	sessions := auth.NewSessionStore()
+	sessions.StartCleanup(ctx, auth.RefreshTokenLifetime/2)
+	rbacChecker := auth.NewRBACChecker(k8sClient, logger)
+	auditLogger := audit.NewSlogLogger(logger)
+	rateLimiter := middleware.NewRateLimiter()
+	rateLimiter.StartCleanup(ctx)
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
 
 	// Create HTTP server
-	srv := server.New(cfg, k8sClient, informerMgr, logger, ready.Load)
+	srv := server.New(server.Deps{
+		Config:       cfg,
+		K8sClient:    k8sClient,
+		Informers:    informerMgr,
+		Logger:       logger,
+		TokenManager: tokenManager,
+		LocalAuth:    localAuth,
+		Sessions:     sessions,
+		RBACChecker:  rbacChecker,
+		AuditLogger:  auditLogger,
+		RateLimiter:  rateLimiter,
+		ReadyFn:      ready.Load,
+	})
 	httpServer := srv.HTTPServer()
 
 	// Start HTTP server — use errCh instead of os.Exit in goroutine

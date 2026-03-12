@@ -8,40 +8,71 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 )
 
 // Server holds all dependencies needed by HTTP handlers.
 type Server struct {
-	Router    *chi.Mux
-	Config    *config.Config
-	K8sClient *k8s.ClientFactory
-	Informers *k8s.InformerManager
-	Logger    *slog.Logger
-	ready     func() bool
+	Router       *chi.Mux
+	Config       *config.Config
+	K8sClient    *k8s.ClientFactory
+	Informers    *k8s.InformerManager
+	Logger       *slog.Logger
+	TokenManager *auth.TokenManager
+	LocalAuth    *auth.LocalProvider
+	Sessions     *auth.SessionStore
+	RBACChecker  *auth.RBACChecker
+	AuditLogger  audit.Logger
+	RateLimiter  *middleware.RateLimiter
+	ready        func() bool
+}
+
+// Deps holds all dependencies needed to create a Server.
+type Deps struct {
+	Config       *config.Config
+	K8sClient    *k8s.ClientFactory
+	Informers    *k8s.InformerManager
+	Logger       *slog.Logger
+	TokenManager *auth.TokenManager
+	LocalAuth    *auth.LocalProvider
+	Sessions     *auth.SessionStore
+	RBACChecker  *auth.RBACChecker
+	AuditLogger  audit.Logger
+	RateLimiter  *middleware.RateLimiter
+	ReadyFn      func() bool
 }
 
 // New creates a configured HTTP server with middleware and routes.
-func New(cfg *config.Config, k8sClient *k8s.ClientFactory, informers *k8s.InformerManager, logger *slog.Logger, readyFn func() bool) *Server {
+func New(deps Deps) *Server {
 	s := &Server{
-		Router:    chi.NewRouter(),
-		Config:    cfg,
-		K8sClient: k8sClient,
-		Informers: informers,
-		Logger:    logger,
-		ready:     readyFn,
+		Router:       chi.NewRouter(),
+		Config:       deps.Config,
+		K8sClient:    deps.K8sClient,
+		Informers:    deps.Informers,
+		Logger:       deps.Logger,
+		TokenManager: deps.TokenManager,
+		LocalAuth:    deps.LocalAuth,
+		Sessions:     deps.Sessions,
+		RBACChecker:  deps.RBACChecker,
+		AuditLogger:  deps.AuditLogger,
+		RateLimiter:  deps.RateLimiter,
+		ready:        deps.ReadyFn,
 	}
 
-	// Middleware chain — order matters
+	// Global middleware chain — order matters.
+	// Auth and CSRF are applied per-route-group in registerRoutes(),
+	// not globally, so public endpoints don't need a skip list.
 	s.Router.Use(chimw.RequestID)
 	s.Router.Use(chimw.RealIP)
-	s.Router.Use(slogMiddleware(logger))
+	s.Router.Use(slogMiddleware(deps.Logger))
 	s.Router.Use(chimw.Recoverer)
 	s.Router.Use(chimw.CleanPath)
-	s.Router.Use(chimw.Timeout(cfg.Server.RequestTimeout))
-	s.Router.Use(middleware.CORS(cfg))
+	s.Router.Use(chimw.Timeout(deps.Config.Server.RequestTimeout))
+	s.Router.Use(middleware.CORS(deps.Config))
 
 	s.registerRoutes()
 

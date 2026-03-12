@@ -15,9 +15,15 @@ import (
 type Config struct {
 	Server    ServerConfig `koanf:"server"`
 	Log       LogConfig    `koanf:"log"`
+	Auth      AuthConfig   `koanf:"auth"`
 	Dev       bool         `koanf:"dev"`
 	ClusterID string       `koanf:"clusterid"`
 	CORS      CORSConfig   `koanf:"cors"`
+}
+
+type AuthConfig struct {
+	JWTSecret  string `koanf:"jwtsecret"`
+	SetupToken string `koanf:"setuptoken"`
 }
 
 type ServerConfig struct {
