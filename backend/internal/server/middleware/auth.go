@@ -9,27 +9,12 @@ import (
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
-// skipAuthPaths are endpoints that do not require authentication.
-var skipAuthPaths = map[string]bool{
-	"/healthz":                true,
-	"/readyz":                 true,
-	"/api/v1/auth/login":     true,
-	"/api/v1/auth/refresh":   true,
-	"/api/v1/auth/providers": true,
-	"/api/v1/setup/init":     true,
-}
-
 // Auth returns middleware that validates JWT Bearer tokens.
-// Requests to skip-listed paths pass through without auth.
-// Authenticated user is injected into the request context.
+// Apply this only to route groups that require authentication —
+// public routes should be registered outside this middleware group.
 func Auth(tm *auth.TokenManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if skipAuthPaths[r.URL.Path] {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			header := r.Header.Get("Authorization")
 			if header == "" {
 				writeAuthError(w, http.StatusUnauthorized, "missing authorization header")
@@ -80,6 +65,5 @@ func writeAuthError(w http.ResponseWriter, status int, message string) {
 			Message: message,
 		},
 	}
-	// Best-effort JSON encoding — if this fails, the status code is already sent
 	json.NewEncoder(w).Encode(resp)
 }

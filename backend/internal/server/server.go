@@ -12,7 +12,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 )
 
 // Server holds all dependencies needed by HTTP handlers.
@@ -63,7 +63,9 @@ func New(deps Deps) *Server {
 		ready:        deps.ReadyFn,
 	}
 
-	// Middleware chain — order matters
+	// Global middleware chain — order matters.
+	// Auth and CSRF are applied per-route-group in registerRoutes(),
+	// not globally, so public endpoints don't need a skip list.
 	s.Router.Use(chimw.RequestID)
 	s.Router.Use(chimw.RealIP)
 	s.Router.Use(slogMiddleware(deps.Logger))
@@ -71,8 +73,6 @@ func New(deps Deps) *Server {
 	s.Router.Use(chimw.CleanPath)
 	s.Router.Use(chimw.Timeout(deps.Config.Server.RequestTimeout))
 	s.Router.Use(middleware.CORS(deps.Config))
-	s.Router.Use(middleware.Auth(deps.TokenManager))
-	s.Router.Use(middleware.CSRF)
 
 	s.registerRoutes()
 

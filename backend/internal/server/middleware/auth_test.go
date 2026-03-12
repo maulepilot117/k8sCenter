@@ -8,24 +8,6 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 )
 
-func TestAuth_SkipsPublicPaths(t *testing.T) {
-	tm := auth.NewTokenManager([]byte("test-secret-key-32-bytes-long!!"))
-
-	handler := Auth(tm)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	for _, path := range []string{"/healthz", "/readyz", "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/providers", "/api/v1/setup/init"} {
-		req := httptest.NewRequest("GET", path, nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Errorf("path %s: expected 200, got %d", path, rec.Code)
-		}
-	}
-}
-
 func TestAuth_RejectsNoToken(t *testing.T) {
 	tm := auth.NewTokenManager([]byte("test-secret-key-32-bytes-long!!"))
 

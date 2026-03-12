@@ -101,18 +101,22 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 	}, nil
 }
 
+// CreateFirstUser atomically creates the first user only if no users exist.
+// This prevents the TOCTOU race where two concurrent setup requests could
+// both pass a UserCount() == 0 check and create two admin accounts.
+func (p *LocalProvider) CreateFirstUser(username, password string, roles []string) (*User, error) {
+	return p.createUser(username, password, roles, true)
+}
+
 // CreateUser adds a new local user with Argon2id-hashed password.
 func (p *LocalProvider) CreateUser(username, password string, roles []string) (*User, error) {
+	return p.createUser(username, password, roles, false)
+}
+
+func (p *LocalProvider) createUser(username, password string, roles []string, requireEmpty bool) (*User, error) {
 	// Acquire hash semaphore before the expensive Argon2id operation.
 	p.hashSem <- struct{}{}
 	defer func() { <-p.hashSem }()
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if _, exists := p.users[username]; exists {
-		return nil, fmt.Errorf("user %q already exists", username)
-	}
 
 	salt := make([]byte, argon2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -124,6 +128,18 @@ func (p *LocalProvider) CreateUser(username, password string, roles []string) (*
 	id, err := generateID()
 	if err != nil {
 		return nil, fmt.Errorf("generating user ID: %w", err)
+	}
+
+	// Lock after hashing to minimize lock hold time. The atomic check happens here.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if requireEmpty && len(p.users) > 0 {
+		return nil, fmt.Errorf("setup already completed")
+	}
+
+	if _, exists := p.users[username]; exists {
+		return nil, fmt.Errorf("user %q already exists", username)
 	}
 
 	stored := storedUser{
