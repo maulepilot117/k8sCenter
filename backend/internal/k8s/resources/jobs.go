@@ -31,6 +31,9 @@ func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.Jobs().Jobs(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindJob, "") {
+			return
+		}
 		all, err = h.Informers.Jobs().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -69,7 +72,7 @@ func (h *Handler) HandleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj batchv1.Job
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -131,6 +134,9 @@ func (h *Handler) HandleListCronJobs(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.CronJobs().CronJobs(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindCronJob, "") {
+			return
+		}
 		all, err = h.Informers.CronJobs().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -169,7 +175,7 @@ func (h *Handler) HandleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj batchv1.CronJob
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

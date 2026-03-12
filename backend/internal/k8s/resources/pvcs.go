@@ -26,6 +26,9 @@ func (h *Handler) HandleListPVCs(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.PersistentVolumeClaims().PersistentVolumeClaims(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindPVC, "") {
+			return
+		}
 		all, err = h.Informers.PersistentVolumeClaims().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -64,7 +67,7 @@ func (h *Handler) HandleCreatePVC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj corev1.PersistentVolumeClaim
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

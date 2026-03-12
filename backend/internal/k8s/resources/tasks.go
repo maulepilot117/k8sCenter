@@ -1,7 +1,10 @@
 package resources
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -37,7 +40,6 @@ type Task struct {
 type TaskManager struct {
 	mu    sync.RWMutex
 	tasks map[string]*Task
-	nextID int
 }
 
 // NewTaskManager creates a new TaskManager.
@@ -52,8 +54,7 @@ func (tm *TaskManager) Create(kind, name, namespace, user string) string {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	tm.nextID++
-	id := "task-" + time.Now().Format("20060102150405") + "-" + itoa(tm.nextID)
+	id := generateTaskID()
 	tm.tasks[id] = &Task{
 		ID:        id,
 		Kind:      kind,
@@ -64,6 +65,16 @@ func (tm *TaskManager) Create(kind, name, namespace, user string) string {
 		User:      user,
 	}
 	return id
+}
+
+// generateTaskID returns a cryptographically random task ID.
+func generateTaskID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if crypto/rand fails (should not happen)
+		return "task-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "task-" + hex.EncodeToString(b)
 }
 
 // Get returns a task by ID.
@@ -96,19 +107,19 @@ func (tm *TaskManager) UpdateStatus(id string, status TaskStatus, message string
 }
 
 // HandleGetTask handles GET /api/v1/tasks/:taskID.
+// Only the task owner can view their tasks.
 func (h *Handler) HandleGetTask(w http.ResponseWriter, r *http.Request) {
-	taskID := chi.URLParam(r, "taskID")
-	task, ok := h.TaskManager.Get(taskID)
+	user, ok := requireUser(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "task not found", "task ID: "+taskID)
+		return
+	}
+
+	taskID := chi.URLParam(r, "taskID")
+	task, found := h.TaskManager.Get(taskID)
+	if !found || task.User != user.Username {
+		writeError(w, http.StatusNotFound, "task not found", "")
 		return
 	}
 	writeJSON(w, http.StatusOK, api.Response{Data: task})
 }
 
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return itoa(n/10) + string(rune('0'+n%10))
-}

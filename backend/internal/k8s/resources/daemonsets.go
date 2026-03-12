@@ -26,6 +26,9 @@ func (h *Handler) HandleListDaemonSets(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.DaemonSets().DaemonSets(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindDaemonSet, "") {
+			return
+		}
 		all, err = h.Informers.DaemonSets().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -64,7 +67,7 @@ func (h *Handler) HandleCreateDaemonSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var obj appsv1.DaemonSet
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -95,7 +98,7 @@ func (h *Handler) HandleUpdateDaemonSet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var obj appsv1.DaemonSet
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

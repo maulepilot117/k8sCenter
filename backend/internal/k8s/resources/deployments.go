@@ -32,6 +32,9 @@ func (h *Handler) HandleListDeployments(w http.ResponseWriter, r *http.Request) 
 		}
 		allDeps, err = h.Informers.Deployments().Deployments(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindDeployment, "") {
+			return
+		}
 		allDeps, err = h.Informers.Deployments().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -76,7 +79,7 @@ func (h *Handler) HandleCreateDeployment(w http.ResponseWriter, r *http.Request)
 	}
 
 	var dep appsv1.Deployment
-	if err := decodeBody(r, &dep); err != nil {
+	if err := decodeBody(w, r, &dep); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -112,7 +115,7 @@ func (h *Handler) HandleUpdateDeployment(w http.ResponseWriter, r *http.Request)
 	}
 
 	var dep appsv1.Deployment
-	if err := decodeBody(r, &dep); err != nil {
+	if err := decodeBody(w, r, &dep); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -179,7 +182,7 @@ func (h *Handler) HandleScaleDeployment(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Replicas int32 `json:"replicas"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -221,7 +224,7 @@ func (h *Handler) HandleRollbackDeployment(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Revision int64 `json:"revision"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

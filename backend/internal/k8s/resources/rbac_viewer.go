@@ -24,6 +24,9 @@ func (h *Handler) HandleListRoles(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.Roles().Roles(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", "roles", "") {
+			return
+		}
 		all, err = h.Informers.Roles().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -102,6 +105,9 @@ func (h *Handler) HandleListRoleBindings(w http.ResponseWriter, r *http.Request)
 		}
 		all, err = h.Informers.RoleBindings().RoleBindings(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", "rolebindings", "") {
+			return
+		}
 		all, err = h.Informers.RoleBindings().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {

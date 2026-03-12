@@ -100,9 +100,13 @@ func (h *Handler) auditWrite(r *http.Request, user *auth.User, action audit.Acti
 	})
 }
 
+// maxRequestBodySize is the maximum allowed request body for create/update operations (1 MB).
+const maxRequestBodySize = 1 << 20
+
 // decodeBody decodes a JSON request body into the given value.
-func decodeBody(r *http.Request, v any) error {
-	defer r.Body.Close()
+// The body is limited to maxRequestBodySize to prevent OOM from oversized payloads.
+func decodeBody(w http.ResponseWriter, r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	return json.NewDecoder(r.Body).Decode(v)
 }
 

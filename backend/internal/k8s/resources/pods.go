@@ -26,6 +26,9 @@ func (h *Handler) HandleListPods(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.Pods().Pods(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindPod, "") {
+			return
+		}
 		all, err = h.Informers.Pods().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {

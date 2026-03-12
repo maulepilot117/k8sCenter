@@ -118,7 +118,7 @@ func (h *Handler) HandleDrainNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req DrainRequest
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, &req); err != nil {
 		// Allow empty body with defaults
 		req = DrainRequest{
 			IgnoreDaemonSets:   true,

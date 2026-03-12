@@ -26,6 +26,9 @@ func (h *Handler) HandleListNetworkPolicies(w http.ResponseWriter, r *http.Reque
 		}
 		all, err = h.Informers.NetworkPolicies().NetworkPolicies(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindNetworkPolicy, "") {
+			return
+		}
 		all, err = h.Informers.NetworkPolicies().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -64,7 +67,7 @@ func (h *Handler) HandleCreateNetworkPolicy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var obj networkingv1.NetworkPolicy
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -95,7 +98,7 @@ func (h *Handler) HandleUpdateNetworkPolicy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var obj networkingv1.NetworkPolicy
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

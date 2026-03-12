@@ -26,6 +26,9 @@ func (h *Handler) HandleListConfigMaps(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.ConfigMaps().ConfigMaps(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindConfigMap, "") {
+			return
+		}
 		all, err = h.Informers.ConfigMaps().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -64,7 +67,7 @@ func (h *Handler) HandleCreateConfigMap(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var obj corev1.ConfigMap
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -95,7 +98,7 @@ func (h *Handler) HandleUpdateConfigMap(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var obj corev1.ConfigMap
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

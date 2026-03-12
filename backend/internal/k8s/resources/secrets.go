@@ -154,7 +154,7 @@ func (h *Handler) HandleCreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj corev1.Secret
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -185,7 +185,7 @@ func (h *Handler) HandleUpdateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj corev1.Secret
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

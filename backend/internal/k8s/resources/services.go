@@ -26,6 +26,9 @@ func (h *Handler) HandleListServices(w http.ResponseWriter, r *http.Request) {
 		}
 		all, err = h.Informers.Services().Services(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindService, "") {
+			return
+		}
 		all, err = h.Informers.Services().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -64,7 +67,7 @@ func (h *Handler) HandleCreateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj corev1.Service
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -95,7 +98,7 @@ func (h *Handler) HandleUpdateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var obj corev1.Service
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

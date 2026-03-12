@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,7 +240,7 @@ func TestListDeployments_LabelSelector(t *testing.T) {
 func TestPagination(t *testing.T) {
 	var deps []runtime.Object
 	for i := 0; i < 5; i++ {
-		name := "dep-" + itoa(i)
+		name := "dep-" + strconv.Itoa(i)
 		deps = append(deps, &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 			Spec: appsv1.DeploymentSpec{

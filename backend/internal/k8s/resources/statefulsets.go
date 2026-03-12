@@ -27,6 +27,9 @@ func (h *Handler) HandleListStatefulSets(w http.ResponseWriter, r *http.Request)
 		}
 		all, err = h.Informers.StatefulSets().StatefulSets(params.Namespace).List(parseSelector(params.LabelSelector))
 	} else {
+		if !h.checkAccess(w, r, user, "list", kindStatefulSet, "") {
+			return
+		}
 		all, err = h.Informers.StatefulSets().List(parseSelector(params.LabelSelector))
 	}
 	if err != nil {
@@ -65,7 +68,7 @@ func (h *Handler) HandleCreateStatefulSet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var obj appsv1.StatefulSet
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -97,7 +100,7 @@ func (h *Handler) HandleUpdateStatefulSet(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var obj appsv1.StatefulSet
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
@@ -156,7 +159,7 @@ func (h *Handler) HandleScaleStatefulSet(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		Replicas int32 `json:"replicas"`
 	}
-	if err := decodeBody(r, &req); err != nil {
+	if err := decodeBody(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}

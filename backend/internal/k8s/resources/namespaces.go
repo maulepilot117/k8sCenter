@@ -55,7 +55,7 @@ func (h *Handler) HandleCreateNamespace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var obj corev1.Namespace
-	if err := decodeBody(r, &obj); err != nil {
+	if err := decodeBody(w, r, &obj); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
