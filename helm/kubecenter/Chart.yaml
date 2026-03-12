@@ -1,0 +1,12 @@
+apiVersion: v2
+name: kubecenter
+description: A web-based Kubernetes management platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - management
+  - dashboard
+maintainers:
+  - name: KubeCenter

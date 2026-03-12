@@ -126,6 +126,33 @@ Research revealed several corrections needed in CLAUDE.md before implementation 
 - Helm skeleton from Step 1 for in-cluster testing from day one
 - CI pipeline from Step 1 (lint, test, build on every push)
 
+### Git Strategy
+
+One branch per step, each merging into `main` via PR.
+
+```
+main                              # Always deployable, protected
+├── feat/step-1-backend-skeleton
+├── feat/step-2-auth
+├── feat/step-3-resource-listing
+├── feat/step-4-frontend-skeleton
+├── feat/step-5-resource-browser
+├── feat/step-6-resource-detail
+├── feat/step-7-yaml-apply
+├── feat/step-8-wizards
+├── feat/step-9-monitoring
+├── feat/step-10-csi-cni
+├── feat/step-11-alerting
+├── feat/step-12-oidc-ldap
+├── feat/step-13-helm-hardening
+├── feat/step-14-audit-persistence
+└── feat/step-15-polish
+```
+
+**Commit convention:** `feat(scope): description` — scope matches component (`backend`, `frontend`, `helm`, `auth`, `k8s`, `monitoring`, etc.)
+
+**Workflow:** Steps merge sequentially since each depends on its predecessor. Each PR represents a working increment.
+
 ### Implementation Phases
 
 ---
