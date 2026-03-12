@@ -44,17 +44,15 @@ export default function Dashboard() {
       error.value = "";
 
       try {
-        // Check auth first
-        await fetchCurrentUser();
-
-        // Fetch cluster info and resource counts in parallel
-        const [infoRes, deplRes, podRes, svcRes, nsRes] = await Promise
+        // Fetch auth and cluster data in parallel (no waterfall)
+        const [, infoRes, deplRes, podRes, svcRes, nsRes] = await Promise
           .allSettled([
+            fetchCurrentUser(),
             apiGet<ClusterInfoData>("/v1/cluster/info"),
-            apiGet<{ items: unknown[] }>("/v1/deployments"),
-            apiGet<{ items: unknown[] }>("/v1/pods"),
-            apiGet<{ items: unknown[] }>("/v1/services"),
-            apiGet<{ items: unknown[] }>("/v1/namespaces"),
+            apiGet<unknown>("/v1/resources/deployments?limit=1"),
+            apiGet<unknown>("/v1/resources/pods?limit=1"),
+            apiGet<unknown>("/v1/resources/services?limit=1"),
+            apiGet<unknown>("/v1/resources/namespaces?limit=1"),
           ]);
 
         if (infoRes.status === "fulfilled") {
@@ -63,16 +61,16 @@ export default function Dashboard() {
 
         counts.value = {
           deployments: deplRes.status === "fulfilled"
-            ? deplRes.value.data.items?.length ?? 0
+            ? deplRes.value.metadata?.total ?? 0
             : 0,
           pods: podRes.status === "fulfilled"
-            ? podRes.value.data.items?.length ?? 0
+            ? podRes.value.metadata?.total ?? 0
             : 0,
           services: svcRes.status === "fulfilled"
-            ? svcRes.value.data.items?.length ?? 0
+            ? svcRes.value.metadata?.total ?? 0
             : 0,
           namespaces: nsRes.status === "fulfilled"
-            ? nsRes.value.data.items?.length ?? 0
+            ? nsRes.value.metadata?.total ?? 0
             : 0,
         };
       } catch {

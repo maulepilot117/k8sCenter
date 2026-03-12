@@ -27,4 +27,4 @@ USER deno
 
 EXPOSE 8000
 
-CMD ["serve", "-A", "--port", "8000", "_fresh/server.js"]
+CMD ["serve", "--allow-net", "--allow-read=.", "--allow-env=BACKEND_URL", "--port", "8000", "_fresh/server.js"]

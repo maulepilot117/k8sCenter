@@ -18,105 +18,12 @@ export interface APIError {
   };
 }
 
-/** Auth login response. */
-export interface LoginResponse {
-  data: {
-    accessToken: string;
-    user: UserInfo;
-  };
-}
-
-/** User info from /auth/me. */
+/** User info from /auth/me — matches backend auth.User struct. */
 export interface UserInfo {
+  id: string;
   username: string;
-  role: string;
-  kubernetesUsername?: string;
-}
-
-/** Cluster info from /cluster/info. */
-export interface ClusterInfo {
-  version: string;
-  nodeCount: number;
-  kubecenterVersion: string;
-}
-
-/** Auth provider info from /auth/providers. */
-export interface AuthProviders {
-  providers: string[];
-}
-
-/** Common Kubernetes object metadata. */
-export interface ObjectMeta {
-  name: string;
-  namespace?: string;
-  uid: string;
-  creationTimestamp: string;
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-}
-
-/** Kubernetes resource with metadata. */
-export interface KubeResource {
-  kind: string;
-  apiVersion: string;
-  metadata: ObjectMeta;
-}
-
-/** Pod status phase. */
-export type PodPhase =
-  | "Pending"
-  | "Running"
-  | "Succeeded"
-  | "Failed"
-  | "Unknown";
-
-/** Node condition status. */
-export type ConditionStatus = "True" | "False" | "Unknown";
-
-/** Deployment summary for list views. */
-export interface DeploymentSummary extends KubeResource {
-  spec: {
-    replicas: number;
-  };
-  status: {
-    readyReplicas?: number;
-    availableReplicas?: number;
-    updatedReplicas?: number;
-  };
-}
-
-/** Pod summary for list views. */
-export interface PodSummary extends KubeResource {
-  status: {
-    phase: PodPhase;
-    containerStatuses?: Array<{
-      name: string;
-      ready: boolean;
-      restartCount: number;
-    }>;
-  };
-  spec: {
-    nodeName?: string;
-  };
-}
-
-/** Node summary for list views. */
-export interface NodeSummary extends KubeResource {
-  status: {
-    conditions: Array<{
-      type: string;
-      status: ConditionStatus;
-    }>;
-    allocatable: {
-      cpu: string;
-      memory: string;
-    };
-    capacity: {
-      cpu: string;
-      memory: string;
-    };
-  };
-  metadata: ObjectMeta & {
-    labels: Record<string, string>;
-  };
+  provider: string;
+  kubernetesUsername: string;
+  kubernetesGroups: string[];
+  roles: string[];
 }

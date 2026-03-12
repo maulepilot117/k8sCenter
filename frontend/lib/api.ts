@@ -1,3 +1,9 @@
+/**
+ * Client-only module — MUST NOT be imported in server-rendered components.
+ * Module-level variables (accessToken, refreshPromise) are process-global
+ * singletons in Deno; importing this server-side would leak auth state
+ * across SSR requests.
+ */
 import { CLUSTER_ID } from "@/lib/constants.ts";
 import type { APIError, APIResponse } from "@/lib/k8s-types.ts";
 
@@ -33,7 +39,7 @@ export class ApiError extends Error {
  */
 async function refreshAccessToken(): Promise<boolean> {
   try {
-    const res = await fetch("/api/auth/refresh", {
+    const res = await fetch("/api/v1/auth/refresh", {
       method: "POST",
       credentials: "include",
       headers: {

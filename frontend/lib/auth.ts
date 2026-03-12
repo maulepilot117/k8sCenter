@@ -1,3 +1,8 @@
+/**
+ * Client-only module — MUST NOT be imported in server-rendered components.
+ * Module-level signals are process-global singletons in Deno; importing
+ * this server-side would leak auth state across SSR requests.
+ */
 import { computed, signal } from "@preact/signals";
 import { api, getAccessToken, setAccessToken } from "@/lib/api.ts";
 import type { UserInfo } from "@/lib/k8s-types.ts";
@@ -17,19 +22,16 @@ export async function login(
   username: string,
   password: string,
 ): Promise<void> {
-  const res = await api<{ accessToken: string; user: UserInfo }>(
+  const res = await api<{ accessToken: string; expiresIn: number }>(
     "/v1/auth/login",
     {
       method: "POST",
       body: JSON.stringify({ username, password }),
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-      },
     },
   );
   setAccessToken(res.data.accessToken);
-  userSignal.value = res.data.user;
+  // Backend login returns only the token — fetch user info separately
+  await fetchCurrentUser();
 }
 
 /**
@@ -37,10 +39,7 @@ export async function login(
  */
 export async function logout(): Promise<void> {
   try {
-    await api("/v1/auth/logout", {
-      method: "POST",
-      headers: { "X-Requested-With": "XMLHttpRequest" },
-    });
+    await api("/v1/auth/logout", { method: "POST" });
   } catch {
     // Best-effort — clear local state regardless
   }
@@ -56,9 +55,12 @@ export async function fetchCurrentUser(): Promise<UserInfo | null> {
   if (!getAccessToken()) return null;
   try {
     loadingSignal.value = true;
-    const res = await api<UserInfo>("/v1/auth/me", { method: "GET" });
-    userSignal.value = res.data;
-    return res.data;
+    const res = await api<{ user: UserInfo; rbac: unknown }>(
+      "/v1/auth/me",
+      { method: "GET" },
+    );
+    userSignal.value = res.data.user;
+    return res.data.user;
   } catch {
     userSignal.value = null;
     return null;

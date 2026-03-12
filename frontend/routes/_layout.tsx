@@ -1,7 +1,6 @@
 import { define } from "@/utils.ts";
 import Sidebar from "@/islands/Sidebar.tsx";
 import TopBar from "@/islands/TopBar.tsx";
-import { ToastContainer } from "@/components/ui/Toast.tsx";
 
 export default define.page(function Layout({ Component, url }) {
   // Login page uses its own full-screen layout
@@ -18,7 +17,6 @@ export default define.page(function Layout({ Component, url }) {
           <Component />
         </main>
       </div>
-      <ToastContainer />
     </div>
   );
 });

@@ -4,8 +4,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useAuth } from "@/lib/auth.ts";
 import { apiGet } from "@/lib/api.ts";
 
-interface NamespaceList {
-  items: Array<{ metadata: { name: string } }>;
+interface NamespaceMeta {
+  metadata: { name: string };
 }
 
 export default function TopBar() {
@@ -17,9 +17,11 @@ export default function TopBar() {
   // Fetch namespaces on mount
   useEffect(() => {
     if (!IS_BROWSER) return;
-    apiGet<NamespaceList>("/v1/namespaces")
+    apiGet<NamespaceMeta[]>("/v1/resources/namespaces")
       .then((res) => {
-        namespaces.value = res.data.items?.map((ns) => ns.metadata.name) ?? [];
+        namespaces.value = Array.isArray(res.data)
+          ? res.data.map((ns) => ns.metadata.name)
+          : [];
       })
       .catch(() => {
         // Silently fail — namespace list is non-critical
@@ -83,7 +85,9 @@ export default function TopBar() {
               <p class="text-sm font-medium text-slate-900 dark:text-white">
                 {displayName.value}
               </p>
-              <p class="text-xs text-slate-500">{user.value?.role ?? "user"}</p>
+              <p class="text-xs text-slate-500">
+                {user.value?.roles?.[0] ?? "user"}
+              </p>
             </div>
             <button
               type="button"

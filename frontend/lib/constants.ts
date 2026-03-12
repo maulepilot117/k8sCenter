@@ -1,16 +1,10 @@
 /** Backend API base URL. In dev, the Fresh BFF proxy forwards to this. */
-export const BACKEND_URL = Deno.env.get("BACKEND_URL") ??
-  "http://localhost:8080";
-
-/** API version prefix for all backend endpoints. */
-export const API_PREFIX = "/api/v1";
+export const BACKEND_URL = typeof Deno !== "undefined"
+  ? Deno.env.get("BACKEND_URL") ?? "http://localhost:8080"
+  : "http://localhost:8080";
 
 /** Cluster ID header — always "local" in Phase 1 (single cluster). */
 export const CLUSTER_ID = "local";
-
-/** WebSocket reconnection settings. */
-export const WS_RECONNECT_MIN_MS = 1000;
-export const WS_RECONNECT_MAX_MS = 30_000;
 
 /** Resource navigation sections for the sidebar. */
 export const NAV_SECTIONS = [
