@@ -343,6 +343,44 @@ func TestSecretMasking(t *testing.T) {
 	}
 }
 
+func TestSecretMaskingStripsLastAppliedAnnotation(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "db-creds",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"kubectl.kubernetes.io/last-applied-configuration": `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"db-creds"},"stringData":{"password":"supersecret"}}`,
+				"some-other-annotation": "keep-me",
+			},
+		},
+		Data: map[string][]byte{
+			"password": []byte("supersecret"),
+		},
+	}
+
+	masked := maskedSecret(secret)
+
+	// last-applied-configuration must be stripped
+	if _, exists := masked.Annotations["kubectl.kubernetes.io/last-applied-configuration"]; exists {
+		t.Error("maskedSecret did not strip kubectl.kubernetes.io/last-applied-configuration annotation")
+	}
+
+	// Other annotations must be preserved
+	if masked.Annotations["some-other-annotation"] != "keep-me" {
+		t.Error("maskedSecret incorrectly removed non-sensitive annotation")
+	}
+
+	// Data must still be masked
+	if string(masked.Data["password"]) != "****" {
+		t.Errorf("expected password to be masked, got %q", string(masked.Data["password"]))
+	}
+
+	// Original must be untouched
+	if _, exists := secret.Annotations["kubectl.kubernetes.io/last-applied-configuration"]; !exists {
+		t.Error("maskedSecret modified the original secret's annotations")
+	}
+}
+
 func TestListNodes(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},

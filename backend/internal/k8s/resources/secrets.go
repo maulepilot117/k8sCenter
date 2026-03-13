@@ -12,7 +12,13 @@ import (
 
 const kindSecret = "secrets"
 
-// maskedSecret returns a copy of a Secret with all data values replaced by "****".
+// lastAppliedConfigAnnotation is the annotation kubectl uses to store the full
+// original manifest, which may contain plaintext secret values (stringData).
+const lastAppliedConfigAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// maskedSecret returns a copy of a Secret with all data values replaced by "****"
+// and the kubectl.kubernetes.io/last-applied-configuration annotation stripped
+// to prevent leaking plaintext secret values.
 func maskedSecret(s *corev1.Secret) *corev1.Secret {
 	cp := s.DeepCopy()
 	if cp.Data != nil {
@@ -24,6 +30,11 @@ func maskedSecret(s *corev1.Secret) *corev1.Secret {
 		for k := range cp.StringData {
 			cp.StringData[k] = "****"
 		}
+	}
+	// Strip last-applied-configuration annotation which may contain plaintext
+	// secret values (stringData) from the original kubectl apply manifest.
+	if cp.Annotations != nil {
+		delete(cp.Annotations, lastAppliedConfigAnnotation)
 	}
 	return cp
 }
