@@ -180,7 +180,7 @@ func (h *Handler) HandleListClusterRoleBindings(w http.ResponseWriter, r *http.R
 		return
 	}
 	params := parseListParams(r)
-	if !h.checkAccess(w, r, user, "list", "clusterrolebindings", "") {
+	if !h.checkAccess(w, r, user, "list", kindClusterRoleBinding, "") {
 		return
 	}
 	sel, ok := parseSelectorOrReject(w, params.LabelSelector)

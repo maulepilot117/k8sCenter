@@ -29,6 +29,14 @@ interface ResourceDetailProps {
 
 const VALID_TABS = new Set(["overview", "yaml", "events", "metrics"]);
 
+function pluralize(s: string): string {
+  if (s.endsWith("y") && !s.endsWith("ey")) return s.slice(0, -1) + "ies";
+  if (
+    s.endsWith("s") || s.endsWith("x") || s.endsWith("ch") || s.endsWith("sh")
+  ) return s + "es";
+  return s + "s";
+}
+
 export default function ResourceDetail({
   kind,
   name,
@@ -348,7 +356,7 @@ export default function ResourceDetail({
               href={listUrl}
               class="hover:text-slate-700 dark:hover:text-slate-200"
             >
-              {title}s
+              {pluralize(title)}
             </a>
             <span>/</span>
             {namespace && (
