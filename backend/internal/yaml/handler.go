@@ -1,7 +1,6 @@
 package yaml
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,9 +10,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
-	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/pkg/api"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -30,7 +30,7 @@ type Handler struct {
 // HandleValidate validates YAML against the cluster's schema using dry-run apply.
 // POST /api/v1/yaml/validate
 func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -42,13 +42,13 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := ParseMultiDoc(data)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
 		return
 	}
 
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
 	mapper := h.K8sClient.RESTMapper()
@@ -97,13 +97,13 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		resp.Documents = append(resp.Documents, dr)
 	}
 
-	writeData(w, resp)
+	httputil.WriteData(w, resp)
 }
 
 // HandleApply applies YAML via server-side apply.
 // POST /api/v1/yaml/apply?force=true
 func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -115,7 +115,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := ParseMultiDoc(data)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
 	mapper := h.K8sClient.RESTMapper()
@@ -150,13 +150,13 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeData(w, resp)
+	httputil.WriteData(w, resp)
 }
 
 // HandleDiff performs a dry-run apply and returns current vs proposed YAML.
 // POST /api/v1/yaml/diff
 func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -168,25 +168,35 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 
 	docs, err := ParseMultiDoc(data)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, "invalid YAML: "+err.Error(), "")
 		return
+	}
+
+	// Block diff for Secrets to prevent leaking unmasked values
+	for _, doc := range docs {
+		if strings.EqualFold(doc.GetKind(), "Secret") {
+			httputil.WriteError(w, http.StatusUnprocessableEntity,
+				"Secrets cannot be diffed via YAML to prevent accidental data exposure. Use the Secrets management interface.",
+				"")
+			return
+		}
 	}
 
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
 	mapper := h.K8sClient.RESTMapper()
 
 	resp := DiffDocuments(r.Context(), dynClient, mapper, docs, h.Logger)
-	writeData(w, resp)
+	httputil.WriteData(w, resp)
 }
 
 // HandleExport exports a resource as clean, reapply-ready YAML.
 // GET /api/v1/yaml/export/{kind}/{namespace}/{name}
 func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -196,13 +206,23 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 
 	if kind == "" || name == "" {
-		writeError(w, http.StatusBadRequest, "kind and name are required", "")
+		httputil.WriteError(w, http.StatusBadRequest, "kind and name are required", "")
+		return
+	}
+
+	// Validate URL params to prevent injection (matches resource route validation)
+	if !resources.ValidateK8sName(name) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid resource name: "+name, "")
+		return
+	}
+	if namespace != "_" && !resources.ValidateK8sName(namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace: "+namespace, "")
 		return
 	}
 
 	// Block secret export to prevent data loss (D1)
 	if strings.EqualFold(kind, "secrets") || strings.EqualFold(kind, "secret") {
-		writeError(w, http.StatusUnprocessableEntity,
+		httputil.WriteError(w, http.StatusUnprocessableEntity,
 			"Secrets cannot be exported via YAML to prevent accidental data loss. Use the Secrets management interface with audit-logged reveal.",
 			"")
 		return
@@ -215,13 +235,13 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
 
 	gvr, err := resolveGVR(h.K8sClient, kind)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown resource kind: %s", kind), err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown resource kind: %s", kind), err.Error())
 		return
 	}
 
@@ -232,20 +252,25 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		obj, err = dynClient.Resource(gvr).Get(r.Context(), name, metav1.GetOptions{})
 	}
 	if err != nil {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("%s '%s' not found", kind, name), err.Error())
+		if apierrors.IsNotFound(err) {
+			httputil.WriteError(w, http.StatusNotFound, fmt.Sprintf("%s '%s' not found", kind, name), "")
+		} else if apierrors.IsForbidden(err) {
+			httputil.WriteError(w, http.StatusForbidden, fmt.Sprintf("permission denied for %s '%s'", kind, name), "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get %s '%s'", kind, name), err.Error())
+		}
 		return
 	}
 
 	yamlBytes, err := ExportToYAML(obj)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to export YAML", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to export YAML", err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s-%s.yaml", kind, name))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(yamlBytes)
+	// Return YAML as a string inside the standard JSON envelope so
+	// the frontend api() wrapper (which calls res.json()) works correctly.
+	httputil.WriteData(w, string(yamlBytes))
 }
 
 // --- Helpers ---
@@ -256,59 +281,20 @@ func readYAMLBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		if strings.Contains(err.Error(), "http: request body too large") {
-			writeError(w, http.StatusRequestEntityTooLarge,
+			httputil.WriteError(w, http.StatusRequestEntityTooLarge,
 				fmt.Sprintf("request body exceeds maximum size of %d bytes", MaxBodySize), "")
 		} else {
-			writeError(w, http.StatusBadRequest, "failed to read request body", err.Error())
+			httputil.WriteError(w, http.StatusBadRequest, "failed to read request body", err.Error())
 		}
 		return nil, err
 	}
 
 	if err := CheckSecurity(data); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error(), "")
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return nil, err
 	}
 
 	return data, nil
-}
-
-// requireUser extracts the authenticated user from context or writes a 401.
-func requireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required", "")
-		return nil, false
-	}
-	return user, true
-}
-
-// writeJSON writes a JSON response.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("failed to encode JSON response", "error", err)
-	}
-}
-
-// writeError writes a JSON error response.
-func writeError(w http.ResponseWriter, status int, message, detail string) {
-	if detail != "" && status >= 500 {
-		slog.Error("internal error detail", "status", status, "message", message, "detail", detail)
-		detail = ""
-	}
-	writeJSON(w, status, api.Response{
-		Error: &api.APIError{
-			Code:    status,
-			Message: message,
-			Detail:  detail,
-		},
-	})
-}
-
-// writeData writes a data response with the standard envelope.
-func writeData(w http.ResponseWriter, data any) {
-	writeJSON(w, http.StatusOK, api.Response{Data: data})
 }
 
 // resolveGVR resolves a plural resource kind name to a GroupVersionResource

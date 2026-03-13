@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,11 +27,19 @@ type ApplyResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// ApplySummary provides aggregate counts for a multi-document apply.
+type ApplySummary struct {
+	Total      int `json:"total"`
+	Created    int `json:"created"`
+	Configured int `json:"configured"`
+	Unchanged  int `json:"unchanged"`
+	Failed     int `json:"failed"`
+}
+
 // ApplyResponse is the response envelope for a multi-document apply.
 type ApplyResponse struct {
 	Results []ApplyResult `json:"results"`
-	Applied int           `json:"applied"`
-	Failed  int           `json:"failed"`
+	Summary ApplySummary  `json:"summary"`
 }
 
 // ApplyDocuments applies a list of parsed Kubernetes objects via server-side
@@ -53,12 +60,18 @@ func ApplyDocuments(
 	for i, obj := range docs {
 		result := applyOne(ctx, dynClient, mapper, obj, i, force, logger)
 		resp.Results = append(resp.Results, result)
-		if result.Action == "failed" {
-			resp.Failed++
-		} else {
-			resp.Applied++
+		switch result.Action {
+		case "created":
+			resp.Summary.Created++
+		case "configured":
+			resp.Summary.Configured++
+		case "unchanged":
+			resp.Summary.Unchanged++
+		case "failed":
+			resp.Summary.Failed++
 		}
 	}
+	resp.Summary.Total = len(resp.Results)
 
 	return resp
 }
@@ -162,12 +175,7 @@ func applyOne(
 // from a Kubernetes StatusError.
 func extractValidationMessage(err error) string {
 	if statusErr, ok := err.(*apierrors.StatusError); ok {
-		msg := statusErr.Status().Message
-		// Trim the verbose prefix if present
-		if idx := strings.Index(msg, ":"); idx > 0 && idx < 100 {
-			return msg
-		}
-		return msg
+		return statusErr.Status().Message
 	}
 	return err.Error()
 }

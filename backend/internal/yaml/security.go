@@ -3,7 +3,6 @@ package yaml
 import (
 	"bytes"
 	"fmt"
-	"regexp"
 )
 
 const (
@@ -31,16 +30,14 @@ var unsafeTags = []string{
 	"!!bash/",
 }
 
-// anchorAliasPattern matches YAML anchor (&name) and alias (*name) syntax.
-// Kubernetes manifests never need anchors or aliases; rejecting them prevents
-// YAML bomb attacks (exponential expansion via nested aliases).
-var anchorAliasPattern = regexp.MustCompile(`(?m)^\s*[^#]*[&*][a-zA-Z_][a-zA-Z0-9_]*`)
-
 // CheckSecurity performs pre-parse security validation on raw YAML bytes.
 // It checks for:
 //   - Body size exceeding MaxBodySize
-//   - YAML anchors and aliases (bomb prevention)
 //   - Unsafe YAML tags (code execution prevention)
+//
+// YAML bomb prevention is handled post-parse by CheckExpansionRatio, which
+// catches actual exponential expansion without false positives on legitimate
+// values containing & or * (URLs, glob patterns, etc.).
 func CheckSecurity(data []byte) error {
 	if len(data) == 0 {
 		return fmt.Errorf("empty YAML body")
@@ -50,9 +47,6 @@ func CheckSecurity(data []byte) error {
 	}
 
 	if err := rejectUnsafeTags(data); err != nil {
-		return err
-	}
-	if err := rejectAnchorsAliases(data); err != nil {
 		return err
 	}
 
@@ -84,11 +78,3 @@ func rejectUnsafeTags(data []byte) error {
 	return nil
 }
 
-// rejectAnchorsAliases scans raw YAML bytes for anchor (&) and alias (*)
-// markers. Kubernetes manifests should not contain these.
-func rejectAnchorsAliases(data []byte) error {
-	if anchorAliasPattern.Match(data) {
-		return fmt.Errorf("YAML anchors and aliases are not permitted in Kubernetes manifests")
-	}
-	return nil
-}

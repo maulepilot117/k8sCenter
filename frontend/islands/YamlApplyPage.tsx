@@ -57,6 +57,7 @@ export default function YamlApplyPage() {
   }, []);
 
   const handleValidate = useCallback(async () => {
+    if (applying.value || validating.value) return;
     validating.value = true;
     error.value = null;
     results.value = null;
@@ -74,6 +75,7 @@ export default function YamlApplyPage() {
   }, []);
 
   const handleApply = useCallback(async () => {
+    if (applying.value || validating.value) return;
     applying.value = true;
     error.value = null;
     results.value = null;
@@ -98,6 +100,14 @@ export default function YamlApplyPage() {
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;
+      // 2 MB limit matches backend MaxBodySize
+      const MAX_FILE_SIZE = 2 * 1024 * 1024;
+      if (file.size > MAX_FILE_SIZE) {
+        error.value = `File is too large (${
+          (file.size / 1024 / 1024).toFixed(1)
+        } MB). Maximum size is 2 MB.`;
+        return;
+      }
       const text = await file.text();
       yamlContent.value = text;
       results.value = null;

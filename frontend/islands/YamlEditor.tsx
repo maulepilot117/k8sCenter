@@ -47,6 +47,9 @@ export default function YamlEditor({
   const latestValueRef = useRef(value);
   latestValueRef.current = value;
 
+  // Guard to suppress onChange during programmatic setValue calls
+  const isSettingExternally = useRef(false);
+
   // Initialize Monaco
   useEffect(() => {
     if (!IS_BROWSER || !containerRef.current) return;
@@ -92,6 +95,7 @@ export default function YamlEditor({
         }
 
         editor.onDidChangeModelContent(() => {
+          if (isSettingExternally.current) return;
           const newValue = editor.getValue();
           if (onChange) {
             onChange(newValue);
@@ -113,7 +117,11 @@ export default function YamlEditor({
 
     return () => {
       disposed = true;
-      editorRef.current?.dispose();
+      const editor = editorRef.current;
+      if (editor) {
+        editor.getModel()?.dispose();
+        editor.dispose();
+      }
       editorRef.current = null;
       monacoRef.current = null;
     };
@@ -130,12 +138,14 @@ export default function YamlEditor({
   useEffect(() => {
     const editor = editorRef.current;
     if (editor && value !== editor.getValue()) {
-      // Preserve cursor position
+      // Suppress onChange callback during programmatic setValue
+      isSettingExternally.current = true;
       const position = editor.getPosition();
       editor.setValue(value);
       if (position) {
         editor.setPosition(position);
       }
+      isSettingExternally.current = false;
     }
   }, [value]);
 

@@ -55,18 +55,32 @@ func TestCheckSecurity_UnsafeTags(t *testing.T) {
 	}
 }
 
-func TestCheckSecurity_AnchorsAliases(t *testing.T) {
+func TestCheckSecurity_AnchorsAliasesAllowed(t *testing.T) {
+	// Anchors/aliases are allowed in pre-parse security checks.
+	// YAML bomb protection is handled post-parse by CheckExpansionRatio.
 	yaml := `
 a: &anchor
   key: value
 b: *anchor
 `
 	err := CheckSecurity([]byte(yaml))
-	if err == nil {
-		t.Fatal("expected error for anchors/aliases")
+	if err != nil {
+		t.Fatalf("expected anchors/aliases to be allowed, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "anchors and aliases") {
-		t.Fatalf("unexpected error: %v", err)
+}
+
+func TestCheckSecurity_URLsWithAmpersand(t *testing.T) {
+	// Verify URLs with & are not rejected (was a false positive before)
+	yaml := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test
+data:
+  url: "https://example.com?foo&bar"
+`
+	err := CheckSecurity([]byte(yaml))
+	if err != nil {
+		t.Fatalf("expected URL with & to be allowed, got: %v", err)
 	}
 }
 

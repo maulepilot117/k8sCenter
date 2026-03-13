@@ -71,10 +71,16 @@ export default function ResourceDetail({
   const isSecret = kind === "secrets";
 
   // Dirty state navigation guard (D9)
+  // Uses a ref to track latest yamlContent so the handler always has current state,
+  // while only registering the event listener once.
+  const yamlContentRef = useRef("");
   useEffect(() => {
     if (!IS_BROWSER) return;
     const handler = (e: BeforeUnloadEvent) => {
-      if (yamlEditing.value && yamlEditContent.value !== yamlContent) {
+      if (
+        yamlEditing.value &&
+        yamlEditContent.value !== yamlContentRef.current
+      ) {
         e.preventDefault();
       }
     };
@@ -260,6 +266,9 @@ export default function ResourceDetail({
     }
   }, [resource.value, showManagedFields.value]);
 
+  // Keep ref in sync for the beforeunload handler
+  yamlContentRef.current = yamlContent;
+
   // Build back-to-list URL
   const listUrl = RESOURCE_DETAIL_PATHS[kind] ?? "/";
 
@@ -420,6 +429,7 @@ export default function ResourceDetail({
                       <button
                         type="button"
                         onClick={async () => {
+                          if (yamlApplying.value) return;
                           yamlApplying.value = true;
                           yamlApplyError.value = null;
                           yamlApplySuccess.value = false;

@@ -49,7 +49,7 @@ func ParseMultiDoc(data []byte) ([]*unstructured.Unstructured, error) {
 
 		objects = append(objects, obj)
 
-		if len(objects) > MaxDocumentCount {
+		if len(objects) >= MaxDocumentCount {
 			return nil, fmt.Errorf("too many documents: maximum is %d", MaxDocumentCount)
 		}
 	}

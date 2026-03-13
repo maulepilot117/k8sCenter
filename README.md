@@ -4,13 +4,15 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 
 ## Features
 
-- **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)
+- **Resource detail views** with tabbed interface (Overview, YAML, Events, Metrics) for all 18 resource types
+- **YAML apply** with Monaco editor, server-side apply, validation, diff, and multi-document support
 - **Real-time cluster view** with WebSocket-powered live updates
-- **Integrated monitoring** via Prometheus and Grafana (auto-discovered or deployed)
+- **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI) *(planned)*
+- **Integrated monitoring** via Prometheus and Grafana (auto-discovered or deployed) *(planned)*
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
-- **Pod management** including logs, exec terminal, and resource metrics
-- **Alerting** via Alertmanager with email notifications
+- **Pod management** including logs, exec terminal, and resource metrics *(planned)*
+- **Alerting** via Alertmanager with email notifications *(planned)*
 - **Audit logging** for all write operations and secret access
 - **Multi-cluster ready** architecture (single-cluster in Phase 1)
 
@@ -128,7 +130,7 @@ Key endpoints:
 | GET | `/api/v1/auth/me` | Yes | Current user info + RBAC summary |
 | GET | `/api/v1/cluster/info` | Yes | Cluster version, node count, KubeCenter version |
 
-Resource CRUD (15 types: deployments, statefulsets, daemonsets, pods, services, ingresses, configmaps, secrets, namespaces, nodes, pvcs, jobs, cronjobs, networkpolicies, RBAC):
+Resource CRUD (18 types: deployments, statefulsets, daemonsets, pods, services, ingresses, configmaps, secrets, namespaces, nodes, pvcs, jobs, cronjobs, networkpolicies, roles, clusterroles, rolebindings, clusterrolebindings):
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -141,6 +143,15 @@ Resource CRUD (15 types: deployments, statefulsets, daemonsets, pods, services, 
 | POST | `/api/v1/resources/nodes/:name/cordon` | Yes | Cordon node |
 | POST | `/api/v1/resources/nodes/:name/drain` | Yes | Drain node (async, returns task ID) |
 | GET | `/api/v1/tasks/:taskID` | Yes | Poll long-running task status |
+
+YAML operations:
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/api/v1/yaml/validate` | Yes | Validate YAML via dry-run apply |
+| POST | `/api/v1/yaml/apply` | Yes | Server-side apply (multi-doc) |
+| POST | `/api/v1/yaml/diff` | Yes | Dry-run diff against current state |
+| GET | `/api/v1/yaml/export/:kind/:ns/:name` | Yes | Export resource as clean YAML |
 
 WebSocket:
 
@@ -175,13 +186,15 @@ kubecenter/
 │   │   ├── auth/         # JWT, local accounts, RBAC, sessions
 │   │   ├── audit/        # Audit logging interface + slog impl
 │   │   ├── websocket/    # WebSocket hub, client, events (gorilla/websocket)
+│   │   ├── httputil/      # Shared HTTP response helpers
 │   │   ├── k8s/          # Client factory, informers, resource handlers
-│   │   │   └── resources/ # CRUD handlers for 15 k8s resource types
+│   │   │   └── resources/ # CRUD handlers for 18 k8s resource types
+│   │   ├── yaml/         # YAML parse, validate, apply, diff, export
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, Sidebar, TopBar, ResourceTable)
+│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, YamlApplyPage)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Helm chart
