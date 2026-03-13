@@ -15,8 +15,8 @@ export default define.middleware(async (ctx) => {
   res.headers.set(
     "Content-Security-Policy",
     // TODO: replace 'unsafe-inline' on script-src with nonce-based CSP when Fresh supports it
-    // esm.sh is allowed for Monaco editor CDN loading (Step 7), pinned to monaco-editor path
-    "default-src 'self'; script-src 'self' 'unsafe-inline' https://esm.sh/monaco-editor@0.52.2/; style-src 'self' 'unsafe-inline' https://esm.sh/monaco-editor@0.52.2/; img-src 'self' data:; connect-src 'self' https://esm.sh/monaco-editor@0.52.2/; worker-src 'self' blob: https://esm.sh/monaco-editor@0.52.2/; frame-ancestors 'none'",
+    // esm.sh domain is allowed for Monaco editor and its transitive dependencies (e.g. /node/buffer)
+    "default-src 'self'; script-src 'self' 'unsafe-inline' https://esm.sh/; style-src 'self' 'unsafe-inline' https://esm.sh/; img-src 'self' data:; connect-src 'self' https://esm.sh/; worker-src 'self' blob: https://esm.sh/; frame-ancestors 'none'",
   );
   res.headers.set("X-Frame-Options", "DENY");
   res.headers.set("X-Content-Type-Options", "nosniff");
