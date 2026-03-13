@@ -39,6 +39,16 @@ export interface K8sMetadata {
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
   resourceVersion?: string;
+  ownerReferences?: Array<{
+    apiVersion: string;
+    kind: string;
+    name: string;
+    uid: string;
+    controller?: boolean;
+  }>;
+  finalizers?: string[];
+  deletionTimestamp?: string;
+  managedFields?: unknown[];
 }
 
 /** Generic k8s resource with metadata — base for all resource types. */

@@ -61,7 +61,9 @@ export default function Sidebar({ currentPath }: SidebarProps) {
             {!collapsed.value[section.title] && (
               <ul>
                 {section.items.map((item) => {
-                  const isActive = currentPath === item.href;
+                  const isActive = currentPath === item.href ||
+                    (item.href !== "/" &&
+                      currentPath.startsWith(item.href + "/"));
                   return (
                     <li key={item.href}>
                       <a

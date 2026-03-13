@@ -6,6 +6,64 @@ export const BACKEND_URL = typeof Deno !== "undefined"
 /** Cluster ID header — always "local" in Phase 1 (single cluster). */
 export const CLUSTER_ID = "local";
 
+/**
+ * Maps lowercase plural API kind to PascalCase Kubernetes API kind.
+ * Used for event filtering (involvedObject.kind uses PascalCase).
+ */
+export const RESOURCE_API_KINDS: Record<string, string> = {
+  pods: "Pod",
+  deployments: "Deployment",
+  statefulsets: "StatefulSet",
+  daemonsets: "DaemonSet",
+  services: "Service",
+  ingresses: "Ingress",
+  configmaps: "ConfigMap",
+  secrets: "Secret",
+  namespaces: "Namespace",
+  nodes: "Node",
+  pvcs: "PersistentVolumeClaim",
+  jobs: "Job",
+  cronjobs: "CronJob",
+  networkpolicies: "NetworkPolicy",
+  roles: "Role",
+  clusterroles: "ClusterRole",
+  rolebindings: "RoleBinding",
+  clusterrolebindings: "ClusterRoleBinding",
+};
+
+/**
+ * Maps API kind to the URL path prefix for detail pages.
+ * Must match the filesystem route structure under routes/.
+ */
+export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
+  pods: "/workloads/pods",
+  deployments: "/workloads/deployments",
+  statefulsets: "/workloads/statefulsets",
+  daemonsets: "/workloads/daemonsets",
+  jobs: "/workloads/jobs",
+  cronjobs: "/workloads/cronjobs",
+  services: "/networking/services",
+  ingresses: "/networking/ingresses",
+  networkpolicies: "/networking/networkpolicies",
+  pvcs: "/storage/pvcs",
+  configmaps: "/config/configmaps",
+  secrets: "/config/secrets",
+  roles: "/rbac/roles",
+  clusterroles: "/rbac/clusterroles",
+  rolebindings: "/rbac/rolebindings",
+  clusterrolebindings: "/rbac/clusterrolebindings",
+  nodes: "/cluster/nodes",
+  namespaces: "/cluster/namespaces",
+};
+
+/** Cluster-scoped resource kinds (no namespace in URL). */
+export const CLUSTER_SCOPED_KINDS = new Set([
+  "nodes",
+  "namespaces",
+  "clusterroles",
+  "clusterrolebindings",
+]);
+
 /** Resource navigation sections for the sidebar. */
 export const NAV_SECTIONS = [
   {

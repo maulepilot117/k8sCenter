@@ -28,6 +28,7 @@ import type {
 } from "@/lib/k8s-types.ts";
 import type { Column } from "@/components/ui/DataTable.tsx";
 import { statusColor } from "@/lib/status-colors.ts";
+import { age } from "@/lib/format.ts";
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
 function badge(text: string): ComponentChildren {
@@ -37,18 +38,6 @@ function badge(text: string): ComponentChildren {
         statusColor(text)
       }`,
   }, text);
-}
-
-function age(timestamp: string): string {
-  const diff = Date.now() - new Date(timestamp).getTime();
-  const secs = Math.floor(diff / 1000);
-  if (secs < 60) return `${secs}s`;
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `${days}d`;
 }
 
 // Shared columns

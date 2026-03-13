@@ -11,6 +11,10 @@ import {
   subscribe,
 } from "@/lib/ws.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
+import {
+  CLUSTER_SCOPED_KINDS,
+  RESOURCE_DETAIL_PATHS,
+} from "@/lib/constants.ts";
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
@@ -210,6 +214,17 @@ export default function ResourceTable({
     });
   });
 
+  // Navigate to detail page on row click
+  const handleRowClick = useCallback((item: K8sResource) => {
+    const basePath = RESOURCE_DETAIL_PATHS[kind];
+    if (!basePath) return;
+    const isClusterScoped = CLUSTER_SCOPED_KINDS.has(kind);
+    const url = isClusterScoped
+      ? `${basePath}/${item.metadata.name}`
+      : `${basePath}/${item.metadata.namespace}/${item.metadata.name}`;
+    globalThis.location.href = url;
+  }, [kind]);
+
   const handleSort = (key: string) => {
     if (sortKey.value === key) {
       sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
@@ -288,6 +303,7 @@ export default function ResourceTable({
           sortDir={sortDir.value}
           onSort={handleSort}
           rowKey={(r) => r.metadata.uid}
+          onRowClick={handleRowClick}
           emptyMessage={loading.value
             ? "Loading resources..."
             : `No ${title.toLowerCase()} found`}

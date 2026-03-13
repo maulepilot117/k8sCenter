@@ -25,7 +25,8 @@
     "preact/hooks": "npm:preact@^10.28.3/hooks",
     "@preact/signals": "npm:@preact/signals@^2.7.1",
     "@tailwindcss/vite": "npm:@tailwindcss/vite@^4.1.10",
-    "tailwindcss": "npm:tailwindcss@^4.1.10"
+    "tailwindcss": "npm:tailwindcss@^4.1.10",
+    "yaml": "npm:yaml@^2.7.1"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.asynciterable", "dom.iterable", "deno.ns"],

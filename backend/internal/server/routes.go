@@ -185,5 +185,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/clusterroles/{name}", h.HandleGetClusterRole)
 	ar.Get("/resources/rolebindings", h.HandleListRoleBindings)
 	ar.Get("/resources/rolebindings/{namespace}", h.HandleListRoleBindings)
+	ar.Get("/resources/rolebindings/{namespace}/{name}", h.HandleGetRoleBinding)
 	ar.Get("/resources/clusterrolebindings", h.HandleListClusterRoleBindings)
+	ar.Get("/resources/clusterrolebindings/{name}", h.HandleGetClusterRoleBinding)
 }
