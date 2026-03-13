@@ -16,7 +16,7 @@ KubeCenter is a web-based Kubernetes management platform that delivers vCenter-l
 | JWT | golang-jwt/jwt/v5 | v5.3.1 |
 | Password Hashing | golang.org/x/crypto (Argon2id) | v0.49.0 |
 | Configuration | koanf/v2 | v2.3.3 (YAML file + env vars) |
-| WebSocket | gorilla/websocket | v1.5.x (planned) |
+| WebSocket | gorilla/websocket | v1.5.3 |
 | Frontend Runtime | Deno | 2.x |
 | Frontend Framework | Fresh | 2.x via JSR @fresh/core@^2.2.0 |
 | Language | TypeScript | Strict mode, ESM only |
@@ -104,11 +104,14 @@ kubecenter/
 │   │   │       └── resources_test.go  # 19 tests — list, get, pagination, RBAC, masking, validation
 │   │   │   # [planned] storage/       # CSI/StorageClass (Step 10)
 │   │   │   # [planned] networking/    # CNI detection (Step 10)
-│   │   │
 │   │   │   # [planned] monitoring/    # Prometheus/Grafana integration (Step 9)
 │   │   │   # [planned] alerting/      # Alertmanager webhook, SMTP (Step 11)
 │   │   │   # [planned] yaml/          # YAML parse, validate, apply, diff (Step 7)
-│   │   │   # [planned] websocket/     # WS hub, client, events (Step 5)
+│   │   │
+│   │   ├── websocket/
+│   │   │   ├── hub.go                 # Hub — single-goroutine event loop, fan-out, RBAC revalidation
+│   │   │   ├── client.go              # Client — auth, subscribe/unsubscribe, read/write pumps
+│   │   │   └── events.go              # Types, constants, kind allowlist, normalizeKind
 │   │   │
 │   │   ├── audit/
 │   │   │   ├── logger.go              # Audit Logger interface + SlogLogger implementation
@@ -143,7 +146,11 @@ kubecenter/
 │   │   ├── api.ts                     # Typed fetch wrapper — Bearer injection, 401 auto-refresh, error parsing
 │   │   ├── auth.ts                    # Client-only auth state — login, logout, fetchCurrentUser (Preact signals)
 │   │   ├── constants.ts               # BACKEND_URL, CLUSTER_ID, NAV_SECTIONS
-│   │   └── k8s-types.ts              # APIResponse<T>, APIError, UserInfo type definitions
+│   │   ├── k8s-types.ts              # APIResponse<T>, APIError, UserInfo type definitions
+│   │   ├── namespace.ts              # Client-only selectedNamespace signal
+│   │   ├── ws.ts                     # WebSocket client — auth, subscribe, reconnect with backoff
+│   │   ├── resource-columns.ts       # Column definitions for all 15 resource types
+│   │   └── status-colors.ts          # Shared status → color mapping utility
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
@@ -151,18 +158,25 @@ kubecenter/
 │   │   ├── _error.tsx                 # Error page (404, 500)
 │   │   ├── index.tsx                  # Dashboard page (renders Dashboard island)
 │   │   ├── login.tsx                  # Login page (renders LoginForm island)
-│   │   └── api/
-│   │       └── [...path].ts           # BFF proxy — allowlisted headers, SSRF protection, timeout
+│   │   ├── resources/                 # Resource browser pages (15 types)
+│   │   ├── api/
+│   │   │   └── [...path].ts          # BFF proxy — allowlisted headers, SSRF protection, timeout
+│   │   └── ws/
+│   │       └── [...path].ts          # WS proxy — path allowlist, message buffering, bidirectional relay
 │   ├── islands/
 │   │   ├── Dashboard.tsx              # Cluster overview — stat cards, cluster details
 │   │   ├── LoginForm.tsx              # Login form with error handling
+│   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
 │       ├── ui/
 │       │   ├── Button.tsx             # Reusable button (variants: primary, secondary, danger, ghost)
 │       │   ├── Card.tsx               # Card container with optional title
-│       │   └── Input.tsx              # Form input with label and error state
+│       │   ├── DataTable.tsx          # Generic sortable table component
+│       │   ├── Input.tsx              # Form input with label and error state
+│       │   ├── SearchBar.tsx          # Search input with icon
+│       │   └── StatusBadge.tsx        # Status indicator with color variants
 │       ├── k8s/
 │       │   └── ResourceIcon.tsx       # SVG icons for k8s resource types
 │       └── layout/
@@ -190,7 +204,9 @@ kubecenter/
 │   ├── 021: complete                  # Handler integration tests
 │   ├── 024-043: complete              # Step 3 review — all fixed
 │   ├── 044-066: Step 4 review         # 5 P1 + 7 P2 fixed, 12 deferred (P2/P3)
-│   └── 054,056-060,062-066: pending   # Step 4 deferred findings
+│   ├── 054,056-060,062-066: pending   # Step 4 deferred findings
+│   ├── 067-096: Step 5 review         # 7 P1 + 16 P2 + 1 P3 fixed
+│   └── 083,090,092-096: pending       # Step 5 deferred findings (1 P2 + 6 P3)
 │
 ├── .github/
 │   └── workflows/
@@ -475,7 +491,6 @@ require (
 ```
 
 Dependencies not yet added (will be added in later steps):
-- `gorilla/websocket` (Step 5: WebSocket hub)
 - `coreos/go-oidc/v3` (Step 12: OIDC auth)
 - `go-ldap/ldap/v3` (Step 12: LDAP auth)
 - `prometheus/client_golang` (Step 9: monitoring)
@@ -639,7 +654,7 @@ Build in this order to have a working system at each step:
 2. ~~**Auth system** — Local accounts with JWT, login/logout endpoints, auth middleware~~ ✅
 3. ~~**Resource listing** — Informer-backed CRUD for 15 resource types, RBAC, pagination, validation~~ ✅
 4. ~~**Frontend skeleton** — Fresh app with layout, sidebar, login page, dashboard home~~ ✅
-5. **Resource browser** — Tables for pods, deployments, services with real-time WebSocket updates
+5. ~~**Resource browser** — Tables for pods, deployments, services with real-time WebSocket updates~~ ✅
 6. **Resource detail** — Detail views with tabs (Overview, YAML, Events, Metrics placeholder)
 7. **YAML apply** — Monaco editor, validation, diff, server-side apply
 8. **Resource creation wizards** — Deployment wizard, Service wizard

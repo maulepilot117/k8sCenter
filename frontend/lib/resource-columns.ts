@@ -27,6 +27,7 @@ import type {
   StatefulSet,
 } from "@/lib/k8s-types.ts";
 import type { Column } from "@/components/ui/DataTable.tsx";
+import { statusColor } from "@/lib/status-colors.ts";
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
 function badge(text: string): ComponentChildren {
@@ -36,42 +37,6 @@ function badge(text: string): ComponentChildren {
         statusColor(text)
       }`,
   }, text);
-}
-
-function statusColor(s: string): string {
-  const low = s.toLowerCase();
-  if (
-    [
-      "running",
-      "active",
-      "bound",
-      "ready",
-      "available",
-      "complete",
-      "succeeded",
-      "true",
-    ].includes(low)
-  ) {
-    return "bg-green-50 text-green-700 ring-green-600/20 dark:bg-green-500/10 dark:text-green-400 dark:ring-green-500/20";
-  }
-  if (
-    ["pending", "waiting", "creating", "terminating", "warning"].includes(low)
-  ) {
-    return "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20";
-  }
-  if (
-    [
-      "failed",
-      "error",
-      "crashloopbackoff",
-      "imagepullbackoff",
-      "evicted",
-      "false",
-    ].includes(low)
-  ) {
-    return "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20";
-  }
-  return "bg-slate-50 text-slate-600 ring-slate-500/20 dark:bg-slate-500/10 dark:text-slate-400 dark:ring-slate-500/20";
 }
 
 function age(timestamp: string): string {
@@ -108,7 +73,7 @@ const ageCol: Column<K8sResource> = {
 
 // ---- Per-resource column sets ----
 
-export const podColumns: Column<K8sResource>[] = [
+const podColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -146,7 +111,7 @@ export const podColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const deploymentColumns: Column<K8sResource>[] = [
+const deploymentColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -170,7 +135,7 @@ export const deploymentColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const statefulsetColumns: Column<K8sResource>[] = [
+const statefulsetColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -184,7 +149,7 @@ export const statefulsetColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const daemonsetColumns: Column<K8sResource>[] = [
+const daemonsetColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -205,7 +170,7 @@ export const daemonsetColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const serviceColumns: Column<K8sResource>[] = [
+const serviceColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -231,7 +196,7 @@ export const serviceColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const ingressColumns: Column<K8sResource>[] = [
+const ingressColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -255,7 +220,7 @@ export const ingressColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const configmapColumns: Column<K8sResource>[] = [
+const configmapColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -269,7 +234,7 @@ export const configmapColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const secretColumns: Column<K8sResource>[] = [
+const secretColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -289,7 +254,7 @@ export const secretColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const namespaceColumns: Column<K8sResource>[] = [
+const namespaceColumns: Column<K8sResource>[] = [
   nameCol,
   {
     key: "status",
@@ -300,7 +265,7 @@ export const namespaceColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const nodeColumns: Column<K8sResource>[] = [
+const nodeColumns: Column<K8sResource>[] = [
   nameCol,
   {
     key: "status",
@@ -330,7 +295,7 @@ export const nodeColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const pvcColumns: Column<K8sResource>[] = [
+const pvcColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -356,7 +321,7 @@ export const pvcColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const jobColumns: Column<K8sResource>[] = [
+const jobColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -381,7 +346,7 @@ export const jobColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const cronjobColumns: Column<K8sResource>[] = [
+const cronjobColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -405,7 +370,7 @@ export const cronjobColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const networkpolicyColumns: Column<K8sResource>[] = [
+const networkpolicyColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -416,7 +381,7 @@ export const networkpolicyColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const roleColumns: Column<K8sResource>[] = [
+const roleColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -427,7 +392,7 @@ export const roleColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const clusterroleColumns: Column<K8sResource>[] = [
+const clusterroleColumns: Column<K8sResource>[] = [
   nameCol,
   {
     key: "rules",
@@ -437,7 +402,7 @@ export const clusterroleColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const rolebindingColumns: Column<K8sResource>[] = [
+const rolebindingColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
@@ -456,7 +421,7 @@ export const rolebindingColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const clusterrolebindingColumns: Column<K8sResource>[] = [
+const clusterrolebindingColumns: Column<K8sResource>[] = [
   nameCol,
   {
     key: "roleRef",
@@ -474,7 +439,7 @@ export const clusterrolebindingColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
-export const eventColumns: Column<K8sResource>[] = [
+const eventColumns: Column<K8sResource>[] = [
   {
     key: "type",
     label: "Type",

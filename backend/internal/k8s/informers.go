@@ -7,6 +7,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appsv1listers "k8s.io/client-go/listers/apps/v1"
@@ -224,6 +225,11 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 				m.emitEvent(cb, "ADDED", kind, obj)
 			},
 			UpdateFunc: func(oldObj, newObj interface{}) {
+				oldMeta, ok1 := oldObj.(metav1.Object)
+				newMeta, ok2 := newObj.(metav1.Object)
+				if ok1 && ok2 && oldMeta.GetResourceVersion() == newMeta.GetResourceVersion() {
+					return // suppress resync noise
+				}
 				m.emitEvent(cb, "MODIFIED", kind, newObj)
 			},
 			DeleteFunc: func(obj interface{}) {
@@ -247,6 +253,10 @@ func (m *InformerManager) emitEvent(cb EventCallback, eventType, kind string, ob
 	if !ok {
 		m.logger.Warn("event object does not implement metav1.Object", "kind", kind)
 		return
+	}
+	// Deep copy to avoid data races with informer cache
+	if copier, ok := obj.(runtime.Object); ok {
+		obj = copier.DeepCopyObject()
 	}
 	cb(eventType, kind, meta.GetNamespace(), meta.GetName(), obj)
 }

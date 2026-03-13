@@ -3,10 +3,27 @@
  * WebSocket client with auth, subscribe/unsubscribe, and reconnect with backoff.
  */
 import { signal } from "@preact/signals";
-import { getAccessToken } from "@/lib/api.ts";
+import { getAccessToken, setAccessToken } from "@/lib/api.ts";
 
 export type WSStatus = "connecting" | "connected" | "disconnected";
 export const wsStatus = signal<WSStatus>("disconnected");
+
+// WebSocket message type constants
+const MSG_AUTH = "auth";
+const MSG_AUTH_OK = "auth_ok";
+const MSG_SUBSCRIBE = "subscribe";
+const MSG_UNSUBSCRIBE = "unsubscribe";
+const MSG_EVENT = "event";
+const MSG_ERROR = "error";
+const MSG_SUBSCRIBED = "subscribed";
+const MSG_RESYNC_REQUIRED = "resync_required";
+
+// Event type constants
+export const EVENT_ADDED = "ADDED";
+export const EVENT_MODIFIED = "MODIFIED";
+export const EVENT_DELETED = "DELETED";
+export const EVENT_RBAC_DENIED = "RBAC_DENIED";
+export const EVENT_RESYNC = "RESYNC";
 
 type EventCallback = (eventType: string, object: unknown) => void;
 
@@ -59,7 +76,7 @@ export function connectWS(): void {
   ws.onopen = () => {
     const token = getAccessToken();
     if (token) {
-      ws!.send(JSON.stringify({ type: "auth", token }));
+      ws!.send(JSON.stringify({ type: MSG_AUTH, token }));
     } else {
       ws!.close();
       wsStatus.value = "disconnected";
@@ -98,7 +115,7 @@ function handleMessage(
   },
 ) {
   switch (msg.type) {
-    case "auth_ok":
+    case MSG_AUTH_OK:
       authenticated = true;
       wsStatus.value = "connected";
       reconnectAttempt = 0;
@@ -108,7 +125,7 @@ function handleMessage(
       }
       break;
 
-    case "event":
+    case MSG_EVENT:
       if (msg.id) {
         const sub = subscriptions.get(msg.id);
         if (sub && msg.eventType && msg.object !== undefined) {
@@ -117,18 +134,28 @@ function handleMessage(
       }
       break;
 
-    case "error":
+    case MSG_ERROR:
       // For RBAC errors (403), notify the subscriber
       if (msg.id && msg.code === 403) {
         const sub = subscriptions.get(msg.id);
         if (sub) {
-          sub.onEvent("RBAC_DENIED", null);
+          sub.onEvent(EVENT_RBAC_DENIED, null);
         }
       }
       break;
 
-    case "subscribed":
+    case MSG_SUBSCRIBED:
       // Subscription confirmed
+      break;
+
+    case MSG_RESYNC_REQUIRED:
+      // Server dropped events for this subscription — trigger a REST re-fetch
+      if (msg.id) {
+        const sub = subscriptions.get(msg.id);
+        if (sub) {
+          sub.onEvent(EVENT_RESYNC, null);
+        }
+      }
       break;
   }
 }
@@ -136,11 +163,33 @@ function handleMessage(
 function sendSubscribe(sub: Subscription): void {
   if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
     ws.send(JSON.stringify({
-      type: "subscribe",
+      type: MSG_SUBSCRIBE,
       id: sub.id,
       kind: sub.kind,
       namespace: sub.namespace,
     }));
+  }
+}
+
+/**
+ * Refresh the access token before a WS reconnect attempt.
+ * The previous token may have expired during the disconnect period.
+ */
+async function refreshTokenForWS(): Promise<void> {
+  try {
+    const res = await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    });
+    if (res.ok) {
+      const body = await res.json();
+      if (body.data?.accessToken) {
+        setAccessToken(body.data.accessToken);
+      }
+    }
+  } catch {
+    // Token refresh failed — connectWS will proceed and fail on auth
   }
 }
 
@@ -159,8 +208,10 @@ function scheduleReconnect(): void {
 
   const delay = reconnectDelay();
   reconnectAttempt++;
-  reconnectTimer = globalThis.setTimeout(() => {
+  reconnectTimer = globalThis.setTimeout(async () => {
     reconnectTimer = null;
+    // Refresh token before reconnecting (may have expired during disconnect)
+    await refreshTokenForWS();
     connectWS();
   }, delay) as unknown as number;
 }
@@ -187,7 +238,7 @@ export function subscribe(
   return () => {
     subscriptions.delete(id);
     if (ws && ws.readyState === WebSocket.OPEN && authenticated) {
-      ws.send(JSON.stringify({ type: "unsubscribe", id }));
+      ws.send(JSON.stringify({ type: MSG_UNSUBSCRIBE, id }));
     }
   };
 }

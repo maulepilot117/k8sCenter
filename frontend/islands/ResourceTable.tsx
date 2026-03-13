@@ -1,9 +1,15 @@
 import { useComputed, useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { subscribe } from "@/lib/ws.ts";
+import {
+  EVENT_ADDED,
+  EVENT_DELETED,
+  EVENT_MODIFIED,
+  EVENT_RESYNC,
+  subscribe,
+} from "@/lib/ws.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -20,6 +26,8 @@ interface ResourceTableProps {
   enableWS?: boolean;
 }
 
+const PAGE_SIZE = 100;
+
 export default function ResourceTable({
   kind,
   title,
@@ -32,6 +40,9 @@ export default function ResourceTable({
   const search = useSignal("");
   const sortKey = useSignal("name");
   const sortDir = useSignal<"asc" | "desc">("asc");
+  const continueToken = useSignal<string | null>(null);
+  const totalCount = useSignal<number | null>(null);
+  const loadingMore = useSignal(false);
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
 
@@ -42,74 +53,124 @@ export default function ResourceTable({
       : (selectedNamespace.value === "all" ? "" : selectedNamespace.value)
   );
 
-  // Fetch resources via REST
-  const fetchResources = useCallback(async () => {
-    loading.value = true;
+  // Fetch resources via REST with pagination
+  const fetchResources = useCallback(async (append = false) => {
+    if (append) {
+      loadingMore.value = true;
+    } else {
+      loading.value = true;
+    }
     error.value = null;
     try {
-      const path = ns.value
+      const basePath = ns.value
         ? `/v1/resources/${kind}/${ns.value}`
         : `/v1/resources/${kind}`;
-      const res = await apiGet<K8sResource[]>(path);
-      items.value = Array.isArray(res.data) ? res.data : [];
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (append && continueToken.value) {
+        params.set("continue", continueToken.value);
+      }
+      const res = await apiGet<K8sResource[]>(
+        `${basePath}?${params.toString()}`,
+      );
+      const newItems = Array.isArray(res.data) ? res.data : [];
+      if (append) {
+        // Deduplicate by UID when appending
+        const existingUIDs = new Set(items.value.map((r) => r.metadata.uid));
+        const unique = newItems.filter((r) =>
+          !existingUIDs.has(r.metadata.uid)
+        );
+        items.value = [...items.value, ...unique];
+      } else {
+        items.value = newItems;
+      }
+      continueToken.value = res.metadata?.continue ?? null;
+      totalCount.value = res.metadata?.total ?? null;
     } catch (err) {
       error.value = err instanceof Error
         ? err.message
         : "Failed to load resources";
-      items.value = [];
+      if (!append) {
+        items.value = [];
+      }
     } finally {
       loading.value = false;
+      loadingMore.value = false;
     }
   }, [kind]);
 
-  // Re-fetch when namespace changes
+  // Batched WS event queue — accumulate events and apply once per animation frame (P2-084).
+  type WSEvent = { eventType: string; object: unknown };
+  const eventQueue = useRef<WSEvent[]>([]);
+  const rafId = useRef<number>(0);
+
+  const flushEvents = useCallback(() => {
+    rafId.current = 0;
+    const batch = eventQueue.current.splice(0);
+    if (batch.length === 0) return;
+
+    // Check for resync first — if any event is RESYNC, just re-fetch
+    if (batch.some((e) => e.eventType === EVENT_RESYNC)) {
+      fetchResources();
+      return;
+    }
+
+    // Apply all events in a single signal update
+    let current = items.value;
+    for (const { eventType, object } of batch) {
+      if (!object || typeof object !== "object") continue;
+      const resource = object as K8sResource;
+      const uid = resource.metadata?.uid;
+      if (!uid) continue;
+
+      switch (eventType) {
+        case EVENT_ADDED:
+          if (!current.some((r) => r.metadata.uid === uid)) {
+            current = [...current, resource];
+          }
+          break;
+        case EVENT_MODIFIED:
+          current = current.map((r) => r.metadata.uid === uid ? resource : r);
+          break;
+        case EVENT_DELETED:
+          current = current.filter((r) => r.metadata.uid !== uid);
+          break;
+      }
+    }
+    items.value = current;
+  }, [kind]);
+
+  // Unified effect: subscribe WS first, then fetch REST to close the event gap.
   useEffect(() => {
     if (!IS_BROWSER) return;
+
+    let unsubscribe: (() => void) | undefined;
+
+    if (enableWS) {
+      const subId = `${kind}-${ns.value || "all"}`;
+      unsubscribe = subscribe(
+        subId,
+        kind,
+        ns.value,
+        (eventType, object) => {
+          eventQueue.current.push({ eventType, object });
+          if (!rafId.current) {
+            rafId.current = requestAnimationFrame(flushEvents);
+          }
+        },
+      );
+    }
+
+    // Fetch after subscribing — any events during the fetch are captured above
     fetchResources();
-  }, [ns.value]);
 
-  // Subscribe to WebSocket events for real-time updates
-  useEffect(() => {
-    if (!IS_BROWSER || !enableWS) return;
-
-    const subId = `${kind}-${ns.value || "all"}`;
-    const unsubscribe = subscribe(
-      subId,
-      kind,
-      ns.value,
-      (eventType, object) => {
-        if (!object || typeof object !== "object") return;
-        const resource = object as K8sResource;
-        const uid = resource.metadata?.uid;
-        if (!uid) return;
-
-        switch (eventType) {
-          case "ADDED": {
-            // Only add if not already present
-            if (!items.value.some((r) => r.metadata.uid === uid)) {
-              items.value = [...items.value, resource];
-            }
-            break;
-          }
-          case "MODIFIED": {
-            items.value = items.value.map((r) =>
-              r.metadata.uid === uid ? resource : r
-            );
-            break;
-          }
-          case "DELETED": {
-            items.value = items.value.filter((r) => r.metadata.uid !== uid);
-            break;
-          }
-          case "RBAC_DENIED": {
-            // Silently ignore — the REST fetch already handles permissions
-            break;
-          }
-        }
-      },
-    );
-
-    return unsubscribe;
+    return () => {
+      unsubscribe?.();
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = 0;
+      }
+      eventQueue.current.length = 0;
+    };
   }, [kind, ns.value, enableWS]);
 
   // Client-side filter + sort
@@ -139,7 +200,6 @@ export default function ResourceTable({
         va = a.metadata.namespace ?? "";
         vb = b.metadata.namespace ?? "";
       } else if (key === "age") {
-        // Sort by creation timestamp (newer first if desc)
         va = a.metadata.creationTimestamp;
         vb = b.metadata.creationTimestamp;
       } else {
@@ -159,6 +219,17 @@ export default function ResourceTable({
     }
   };
 
+  // Item count display — show "X of Y" when total is known and more exist
+  const itemCountText = useComputed(() => {
+    if (loading.value) return "Loading...";
+    const shown = displayed.value.length;
+    const total = totalCount.value;
+    if (total !== null && total > items.value.length) {
+      return `${shown} shown (${items.value.length} of ${total} loaded)`;
+    }
+    return `${shown} items`;
+  });
+
   return (
     <div class="space-y-4">
       {/* Header */}
@@ -168,11 +239,11 @@ export default function ResourceTable({
         </h1>
         <div class="flex items-center gap-3">
           <span class="text-sm text-slate-500 dark:text-slate-400">
-            {loading.value ? "Loading..." : `${displayed.value.length} items`}
+            {itemCountText.value}
           </span>
           <button
             type="button"
-            onClick={fetchResources}
+            onClick={() => fetchResources()}
             class="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
             title="Refresh"
           >
@@ -222,6 +293,20 @@ export default function ResourceTable({
             : `No ${title.toLowerCase()} found`}
         />
       </div>
+
+      {/* Load More */}
+      {continueToken.value && (
+        <div class="flex justify-center">
+          <button
+            type="button"
+            onClick={() => fetchResources(true)}
+            disabled={loadingMore.value}
+            class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+          >
+            {loadingMore.value ? "Loading..." : "Load More"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

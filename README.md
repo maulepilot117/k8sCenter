@@ -142,6 +142,12 @@ Resource CRUD (15 types: deployments, statefulsets, daemonsets, pods, services, 
 | POST | `/api/v1/resources/nodes/:name/drain` | Yes | Drain node (async, returns task ID) |
 | GET | `/api/v1/tasks/:taskID` | Yes | Poll long-running task status |
 
+WebSocket:
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `WS /api/v1/ws/resources` | JWT (first message) | Subscribe to real-time resource events |
+
 See [CLAUDE.md](CLAUDE.md) for the complete API reference.
 
 ## Security
@@ -168,13 +174,14 @@ kubecenter/
 │   │   │   └── middleware/ # Auth, CSRF, rate limiting, CORS
 │   │   ├── auth/         # JWT, local accounts, RBAC, sessions
 │   │   ├── audit/        # Audit logging interface + slog impl
+│   │   ├── websocket/    # WebSocket hub, client, events (gorilla/websocket)
 │   │   ├── k8s/          # Client factory, informers, resource handlers
 │   │   │   └── resources/ # CRUD handlers for 15 k8s resource types
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, Sidebar, TopBar)
+│   ├── islands/          # Interactive components (Dashboard, Login, Sidebar, TopBar, ResourceTable)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Helm chart

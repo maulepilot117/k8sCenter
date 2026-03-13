@@ -20,6 +20,22 @@ export const handler = define.handlers({
       );
     }
 
+    // Allowlist known WS endpoints (P2-087)
+    const allowedPatterns = [
+      /^v1\/ws\/resources$/,
+      /^v1\/ws\/logs\/[^/]+\/[^/]+\/[^/]+$/,
+      /^v1\/ws\/exec\/[^/]+\/[^/]+\/[^/]+$/,
+      /^v1\/ws\/alerts$/,
+    ];
+    if (!allowedPatterns.some((p) => p.test(path))) {
+      return new Response(
+        JSON.stringify({
+          error: { code: 404, message: "Unknown WS endpoint" },
+        }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
     // Must be a WebSocket upgrade request
     if (ctx.req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket upgrade", { status: 426 });
@@ -36,14 +52,23 @@ export const handler = define.handlers({
     // Connect to backend once the client socket is open
     clientSocket.onopen = () => {
       const backendSocket = new WebSocket(backendWsUrl);
+      const pendingMessages: string[] = [];
+
+      // Queue client messages until backend is connected
+      clientSocket.onmessage = (event) => {
+        if (backendSocket.readyState === WebSocket.OPEN) {
+          backendSocket.send(event.data);
+        } else {
+          pendingMessages.push(event.data);
+        }
+      };
 
       backendSocket.onopen = () => {
-        // Relay client messages to backend
-        clientSocket.onmessage = (event) => {
-          if (backendSocket.readyState === WebSocket.OPEN) {
-            backendSocket.send(event.data);
-          }
-        };
+        // Flush queued messages (includes the auth token)
+        for (const msg of pendingMessages) {
+          backendSocket.send(msg);
+        }
+        pendingMessages.length = 0;
 
         // Relay backend messages to client
         backendSocket.onmessage = (event) => {
@@ -66,10 +91,10 @@ export const handler = define.handlers({
         }
       };
 
-      // If client closes, close backend
-      clientSocket.onclose = () => {
+      // If client closes, close backend (propagate close code)
+      clientSocket.onclose = (event) => {
         if (backendSocket.readyState === WebSocket.OPEN) {
-          backendSocket.close();
+          backendSocket.close(event.code, event.reason);
         }
       };
 

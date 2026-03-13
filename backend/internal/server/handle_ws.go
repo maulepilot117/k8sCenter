@@ -21,8 +21,20 @@ func (s *Server) handleWSResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate Origin header against allowed origins
+	if s.Hub.ClientCount() >= ws.MaxClients {
+		http.Error(w, "too many WebSocket connections", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Validate Origin header against allowed origins.
+	// In production, require a valid Origin header to prevent CSWSH attacks.
+	// In dev mode, allow empty Origin for non-browser clients (curl, CLI tools).
 	origin := r.Header.Get("Origin")
+	if origin == "" && !s.Config.Dev {
+		s.Logger.Warn("websocket rejected: missing Origin header")
+		http.Error(w, "Origin header required", http.StatusForbidden)
+		return
+	}
 	if origin != "" && !s.isAllowedOrigin(origin) {
 		s.Logger.Warn("websocket origin rejected", "origin", origin)
 		http.Error(w, "origin not allowed", http.StatusForbidden)

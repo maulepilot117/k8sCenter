@@ -32,7 +32,7 @@ type Client struct {
 	conn           *websocket.Conn
 	send           chan []byte
 	user           *auth.User
-	subs           map[subKey]string // subKey → subscription ID
+	subCount       int // tracks number of active subscriptions (written only by readPump)
 	tokenValidator TokenValidator
 	logger         *slog.Logger
 }
@@ -43,7 +43,6 @@ func NewClient(hub *Hub, conn *websocket.Conn, tv TokenValidator, logger *slog.L
 		hub:            hub,
 		conn:           conn,
 		send:           make(chan []byte, sendBufferSize),
-		subs:           make(map[subKey]string),
 		tokenValidator: tv,
 		logger:         logger,
 	}
@@ -56,10 +55,6 @@ func (c *Client) username() string {
 	return "unauthenticated"
 }
 
-// subIDForKey returns the subscription ID for a given subKey, or empty string.
-func (c *Client) subIDForKey(key subKey) string {
-	return c.subs[key]
-}
 
 // ReadPump reads messages from the WebSocket connection. Runs in its own goroutine.
 func (c *Client) ReadPump() {
@@ -183,17 +178,28 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		return
 	}
 
-	if len(c.subs) >= maxSubscriptions {
+	if c.subCount >= maxSubscriptions {
 		c.sendError(msg.ID, 429, "too many subscriptions")
 		return
 	}
 
+	// Validate kind against allowlist (P1-071: defense-in-depth, block secrets)
+	if !isAllowedKind(msg.Kind) {
+		c.sendError(msg.ID, 400, fmt.Sprintf("subscription to %q is not allowed", msg.Kind))
+		return
+	}
+
+	// Normalize kind for informer matching (P1-069: e.g. "pvcs" → "persistentvolumeclaims")
+	normalizedKind := normalizeKind(msg.Kind)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	allowed, err := c.hub.accessChecker.CanAccess(
-		context.Background(),
+		ctx,
 		c.user.KubernetesUsername,
 		c.user.KubernetesGroups,
 		"list",
-		msg.Kind,
+		normalizedKind,
 		msg.Namespace,
 	)
 	if err != nil {
@@ -204,13 +210,13 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		return
 	}
 	if !allowed {
-		c.sendError(msg.ID, 403, fmt.Sprintf("cannot list %s in namespace %q", msg.Kind, msg.Namespace))
+		c.sendError(msg.ID, 403, "subscription denied")
 		return
 	}
 
-	key := subKey{Kind: msg.Kind, Namespace: msg.Namespace}
-	c.subs[key] = msg.ID
-	c.hub.addSub <- subChange{client: c, key: key, add: true}
+	key := subKey{Kind: normalizedKind, Namespace: msg.Namespace}
+	c.subCount++
+	c.hub.addSub <- subChange{client: c, key: key, add: true, id: msg.ID}
 
 	data, _ := MarshalOutgoing(OutgoingMessage{Type: MsgTypeSubscribed, ID: msg.ID})
 	select {
@@ -229,12 +235,11 @@ func (c *Client) handleUnsubscribe(msg IncomingMessage) {
 		return
 	}
 
-	for key, id := range c.subs {
-		if id == msg.ID {
-			delete(c.subs, key)
-			c.hub.addSub <- subChange{client: c, key: key, add: false}
-			break
-		}
+	// Send unsubscribe to hub — hub will find and remove the matching subscription.
+	// We use an empty key here; the hub's removeSubByID handles the lookup.
+	c.hub.unsubByID <- unsubRequest{client: c, id: msg.ID}
+	if c.subCount > 0 {
+		c.subCount--
 	}
 }
 

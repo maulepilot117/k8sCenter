@@ -114,18 +114,19 @@ func main() {
 
 	// Create HTTP server
 	srv := server.New(server.Deps{
-		Config:       cfg,
-		K8sClient:    k8sClient,
-		Informers:    informerMgr,
-		Logger:       logger,
-		TokenManager: tokenManager,
-		LocalAuth:    localAuth,
-		Sessions:     sessions,
-		RBACChecker:  rbacChecker,
-		AuditLogger:  auditLogger,
-		RateLimiter:  rateLimiter,
-		Hub:          hub,
-		ReadyFn:      ready.Load,
+		Config:        cfg,
+		K8sClient:     k8sClient,
+		Informers:     informerMgr,
+		Logger:        logger,
+		TokenManager:  tokenManager,
+		LocalAuth:     localAuth,
+		Sessions:      sessions,
+		RBACChecker:   rbacChecker,
+		AuditLogger:   auditLogger,
+		RateLimiter:   rateLimiter,
+		Hub:           hub,
+		AccessChecker: accessChecker,
+		ReadyFn:       ready.Load,
 	})
 	httpServer := srv.HTTPServer()
 

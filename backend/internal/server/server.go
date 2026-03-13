@@ -37,18 +37,19 @@ type Server struct {
 
 // Deps holds all dependencies needed to create a Server.
 type Deps struct {
-	Config       *config.Config
-	K8sClient    *k8s.ClientFactory
-	Informers    *k8s.InformerManager
-	Logger       *slog.Logger
-	TokenManager *auth.TokenManager
-	LocalAuth    *auth.LocalProvider
-	Sessions     *auth.SessionStore
-	RBACChecker  *auth.RBACChecker
-	AuditLogger  audit.Logger
-	RateLimiter  *middleware.RateLimiter
-	Hub          *websocket.Hub
-	ReadyFn      func() bool
+	Config        *config.Config
+	K8sClient     *k8s.ClientFactory
+	Informers     *k8s.InformerManager
+	Logger        *slog.Logger
+	TokenManager  *auth.TokenManager
+	LocalAuth     *auth.LocalProvider
+	Sessions      *auth.SessionStore
+	RBACChecker   *auth.RBACChecker
+	AuditLogger   audit.Logger
+	RateLimiter   *middleware.RateLimiter
+	Hub           *websocket.Hub
+	AccessChecker *resources.AccessChecker
+	ReadyFn       func() bool
 }
 
 // New creates a configured HTTP server with middleware and routes.
@@ -71,10 +72,15 @@ func New(deps Deps) *Server {
 
 	// Build resource handler if k8s dependencies are available (not in auth-only tests)
 	if deps.K8sClient != nil && deps.Informers != nil {
+		ac := deps.AccessChecker
+		if ac == nil {
+			// Fallback for tests that don't provide an AccessChecker
+			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
+		}
 		s.ResourceHandler = &resources.Handler{
 			K8sClient:     deps.K8sClient,
 			Informers:     deps.Informers,
-			AccessChecker: resources.NewAccessChecker(deps.K8sClient, deps.Logger),
+			AccessChecker: ac,
 			AuditLogger:   deps.AuditLogger,
 			Logger:        deps.Logger,
 			TaskManager:   resources.NewTaskManager(),

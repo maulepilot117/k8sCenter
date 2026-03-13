@@ -19,13 +19,14 @@ type subKey struct {
 
 // Message types for the WebSocket wire protocol.
 const (
-	MsgTypeAuth        = "auth"
-	MsgTypeAuthOK      = "auth_ok"
-	MsgTypeSubscribe   = "subscribe"
-	MsgTypeUnsubscribe = "unsubscribe"
-	MsgTypeSubscribed  = "subscribed"
-	MsgTypeEvent       = "event"
-	MsgTypeError       = "error"
+	MsgTypeAuth          = "auth"
+	MsgTypeAuthOK        = "auth_ok"
+	MsgTypeSubscribe     = "subscribe"
+	MsgTypeUnsubscribe   = "unsubscribe"
+	MsgTypeSubscribed    = "subscribed"
+	MsgTypeEvent         = "event"
+	MsgTypeError         = "error"
+	MsgTypeResyncRequired = "resync_required"
 )
 
 // IncomingMessage is the envelope for client-to-server messages.
@@ -50,4 +51,47 @@ type OutgoingMessage struct {
 // MarshalOutgoing serializes an OutgoingMessage to JSON bytes.
 func MarshalOutgoing(msg OutgoingMessage) ([]byte, error) {
 	return json.Marshal(msg)
+}
+
+// allowedKinds is the set of resource kinds that clients may subscribe to via WebSocket.
+// Secrets are intentionally excluded — they are not in the informer cache and must only
+// be accessed via the REST API with masking and audit logging.
+var allowedKinds = map[string]bool{
+	"pods":                    true,
+	"services":                true,
+	"configmaps":              true,
+	"namespaces":              true,
+	"nodes":                   true,
+	"persistentvolumeclaims":  true,
+	"pvcs":                    true, // alias — normalized to persistentvolumeclaims
+	"events":                  true,
+	"deployments":             true,
+	"statefulsets":             true,
+	"daemonsets":               true,
+	"jobs":                    true,
+	"cronjobs":                true,
+	"ingresses":               true,
+	"networkpolicies":          true,
+	"roles":                   true,
+	"clusterroles":             true,
+	"rolebindings":             true,
+	"clusterrolebindings":      true,
+}
+
+// isAllowedKind returns true if the kind is in the subscription allowlist.
+func isAllowedKind(kind string) bool {
+	return allowedKinds[kind]
+}
+
+// kindAliases maps frontend short names to the informer's canonical kind strings.
+var kindAliases = map[string]string{
+	"pvcs": "persistentvolumeclaims",
+}
+
+// normalizeKind maps alias kind strings to their canonical form used by informers.
+func normalizeKind(kind string) string {
+	if canonical, ok := kindAliases[kind]; ok {
+		return canonical
+	}
+	return kind
 }
