@@ -108,6 +108,17 @@ func (f *ClientFactory) BaseConfig() *rest.Config {
 	return rest.CopyConfig(f.baseConfig)
 }
 
+// BaseDynamicClient returns a dynamic client using the service account's own
+// permissions. Used for CRD access (e.g., VolumeSnapshots) in read-only contexts.
+func (f *ClientFactory) BaseDynamicClient() dynamic.Interface {
+	dc, err := dynamic.NewForConfig(f.baseConfig)
+	if err != nil {
+		f.logger.Error("failed to create base dynamic client", "error", err)
+		return nil
+	}
+	return dc
+}
+
 // ClientForUser returns an impersonating clientset for the given user.
 // Results are cached for 5 minutes keyed by hash(username+groups).
 func (f *ClientFactory) ClientForUser(username string, groups []string) (*kubernetes.Clientset, error) {

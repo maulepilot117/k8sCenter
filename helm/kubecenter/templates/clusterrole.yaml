@@ -46,6 +46,22 @@ rules:
       - rolebindings
       - clusterrolebindings
     verbs: ["get", "list", "watch"]
+  # Storage — CSI drivers, storage classes (informer-cached, cluster-scoped)
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - csidrivers
+      - storageclasses
+      - csinodes
+    verbs: ["get", "list", "watch"]
+  # VolumeSnapshot CRDs (dynamic client, conditional on CRD existence)
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources:
+      - volumesnapshots
+      - volumesnapshotclasses
+    verbs: ["get", "list"]
+  # API discovery for CNI/CSI CRD detection
+  - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*"]
+    verbs: ["get"]
   # Monitoring discovery — check for Prometheus Operator CRDs and resources
   - apiGroups: ["monitoring.coreos.com"]
     resources: ["servicemonitors", "prometheuses"]

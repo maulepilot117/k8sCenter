@@ -15,6 +15,7 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
 	rbacv1listers "k8s.io/client-go/listers/rbac/v1"
+	storagev1listers "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -63,8 +64,12 @@ func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *In
 	factory.Rbac().V1().RoleBindings().Informer()
 	factory.Rbac().V1().ClusterRoleBindings().Informer()
 
+	// Storage resources (cluster-scoped)
+	factory.Storage().V1().StorageClasses().Informer()
+	factory.Storage().V1().CSIDrivers().Informer()
+
 	logger.Info("informer manager created",
-		"resourceTypes", 18,
+		"resourceTypes", 20,
 		"resyncPeriod", defaultResyncPeriod,
 	)
 
@@ -182,6 +187,16 @@ func (m *InformerManager) ClusterRoleBindings() rbacv1listers.ClusterRoleBinding
 	return m.factory.Rbac().V1().ClusterRoleBindings().Lister()
 }
 
+// Typed lister accessors — Storage
+
+func (m *InformerManager) StorageClasses() storagev1listers.StorageClassLister {
+	return m.factory.Storage().V1().StorageClasses().Lister()
+}
+
+func (m *InformerManager) CSIDrivers() storagev1listers.CSIDriverLister {
+	return m.factory.Storage().V1().CSIDrivers().Lister()
+}
+
 // EventCallback is called when an informer observes a resource change.
 type EventCallback func(eventType, kind, namespace, name string, obj any)
 
@@ -213,6 +228,8 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 		{"clusterroles", m.factory.Rbac().V1().ClusterRoles().Informer()},
 		{"rolebindings", m.factory.Rbac().V1().RoleBindings().Informer()},
 		{"clusterrolebindings", m.factory.Rbac().V1().ClusterRoleBindings().Informer()},
+		{"storageclasses", m.factory.Storage().V1().StorageClasses().Informer()},
+		{"csidrivers", m.factory.Storage().V1().CSIDrivers().Informer()},
 	}
 
 	for _, spec := range specs {

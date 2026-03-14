@@ -84,6 +84,35 @@ func (h *Handler) HandleServicePreview(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
 }
 
+// HandleStorageClassPreview handles POST /api/v1/wizards/storageclass/preview.
+// It validates the input, constructs a typed StorageClass, and returns YAML.
+func (h *Handler) HandleStorageClassPreview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	var input StorageClassInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	if errs := input.Validate(); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	sc := input.ToStorageClass()
+	yamlBytes, err := sigsyaml.Marshal(sc)
+	if err != nil {
+		h.Logger.Error("failed to marshal storage class to YAML", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+		return
+	}
+
+	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
+}
+
 func writeValidationErrors(w http.ResponseWriter, errs []FieldError) {
 	httputil.WriteJSON(w, http.StatusUnprocessableEntity, api.Response{
 		Error: &api.APIError{

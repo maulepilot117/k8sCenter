@@ -108,15 +108,26 @@ export const NAV_SECTIONS = [
         href: "/networking/networkpolicies",
         icon: "networkpolicies",
       },
+      { label: "CNI Plugin", href: "/networking/cni", icon: "networking" },
     ],
   },
   {
     title: "Storage",
     items: [
       {
+        label: "Overview",
+        href: "/storage/overview",
+        icon: "storage",
+      },
+      {
         label: "Persistent Volume Claims",
         href: "/storage/pvcs",
         icon: "pvcs",
+      },
+      {
+        label: "Snapshots",
+        href: "/storage/snapshots",
+        icon: "snapshots",
       },
     ],
   },
@@ -168,6 +179,11 @@ export const NAV_SECTIONS = [
     title: "Tools",
     items: [
       { label: "YAML Apply", href: "/tools/yaml-apply", icon: "yaml" },
+      {
+        label: "StorageClass Wizard",
+        href: "/tools/storageclass-wizard",
+        icon: "storage",
+      },
     ],
   },
 ] as const;

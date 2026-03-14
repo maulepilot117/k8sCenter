@@ -14,7 +14,9 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
+	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
@@ -37,9 +39,11 @@ type Server struct {
 	ResourceHandler *resources.Handler
 	YAMLHandler     *yamlpkg.Handler
 	WizardHandler     *wizard.Handler
-	MonitoringHandler *monitoring.Handler
-	Hub               *websocket.Hub
-	ready             func() bool
+	MonitoringHandler  *monitoring.Handler
+	StorageHandler     *storage.Handler
+	NetworkingHandler  *networking.Handler
+	Hub                *websocket.Hub
+	ready              func() bool
 }
 
 // Deps holds all dependencies needed to create a Server.
@@ -56,9 +60,11 @@ type Deps struct {
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
 	Hub               *websocket.Hub
-	MonitoringHandler *monitoring.Handler
-	AccessChecker     *resources.AccessChecker
-	ReadyFn           func() bool
+	MonitoringHandler  *monitoring.Handler
+	StorageHandler     *storage.Handler
+	NetworkingHandler  *networking.Handler
+	AccessChecker      *resources.AccessChecker
+	ReadyFn            func() bool
 }
 
 // New creates a configured HTTP server with middleware and routes.
@@ -111,6 +117,16 @@ func New(deps Deps) *Server {
 	// informers (it uses its own discovery goroutine)
 	if deps.MonitoringHandler != nil {
 		s.MonitoringHandler = deps.MonitoringHandler
+	}
+
+	// Storage handler
+	if deps.StorageHandler != nil {
+		s.StorageHandler = deps.StorageHandler
+	}
+
+	// Networking handler
+	if deps.NetworkingHandler != nil {
+		s.NetworkingHandler = deps.NetworkingHandler
 	}
 
 	// Global middleware chain — order matters.

@@ -176,6 +176,27 @@ const icons: Record<string, ReturnType<typeof SVGContent>> = {
       <path d="M10 5v5l3 3" />
     </>
   ),
+  storage: (
+    <>
+      <path d="M4 6c0-1.1 2.69-2 6-2s6 .9 6 2v8c0 1.1-2.69 2-6 2s-6-.9-6-2V6z" />
+      <path d="M4 10c0 1.1 2.69 2 6 2s6-.9 6-2" />
+    </>
+  ),
+  networking: (
+    <>
+      <circle cx="10" cy="4" r="2" />
+      <circle cx="4" cy="14" r="2" />
+      <circle cx="16" cy="14" r="2" />
+      <path d="M10 6v4M6.5 12.5L9 10M13.5 12.5L11 10" />
+    </>
+  ),
+  snapshots: (
+    <>
+      <rect x="4" y="4" width="12" height="12" rx="2" />
+      <path d="M4 8h12M8 4v12" />
+      <circle cx="12" cy="12" r="2" />
+    </>
+  ),
   yaml: (
     <>
       <path d="M4 3h12a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" />

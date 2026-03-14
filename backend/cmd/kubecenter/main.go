@@ -19,8 +19,10 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/pkg/version"
 )
@@ -121,6 +123,24 @@ func main() {
 		Logger:     logger,
 	}
 
+	// Initialize CNI detector and run initial detection
+	cniDetector := networking.NewDetector(k8sClient, informerMgr, logger)
+	cniDetector.Detect(ctx)
+
+	storageHandler := &storage.Handler{
+		K8sClient: k8sClient,
+		Informers: informerMgr,
+		Logger:    logger,
+	}
+
+	networkingHandler := &networking.Handler{
+		K8sClient:   k8sClient,
+		Detector:    cniDetector,
+		AuditLogger: auditLogger,
+		Logger:      logger,
+		ClusterID:   cfg.ClusterID,
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -139,9 +159,11 @@ func main() {
 		RateLimiter:     rateLimiter,
 		YAMLRateLimiter: yamlRateLimiter,
 		Hub:               hub,
-		MonitoringHandler: monHandler,
-		AccessChecker:     accessChecker,
-		ReadyFn:           ready.Load,
+		MonitoringHandler:  monHandler,
+		StorageHandler:     storageHandler,
+		NetworkingHandler:  networkingHandler,
+		AccessChecker:      accessChecker,
+		ReadyFn:            ready.Load,
 	})
 	httpServer := srv.HTTPServer()
 

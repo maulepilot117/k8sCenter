@@ -56,6 +56,16 @@ func (s *Server) registerRoutes() {
 				s.registerWizardRoutes(ar)
 			}
 
+			// Storage routes — only registered if storage handler is available
+			if s.StorageHandler != nil {
+				s.registerStorageRoutes(ar)
+			}
+
+			// Networking routes — only registered if networking handler is available
+			if s.NetworkingHandler != nil {
+				s.registerNetworkingRoutes(ar)
+			}
+
 			// Monitoring routes — only registered if monitoring handler is available
 			if s.MonitoringHandler != nil {
 				s.registerMonitoringRoutes(ar)
@@ -108,6 +118,7 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 
 		wr.Post("/deployment/preview", h.HandleDeploymentPreview)
 		wr.Post("/service/preview", h.HandleServicePreview)
+		wr.Post("/storageclass/preview", h.HandleStorageClassPreview)
 	})
 }
 
@@ -130,6 +141,26 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 		mr.Get("/templates/query", h.HandleTemplateQuery)
 		mr.Get("/resource-dashboard", h.HandleResourceDashboard)
 		mr.HandleFunc("/grafana/proxy/*", h.GrafanaProxy)
+	})
+}
+
+func (s *Server) registerStorageRoutes(ar chi.Router) {
+	h := s.StorageHandler
+	ar.Route("/storage", func(sr chi.Router) {
+		sr.Get("/drivers", h.HandleListDrivers)
+		sr.Get("/classes", h.HandleListClasses)
+		sr.Get("/snapshots", h.HandleListSnapshots)
+		sr.Get("/snapshots/{namespace}", h.HandleListSnapshots)
+		sr.Get("/presets", h.HandleListPresets)
+	})
+}
+
+func (s *Server) registerNetworkingRoutes(ar chi.Router) {
+	h := s.NetworkingHandler
+	ar.Route("/networking", func(nr chi.Router) {
+		nr.Get("/cni", h.HandleCNIStatus)
+		nr.Get("/cni/config", h.HandleCNIConfig)
+		nr.Put("/cni/config", h.HandleUpdateCNIConfig)
 	})
 }
 
