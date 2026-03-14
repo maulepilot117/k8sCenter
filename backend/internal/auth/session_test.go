@@ -14,7 +14,7 @@ func TestSessionStore_StoreAndValidate(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	})
 
-	userID, err := store.Validate("token-abc")
+	userID, _, err := store.Validate("token-abc")
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}
@@ -33,13 +33,13 @@ func TestSessionStore_SingleUse(t *testing.T) {
 	})
 
 	// First use succeeds
-	_, err := store.Validate("token-abc")
+	_, _, err := store.Validate("token-abc")
 	if err != nil {
 		t.Fatalf("first Validate failed: %v", err)
 	}
 
 	// Second use fails (rotation)
-	_, err = store.Validate("token-abc")
+	_, _, err = store.Validate("token-abc")
 	if err == nil {
 		t.Fatal("expected error on second use of refresh token")
 	}
@@ -54,7 +54,7 @@ func TestSessionStore_ExpiredToken(t *testing.T) {
 		ExpiresAt: time.Now().Add(-time.Hour),
 	})
 
-	_, err := store.Validate("expired-token")
+	_, _, err := store.Validate("expired-token")
 	if err == nil {
 		t.Fatal("expected error for expired token")
 	}
@@ -63,7 +63,7 @@ func TestSessionStore_ExpiredToken(t *testing.T) {
 func TestSessionStore_UnknownToken(t *testing.T) {
 	store := NewSessionStore()
 
-	_, err := store.Validate("nonexistent")
+	_, _, err := store.Validate("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown token")
 	}
@@ -80,7 +80,7 @@ func TestSessionStore_Revoke(t *testing.T) {
 
 	store.Revoke("token-to-revoke")
 
-	_, err := store.Validate("token-to-revoke")
+	_, _, err := store.Validate("token-to-revoke")
 	if err == nil {
 		t.Fatal("expected error after revocation")
 	}

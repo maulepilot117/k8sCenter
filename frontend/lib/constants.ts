@@ -194,4 +194,14 @@ export const NAV_SECTIONS = [
       },
     ],
   },
+  {
+    title: "Settings",
+    items: [
+      {
+        label: "Authentication",
+        href: "/settings/auth",
+        icon: "settings",
+      },
+    ],
+  },
 ] as const;

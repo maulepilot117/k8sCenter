@@ -31,8 +31,47 @@ type MonitoringConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret  string `koanf:"jwtsecret"`
-	SetupToken string `koanf:"setuptoken"`
+	JWTSecret  string       `koanf:"jwtsecret"`
+	SetupToken string       `koanf:"setuptoken"`
+	OIDC       []OIDCConfig `koanf:"oidc"`
+	LDAP       []LDAPConfig `koanf:"ldap"`
+}
+
+// OIDCConfig holds configuration for a single OIDC provider.
+type OIDCConfig struct {
+	ID             string   `koanf:"id"`
+	DisplayName    string   `koanf:"displayname"`
+	IssuerURL      string   `koanf:"issuerurl"`
+	ClientID       string   `koanf:"clientid"`
+	ClientSecret   string   `koanf:"clientsecret"`
+	RedirectURL    string   `koanf:"redirecturl"`
+	Scopes         []string `koanf:"scopes"`
+	UsernameClaim  string   `koanf:"usernameclaim"`
+	GroupsClaim    string   `koanf:"groupsclaim"`
+	GroupsPrefix   string   `koanf:"groupsprefix"`
+	AllowedDomains []string `koanf:"alloweddomains"`
+	TLSInsecure    bool     `koanf:"tlsinsecure"`
+	CACertPath     string   `koanf:"cacertpath"`
+}
+
+// LDAPConfig holds configuration for a single LDAP provider.
+type LDAPConfig struct {
+	ID              string   `koanf:"id"`
+	DisplayName     string   `koanf:"displayname"`
+	URL             string   `koanf:"url"`
+	BindDN          string   `koanf:"binddn"`
+	BindPassword    string   `koanf:"bindpassword"`
+	StartTLS        bool     `koanf:"starttls"`
+	TLSInsecure     bool     `koanf:"tlsinsecure"`
+	CACertPath      string   `koanf:"cacertpath"`
+	UserBaseDN      string   `koanf:"userbasedn"`
+	UserFilter      string   `koanf:"userfilter"`
+	UserAttributes  []string `koanf:"userattributes"`
+	GroupBaseDN     string   `koanf:"groupbasedn"`
+	GroupFilter     string   `koanf:"groupfilter"`
+	GroupNameAttr   string   `koanf:"groupnameattr"`
+	UsernameMapAttr string   `koanf:"usernamemapattr"`
+	GroupsPrefix    string   `koanf:"groupsprefix"`
 }
 
 type ServerConfig struct {

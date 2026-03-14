@@ -32,6 +32,8 @@ type Server struct {
 	Logger          *slog.Logger
 	TokenManager    *auth.TokenManager
 	LocalAuth       *auth.LocalProvider
+	AuthRegistry    *auth.ProviderRegistry
+	OIDCStateStore  *auth.OIDCStateStore
 	Sessions        *auth.SessionStore
 	RBACChecker     *auth.RBACChecker
 	AuditLogger     audit.Logger
@@ -57,6 +59,8 @@ type Deps struct {
 	Logger        *slog.Logger
 	TokenManager  *auth.TokenManager
 	LocalAuth     *auth.LocalProvider
+	AuthRegistry    *auth.ProviderRegistry
+	OIDCStateStore  *auth.OIDCStateStore
 	Sessions      *auth.SessionStore
 	RBACChecker   *auth.RBACChecker
 	AuditLogger     audit.Logger
@@ -82,6 +86,8 @@ func New(deps Deps) *Server {
 		Logger:       deps.Logger,
 		TokenManager: deps.TokenManager,
 		LocalAuth:    deps.LocalAuth,
+		AuthRegistry:   deps.AuthRegistry,
+		OIDCStateStore: deps.OIDCStateStore,
 		Sessions:     deps.Sessions,
 		RBACChecker:  deps.RBACChecker,
 		AuditLogger:     deps.AuditLogger,

@@ -16,14 +16,28 @@ type User struct {
 type Credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Provider string `json:"provider,omitempty"` // optional: "local" (default), "ldap", or LDAP provider ID
 }
 
-// AuthProvider is the interface for authentication backends.
+// AuthProvider is the interface for credential-based authentication backends (local, LDAP).
 type AuthProvider interface {
 	// Authenticate validates credentials and returns the authenticated user.
 	Authenticate(ctx context.Context, credentials Credentials) (*User, error)
-	// Type returns the provider type identifier (e.g., "local", "oidc", "ldap").
+	// Type returns the provider type identifier (e.g., "local", "ldap").
 	Type() string
+}
+
+// UserLookup is implemented by providers that can look up users by ID (for token refresh).
+type UserLookup interface {
+	GetUserByID(id string) (*User, error)
+}
+
+// ProviderInfo describes a configured auth provider for the login page.
+type ProviderInfo struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`        // "local", "oidc", "ldap"
+	DisplayName string `json:"displayName"`
+	LoginURL    string `json:"loginURL,omitempty"` // only for OIDC (redirect-based)
 }
 
 // contextKey is an unexported type for context keys to prevent collisions.

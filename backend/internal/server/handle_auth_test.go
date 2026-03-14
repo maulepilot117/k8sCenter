@@ -39,15 +39,21 @@ func testServer(t *testing.T) *Server {
 	auditLogger := audit.NewSlogLogger(logger)
 	rateLimiter := middleware.NewRateLimiter()
 
+	// Create auth registry with local provider
+	authRegistry := auth.NewProviderRegistry()
+	authRegistry.RegisterCredential("local", "Local Accounts", localAuth)
+
 	return New(Deps{
-		Config:       cfg,
-		Logger:       logger,
-		TokenManager: tokenManager,
-		LocalAuth:    localAuth,
-		Sessions:     sessions,
-		AuditLogger:  auditLogger,
-		RateLimiter:  rateLimiter,
-		ReadyFn:      func() bool { return true },
+		Config:         cfg,
+		Logger:         logger,
+		TokenManager:   tokenManager,
+		LocalAuth:      localAuth,
+		AuthRegistry:   authRegistry,
+		OIDCStateStore: auth.NewOIDCStateStore(),
+		Sessions:       sessions,
+		AuditLogger:    auditLogger,
+		RateLimiter:    rateLimiter,
+		ReadyFn:        func() bool { return true },
 	})
 }
 

@@ -28,6 +28,10 @@ func (s *Server) registerRoutes() {
 			ar.With(middleware.RateLimit(s.RateLimiter)).Post("/refresh", s.handleRefresh)
 			ar.Post("/logout", s.handleLogout)
 			ar.Get("/providers", s.handleAuthProviders)
+
+			// OIDC routes — redirect-based flow, rate limited
+			ar.With(middleware.RateLimit(s.RateLimiter)).Get("/oidc/{providerID}/login", s.handleOIDCLogin)
+			ar.With(middleware.RateLimit(s.RateLimiter)).Get("/oidc/{providerID}/callback", s.handleOIDCCallback)
 		})
 
 		// Setup — rate limited, no auth
@@ -84,6 +88,11 @@ func (s *Server) registerRoutes() {
 			if s.AlertingHandler != nil {
 				s.registerAlertingRoutes(ar)
 			}
+
+			// Auth settings routes (authenticated, admin-only in practice)
+			ar.Get("/settings/auth", s.handleGetAuthSettings)
+			ar.Post("/settings/auth/test-oidc", s.handleTestOIDC)
+			ar.Post("/settings/auth/test-ldap", s.handleTestLDAP)
 		})
 	})
 }

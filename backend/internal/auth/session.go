@@ -34,11 +34,11 @@ func (s *SessionStore) Store(session RefreshSession) {
 
 // Validate checks if a refresh token is valid (exists and not expired).
 // If valid, it deletes the token (rotation — single use).
-// Returns the associated user ID.
-func (s *SessionStore) Validate(token string) (string, error) {
+// Returns the associated user ID and provider type.
+func (s *SessionStore) Validate(token string) (userID string, provider string, err error) {
 	val, ok := s.sessions.Load(token)
 	if !ok {
-		return "", fmt.Errorf("refresh token not found")
+		return "", "", fmt.Errorf("refresh token not found")
 	}
 
 	session := val.(RefreshSession)
@@ -47,10 +47,10 @@ func (s *SessionStore) Validate(token string) (string, error) {
 	s.sessions.Delete(token)
 
 	if time.Now().After(session.ExpiresAt) {
-		return "", fmt.Errorf("refresh token expired")
+		return "", "", fmt.Errorf("refresh token expired")
 	}
 
-	return session.UserID, nil
+	return session.UserID, session.Provider, nil
 }
 
 // Revoke deletes a refresh token (e.g., on logout).

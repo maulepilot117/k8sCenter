@@ -109,6 +109,63 @@ func main() {
 	sessions := auth.NewSessionStore()
 	sessions.StartCleanup(ctx, auth.RefreshTokenLifetime/2)
 	rbacChecker := auth.NewRBACChecker(k8sClient, logger)
+	oidcStateStore := auth.NewOIDCStateStore()
+	oidcStateStore.StartCleanup(ctx, time.Minute)
+
+	// Create auth provider registry
+	authRegistry := auth.NewProviderRegistry()
+	authRegistry.RegisterCredential("local", "Local Accounts", localAuth)
+
+	// Register configured OIDC providers
+	for _, oidcCfg := range cfg.Auth.OIDC {
+		oidcProviderCfg := auth.OIDCProviderConfig{
+			ID:             oidcCfg.ID,
+			DisplayName:    oidcCfg.DisplayName,
+			IssuerURL:      oidcCfg.IssuerURL,
+			ClientID:       oidcCfg.ClientID,
+			ClientSecret:   oidcCfg.ClientSecret,
+			RedirectURL:    oidcCfg.RedirectURL,
+			Scopes:         oidcCfg.Scopes,
+			UsernameClaim:  oidcCfg.UsernameClaim,
+			GroupsClaim:    oidcCfg.GroupsClaim,
+			GroupsPrefix:   oidcCfg.GroupsPrefix,
+			AllowedDomains: oidcCfg.AllowedDomains,
+			TLSInsecure:    oidcCfg.TLSInsecure,
+			CACertPath:     oidcCfg.CACertPath,
+		}
+		oidcProvider, err := auth.NewOIDCProvider(ctx, oidcProviderCfg, oidcStateStore, logger)
+		if err != nil {
+			logger.Error("failed to initialize OIDC provider", "id", oidcCfg.ID, "error", err)
+			continue // skip this provider but don't prevent startup
+		}
+		authRegistry.RegisterOIDC(oidcCfg.ID, oidcProvider)
+		logger.Info("registered OIDC provider", "id", oidcCfg.ID, "issuer", oidcCfg.IssuerURL)
+	}
+
+	// Register configured LDAP providers
+	for _, ldapCfg := range cfg.Auth.LDAP {
+		ldapProviderCfg := auth.LDAPProviderConfig{
+			ID:              ldapCfg.ID,
+			DisplayName:     ldapCfg.DisplayName,
+			URL:             ldapCfg.URL,
+			BindDN:          ldapCfg.BindDN,
+			BindPassword:    ldapCfg.BindPassword,
+			StartTLS:        ldapCfg.StartTLS,
+			TLSInsecure:     ldapCfg.TLSInsecure,
+			CACertPath:      ldapCfg.CACertPath,
+			UserBaseDN:      ldapCfg.UserBaseDN,
+			UserFilter:      ldapCfg.UserFilter,
+			UserAttributes:  ldapCfg.UserAttributes,
+			GroupBaseDN:     ldapCfg.GroupBaseDN,
+			GroupFilter:     ldapCfg.GroupFilter,
+			GroupNameAttr:   ldapCfg.GroupNameAttr,
+			UsernameMapAttr: ldapCfg.UsernameMapAttr,
+			GroupsPrefix:    ldapCfg.GroupsPrefix,
+		}
+		ldapProvider := auth.NewLDAPProvider(ldapProviderCfg, logger)
+		authRegistry.RegisterCredential(ldapCfg.ID, ldapCfg.DisplayName, ldapProvider)
+		logger.Info("registered LDAP provider", "id", ldapCfg.ID, "url", ldapCfg.URL)
+	}
 	auditLogger := audit.NewSlogLogger(logger)
 	rateLimiter := middleware.NewRateLimiter()
 	rateLimiter.StartCleanup(ctx)
@@ -182,6 +239,8 @@ func main() {
 		Logger:        logger,
 		TokenManager:  tokenManager,
 		LocalAuth:     localAuth,
+		AuthRegistry:   authRegistry,
+		OIDCStateStore: oidcStateStore,
 		Sessions:      sessions,
 		RBACChecker:   rbacChecker,
 		AuditLogger:   auditLogger,

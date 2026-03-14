@@ -17,21 +17,48 @@ const isAuthenticated = computed(() => userSignal.value !== null);
 /**
  * Log in with username and password.
  * Stores the access token in memory and fetches user info.
+ * @param provider — optional provider ID (default: "local"). Use LDAP provider ID for LDAP login.
  */
 export async function login(
   username: string,
   password: string,
+  provider?: string,
 ): Promise<void> {
+  const body: Record<string, string> = { username, password };
+  if (provider && provider !== "local") {
+    body.provider = provider;
+  }
+
   const res = await api<{ accessToken: string; expiresIn: number }>(
     "/v1/auth/login",
     {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify(body),
     },
   );
   setAccessToken(res.data.accessToken);
   // Backend login returns only the token — fetch user info separately
   await fetchCurrentUser();
+}
+
+/**
+ * Handle the OIDC callback by exchanging the httpOnly cookie for an access token.
+ * Called from the /auth/callback page after an OIDC redirect.
+ */
+export async function handleOIDCCallback(): Promise<boolean> {
+  try {
+    const res = await api<{ accessToken: string }>("/auth/oidc-token-exchange", {
+      method: "POST",
+    });
+    if (res.data.accessToken) {
+      setAccessToken(res.data.accessToken);
+      await fetchCurrentUser();
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /**
