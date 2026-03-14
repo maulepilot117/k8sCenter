@@ -1,5 +1,5 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import SnapshotList from "@/islands/SnapshotList.tsx";
 
 export default define.page(function SnapshotsPage() {
   return (
@@ -11,7 +11,7 @@ export default define.page(function SnapshotsPage() {
         VolumeSnapshot resources require the snapshot.storage.k8s.io CRDs to be
         installed in your cluster.
       </p>
-      <ResourceTable kind="volumesnapshots" title="Volume Snapshots" />
+      <SnapshotList />
     </div>
   );
 });

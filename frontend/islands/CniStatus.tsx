@@ -40,7 +40,7 @@ interface CiliumConfig {
   config: Record<string, string>;
 }
 
-export default function CniStatusIsland() {
+export default function CniStatus() {
   const cniInfo = useSignal<CNIInfo | null>(null);
   const config = useSignal<CiliumConfig | null>(null);
   const loading = useSignal(true);
@@ -87,8 +87,7 @@ export default function CniStatusIsland() {
 
   const handleRefresh = async () => {
     refreshing.value = true;
-    await fetchCNI(true);
-    await fetchConfig();
+    await Promise.all([fetchCNI(true), fetchConfig()]);
     refreshing.value = false;
   };
 
@@ -188,9 +187,7 @@ export default function CniStatusIsland() {
         )}
       </div>
 
-      {configTab.value === "status" && (
-        <CniStatusTab info={info} />
-      )}
+      {configTab.value === "status" && <CniStatusTab info={info} />}
 
       {configTab.value === "config" && config.value && (
         <CniConfigTab config={config.value} onUpdate={fetchConfig} />
@@ -378,7 +375,9 @@ function CniConfigTab(
   const sortedKeys = Object.keys(config.config).sort();
 
   return (
-    <Card title={`Cilium Configuration (${config.configMapNamespace}/${config.configMapName})`}>
+    <Card
+      title={`Cilium Configuration (${config.configMapNamespace}/${config.configMapName})`}
+    >
       {saveError.value && (
         <div class="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded p-3 text-sm text-red-700 dark:text-red-300">
           {saveError.value}
@@ -424,7 +423,9 @@ function CniConfigTab(
                     )
                     : (
                       <span class="font-mono text-xs text-slate-600 dark:text-slate-400">
-                        {config.config[key] || <em class="text-slate-400">empty</em>}
+                        {config.config[key] || (
+                          <em class="text-slate-400">empty</em>
+                        )}
                       </span>
                     )}
                 </td>

@@ -109,7 +109,8 @@ export default function StorageClassWizard() {
         !f.name ||
         !/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(f.name)
       ) {
-        errs.name = "Must be a valid DNS subdomain (lowercase, hyphens, dots, max 253)";
+        errs.name =
+          "Must be a valid DNS subdomain (lowercase, hyphens, dots, max 253)";
       }
       if (!f.provisioner) errs.provisioner = "Required";
     }
@@ -302,8 +303,7 @@ function BasicsStep(
         label="Name"
         value={form.name}
         error={errors.name}
-        onInput={(e) =>
-          onChange("name", (e.target as HTMLInputElement).value)}
+        onInput={(e) => onChange("name", (e.target as HTMLInputElement).value)}
         placeholder="e.g., fast-storage"
       />
 
@@ -402,7 +402,11 @@ function ParametersStep(
     onChange("parameters", form.parameters.filter((_, i) => i !== idx));
   };
 
-  const updateParameter = (idx: number, field: "key" | "value", val: string) => {
+  const updateParameter = (
+    idx: number,
+    field: "key" | "value",
+    val: string,
+  ) => {
     const updated = [...form.parameters];
     updated[idx] = { ...updated[idx], [field]: val };
     onChange("parameters", updated);

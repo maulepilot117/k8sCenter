@@ -42,6 +42,8 @@ type ClientFactory struct {
 	baseClientset *kubernetes.Clientset
 	cache         sync.Map // map[string]cachedClient — typed clientsets
 	dynCache      sync.Map // map[string]cachedDynClient — dynamic clients
+	baseDynClient dynamic.Interface
+	baseDynOnce   sync.Once
 	mapper        meta.RESTMapper
 	mapperOnce    sync.Once
 	clusterID     string
@@ -108,15 +110,18 @@ func (f *ClientFactory) BaseConfig() *rest.Config {
 	return rest.CopyConfig(f.baseConfig)
 }
 
-// BaseDynamicClient returns a dynamic client using the service account's own
-// permissions. Used for CRD access (e.g., VolumeSnapshots) in read-only contexts.
+// BaseDynamicClient returns a cached dynamic client using the service account's own
+// permissions. Used for CRD access (e.g., VolumeSnapshotClasses) in read-only contexts.
 func (f *ClientFactory) BaseDynamicClient() dynamic.Interface {
-	dc, err := dynamic.NewForConfig(f.baseConfig)
-	if err != nil {
-		f.logger.Error("failed to create base dynamic client", "error", err)
-		return nil
-	}
-	return dc
+	f.baseDynOnce.Do(func() {
+		dc, err := dynamic.NewForConfig(f.baseConfig)
+		if err != nil {
+			f.logger.Error("failed to create base dynamic client", "error", err)
+			return
+		}
+		f.baseDynClient = dc
+	})
+	return f.baseDynClient
 }
 
 // ClientForUser returns an impersonating clientset for the given user.

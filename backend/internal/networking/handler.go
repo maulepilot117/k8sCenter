@@ -5,7 +5,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -47,7 +48,8 @@ func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
 // HandleCNIConfig returns the current CNI configuration.
 // GET /api/v1/networking/cni/config
 func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -56,38 +58,26 @@ func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 		info = h.Detector.Detect(r.Context())
 	}
 
-	switch info.Name {
-	case CNICilium:
-		config, err := ReadCiliumConfig(r.Context(), h.K8sClient)
-		if err != nil {
-			httputil.WriteError(w, http.StatusBadGateway, "failed to read Cilium config", err.Error())
-			return
-		}
-		httputil.WriteData(w, config)
-
-	case CNICalico:
+	if info.Name != CNICilium {
 		httputil.WriteData(w, map[string]any{
-			"cniType":    CNICalico,
-			"editable":   false,
-			"message":    "Calico configuration editing is not yet supported",
-			"detectedAt": info.DaemonSet,
-		})
-
-	case CNIFlannel:
-		httputil.WriteData(w, map[string]any{
-			"cniType":    CNIFlannel,
-			"editable":   false,
-			"message":    "Flannel configuration editing is not yet supported",
-			"detectedAt": info.DaemonSet,
-		})
-
-	default:
-		httputil.WriteData(w, map[string]any{
-			"cniType":  CNIUnknown,
+			"cniType":  info.Name,
 			"editable": false,
-			"message":  "No supported CNI plugin detected",
+			"message":  "Configuration editing is only supported for Cilium",
 		})
+		return
 	}
+
+	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
+		return
+	}
+	config, err := ReadCiliumConfig(r.Context(), cs)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadGateway, "failed to read Cilium config", "")
+		return
+	}
+	httputil.WriteData(w, config)
 }
 
 // CiliumConfigUpdate is the request body for PUT /api/v1/networking/cni/config.
@@ -128,8 +118,22 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Validate changes against allowlist
+	if err := ValidateCiliumChanges(req.Changes); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+
+	// Use impersonated client to enforce Kubernetes RBAC
+	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
+		return
+	}
+
 	// Apply changes to cilium-config ConfigMap
-	if err := UpdateCiliumConfig(r.Context(), h.K8sClient, req.Changes); err != nil {
+	updatedNS, err := UpdateCiliumConfig(r.Context(), cs, req.Changes)
+	if err != nil {
 		h.AuditLogger.Log(r.Context(), audit.Entry{
 			Timestamp:         time.Now().UTC(),
 			ClusterID:         h.ClusterID,
@@ -137,11 +141,12 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 			SourceIP:          r.RemoteAddr,
 			Action:            audit.ActionUpdate,
 			ResourceKind:      "CiliumConfig",
-			ResourceNamespace: "kube-system",
+			ResourceNamespace: updatedNS,
 			ResourceName:      "cilium-config",
 			Result:            audit.ResultFailure,
+			Detail:            formatChangedKeys(req.Changes),
 		})
-		httputil.WriteError(w, http.StatusBadGateway, "failed to update Cilium config", err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "failed to update Cilium config", "")
 		return
 	}
 
@@ -152,9 +157,10 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 		SourceIP:          r.RemoteAddr,
 		Action:            audit.ActionUpdate,
 		ResourceKind:      "CiliumConfig",
-		ResourceNamespace: "kube-system",
+		ResourceNamespace: updatedNS,
 		ResourceName:      "cilium-config",
 		Result:            audit.ResultSuccess,
+		Detail:            formatChangedKeys(req.Changes),
 	})
 	h.Logger.Info("cilium config updated", "user", user.Username, "changedKeys", len(req.Changes))
 
@@ -162,10 +168,20 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	h.Detector.Detect(r.Context())
 
 	// Return updated config
-	config, err := ReadCiliumConfig(r.Context(), h.K8sClient)
+	config, err := ReadCiliumConfig(r.Context(), cs)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "config updated but failed to re-read", err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "config updated but failed to re-read", "")
 		return
 	}
 	httputil.WriteData(w, config)
+}
+
+// formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.
+func formatChangedKeys(changes map[string]string) string {
+	keys := make([]string, 0, len(changes))
+	for k := range changes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return "changed keys: " + strings.Join(keys, ", ")
 }

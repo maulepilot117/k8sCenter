@@ -2,8 +2,8 @@ package networking
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
@@ -103,7 +103,7 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 
 	for _, ds := range allDS {
 		// Only check CNI namespaces
-		if !isInSlice(ds.Namespace, cniSearchNamespaces) {
+		if !slices.Contains(cniSearchNamespaces, ds.Namespace) {
 			continue
 		}
 
@@ -211,9 +211,8 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 	features := CNIFeatures{}
 	cs := d.k8sClient.BaseClientset()
 
-	// Try kube-system first, then cilium namespace
-	for _, ns := range []string{"kube-system", "cilium"} {
-		cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, "cilium-config", metav1.GetOptions{})
+	for _, ns := range ciliumSearchNamespaces {
+		cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
 		if err != nil {
 			continue
 		}
@@ -243,26 +242,3 @@ func extractImageVersion(containers []corev1.Container, containerName string) st
 	return ""
 }
 
-func isInSlice(s string, slice []string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// FormatCNIMessage returns a human-readable CNI description.
-func FormatCNIMessage(info *CNIInfo) string {
-	if info == nil || info.Name == CNIUnknown {
-		return "No CNI plugin detected"
-	}
-	msg := fmt.Sprintf("%s", info.Name)
-	if info.Version != "" {
-		msg += " v" + info.Version
-	}
-	if info.Status.Desired > 0 {
-		msg += fmt.Sprintf(" (%d/%d ready)", info.Status.Ready, info.Status.Desired)
-	}
-	return msg
-}

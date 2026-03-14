@@ -158,6 +158,24 @@ Monitoring:
 | GET | `/api/v1/monitoring/resource-dashboard` | Yes | Dashboard mapping for a resource kind |
 | ALL | `/api/v1/monitoring/grafana/proxy/*` | Yes | Reverse proxy to Grafana (path-allowlisted) |
 
+Storage (CSI):
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/v1/storage/drivers` | Yes | List CSI drivers with capabilities |
+| GET | `/api/v1/storage/classes` | Yes | List StorageClasses |
+| GET | `/api/v1/storage/snapshots` | Yes | List VolumeSnapshots (requires CRDs) |
+| GET | `/api/v1/storage/snapshots/:namespace` | Yes | List VolumeSnapshots in namespace |
+| GET | `/api/v1/storage/presets` | Yes | Driver-specific parameter presets |
+
+Networking (CNI):
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/v1/networking/cni` | Yes | Detected CNI plugin info and health |
+| GET | `/api/v1/networking/cni/config` | Yes | CNI configuration (Cilium editable) |
+| PUT | `/api/v1/networking/cni/config` | Yes | Update CNI config (Cilium, allowlisted keys) |
+
 YAML operations:
 
 | Method | Path | Auth | Description |
@@ -205,11 +223,13 @@ kubecenter/
 │   │   │   └── resources/ # CRUD handlers for 18 k8s resource types
 │   │   ├── yaml/         # YAML parse, validate, apply, diff, export
 │   │   ├── monitoring/   # Prometheus/Grafana discovery, proxy, dashboards
+│   │   ├── storage/      # CSI drivers, StorageClasses, VolumeSnapshots
+│   │   ├── networking/   # CNI detection (Cilium/Calico/Flannel), config management
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring)
+│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Helm chart

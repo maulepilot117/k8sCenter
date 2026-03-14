@@ -147,6 +147,13 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 func (s *Server) registerStorageRoutes(ar chi.Router) {
 	h := s.StorageHandler
 	ar.Route("/storage", func(sr chi.Router) {
+		// Share YAML rate limiter (30 req/min) for storage endpoints
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		sr.Use(middleware.RateLimit(yamlRL))
+
 		sr.Get("/drivers", h.HandleListDrivers)
 		sr.Get("/classes", h.HandleListClasses)
 		sr.Get("/snapshots", h.HandleListSnapshots)
@@ -158,6 +165,13 @@ func (s *Server) registerStorageRoutes(ar chi.Router) {
 func (s *Server) registerNetworkingRoutes(ar chi.Router) {
 	h := s.NetworkingHandler
 	ar.Route("/networking", func(nr chi.Router) {
+		// Share YAML rate limiter (30 req/min) for networking endpoints
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		nr.Use(middleware.RateLimit(yamlRL))
+
 		nr.Get("/cni", h.HandleCNIStatus)
 		nr.Get("/cni/config", h.HandleCNIConfig)
 		nr.Put("/cni/config", h.HandleUpdateCNIConfig)

@@ -71,74 +71,6 @@ func TestExtractImageVersion(t *testing.T) {
 	}
 }
 
-func TestIsInSlice(t *testing.T) {
-	slice := []string{"kube-system", "cilium", "calico-system"}
-	if !isInSlice("kube-system", slice) {
-		t.Error("expected kube-system to be in slice")
-	}
-	if !isInSlice("cilium", slice) {
-		t.Error("expected cilium to be in slice")
-	}
-	if isInSlice("default", slice) {
-		t.Error("expected default not to be in slice")
-	}
-	if isInSlice("", slice) {
-		t.Error("expected empty string not to be in slice")
-	}
-}
-
-func TestFormatCNIMessage(t *testing.T) {
-	tests := []struct {
-		name string
-		info *CNIInfo
-		want string
-	}{
-		{
-			name: "nil",
-			info: nil,
-			want: "No CNI plugin detected",
-		},
-		{
-			name: "unknown",
-			info: &CNIInfo{Name: CNIUnknown},
-			want: "No CNI plugin detected",
-		},
-		{
-			name: "cilium with version and status",
-			info: &CNIInfo{
-				Name:    CNICilium,
-				Version: "1.15.3",
-				Status:  CNIStatus{Ready: 3, Desired: 3, Healthy: true},
-			},
-			want: "cilium v1.15.3 (3/3 ready)",
-		},
-		{
-			name: "calico without version",
-			info: &CNIInfo{
-				Name: CNICalico,
-			},
-			want: "calico",
-		},
-		{
-			name: "flannel with version no nodes",
-			info: &CNIInfo{
-				Name:    CNIFlannel,
-				Version: "0.24.0",
-			},
-			want: "flannel v0.24.0",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := FormatCNIMessage(tt.info)
-			if got != tt.want {
-				t.Errorf("FormatCNIMessage() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestCachedInfo_InitiallyNil(t *testing.T) {
 	d := &Detector{}
 	if d.CachedInfo() != nil {
@@ -161,17 +93,3 @@ func TestCachedInfo_ReturnsCopy(t *testing.T) {
 	}
 }
 
-func TestCNIConstants(t *testing.T) {
-	if CNICilium != "cilium" {
-		t.Errorf("CNICilium = %q, want cilium", CNICilium)
-	}
-	if CNICalico != "calico" {
-		t.Errorf("CNICalico = %q, want calico", CNICalico)
-	}
-	if CNIFlannel != "flannel" {
-		t.Errorf("CNIFlannel = %q, want flannel", CNIFlannel)
-	}
-	if CNIUnknown != "unknown" {
-		t.Errorf("CNIUnknown = %q, want unknown", CNIUnknown)
-	}
-}

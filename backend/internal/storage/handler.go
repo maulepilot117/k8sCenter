@@ -4,12 +4,14 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -17,11 +19,11 @@ import (
 
 // Handler serves storage-related HTTP endpoints.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
-	Informers     *k8s.InformerManager
-	Logger        *slog.Logger
-	snapshotAvail bool // cached CRD existence check
-	snapshotCheck bool // whether check has been performed
+	K8sClient       *k8s.ClientFactory
+	Informers       *k8s.InformerManager
+	Logger          *slog.Logger
+	snapshotOnce    sync.Once
+	snapshotAvail   bool
 }
 
 // volumeSnapshotGVR is the GVR for VolumeSnapshot CRDs.
@@ -47,7 +49,7 @@ func (h *Handler) HandleListDrivers(w http.ResponseWriter, r *http.Request) {
 
 	drivers, err := h.Informers.CSIDrivers().List(labels.Everything())
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list CSI drivers", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list CSI drivers", "")
 		return
 	}
 
@@ -84,7 +86,7 @@ func (h *Handler) HandleListClasses(w http.ResponseWriter, r *http.Request) {
 
 	classes, err := h.Informers.StorageClasses().List(labels.Everything())
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to list storage classes", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list storage classes", "")
 		return
 	}
 
@@ -105,7 +107,8 @@ func (h *Handler) HandleListClasses(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/storage/snapshots
 // GET /api/v1/storage/snapshots/{namespace}
 func (h *Handler) HandleListSnapshots(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
 		return
 	}
 
@@ -119,9 +122,9 @@ func (h *Handler) HandleListSnapshots(w http.ResponseWriter, r *http.Request) {
 
 	ns := chi.URLParam(r, "namespace")
 
-	dynClient := h.K8sClient.BaseDynamicClient()
-	if dynClient == nil {
-		httputil.WriteError(w, http.StatusInternalServerError, "dynamic client unavailable", "")
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to create impersonated client", "")
 		return
 	}
 
@@ -134,7 +137,7 @@ func (h *Handler) HandleListSnapshots(w http.ResponseWriter, r *http.Request) {
 
 	list, err := res.List(r.Context(), metav1.ListOptions{})
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "failed to list volume snapshots", err.Error())
+		httputil.WriteError(w, http.StatusBadGateway, "failed to list volume snapshots", "")
 		return
 	}
 
@@ -158,28 +161,24 @@ func (h *Handler) HandleListPresets(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, DriverPresets)
 }
 
-// checkSnapshotCRDs checks if VolumeSnapshot CRDs are installed (cached).
+// checkSnapshotCRDs checks if VolumeSnapshot CRDs are installed (thread-safe, checked once).
 func (h *Handler) checkSnapshotCRDs() bool {
-	if h.snapshotCheck {
-		return h.snapshotAvail
-	}
-	disc := h.K8sClient.DiscoveryClient()
-	if disc == nil {
-		h.snapshotCheck = true
-		return false
-	}
-	resources, err := disc.ServerResourcesForGroupVersion("snapshot.storage.k8s.io/v1")
-	if err != nil {
-		h.snapshotCheck = true
-		return false
-	}
-	for _, r := range resources.APIResources {
-		if r.Name == "volumesnapshots" {
-			h.snapshotAvail = true
-			break
+	h.snapshotOnce.Do(func() {
+		disc := h.K8sClient.DiscoveryClient()
+		if disc == nil {
+			return
 		}
-	}
-	h.snapshotCheck = true
+		resources, err := disc.ServerResourcesForGroupVersion("snapshot.storage.k8s.io/v1")
+		if err != nil {
+			return
+		}
+		for _, r := range resources.APIResources {
+			if r.Name == "volumesnapshots" {
+				h.snapshotAvail = true
+				return
+			}
+		}
+	})
 	return h.snapshotAvail
 }
 
@@ -313,60 +312,21 @@ type SnapshotInfo struct {
 
 // buildSnapshotInfo constructs a SnapshotInfo from an unstructured VolumeSnapshot.
 func buildSnapshotInfo(item map[string]any) SnapshotInfo {
-	// Use the helper type for unstructured access
-	u := unstructuredHelper{item}
+	name, _, _ := unstructured.NestedString(item, "metadata", "name")
+	namespace, _, _ := unstructured.NestedString(item, "metadata", "namespace")
+	createdAt, _, _ := unstructured.NestedString(item, "metadata", "creationTimestamp")
+	snapClass, _, _ := unstructured.NestedString(item, "spec", "volumeSnapshotClassName")
+	sourcePVC, _, _ := unstructured.NestedString(item, "spec", "source", "persistentVolumeClaimName")
+	readyToUse, _, _ := unstructured.NestedBool(item, "status", "readyToUse")
+	restoreSize, _, _ := unstructured.NestedString(item, "status", "restoreSize")
 
-	info := SnapshotInfo{
-		Name:      u.getString("metadata", "name"),
-		Namespace: u.getString("metadata", "namespace"),
-		CreatedAt: u.getString("metadata", "creationTimestamp"),
+	return SnapshotInfo{
+		Name:                    name,
+		Namespace:               namespace,
+		CreatedAt:               createdAt,
+		VolumeSnapshotClassName: snapClass,
+		SourcePVC:               sourcePVC,
+		ReadyToUse:              readyToUse,
+		RestoreSize:             restoreSize,
 	}
-
-	info.VolumeSnapshotClassName = u.getString("spec", "volumeSnapshotClassName")
-	info.SourcePVC = u.getString("spec", "source", "persistentVolumeClaimName")
-	info.ReadyToUse = u.getBool("status", "readyToUse")
-	info.RestoreSize = u.getString("status", "restoreSize")
-
-	return info
-}
-
-// unstructuredHelper provides safe nested field access for unstructured objects.
-type unstructuredHelper struct {
-	obj map[string]any
-}
-
-func (u unstructuredHelper) getString(path ...string) string {
-	current := u.obj
-	for i, key := range path {
-		if i == len(path)-1 {
-			if v, ok := current[key].(string); ok {
-				return v
-			}
-			return ""
-		}
-		next, ok := current[key].(map[string]any)
-		if !ok {
-			return ""
-		}
-		current = next
-	}
-	return ""
-}
-
-func (u unstructuredHelper) getBool(path ...string) bool {
-	current := u.obj
-	for i, key := range path {
-		if i == len(path)-1 {
-			if v, ok := current[key].(bool); ok {
-				return v
-			}
-			return false
-		}
-		next, ok := current[key].(map[string]any)
-		if !ok {
-			return false
-		}
-		current = next
-	}
-	return false
 }

@@ -195,54 +195,6 @@ func TestBuildSnapshotInfo_MissingFields(t *testing.T) {
 	}
 }
 
-func TestUnstructuredHelper_GetString(t *testing.T) {
-	obj := map[string]any{
-		"metadata": map[string]any{
-			"name": "test",
-			"labels": map[string]any{
-				"app": "myapp",
-			},
-		},
-		"spec": "not-a-map",
-	}
-	u := unstructuredHelper{obj}
-
-	if got := u.getString("metadata", "name"); got != "test" {
-		t.Errorf("expected test, got %s", got)
-	}
-	if got := u.getString("metadata", "labels", "app"); got != "myapp" {
-		t.Errorf("expected myapp, got %s", got)
-	}
-	// Missing path
-	if got := u.getString("metadata", "nonexistent"); got != "" {
-		t.Errorf("expected empty string, got %s", got)
-	}
-	// Non-map intermediate
-	if got := u.getString("spec", "nested"); got != "" {
-		t.Errorf("expected empty string for non-map intermediate, got %s", got)
-	}
-}
-
-func TestUnstructuredHelper_GetBool(t *testing.T) {
-	obj := map[string]any{
-		"status": map[string]any{
-			"ready":   true,
-			"pending": false,
-		},
-	}
-	u := unstructuredHelper{obj}
-
-	if !u.getBool("status", "ready") {
-		t.Error("expected ready to be true")
-	}
-	if u.getBool("status", "pending") {
-		t.Error("expected pending to be false")
-	}
-	if u.getBool("status", "nonexistent") {
-		t.Error("expected nonexistent to be false")
-	}
-}
-
 func TestDriverPresets(t *testing.T) {
 	// Verify known presets exist
 	knownDrivers := []string{"driver.longhorn.io", "nfs.csi.k8s.io", "ebs.csi.aws.com", "rook-ceph.rbd.csi.ceph.com"}
