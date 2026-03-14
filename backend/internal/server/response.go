@@ -56,12 +56,17 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string,
 		return "", err
 	}
 
-	s.Sessions.Store(auth.RefreshSession{
+	session := auth.RefreshSession{
 		Token:     refreshToken,
 		UserID:    user.ID,
 		Provider:  user.Provider,
 		ExpiresAt: time.Now().Add(auth.RefreshTokenLifetime),
-	})
+	}
+	// Cache user data for OIDC users (no local store to look up on refresh)
+	if user.Provider == "oidc" {
+		session.CachedUser = user
+	}
+	s.Sessions.Store(session)
 
 	s.setRefreshCookie(w, refreshToken, int(auth.RefreshTokenLifetime.Seconds()))
 

@@ -13,6 +13,9 @@ type RefreshSession struct {
 	UserID    string
 	Provider  string // auth provider that created this session
 	ExpiresAt time.Time
+	// CachedUser stores the full user for providers without a local store (OIDC).
+	// For local and LDAP providers, this is nil and the user is looked up by ID.
+	CachedUser *User
 }
 
 // SessionStore manages server-side refresh token storage.
@@ -32,13 +35,20 @@ func (s *SessionStore) Store(session RefreshSession) {
 	s.sessions.Store(session.Token, session)
 }
 
+// ValidatedSession is the result of a successful refresh token validation.
+type ValidatedSession struct {
+	UserID     string
+	Provider   string
+	CachedUser *User // non-nil for OIDC users
+}
+
 // Validate checks if a refresh token is valid (exists and not expired).
 // If valid, it deletes the token (rotation — single use).
-// Returns the associated user ID and provider type.
-func (s *SessionStore) Validate(token string) (userID string, provider string, err error) {
+// Returns the session data needed for token refresh.
+func (s *SessionStore) Validate(token string) (*ValidatedSession, error) {
 	val, ok := s.sessions.Load(token)
 	if !ok {
-		return "", "", fmt.Errorf("refresh token not found")
+		return nil, fmt.Errorf("refresh token not found")
 	}
 
 	session := val.(RefreshSession)
@@ -47,10 +57,14 @@ func (s *SessionStore) Validate(token string) (userID string, provider string, e
 	s.sessions.Delete(token)
 
 	if time.Now().After(session.ExpiresAt) {
-		return "", "", fmt.Errorf("refresh token expired")
+		return nil, fmt.Errorf("refresh token expired")
 	}
 
-	return session.UserID, session.Provider, nil
+	return &ValidatedSession{
+		UserID:     session.UserID,
+		Provider:   session.Provider,
+		CachedUser: session.CachedUser,
+	}, nil
 }
 
 // Revoke deletes a refresh token (e.g., on logout).

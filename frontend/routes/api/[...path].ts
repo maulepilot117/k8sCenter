@@ -81,11 +81,19 @@ async function proxyRequest(
     }
   }
 
+  // OIDC callback paths return HTTP 302 redirects that the browser must follow
+  // directly. Using redirect: "manual" prevents fetch() from following them
+  // server-side (which would swallow the redirect and return the HTML page).
+  const isOIDCPath = /^v1\/auth\/oidc\/[^/]+\/(login|callback)$/.test(
+    backendPath,
+  );
+
   try {
     const backendRes = await fetch(target, {
       method: ctx.req.method,
       headers,
       body: ctx.req.body,
+      redirect: isOIDCPath ? "manual" : "follow",
       signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
       // @ts-expect-error — Deno supports duplex for streaming requests
       duplex: "half",

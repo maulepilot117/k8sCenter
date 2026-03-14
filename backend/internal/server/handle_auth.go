@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -95,7 +94,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, provider, err := s.Sessions.Validate(cookie.Value)
+	session, err := s.Sessions.Validate(cookie.Value)
 	if err != nil {
 		entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
 		entry.Detail = "invalid or expired refresh token"
@@ -106,25 +105,19 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.AuthRegistry.GetUserByID(provider, userID)
-	if err != nil {
-		// For OIDC users, there's no local store. Reconstruct from the previous JWT.
-		// The user info was embedded in the access token claims when they first logged in.
-		// On refresh, we need to re-derive from stored session data.
-		if errors.Is(err, auth.ErrOIDCUserLookup) {
-			// OIDC users: we cannot re-lookup from the provider. The session is
-			// invalid if we can't find the user. This shouldn't happen in practice
-			// because the previous access token had the user info in claims.
-			// For now, reject the refresh — the user must re-authenticate via OIDC.
+	// For OIDC users, use the cached user data from the session (no local store).
+	// For local/LDAP users, look up by ID from the provider registry.
+	var user *auth.User
+	if session.CachedUser != nil {
+		user = session.CachedUser
+	} else {
+		user, err = s.AuthRegistry.GetUserByID(session.Provider, session.UserID)
+		if err != nil {
 			writeJSON(w, http.StatusUnauthorized, api.Response{
-				Error: &api.APIError{Code: 401, Message: "session expired, please sign in again"},
+				Error: &api.APIError{Code: 401, Message: "user not found"},
 			})
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "user not found"},
-		})
-		return
 	}
 
 	accessToken, err := s.issueTokenPair(w, user)
