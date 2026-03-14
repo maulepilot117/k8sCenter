@@ -7,8 +7,8 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Resource detail views** with tabbed interface (Overview, YAML, Events, Metrics) for all 18 resource types
 - **YAML apply** with Monaco editor, server-side apply, validation, diff, and multi-document support
 - **Real-time cluster view** with WebSocket-powered live updates
-- **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI) *(planned)*
-- **Integrated monitoring** via Prometheus and Grafana (auto-discovered or deployed) *(planned)*
+- **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)
+- **Integrated monitoring** via Prometheus and Grafana with auto-discovery, PromQL proxy, and Grafana dashboard embedding
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Pod management** including logs, exec terminal, and resource metrics *(planned)*
@@ -144,6 +144,20 @@ Resource CRUD (18 types: deployments, statefulsets, daemonsets, pods, services, 
 | POST | `/api/v1/resources/nodes/:name/drain` | Yes | Drain node (async, returns task ID) |
 | GET | `/api/v1/tasks/:taskID` | Yes | Poll long-running task status |
 
+Monitoring:
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/v1/monitoring/status` | Yes | Prometheus + Grafana discovery status |
+| POST | `/api/v1/monitoring/rediscover` | Yes | Trigger immediate re-discovery |
+| GET | `/api/v1/monitoring/query` | Yes | Proxy PromQL instant query |
+| GET | `/api/v1/monitoring/query_range` | Yes | Proxy PromQL range query |
+| GET | `/api/v1/monitoring/dashboards` | Yes | List provisioned Grafana dashboards |
+| GET | `/api/v1/monitoring/templates` | Yes | List available PromQL templates |
+| GET | `/api/v1/monitoring/templates/query` | Yes | Render and execute a named template |
+| GET | `/api/v1/monitoring/resource-dashboard` | Yes | Dashboard mapping for a resource kind |
+| ALL | `/api/v1/monitoring/grafana/proxy/*` | Yes | Reverse proxy to Grafana (path-allowlisted) |
+
 YAML operations:
 
 | Method | Path | Auth | Description |
@@ -190,11 +204,12 @@ kubecenter/
 │   │   ├── k8s/          # Client factory, informers, resource handlers
 │   │   │   └── resources/ # CRUD handlers for 18 k8s resource types
 │   │   ├── yaml/         # YAML parse, validate, apply, diff, export
+│   │   ├── monitoring/   # Prometheus/Grafana discovery, proxy, dashboards
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, YamlApplyPage)
+│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Helm chart
