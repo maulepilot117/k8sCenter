@@ -17,6 +17,7 @@ type Config struct {
 	Log        LogConfig        `koanf:"log"`
 	Auth       AuthConfig       `koanf:"auth"`
 	Monitoring MonitoringConfig `koanf:"monitoring"`
+	Alerting   AlertingConfig   `koanf:"alerting"`
 	Dev        bool             `koanf:"dev"`
 	ClusterID  string           `koanf:"clusterid"`
 	CORS       CORSConfig       `koanf:"cors"`
@@ -51,6 +52,23 @@ type CORSConfig struct {
 	AllowedOrigins []string `koanf:"allowedorigins"`
 }
 
+type AlertingConfig struct {
+	Enabled       bool       `koanf:"enabled"`
+	WebhookToken  string     `koanf:"webhooktoken"`
+	RetentionDays int        `koanf:"retentiondays"`
+	RateLimit     int        `koanf:"ratelimit"` // max emails per hour
+	SMTP          SMTPConfig `koanf:"smtp"`
+}
+
+type SMTPConfig struct {
+	Host        string `koanf:"host"`
+	Port        int    `koanf:"port"`
+	Username    string `koanf:"username"`
+	Password    string `koanf:"password"`
+	From        string `koanf:"from"`
+	TLSInsecure bool   `koanf:"tlsinsecure"`
+}
+
 func Load(configPath string) (*Config, error) {
 	k := koanf.New(".")
 
@@ -61,8 +79,12 @@ func Load(configPath string) (*Config, error) {
 		"server.requesttimeout":  DefaultRequestTimeout,
 		"log.level":              DefaultLogLevel,
 		"log.format":             DefaultLogFormat,
-		"dev":                    DefaultDevMode,
-		"clusterid":              DefaultClusterID,
+		"dev":                         DefaultDevMode,
+		"clusterid":                   DefaultClusterID,
+		"alerting.enabled":            DefaultAlertingEnabled,
+		"alerting.retentiondays":      DefaultAlertingRetentionDays,
+		"alerting.ratelimit":          DefaultAlertingRateLimit,
+		"alerting.smtp.port":          DefaultAlertingSMTPPort,
 	}
 	for key, val := range defaults {
 		k.Set(key, val)

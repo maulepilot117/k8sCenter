@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f9fafb;">
+  <div style="max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; border: 1px solid #e5e7eb; overflow: hidden;">
+    <div style="background: #dc2626; color: #fff; padding: 16px 24px;">
+      <h2 style="margin: 0; font-size: 18px;">Alert Digest: {{.Count}} alerts firing</h2>
+    </div>
+    <div style="padding: 24px;">
+      <p style="color: #374151; font-size: 14px;">Multiple alerts fired within the last minute. Review all active alerts in KubeCenter.</p>
+      <table style="border-collapse: collapse; width: 100%; font-size: 14px; margin-top: 16px;">
+        <thead>
+          <tr style="border-bottom: 2px solid #e5e7eb;">
+            <th style="text-align: left; padding: 8px 0;">Alert</th>
+            <th style="text-align: left; padding: 8px 0;">Severity</th>
+            <th style="text-align: left; padding: 8px 0;">Namespace</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Alerts}}
+          <tr style="border-bottom: 1px solid #f3f4f6;">
+            <td style="padding: 8px 0;">{{.AlertName}}</td>
+            <td style="padding: 8px 0;">{{.Severity}}</td>
+            <td style="padding: 8px 0;">{{.Namespace}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <div style="padding: 12px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af;">
+      Sent by KubeCenter
+    </div>
+  </div>
+</body>
+</html>

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
@@ -141,6 +142,34 @@ func main() {
 		ClusterID:   cfg.ClusterID,
 	}
 
+	// Initialize alerting
+	alertStore := alerting.NewMemoryStore()
+	go alertStore.RunPruner(ctx, cfg.Alerting.RetentionDays, logger)
+
+	var alertNotifier *alerting.Notifier
+	if cfg.Alerting.SMTP.Host != "" {
+		alertNotifier = alerting.NewNotifier(cfg.Alerting.SMTP, cfg.Alerting.SMTP.From, cfg.Alerting.RateLimit, logger)
+		go alertNotifier.Run(ctx)
+	}
+
+	alertRules := alerting.NewRulesManager(k8sClient, logger)
+
+	alertHandler := &alerting.Handler{
+		Store:        alertStore,
+		Notifier:     alertNotifier,
+		Rules:        alertRules,
+		Hub:          hub,
+		AuditLogger:  auditLogger,
+		Logger:       logger,
+		ClusterID:    cfg.ClusterID,
+		WebhookToken: cfg.Alerting.WebhookToken,
+		Enabled:      cfg.Alerting.Enabled,
+		Config:       cfg.Alerting,
+	}
+
+	webhookRateLimiter := middleware.NewRateLimiterWithRate(300, time.Minute)
+	webhookRateLimiter.StartCleanup(ctx)
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -162,6 +191,8 @@ func main() {
 		MonitoringHandler:  monHandler,
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
+		AlertingHandler:    alertHandler,
+		WebhookRateLimiter: webhookRateLimiter,
 		AccessChecker:      accessChecker,
 		ReadyFn:            ready.Load,
 	})

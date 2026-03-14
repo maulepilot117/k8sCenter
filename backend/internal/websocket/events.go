@@ -76,6 +76,7 @@ var allowedKinds = map[string]bool{
 	"clusterroles":             true,
 	"rolebindings":             true,
 	"clusterrolebindings":      true,
+	"alerts":                   true,
 }
 
 // isAllowedKind returns true if the kind is in the subscription allowlist.

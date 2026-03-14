@@ -33,6 +33,15 @@ func (s *Server) registerRoutes() {
 		// Setup — rate limited, no auth
 		r.With(middleware.RateLimit(s.RateLimiter)).Post("/setup/init", s.handleSetupInit)
 
+		// Alertmanager webhook — bearer token auth (not JWT), dedicated rate limiter
+		if s.AlertingHandler != nil {
+			webhookRL := s.WebhookRateLimiter
+			if webhookRL == nil {
+				webhookRL = s.RateLimiter
+			}
+			r.With(middleware.RateLimit(webhookRL)).Post("/alerts/webhook", s.AlertingHandler.HandleWebhook)
+		}
+
 		// Authenticated routes — auth + CSRF enforced at the group level
 		r.Group(func(ar chi.Router) {
 			ar.Use(middleware.Auth(s.TokenManager))
@@ -69,6 +78,11 @@ func (s *Server) registerRoutes() {
 			// Monitoring routes — only registered if monitoring handler is available
 			if s.MonitoringHandler != nil {
 				s.registerMonitoringRoutes(ar)
+			}
+
+			// Alerting routes (authenticated) — only registered if alerting handler is available
+			if s.AlertingHandler != nil {
+				s.registerAlertingRoutes(ar)
 			}
 		})
 	})
@@ -175,6 +189,29 @@ func (s *Server) registerNetworkingRoutes(ar chi.Router) {
 		nr.Get("/cni", h.HandleCNIStatus)
 		nr.Get("/cni/config", h.HandleCNIConfig)
 		nr.Put("/cni/config", h.HandleUpdateCNIConfig)
+	})
+}
+
+func (s *Server) registerAlertingRoutes(ar chi.Router) {
+	h := s.AlertingHandler
+	ar.Route("/alerts", func(alr chi.Router) {
+		// Share YAML rate limiter (30 req/min) for alerting endpoints
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		alr.Use(middleware.RateLimit(yamlRL))
+
+		alr.Get("/", h.HandleListActive)
+		alr.Get("/history", h.HandleListHistory)
+		alr.Get("/rules", h.HandleListRules)
+		alr.Get("/rules/{namespace}/{name}", h.HandleGetRule)
+		alr.Post("/rules", h.HandleCreateRule)
+		alr.Put("/rules/{namespace}/{name}", h.HandleUpdateRule)
+		alr.Delete("/rules/{namespace}/{name}", h.HandleDeleteRule)
+		alr.Get("/settings", h.HandleGetSettings)
+		alr.Put("/settings", h.HandleUpdateSettings)
+		alr.Post("/test", h.HandleTestEmail)
 	})
 }
 

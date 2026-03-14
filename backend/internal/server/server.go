@@ -15,6 +15,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/websocket"
@@ -42,7 +43,9 @@ type Server struct {
 	MonitoringHandler  *monitoring.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
+	AlertingHandler    *alerting.Handler
 	Hub                *websocket.Hub
+	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
 }
 
@@ -63,6 +66,8 @@ type Deps struct {
 	MonitoringHandler  *monitoring.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
+	AlertingHandler    *alerting.Handler
+	WebhookRateLimiter *middleware.RateLimiter
 	AccessChecker      *resources.AccessChecker
 	ReadyFn            func() bool
 }
@@ -127,6 +132,12 @@ func New(deps Deps) *Server {
 	// Networking handler
 	if deps.NetworkingHandler != nil {
 		s.NetworkingHandler = deps.NetworkingHandler
+	}
+
+	// Alerting handler
+	if deps.AlertingHandler != nil {
+		s.AlertingHandler = deps.AlertingHandler
+		s.WebhookRateLimiter = deps.WebhookRateLimiter
 	}
 
 	// Global middleware chain — order matters.

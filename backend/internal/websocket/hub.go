@@ -99,6 +99,12 @@ func (h *Hub) Register(client *Client) {
 // rbacRevalidateInterval is how often the hub rechecks RBAC for active subscriptions.
 const rbacRevalidateInterval = 5 * time.Minute
 
+// alwaysAllowKinds are subscription kinds that bypass RBAC revalidation.
+// "alerts" is not a Kubernetes resource — JWT auth alone is sufficient.
+var alwaysAllowKinds = map[string]bool{
+	"alerts": true,
+}
+
 // Run is the main hub goroutine. Call as `go hub.Run(ctx)`.
 func (h *Hub) Run(ctx context.Context) {
 	h.logger.Info("websocket hub started")
@@ -238,6 +244,10 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 	var removals []removal
 
 	for key, subs := range h.subscriptions {
+		// Skip RBAC revalidation for kinds without a k8s resource counterpart
+		if alwaysAllowKinds[key.Kind] {
+			continue
+		}
 		for client, subID := range subs {
 			if client.user == nil {
 				continue

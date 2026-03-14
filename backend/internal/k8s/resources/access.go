@@ -181,6 +181,8 @@ func apiGroupForResource(resource string) string {
 		return "networking.k8s.io"
 	case "roles", "clusterroles", "rolebindings", "clusterrolebindings":
 		return "rbac.authorization.k8s.io"
+	case "prometheusrules", "servicemonitors", "podmonitors", "alertmanagerconfigs":
+		return "monitoring.coreos.com"
 	default:
 		return "" // core API group
 	}

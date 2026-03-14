@@ -10,4 +10,10 @@ const (
 	DefaultRequestTimeout  = 60 * time.Second
 	DefaultClusterID       = "local"
 	DefaultDevMode         = false
+
+	// Alerting defaults
+	DefaultAlertingEnabled       = false
+	DefaultAlertingRetentionDays = 30
+	DefaultAlertingRateLimit     = 120 // max emails per hour
+	DefaultAlertingSMTPPort      = 587
 )

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; background: #f9fafb;">
+  <div style="max-width: 600px; margin: 0 auto; background: #fff; border-radius: 8px; border: 1px solid #e5e7eb; overflow: hidden;">
+    <div style="background: #dc2626; color: #fff; padding: 16px 24px;">
+      <h2 style="margin: 0; font-size: 18px;">FIRING: {{.AlertName}}</h2>
+    </div>
+    <div style="padding: 24px;">
+      <table style="border-collapse: collapse; width: 100%; font-size: 14px;">
+        <tr><td style="padding: 8px 0; color: #6b7280; width: 120px;"><strong>Severity</strong></td><td style="padding: 8px 0;">{{.Severity}}</td></tr>
+        {{if .Namespace}}<tr><td style="padding: 8px 0; color: #6b7280;"><strong>Namespace</strong></td><td style="padding: 8px 0;">{{.Namespace}}</td></tr>{{end}}
+        <tr><td style="padding: 8px 0; color: #6b7280;"><strong>Started</strong></td><td style="padding: 8px 0;">{{formatTime .StartsAt}}</td></tr>
+        {{with index .Annotations "summary"}}<tr><td style="padding: 8px 0; color: #6b7280;"><strong>Summary</strong></td><td style="padding: 8px 0;">{{.}}</td></tr>{{end}}
+        {{with index .Annotations "description"}}<tr><td style="padding: 8px 0; color: #6b7280;"><strong>Description</strong></td><td style="padding: 8px 0;">{{.}}</td></tr>{{end}}
+      </table>
+      {{if .GeneratorURL}}<p style="margin-top: 16px;"><a href="{{.GeneratorURL}}" style="color: #2563eb;">View in Prometheus</a></p>{{end}}
+    </div>
+    <div style="padding: 12px 24px; background: #f9fafb; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af;">
+      Sent by KubeCenter
+    </div>
+  </div>
+</body>
+</html>

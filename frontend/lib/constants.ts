@@ -176,6 +176,14 @@ export const NAV_SECTIONS = [
     ],
   },
   {
+    title: "Alerting",
+    items: [
+      { label: "Active Alerts", href: "/alerting", icon: "alerts" },
+      { label: "Alert Rules", href: "/alerting/rules", icon: "rules" },
+      { label: "Settings", href: "/alerting/settings", icon: "settings" },
+    ],
+  },
+  {
     title: "Tools",
     items: [
       { label: "YAML Apply", href: "/tools/yaml-apply", icon: "yaml" },

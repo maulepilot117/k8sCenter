@@ -18,7 +18,12 @@ const (
 	ActionLogin   Action = "login"
 	ActionLogout  Action = "logout"
 	ActionRefresh Action = "refresh"
-	ActionSetup   Action = "setup"
+	ActionSetup              Action = "setup"
+	ActionAlertRuleCreate    Action = "alert_rule_create"
+	ActionAlertRuleUpdate    Action = "alert_rule_update"
+	ActionAlertRuleDelete    Action = "alert_rule_delete"
+	ActionAlertSettingsUpdate Action = "alert_settings_update"
+	ActionAlertTest          Action = "alert_test"
 )
 
 // Result represents the outcome of an auditable operation.
