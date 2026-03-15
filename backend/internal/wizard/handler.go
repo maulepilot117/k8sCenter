@@ -114,11 +114,14 @@ func (h *Handler) HandleStorageClassPreview(w http.ResponseWriter, r *http.Reque
 }
 
 func writeValidationErrors(w http.ResponseWriter, errs []FieldError) {
+	// Encode field errors as JSON in the Detail field to follow the
+	// project convention of using Error only (never both Data and Error).
+	detail, _ := json.Marshal(errs)
 	httputil.WriteJSON(w, http.StatusUnprocessableEntity, api.Response{
 		Error: &api.APIError{
 			Code:    http.StatusUnprocessableEntity,
 			Message: "validation failed",
+			Detail:  string(detail),
 		},
-		Data: map[string]any{"fields": errs},
 	})
 }

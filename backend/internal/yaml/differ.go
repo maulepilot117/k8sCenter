@@ -85,6 +85,10 @@ func diffOne(
 	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
 		ns := obj.GetNamespace()
 		if ns == "" {
+			// This matches kubectl's behavior: when metadata.namespace is
+			// omitted, the resource lands in "default". A future improvement
+			// could accept the frontend's selected namespace as a fallback
+			// or reject resources without an explicit namespace.
 			ns = "default"
 		}
 		doc.Namespace = ns

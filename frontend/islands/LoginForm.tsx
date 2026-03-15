@@ -1,9 +1,14 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useAuth } from "@/lib/auth.ts";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ApiError } from "@/lib/api.ts";
+import {
+  MAX_PASSWORD_LENGTH,
+  MAX_USERNAME_LENGTH,
+} from "@/lib/wizard-constants.ts";
 
 export default function LoginForm() {
   const { login } = useAuth();
@@ -41,11 +46,7 @@ export default function LoginForm() {
 
   return (
     <form onSubmit={handleSubmit} class="space-y-5">
-      {error.value && (
-        <div class="rounded-md bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-400">
-          {error.value}
-        </div>
-      )}
+      {error.value && <Alert variant="error">{error.value}</Alert>}
 
       <Input
         label="Username"
@@ -57,6 +58,7 @@ export default function LoginForm() {
         required
         autocomplete="username"
         autofocus
+        maxLength={MAX_USERNAME_LENGTH}
       />
 
       <Input
@@ -68,6 +70,7 @@ export default function LoginForm() {
         }}
         required
         autocomplete="current-password"
+        maxLength={MAX_PASSWORD_LENGTH}
       />
 
       <Button

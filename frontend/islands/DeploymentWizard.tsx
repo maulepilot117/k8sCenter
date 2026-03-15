@@ -3,20 +3,19 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import {
+  DNS_LABEL_REGEX,
+  ENV_VAR_NAME_REGEX,
+  MAX_PORT,
+  MAX_REPLICAS,
+} from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { DeploymentBasicsStep } from "@/components/wizard/DeploymentBasicsStep.tsx";
 import { DeploymentNetworkStep } from "@/components/wizard/DeploymentNetworkStep.tsx";
 import { DeploymentResourcesStep } from "@/components/wizard/DeploymentResourcesStep.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface ProbeState {
-  type: string;
-  path: string;
-  port: number;
-  initialDelaySeconds: number;
-  periodSeconds: number;
-}
+import type { ProbeState } from "@/lib/wizard-types.ts";
 
 interface DeploymentFormState {
   name: string;
@@ -128,27 +127,27 @@ export default function DeploymentWizard() {
     const errs: Record<string, string> = {};
 
     if (step === 0) {
-      if (!f.name || !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(f.name)) {
+      if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
         errs.name =
           "Must be lowercase alphanumeric with hyphens, 1-63 characters";
       }
       if (!f.namespace) errs.namespace = "Required";
       if (!f.image) errs.image = "Required";
-      if (f.replicas < 0 || f.replicas > 1000) {
-        errs.replicas = "Must be between 0 and 1000";
+      if (f.replicas < 0 || f.replicas > MAX_REPLICAS) {
+        errs.replicas = `Must be between 0 and ${MAX_REPLICAS}`;
       }
     }
 
     if (step === 1) {
       f.ports.forEach((p, i) => {
         if (
-          p.containerPort && (p.containerPort < 1 || p.containerPort > 65535)
+          p.containerPort && (p.containerPort < 1 || p.containerPort > MAX_PORT)
         ) {
-          errs[`ports[${i}].containerPort`] = "Must be 1-65535";
+          errs[`ports[${i}].containerPort`] = `Must be 1-${MAX_PORT}`;
         }
       });
       f.envVars.forEach((e, i) => {
-        if (e.name && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.name)) {
+        if (e.name && !ENV_VAR_NAME_REGEX.test(e.name)) {
           errs[`envVars[${i}].name`] = "Invalid env var name";
         }
       });

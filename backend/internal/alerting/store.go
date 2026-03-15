@@ -38,7 +38,7 @@ type ListOptions struct {
 	Since     time.Time
 	Until     time.Time
 	Limit     int
-	Continue  string // opaque cursor (base64-encoded receivedAt nanos)
+	Continue  string // opaque cursor (base64-encoded "receivedAtNanos:id")
 }
 
 // Store is the interface for alert persistence.
@@ -124,27 +124,37 @@ func (s *MemoryStore) List(_ context.Context, opts ListOptions) ([]AlertEvent, s
 		limit = defaultListLimit
 	}
 
-	// Decode continue cursor (receivedAt nanos)
+	// Decode continue cursor (composite: "receivedAtNanos:id")
 	var cursorTime time.Time
+	var cursorID string
 	if opts.Continue != "" {
 		decoded, err := base64.StdEncoding.DecodeString(opts.Continue)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid continue token")
 		}
-		nanos, err := strconv.ParseInt(string(decoded), 10, 64)
+		parts := strings.SplitN(string(decoded), ":", 2)
+		nanos, err := strconv.ParseInt(parts[0], 10, 64)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid continue token")
 		}
 		cursorTime = time.Unix(0, nanos)
+		if len(parts) == 2 {
+			cursorID = parts[1]
+		}
 	}
 
 	var result []AlertEvent
 	// Iterate in reverse (newest first)
 	for i := len(s.history) - 1; i >= 0; i-- {
 		event := s.history[i]
-		// Skip entries before cursor
-		if !cursorTime.IsZero() && !event.ReceivedAt.Before(cursorTime) {
-			continue
+		// Skip entries at or before cursor (using composite key to handle timestamp collisions)
+		if !cursorTime.IsZero() {
+			if event.ReceivedAt.After(cursorTime) {
+				continue
+			}
+			if event.ReceivedAt.Equal(cursorTime) && (cursorID == "" || event.ID >= cursorID) {
+				continue
+			}
 		}
 
 		// Apply filters
@@ -173,14 +183,13 @@ func (s *MemoryStore) List(_ context.Context, opts ListOptions) ([]AlertEvent, s
 		}
 	}
 
-	// Determine continue token
+	// Determine continue token (composite: "receivedAtNanos:id")
 	var continueToken string
 	if len(result) > limit {
 		result = result[:limit]
 		last := result[len(result)-1]
-		continueToken = base64.StdEncoding.EncodeToString(
-			[]byte(strconv.FormatInt(last.ReceivedAt.UnixNano(), 10)),
-		)
+		cursor := strconv.FormatInt(last.ReceivedAt.UnixNano(), 10) + ":" + last.ID
+		continueToken = base64.StdEncoding.EncodeToString([]byte(cursor))
 	}
 
 	return result, continueToken, nil

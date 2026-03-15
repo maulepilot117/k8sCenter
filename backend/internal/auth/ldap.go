@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-ldap/ldap/v3"
+	"github.com/kubecenter/kubecenter/internal/config"
 )
 
 const (
@@ -30,25 +31,10 @@ type LDAPProvider struct {
 	logger *slog.Logger
 }
 
-// LDAPProviderConfig holds the configuration for a single LDAP provider.
-type LDAPProviderConfig struct {
-	ID              string
-	DisplayName     string
-	URL             string   // ldaps://host:636 or ldap://host:389
-	BindDN          string   // service account DN
-	BindPassword    string   // service account password (from env/k8s Secret)
-	StartTLS        bool     // upgrade plaintext connection to TLS
-	TLSInsecure     bool     // skip TLS cert verification
-	CACertPath      string   // custom CA cert
-	UserBaseDN      string   // e.g., "DC=corp,DC=com"
-	UserFilter      string   // e.g., "(sAMAccountName={0})" — {0} replaced with escaped username
-	UserAttributes  []string // attributes to fetch (e.g., ["sAMAccountName", "mail", "memberOf"])
-	GroupBaseDN     string   // where to search for groups
-	GroupFilter     string   // e.g., "(member={0})" — {0} replaced with user DN
-	GroupNameAttr   string   // default: "cn"
-	UsernameMapAttr string   // attribute that maps to KubernetesUsername
-	GroupsPrefix    string   // prepended to k8s group names
-}
+// LDAPProviderConfig is an alias for config.LDAPConfig.
+// Kept as a type alias for backward compatibility with existing code
+// that references auth.LDAPProviderConfig.
+type LDAPProviderConfig = config.LDAPConfig
 
 // NewLDAPProvider creates a new LDAP provider with the given configuration.
 func NewLDAPProvider(config LDAPProviderConfig, logger *slog.Logger) *LDAPProvider {
@@ -85,20 +71,20 @@ func (p *LDAPProvider) Type() string { return "ldap" }
 func (p *LDAPProvider) Authenticate(ctx context.Context, creds Credentials) (*User, error) {
 	// Defense-in-depth: validate username before any LDAP interaction
 	if !usernameAllowlist.MatchString(creds.Username) {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	conn, err := p.connect()
 	if err != nil {
 		p.logger.Error("LDAP connection failed", "error", err)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 	defer conn.Close()
 
 	// Step 1: Bind as service account
 	if err := conn.Bind(p.config.BindDN, p.config.BindPassword); err != nil {
 		p.logger.Error("LDAP service account bind failed", "error", err)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	// Step 2: Search for the user
@@ -120,15 +106,15 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, creds Credentials) (*Us
 	result, err := conn.Search(searchReq)
 	if err != nil {
 		p.logger.Error("LDAP user search failed", "error", err)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	if len(result.Entries) == 0 {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 	if len(result.Entries) > 1 {
 		p.logger.Warn("LDAP search returned multiple entries", "username", creds.Username, "count", len(result.Entries))
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	userEntry := result.Entries[0]
@@ -137,16 +123,16 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, creds Credentials) (*Us
 	// Step 3: Bind as the user to verify their password
 	if err := conn.Bind(userDN, creds.Password); err != nil {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
-			return nil, fmt.Errorf("invalid credentials")
+			return nil, ErrInvalidCredentials
 		}
 		p.logger.Error("LDAP user bind failed", "error", err)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	// Step 4: Rebind as service account to fetch groups
 	if err := conn.Bind(p.config.BindDN, p.config.BindPassword); err != nil {
 		p.logger.Error("LDAP service account rebind failed", "error", err)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	// Step 5: Get group membership

@@ -1,4 +1,5 @@
 /** SVG icons for Kubernetes resource types. Sized at 20x20 by default. */
+import type * as preact from "preact";
 
 interface ResourceIconProps {
   kind: string;
@@ -27,7 +28,7 @@ export function ResourceIcon(
   );
 }
 
-const icons: Record<string, ReturnType<typeof SVGContent>> = {
+const icons: Record<string, preact.JSX.Element> = {
   dashboard: (
     <path d="M3 5h14M3 5v10a2 2 0 002 2h10a2 2 0 002-2V5M3 5l7 5 7-5" />
   ),
@@ -222,8 +223,3 @@ const icons: Record<string, ReturnType<typeof SVGContent>> = {
     </>
   ),
 };
-
-// Helper type — just gets JSX elements to work as values
-function SVGContent(_props: Record<string, never>) {
-  return null;
-}

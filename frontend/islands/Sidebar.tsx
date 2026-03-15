@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { NAV_SECTIONS } from "@/lib/constants.ts";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
+import { Logo } from "@/components/ui/Logo.tsx";
 
 interface SidebarProps {
   currentPath: string;
@@ -20,21 +21,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
     <aside class="flex h-full w-60 flex-col bg-sidebar text-slate-300 shrink-0">
       {/* Logo */}
       <div class="flex h-14 items-center gap-2 px-4 border-b border-slate-700">
-        <svg
-          width="24"
-          height="24"
-          viewBox="0 0 24 24"
-          fill="none"
-          class="text-brand"
-        >
-          <path
-            d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <Logo size={24} />
         <span class="text-lg font-semibold text-white">k8sCenter</span>
       </div>
 

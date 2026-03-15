@@ -1,7 +1,5 @@
 package websocket
 
-import "encoding/json"
-
 // ResourceEvent is emitted by informer event handlers and consumed by the Hub.
 type ResourceEvent struct {
 	EventType string `json:"eventType"` // ADDED, MODIFIED, DELETED
@@ -46,11 +44,6 @@ type OutgoingMessage struct {
 	Code      int    `json:"code,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Object    any    `json:"object,omitempty"`
-}
-
-// MarshalOutgoing serializes an OutgoingMessage to JSON bytes.
-func MarshalOutgoing(msg OutgoingMessage) ([]byte, error) {
-	return json.Marshal(msg)
 }
 
 // allowedKinds is the set of resource kinds that clients may subscribe to via WebSocket.

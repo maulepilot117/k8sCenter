@@ -215,15 +215,9 @@ function ApplyResults({ response }: { response: ApplyResponse }) {
   if (summary.failed > 0) summaryParts.push(`${summary.failed} failed`);
 
   const hasFailed = summary.failed > 0;
-  const borderColor = hasFailed
-    ? "border-amber-200 dark:border-amber-800"
-    : "border-green-200 dark:border-green-800";
-  const bgColor = hasFailed
-    ? "bg-amber-50 dark:bg-amber-900/20"
-    : "bg-green-50 dark:bg-green-900/20";
-  const textColor = hasFailed
-    ? "text-amber-700 dark:text-amber-400"
-    : "text-green-700 dark:text-green-400";
+  const borderColor = hasFailed ? "border-warning/30" : "border-success/30";
+  const bgColor = hasFailed ? "bg-warning/10" : "bg-success/10";
+  const textColor = hasFailed ? "text-warning" : "text-success";
 
   return (
     <div class={`rounded-md border ${borderColor} ${bgColor} p-4`}>

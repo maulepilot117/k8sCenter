@@ -1,4 +1,5 @@
 import { Input } from "@/components/ui/Input.tsx";
+import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 
 interface PortEntry {
@@ -131,26 +132,11 @@ export function DeploymentNetworkStep({
                 options={PROTOCOL_OPTIONS}
               />
             </div>
-            <button
-              type="button"
+            <RemoveButton
               onClick={() => removePort(i)}
-              class="p-2 text-slate-400 hover:text-danger mb-1"
               title="Remove port"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
+              class="p-2 mb-1"
+            />
           </div>
         ))}
         {ports.length < 20 && (
@@ -248,26 +234,11 @@ export function DeploymentNetworkStep({
                   </div>
                 </>
               )}
-            <button
-              type="button"
+            <RemoveButton
               onClick={() => removeEnvVar(i)}
-              class="p-2 text-slate-400 hover:text-danger mb-1"
               title="Remove env var"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
+              class="p-2 mb-1"
+            />
           </div>
         ))}
         {envVars.length < 50 && (

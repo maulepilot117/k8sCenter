@@ -1,13 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-
-interface ProbeState {
-  type: string;
-  path: string;
-  port: number;
-  initialDelaySeconds: number;
-  periodSeconds: number;
-}
+import type { ProbeState } from "@/lib/wizard-types.ts";
+import { MAX_PROBE_PATH_LENGTH } from "@/lib/wizard-constants.ts";
 
 interface StrategyState {
   type: string;
@@ -77,6 +71,7 @@ function ProbeSection({
               onInput={(e) =>
                 onUpdate("path", (e.target as HTMLInputElement).value)}
               placeholder="/healthz"
+              maxLength={MAX_PROBE_PATH_LENGTH}
             />
           )}
           <Input

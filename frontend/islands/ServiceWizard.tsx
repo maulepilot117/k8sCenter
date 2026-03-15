@@ -3,6 +3,13 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import {
+  DNS_LABEL_REGEX,
+  MAX_NODE_PORT,
+  MAX_PORT,
+  MIN_NODE_PORT,
+  PORT_NAME_REGEX,
+} from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { ServiceBasicsStep } from "@/components/wizard/ServiceBasicsStep.tsx";
 import { ServicePortsStep } from "@/components/wizard/ServicePortsStep.tsx";
@@ -117,7 +124,7 @@ export default function ServiceWizard() {
     const errs: Record<string, string> = {};
 
     if (step === 0) {
-      if (!f.name || !/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(f.name)) {
+      if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
         errs.name =
           "Must be lowercase alphanumeric with hyphens, 1-63 characters";
       }
@@ -134,18 +141,23 @@ export default function ServiceWizard() {
         errs.ports = "At least one port is required";
       }
       f.ports.forEach((p, i) => {
-        if (p.port && (p.port < 1 || p.port > 65535)) {
-          errs[`ports[${i}].port`] = "Must be 1-65535";
+        if (p.name && !PORT_NAME_REGEX.test(p.name)) {
+          errs[`ports[${i}].name`] =
+            "Must be a valid IANA service name (lowercase, alphanumeric + hyphens, max 15 chars)";
         }
-        if (p.targetPort && (p.targetPort < 1 || p.targetPort > 65535)) {
-          errs[`ports[${i}].targetPort`] = "Must be 1-65535";
+        if (p.port && (p.port < 1 || p.port > MAX_PORT)) {
+          errs[`ports[${i}].port`] = `Must be 1-${MAX_PORT}`;
+        }
+        if (p.targetPort && (p.targetPort < 1 || p.targetPort > MAX_PORT)) {
+          errs[`ports[${i}].targetPort`] = `Must be 1-${MAX_PORT}`;
         }
         if (
           p.nodePort &&
           (f.type === "NodePort" || f.type === "LoadBalancer") &&
-          (p.nodePort < 30000 || p.nodePort > 32767)
+          (p.nodePort < MIN_NODE_PORT || p.nodePort > MAX_NODE_PORT)
         ) {
-          errs[`ports[${i}].nodePort`] = "Must be 30000-32767";
+          errs[`ports[${i}].nodePort`] =
+            `Must be ${MIN_NODE_PORT}-${MAX_NODE_PORT}`;
         }
       });
     }

@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
+import { Alert } from "@/components/ui/Alert.tsx";
 import { Card } from "@/components/ui/Card.tsx";
 
 interface ClusterInfoData {
@@ -100,11 +101,7 @@ export default function Dashboard() {
   }
 
   if (error.value) {
-    return (
-      <div class="rounded-md bg-red-50 px-4 py-3 text-sm text-red-800 dark:bg-red-900/30 dark:text-red-400">
-        {error.value}
-      </div>
-    );
+    return <Alert variant="error">{error.value}</Alert>;
   }
 
   const statCards = [

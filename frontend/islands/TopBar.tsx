@@ -1,5 +1,5 @@
 import { useComputed, useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { useAuth } from "@/lib/auth.ts";
 import { apiGet } from "@/lib/api.ts";
@@ -14,6 +14,7 @@ export default function TopBar() {
   const { user, logout } = useAuth();
   const namespaces = useSignal<string[]>([]);
   const showUserMenu = useSignal(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Fetch namespaces on mount
   useEffect(() => {
@@ -27,6 +28,21 @@ export default function TopBar() {
       .catch(() => {
         // Silently fail — namespace list is non-critical
       });
+  }, []);
+
+  // Close user menu on outside click
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        showUserMenu.value && menuRef.current &&
+        !menuRef.current.contains(e.target as Node)
+      ) {
+        showUserMenu.value = false;
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
   const displayName = useComputed(() => user.value?.username ?? "User");
@@ -65,7 +81,7 @@ export default function TopBar() {
       {/* Right: theme + user menu */}
       <div class="flex items-center gap-2">
         <ThemeToggle />
-        <div class="relative">
+        <div class="relative" ref={menuRef}>
           <button
             type="button"
             onClick={() => {

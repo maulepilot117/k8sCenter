@@ -2,11 +2,17 @@ package wizard
 
 import (
 	"fmt"
+	"regexp"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+// portNameRegex validates IANA service names as required by k8s for named ports.
+// Must be lowercase alphanumeric and hyphens, max 15 chars, at least one letter,
+// cannot start or end with hyphen.
+var portNameRegex = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$`)
 
 // ServiceInput represents the wizard form data for creating a Service.
 type ServiceInput struct {
@@ -74,6 +80,12 @@ func (s *ServiceInput) Validate() []FieldError {
 
 	seenPorts := make(map[int32]bool)
 	for i, p := range s.Ports {
+		if p.Name != "" && !portNameRegex.MatchString(p.Name) {
+			errs = append(errs, FieldError{
+				Field:   fmt.Sprintf("ports[%d].name", i),
+				Message: "must be a valid IANA service name (lowercase alphanumeric and hyphens, max 15 chars, at least one letter)",
+			})
+		}
 		if seenPorts[p.Port] {
 			errs = append(errs, FieldError{
 				Field:   fmt.Sprintf("ports[%d].port", i),

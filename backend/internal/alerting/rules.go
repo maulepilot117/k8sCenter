@@ -279,5 +279,13 @@ func (rm *RulesManager) Delete(ctx context.Context, username string, groups []st
 		return fmt.Errorf("cannot delete PrometheusRule not managed by KubeCenter")
 	}
 
-	return dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	// Use ResourceVersion precondition to guard against TOCTOU race:
+	// if the resource was modified between the GET and DELETE, the API server
+	// will reject the delete with a Conflict error.
+	rv := obj.GetResourceVersion()
+	return dynClient.Resource(prometheusRuleGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{
+			ResourceVersion: &rv,
+		},
+	})
 }

@@ -44,7 +44,18 @@ const BASE_DELAY = 1000;
 const MAX_DELAY = 30000;
 const JITTER = 0.2;
 
+/** Close codes that indicate permanent auth failures -- do not reconnect. */
+const AUTH_FAILURE_CODES = new Set([4001, 4003]);
+
+/** Maximum reconnect attempts before giving up. */
+const MAX_RECONNECT_ATTEMPTS = 15;
+
 function getWsUrl(): string {
+  // Security note (todo-096): The JWT is sent as the first WS message in plaintext.
+  // In production, TLS is enforced at the ingress/load-balancer level, so the connection
+  // is always wss://. In development (localhost), ws:// is acceptable. Additionally,
+  // the WS connection goes through the BFF proxy (routes/ws/[...path].ts), so the
+  // JWT never traverses untrusted network segments directly.
   const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${globalThis.location.host}/ws/v1/ws/resources`;
 }
@@ -92,10 +103,21 @@ export function connectWS(): void {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     ws = null;
     authenticated = false;
     wsStatus.value = "disconnected";
+
+    // Do not reconnect on permanent auth failures
+    if (AUTH_FAILURE_CODES.has(event.code)) {
+      return;
+    }
+
+    // Do not reconnect after max attempts
+    if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      return;
+    }
+
     scheduleReconnect();
   };
 

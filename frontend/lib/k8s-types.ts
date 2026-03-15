@@ -295,6 +295,22 @@ export interface ClusterRoleBinding extends K8sResource {
   roleRef: { kind: string; name: string; apiGroup: string };
 }
 
+// -- Alerts --
+export interface AlertEvent {
+  id: string;
+  fingerprint: string;
+  status: string;
+  alertName: string;
+  namespace: string;
+  severity: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  startsAt: string;
+  endsAt?: string;
+  receivedAt: string;
+  resolvedAt?: string;
+}
+
 // -- Events --
 export interface K8sEvent extends K8sResource {
   type?: string;

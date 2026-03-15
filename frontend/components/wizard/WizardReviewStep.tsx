@@ -1,7 +1,9 @@
 import { useSignal } from "@preact/signals";
+import { useRef } from "preact/hooks";
 import { MonacoEditor } from "@/components/ui/MonacoEditor.tsx";
 import { apiPostRaw } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 
 interface ApplyResult {
   action: string;
@@ -40,9 +42,11 @@ export function WizardReviewStep({
   const applying = useSignal(false);
   const applyError = useSignal<string | null>(null);
   const applyResult = useSignal<ApplyResponse | null>(null);
+  const applyGuard = useRef(false);
 
   const handleApply = async () => {
-    if (!yaml.trim()) return;
+    if (!yaml.trim() || applyGuard.current) return;
+    applyGuard.current = true;
     applying.value = true;
     applyError.value = null;
     applyResult.value = null;
@@ -60,6 +64,7 @@ export function WizardReviewStep({
         : "Failed to apply resource";
     } finally {
       applying.value = false;
+      applyGuard.current = false;
     }
   };
 
@@ -67,25 +72,7 @@ export function WizardReviewStep({
     return (
       <div class="flex items-center justify-center py-16">
         <div class="flex items-center gap-3 text-slate-500">
-          <svg
-            class="animate-spin h-5 w-5"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
+          <Spinner size="md" />
           Generating YAML preview...
         </div>
       </div>
@@ -107,7 +94,9 @@ export function WizardReviewStep({
     const hasFailures = result.summary.failed > 0;
     const firstResult = result.results[0];
     const detailPath = firstResult && !firstResult.error
-      ? `${detailBasePath}/${firstResult.namespace ?? ""}/${firstResult.name}`
+      ? `${detailBasePath}/${encodeURIComponent(firstResult.namespace ?? "")}/${
+        encodeURIComponent(firstResult.name)
+      }`
       : null;
 
     return (
