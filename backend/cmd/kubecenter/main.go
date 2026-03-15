@@ -168,10 +168,8 @@ func main() {
 	}
 	// Initialize audit logger — SQLite if configured, slog-only otherwise
 	var auditLogger audit.Logger
-	var auditStore *audit.SQLiteStore
 	if cfg.Audit.DBPath != "" {
-		var err error
-		auditStore, err = audit.NewSQLiteStore(cfg.Audit.DBPath)
+		auditStore, err := audit.NewSQLiteStore(cfg.Audit.DBPath)
 		if err != nil {
 			logger.Error("failed to open audit database, falling back to slog", "error", err, "path", cfg.Audit.DBPath)
 			auditLogger = audit.NewSlogLogger(logger)
@@ -189,7 +187,7 @@ func main() {
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						deleted, err := auditStore.Cleanup(ctx, cfg.Audit.RetentionDays)
+						deleted, err := sqliteLogger.Cleanup(ctx, cfg.Audit.RetentionDays)
 						if err != nil {
 							logger.Error("audit cleanup failed", "error", err)
 						} else if deleted > 0 {
@@ -279,7 +277,6 @@ func main() {
 		Sessions:      sessions,
 		RBACChecker:   rbacChecker,
 		AuditLogger:   auditLogger,
-		AuditStore:    auditStore,
 		RateLimiter:     rateLimiter,
 		YAMLRateLimiter: yamlRateLimiter,
 		Hub:               hub,

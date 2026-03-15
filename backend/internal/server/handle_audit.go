@@ -10,8 +10,10 @@ import (
 )
 
 // handleAuditLogs returns paginated, filterable audit log entries.
+// Requires the audit logger to implement audit.Queryable (SQLiteLogger does).
 func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
-	if s.AuditStore == nil {
+	queryable, ok := s.AuditLogger.(audit.Queryable)
+	if !ok {
 		writeJSON(w, http.StatusServiceUnavailable, api.Response{
 			Error: &api.APIError{Code: 503, Message: "audit log persistence is not enabled"},
 		})
@@ -43,7 +45,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		params.PageSize, _ = strconv.Atoi(pageSize)
 	}
 
-	entries, total, err := s.AuditStore.Query(r.Context(), params)
+	entries, total, err := queryable.Query(r.Context(), params)
 	if err != nil {
 		s.Logger.Error("failed to query audit logs", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -52,6 +54,7 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	params.Normalize()
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: entries,
 		Metadata: &api.Metadata{

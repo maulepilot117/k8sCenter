@@ -52,6 +52,12 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("enabling WAL mode: %w", err)
 	}
 
+	// Limit WAL file growth
+	if _, err := db.Exec("PRAGMA wal_autocheckpoint=1000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("setting WAL autocheckpoint: %w", err)
+	}
+
 	// Run schema migration
 	if _, err := db.Exec(createTableSQL); err != nil {
 		db.Close()
@@ -127,7 +133,9 @@ func (s *SQLiteStore) Query(ctx context.Context, params QueryParams) ([]Entry, i
 		"SELECT timestamp, cluster_id, user, source_ip, action, resource_kind, resource_namespace, resource_name, result, detail FROM audit_logs %s ORDER BY timestamp DESC LIMIT ? OFFSET ?",
 		whereClause,
 	)
-	dataArgs := append(args, params.PageSize, params.Offset())
+	dataArgs := make([]any, 0, len(args)+2)
+	dataArgs = append(dataArgs, args...)
+	dataArgs = append(dataArgs, params.PageSize, params.Offset())
 
 	rows, err := s.db.QueryContext(ctx, dataQuery, dataArgs...)
 	if err != nil {
@@ -154,8 +162,11 @@ func (s *SQLiteStore) Query(ctx context.Context, params QueryParams) ([]Entry, i
 }
 
 // Cleanup deletes audit entries older than the given number of days.
-// Returns the number of deleted rows.
+// Returns the number of deleted rows. Rejects retentionDays < 1 to prevent accidental data loss.
 func (s *SQLiteStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays < 1 {
+		return 0, fmt.Errorf("retentionDays must be >= 1, got %d", retentionDays)
+	}
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(time.RFC3339Nano)
 	result, err := s.db.ExecContext(ctx, "DELETE FROM audit_logs WHERE timestamp < ?", cutoff)
 	if err != nil {

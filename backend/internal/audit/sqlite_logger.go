@@ -39,7 +39,17 @@ func (l *SQLiteLogger) Log(ctx context.Context, e Entry) error {
 	return nil
 }
 
-// Store returns the underlying SQLiteStore for direct queries.
-func (l *SQLiteLogger) Store() *SQLiteStore {
-	return l.store
+// Query delegates to the underlying SQLiteStore for audit log queries.
+func (l *SQLiteLogger) Query(ctx context.Context, params QueryParams) ([]Entry, int, error) {
+	return l.store.Query(ctx, params)
+}
+
+// Cleanup delegates to the underlying SQLiteStore for retention cleanup.
+func (l *SQLiteLogger) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
+	return l.store.Cleanup(ctx, retentionDays)
+}
+
+// Queryable is implemented by Logger implementations that support audit log queries.
+type Queryable interface {
+	Query(ctx context.Context, params QueryParams) ([]Entry, int, error)
 }
