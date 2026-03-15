@@ -1,0 +1,110 @@
+{{- if .Values.networkPolicy.enabled }}
+---
+# Backend NetworkPolicy: allow ingress from frontend, allow egress to k8s API + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubecenter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from frontend pods
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kubecenter.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: frontend
+      ports:
+        - port: {{ .Values.backend.port }}
+          protocol: TCP
+    # Allow traffic from ingress controller (when frontend is disabled)
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: {{ .Values.backend.port }}
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS to k8s API server
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # Allow HTTP/HTTPS for OIDC discovery and Prometheus/Grafana
+    - to: []
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+        - port: 3000
+          protocol: TCP
+    # Allow LDAP/LDAPS
+    - to: []
+      ports:
+        - port: 389
+          protocol: TCP
+        - port: 636
+          protocol: TCP
+---
+{{- if .Values.frontend.enabled }}
+# Frontend NetworkPolicy: allow ingress from anywhere, allow egress only to backend + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubecenter.frontendFullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubecenter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic from ingress controller and direct access
+    - from: []
+      ports:
+        - port: {{ .Values.frontend.port }}
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow traffic to backend only
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "kubecenter.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: backend
+      ports:
+        - port: {{ .Values.backend.port }}
+          protocol: TCP
+{{- end }}
+{{- end }}

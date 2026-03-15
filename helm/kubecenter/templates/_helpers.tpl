@@ -42,6 +42,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/*
 Service account name
 */}}
+{{/*
+Frontend fullname
+*/}}
+{{- define "kubecenter.frontendFullname" -}}
+{{ include "kubecenter.fullname" . }}-frontend
+{{- end }}
+
+{{/*
+Service account name
+*/}}
 {{- define "kubecenter.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "kubecenter.fullname" .) .Values.serviceAccount.name }}

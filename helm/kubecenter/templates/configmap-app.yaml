@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+data:
+  KUBECENTER_SERVER_PORT: {{ .Values.backend.port | quote }}
+  KUBECENTER_DEV: {{ .Values.backend.config.dev | quote }}
+  KUBECENTER_LOG_LEVEL: {{ .Values.backend.config.logLevel | quote }}
+  KUBECENTER_LOG_FORMAT: {{ .Values.backend.config.logFormat | quote }}
+  KUBECENTER_CLUSTERID: {{ .Values.backend.config.clusterID | quote }}
+  {{- if .Values.monitoring.namespace }}
+  KUBECENTER_MONITORING_NAMESPACE: {{ .Values.monitoring.namespace | quote }}
+  {{- end }}
+  {{- if .Values.monitoring.prometheus.url }}
+  KUBECENTER_MONITORING_PROMETHEUSURL: {{ .Values.monitoring.prometheus.url | quote }}
+  {{- end }}
+  {{- if .Values.monitoring.grafana.url }}
+  KUBECENTER_MONITORING_GRAFANAURL: {{ .Values.monitoring.grafana.url | quote }}
+  {{- end }}
+  {{- if .Values.alerting.enabled }}
+  KUBECENTER_ALERTING_ENABLED: "true"
+  KUBECENTER_ALERTING_RETENTIONDAYS: {{ .Values.alerting.retentionDays | quote }}
+  KUBECENTER_ALERTING_RATELIMIT: {{ .Values.alerting.rateLimit | quote }}
+  {{- if .Values.alerting.smtp.host }}
+  KUBECENTER_ALERTING_SMTP_HOST: {{ .Values.alerting.smtp.host | quote }}
+  KUBECENTER_ALERTING_SMTP_PORT: {{ .Values.alerting.smtp.port | quote }}
+  KUBECENTER_ALERTING_SMTP_FROM: {{ .Values.alerting.smtp.from | quote }}
+  KUBECENTER_ALERTING_SMTP_USERNAME: {{ .Values.alerting.smtp.username | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.cors.allowedOrigins }}
+  KUBECENTER_CORS_ALLOWEDORIGINS: {{ join "," .Values.cors.allowedOrigins | quote }}
+  {{- end }}

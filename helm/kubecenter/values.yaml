@@ -1,5 +1,12 @@
-replicaCount: 1
+# k8sCenter Helm Chart Values
+# See values.schema.json for validation rules.
 
+replicaCount: 1  # Must be 1 when persistence.enabled=true (SQLite single-writer)
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Backend (Go API server)
 backend:
   image:
     repository: kubecenter-backend
@@ -15,39 +22,139 @@ backend:
       memory: 256Mi
   config:
     dev: false
-    logLevel: info
-    logFormat: json
+    logLevel: info     # debug, info, warn, error
+    logFormat: json     # json, text
     clusterID: local
 
+# -- Frontend (Deno/Fresh SSR)
+frontend:
+  enabled: true
+  image:
+    repository: kubecenter-frontend
+    tag: ""  # Defaults to appVersion
+    pullPolicy: IfNotPresent
+  port: 8000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -- Service Account
 serviceAccount:
   create: true
   name: ""
   annotations: {}
 
+# -- Services
 service:
   type: ClusterIP
   port: 8080
+  frontendPort: 8000
 
+# -- Ingress
 ingress:
   enabled: false
   className: ""
   annotations: {}
-  hosts: []
+  # Example for cert-manager:
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: k8scenter.local
+      paths:
+        - path: /
+          pathType: Prefix
   tls: []
+  # - secretName: k8scenter-tls
+  #   hosts:
+  #     - k8scenter.local
 
+# -- Authentication
+auth:
+  # JWT signing secret. Auto-generated on first install if empty.
+  # Stored in a k8s Secret and survives helm upgrades.
+  jwtSecret: ""
+  # Setup token for POST /api/v1/setup/init. Optional.
+  setupToken: ""
+  # OIDC providers (array). Each entry maps to config.OIDCConfig.
+  oidc: []
+  # - id: google
+  #   displayName: "Google"
+  #   issuerURL: "https://accounts.google.com"
+  #   clientID: ""
+  #   clientSecret: ""
+  #   redirectURL: "https://k8scenter.example.com/api/v1/auth/oidc/google/callback"
+  #   scopes: ["openid", "email", "profile"]
+  #   usernameClaim: "email"
+  #   groupsClaim: "groups"
+  #   groupsPrefix: ""
+  #   allowedDomains: []
+  # LDAP providers (array). Each entry maps to config.LDAPConfig.
+  ldap: []
+  # - id: corp-ad
+  #   displayName: "Corporate AD"
+  #   url: "ldaps://ldap.corp.com:636"
+  #   bindDN: "CN=svc-k8scenter,OU=ServiceAccounts,DC=corp,DC=com"
+  #   bindPassword: ""
+  #   userBaseDN: "DC=corp,DC=com"
+  #   userFilter: "(sAMAccountName={0})"
+  #   groupBaseDN: "DC=corp,DC=com"
+  #   groupFilter: "(member={0})"
+  #   groupNameAttr: "cn"
+  #   usernameMapAttr: "sAMAccountName"
+  #   groupsPrefix: "ldap:"
+
+# -- Alerting
+alerting:
+  enabled: false
+  webhookToken: ""      # Auto-generated if empty
+  retentionDays: 30
+  rateLimit: 120        # Max emails per hour
+  recipients: []
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+    from: ""
+    tlsInsecure: false
+
+# -- Monitoring
 monitoring:
-  deploy: false
-  namespace: ""              # Namespace hint for discovery (empty = search all)
+  deploy: false          # Set true to deploy kube-prometheus-stack subchart
+  namespace: ""          # Namespace hint for discovery (empty = search all)
   prometheus:
-    url: ""                  # Override auto-discovery
+    url: ""              # Override auto-discovery
   grafana:
-    url: ""                  # Override auto-discovery
-    apiToken: ""             # Service account token for dashboard provisioning
+    url: ""              # Override auto-discovery
+    apiToken: ""         # Service account token for dashboard provisioning
 
-# Subchart overrides (only when monitoring.deploy=true)
+# -- CORS
+cors:
+  allowedOrigins: []     # Auto-set from ingress host if empty
+
+# -- Persistence (for SQLite audit logs in Step 14)
+persistence:
+  enabled: false
+  storageClass: ""       # Empty = default StorageClass
+  size: 1Gi
+  accessMode: ReadWriteOnce
+
+# -- Network Policy
+networkPolicy:
+  enabled: true
+
+# -- Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 0        # Single replica: allow full disruption during upgrades
+
+# -- Subchart overrides (only when monitoring.deploy=true)
 monitoring-stack:
   alertmanager:
-    enabled: false           # KubeCenter handles alerting in Step 11
+    enabled: false
   grafana:
     enabled: true
     sidecar:
