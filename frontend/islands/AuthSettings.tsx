@@ -54,7 +54,9 @@ export default function AuthSettings() {
       });
       testResult.value = "OIDC discovery successful";
     } catch (err) {
-      testResult.value = `OIDC test failed: ${err instanceof Error ? err.message : "unknown error"}`;
+      testResult.value = `OIDC test failed: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`;
     } finally {
       testLoading.value = false;
     }
@@ -71,7 +73,9 @@ export default function AuthSettings() {
       });
       testResult.value = "LDAP connection successful";
     } catch (err) {
-      testResult.value = `LDAP test failed: ${err instanceof Error ? err.message : "unknown error"}`;
+      testResult.value = `LDAP test failed: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`;
     } finally {
       testLoading.value = false;
     }
@@ -139,8 +143,8 @@ export default function AuthSettings() {
                       p.type === "local"
                         ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
                         : p.type === "oidc"
-                          ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
-                          : "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400"
+                        ? "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400"
+                        : "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400"
                     }`}
                   >
                     {p.type.toUpperCase()}

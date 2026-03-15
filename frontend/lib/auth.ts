@@ -47,9 +47,12 @@ export async function login(
  */
 export async function handleOIDCCallback(): Promise<boolean> {
   try {
-    const res = await api<{ accessToken: string }>("/auth/oidc-token-exchange", {
-      method: "POST",
-    });
+    const res = await api<{ accessToken: string }>(
+      "/auth/oidc-token-exchange",
+      {
+        method: "POST",
+      },
+    );
     if (res.data.accessToken) {
       setAccessToken(res.data.accessToken);
       await fetchCurrentUser();
