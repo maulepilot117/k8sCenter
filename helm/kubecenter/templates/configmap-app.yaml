@@ -28,7 +28,6 @@ data:
   KUBECENTER_ALERTING_SMTP_HOST: {{ .Values.alerting.smtp.host | quote }}
   KUBECENTER_ALERTING_SMTP_PORT: {{ .Values.alerting.smtp.port | quote }}
   KUBECENTER_ALERTING_SMTP_FROM: {{ .Values.alerting.smtp.from | quote }}
-  KUBECENTER_ALERTING_SMTP_USERNAME: {{ .Values.alerting.smtp.username | quote }}
   {{- end }}
   {{- end }}
   {{- if .Values.cors.allowedOrigins }}

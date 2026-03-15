@@ -90,26 +90,10 @@
         "rateLimit": { "type": "integer", "minimum": 1 }
       }
     },
-    "persistence": {
-      "type": "object",
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "storageClass": { "type": "string" },
-        "size": { "type": "string" },
-        "accessMode": { "type": "string", "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"] }
-      }
-    },
     "networkPolicy": {
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" }
-      }
-    },
-    "podDisruptionBudget": {
-      "type": "object",
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "minAvailable": { "type": "integer", "minimum": 0 }
       }
     }
   }

@@ -135,21 +135,9 @@ monitoring:
 cors:
   allowedOrigins: []     # Auto-set from ingress host if empty
 
-# -- Persistence (for SQLite audit logs in Step 14)
-persistence:
-  enabled: false
-  storageClass: ""       # Empty = default StorageClass
-  size: 1Gi
-  accessMode: ReadWriteOnce
-
 # -- Network Policy
 networkPolicy:
   enabled: true
-
-# -- Pod Disruption Budget
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 0        # Single replica: allow full disruption during upgrades
 
 # -- Subchart overrides (only when monitoring.deploy=true)
 monitoring-stack:

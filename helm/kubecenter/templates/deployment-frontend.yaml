@@ -19,6 +19,7 @@ spec:
         {{- include "kubecenter.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: frontend
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

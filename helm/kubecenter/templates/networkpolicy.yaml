@@ -1,6 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
 ---
-# Backend NetworkPolicy: allow ingress from frontend, allow egress to k8s API + DNS
+# Backend NetworkPolicy: allow ingress from frontend/ingress, allow egress to k8s API + DNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -17,7 +17,7 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from frontend pods
+    # Allow traffic from frontend pods in this namespace
     - from:
         - podSelector:
             matchLabels:
@@ -26,48 +26,44 @@ spec:
       ports:
         - port: {{ .Values.backend.port }}
           protocol: TCP
-    # Allow traffic from ingress controller (when frontend is disabled)
+    {{- if .Values.ingress.enabled }}
+    # Allow traffic from ingress controller namespace
+    # NOTE: For tighter security, restrict namespaceSelector to your ingress namespace
     - from:
         - namespaceSelector: {}
+          podSelector: {}
       ports:
         - port: {{ .Values.backend.port }}
           protocol: TCP
+    {{- end }}
   egress:
-    # Allow DNS
-    - to: []
-      ports:
+    # DNS resolution
+    - ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Allow HTTPS to k8s API server
-    - to: []
-      ports:
+    # Kubernetes API server (HTTPS), OIDC discovery, Prometheus, Grafana
+    - ports:
         - port: 443
           protocol: TCP
         - port: 6443
-          protocol: TCP
-    # Allow HTTP/HTTPS for OIDC discovery and Prometheus/Grafana
-    - to: []
-      ports:
-        - port: 80
-          protocol: TCP
-        - port: 443
           protocol: TCP
         - port: 9090
           protocol: TCP
         - port: 3000
           protocol: TCP
-    # Allow LDAP/LDAPS
-    - to: []
-      ports:
+    {{- if .Values.auth.ldap }}
+    # LDAP/LDAPS (only when LDAP providers are configured)
+    - ports:
         - port: 389
           protocol: TCP
         - port: 636
           protocol: TCP
+    {{- end }}
 ---
 {{- if .Values.frontend.enabled }}
-# Frontend NetworkPolicy: allow ingress from anywhere, allow egress only to backend + DNS
+# Frontend NetworkPolicy: allow ingress from ingress controller, egress only to backend + DNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -84,20 +80,18 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Allow traffic from ingress controller and direct access
     - from: []
       ports:
         - port: {{ .Values.frontend.port }}
           protocol: TCP
   egress:
-    # Allow DNS
-    - to: []
-      ports:
+    # DNS resolution
+    - ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # Allow traffic to backend only
+    # Backend service only
     - to:
         - podSelector:
             matchLabels:
