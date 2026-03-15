@@ -35,7 +35,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
             stroke-linejoin="round"
           />
         </svg>
-        <span class="text-lg font-semibold text-white">KubeCenter</span>
+        <span class="text-lg font-semibold text-white">k8sCenter</span>
       </div>
 
       {/* Navigation */}
@@ -94,7 +94,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
 
       {/* Version */}
       <div class="border-t border-slate-700 px-4 py-2 text-xs text-slate-500">
-        KubeCenter v0.1.0
+        k8sCenter v0.1.0
       </div>
     </aside>
   );

@@ -200,7 +200,7 @@ export default function Dashboard() {
               </div>
               <div>
                 <dt class="text-sm text-slate-500 dark:text-slate-400">
-                  KubeCenter Version
+                  k8sCenter Version
                 </dt>
                 <dd class="mt-1 text-sm font-medium text-slate-900 dark:text-white">
                   {clusterInfo.value.kubecenter?.version ?? "dev"}

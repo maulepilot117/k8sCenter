@@ -50,9 +50,9 @@ export default function YamlApplyPage() {
   // Set document title
   useEffect(() => {
     if (!IS_BROWSER) return;
-    document.title = "YAML Apply - KubeCenter";
+    document.title = "YAML Apply - k8sCenter";
     return () => {
-      document.title = "KubeCenter";
+      document.title = "k8sCenter";
     };
   }, []);
 

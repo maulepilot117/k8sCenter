@@ -267,7 +267,7 @@ export default function AlertSettings() {
       <Card title="Webhook Configuration">
         <div class="p-4 space-y-4">
           <p class="text-sm text-slate-600 dark:text-slate-400">
-            Configure Alertmanager to send alerts to KubeCenter using the
+            Configure Alertmanager to send alerts to k8sCenter using the
             following receiver configuration:
           </p>
           <div class="bg-slate-900 rounded-lg p-4 overflow-x-auto">

@@ -7,7 +7,7 @@ import { define } from "@/utils.ts";
  */
 export default define.middleware(async (ctx) => {
   ctx.state.user = null;
-  ctx.state.title = "KubeCenter";
+  ctx.state.title = "k8sCenter";
 
   const res = await ctx.next();
 
