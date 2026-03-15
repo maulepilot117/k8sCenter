@@ -98,6 +98,7 @@ export default function AuthSettings() {
             ] as const
           ).map(([key, label]) => (
             <button
+              type="button"
               key={key}
               onClick={() => {
                 activeTab.value = key;
