@@ -1,8 +1,8 @@
-# feat: KubeCenter Phase 1 MVP — Full Implementation Plan
+# feat: k8sCenter Phase 1 MVP — Full Implementation Plan
 
 ## Overview
 
-KubeCenter is a web-based Kubernetes management platform delivering vCenter-level functionality for Kubernetes clusters. This plan covers the complete Phase 1 MVP: a working single-cluster management UI with GUI wizards, real-time updates, monitoring integration, and RBAC-aware multi-tenancy.
+k8sCenter is a web-based Kubernetes management platform delivering vCenter-level functionality for Kubernetes clusters. This plan covers the complete Phase 1 MVP: a working single-cluster management UI with GUI wizards, real-time updates, monitoring integration, and RBAC-aware multi-tenancy.
 
 This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking changes, and 62 specification gaps identified during analysis.
 
@@ -12,18 +12,18 @@ This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking
 
 | Step | Name | Status | PR | Notes |
 |------|------|--------|-----|-------|
-| 1 | Backend Skeleton | Done | #1 | HTTP server, k8s client, informers, Helm skeleton, CI |
-| 2 | Auth System | Done | #2 | JWT, local auth, RBAC, audit interface, middleware. 14 review findings fixed, 9 deferred (todos 015-023) |
-| 3 | Resource Listing | Not started | — | |
-| 4 | Frontend Skeleton | Not started | — | |
-| 5 | Resource Browser | Not started | — | |
-| 6 | Resource Detail | Not started | — | |
-| 7 | YAML Apply | Not started | — | |
-| 8 | Resource Creation Wizards | Not started | — | |
-| 9 | Monitoring Integration | Not started | — | |
-| 10 | CSI/CNI Wizards | Not started | — | |
-| 11 | Alerting | Not started | — | |
-| 12 | OIDC/LDAP Auth | Done | #18 | OIDC (PKCE, claims mapping), LDAP (bind+search), provider registry, auth settings UI. 15 review findings: 13 fixed, 2 deferred (todos 192, 194) |
+| 1 | Backend Skeleton | Done | #1 | HTTP server, chi router, k8s client factory, informer manager (20 resource types), Helm chart skeleton, CI pipeline, health/readiness probes |
+| 2 | Auth System | Done | #2 | JWT (HMAC-SHA256, 15min access + 7day refresh), local auth (Argon2id), RBAC (SelfSubjectRulesReview), audit interface, middleware (auth, CSRF, rate limiting, CORS). 14 review findings fixed, 9 deferred (todos 015-023) |
+| 3 | Resource Listing | Done | #3 | Informer-backed CRUD for 15 resource types, RBAC access checks, pagination, validation, secret masking, node cordon/drain with task tracking. Fix PRs: #11 (secret annotation leak), #13 (rate limit bucket) |
+| 4 | Frontend Skeleton | Done | #4 | Fresh 2.x app with Vite + Tailwind v4, login page, dashboard, sidebar navigation, BFF proxy with SSRF protection, WS proxy, security headers (CSP, X-Frame-Options) |
+| 5 | Resource Browser | Done | #5 | ResourceTable island with WebSocket live updates, search, sort, pagination. Column definitions for all 15 resource types. Status color mapping |
+| 6 | Resource Detail | Done | #6 | Tabbed detail views (Overview, YAML, Events, Metrics placeholder) for all 18 resource types. ResourceDetail island with live WS updates. Fix PRs: #12 (Monaco CSP) |
+| 7 | YAML Apply | Done | #7 | Monaco editor island, server-side apply (SSA), validate (dry-run), diff, export. Multi-document YAML support. Clean YAML export (strips managed fields) |
+| 8 | Resource Creation Wizards | Done | #14 | Deployment wizard (container config, env vars, volumes, probes, strategy) and Service wizard (ClusterIP/NodePort/LoadBalancer). WizardStepper shell. YAML preview before apply |
+| 9 | Monitoring Integration | Done | #15 | Prometheus/Grafana auto-discovery, PromQL proxy (instant + range), Grafana reverse proxy with dashboard embedding, 12 pre-built PromQL templates, resource→dashboard mapping |
+| 10 | CSI/CNI Wizards | Done | #16 | CSI driver discovery + StorageClass wizard with driver-specific presets. CNI detection (Cilium/Calico/Flannel) with config management. VolumeSnapshot support |
+| 11 | Alerting | Done | #17 | Alertmanager webhook receiver, in-memory alert store with pruner, SMTP email notifier with rate limiting, PrometheusRule CRD CRUD (SSA), real-time alert banner via WebSocket, alert settings UI |
+| 12 | OIDC/LDAP Auth | Done | #18 | OIDC (PKCE + state + nonce, configurable claims mapping, email domain filtering). LDAP (bind+search, injection prevention, group mapping). Provider registry, multi-provider login/refresh, auth settings UI with test connection. 15 review findings: 13 fixed, 2 deferred (todos 192, 194) |
 | 13 | Helm Chart — Production | Not started | — | |
 | 14 | Audit Logging (SQLite) | Not started | — | |
 | 15 | Polish | Not started | — | |
@@ -32,7 +32,7 @@ This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking
 
 ## Problem Statement
 
-Kubernetes operators need a GUI-based management tool that bridges the gap between `kubectl` and enterprise platforms like vCenter. Existing tools (Rancher, Lens, Headlamp) either require external infrastructure, lack wizard-driven workflows, or don't provide integrated monitoring. KubeCenter deploys inside the managed cluster via Helm and provides a complete management experience.
+Kubernetes operators need a GUI-based management tool that bridges the gap between `kubectl` and enterprise platforms like vCenter. Existing tools (Rancher, Lens, Headlamp) either require external infrastructure, lack wizard-driven workflows, or don't provide integrated monitoring. k8sCenter deploys inside the managed cluster via Helm and provides a complete management experience.
 
 ---
 
@@ -325,7 +325,7 @@ type User struct {
 
 `backend/internal/auth/local.go`:
 - Argon2id password hashing (golang.org/x/crypto)
-- User store backed by k8s Secret in the KubeCenter namespace (known limitation: 1MB Secret size limit caps user count; migration path to SQLite documented for scale)
+- User store backed by k8s Secret in the k8sCenter namespace (known limitation: 1MB Secret size limit caps user count; migration path to SQLite documented for scale)
 - `POST /api/v1/setup/init` — creates first admin when no users exist
   - Hardened: rate limited to 1 request per 10 seconds
   - Returns 410 (Gone) when any user exists (does not leak endpoint existence via 403)
@@ -950,7 +950,7 @@ frontend/
 `backend/internal/monitoring/grafana.go`:
 - Reverse proxy to Grafana at `/api/v1/monitoring/grafana/proxy/*`
 - Inject Grafana service account auth headers
-- Provision KubeCenter dashboards via Grafana API on startup
+- Provision k8sCenter dashboards via Grafana API on startup
 - Template variable injection via URL query params (`?var-namespace=X&var-pod=Y`)
 
 `backend/internal/monitoring/metrics.go`:
@@ -1199,7 +1199,7 @@ clusters:
 **Acceptance criteria:**
 - [ ] `helm lint` passes
 - [ ] `helm template` renders valid manifests
-- [ ] `helm install` deploys working KubeCenter in kind cluster
+- [ ] `helm install` deploys working k8sCenter in kind cluster
 - [ ] All security checklist items enforced
 - [ ] PDB configured for zero-downtime upgrades
 - [ ] NetworkPolicy restricts traffic appropriately
