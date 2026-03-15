@@ -24,7 +24,7 @@ This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking
 | 10 | CSI/CNI Wizards | Done | #16 | CSI driver discovery + StorageClass wizard with driver-specific presets. CNI detection (Cilium/Calico/Flannel) with config management. VolumeSnapshot support |
 | 11 | Alerting | Done | #17 | Alertmanager webhook receiver, in-memory alert store with pruner, SMTP email notifier with rate limiting, PrometheusRule CRD CRUD (SSA), real-time alert banner via WebSocket, alert settings UI |
 | 12 | OIDC/LDAP Auth | Done | #18 | OIDC (PKCE + state + nonce, configurable claims mapping, email domain filtering). LDAP (bind+search, injection prevention, group mapping). Provider registry, multi-provider login/refresh, auth settings UI with test connection. 15 review findings: 13 fixed, 2 deferred (todos 192, 194) |
-| 13 | Helm Chart — Production | Not started | — | |
+| 13 | Helm Chart — Production | Done | #23 | Frontend deployment/service, ingress, auto-generated secrets (JWT survives upgrades), ConfigMap, NetworkPolicy (frontend→backend only, conditional LDAP), values.schema.json. Reviewed: removed PDB (no-op) and PVC (premature), tightened NetworkPolicy egress, moved SMTP creds to Secret |
 | 14 | Audit Logging (SQLite) | Not started | — | |
 | 15 | Polish | Not started | — | |
 

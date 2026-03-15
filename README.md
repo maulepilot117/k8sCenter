@@ -85,7 +85,23 @@ curl -X POST http://localhost:8080/api/v1/auth/login \
 ### Deploy to Cluster
 
 ```bash
+# Basic install
 helm install kubecenter ./helm/kubecenter
+
+# With ingress and monitoring
+helm install kubecenter ./helm/kubecenter \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=k8scenter.example.com \
+  --set monitoring.deploy=true
+
+# With OIDC authentication
+helm install kubecenter ./helm/kubecenter \
+  --set auth.oidc[0].id=google \
+  --set auth.oidc[0].displayName="Google" \
+  --set auth.oidc[0].issuerURL=https://accounts.google.com \
+  --set auth.oidc[0].clientID=YOUR_CLIENT_ID \
+  --set auth.oidc[0].clientSecret=YOUR_SECRET \
+  --set auth.oidc[0].redirectURL=https://k8scenter.example.com/api/v1/auth/oidc/google/callback
 ```
 
 ## Build
@@ -251,7 +267,9 @@ kubecenter/
 │   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI, Alerting, AuthSettings)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
-├── helm/kubecenter/      # Helm chart
+├── helm/kubecenter/      # Production Helm chart (v0.2.0)
+│   ├── templates/        # Backend + frontend deployments, services, ingress, secrets, networkpolicy
+│   └── values.schema.json # Values validation
 ├── todos/                # Tracked findings and improvements
 ├── .github/workflows/    # CI pipeline
 └── plans/                # Implementation plans

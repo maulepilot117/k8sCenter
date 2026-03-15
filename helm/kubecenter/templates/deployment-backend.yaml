@@ -39,35 +39,90 @@ spec:
             - name: http
               containerPort: {{ .Values.backend.port }}
               protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "kubecenter.fullname" . }}-config
           env:
-            - name: KUBECENTER_SERVER_PORT
-              value: {{ .Values.backend.port | quote }}
-            - name: KUBECENTER_DEV
-              value: {{ .Values.backend.config.dev | quote }}
-            - name: KUBECENTER_LOG_LEVEL
-              value: {{ .Values.backend.config.logLevel | quote }}
-            - name: KUBECENTER_LOG_FORMAT
-              value: {{ .Values.backend.config.logFormat | quote }}
-            - name: KUBECENTER_CLUSTERID
-              value: {{ .Values.backend.config.clusterID | quote }}
-            {{- if .Values.monitoring.namespace }}
-            - name: KUBECENTER_MONITORING_NAMESPACE
-              value: {{ .Values.monitoring.namespace | quote }}
+            # Secrets — always from the app Secret
+            - name: KUBECENTER_AUTH_JWTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" . }}
+                  key: jwt-secret
+            {{- if .Values.auth.setupToken }}
+            - name: KUBECENTER_AUTH_SETUPTOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" . }}
+                  key: setup-token
             {{- end }}
-            {{- if .Values.monitoring.prometheus.url }}
-            - name: KUBECENTER_MONITORING_PROMETHEUSURL
-              value: {{ .Values.monitoring.prometheus.url | quote }}
+            {{- if .Values.alerting.enabled }}
+            - name: KUBECENTER_ALERTING_WEBHOOKTOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" . }}
+                  key: alerting-webhook-token
+            {{- if .Values.alerting.smtp.username }}
+            - name: KUBECENTER_ALERTING_SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" . }}
+                  key: smtp-username
             {{- end }}
-            {{- if .Values.monitoring.grafana.url }}
-            - name: KUBECENTER_MONITORING_GRAFANAURL
-              value: {{ .Values.monitoring.grafana.url | quote }}
+            {{- if .Values.alerting.smtp.password }}
+            - name: KUBECENTER_ALERTING_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" . }}
+                  key: smtp-password
+            {{- end }}
             {{- end }}
             {{- if .Values.monitoring.grafana.apiToken }}
             - name: KUBECENTER_MONITORING_GRAFANATOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kubecenter.fullname" . }}-monitoring
+                  name: {{ include "kubecenter.fullname" . }}
                   key: grafana-api-token
+            {{- end }}
+            {{- range $i, $provider := .Values.auth.oidc }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_ID
+              value: {{ $provider.id | quote }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_DISPLAYNAME
+              value: {{ $provider.displayName | quote }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_ISSUERURL
+              value: {{ $provider.issuerURL | quote }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_CLIENTID
+              value: {{ $provider.clientID | quote }}
+            {{- if $provider.clientSecret }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_CLIENTSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" $ }}
+                  key: oidc-{{ $provider.id }}-client-secret
+            {{- end }}
+            - name: KUBECENTER_AUTH_OIDC_{{ $i }}_REDIRECTURL
+              value: {{ $provider.redirectURL | quote }}
+            {{- end }}
+            {{- range $i, $provider := .Values.auth.ldap }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_ID
+              value: {{ $provider.id | quote }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_DISPLAYNAME
+              value: {{ $provider.displayName | quote }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_URL
+              value: {{ $provider.url | quote }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_BINDDN
+              value: {{ $provider.bindDN | quote }}
+            {{- if $provider.bindPassword }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_BINDPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubecenter.fullname" $ }}
+                  key: ldap-{{ $provider.id }}-bind-password
+            {{- end }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERBASEDN
+              value: {{ $provider.userBaseDN | quote }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERFILTER
+              value: {{ $provider.userFilter | quote }}
             {{- end }}
           livenessProbe:
             httpGet:
