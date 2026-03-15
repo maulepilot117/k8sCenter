@@ -11,7 +11,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Integrated monitoring** via Prometheus and Grafana with auto-discovery, PromQL proxy, and Grafana dashboard embedding
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
-- **Pod management** including logs, exec terminal, and resource metrics *(planned)*
+- **Pod management** including logs, exec terminal, and resource metrics *(Phase 2)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
 - **Audit logging** with SQLite persistence, paginated query API, filterable viewer, and 90-day retention
 - **Multi-cluster ready** architecture (single-cluster in Phase 1)

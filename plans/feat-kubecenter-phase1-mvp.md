@@ -26,7 +26,7 @@ This plan incorporates research findings on Go 1.26 patterns, Fresh 2.x breaking
 | 12 | OIDC/LDAP Auth | Done | #18 | OIDC (PKCE + state + nonce, configurable claims mapping, email domain filtering). LDAP (bind+search, injection prevention, group mapping). Provider registry, multi-provider login/refresh, auth settings UI with test connection. 15 review findings: 13 fixed, 2 deferred (todos 192, 194) |
 | 13 | Helm Chart — Production | Done | #23 | Frontend deployment/service, ingress, auto-generated secrets (JWT survives upgrades), ConfigMap, NetworkPolicy (frontend→backend only, conditional LDAP), values.schema.json. Reviewed: removed PDB (no-op) and PVC (premature), tightened NetworkPolicy egress, moved SMTP creds to Secret |
 | 14 | Audit Logging (SQLite) | Done | #24 | SQLiteLogger swaps SlogLogger via same interface. Pure Go SQLite (modernc.org/sqlite, no CGO). Paginated query API with filters, daily retention cleanup, WAL mode. Dual-write (SQLite + slog). Frontend audit viewer with filters/pagination. Reviewed: RetentionDays validation, Queryable interface, WAL autocheckpoint |
-| 15 | Polish | Not started | — | |
+| 15 | Polish | Done | #28 | Dark mode toggle (localStorage, no flash), loading skeletons, toast notifications, keyboard shortcuts (? help, / search), branding fix (KubeCenter→k8sCenter). Also resolved all 60 deferred code review findings (6 P1, 21 P2, 39 P3): JWT jti, RBAC cache bound, sentinel errors, admin-only alert routes, pagination cursor fix, config struct dedup, shared UI components (Logo, Alert, Spinner, RemoveButton, KeyValueListEditor), wizard constants, port validation, click-outside handler, WS reconnect limit |
 
 ---
 
