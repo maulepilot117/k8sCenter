@@ -2,12 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
-
-interface AlertEvent {
-  severity: string;
-  alertName: string;
-  status: string;
-}
+import type { AlertEvent } from "@/lib/k8s-types.ts";
 
 export default function AlertBanner() {
   const alerts = useSignal<AlertEvent[]>([]);
@@ -27,7 +22,10 @@ export default function AlertBanner() {
     if (!IS_BROWSER) return;
     fetchAlerts();
 
-    // Poll every 30 seconds for updates
+    // TODO(perf): Replace 30s polling with WebSocket subscription to kind "alerts"
+    // via lib/ws.ts. Fetch initial state via REST, then update via WS events.
+    // This would reduce N requests/30s for N users and improve alert latency
+    // from up to 30s to near-real-time. Blocked on fixing WS alerts RBAC (todo 164).
     const interval = setInterval(fetchAlerts, 30_000);
     return () => clearInterval(interval);
   }, []);

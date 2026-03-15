@@ -136,6 +136,10 @@ export default function ResourceTable({
           }
           break;
         case EVENT_MODIFIED:
+          // Known limitation (todo-095): no resourceVersion comparison — if events
+          // arrive out of order during reconnection, an older version could overwrite
+          // a newer one. Acceptable for now since the server delivers events in order
+          // and reconnection triggers a full REST re-fetch via RESYNC.
           current = current.map((r) => r.metadata.uid === uid ? resource : r);
           break;
         case EVENT_DELETED:

@@ -3,10 +3,12 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -67,9 +69,9 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Atomic: checks no users exist AND creates under the same lock.
-	user, err := s.LocalAuth.CreateFirstUser(req.Username, req.Password, []string{"admin"})
+	user, err := s.LocalAuth.CreateFirstUser(r.Context(), req.Username, req.Password, []string{"admin"})
 	if err != nil {
-		if err.Error() == "setup already completed" {
+		if errors.Is(err, auth.ErrSetupCompleted) {
 			writeJSON(w, http.StatusGone, api.Response{
 				Error: &api.APIError{Code: 410, Message: "setup already completed"},
 			})

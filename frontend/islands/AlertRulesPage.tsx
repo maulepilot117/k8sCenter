@@ -13,24 +13,40 @@ interface RuleSummary {
   managedBy: string;
 }
 
-const DEFAULT_RULE_YAML = `apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: kubecenter-example
-spec:
-  groups:
-    - name: example.rules
-      rules:
-        - alert: HighPodCPU
-          expr: |
-            sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod, namespace) > 0.8
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: "High CPU usage on {{ $labels.pod }}"
-            description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} is using > 80% CPU for 5 minutes."
-`;
+const DEFAULT_RULE_JSON = JSON.stringify(
+  {
+    apiVersion: "monitoring.coreos.com/v1",
+    kind: "PrometheusRule",
+    metadata: {
+      name: "kubecenter-example",
+    },
+    spec: {
+      groups: [
+        {
+          name: "example.rules",
+          rules: [
+            {
+              alert: "HighPodCPU",
+              expr:
+                'sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (pod, namespace) > 0.8',
+              for: "5m",
+              labels: {
+                severity: "warning",
+              },
+              annotations: {
+                summary: "High CPU usage on {{ $labels.pod }}",
+                description:
+                  "Pod {{ $labels.pod }} in {{ $labels.namespace }} is using > 80% CPU for 5 minutes.",
+              },
+            },
+          ],
+        },
+      ],
+    },
+  },
+  null,
+  2,
+);
 
 export default function AlertRulesPage() {
   const rules = useSignal<RuleSummary[]>([]);
@@ -63,7 +79,7 @@ export default function AlertRulesPage() {
 
   function handleNew() {
     editing.value = "new";
-    editorContent.value = DEFAULT_RULE_YAML;
+    editorContent.value = DEFAULT_RULE_JSON;
   }
 
   function handleEdit(ns: string, name: string) {

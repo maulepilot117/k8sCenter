@@ -14,25 +14,14 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/kubecenter/kubecenter/internal/config"
 	"golang.org/x/oauth2"
 )
 
-// OIDCProviderConfig holds the configuration for a single OIDC provider.
-type OIDCProviderConfig struct {
-	ID             string   `json:"id" koanf:"id"`
-	DisplayName    string   `json:"displayName" koanf:"displayname"`
-	IssuerURL      string   `json:"issuerURL" koanf:"issuerurl"`
-	ClientID       string   `json:"clientID" koanf:"clientid"`
-	ClientSecret   string   `json:"clientSecret" koanf:"clientsecret"`
-	RedirectURL    string   `json:"redirectURL" koanf:"redirecturl"`
-	Scopes         []string `json:"scopes" koanf:"scopes"`
-	UsernameClaim  string   `json:"usernameClaim" koanf:"usernameclaim"`
-	GroupsClaim    string   `json:"groupsClaim" koanf:"groupsclaim"`
-	GroupsPrefix   string   `json:"groupsPrefix" koanf:"groupsprefix"`
-	AllowedDomains []string `json:"allowedDomains" koanf:"alloweddomains"`
-	TLSInsecure    bool     `json:"tlsInsecure" koanf:"tlsinsecure"`
-	CACertPath     string   `json:"caCertPath" koanf:"cacertpath"`
-}
+// OIDCProviderConfig is an alias for config.OIDCConfig.
+// Kept as a type alias for backward compatibility with existing code
+// that references auth.OIDCProviderConfig.
+type OIDCProviderConfig = config.OIDCConfig
 
 // OIDCProvider wraps the go-oidc provider and oauth2 config for a single OIDC identity provider.
 type OIDCProvider struct {

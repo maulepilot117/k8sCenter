@@ -1,6 +1,9 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // User represents an authenticated user with Kubernetes identity mappings.
 type User struct {
@@ -39,6 +42,14 @@ type ProviderInfo struct {
 	DisplayName string `json:"displayName"`
 	LoginURL    string `json:"loginURL,omitempty"` // only for OIDC (redirect-based)
 }
+
+// Sentinel errors for the auth package. Use errors.Is() for comparison.
+var (
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrDuplicateUser      = errors.New("user already exists")
+	ErrSetupCompleted     = errors.New("setup already completed")
+)
 
 // contextKey is an unexported type for context keys to prevent collisions.
 type contextKey int

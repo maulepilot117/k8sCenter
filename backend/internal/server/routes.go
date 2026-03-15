@@ -225,8 +225,8 @@ func (s *Server) registerAlertingRoutes(ar chi.Router) {
 		alr.Put("/rules/{namespace}/{name}", h.HandleUpdateRule)
 		alr.Delete("/rules/{namespace}/{name}", h.HandleDeleteRule)
 		alr.Get("/settings", h.HandleGetSettings)
-		alr.Put("/settings", h.HandleUpdateSettings)
-		alr.Post("/test", h.HandleTestEmail)
+		alr.With(middleware.RequireAdmin).Put("/settings", h.HandleUpdateSettings)
+		alr.With(middleware.RequireAdmin).Post("/test", h.HandleTestEmail)
 	})
 }
 

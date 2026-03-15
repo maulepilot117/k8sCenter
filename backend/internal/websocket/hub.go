@@ -33,6 +33,15 @@ const MaxClients = 1000
 // Hub maintains active clients and fans out informer events
 // to clients based on their subscriptions. All map mutations
 // happen in the single Run goroutine via channels.
+//
+// Design note: the single-goroutine event loop is intentional. It avoids
+// concurrent map access without locks and keeps ordering guarantees simple.
+// The events channel is buffered (1024) to absorb bursts from informer
+// callbacks. Broadcast uses non-blocking sends with resync_required
+// fallback for slow clients, so a blocked consumer cannot stall the loop.
+// If throughput becomes a bottleneck under very high event rates, consider
+// a worker pool for serialization + send, but the current design is
+// sufficient for typical cluster sizes.
 type Hub struct {
 	clients       map[*Client]bool
 	subscriptions map[subKey]map[*Client]string // subKey → client → subscription ID
@@ -288,7 +297,7 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			Code:    403,
 			Message: "subscription revoked: access denied",
 		}
-		if data, err := MarshalOutgoing(msg); err == nil {
+		if data, err := json.Marshal(msg); err == nil {
 			select {
 			case r.client.send <- data:
 			default:
@@ -308,7 +317,7 @@ func (h *Hub) sendResync(client *Client, subID, kind string) {
 		ID:      subID,
 		Message: kind,
 	}
-	data, err := MarshalOutgoing(msg)
+	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}

@@ -1,10 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
+import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-
-interface LabelEntry {
-  key: string;
-  value: string;
-}
+import type { LabelEntry } from "@/lib/wizard-types.ts";
 
 interface DeploymentBasicsProps {
   name: string;
@@ -87,57 +84,14 @@ export function DeploymentBasicsStep({
         error={errors.replicas}
       />
 
-      <div class="space-y-2">
-        <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-          Labels
-        </label>
-        {labels.map((label, i) => (
-          <div key={i} class="flex items-center gap-2">
-            <Input
-              value={label.key}
-              onInput={(e) =>
-                updateLabel(i, "key", (e.target as HTMLInputElement).value)}
-              placeholder="key"
-              class="flex-1"
-            />
-            <span class="text-slate-400">=</span>
-            <Input
-              value={label.value}
-              onInput={(e) =>
-                updateLabel(i, "value", (e.target as HTMLInputElement).value)}
-              placeholder="value"
-              class="flex-1"
-            />
-            <button
-              type="button"
-              onClick={() => removeLabel(i)}
-              class="p-1 text-slate-400 hover:text-danger"
-              title="Remove label"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
-        ))}
-        <button
-          type="button"
-          onClick={addLabel}
-          class="text-sm text-brand hover:text-brand/80"
-        >
-          + Add Label
-        </button>
-      </div>
+      <KeyValueListEditor
+        label="Labels"
+        entries={labels}
+        onUpdate={updateLabel}
+        onAdd={addLabel}
+        onRemove={removeLabel}
+        addLabel="+ Add Label"
+      />
     </div>
   );
 }

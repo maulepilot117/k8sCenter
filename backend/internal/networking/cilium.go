@@ -28,21 +28,31 @@ type CiliumConfig struct {
 // The caller should pass an impersonated clientset to enforce Kubernetes RBAC.
 func ReadCiliumConfig(ctx context.Context, cs kubernetes.Interface) (*CiliumConfig, error) {
 	for _, ns := range ciliumSearchNamespaces {
-		cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
+		config, err := ReadCiliumConfigFromNamespace(ctx, cs, ns)
 		if err != nil {
 			continue
 		}
-		return &CiliumConfig{
-			CNIType:            CNICilium,
-			ConfigSource:       "configmap",
-			ConfigMapName:      ciliumConfigMapName,
-			ConfigMapNamespace: ns,
-			Editable:           true,
-			Config:             cm.Data,
-		}, nil
+		return config, nil
 	}
 
 	return nil, fmt.Errorf("cilium-config ConfigMap not found in namespaces %v", ciliumSearchNamespaces)
+}
+
+// ReadCiliumConfigFromNamespace reads the cilium-config ConfigMap from a specific namespace.
+// Use this when the namespace is already known to avoid redundant API calls.
+func ReadCiliumConfigFromNamespace(ctx context.Context, cs kubernetes.Interface, namespace string) (*CiliumConfig, error) {
+	cm, err := cs.CoreV1().ConfigMaps(namespace).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to read cilium-config in %s: %w", namespace, err)
+	}
+	return &CiliumConfig{
+		CNIType:            CNICilium,
+		ConfigSource:       "configmap",
+		ConfigMapName:      ciliumConfigMapName,
+		ConfigMapNamespace: namespace,
+		Editable:           true,
+		Config:             cm.Data,
+	}, nil
 }
 
 // ciliumConfigAllowlist defines Cilium config keys that are safe to modify via the UI.

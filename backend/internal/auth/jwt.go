@@ -23,8 +23,8 @@ type TokenClaims struct {
 	jwt.RegisteredClaims
 	Username           string   `json:"username"`
 	Provider           string   `json:"provider"`
-	KubernetesUsername string   `json:"k8s_user"`
-	KubernetesGroups   []string `json:"k8s_groups"`
+	KubernetesUsername string   `json:"kubernetesUsername"`
+	KubernetesGroups   []string `json:"kubernetesGroups"`
 	Roles              []string `json:"roles"`
 }
 
@@ -42,11 +42,26 @@ func NewTokenManager(signingKey []byte) *TokenManager {
 	}
 }
 
+// generateJTI creates a cryptographically random JWT ID (16 bytes, hex-encoded).
+func generateJTI() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating jti: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // IssueAccessToken creates a signed JWT access token for the given user.
 func (tm *TokenManager) IssueAccessToken(user *User) (string, error) {
+	jti, err := generateJTI()
+	if err != nil {
+		return "", err
+	}
+
 	now := time.Now()
 	claims := TokenClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			Subject:   user.ID,
 			Issuer:    tm.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),

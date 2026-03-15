@@ -52,6 +52,7 @@ func (s storedUser) toUser() *User {
 type LocalProvider struct {
 	mu       sync.RWMutex
 	users    map[string]storedUser // keyed by username
+	usersByID map[string]storedUser // keyed by ID (todo-017: O(1) lookup)
 	logger   *slog.Logger
 	hashSem  chan struct{} // limits concurrent Argon2id operations
 }
@@ -59,9 +60,10 @@ type LocalProvider struct {
 // NewLocalProvider creates a LocalProvider.
 func NewLocalProvider(logger *slog.Logger) *LocalProvider {
 	return &LocalProvider{
-		users:   make(map[string]storedUser),
-		logger:  logger,
-		hashSem: make(chan struct{}, maxConcurrentHashes),
+		users:     make(map[string]storedUser),
+		usersByID: make(map[string]storedUser),
+		logger:    logger,
+		hashSem:   make(chan struct{}, maxConcurrentHashes),
 	}
 }
 
@@ -85,21 +87,21 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 		// Constant-time: hash the password anyway to prevent timing attacks
 		dummySalt := make([]byte, argon2SaltLen)
 		argon2.IDKey([]byte(creds.Password), dummySalt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	salt, err := hex.DecodeString(stored.Salt)
 	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	hash := argon2.IDKey([]byte(creds.Password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
 	storedHash, err := hex.DecodeString(stored.PasswordHash)
 	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 	if subtle.ConstantTimeCompare(hash, storedHash) != 1 {
-		return nil, fmt.Errorf("invalid credentials")
+		return nil, ErrInvalidCredentials
 	}
 
 	return stored.toUser(), nil
@@ -108,19 +110,23 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 // CreateFirstUser atomically creates the first user only if no users exist.
 // This prevents the TOCTOU race where two concurrent setup requests could
 // both pass a UserCount() == 0 check and create two admin accounts.
-func (p *LocalProvider) CreateFirstUser(username, password string, roles []string) (*User, error) {
-	return p.createUser(username, password, roles, true)
+func (p *LocalProvider) CreateFirstUser(ctx context.Context, username, password string, roles []string) (*User, error) {
+	return p.createUser(ctx, username, password, roles, true)
 }
 
 // CreateUser adds a new local user with Argon2id-hashed password.
-func (p *LocalProvider) CreateUser(username, password string, roles []string) (*User, error) {
-	return p.createUser(username, password, roles, false)
+func (p *LocalProvider) CreateUser(ctx context.Context, username, password string, roles []string) (*User, error) {
+	return p.createUser(ctx, username, password, roles, false)
 }
 
-func (p *LocalProvider) createUser(username, password string, roles []string, requireEmpty bool) (*User, error) {
-	// Acquire hash semaphore before the expensive Argon2id operation.
-	p.hashSem <- struct{}{}
-	defer func() { <-p.hashSem }()
+func (p *LocalProvider) createUser(ctx context.Context, username, password string, roles []string, requireEmpty bool) (*User, error) {
+	// Acquire hash semaphore with context cancellation support (todo-022).
+	select {
+	case p.hashSem <- struct{}{}:
+		defer func() { <-p.hashSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
 	salt := make([]byte, argon2SaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -139,11 +145,11 @@ func (p *LocalProvider) createUser(username, password string, roles []string, re
 	defer p.mu.Unlock()
 
 	if requireEmpty && len(p.users) > 0 {
-		return nil, fmt.Errorf("setup already completed")
+		return nil, ErrSetupCompleted
 	}
 
 	if _, exists := p.users[username]; exists {
-		return nil, fmt.Errorf("user %q already exists", username)
+		return nil, ErrDuplicateUser
 	}
 
 	stored := storedUser{
@@ -157,6 +163,7 @@ func (p *LocalProvider) createUser(username, password string, roles []string, re
 	}
 
 	p.users[username] = stored
+	p.usersByID[id] = stored
 
 	p.logger.Info("local user created", "username", username, "roles", roles)
 
@@ -170,17 +177,16 @@ func (p *LocalProvider) UserCount() int {
 	return len(p.users)
 }
 
-// GetUserByID looks up a user by their ID.
+// GetUserByID looks up a user by their ID using the ID-indexed map (O(1)).
 func (p *LocalProvider) GetUserByID(id string) (*User, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	for _, stored := range p.users {
-		if stored.ID == id {
-			return stored.toUser(), nil
-		}
+	stored, ok := p.usersByID[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, id)
 	}
-	return nil, fmt.Errorf("user not found: %s", id)
+	return stored.toUser(), nil
 }
 
 func generateID() (string, error) {

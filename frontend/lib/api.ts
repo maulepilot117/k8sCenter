@@ -60,7 +60,7 @@ async function refreshAccessToken(): Promise<boolean> {
 }
 
 /**
- * Typed fetch wrapper for the KubeCenter API.
+ * Typed fetch wrapper for the k8sCenter API.
  *
  * - Injects Bearer token and X-Cluster-ID header
  * - Auto-refreshes on 401 (single concurrent refresh, replays queued requests)

@@ -1,6 +1,7 @@
 package networking
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -164,16 +165,16 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	})
 	h.Logger.Info("cilium config updated", "user", user.Username, "changedKeys", len(req.Changes))
 
-	// Re-detect to refresh cached features
-	h.Detector.Detect(r.Context())
-
-	// Return updated config
-	config, err := ReadCiliumConfig(r.Context(), cs)
+	// Return updated config by reading from the known namespace (avoids redundant probing)
+	config, err := ReadCiliumConfigFromNamespace(r.Context(), cs, updatedNS)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadGateway, "config updated but failed to re-read", "")
 		return
 	}
 	httputil.WriteData(w, config)
+
+	// Refresh cached CNI features asynchronously (non-blocking)
+	go h.Detector.Detect(context.Background())
 }
 
 // formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.

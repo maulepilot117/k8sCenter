@@ -412,6 +412,12 @@ func validateProbe(prefix string, p *ProbeInput) []FieldError {
 			Message: "must start with /",
 		})
 	}
+	if p.Type == "http" && len(p.Path) > 1024 {
+		errs = append(errs, FieldError{
+			Field:   prefix + ".path",
+			Message: "must be 1024 characters or fewer",
+		})
+	}
 	return errs
 }
 
@@ -422,7 +428,7 @@ func validateQuantity(field, value string) []FieldError {
 	if _, err := resource.ParseQuantity(value); err != nil {
 		return []FieldError{{
 			Field:   field,
-			Message: fmt.Sprintf("invalid resource quantity: %s", err.Error()),
+			Message: "invalid resource quantity (e.g. use 100m, 128Mi, 1Gi)",
 		}}
 	}
 	return nil

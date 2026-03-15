@@ -111,9 +111,9 @@ export default function ResourceDetail({
   // Set document title
   useEffect(() => {
     if (!IS_BROWSER) return;
-    document.title = `${name} - ${title} - KubeCenter`;
+    document.title = `${name} - ${title} - k8sCenter`;
     return () => {
-      document.title = "KubeCenter";
+      document.title = "k8sCenter";
     };
   }, [name, title]);
 

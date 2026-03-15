@@ -94,6 +94,9 @@ func (d *Detector) CachedInfo() *CNIInfo {
 }
 
 func (d *Detector) detect(ctx context.Context) *CNIInfo {
+	// Fetch server groups once for all CRD group checks
+	serverGroups := d.fetchServerGroups()
+
 	// Strategy 1: DaemonSet scan across known namespaces
 	allDS, err := d.informers.DaemonSets().List(labels.Everything())
 	if err != nil {
@@ -127,8 +130,8 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 					},
 					DetectionMethod: "daemonset",
 				}
-				// Check for Cilium CRDs
-				info.HasCRDs = d.checkCRDGroup("cilium.io")
+				// Check for Cilium CRDs using pre-fetched groups
+				info.HasCRDs = hasAPIGroup(serverGroups, "cilium.io")
 				if info.HasCRDs {
 					info.DetectionMethod = "daemonset+crd"
 				}
@@ -152,7 +155,7 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 					},
 					DetectionMethod: "daemonset",
 				}
-				info.HasCRDs = d.checkCRDGroup("crd.projectcalico.org")
+				info.HasCRDs = hasAPIGroup(serverGroups, "crd.projectcalico.org")
 				if info.HasCRDs {
 					info.DetectionMethod = "daemonset+crd"
 				}
@@ -178,28 +181,34 @@ func (d *Detector) detect(ctx context.Context) *CNIInfo {
 	}
 
 	// Strategy 2: CRD-only check (DaemonSet might be in unexpected namespace)
-	if d.checkCRDGroup("cilium.io") {
+	if hasAPIGroup(serverGroups, "cilium.io") {
 		return &CNIInfo{Name: CNICilium, HasCRDs: true, DetectionMethod: "crd-only"}
 	}
-	if d.checkCRDGroup("crd.projectcalico.org") {
+	if hasAPIGroup(serverGroups, "crd.projectcalico.org") {
 		return &CNIInfo{Name: CNICalico, HasCRDs: true, DetectionMethod: "crd-only"}
 	}
 
 	return &CNIInfo{Name: CNIUnknown, DetectionMethod: "none"}
 }
 
-// checkCRDGroup checks if an API group is registered.
-func (d *Detector) checkCRDGroup(group string) bool {
+// fetchServerGroups retrieves the API server groups once for reuse.
+func (d *Detector) fetchServerGroups() []metav1.APIGroup {
 	disc := d.k8sClient.DiscoveryClient()
 	if disc == nil {
-		return false
+		return nil
 	}
 	groups, err := disc.ServerGroups()
 	if err != nil {
-		return false
+		d.logger.Debug("failed to fetch server groups", "error", err)
+		return nil
 	}
-	for _, g := range groups.Groups {
-		if g.Name == group {
+	return groups.Groups
+}
+
+// hasAPIGroup checks if the given group name exists in the provided server groups list.
+func hasAPIGroup(groups []metav1.APIGroup, name string) bool {
+	for _, g := range groups {
+		if g.Name == name {
 			return true
 		}
 	}

@@ -4,21 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface AlertEvent {
-  id: string;
-  fingerprint: string;
-  status: string;
-  alertName: string;
-  namespace: string;
-  severity: string;
-  labels: Record<string, string>;
-  annotations: Record<string, string>;
-  startsAt: string;
-  endsAt?: string;
-  receivedAt: string;
-  resolvedAt?: string;
-}
+import type { AlertEvent } from "@/lib/k8s-types.ts";
 
 const severityColor: Record<string, string> = {
   critical: "danger",

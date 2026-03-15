@@ -1,5 +1,8 @@
 import { Input } from "@/components/ui/Input.tsx";
+import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
+import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
+import type { SelectorEntry } from "@/lib/wizard-types.ts";
 
 interface PortEntry {
   name: string;
@@ -7,11 +10,6 @@ interface PortEntry {
   targetPort: number;
   protocol: string;
   nodePort: number;
-}
-
-interface SelectorEntry {
-  key: string;
-  value: string;
 }
 
 interface ServicePortsProps {
@@ -81,71 +79,20 @@ export function ServicePortsStep({
     <div class="space-y-8 max-w-2xl">
       {/* Selector */}
       <div class="space-y-3">
-        <div>
-          <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-            Pod Selector
-          </label>
-          <p class="text-xs text-slate-500 mt-1">
-            Labels used to match target pods. Must match at least one pod's
-            labels.
-          </p>
-        </div>
+        <p class="text-xs text-slate-500">
+          Labels used to match target pods. Must match at least one pod's
+          labels.
+        </p>
         {errors.selector && <p class="text-sm text-danger">{errors.selector}
         </p>}
-        {selector.map((s, i) => (
-          <div key={i} class="flex items-center gap-2">
-            <Input
-              value={s.key}
-              onInput={(e) =>
-                updateSelector(
-                  i,
-                  "key",
-                  (e.target as HTMLInputElement).value,
-                )}
-              placeholder="key"
-              class="flex-1"
-            />
-            <span class="text-slate-400">=</span>
-            <Input
-              value={s.value}
-              onInput={(e) =>
-                updateSelector(
-                  i,
-                  "value",
-                  (e.target as HTMLInputElement).value,
-                )}
-              placeholder="value"
-              class="flex-1"
-            />
-            <button
-              type="button"
-              onClick={() => removeSelector(i)}
-              class="p-1 text-slate-400 hover:text-danger"
-              title="Remove selector"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
-          </div>
-        ))}
-        <button
-          type="button"
-          onClick={addSelector}
-          class="text-sm text-brand hover:text-brand/80"
-        >
-          + Add Selector
-        </button>
+        <KeyValueListEditor
+          label="Pod Selector"
+          entries={selector}
+          onUpdate={updateSelector}
+          onAdd={addSelector}
+          onRemove={removeSelector}
+          addLabel="+ Add Selector"
+        />
       </div>
 
       {/* Ports */}
@@ -231,26 +178,11 @@ export function ServicePortsStep({
                 />
               </div>
             )}
-            <button
-              type="button"
+            <RemoveButton
               onClick={() => removePort(i)}
-              class="p-2 text-slate-400 hover:text-danger mb-1"
               title="Remove port"
-            >
-              <svg
-                class="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
-            </button>
+              class="p-2 mb-1"
+            />
           </div>
         ))}
         {ports.length < 20 && (

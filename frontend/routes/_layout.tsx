@@ -2,10 +2,12 @@ import { define } from "@/utils.ts";
 import AlertBanner from "@/islands/AlertBanner.tsx";
 import Sidebar from "@/islands/Sidebar.tsx";
 import TopBar from "@/islands/TopBar.tsx";
+import ToastProvider from "@/islands/ToastProvider.tsx";
+import KeyboardShortcuts from "@/islands/KeyboardShortcuts.tsx";
 
 export default define.page(function Layout({ Component, url }) {
-  // Login page uses its own full-screen layout
-  if (url.pathname === "/login") {
+  // Login and OIDC callback use their own full-screen layout
+  if (url.pathname === "/login" || url.pathname.startsWith("/auth/")) {
     return <Component />;
   }
 
@@ -19,6 +21,8 @@ export default define.page(function Layout({ Component, url }) {
           <Component />
         </main>
       </div>
+      <ToastProvider />
+      <KeyboardShortcuts />
     </div>
   );
 });

@@ -139,7 +139,7 @@ async function proxyRequest(
         error: {
           code: 502,
           message: "Backend unavailable",
-          detail: "Could not connect to the KubeCenter backend",
+          detail: "Could not connect to the k8sCenter backend",
         },
       }),
       { status: 502, headers: { "Content-Type": "application/json" } },

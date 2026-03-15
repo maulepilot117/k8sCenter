@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/httputil"
@@ -17,13 +18,17 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+// snapshotCRDCheckTTL is how long to cache the VolumeSnapshot CRD existence check.
+const snapshotCRDCheckTTL = 5 * time.Minute
+
 // Handler serves storage-related HTTP endpoints.
 type Handler struct {
-	K8sClient       *k8s.ClientFactory
-	Informers       *k8s.InformerManager
-	Logger          *slog.Logger
-	snapshotOnce    sync.Once
-	snapshotAvail   bool
+	K8sClient          *k8s.ClientFactory
+	Informers          *k8s.InformerManager
+	Logger             *slog.Logger
+	snapshotMu         sync.Mutex
+	snapshotAvail      bool
+	snapshotCheckedAt  time.Time
 }
 
 // volumeSnapshotGVR is the GVR for VolumeSnapshot CRDs.
@@ -161,25 +166,34 @@ func (h *Handler) HandleListPresets(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, DriverPresets)
 }
 
-// checkSnapshotCRDs checks if VolumeSnapshot CRDs are installed (thread-safe, checked once).
+// checkSnapshotCRDs checks if VolumeSnapshot CRDs are installed.
+// Results are cached with a TTL so CRDs installed after startup are detected.
 func (h *Handler) checkSnapshotCRDs() bool {
-	h.snapshotOnce.Do(func() {
-		disc := h.K8sClient.DiscoveryClient()
-		if disc == nil {
-			return
+	h.snapshotMu.Lock()
+	defer h.snapshotMu.Unlock()
+
+	if !h.snapshotCheckedAt.IsZero() && time.Since(h.snapshotCheckedAt) < snapshotCRDCheckTTL {
+		return h.snapshotAvail
+	}
+
+	h.snapshotAvail = false
+	h.snapshotCheckedAt = time.Now()
+
+	disc := h.K8sClient.DiscoveryClient()
+	if disc == nil {
+		return false
+	}
+	resources, err := disc.ServerResourcesForGroupVersion("snapshot.storage.k8s.io/v1")
+	if err != nil {
+		return false
+	}
+	for _, r := range resources.APIResources {
+		if r.Name == "volumesnapshots" {
+			h.snapshotAvail = true
+			return true
 		}
-		resources, err := disc.ServerResourcesForGroupVersion("snapshot.storage.k8s.io/v1")
-		if err != nil {
-			return
-		}
-		for _, r := range resources.APIResources {
-			if r.Name == "volumesnapshots" {
-				h.snapshotAvail = true
-				return
-			}
-		}
-	})
-	return h.snapshotAvail
+	}
+	return false
 }
 
 // getSnapshotDrivers returns a set of driver names that have VolumeSnapshotClasses.

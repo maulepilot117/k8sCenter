@@ -13,7 +13,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const rbacCacheTTL = 60 * time.Second
+const (
+	rbacCacheTTL     = 60 * time.Second
+	rbacCacheMaxSize = 1000
+)
 
 // RBACSummary describes a user's permissions across the cluster.
 type RBACSummary struct {
@@ -43,7 +46,8 @@ type RBACChecker struct {
 	clientFactory interface {
 		ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
 	}
-	cache  sync.Map // map[string]rbacCacheEntry (keyed by username)
+	mu     sync.Mutex
+	cache  map[string]rbacCacheEntry // keyed by username
 	logger *slog.Logger
 }
 
@@ -53,6 +57,7 @@ func NewRBACChecker(clientFactory interface {
 }, logger *slog.Logger) *RBACChecker {
 	return &RBACChecker{
 		clientFactory: clientFactory,
+		cache:         make(map[string]rbacCacheEntry),
 		logger:        logger,
 	}
 }
@@ -62,13 +67,15 @@ func NewRBACChecker(clientFactory interface {
 // SelfSubjectAccessReview (1 call per resource per verb per namespace).
 // Results are cached for 60 seconds per user.
 func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []string) (*RBACSummary, error) {
-	if val, ok := rc.cache.Load(user.Username); ok {
-		entry := val.(rbacCacheEntry)
+	rc.mu.Lock()
+	if entry, ok := rc.cache[user.Username]; ok {
 		if time.Now().Before(entry.expiresAt) {
+			rc.mu.Unlock()
 			return entry.summary, nil
 		}
-		rc.cache.Delete(user.Username)
+		delete(rc.cache, user.Username)
 	}
+	rc.mu.Unlock()
 
 	cs, err := rc.clientFactory.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
@@ -115,10 +122,32 @@ func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []
 		}
 	}
 
-	rc.cache.Store(user.Username, rbacCacheEntry{
+	rc.mu.Lock()
+	// Evict expired entries if cache is at capacity
+	if len(rc.cache) >= rbacCacheMaxSize {
+		now := time.Now()
+		for k, v := range rc.cache {
+			if now.After(v.expiresAt) {
+				delete(rc.cache, k)
+			}
+		}
+		// If still at capacity after evicting expired entries, clear the oldest half
+		if len(rc.cache) >= rbacCacheMaxSize {
+			count := 0
+			for k := range rc.cache {
+				delete(rc.cache, k)
+				count++
+				if count >= rbacCacheMaxSize/2 {
+					break
+				}
+			}
+		}
+	}
+	rc.cache[user.Username] = rbacCacheEntry{
 		summary:   summary,
 		expiresAt: time.Now().Add(rbacCacheTTL),
-	})
+	}
+	rc.mu.Unlock()
 
 	return summary, nil
 }
