@@ -13,7 +13,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Pod management** including logs, exec terminal, and resource metrics *(planned)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
-- **Audit logging** for all write operations and secret access
+- **Audit logging** with SQLite persistence, paginated query API, filterable viewer, and 90-day retention
 - **Multi-cluster ready** architecture (single-cluster in Phase 1)
 
 ## Architecture
@@ -224,6 +224,12 @@ Alerting:
 | GET | `/api/v1/alerts/settings` | Yes | Get alerting config (password masked) |
 | PUT | `/api/v1/alerts/settings` | Yes | Update alerting config (in-memory) |
 | POST | `/api/v1/alerts/test` | Yes | Send test email |
+
+Audit:
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/v1/audit/logs` | Admin | Paginated audit log query (filters: user, action, kind, namespace, since, until) |
 
 See [CLAUDE.md](CLAUDE.md) for the complete API reference.
 
