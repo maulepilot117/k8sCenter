@@ -22,6 +22,7 @@ import { stringify } from "yaml";
 import YamlEditor from "@/islands/YamlEditor.tsx";
 import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
+import RelatedPods from "@/islands/RelatedPods.tsx";
 
 interface ResourceDetailProps {
   kind: string;
@@ -522,6 +523,36 @@ export default function ResourceDetail({
       ),
     },
   ];
+
+  // Add Pods tab for workload types (deployments, statefulsets, daemonsets)
+  const workloadKinds = ["deployments", "statefulsets", "daemonsets"];
+  if (workloadKinds.includes(kind) && namespace && IS_BROWSER) {
+    tabDefs.push({
+      id: "pods",
+      label: "Pods",
+      content: () => {
+        // deno-lint-ignore no-explicit-any
+        const res = resource.value as any;
+        const matchLabels = res?.spec?.selector?.matchLabels ?? {};
+        const selector = Object.entries(matchLabels)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(",");
+        return selector
+          ? (
+            <RelatedPods
+              namespace={namespace}
+              labelSelector={selector}
+              parentName={name}
+            />
+          )
+          : (
+            <div class="py-8 text-center text-sm text-slate-400">
+              Loading pod selector...
+            </div>
+          );
+      },
+    });
+  }
 
   // Add Logs tab for pods
   if (kind === "pods" && namespace && IS_BROWSER) {
