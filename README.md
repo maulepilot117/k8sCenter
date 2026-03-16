@@ -13,7 +13,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Pod management** including logs, exec terminal, and resource metrics *(Phase 2)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
-- **Audit logging** with SQLite persistence, paginated query API, filterable viewer, and 90-day retention
+- **Audit logging** with PostgreSQL persistence, paginated query API, filterable viewer, and 90-day retention
 - **Multi-cluster ready** architecture (single-cluster in Phase 1)
 
 ## Architecture
@@ -40,6 +40,7 @@ Kubernetes Cluster
 |---|---|
 | Backend API | Go 1.26, chi router, client-go |
 | Frontend | Deno 2.x, Fresh 2.x, Preact, Tailwind v4 |
+| Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
 | Auth | JWT + OIDC / LDAP / local (Argon2id) |
 | Deployment | Helm 3.x chart |

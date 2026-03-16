@@ -10,7 +10,7 @@ Transform k8sCenter from a single-cluster MVP into a production-grade, multi-clu
 
 | Step | Name | Depends On | Effort |
 |------|------|------------|--------|
-| 16 | PostgreSQL Migration | — | Medium |
+| 16 | PostgreSQL Migration | — | Done (#29) |
 | 17 | Persistent Settings Store | 16 | Medium |
 | 18 | Multi-Cluster Registry | 16, 17 | Large |
 | 19 | Complete Resource Coverage | — | Medium |
