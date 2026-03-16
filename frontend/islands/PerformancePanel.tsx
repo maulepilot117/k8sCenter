@@ -85,6 +85,111 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
       query:
         'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
     },
+    {
+      title: "Desired / Ready",
+      query:
+        'kube_daemonset_status_number_ready{namespace="{namespace}",daemonset="{name}"}',
+    },
+  ],
+  replicasets: [
+    {
+      title: "CPU Usage (cores)",
+      query:
+        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
+    },
+    {
+      title: "Memory Usage (MB)",
+      query:
+        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
+    },
+  ],
+  jobs: [
+    {
+      title: "CPU Usage (cores)",
+      query:
+        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
+    },
+    {
+      title: "Memory Usage (MB)",
+      query:
+        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
+    },
+  ],
+  cronjobs: [
+    {
+      title: "Last Job CPU (cores)",
+      query:
+        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
+    },
+    {
+      title: "Last Job Memory (MB)",
+      query:
+        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
+    },
+  ],
+  services: [
+    {
+      title: "Endpoint Pods CPU (cores)",
+      query:
+        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~".*",container!=""}[5m])) by (pod)',
+    },
+  ],
+  pvcs: [
+    {
+      title: "Volume Usage (bytes)",
+      query:
+        'kubelet_volume_stats_used_bytes{namespace="{namespace}",persistentvolumeclaim="{name}"}',
+    },
+    {
+      title: "Volume Capacity (bytes)",
+      query:
+        'kubelet_volume_stats_capacity_bytes{namespace="{namespace}",persistentvolumeclaim="{name}"}',
+    },
+    {
+      title: "Inodes Used",
+      query:
+        'kubelet_volume_stats_inodes_used{namespace="{namespace}",persistentvolumeclaim="{name}"}',
+    },
+  ],
+  hpas: [
+    {
+      title: "Current Replicas",
+      query:
+        'kube_horizontalpodautoscaler_status_current_replicas{namespace="{namespace}",horizontalpodautoscaler="{name}"}',
+    },
+    {
+      title: "Desired Replicas",
+      query:
+        'kube_horizontalpodautoscaler_status_desired_replicas{namespace="{namespace}",horizontalpodautoscaler="{name}"}',
+    },
+  ],
+  ingresses: [
+    {
+      title: "Request Rate (req/s)",
+      query:
+        'sum(rate(nginx_ingress_controller_requests{namespace="{namespace}",ingress="{name}"}[5m]))',
+    },
+    {
+      title: "Error Rate (5xx/s)",
+      query:
+        'sum(rate(nginx_ingress_controller_requests{namespace="{namespace}",ingress="{name}",status=~"5.."}[5m]))',
+    },
+  ],
+  namespaces: [
+    {
+      title: "Total CPU (cores)",
+      query:
+        'sum(rate(container_cpu_usage_seconds_total{namespace="{name}",container!=""}[5m]))',
+    },
+    {
+      title: "Total Memory (MB)",
+      query:
+        'sum(container_memory_working_set_bytes{namespace="{name}",container!=""}) / 1024 / 1024',
+    },
+    {
+      title: "Pod Count",
+      query: 'count(kube_pod_info{namespace="{name}"})',
+    },
   ],
 };
 
