@@ -525,7 +525,7 @@ export default function ResourceDetail({
 
   // Add Logs tab for pods
   if (kind === "pods" && namespace && IS_BROWSER) {
-    tabs.push({
+    tabDefs.push({
       id: "logs",
       label: "Logs",
       content: () => {
