@@ -529,10 +529,11 @@ export default function ResourceDetail({
       id: "logs",
       label: "Logs",
       content: () => {
+        // deno-lint-ignore no-explicit-any
+        const res = resource.value as any;
         const containers: string[] =
-          (resource.value as any)?.spec?.containers?.map(
-            (c: any) => c.name,
-          ) ?? [];
+          // deno-lint-ignore no-explicit-any
+          res?.spec?.containers?.map((c: any) => c.name) ?? [];
         return (
           <LogViewer
             namespace={namespace}
