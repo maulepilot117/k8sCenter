@@ -14,7 +14,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Pod management** including logs, exec terminal, and resource metrics *(Phase 2)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
 - **Audit logging** with PostgreSQL persistence, paginated query API, filterable viewer, and 90-day retention
-- **Multi-cluster ready** architecture (single-cluster in Phase 1)
+- **Multi-cluster management** with cluster registry, wizard registration, and per-cluster context switching
 
 ## Architecture
 

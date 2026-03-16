@@ -4,7 +4,7 @@
  * singletons in Deno; importing this server-side would leak auth state
  * across SSR requests.
  */
-import { CLUSTER_ID } from "@/lib/constants.ts";
+import { selectedCluster } from "@/lib/cluster.ts";
 import type { APIError, APIResponse } from "@/lib/k8s-types.ts";
 
 /** In-memory access token. Never stored in localStorage. */
@@ -75,7 +75,7 @@ export async function api<T>(
     if (accessToken) {
       headers.set("Authorization", `Bearer ${accessToken}`);
     }
-    headers.set("X-Cluster-ID", CLUSTER_ID);
+    headers.set("X-Cluster-ID", selectedCluster.value);
     if (!headers.has("Content-Type") && options.body) {
       headers.set("Content-Type", "application/json");
     }

@@ -99,6 +99,15 @@ func (s *Server) registerRoutes() {
 				sr.Post("/test-oidc", s.handleTestOIDC)
 				sr.Post("/test-ldap", s.handleTestLDAP)
 			})
+
+			// Cluster management — admin only
+			ar.Route("/clusters", func(cr chi.Router) {
+				cr.Use(middleware.RequireAdmin)
+				cr.Get("/", s.handleListClusters)
+				cr.Post("/", s.handleCreateCluster)
+				cr.Get("/{clusterID}", s.handleGetCluster)
+				cr.Delete("/{clusterID}", s.handleDeleteCluster)
+			})
 		})
 	})
 }

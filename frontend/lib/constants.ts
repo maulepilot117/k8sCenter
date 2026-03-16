@@ -3,9 +3,6 @@ export const BACKEND_URL = typeof Deno !== "undefined"
   ? Deno.env.get("BACKEND_URL") ?? "http://localhost:8080"
   : "http://localhost:8080";
 
-/** Cluster ID header — always "local" in Phase 1 (single cluster). */
-export const CLUSTER_ID = "local";
-
 /**
  * Maps lowercase plural API kind to PascalCase Kubernetes API kind.
  * Used for event filtering (involvedObject.kind uses PascalCase).
@@ -197,6 +194,11 @@ export const NAV_SECTIONS = [
   {
     title: "Settings",
     items: [
+      {
+        label: "Clusters",
+        href: "/settings/clusters",
+        icon: "nodes",
+      },
       {
         label: "Authentication",
         href: "/settings/auth",

@@ -32,9 +32,10 @@ type AuditConfig struct {
 
 // DatabaseConfig holds PostgreSQL connection configuration.
 type DatabaseConfig struct {
-	URL      string `koanf:"url"`      // PostgreSQL connection URL (empty = audit via slog only)
-	MaxConns int    `koanf:"maxconns"` // Connection pool max (default: 10)
-	MinConns int    `koanf:"minconns"` // Connection pool min (default: 2)
+	URL           string `koanf:"url"`           // PostgreSQL connection URL (empty = audit via slog only)
+	MaxConns      int    `koanf:"maxconns"`      // Connection pool max (default: 10)
+	MinConns      int    `koanf:"minconns"`      // Connection pool min (default: 2)
+	EncryptionKey string `koanf:"encryptionkey"` // AES-256 key for encrypting credentials at rest
 }
 
 type MonitoringConfig struct {

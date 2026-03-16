@@ -134,8 +134,10 @@ func main() {
 		authRegistry.RegisterCredential(ldapCfg.ID, ldapCfg.DisplayName, ldapProvider)
 		logger.Info("registered LDAP provider", "id", ldapCfg.ID, "url", ldapCfg.URL)
 	}
-	// Initialize database and audit logger
+	// Initialize database, audit logger, settings, and cluster store
 	var auditLogger audit.Logger
+	var clusterStore *appstore.ClusterStore
+	var settingsService *appstore.SettingsService
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -146,6 +148,23 @@ func main() {
 			pgLogger := audit.NewPostgresLogger(auditStore, logger)
 			auditLogger = pgLogger
 			logger.Info("audit logging to PostgreSQL", "retentionDays", cfg.Audit.RetentionDays)
+
+			// Initialize settings and cluster stores
+			settingsService = appstore.NewSettingsService(db.Pool)
+			encKey := cfg.Database.EncryptionKey
+			if encKey == "" {
+				encKey = cfg.Auth.JWTSecret // fall back to JWT secret as encryption key
+			}
+			clusterStore = appstore.NewClusterStore(db.Pool, encKey)
+
+			// Register local cluster
+			apiServerHost := "in-cluster"
+			if cfg.Dev {
+				apiServerHost = "kubeconfig"
+			}
+			if err := clusterStore.EnsureLocal(ctx, cfg.ClusterID, apiServerHost); err != nil {
+				logger.Error("failed to register local cluster", "error", err)
+			}
 
 			// Start retention cleanup goroutine
 			go func() {
@@ -253,7 +272,9 @@ func main() {
 		OIDCStateStore: oidcStateStore,
 		Sessions:      sessions,
 		RBACChecker:   rbacChecker,
-		AuditLogger:   auditLogger,
+		AuditLogger:     auditLogger,
+		ClusterStore:    clusterStore,
+		SettingsService: settingsService,
 		RateLimiter:     rateLimiter,
 		YAMLRateLimiter: yamlRateLimiter,
 		Hub:               hub,

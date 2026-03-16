@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth.ts";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import ThemeToggle from "@/islands/ThemeToggle.tsx";
+import ClusterSelector from "@/islands/ClusterSelector.tsx";
 
 interface NamespaceMeta {
   metadata: { name: string };
@@ -71,11 +72,8 @@ export default function TopBar() {
           ))}
         </select>
 
-        {/* Cluster indicator */}
-        <div class="flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1 text-xs text-slate-600 dark:bg-slate-700 dark:text-slate-300">
-          <span class="h-2 w-2 rounded-full bg-success" />
-          local
-        </div>
+        {/* Cluster selector */}
+        <ClusterSelector />
       </div>
 
       {/* Right: theme + user menu */}

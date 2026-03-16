@@ -17,6 +17,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
+	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
@@ -37,6 +38,8 @@ type Server struct {
 	Sessions        *auth.SessionStore
 	RBACChecker     *auth.RBACChecker
 	AuditLogger     audit.Logger
+	ClusterStore    *store.ClusterStore
+	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
 	ResourceHandler *resources.Handler
@@ -64,6 +67,8 @@ type Deps struct {
 	Sessions      *auth.SessionStore
 	RBACChecker   *auth.RBACChecker
 	AuditLogger     audit.Logger
+	ClusterStore    *store.ClusterStore
+	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
 	Hub               *websocket.Hub
@@ -91,6 +96,8 @@ func New(deps Deps) *Server {
 		Sessions:     deps.Sessions,
 		RBACChecker:  deps.RBACChecker,
 		AuditLogger:     deps.AuditLogger,
+		ClusterStore:    deps.ClusterStore,
+		SettingsService: deps.SettingsService,
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
 		Hub:             deps.Hub,
