@@ -10,10 +10,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	admissionregistrationv1listers "k8s.io/client-go/listers/admissionregistration/v1"
 	appsv1listers "k8s.io/client-go/listers/apps/v1"
+	autoscalingv2listers "k8s.io/client-go/listers/autoscaling/v2"
 	batchv1listers "k8s.io/client-go/listers/batch/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
+	discoveryv1listers "k8s.io/client-go/listers/discovery/v1"
 	networkingv1listers "k8s.io/client-go/listers/networking/v1"
+	policyv1listers "k8s.io/client-go/listers/policy/v1"
 	rbacv1listers "k8s.io/client-go/listers/rbac/v1"
 	storagev1listers "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/client-go/tools/cache"
@@ -43,10 +47,16 @@ func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *In
 	factory.Core().V1().Namespaces().Informer()
 	factory.Core().V1().Nodes().Informer()
 	factory.Core().V1().PersistentVolumeClaims().Informer()
+	factory.Core().V1().PersistentVolumes().Informer()
+	factory.Core().V1().Endpoints().Informer()
 	factory.Core().V1().Events().Informer()
+	factory.Core().V1().ResourceQuotas().Informer()
+	factory.Core().V1().LimitRanges().Informer()
+	factory.Core().V1().ServiceAccounts().Informer()
 
 	// Apps resources
 	factory.Apps().V1().Deployments().Informer()
+	factory.Apps().V1().ReplicaSets().Informer()
 	factory.Apps().V1().StatefulSets().Informer()
 	factory.Apps().V1().DaemonSets().Informer()
 
@@ -54,9 +64,15 @@ func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *In
 	factory.Batch().V1().Jobs().Informer()
 	factory.Batch().V1().CronJobs().Informer()
 
+	// Policy resources
+	factory.Policy().V1().PodDisruptionBudgets().Informer()
+
 	// Networking resources
 	factory.Networking().V1().Ingresses().Informer()
 	factory.Networking().V1().NetworkPolicies().Informer()
+
+	// Discovery resources
+	factory.Discovery().V1().EndpointSlices().Informer()
 
 	// RBAC resources (read-only viewer)
 	factory.Rbac().V1().Roles().Informer()
@@ -64,12 +80,19 @@ func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *In
 	factory.Rbac().V1().RoleBindings().Informer()
 	factory.Rbac().V1().ClusterRoleBindings().Informer()
 
+	// Autoscaling resources
+	factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer()
+
 	// Storage resources (cluster-scoped)
 	factory.Storage().V1().StorageClasses().Informer()
 	factory.Storage().V1().CSIDrivers().Informer()
 
+	// Admission registration resources (cluster-scoped, read-only)
+	factory.Admissionregistration().V1().ValidatingWebhookConfigurations().Informer()
+	factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()
+
 	logger.Info("informer manager created",
-		"resourceTypes", 20,
+		"resourceTypes", 31,
 		"resyncPeriod", defaultResyncPeriod,
 	)
 
@@ -131,14 +154,38 @@ func (m *InformerManager) PersistentVolumeClaims() corev1listers.PersistentVolum
 	return m.factory.Core().V1().PersistentVolumeClaims().Lister()
 }
 
+func (m *InformerManager) PersistentVolumes() corev1listers.PersistentVolumeLister {
+	return m.factory.Core().V1().PersistentVolumes().Lister()
+}
+
+func (m *InformerManager) Endpoints() corev1listers.EndpointsLister {
+	return m.factory.Core().V1().Endpoints().Lister()
+}
+
 func (m *InformerManager) Events() corev1listers.EventLister {
 	return m.factory.Core().V1().Events().Lister()
+}
+
+func (m *InformerManager) ResourceQuotas() corev1listers.ResourceQuotaLister {
+	return m.factory.Core().V1().ResourceQuotas().Lister()
+}
+
+func (m *InformerManager) LimitRanges() corev1listers.LimitRangeLister {
+	return m.factory.Core().V1().LimitRanges().Lister()
+}
+
+func (m *InformerManager) ServiceAccounts() corev1listers.ServiceAccountLister {
+	return m.factory.Core().V1().ServiceAccounts().Lister()
 }
 
 // Typed lister accessors — Apps
 
 func (m *InformerManager) Deployments() appsv1listers.DeploymentLister {
 	return m.factory.Apps().V1().Deployments().Lister()
+}
+
+func (m *InformerManager) ReplicaSets() appsv1listers.ReplicaSetLister {
+	return m.factory.Apps().V1().ReplicaSets().Lister()
 }
 
 func (m *InformerManager) StatefulSets() appsv1listers.StatefulSetLister {
@@ -159,6 +206,18 @@ func (m *InformerManager) CronJobs() batchv1listers.CronJobLister {
 	return m.factory.Batch().V1().CronJobs().Lister()
 }
 
+// Typed lister accessors — Autoscaling
+
+func (m *InformerManager) HorizontalPodAutoscalers() autoscalingv2listers.HorizontalPodAutoscalerLister {
+	return m.factory.Autoscaling().V2().HorizontalPodAutoscalers().Lister()
+}
+
+// Typed lister accessors — Policy
+
+func (m *InformerManager) PodDisruptionBudgets() policyv1listers.PodDisruptionBudgetLister {
+	return m.factory.Policy().V1().PodDisruptionBudgets().Lister()
+}
+
 // Typed lister accessors — Networking
 
 func (m *InformerManager) Ingresses() networkingv1listers.IngressLister {
@@ -167,6 +226,12 @@ func (m *InformerManager) Ingresses() networkingv1listers.IngressLister {
 
 func (m *InformerManager) NetworkPolicies() networkingv1listers.NetworkPolicyLister {
 	return m.factory.Networking().V1().NetworkPolicies().Lister()
+}
+
+// Typed lister accessors — Discovery
+
+func (m *InformerManager) EndpointSlices() discoveryv1listers.EndpointSliceLister {
+	return m.factory.Discovery().V1().EndpointSlices().Lister()
 }
 
 // Typed lister accessors — RBAC
@@ -197,6 +262,16 @@ func (m *InformerManager) CSIDrivers() storagev1listers.CSIDriverLister {
 	return m.factory.Storage().V1().CSIDrivers().Lister()
 }
 
+// Typed lister accessors — Admission Registration
+
+func (m *InformerManager) ValidatingWebhookConfigurations() admissionregistrationv1listers.ValidatingWebhookConfigurationLister {
+	return m.factory.Admissionregistration().V1().ValidatingWebhookConfigurations().Lister()
+}
+
+func (m *InformerManager) MutatingWebhookConfigurations() admissionregistrationv1listers.MutatingWebhookConfigurationLister {
+	return m.factory.Admissionregistration().V1().MutatingWebhookConfigurations().Lister()
+}
+
 // EventCallback is called when an informer observes a resource change.
 type EventCallback func(eventType, kind, namespace, name string, obj any)
 
@@ -216,20 +291,31 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 		{"namespaces", m.factory.Core().V1().Namespaces().Informer()},
 		{"nodes", m.factory.Core().V1().Nodes().Informer()},
 		{"persistentvolumeclaims", m.factory.Core().V1().PersistentVolumeClaims().Informer()},
+		{"persistentvolumes", m.factory.Core().V1().PersistentVolumes().Informer()},
+		{"endpoints", m.factory.Core().V1().Endpoints().Informer()},
 		{"events", m.factory.Core().V1().Events().Informer()},
+		{"resourcequotas", m.factory.Core().V1().ResourceQuotas().Informer()},
+		{"limitranges", m.factory.Core().V1().LimitRanges().Informer()},
+		{"serviceaccounts", m.factory.Core().V1().ServiceAccounts().Informer()},
 		{"deployments", m.factory.Apps().V1().Deployments().Informer()},
+		{"replicasets", m.factory.Apps().V1().ReplicaSets().Informer()},
 		{"statefulsets", m.factory.Apps().V1().StatefulSets().Informer()},
 		{"daemonsets", m.factory.Apps().V1().DaemonSets().Informer()},
 		{"jobs", m.factory.Batch().V1().Jobs().Informer()},
 		{"cronjobs", m.factory.Batch().V1().CronJobs().Informer()},
 		{"ingresses", m.factory.Networking().V1().Ingresses().Informer()},
 		{"networkpolicies", m.factory.Networking().V1().NetworkPolicies().Informer()},
+		{"endpointslices", m.factory.Discovery().V1().EndpointSlices().Informer()},
+		{"poddisruptionbudgets", m.factory.Policy().V1().PodDisruptionBudgets().Informer()},
+		{"horizontalpodautoscalers", m.factory.Autoscaling().V2().HorizontalPodAutoscalers().Informer()},
 		{"roles", m.factory.Rbac().V1().Roles().Informer()},
 		{"clusterroles", m.factory.Rbac().V1().ClusterRoles().Informer()},
 		{"rolebindings", m.factory.Rbac().V1().RoleBindings().Informer()},
 		{"clusterrolebindings", m.factory.Rbac().V1().ClusterRoleBindings().Informer()},
 		{"storageclasses", m.factory.Storage().V1().StorageClasses().Informer()},
 		{"csidrivers", m.factory.Storage().V1().CSIDrivers().Informer()},
+		{"validatingwebhookconfigurations", m.factory.Admissionregistration().V1().ValidatingWebhookConfigurations().Informer()},
+		{"mutatingwebhookconfigurations", m.factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()},
 	}
 
 	for _, spec := range specs {

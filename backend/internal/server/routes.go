@@ -349,10 +349,69 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Put("/resources/networkpolicies/{namespace}/{name}", h.HandleUpdateNetworkPolicy)
 	ar.Delete("/resources/networkpolicies/{namespace}/{name}", h.HandleDeleteNetworkPolicy)
 
+	// ReplicaSets (read-only — managed by Deployments)
+	ar.Get("/resources/replicasets", h.HandleListReplicaSets)
+	ar.Get("/resources/replicasets/{namespace}", h.HandleListReplicaSets)
+	ar.Get("/resources/replicasets/{namespace}/{name}", h.HandleGetReplicaSet)
+
+	// Endpoints (read-only)
+	ar.Get("/resources/endpoints", h.HandleListEndpoints)
+	ar.Get("/resources/endpoints/{namespace}", h.HandleListEndpoints)
+	ar.Get("/resources/endpoints/{namespace}/{name}", h.HandleGetEndpoints)
+
+	// HorizontalPodAutoscalers
+	ar.Get("/resources/hpas", h.HandleListHPAs)
+	ar.Get("/resources/hpas/{namespace}", h.HandleListHPAs)
+	ar.Get("/resources/hpas/{namespace}/{name}", h.HandleGetHPA)
+	ar.Post("/resources/hpas/{namespace}", h.HandleCreateHPA)
+	ar.Put("/resources/hpas/{namespace}/{name}", h.HandleUpdateHPA)
+	ar.Delete("/resources/hpas/{namespace}/{name}", h.HandleDeleteHPA)
+
+	// PersistentVolumes (cluster-scoped, read-only)
+	ar.Get("/resources/pvs", h.HandleListPVs)
+	ar.Get("/resources/pvs/{name}", h.HandleGetPV)
+
+	// StorageClasses (cluster-scoped, read-only)
+	ar.Get("/resources/storageclasses", h.HandleListStorageClasses)
+	ar.Get("/resources/storageclasses/{name}", h.HandleGetStorageClass)
+
 	// Events (read-only)
 	ar.Get("/resources/events", h.HandleListEvents)
 	ar.Get("/resources/events/{namespace}", h.HandleListEvents)
 	ar.Get("/resources/events/{namespace}/{name}", h.HandleGetEvent)
+
+	// Webhook Configurations (cluster-scoped, read-only)
+	ar.Get("/resources/validatingwebhookconfigurations", h.HandleListValidatingWebhookConfigurations)
+	ar.Get("/resources/validatingwebhookconfigurations/{name}", h.HandleGetValidatingWebhookConfiguration)
+	ar.Get("/resources/mutatingwebhookconfigurations", h.HandleListMutatingWebhookConfigurations)
+	ar.Get("/resources/mutatingwebhookconfigurations/{name}", h.HandleGetMutatingWebhookConfiguration)
+
+	// ResourceQuotas (read-only)
+	ar.Get("/resources/resourcequotas", h.HandleListResourceQuotas)
+	ar.Get("/resources/resourcequotas/{namespace}", h.HandleListResourceQuotas)
+	ar.Get("/resources/resourcequotas/{namespace}/{name}", h.HandleGetResourceQuota)
+
+	// LimitRanges (read-only)
+	ar.Get("/resources/limitranges", h.HandleListLimitRanges)
+	ar.Get("/resources/limitranges/{namespace}", h.HandleListLimitRanges)
+	ar.Get("/resources/limitranges/{namespace}/{name}", h.HandleGetLimitRange)
+
+	// ServiceAccounts (read-only)
+	ar.Get("/resources/serviceaccounts", h.HandleListServiceAccounts)
+	ar.Get("/resources/serviceaccounts/{namespace}", h.HandleListServiceAccounts)
+	ar.Get("/resources/serviceaccounts/{namespace}/{name}", h.HandleGetServiceAccount)
+
+	// PodDisruptionBudgets
+	ar.Get("/resources/pdbs", h.HandleListPDBs)
+	ar.Get("/resources/pdbs/{namespace}", h.HandleListPDBs)
+	ar.Get("/resources/pdbs/{namespace}/{name}", h.HandleGetPDB)
+	ar.Post("/resources/pdbs/{namespace}", h.HandleCreatePDB)
+	ar.Delete("/resources/pdbs/{namespace}/{name}", h.HandleDeletePDB)
+
+	// EndpointSlices (read-only)
+	ar.Get("/resources/endpointslices", h.HandleListEndpointSlices)
+	ar.Get("/resources/endpointslices/{namespace}", h.HandleListEndpointSlices)
+	ar.Get("/resources/endpointslices/{namespace}/{name}", h.HandleGetEndpointSlice)
 
 	// RBAC Viewer (read-only)
 	ar.Get("/resources/roles", h.HandleListRoles)

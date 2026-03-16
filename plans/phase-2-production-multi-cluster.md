@@ -13,7 +13,7 @@ Transform k8sCenter from a single-cluster MVP into a production-grade, multi-clu
 | 16 | PostgreSQL Migration | — | Done (#29) |
 | 17 | Persistent Settings Store | 16 | Done (#30) |
 | 18 | Multi-Cluster Registry | 16, 17 | Done (#30) |
-| 19 | Complete Resource Coverage | — | Medium |
+| 19 | Complete Resource Coverage | — | Done (#31) |
 | 20 | Pod Logs & Exec | 19 | Medium |
 | 21 | Cilium Network Policy Editor | 19 | Large |
 | 22 | Hubble Flow Integration | 18, 21 | Medium |

@@ -1,0 +1,6 @@
+import { define } from "@/utils.ts";
+import ResourceTable from "@/islands/ResourceTable.tsx";
+
+export default define.page(function EndpointsPage() {
+  return <ResourceTable kind="endpoints" title="Endpoints" />;
+});

@@ -4,7 +4,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 
 ## Features
 
-- **Resource detail views** with tabbed interface (Overview, YAML, Events, Metrics) for all 18 resource types
+- **Resource detail views** with tabbed interface (Overview, YAML, Events, Metrics) for all 31 resource types
 - **YAML apply** with Monaco editor, server-side apply, validation, diff, and multi-document support
 - **Real-time cluster view** with WebSocket-powered live updates
 - **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)

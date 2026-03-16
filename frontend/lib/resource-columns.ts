@@ -11,20 +11,30 @@ import type {
   CronJob,
   DaemonSet,
   Deployment,
+  Endpoints,
+  EndpointSlice,
+  HorizontalPodAutoscaler,
   Ingress,
   Job,
   K8sEvent,
   K8sResource,
+  LimitRange,
   Namespace,
   NetworkPolicy,
   Node,
+  PersistentVolume,
   PersistentVolumeClaim,
   Pod,
+  PodDisruptionBudget,
+  ReplicaSet,
+  ResourceQuota,
   Role,
   RoleBinding,
   Secret,
   Service,
+  ServiceAccount,
   StatefulSet,
+  StorageClass,
 } from "@/lib/k8s-types.ts";
 import type { Column } from "@/components/ui/DataTable.tsx";
 import { statusColor } from "@/lib/status-colors.ts";
@@ -472,6 +482,260 @@ const eventColumns: Column<K8sResource>[] = [
   },
 ];
 
+const validatingWebhookColumns: Column<K8sResource>[] = [
+  nameCol,
+  {
+    key: "webhooks",
+    label: "Webhooks",
+    render: (r) => {
+      const webhooks = (r as K8sResource & { webhooks?: unknown[] }).webhooks;
+      return String(webhooks?.length ?? 0);
+    },
+  },
+  ageCol,
+];
+
+const mutatingWebhookColumns: Column<K8sResource>[] = [
+  nameCol,
+  {
+    key: "webhooks",
+    label: "Webhooks",
+    render: (r) => {
+      const webhooks = (r as K8sResource & { webhooks?: unknown[] }).webhooks;
+      return String(webhooks?.length ?? 0);
+    },
+  },
+  ageCol,
+];
+
+const replicasetColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "desired",
+    label: "Desired",
+    render: (r) => String((r as ReplicaSet).spec?.replicas ?? 0),
+  },
+  {
+    key: "current",
+    label: "Current",
+    render: (r) => String((r as ReplicaSet).status?.replicas ?? 0),
+  },
+  {
+    key: "ready",
+    label: "Ready",
+    render: (r) => String((r as ReplicaSet).status?.readyReplicas ?? 0),
+  },
+  ageCol,
+];
+
+const endpointColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "addresses",
+    label: "Addresses",
+    render: (r) => {
+      const ep = r as Endpoints;
+      const count = ep.subsets?.reduce(
+        (sum, s) => sum + (s.addresses?.length ?? 0),
+        0,
+      ) ?? 0;
+      return String(count);
+    },
+  },
+  ageCol,
+];
+
+const hpaColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "targets",
+    label: "Targets",
+    render: (r) => {
+      const hpa = r as HorizontalPodAutoscaler;
+      const metrics = hpa.spec?.metrics;
+      if (!metrics?.length) return "-";
+      return metrics.map((m) => {
+        if (m.resource?.target?.averageUtilization) {
+          const current = hpa.status?.currentMetrics?.find(
+            (cm) => cm.resource?.name === m.resource?.name,
+          );
+          const currentVal = current?.resource?.current?.averageUtilization;
+          return `${
+            currentVal ?? "<unknown>"
+          }%/${m.resource.target.averageUtilization}%`;
+        }
+        return m.type;
+      }).join(", ");
+    },
+  },
+  {
+    key: "minReplicas",
+    label: "Min",
+    render: (r) =>
+      String((r as HorizontalPodAutoscaler).spec?.minReplicas ?? 1),
+  },
+  {
+    key: "maxReplicas",
+    label: "Max",
+    render: (r) =>
+      String((r as HorizontalPodAutoscaler).spec?.maxReplicas ?? 0),
+  },
+  {
+    key: "currentReplicas",
+    label: "Replicas",
+    render: (r) =>
+      String((r as HorizontalPodAutoscaler).status?.currentReplicas ?? 0),
+  },
+  ageCol,
+];
+
+const pvColumns: Column<K8sResource>[] = [
+  nameCol,
+  {
+    key: "capacity",
+    label: "Capacity",
+    render: (r) => (r as PersistentVolume).spec?.capacity?.storage ?? "-",
+  },
+  {
+    key: "accessModes",
+    label: "Access Modes",
+    render: (r) => (r as PersistentVolume).spec?.accessModes?.join(", ") ?? "-",
+  },
+  {
+    key: "reclaimPolicy",
+    label: "Reclaim Policy",
+    render: (r) =>
+      (r as PersistentVolume).spec?.persistentVolumeReclaimPolicy ?? "-",
+  },
+  {
+    key: "status",
+    label: "Status",
+    sortable: true,
+    render: (r) => badge((r as PersistentVolume).status?.phase ?? "Available"),
+  },
+  {
+    key: "storageClass",
+    label: "Storage Class",
+    render: (r) => (r as PersistentVolume).spec?.storageClassName ?? "-",
+  },
+  {
+    key: "claim",
+    label: "Claim",
+    render: (r) => {
+      const ref = (r as PersistentVolume).spec?.claimRef;
+      return ref ? `${ref.namespace}/${ref.name}` : "-";
+    },
+  },
+  ageCol,
+];
+
+const storageclassColumns: Column<K8sResource>[] = [
+  nameCol,
+  {
+    key: "provisioner",
+    label: "Provisioner",
+    render: (r) => (r as StorageClass).provisioner ?? "-",
+  },
+  {
+    key: "reclaimPolicy",
+    label: "Reclaim Policy",
+    render: (r) => (r as StorageClass).reclaimPolicy ?? "-",
+  },
+  {
+    key: "volumeBindingMode",
+    label: "Volume Binding Mode",
+    render: (r) => (r as StorageClass).volumeBindingMode ?? "-",
+  },
+  ageCol,
+];
+
+const resourcequotaColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  ageCol,
+];
+
+const limitrangeColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  ageCol,
+];
+
+const serviceaccountColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "secrets",
+    label: "Secrets",
+    render: (r) => String((r as ServiceAccount).secrets?.length ?? 0),
+  },
+  ageCol,
+];
+
+const pdbColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "minAvailable",
+    label: "Min Available",
+    render: (r) => {
+      const v = (r as PodDisruptionBudget).spec?.minAvailable;
+      return v != null ? String(v) : "-";
+    },
+  },
+  {
+    key: "maxUnavailable",
+    label: "Max Unavailable",
+    render: (r) => {
+      const v = (r as PodDisruptionBudget).spec?.maxUnavailable;
+      return v != null ? String(v) : "-";
+    },
+  },
+  {
+    key: "currentHealthy",
+    label: "Current Healthy",
+    render: (r) =>
+      String((r as PodDisruptionBudget).status?.currentHealthy ?? 0),
+  },
+  {
+    key: "desiredHealthy",
+    label: "Desired Healthy",
+    render: (r) =>
+      String((r as PodDisruptionBudget).status?.desiredHealthy ?? 0),
+  },
+  ageCol,
+];
+
+const endpointsliceColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "addressType",
+    label: "Address Type",
+    render: (r) => (r as EndpointSlice).addressType ?? "-",
+  },
+  {
+    key: "ports",
+    label: "Ports",
+    render: (r) => {
+      const ports = (r as EndpointSlice).ports;
+      if (!ports?.length) return "-";
+      return ports.map((p) => `${p.port ?? ""}/${p.protocol ?? "TCP"}`).join(
+        ", ",
+      );
+    },
+  },
+  {
+    key: "endpoints",
+    label: "Endpoints",
+    render: (r) => String((r as EndpointSlice).endpoints?.length ?? 0),
+  },
+  ageCol,
+];
+
 /** Maps API kind string to its column config. */
 export const RESOURCE_COLUMNS: Record<string, Column<K8sResource>[]> = {
   pods: podColumns,
@@ -492,5 +756,17 @@ export const RESOURCE_COLUMNS: Record<string, Column<K8sResource>[]> = {
   clusterroles: clusterroleColumns,
   rolebindings: rolebindingColumns,
   clusterrolebindings: clusterrolebindingColumns,
+  replicasets: replicasetColumns,
+  endpoints: endpointColumns,
+  hpas: hpaColumns,
+  pvs: pvColumns,
+  storageclasses: storageclassColumns,
+  resourcequotas: resourcequotaColumns,
+  limitranges: limitrangeColumns,
+  serviceaccounts: serviceaccountColumns,
+  pdbs: pdbColumns,
+  endpointslices: endpointsliceColumns,
   events: eventColumns,
+  validatingwebhookconfigurations: validatingWebhookColumns,
+  mutatingwebhookconfigurations: mutatingWebhookColumns,
 };

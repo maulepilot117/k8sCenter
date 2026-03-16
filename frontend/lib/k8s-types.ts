@@ -311,6 +311,151 @@ export interface AlertEvent {
   resolvedAt?: string;
 }
 
+// -- ReplicaSets --
+export interface ReplicaSet extends K8sResource {
+  spec: {
+    replicas?: number;
+    selector: { matchLabels?: Record<string, string> };
+  };
+  status?: {
+    replicas?: number;
+    fullyLabeledReplicas?: number;
+    readyReplicas?: number;
+    availableReplicas?: number;
+  };
+}
+
+// -- Endpoints --
+export interface Endpoints extends K8sResource {
+  subsets?: Array<{
+    addresses?: Array<{ ip: string; hostname?: string; nodeName?: string }>;
+    notReadyAddresses?: Array<{ ip: string; hostname?: string }>;
+    ports?: Array<{ name?: string; port: number; protocol?: string }>;
+  }>;
+}
+
+// -- HorizontalPodAutoscalers --
+export interface HorizontalPodAutoscaler extends K8sResource {
+  spec: {
+    scaleTargetRef: { apiVersion: string; kind: string; name: string };
+    minReplicas?: number;
+    maxReplicas: number;
+    metrics?: Array<{
+      type: string;
+      resource?: {
+        name: string;
+        target: { type: string; averageUtilization?: number };
+      };
+    }>;
+  };
+  status?: {
+    currentReplicas?: number;
+    desiredReplicas?: number;
+    currentMetrics?: Array<{
+      type: string;
+      resource?: {
+        name: string;
+        current: { averageUtilization?: number; averageValue?: string };
+      };
+    }>;
+    conditions?: Array<{
+      type: string;
+      status: string;
+      reason?: string;
+      message?: string;
+    }>;
+  };
+}
+
+// -- PersistentVolumes --
+export interface PersistentVolume extends K8sResource {
+  spec: {
+    capacity?: Record<string, string>;
+    accessModes?: string[];
+    persistentVolumeReclaimPolicy?: string;
+    storageClassName?: string;
+    claimRef?: {
+      namespace: string;
+      name: string;
+    };
+    volumeMode?: string;
+  };
+  status?: {
+    phase?: string;
+  };
+}
+
+// -- StorageClasses --
+export interface StorageClass extends K8sResource {
+  provisioner: string;
+  reclaimPolicy?: string;
+  volumeBindingMode?: string;
+  allowVolumeExpansion?: boolean;
+  parameters?: Record<string, string>;
+}
+
+// -- ResourceQuotas --
+export interface ResourceQuota extends K8sResource {
+  spec?: {
+    hard?: Record<string, string>;
+    scopes?: string[];
+  };
+  status?: {
+    hard?: Record<string, string>;
+    used?: Record<string, string>;
+  };
+}
+
+// -- LimitRanges --
+export interface LimitRange extends K8sResource {
+  spec?: {
+    limits?: Array<{
+      type: string;
+      max?: Record<string, string>;
+      min?: Record<string, string>;
+      default?: Record<string, string>;
+      defaultRequest?: Record<string, string>;
+    }>;
+  };
+}
+
+// -- ServiceAccounts --
+export interface ServiceAccount extends K8sResource {
+  secrets?: Array<{ name: string }>;
+  automountServiceAccountToken?: boolean;
+}
+
+// -- PodDisruptionBudgets --
+export interface PodDisruptionBudget extends K8sResource {
+  spec?: {
+    minAvailable?: number | string;
+    maxUnavailable?: number | string;
+    selector?: { matchLabels?: Record<string, string> };
+  };
+  status?: {
+    currentHealthy?: number;
+    desiredHealthy?: number;
+    disruptionsAllowed?: number;
+    expectedPods?: number;
+  };
+}
+
+// -- EndpointSlices --
+export interface EndpointSlice extends K8sResource {
+  addressType?: string;
+  endpoints?: Array<{
+    addresses: string[];
+    conditions?: { ready?: boolean; serving?: boolean; terminating?: boolean };
+    hostname?: string;
+    nodeName?: string;
+  }>;
+  ports?: Array<{
+    name?: string;
+    port?: number;
+    protocol?: string;
+  }>;
+}
+
 // -- Events --
 export interface K8sEvent extends K8sResource {
   type?: string;

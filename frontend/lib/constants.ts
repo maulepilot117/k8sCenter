@@ -10,22 +10,37 @@ export const BACKEND_URL = typeof Deno !== "undefined"
 export const RESOURCE_API_KINDS: Record<string, string> = {
   pods: "Pod",
   deployments: "Deployment",
+  replicasets: "ReplicaSet",
   statefulsets: "StatefulSet",
   daemonsets: "DaemonSet",
   services: "Service",
   ingresses: "Ingress",
+  endpoints: "Endpoints",
   configmaps: "ConfigMap",
   secrets: "Secret",
+  serviceaccounts: "ServiceAccount",
+  resourcequotas: "ResourceQuota",
+  limitranges: "LimitRange",
   namespaces: "Namespace",
   nodes: "Node",
+  persistentvolumes: "PersistentVolume",
+  pvs: "PersistentVolume",
   pvcs: "PersistentVolumeClaim",
+  storageclasses: "StorageClass",
   jobs: "Job",
   cronjobs: "CronJob",
   networkpolicies: "NetworkPolicy",
+  horizontalpodautoscalers: "HorizontalPodAutoscaler",
+  hpas: "HorizontalPodAutoscaler",
+  poddisruptionbudgets: "PodDisruptionBudget",
+  pdbs: "PodDisruptionBudget",
+  endpointslices: "EndpointSlice",
   roles: "Role",
   clusterroles: "ClusterRole",
   rolebindings: "RoleBinding",
   clusterrolebindings: "ClusterRoleBinding",
+  validatingwebhookconfigurations: "ValidatingWebhookConfiguration",
+  mutatingwebhookconfigurations: "MutatingWebhookConfiguration",
 };
 
 /**
@@ -35,20 +50,35 @@ export const RESOURCE_API_KINDS: Record<string, string> = {
 export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   pods: "/workloads/pods",
   deployments: "/workloads/deployments",
+  replicasets: "/workloads/replicasets",
   statefulsets: "/workloads/statefulsets",
   daemonsets: "/workloads/daemonsets",
   jobs: "/workloads/jobs",
   cronjobs: "/workloads/cronjobs",
   services: "/networking/services",
   ingresses: "/networking/ingresses",
+  endpoints: "/networking/endpoints",
   networkpolicies: "/networking/networkpolicies",
+  persistentvolumes: "/cluster/pvs",
+  pvs: "/cluster/pvs",
   pvcs: "/storage/pvcs",
+  storageclasses: "/cluster/storageclasses",
   configmaps: "/config/configmaps",
   secrets: "/config/secrets",
+  serviceaccounts: "/config/serviceaccounts",
+  resourcequotas: "/config/resourcequotas",
+  limitranges: "/config/limitranges",
+  horizontalpodautoscalers: "/scaling/hpas",
+  hpas: "/scaling/hpas",
+  poddisruptionbudgets: "/scaling/pdbs",
+  pdbs: "/scaling/pdbs",
+  endpointslices: "/networking/endpointslices",
   roles: "/rbac/roles",
   clusterroles: "/rbac/clusterroles",
   rolebindings: "/rbac/rolebindings",
   clusterrolebindings: "/rbac/clusterrolebindings",
+  validatingwebhookconfigurations: "/admin/validatingwebhooks",
+  mutatingwebhookconfigurations: "/admin/mutatingwebhooks",
   nodes: "/cluster/nodes",
   namespaces: "/cluster/namespaces",
 };
@@ -59,6 +89,11 @@ export const CLUSTER_SCOPED_KINDS = new Set([
   "namespaces",
   "clusterroles",
   "clusterrolebindings",
+  "persistentvolumes",
+  "pvs",
+  "storageclasses",
+  "validatingwebhookconfigurations",
+  "mutatingwebhookconfigurations",
 ]);
 
 /** Resource navigation sections for the sidebar. */
@@ -70,6 +105,16 @@ export const NAV_SECTIONS = [
       { label: "Nodes", href: "/cluster/nodes", icon: "nodes" },
       { label: "Namespaces", href: "/cluster/namespaces", icon: "namespaces" },
       { label: "Events", href: "/cluster/events", icon: "events" },
+      {
+        label: "PersistentVolumes",
+        href: "/cluster/pvs",
+        icon: "pvcs",
+      },
+      {
+        label: "StorageClasses",
+        href: "/cluster/storageclasses",
+        icon: "storage",
+      },
     ],
   },
   {
@@ -93,6 +138,11 @@ export const NAV_SECTIONS = [
       { label: "Pods", href: "/workloads/pods", icon: "pods" },
       { label: "Jobs", href: "/workloads/jobs", icon: "jobs" },
       { label: "CronJobs", href: "/workloads/cronjobs", icon: "cronjobs" },
+      {
+        label: "ReplicaSets",
+        href: "/workloads/replicasets",
+        icon: "deployments",
+      },
     ],
   },
   {
@@ -106,6 +156,12 @@ export const NAV_SECTIONS = [
         icon: "networkpolicies",
       },
       { label: "CNI Plugin", href: "/networking/cni", icon: "networking" },
+      { label: "Endpoints", href: "/networking/endpoints", icon: "services" },
+      {
+        label: "EndpointSlices",
+        href: "/networking/endpointslices",
+        icon: "services",
+      },
     ],
   },
   {
@@ -133,6 +189,36 @@ export const NAV_SECTIONS = [
     items: [
       { label: "ConfigMaps", href: "/config/configmaps", icon: "configmaps" },
       { label: "Secrets", href: "/config/secrets", icon: "secrets" },
+      {
+        label: "ServiceAccounts",
+        href: "/config/serviceaccounts",
+        icon: "roles",
+      },
+      {
+        label: "ResourceQuotas",
+        href: "/config/resourcequotas",
+        icon: "configmaps",
+      },
+      {
+        label: "LimitRanges",
+        href: "/config/limitranges",
+        icon: "configmaps",
+      },
+    ],
+  },
+  {
+    title: "Scaling",
+    items: [
+      {
+        label: "HorizontalPodAutoscalers",
+        href: "/scaling/hpas",
+        icon: "deployments",
+      },
+      {
+        label: "PodDisruptionBudgets",
+        href: "/scaling/pdbs",
+        icon: "pods",
+      },
     ],
   },
   {
@@ -188,6 +274,21 @@ export const NAV_SECTIONS = [
         label: "StorageClass Wizard",
         href: "/tools/storageclass-wizard",
         icon: "storage",
+      },
+    ],
+  },
+  {
+    title: "Admin",
+    items: [
+      {
+        label: "ValidatingWebhooks",
+        href: "/admin/validatingwebhooks",
+        icon: "rules",
+      },
+      {
+        label: "MutatingWebhooks",
+        href: "/admin/mutatingwebhooks",
+        icon: "rules",
       },
     ],
   },

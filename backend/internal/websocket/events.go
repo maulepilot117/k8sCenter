@@ -57,19 +57,34 @@ var allowedKinds = map[string]bool{
 	"nodes":                   true,
 	"persistentvolumeclaims":  true,
 	"pvcs":                    true, // alias — normalized to persistentvolumeclaims
+	"persistentvolumes":       true,
+	"pvs":                     true, // alias — normalized to persistentvolumes
+	"endpoints":               true,
 	"events":                  true,
 	"deployments":             true,
+	"replicasets":              true,
 	"statefulsets":             true,
 	"daemonsets":               true,
 	"jobs":                    true,
 	"cronjobs":                true,
 	"ingresses":               true,
 	"networkpolicies":          true,
+	"horizontalpodautoscalers": true,
+	"hpas":                     true, // alias — normalized to horizontalpodautoscalers
+	"storageclasses":           true,
 	"roles":                   true,
 	"clusterroles":             true,
 	"rolebindings":             true,
 	"clusterrolebindings":      true,
-	"alerts":                   true,
+	"resourcequotas":                      true,
+	"limitranges":                         true,
+	"serviceaccounts":                     true,
+	"poddisruptionbudgets":                true,
+	"pdbs":                                true, // alias — normalized to poddisruptionbudgets
+	"endpointslices":                      true,
+	"alerts":                              true,
+	"validatingwebhookconfigurations":      true,
+	"mutatingwebhookconfigurations":        true,
 }
 
 // isAllowedKind returns true if the kind is in the subscription allowlist.
@@ -80,6 +95,9 @@ func isAllowedKind(kind string) bool {
 // kindAliases maps frontend short names to the informer's canonical kind strings.
 var kindAliases = map[string]string{
 	"pvcs": "persistentvolumeclaims",
+	"pvs":  "persistentvolumes",
+	"hpas": "horizontalpodautoscalers",
+	"pdbs": "poddisruptionbudgets",
 }
 
 // normalizeKind maps alias kind strings to their canonical form used by informers.

@@ -15,16 +15,22 @@ rules:
       - pods
       - pods/log
       - services
+      - endpoints
       - configmaps
       # secrets are fetched on-demand via impersonated client, not cached in informer
       - namespaces
       - nodes
       - persistentvolumeclaims
+      - persistentvolumes
       - events
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources:
       - deployments
+      - replicasets
       - statefulsets
       - daemonsets
     verbs: ["get", "list", "watch"]
@@ -32,6 +38,18 @@ rules:
     resources:
       - jobs
       - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources:
