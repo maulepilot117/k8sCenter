@@ -1,7 +1,9 @@
 package resources
 
 import (
+	"bufio"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -60,6 +62,71 @@ func (h *Handler) HandleGetPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeData(w, obj)
+}
+
+// HandlePodLogs returns the last N lines of a pod's container logs.
+// GET /api/v1/resources/pods/{namespace}/{name}/logs?container=X&tailLines=500&previous=false&timestamps=true
+func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	// RBAC: check get on pods/log subresource
+	if !h.checkAccess(w, r, user, "get", "pods/log", ns) {
+		return
+	}
+
+	q := r.URL.Query()
+	container := q.Get("container")
+
+	tailLines := int64(500)
+	if tl := q.Get("tailLines"); tl != "" {
+		if v, err := strconv.ParseInt(tl, 10, 64); err == nil && v > 0 {
+			tailLines = v
+		}
+	}
+
+	previous := q.Get("previous") == "true"
+	timestamps := q.Get("timestamps") != "false" // default true
+
+	opts := &corev1.PodLogOptions{
+		Container:  container,
+		TailLines:  &tailLines,
+		Previous:   previous,
+		Timestamps: timestamps,
+	}
+
+	cs, err := h.impersonatingClient(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", "")
+		return
+	}
+
+	stream, err := cs.CoreV1().Pods(ns).GetLogs(name, opts).Stream(r.Context())
+	if err != nil {
+		mapK8sError(w, err, "get", "Pod logs", ns, name)
+		return
+	}
+	defer stream.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(stream)
+	// Increase max line size to 1 MB for long log lines
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	writeData(w, map[string]any{
+		"lines":     lines,
+		"container": container,
+		"pod":       name,
+		"namespace": ns,
+		"count":     len(lines),
+	})
 }
 
 func (h *Handler) HandleDeletePod(w http.ResponseWriter, r *http.Request) {

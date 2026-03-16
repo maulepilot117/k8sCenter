@@ -21,6 +21,7 @@ import { MetadataSection } from "@/components/k8s/detail/MetadataSection.tsx";
 import { stringify } from "yaml";
 import YamlEditor from "@/islands/YamlEditor.tsx";
 import PerformancePanel from "@/islands/PerformancePanel.tsx";
+import LogViewer from "@/islands/LogViewer.tsx";
 
 interface ResourceDetailProps {
   kind: string;
@@ -521,6 +522,21 @@ export default function ResourceDetail({
       ),
     },
   ];
+
+  // Add Logs tab for pods
+  if (kind === "pods" && resource.value) {
+    const containers: string[] =
+      (resource.value as any)?.spec?.containers?.map((c: any) => c.name) ?? [];
+    if (containers.length > 0 && namespace) {
+      tabs.push({
+        id: "logs",
+        label: "Logs",
+        content: () => (
+          <LogViewer namespace={namespace} pod={name} containers={containers} />
+        ),
+      });
+    }
+  }
 
   return (
     <div class="space-y-4">

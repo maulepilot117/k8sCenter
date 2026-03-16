@@ -273,6 +273,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/pods/{namespace}", h.HandleListPods)
 	ar.Get("/resources/pods/{namespace}/{name}", h.HandleGetPod)
 	ar.Delete("/resources/pods/{namespace}/{name}", h.HandleDeletePod)
+	ar.Get("/resources/pods/{namespace}/{name}/logs", h.HandlePodLogs)
 
 	// Services
 	ar.Get("/resources/services", h.HandleListServices)
