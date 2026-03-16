@@ -4,12 +4,14 @@ replicaCount: 1
 backend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-backend
-    tag: v0.3.0
+    tag: v0.3.1
+  config:
+    dev: true  # relaxes rate limiting to 60 req/min for homelab
 
 frontend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-frontend
-    tag: v0.3.0
+    tag: v0.3.2
 
 imagePullSecrets: []
 # Packages are public on GHCR — no pull secret needed
