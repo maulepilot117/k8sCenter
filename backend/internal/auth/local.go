@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -25,55 +26,59 @@ const (
 	argon2SaltLen = 16
 )
 
-// storedUser is the internal representation persisted in the user store.
-type storedUser struct {
-	ID                 string   `json:"id"`
-	Username           string   `json:"username"`
-	PasswordHash       string   `json:"passwordHash"`
-	Salt               string   `json:"salt"`
-	KubernetesUsername string   `json:"kubernetesUsername"`
-	KubernetesGroups   []string `json:"kubernetesGroups"`
-	Roles              []string `json:"roles"`
+// UserStore is the interface for persistent user storage.
+// Implemented by store.UserStore (PostgreSQL).
+type UserStore interface {
+	Create(ctx context.Context, u UserRecord) error
+	CreateFirstUser(ctx context.Context, u UserRecord) (bool, error)
+	GetByUsername(ctx context.Context, username string) (*UserRecord, error)
+	GetByID(ctx context.Context, id string) (*UserRecord, error)
+	Count(ctx context.Context) (int, error)
 }
 
-func (s storedUser) toUser() *User {
+// UserRecord is the database representation of a local user.
+// PasswordPHC stores the password in PHC format: $argon2id$v=19$m=65536,t=1,p=4$<salt>$<hash>
+type UserRecord struct {
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	PasswordPHC string   `json:"-"`
+	K8sUsername string   `json:"k8sUsername"`
+	K8sGroups   []string `json:"k8sGroups"`
+	Roles       []string `json:"roles"`
+}
+
+func (r *UserRecord) toUser() *User {
 	return &User{
-		ID:                 s.ID,
-		Username:           s.Username,
+		ID:                 r.ID,
+		Username:           r.Username,
 		Provider:           "local",
-		KubernetesUsername: s.KubernetesUsername,
-		KubernetesGroups:   s.KubernetesGroups,
-		Roles:              s.Roles,
+		KubernetesUsername: r.K8sUsername,
+		KubernetesGroups:   r.K8sGroups,
+		Roles:              r.Roles,
 	}
 }
 
-// LocalProvider authenticates users against a local account store.
-// User data is held in memory and can be persisted externally (e.g., k8s Secret).
+// LocalProvider authenticates users against a PostgreSQL-backed local account store.
 type LocalProvider struct {
-	mu       sync.RWMutex
-	users    map[string]storedUser // keyed by username
-	usersByID map[string]storedUser // keyed by ID (todo-017: O(1) lookup)
-	logger   *slog.Logger
-	hashSem  chan struct{} // limits concurrent Argon2id operations
+	store   UserStore
+	logger  *slog.Logger
+	hashSem chan struct{} // limits concurrent Argon2id operations
 }
 
-// NewLocalProvider creates a LocalProvider.
-func NewLocalProvider(logger *slog.Logger) *LocalProvider {
+// NewLocalProvider creates a LocalProvider backed by the given UserStore.
+func NewLocalProvider(store UserStore, logger *slog.Logger) *LocalProvider {
 	return &LocalProvider{
-		users:     make(map[string]storedUser),
-		usersByID: make(map[string]storedUser),
-		logger:    logger,
-		hashSem:   make(chan struct{}, maxConcurrentHashes),
+		store:   store,
+		logger:  logger,
+		hashSem: make(chan struct{}, maxConcurrentHashes),
 	}
 }
 
 func (p *LocalProvider) Type() string { return "local" }
 
-// Authenticate validates credentials against the local store.
+// Authenticate validates credentials against the database.
 func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*User, error) {
-	p.mu.RLock()
-	stored, ok := p.users[creds.Username]
-	p.mu.RUnlock()
+	stored, err := p.store.GetByUsername(ctx, creds.Username)
 
 	// Acquire hash semaphore to limit concurrent Argon2id operations (each uses ~64 MB).
 	select {
@@ -83,23 +88,19 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 		return nil, ctx.Err()
 	}
 
-	if !ok {
+	if err != nil {
 		// Constant-time: hash the password anyway to prevent timing attacks
 		dummySalt := make([]byte, argon2SaltLen)
 		argon2.IDKey([]byte(creds.Password), dummySalt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
 		return nil, ErrInvalidCredentials
 	}
 
-	salt, err := hex.DecodeString(stored.Salt)
+	salt, storedHash, err := parsePHC(stored.PasswordPHC)
 	if err != nil {
 		return nil, ErrInvalidCredentials
 	}
 
 	hash := argon2.IDKey([]byte(creds.Password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-	storedHash, err := hex.DecodeString(stored.PasswordHash)
-	if err != nil {
-		return nil, ErrInvalidCredentials
-	}
 	if subtle.ConstantTimeCompare(hash, storedHash) != 1 {
 		return nil, ErrInvalidCredentials
 	}
@@ -108,19 +109,65 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 }
 
 // CreateFirstUser atomically creates the first user only if no users exist.
-// This prevents the TOCTOU race where two concurrent setup requests could
-// both pass a UserCount() == 0 check and create two admin accounts.
+// Atomicity is enforced at the database level (no Go mutex needed).
 func (p *LocalProvider) CreateFirstUser(ctx context.Context, username, password string, roles []string) (*User, error) {
-	return p.createUser(ctx, username, password, roles, true)
+	record, err := p.hashAndBuild(ctx, username, password, roles)
+	if err != nil {
+		return nil, err
+	}
+
+	created, err := p.store.CreateFirstUser(ctx, *record)
+	if err != nil {
+		return nil, fmt.Errorf("creating first user: %w", err)
+	}
+	if !created {
+		return nil, ErrSetupCompleted
+	}
+
+	p.logger.Info("first local user created", "username", username, "roles", roles)
+	return record.toUser(), nil
 }
 
 // CreateUser adds a new local user with Argon2id-hashed password.
 func (p *LocalProvider) CreateUser(ctx context.Context, username, password string, roles []string) (*User, error) {
-	return p.createUser(ctx, username, password, roles, false)
+	record, err := p.hashAndBuild(ctx, username, password, roles)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.store.Create(ctx, *record); err != nil {
+		if errors.Is(err, ErrDuplicateUser) {
+			return nil, ErrDuplicateUser
+		}
+		return nil, fmt.Errorf("creating user: %w", err)
+	}
+
+	p.logger.Info("local user created", "username", username, "roles", roles)
+	return record.toUser(), nil
 }
 
-func (p *LocalProvider) createUser(ctx context.Context, username, password string, roles []string, requireEmpty bool) (*User, error) {
-	// Acquire hash semaphore with context cancellation support (todo-022).
+// UserCount returns the number of local users.
+func (p *LocalProvider) UserCount() int {
+	count, err := p.store.Count(context.Background())
+	if err != nil {
+		p.logger.Error("failed to count users", "error", err)
+		return 0
+	}
+	return count
+}
+
+// GetUserByID looks up a user by their ID.
+func (p *LocalProvider) GetUserByID(id string) (*User, error) {
+	record, err := p.store.GetByID(context.Background(), id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, id)
+	}
+	return record.toUser(), nil
+}
+
+// hashAndBuild hashes the password and builds a UserRecord.
+func (p *LocalProvider) hashAndBuild(ctx context.Context, username, password string, roles []string) (*UserRecord, error) {
+	// Acquire hash semaphore with context cancellation support.
 	select {
 	case p.hashSem <- struct{}{}:
 		defer func() { <-p.hashSem }()
@@ -140,53 +187,64 @@ func (p *LocalProvider) createUser(ctx context.Context, username, password strin
 		return nil, fmt.Errorf("generating user ID: %w", err)
 	}
 
-	// Lock after hashing to minimize lock hold time. The atomic check happens here.
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if requireEmpty && len(p.users) > 0 {
-		return nil, ErrSetupCompleted
-	}
-
-	if _, exists := p.users[username]; exists {
-		return nil, ErrDuplicateUser
-	}
-
-	stored := storedUser{
-		ID:                 id,
-		Username:           username,
-		PasswordHash:       hex.EncodeToString(hash),
-		Salt:               hex.EncodeToString(salt),
-		KubernetesUsername: username,
-		KubernetesGroups:   []string{"k8scenter:users"},
-		Roles:              roles,
-	}
-
-	p.users[username] = stored
-	p.usersByID[id] = stored
-
-	p.logger.Info("local user created", "username", username, "roles", roles)
-
-	return stored.toUser(), nil
+	return &UserRecord{
+		ID:          id,
+		Username:    username,
+		PasswordPHC: encodePHC(salt, hash),
+		K8sUsername: username,
+		K8sGroups:   []string{"k8scenter:users"},
+		Roles:       roles,
+	}, nil
 }
 
-// UserCount returns the number of local users.
-func (p *LocalProvider) UserCount() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.users)
+// encodePHC encodes salt and hash into PHC format: $argon2id$v=19$m=65536,t=1,p=4$<salt>$<hash>
+func encodePHC(salt, hash []byte) string {
+	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
+	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, argon2Memory, argon2Time, argon2Threads, b64Salt, b64Hash)
 }
 
-// GetUserByID looks up a user by their ID using the ID-indexed map (O(1)).
-func (p *LocalProvider) GetUserByID(id string) (*User, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// parsePHC extracts salt and hash from a PHC-format string.
+func parsePHC(phc string) (salt, hash []byte, err error) {
+	var version int
+	var memory, time, threads uint32
+	var b64Salt, b64Hash string
 
-	stored, ok := p.usersByID[id]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrUserNotFound, id)
+	_, err = fmt.Sscanf(phc, "$argon2id$v=%d$m=%d,t=%d,p=%d$%s",
+		&version, &memory, &time, &threads, &b64Salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid PHC format: %w", err)
 	}
-	return stored.toUser(), nil
+
+	// Split the last segment — Sscanf captures everything after the 4th $
+	// The format is <salt>$<hash>, so split on $
+	parts := splitLast(b64Salt, '$')
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("invalid PHC format: missing hash segment")
+	}
+	b64Salt = parts[0]
+	b64Hash = parts[1]
+
+	salt, err = base64.RawStdEncoding.DecodeString(b64Salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding salt: %w", err)
+	}
+	hash, err = base64.RawStdEncoding.DecodeString(b64Hash)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding hash: %w", err)
+	}
+	return salt, hash, nil
+}
+
+// splitLast splits s into two parts at the last occurrence of sep.
+func splitLast(s string, sep byte) []string {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == sep {
+			return []string{s[:i], s[i+1:]}
+		}
+	}
+	return []string{s}
 }
 
 func generateID() (string, error) {

@@ -24,7 +24,7 @@ KubeCenter is a web-based Kubernetes management platform that delivers vCenter-l
 | YAML Editor | Monaco Editor | Latest (planned) |
 | Monitoring | Prometheus + Grafana | kube-prometheus-stack compatible (planned — Step 9) |
 | Alerting | Prometheus Alertmanager + SMTP | Via Go SMTP client (planned — Step 11) |
-| Auth | Local (Argon2id) implemented; OIDC / LDAP planned (Step 12) | golang-jwt/jwt/v5, golang.org/x/crypto |
+| Auth | Local (Argon2id, PHC format, PostgreSQL-backed) + OIDC + LDAP | golang-jwt/jwt/v5, golang.org/x/crypto |
 | Deployment | Helm | v3.x chart (skeleton deployed) |
 | Container | Distroless / Alpine-based multi-stage | Scratch for Go, Deno slim for frontend |
 
@@ -69,7 +69,8 @@ kubecenter/
 │   │   ├── auth/
 │   │   │   ├── provider.go            # AuthProvider interface + StoredUser/User types
 │   │   │   ├── provider_test.go
-│   │   │   ├── local.go               # Local account provider (Argon2id, semaphore-limited concurrency)
+│   │   │   ├── local.go               # Local account provider (Argon2id, PHC format, PostgreSQL-backed)
+│   │   │   ├── memory_store.go        # In-memory UserStore for tests
 │   │   │   ├── local_test.go
 │   │   │   ├── jwt.go                 # JWT TokenManager — HMAC-SHA256, 15min access, 7day refresh
 │   │   │   ├── jwt_test.go

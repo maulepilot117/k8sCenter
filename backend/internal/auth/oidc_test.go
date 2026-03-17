@@ -173,7 +173,7 @@ func TestOIDCStateStore_ExpiredState(t *testing.T) {
 
 func TestRegistryGetUserByID(t *testing.T) {
 	registry := NewProviderRegistry()
-	local := NewLocalProvider(nil)
+	local := NewLocalProvider(NewMemoryUserStore(), testLogger())
 	registry.RegisterCredential("local", "Local", local)
 
 	// Unknown provider should error
@@ -185,7 +185,7 @@ func TestRegistryGetUserByID(t *testing.T) {
 
 func TestRegistryListProviders(t *testing.T) {
 	registry := NewProviderRegistry()
-	local := NewLocalProvider(nil)
+	local := NewLocalProvider(NewMemoryUserStore(), testLogger())
 	registry.RegisterCredential("local", "Local Accounts", local)
 
 	providers := registry.ListProviders()

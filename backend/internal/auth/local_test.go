@@ -11,8 +11,12 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
+func testProvider() *LocalProvider {
+	return NewLocalProvider(NewMemoryUserStore(), testLogger())
+}
+
 func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 
 	user, err := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
 	if err != nil {
@@ -25,7 +29,6 @@ func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
 		t.Errorf("expected k8s username admin, got %s", user.KubernetesUsername)
 	}
 
-	// Authenticate with correct credentials
 	authed, err := p.Authenticate(context.Background(), Credentials{
 		Username: "admin",
 		Password: "password123",
@@ -42,7 +45,7 @@ func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
 }
 
 func TestLocalProvider_WrongPassword(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
 
 	_, err := p.Authenticate(context.Background(), Credentials{
@@ -55,7 +58,7 @@ func TestLocalProvider_WrongPassword(t *testing.T) {
 }
 
 func TestLocalProvider_UnknownUser(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 
 	_, err := p.Authenticate(context.Background(), Credentials{
 		Username: "nobody",
@@ -67,7 +70,7 @@ func TestLocalProvider_UnknownUser(t *testing.T) {
 }
 
 func TestLocalProvider_DuplicateUser(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
 
 	_, err := p.CreateUser(context.Background(), "admin", "otherpass", []string{"admin"})
@@ -77,7 +80,7 @@ func TestLocalProvider_DuplicateUser(t *testing.T) {
 }
 
 func TestLocalProvider_UserCount(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 
 	if p.UserCount() != 0 {
 		t.Errorf("expected 0 users, got %d", p.UserCount())
@@ -95,7 +98,7 @@ func TestLocalProvider_UserCount(t *testing.T) {
 }
 
 func TestLocalProvider_GetUserByID(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 	created, _ := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
 
 	found, err := p.GetUserByID(created.ID)
@@ -113,8 +116,25 @@ func TestLocalProvider_GetUserByID(t *testing.T) {
 }
 
 func TestLocalProvider_Type(t *testing.T) {
-	p := NewLocalProvider(testLogger())
+	p := testProvider()
 	if p.Type() != "local" {
 		t.Errorf("expected type 'local', got %s", p.Type())
+	}
+}
+
+func TestLocalProvider_CreateFirstUser(t *testing.T) {
+	p := testProvider()
+
+	user, err := p.CreateFirstUser(context.Background(), "admin", "password123", []string{"admin"})
+	if err != nil {
+		t.Fatalf("CreateFirstUser failed: %v", err)
+	}
+	if user.Username != "admin" {
+		t.Errorf("expected username admin, got %s", user.Username)
+	}
+
+	_, err = p.CreateFirstUser(context.Background(), "admin2", "password456", []string{"admin"})
+	if err != ErrSetupCompleted {
+		t.Errorf("expected ErrSetupCompleted, got %v", err)
 	}
 }

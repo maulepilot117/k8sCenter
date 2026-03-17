@@ -35,7 +35,7 @@ func testServer(t *testing.T) *Server {
 	}
 
 	tokenManager := auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes"))
-	localAuth := auth.NewLocalProvider(logger)
+	localAuth := auth.NewLocalProvider(auth.NewMemoryUserStore(), logger)
 	sessions := auth.NewSessionStore()
 	auditLogger := audit.NewSlogLogger(logger)
 	rateLimiter := middleware.NewRateLimiter()
@@ -458,7 +458,7 @@ func TestHandleReadyz_NotReady(t *testing.T) {
 		Config:       cfg,
 		Logger:       logger,
 		TokenManager: auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes")),
-		LocalAuth:    auth.NewLocalProvider(logger),
+		LocalAuth:    auth.NewLocalProvider(auth.NewMemoryUserStore(), logger),
 		Sessions:     auth.NewSessionStore(),
 		AuditLogger:  audit.NewSlogLogger(logger),
 		RateLimiter:  middleware.NewRateLimiter(),

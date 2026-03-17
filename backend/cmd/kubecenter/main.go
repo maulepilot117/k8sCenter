@@ -104,40 +104,11 @@ func main() {
 		logger.Warn("no JWT secret configured, using random key (tokens will not survive restarts)")
 	}
 
-	// Initialize auth components
-	tokenManager := auth.NewTokenManager(jwtSecret)
-	localAuth := auth.NewLocalProvider(logger)
-	sessions := auth.NewSessionStore()
-	sessions.StartCleanup(ctx, auth.RefreshTokenLifetime/2)
-	rbacChecker := auth.NewRBACChecker(k8sClient, logger)
-	oidcStateStore := auth.NewOIDCStateStore()
-	oidcStateStore.StartCleanup(ctx, time.Minute)
-
-	// Create auth provider registry
-	authRegistry := auth.NewProviderRegistry()
-	authRegistry.RegisterCredential("local", "Local Accounts", localAuth)
-
-	// Register configured OIDC providers
-	for _, oidcCfg := range cfg.Auth.OIDC {
-		oidcProvider, err := auth.NewOIDCProvider(ctx, oidcCfg, oidcStateStore, logger)
-		if err != nil {
-			logger.Error("failed to initialize OIDC provider", "id", oidcCfg.ID, "error", err)
-			continue // skip this provider but don't prevent startup
-		}
-		authRegistry.RegisterOIDC(oidcCfg.ID, oidcProvider)
-		logger.Info("registered OIDC provider", "id", oidcCfg.ID, "issuer", oidcCfg.IssuerURL)
-	}
-
-	// Register configured LDAP providers
-	for _, ldapCfg := range cfg.Auth.LDAP {
-		ldapProvider := auth.NewLDAPProvider(ldapCfg, logger)
-		authRegistry.RegisterCredential(ldapCfg.ID, ldapCfg.DisplayName, ldapProvider)
-		logger.Info("registered LDAP provider", "id", ldapCfg.ID, "url", ldapCfg.URL)
-	}
 	// Initialize database, audit logger, settings, and cluster store
 	var auditLogger audit.Logger
 	var clusterStore *appstore.ClusterStore
 	var settingsService *appstore.SettingsService
+	var userStore *appstore.UserStore
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -149,7 +120,8 @@ func main() {
 			auditLogger = pgLogger
 			logger.Info("audit logging to PostgreSQL", "retentionDays", cfg.Audit.RetentionDays)
 
-			// Initialize settings and cluster stores
+			// Initialize settings, user, and cluster stores
+			userStore = appstore.NewUserStore(db.Pool)
 			settingsService = appstore.NewSettingsService(db.Pool)
 			encKey := cfg.Database.EncryptionKey
 			if encKey == "" {
@@ -191,6 +163,42 @@ func main() {
 	} else {
 		auditLogger = audit.NewSlogLogger(logger)
 	}
+
+	// Initialize auth components (after DB so userStore is available)
+	tokenManager := auth.NewTokenManager(jwtSecret)
+	if userStore == nil {
+		logger.Error("database is required for local user accounts — cannot start without PostgreSQL")
+		os.Exit(1)
+	}
+	localAuth := auth.NewLocalProvider(userStore, logger)
+	sessions := auth.NewSessionStore()
+	sessions.StartCleanup(ctx, auth.RefreshTokenLifetime/2)
+	rbacChecker := auth.NewRBACChecker(k8sClient, logger)
+	oidcStateStore := auth.NewOIDCStateStore()
+	oidcStateStore.StartCleanup(ctx, time.Minute)
+
+	// Create auth provider registry
+	authRegistry := auth.NewProviderRegistry()
+	authRegistry.RegisterCredential("local", "Local Accounts", localAuth)
+
+	// Register configured OIDC providers
+	for _, oidcCfg := range cfg.Auth.OIDC {
+		oidcProvider, err := auth.NewOIDCProvider(ctx, oidcCfg, oidcStateStore, logger)
+		if err != nil {
+			logger.Error("failed to initialize OIDC provider", "id", oidcCfg.ID, "error", err)
+			continue
+		}
+		authRegistry.RegisterOIDC(oidcCfg.ID, oidcProvider)
+		logger.Info("registered OIDC provider", "id", oidcCfg.ID, "issuer", oidcCfg.IssuerURL)
+	}
+
+	// Register configured LDAP providers
+	for _, ldapCfg := range cfg.Auth.LDAP {
+		ldapProvider := auth.NewLDAPProvider(ldapCfg, logger)
+		authRegistry.RegisterCredential(ldapCfg.ID, ldapCfg.DisplayName, ldapProvider)
+		logger.Info("registered LDAP provider", "id", ldapCfg.ID, "url", ldapCfg.URL)
+	}
+
 	var rateLimiter *middleware.RateLimiter
 	if cfg.Dev {
 		rateLimiter = middleware.NewRateLimiterWithRate(60, time.Minute) // relaxed for dev

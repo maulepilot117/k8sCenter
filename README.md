@@ -9,8 +9,10 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Real-time cluster view** with WebSocket-powered live updates
 - **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)
 - **Integrated monitoring** via Prometheus and Grafana with auto-discovery, PromQL proxy, and Grafana dashboard embedding
-- **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts)
+- **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts with PostgreSQL persistence)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
+- **Cilium Network Policy editor** with NSX-T-style rule table, YAML preview, and dangerous policy warnings
+- **Namespace creation wizard** with inline create from deployment/service wizards
 - **Pod management** including logs, exec terminal, and resource metrics *(Phase 2)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
 - **Audit logging** with PostgreSQL persistence, paginated query API, filterable viewer, and 90-day retention
@@ -42,7 +44,7 @@ Kubernetes Cluster
 | Frontend | Deno 2.x, Fresh 2.x, Preact, Tailwind v4 |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
-| Auth | JWT + OIDC / LDAP / local (Argon2id) |
+| Auth | JWT + OIDC / LDAP / local (Argon2id, PHC format, PostgreSQL-backed) |
 | Deployment | Helm 3.x chart |
 | Container | Distroless (Go), Deno slim (frontend) |
 
@@ -149,7 +151,7 @@ Key endpoints:
 | GET | `/api/v1/auth/oidc/:id/callback` | No | OIDC callback (exchanges code, issues JWT) |
 | GET | `/api/v1/cluster/info` | Yes | Cluster version, node count, k8sCenter version |
 
-Resource CRUD (18 types: deployments, statefulsets, daemonsets, pods, services, ingresses, configmaps, secrets, namespaces, nodes, pvcs, jobs, cronjobs, networkpolicies, roles, clusterroles, rolebindings, clusterrolebindings):
+Resource CRUD (31+ types including CiliumNetworkPolicies via dynamic client):
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
@@ -241,6 +243,7 @@ k8sCenter follows a strict security model:
 - All user-initiated Kubernetes API calls use **user impersonation** so that cluster RBAC is enforced server-side
 - The service account has **read-only** access for informer caches plus impersonation permissions
 - Secrets are **never cached** in-process; they are fetched on-demand via the impersonated client
+- Local user passwords hashed with **Argon2id** (OWASP parameters) stored in **PHC format** (self-describing, parameter-agile)
 - JWT access tokens are held in memory only (not localStorage); refresh tokens use httpOnly cookies
 - Containers run as **non-root** (UID 65534) with read-only root filesystem and all capabilities dropped
 - All write operations and secret accesses are **audit logged**
@@ -256,7 +259,7 @@ kubecenter/
 │   ├── internal/
 │   │   ├── server/       # HTTP server, routes, handlers
 │   │   │   └── middleware/ # Auth, CSRF, rate limiting, CORS
-│   │   ├── auth/         # JWT, local/OIDC/LDAP providers, RBAC, sessions, provider registry
+│   │   ├── auth/         # JWT, local (PostgreSQL-backed)/OIDC/LDAP providers, RBAC, sessions
 │   │   ├── audit/        # Audit logging interface + slog impl
 │   │   ├── websocket/    # WebSocket hub, client, events (gorilla/websocket)
 │   │   ├── httputil/      # Shared HTTP response helpers
