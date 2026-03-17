@@ -25,9 +25,9 @@ func NewUserStore(pool *pgxpool.Pool) *UserStore {
 // Create inserts a new local user. Returns auth.ErrDuplicateUser on unique violation.
 func (s *UserStore) Create(ctx context.Context, u auth.UserRecord) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO local_users (id, username, password_hash, salt, k8s_username, k8s_groups, roles)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		u.ID, u.Username, u.PasswordHash, u.Salt, u.K8sUsername, u.K8sGroups, u.Roles)
+		INSERT INTO local_users (id, username, password_phc, k8s_username, k8s_groups, roles)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID, u.Username, u.PasswordPHC, u.K8sUsername, u.K8sGroups, u.Roles)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
@@ -50,7 +50,6 @@ func (s *UserStore) CreateFirstUser(ctx context.Context, u auth.UserRecord) (boo
 	defer tx.Rollback(ctx)
 
 	// Advisory lock ensures only one CreateFirstUser can run at a time.
-	// The lock is automatically released when the transaction ends.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('create_first_user'))`); err != nil {
 		return false, fmt.Errorf("acquiring advisory lock: %w", err)
 	}
@@ -64,9 +63,9 @@ func (s *UserStore) CreateFirstUser(ctx context.Context, u auth.UserRecord) (boo
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO local_users (id, username, password_hash, salt, k8s_username, k8s_groups, roles)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		u.ID, u.Username, u.PasswordHash, u.Salt, u.K8sUsername, u.K8sGroups, u.Roles)
+		INSERT INTO local_users (id, username, password_phc, k8s_username, k8s_groups, roles)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		u.ID, u.Username, u.PasswordPHC, u.K8sUsername, u.K8sGroups, u.Roles)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -85,9 +84,9 @@ func (s *UserStore) CreateFirstUser(ctx context.Context, u auth.UserRecord) (boo
 func (s *UserStore) GetByUsername(ctx context.Context, username string) (*auth.UserRecord, error) {
 	var u auth.UserRecord
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, username, password_hash, salt, k8s_username, k8s_groups, roles
+		SELECT id, username, password_phc, k8s_username, k8s_groups, roles
 		FROM local_users WHERE username = $1`, username).Scan(
-		&u.ID, &u.Username, &u.PasswordHash, &u.Salt, &u.K8sUsername, &u.K8sGroups, &u.Roles)
+		&u.ID, &u.Username, &u.PasswordPHC, &u.K8sUsername, &u.K8sGroups, &u.Roles)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, auth.ErrUserNotFound
@@ -101,9 +100,9 @@ func (s *UserStore) GetByUsername(ctx context.Context, username string) (*auth.U
 func (s *UserStore) GetByID(ctx context.Context, id string) (*auth.UserRecord, error) {
 	var u auth.UserRecord
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, username, password_hash, salt, k8s_username, k8s_groups, roles
+		SELECT id, username, password_phc, k8s_username, k8s_groups, roles
 		FROM local_users WHERE id = $1`, id).Scan(
-		&u.ID, &u.Username, &u.PasswordHash, &u.Salt, &u.K8sUsername, &u.K8sGroups, &u.Roles)
+		&u.ID, &u.Username, &u.PasswordPHC, &u.K8sUsername, &u.K8sGroups, &u.Roles)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, auth.ErrUserNotFound

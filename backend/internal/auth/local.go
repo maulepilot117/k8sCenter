@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -36,12 +37,12 @@ type UserStore interface {
 }
 
 // UserRecord is the database representation of a local user.
+// PasswordPHC stores the password in PHC format: $argon2id$v=19$m=65536,t=1,p=4$<salt>$<hash>
 type UserRecord struct {
-	ID           string   `json:"id"`
-	Username     string   `json:"username"`
-	PasswordHash string   `json:"-"`
-	Salt         string   `json:"-"`
-	K8sUsername  string   `json:"k8sUsername"`
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	PasswordPHC string   `json:"-"`
+	K8sUsername string   `json:"k8sUsername"`
 	K8sGroups   []string `json:"k8sGroups"`
 	Roles       []string `json:"roles"`
 }
@@ -94,16 +95,12 @@ func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*U
 		return nil, ErrInvalidCredentials
 	}
 
-	salt, err := hex.DecodeString(stored.Salt)
+	salt, storedHash, err := parsePHC(stored.PasswordPHC)
 	if err != nil {
 		return nil, ErrInvalidCredentials
 	}
 
 	hash := argon2.IDKey([]byte(creds.Password), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
-	storedHash, err := hex.DecodeString(stored.PasswordHash)
-	if err != nil {
-		return nil, ErrInvalidCredentials
-	}
 	if subtle.ConstantTimeCompare(hash, storedHash) != 1 {
 		return nil, ErrInvalidCredentials
 	}
@@ -191,14 +188,63 @@ func (p *LocalProvider) hashAndBuild(ctx context.Context, username, password str
 	}
 
 	return &UserRecord{
-		ID:           id,
-		Username:     username,
-		PasswordHash: hex.EncodeToString(hash),
-		Salt:         hex.EncodeToString(salt),
-		K8sUsername:  username,
+		ID:          id,
+		Username:    username,
+		PasswordPHC: encodePHC(salt, hash),
+		K8sUsername: username,
 		K8sGroups:   []string{"k8scenter:users"},
-		Roles:        roles,
+		Roles:       roles,
 	}, nil
+}
+
+// encodePHC encodes salt and hash into PHC format: $argon2id$v=19$m=65536,t=1,p=4$<salt>$<hash>
+func encodePHC(salt, hash []byte) string {
+	b64Salt := base64.RawStdEncoding.EncodeToString(salt)
+	b64Hash := base64.RawStdEncoding.EncodeToString(hash)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, argon2Memory, argon2Time, argon2Threads, b64Salt, b64Hash)
+}
+
+// parsePHC extracts salt and hash from a PHC-format string.
+func parsePHC(phc string) (salt, hash []byte, err error) {
+	var version int
+	var memory, time, threads uint32
+	var b64Salt, b64Hash string
+
+	_, err = fmt.Sscanf(phc, "$argon2id$v=%d$m=%d,t=%d,p=%d$%s",
+		&version, &memory, &time, &threads, &b64Salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid PHC format: %w", err)
+	}
+
+	// Split the last segment — Sscanf captures everything after the 4th $
+	// The format is <salt>$<hash>, so split on $
+	parts := splitLast(b64Salt, '$')
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("invalid PHC format: missing hash segment")
+	}
+	b64Salt = parts[0]
+	b64Hash = parts[1]
+
+	salt, err = base64.RawStdEncoding.DecodeString(b64Salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding salt: %w", err)
+	}
+	hash, err = base64.RawStdEncoding.DecodeString(b64Hash)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding hash: %w", err)
+	}
+	return salt, hash, nil
+}
+
+// splitLast splits s into two parts at the last occurrence of sep.
+func splitLast(s string, sep byte) []string {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == sep {
+			return []string{s[:i], s[i+1:]}
+		}
+	}
+	return []string{s}
 }
 
 func generateID() (string, error) {
