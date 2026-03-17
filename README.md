@@ -12,6 +12,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts with PostgreSQL persistence)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Cilium Network Policy editor** with NSX-T-style rule table, YAML preview, and dangerous policy warnings
+- **Hubble network flow visibility** with gRPC-to-HTTP bridge, namespace/verdict filters, and color-coded flow table
 - **Namespace creation wizard** with inline create from deployment/service wizards
 - **Pod management** including logs, exec terminal, and resource metrics *(Phase 2)*
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time alert banner
@@ -196,6 +197,7 @@ Networking (CNI):
 | GET | `/api/v1/networking/cni` | Yes | Detected CNI plugin info and health |
 | GET | `/api/v1/networking/cni/config` | Yes | CNI configuration (Cilium editable) |
 | PUT | `/api/v1/networking/cni/config` | Yes | Update CNI config (Cilium, allowlisted keys) |
+| GET | `/api/v1/networking/hubble/flows` | Yes | Hubble network flows (namespace+verdict filters) |
 
 YAML operations:
 
