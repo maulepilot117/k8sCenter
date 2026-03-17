@@ -12,6 +12,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/pkg/api"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -64,6 +65,12 @@ func requireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {
 // impersonatingClient returns a k8s clientset impersonating the authenticated user.
 func (h *Handler) impersonatingClient(user *auth.User) (*kubernetes.Clientset, error) {
 	return h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+}
+
+// impersonatingDynamic returns a dynamic client impersonating the authenticated user.
+// Used for CRD resources (e.g., CiliumNetworkPolicy) that have no typed client.
+func (h *Handler) impersonatingDynamic(user *auth.User) (dynamic.Interface, error) {
+	return h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // checkAccess verifies the user can perform the verb on the resource in the namespace.

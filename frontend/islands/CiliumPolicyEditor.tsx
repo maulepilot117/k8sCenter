@@ -83,20 +83,24 @@ export default function CiliumPolicyEditor() {
       .catch(() => {});
   }, []);
 
-  // Generate YAML preview
+  // Generate YAML preview (debounced, skip when hidden)
   useEffect(() => {
-    const policy = buildPolicyYaml(
-      name.value,
-      namespace.value,
-      endpointSelector.value,
-      rules.value,
-    );
-    yamlPreview.value = policy;
+    if (!showYaml.value) return;
+    const timer = setTimeout(() => {
+      yamlPreview.value = buildPolicyYaml(
+        name.value,
+        namespace.value,
+        endpointSelector.value,
+        rules.value,
+      );
+    }, 150);
+    return () => clearTimeout(timer);
   }, [
     name.value,
     namespace.value,
     endpointSelector.value,
     rules.value,
+    showYaml.value,
   ]);
 
   if (!IS_BROWSER) {

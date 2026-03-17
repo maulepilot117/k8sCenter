@@ -27,22 +27,22 @@ type CiliumPolicyRequest struct {
 	Name             string            `json:"name"`
 	Namespace        string            `json:"namespace"`
 	EndpointSelector map[string]string `json:"endpointSelector"`
-	IngressRules     []PolicyRule      `json:"ingressRules"`
-	EgressRules      []PolicyRule      `json:"egressRules"`
+	IngressRules     []CiliumPolicyRule `json:"ingressRules"`
+	EgressRules      []CiliumPolicyRule `json:"egressRules"`
 }
 
-// PolicyRule defines a single ingress or egress rule.
-type PolicyRule struct {
+// CiliumPolicyRule defines a single ingress or egress rule.
+type CiliumPolicyRule struct {
 	PeerType string            `json:"peerType"` // "endpoints", "entities", "cidr"
 	Labels   map[string]string `json:"labels,omitempty"`
 	Entities []string          `json:"entities,omitempty"`
 	CIDRs    []string          `json:"cidrs,omitempty"`
-	Ports    []PortRule        `json:"ports,omitempty"`
+	Ports    []CiliumPortRule  `json:"ports,omitempty"`
 	Action   string            `json:"action"` // "allow", "deny"
 }
 
-// PortRule defines a port and protocol for a policy rule.
-type PortRule struct {
+// CiliumPortRule defines a port and protocol for a Cilium policy rule.
+type CiliumPortRule struct {
 	Port     int    `json:"port"`
 	Protocol string `json:"protocol"` // "TCP", "UDP", "SCTP", "ANY"
 }
@@ -74,46 +74,36 @@ func (h *Handler) HandleListCiliumPolicies(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	params := parseListParams(r)
-
 	ns := params.Namespace
-	if ns != "" {
-		if !h.checkAccess(w, r, user, "list", kindCiliumNetworkPolicy, ns) {
-			return
-		}
-	} else {
-		if !h.checkAccess(w, r, user, "list", kindCiliumNetworkPolicy, "") {
-			return
-		}
+
+	if !h.checkAccess(w, r, user, "list", kindCiliumNetworkPolicy, ns) {
+		return
 	}
 
-	dc, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dc, err := h.impersonatingDynamic(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
 	}
 
+	opts := metav1.ListOptions{
+		LabelSelector: params.LabelSelector,
+		Limit:         int64(params.Limit),
+		Continue:      params.Continue,
+	}
+
 	var list *unstructured.UnstructuredList
 	if ns != "" {
-		list, err = dc.Resource(ciliumPolicyGVR).Namespace(ns).List(r.Context(), metav1.ListOptions{
-			LabelSelector: params.LabelSelector,
-		})
+		list, err = dc.Resource(ciliumPolicyGVR).Namespace(ns).List(r.Context(), opts)
 	} else {
-		list, err = dc.Resource(ciliumPolicyGVR).List(r.Context(), metav1.ListOptions{
-			LabelSelector: params.LabelSelector,
-		})
+		list, err = dc.Resource(ciliumPolicyGVR).List(r.Context(), opts)
 	}
 	if err != nil {
 		mapK8sError(w, err, "list", "CiliumNetworkPolicy", ns, "")
 		return
 	}
 
-	// Convert to pointer slice for paginate
-	items := make([]*unstructured.Unstructured, len(list.Items))
-	for i := range list.Items {
-		items[i] = &list.Items[i]
-	}
-	paged, cont := paginate(items, params.Limit, params.Continue)
-	writeList(w, paged, len(items), cont)
+	writeList(w, list.Items, len(list.Items), list.GetContinue())
 }
 
 // HandleGetCiliumPolicy gets a single CiliumNetworkPolicy.
@@ -128,7 +118,7 @@ func (h *Handler) HandleGetCiliumPolicy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dc, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dc, err := h.impersonatingDynamic(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -154,7 +144,7 @@ func (h *Handler) HandleDeleteCiliumPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	dc, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dc, err := h.impersonatingDynamic(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -199,7 +189,7 @@ func (h *Handler) HandleCreateCiliumPolicy(w http.ResponseWriter, r *http.Reques
 	// Build unstructured CiliumNetworkPolicy
 	obj := buildCiliumPolicy(&req)
 
-	dc, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	dc, err := h.impersonatingDynamic(user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -259,7 +249,7 @@ func validateCiliumPolicy(req *CiliumPolicyRequest) []string {
 	return errs
 }
 
-func validateRule(rule *PolicyRule) []string {
+func validateRule(rule *CiliumPolicyRule) []string {
 	var errs []string
 
 	// Action
@@ -377,7 +367,7 @@ func detectDangerousPolicy(req *CiliumPolicyRequest) []PolicyWarning {
 	}
 
 	// Warn on 0.0.0.0/0 CIDR
-	for _, rules := range [][]PolicyRule{req.IngressRules, req.EgressRules} {
+	for _, rules := range [][]CiliumPolicyRule{req.IngressRules, req.EgressRules} {
 		for _, rule := range rules {
 			for _, c := range rule.CIDRs {
 				if c == "0.0.0.0/0" || c == "::/0" {
@@ -445,7 +435,7 @@ func buildCiliumPolicy(req *CiliumPolicyRequest) *unstructured.Unstructured {
 
 // buildDirectionalRules builds rules with correct Cilium key names for the given direction.
 // Ingress uses "from*" keys, egress uses "to*" keys.
-func buildDirectionalRules(rules []PolicyRule, direction string) (allow []any, deny []any) {
+func buildDirectionalRules(rules []CiliumPolicyRule, direction string) (allow []any, deny []any) {
 	fromTo := "from"
 	if direction == "egress" {
 		fromTo = "to"
