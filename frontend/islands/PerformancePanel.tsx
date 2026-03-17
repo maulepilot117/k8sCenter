@@ -378,12 +378,13 @@ export default function PerformancePanel(
     }));
     charts.value = initial;
 
-    // For nodes, resolve the node name to instance label (IP:port) via kube_node_info
+    // For nodes, resolve the node name to node-exporter instance (internal_ip:9100)
+    // kube_node_info has internal_ip label, node-exporter uses instance=IP:9100
     let nodeInstance = "";
     if (kind === "nodes") {
       try {
         const nodeInfoRes = await apiGet<{
-          result: { metric: { instance: string } }[];
+          result: { metric: { internal_ip: string } }[];
         }>(
           `/v1/monitoring/query?query=${
             encodeURIComponent(
@@ -393,7 +394,8 @@ export default function PerformancePanel(
         );
         const results = nodeInfoRes.data?.result;
         if (results && results.length > 0) {
-          nodeInstance = results[0].metric.instance;
+          const ip = results[0].metric.internal_ip;
+          nodeInstance = `${ip}:9100`;
         }
       } catch {
         // Fall back to name-based matching
