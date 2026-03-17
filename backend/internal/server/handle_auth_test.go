@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -16,6 +17,65 @@ import (
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
+
+// testUserStore is an in-memory auth.UserStore for server tests.
+type testUserStore struct {
+	mu    sync.RWMutex
+	users map[string]auth.UserRecord
+	byID  map[string]auth.UserRecord
+}
+
+func newTestUserStore() *testUserStore {
+	return &testUserStore{users: make(map[string]auth.UserRecord), byID: make(map[string]auth.UserRecord)}
+}
+
+func (m *testUserStore) Create(_ context.Context, u auth.UserRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.users[u.Username]; ok {
+		return auth.ErrDuplicateUser
+	}
+	m.users[u.Username] = u
+	m.byID[u.ID] = u
+	return nil
+}
+
+func (m *testUserStore) CreateFirstUser(_ context.Context, u auth.UserRecord) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.users) > 0 {
+		return false, nil
+	}
+	m.users[u.Username] = u
+	m.byID[u.ID] = u
+	return true, nil
+}
+
+func (m *testUserStore) GetByUsername(_ context.Context, username string) (*auth.UserRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	u, ok := m.users[username]
+	if !ok {
+		return nil, auth.ErrUserNotFound
+	}
+	return &u, nil
+}
+
+func (m *testUserStore) GetByID(_ context.Context, id string) (*auth.UserRecord, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	u, ok := m.byID[id]
+	if !ok {
+		return nil, auth.ErrUserNotFound
+	}
+	return &u, nil
+}
+
+func (m *testUserStore) Count(_ context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.users), nil
+}
 
 // testServer creates a fully wired Server for handler integration tests.
 // It skips k8s-dependent features (informers, RBAC checker) by not setting them.
@@ -35,7 +95,7 @@ func testServer(t *testing.T) *Server {
 	}
 
 	tokenManager := auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes"))
-	localAuth := auth.NewLocalProvider(logger)
+	localAuth := auth.NewLocalProvider(newTestUserStore(), logger)
 	sessions := auth.NewSessionStore()
 	auditLogger := audit.NewSlogLogger(logger)
 	rateLimiter := middleware.NewRateLimiter()
@@ -458,7 +518,7 @@ func TestHandleReadyz_NotReady(t *testing.T) {
 		Config:       cfg,
 		Logger:       logger,
 		TokenManager: auth.NewTokenManager([]byte("test-signing-key-minimum-32-bytes")),
-		LocalAuth:    auth.NewLocalProvider(logger),
+		LocalAuth:    auth.NewLocalProvider(newTestUserStore(), logger),
 		Sessions:     auth.NewSessionStore(),
 		AuditLogger:  audit.NewSlogLogger(logger),
 		RateLimiter:  middleware.NewRateLimiter(),
