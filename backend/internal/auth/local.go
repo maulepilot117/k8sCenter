@@ -37,13 +37,13 @@ type UserStore interface {
 
 // UserRecord is the database representation of a local user.
 type UserRecord struct {
-	ID           string
-	Username     string
-	PasswordHash string
-	Salt         string
-	K8sUsername  string
-	K8sGroups   []string
-	Roles       []string
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"-"`
+	Salt         string   `json:"-"`
+	K8sUsername  string   `json:"k8sUsername"`
+	K8sGroups   []string `json:"k8sGroups"`
+	Roles       []string `json:"roles"`
 }
 
 func (r *UserRecord) toUser() *User {

@@ -4,81 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"sync"
 	"testing"
 )
-
-// memoryUserStore is a simple in-memory UserStore for tests.
-type memoryUserStore struct {
-	mu    sync.RWMutex
-	users map[string]UserRecord // keyed by username
-	byID  map[string]UserRecord // keyed by ID
-}
-
-func newMemoryUserStore() *memoryUserStore {
-	return &memoryUserStore{
-		users: make(map[string]UserRecord),
-		byID:  make(map[string]UserRecord),
-	}
-}
-
-func (m *memoryUserStore) Create(_ context.Context, u UserRecord) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.users[u.Username]; exists {
-		return ErrDuplicateUser
-	}
-	m.users[u.Username] = u
-	m.byID[u.ID] = u
-	return nil
-}
-
-func (m *memoryUserStore) CreateFirstUser(_ context.Context, u UserRecord) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.users) > 0 {
-		return false, nil
-	}
-	if _, exists := m.users[u.Username]; exists {
-		return false, ErrDuplicateUser
-	}
-	m.users[u.Username] = u
-	m.byID[u.ID] = u
-	return true, nil
-}
-
-func (m *memoryUserStore) GetByUsername(_ context.Context, username string) (*UserRecord, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	u, ok := m.users[username]
-	if !ok {
-		return nil, ErrUserNotFound
-	}
-	return &u, nil
-}
-
-func (m *memoryUserStore) GetByID(_ context.Context, id string) (*UserRecord, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	u, ok := m.byID[id]
-	if !ok {
-		return nil, ErrUserNotFound
-	}
-	return &u, nil
-}
-
-func (m *memoryUserStore) Count(_ context.Context) (int, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.users), nil
-}
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
 func testProvider() *LocalProvider {
-	return NewLocalProvider(newMemoryUserStore(), testLogger())
+	return NewLocalProvider(NewMemoryUserStore(), testLogger())
 }
 
 func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
@@ -95,7 +29,6 @@ func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
 		t.Errorf("expected k8s username admin, got %s", user.KubernetesUsername)
 	}
 
-	// Authenticate with correct credentials
 	authed, err := p.Authenticate(context.Background(), Credentials{
 		Username: "admin",
 		Password: "password123",
@@ -200,7 +133,6 @@ func TestLocalProvider_CreateFirstUser(t *testing.T) {
 		t.Errorf("expected username admin, got %s", user.Username)
 	}
 
-	// Second call should fail
 	_, err = p.CreateFirstUser(context.Background(), "admin2", "password456", []string{"admin"})
 	if err != ErrSetupCompleted {
 		t.Errorf("expected ErrSetupCompleted, got %v", err)

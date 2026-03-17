@@ -39,22 +39,46 @@ func (s *UserStore) Create(ctx context.Context, u auth.UserRecord) error {
 }
 
 // CreateFirstUser atomically inserts a user only if no users exist.
-// Uses a subquery to ensure database-level atomicity (no Go mutex needed).
+// Uses a PostgreSQL advisory lock to prevent concurrent setup requests from
+// both succeeding (INSERT ... WHERE NOT EXISTS is not atomic under READ COMMITTED).
 // Returns true if the user was created, false if users already exist.
 func (s *UserStore) CreateFirstUser(ctx context.Context, u auth.UserRecord) (bool, error) {
-	result, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Advisory lock ensures only one CreateFirstUser can run at a time.
+	// The lock is automatically released when the transaction ends.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('create_first_user'))`); err != nil {
+		return false, fmt.Errorf("acquiring advisory lock: %w", err)
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM local_users`).Scan(&count); err != nil {
+		return false, fmt.Errorf("counting users: %w", err)
+	}
+	if count > 0 {
+		return false, nil
+	}
+
+	_, err = tx.Exec(ctx, `
 		INSERT INTO local_users (id, username, password_hash, salt, k8s_username, k8s_groups, roles)
-		SELECT $1, $2, $3, $4, $5, $6, $7
-		WHERE NOT EXISTS (SELECT 1 FROM local_users)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		u.ID, u.Username, u.PasswordHash, u.Salt, u.K8sUsername, u.K8sGroups, u.Roles)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return false, auth.ErrDuplicateUser
 		}
-		return false, fmt.Errorf("creating first user: %w", err)
+		return false, fmt.Errorf("inserting first user: %w", err)
 	}
-	return result.RowsAffected() == 1, nil
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing first user: %w", err)
+	}
+	return true, nil
 }
 
 // GetByUsername looks up a user by username.
@@ -68,7 +92,7 @@ func (s *UserStore) GetByUsername(ctx context.Context, username string) (*auth.U
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, auth.ErrUserNotFound
 		}
-		return nil, fmt.Errorf("getting user by username %s: %w", username, err)
+		return nil, fmt.Errorf("getting user by username: %w", err)
 	}
 	return &u, nil
 }
@@ -84,7 +108,7 @@ func (s *UserStore) GetByID(ctx context.Context, id string) (*auth.UserRecord, e
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, auth.ErrUserNotFound
 		}
-		return nil, fmt.Errorf("getting user by ID %s: %w", id, err)
+		return nil, fmt.Errorf("getting user by ID: %w", err)
 	}
 	return &u, nil
 }
