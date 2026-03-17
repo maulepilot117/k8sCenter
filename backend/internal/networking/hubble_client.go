@@ -27,28 +27,27 @@ type FlowRecord struct {
 	DstPort      uint32    `json:"dstPort,omitempty"`
 }
 
-// HubbleStatus reports the availability and capacity of the Hubble Relay.
-type HubbleStatus struct {
-	Connected        bool    `json:"connected"`
-	NumFlows         uint64  `json:"numFlows"`
-	MaxFlows         uint64  `json:"maxFlows"`
-	FlowsRate        float64 `json:"flowsRate"`
-	ConnectedNodes   uint32  `json:"connectedNodes"`
-	UnavailableNodes uint32  `json:"unavailableNodes"`
-	Version          string  `json:"version"`
-}
-
 // HubbleClient wraps a gRPC connection to Hubble Relay.
 type HubbleClient struct {
 	conn   *grpc.ClientConn
 	client observerpb.ObserverClient
 }
 
+// grpcDialTimeout is the maximum time to wait for the initial gRPC connection.
+const grpcDialTimeout = 10 * time.Second
+
+// grpcStreamTimeout is the maximum time to wait for a complete flow query.
+const grpcStreamTimeout = 30 * time.Second
+
 // NewHubbleClient connects to Hubble Relay at the given address (e.g., "hubble-relay:80").
 // Uses insecure credentials for in-cluster communication.
 func NewHubbleClient(relayAddr string) (*HubbleClient, error) {
-	conn, err := grpc.NewClient(relayAddr,
+	ctx, cancel := context.WithTimeout(context.Background(), grpcDialTimeout)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, relayAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithBlock(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to hubble relay at %s: %w", relayAddr, err)
@@ -59,41 +58,14 @@ func NewHubbleClient(relayAddr string) (*HubbleClient, error) {
 	}, nil
 }
 
-// Status checks Hubble Relay availability and returns capacity info.
-func (c *HubbleClient) Status(ctx context.Context) (*HubbleStatus, error) {
-	resp, err := c.client.ServerStatus(ctx, &observerpb.ServerStatusRequest{})
-	if err != nil {
-		return &HubbleStatus{Connected: false}, err
-	}
-
-	status := &HubbleStatus{
-		Connected: true,
-		NumFlows:  resp.GetNumFlows(),
-		MaxFlows:  resp.GetMaxFlows(),
-		FlowsRate: resp.GetFlowsRate(),
-		Version:   resp.GetVersion(),
-	}
-	if n := resp.GetNumConnectedNodes(); n != nil {
-		status.ConnectedNodes = n.GetValue()
-	}
-	if n := resp.GetNumUnavailableNodes(); n != nil {
-		status.UnavailableNodes = n.GetValue()
-	}
-	return status, nil
-}
-
 // GetFlows queries Hubble Relay for recent flows matching the given filters.
 // namespace is required. verdict and limit are optional (empty/0 = no filter/default 100).
 func (c *HubbleClient) GetFlows(ctx context.Context, namespace, verdict string, limit int) ([]FlowRecord, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
+	// Enforce stream timeout shorter than HTTP request timeout
+	ctx, cancel := context.WithTimeout(ctx, grpcStreamTimeout)
+	defer cancel()
 
 	// Build whitelist filters: capture traffic where src OR dst is in the namespace
-	var whitelist []*flowpb.FlowFilter
 	srcFilter := &flowpb.FlowFilter{
 		SourcePod: []string{namespace + "/"},
 	}
@@ -102,18 +74,14 @@ func (c *HubbleClient) GetFlows(ctx context.Context, namespace, verdict string, 
 	}
 
 	if verdict != "" {
-		v, ok := verdictFromString(verdict)
-		if ok {
-			srcFilter.Verdict = []flowpb.Verdict{v}
-			dstFilter.Verdict = []flowpb.Verdict{v}
-		}
+		v, _ := verdictFromString(verdict)
+		srcFilter.Verdict = []flowpb.Verdict{v}
+		dstFilter.Verdict = []flowpb.Verdict{v}
 	}
-
-	whitelist = append(whitelist, srcFilter, dstFilter)
 
 	req := &observerpb.GetFlowsRequest{
 		Number:    uint64(limit),
-		Whitelist: whitelist,
+		Whitelist: []*flowpb.FlowFilter{srcFilter, dstFilter},
 	}
 
 	stream, err := c.client.GetFlows(ctx, req)
@@ -128,16 +96,15 @@ func (c *HubbleClient) GetFlows(ctx context.Context, namespace, verdict string, 
 			break
 		}
 		if err != nil {
-			// Partial results are fine — return what we have
 			if len(flows) > 0 {
-				break
+				break // partial results are fine
 			}
 			return nil, fmt.Errorf("receiving flow: %w", err)
 		}
 
 		f := resp.GetFlow()
 		if f == nil {
-			continue // skip node_status and lost_events
+			continue
 		}
 
 		flows = append(flows, convertFlow(f))
@@ -151,6 +118,12 @@ func (c *HubbleClient) Close() {
 	if c.conn != nil {
 		c.conn.Close()
 	}
+}
+
+// ValidVerdict returns true if the verdict string is a recognized Hubble verdict.
+func ValidVerdict(s string) bool {
+	_, ok := verdictFromString(s)
+	return ok
 }
 
 func convertFlow(f *flowpb.Flow) FlowRecord {
