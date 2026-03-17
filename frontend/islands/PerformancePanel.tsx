@@ -89,41 +89,36 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
     {
       title: "CPU Usage %",
       query:
-        '100 - (avg(rate(node_cpu_seconds_total{mode="idle",instance=~"{name}.*"}[5m])) * 100)',
+        '100 - (avg(rate(node_cpu_seconds_total{mode="idle",instance=~"{nodeInstance}"}[5m])) * 100)',
     },
     {
       title: "Memory Usage %",
       query:
-        '100 * (1 - node_memory_MemAvailable_bytes{instance=~"{name}.*"} / node_memory_MemTotal_bytes{instance=~"{name}.*"})',
+        '100 * (1 - node_memory_MemAvailable_bytes{instance=~"{nodeInstance}"} / node_memory_MemTotal_bytes{instance=~"{nodeInstance}"})',
+    },
+    {
+      title: "Load Average (5m)",
+      query: 'node_load5{instance=~"{nodeInstance}"}',
     },
     {
       title: "Network Rx (MB/s)",
       query:
-        'sum(rate(node_network_receive_bytes_total{instance=~"{name}.*",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
+        'sum(rate(node_network_receive_bytes_total{instance=~"{nodeInstance}",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
     },
     {
       title: "Network Tx (MB/s)",
       query:
-        'sum(rate(node_network_transmit_bytes_total{instance=~"{name}.*",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
+        'sum(rate(node_network_transmit_bytes_total{instance=~"{nodeInstance}",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
     },
     {
       title: "Disk Read (MB/s)",
       query:
-        'sum(rate(node_disk_read_bytes_total{instance=~"{name}.*"}[5m])) / 1024 / 1024',
+        'sum(rate(node_disk_read_bytes_total{instance=~"{nodeInstance}"}[5m])) / 1024 / 1024',
     },
     {
       title: "Disk Write (MB/s)",
       query:
-        'sum(rate(node_disk_written_bytes_total{instance=~"{name}.*"}[5m])) / 1024 / 1024',
-    },
-    {
-      title: "Load Average (5m)",
-      query: 'node_load5{instance=~"{name}.*"}',
-    },
-    {
-      title: "Cilium Endpoints",
-      query:
-        'sum(cilium_endpoint_state{instance=~"{name}.*"}) by (endpoint_state)',
+        'sum(rate(node_disk_written_bytes_total{instance=~"{nodeInstance}"}[5m])) / 1024 / 1024',
     },
   ],
   statefulsets: [
@@ -383,11 +378,35 @@ export default function PerformancePanel(
     }));
     charts.value = initial;
 
+    // For nodes, resolve the node name to instance label (IP:port) via kube_node_info
+    let nodeInstance = "";
+    if (kind === "nodes") {
+      try {
+        const nodeInfoRes = await apiGet<{
+          result: { metric: { instance: string } }[];
+        }>(
+          `/v1/monitoring/query?query=${
+            encodeURIComponent(
+              `kube_node_info{node="${name}"}`,
+            )
+          }`,
+        );
+        const results = nodeInfoRes.data?.result;
+        if (results && results.length > 0) {
+          nodeInstance = results[0].metric.instance;
+        }
+      } catch {
+        // Fall back to name-based matching
+        nodeInstance = `${name}.*`;
+      }
+    }
+
     const results = await Promise.allSettled(
       templates.map(async (t, i) => {
         const query = t.query
           .replaceAll("{namespace}", namespace || "")
-          .replaceAll("{name}", name);
+          .replaceAll("{name}", name)
+          .replaceAll("{nodeInstance}", nodeInstance || `${name}.*`);
 
         const res = await apiGet<QueryRangeResult>(
           `/v1/monitoring/query_range?query=${
