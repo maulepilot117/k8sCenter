@@ -408,6 +408,13 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/endpointslices/{namespace}", h.HandleListEndpointSlices)
 	ar.Get("/resources/endpointslices/{namespace}/{name}", h.HandleGetEndpointSlice)
 
+	// CiliumNetworkPolicies (via dynamic client)
+	ar.Get("/resources/ciliumnetworkpolicies", h.HandleListCiliumPolicies)
+	ar.Get("/resources/ciliumnetworkpolicies/{namespace}", h.HandleListCiliumPolicies)
+	ar.Get("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleGetCiliumPolicy)
+	ar.Post("/resources/ciliumnetworkpolicies/{namespace}", h.HandleCreateCiliumPolicy)
+	ar.Delete("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleDeleteCiliumPolicy)
+
 	// RBAC Viewer (read-only)
 	ar.Get("/resources/roles", h.HandleListRoles)
 	ar.Get("/resources/roles/{namespace}", h.HandleListRoles)

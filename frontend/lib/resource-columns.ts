@@ -734,6 +734,45 @@ const endpointsliceColumns: Column<K8sResource>[] = [
   ageCol,
 ];
 
+const ciliumnetworkpolicyColumns: Column<K8sResource>[] = [
+  nameCol,
+  namespaceCol,
+  {
+    key: "endpointSelector",
+    label: "Endpoint Selector",
+    render: (r) => {
+      const spec = (r as K8sResource & {
+        spec?: {
+          endpointSelector?: { matchLabels?: Record<string, string> };
+        };
+      }).spec;
+      const labels = spec?.endpointSelector?.matchLabels;
+      if (!labels || Object.keys(labels).length === 0) return "All";
+      return Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(", ");
+    },
+    class: "max-w-xs truncate",
+  },
+  {
+    key: "rules",
+    label: "Rules",
+    render: (r) => {
+      const spec = (r as K8sResource & {
+        spec?: {
+          ingress?: unknown[];
+          ingressDeny?: unknown[];
+          egress?: unknown[];
+          egressDeny?: unknown[];
+        };
+      }).spec;
+      const count = (spec?.ingress?.length ?? 0) +
+        (spec?.ingressDeny?.length ?? 0) +
+        (spec?.egress?.length ?? 0) + (spec?.egressDeny?.length ?? 0);
+      return String(count);
+    },
+  },
+  ageCol,
+];
+
 /** Maps API kind string to its column config. */
 export const RESOURCE_COLUMNS: Record<string, Column<K8sResource>[]> = {
   pods: podColumns,
@@ -767,4 +806,5 @@ export const RESOURCE_COLUMNS: Record<string, Column<K8sResource>[]> = {
   events: eventColumns,
   validatingwebhookconfigurations: validatingWebhookColumns,
   mutatingwebhookconfigurations: mutatingWebhookColumns,
+  ciliumnetworkpolicies: ciliumnetworkpolicyColumns,
 };

@@ -41,6 +41,7 @@ export const RESOURCE_API_KINDS: Record<string, string> = {
   clusterrolebindings: "ClusterRoleBinding",
   validatingwebhookconfigurations: "ValidatingWebhookConfiguration",
   mutatingwebhookconfigurations: "MutatingWebhookConfiguration",
+  ciliumnetworkpolicies: "CiliumNetworkPolicy",
 };
 
 /**
@@ -79,6 +80,7 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   clusterrolebindings: "/rbac/clusterrolebindings",
   validatingwebhookconfigurations: "/admin/validatingwebhooks",
   mutatingwebhookconfigurations: "/admin/mutatingwebhooks",
+  ciliumnetworkpolicies: "/networking/cilium-policies",
   nodes: "/cluster/nodes",
   namespaces: "/cluster/namespaces",
 };
@@ -153,6 +155,11 @@ export const NAV_SECTIONS = [
       {
         label: "Network Policies",
         href: "/networking/networkpolicies",
+        icon: "networkpolicies",
+      },
+      {
+        label: "Cilium Policies",
+        href: "/networking/cilium-policies",
         icon: "networkpolicies",
       },
       { label: "CNI Plugin", href: "/networking/cni", icon: "networking" },
