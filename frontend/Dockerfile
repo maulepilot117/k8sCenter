@@ -1,5 +1,6 @@
-# Stage 1: Install dependencies and build
-FROM denoland/deno:2.7.4 AS builder
+# Stage 1: Install dependencies and build (always on amd64 — Deno WASM loader
+# crashes under QEMU ARM64 emulation, but build output is arch-independent JS)
+FROM --platform=linux/amd64 denoland/deno:2.7.4 AS builder
 
 WORKDIR /app
 
@@ -14,7 +15,7 @@ RUN deno task build
 # Cache all runtime dependencies (ensures no network fetches at startup)
 RUN deno cache _fresh/server.js || true
 
-# Stage 2: Production runtime
+# Stage 2: Production runtime (uses target platform — arm64 or amd64)
 FROM denoland/deno:2.7.4
 
 WORKDIR /app
