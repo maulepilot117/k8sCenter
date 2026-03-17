@@ -36,6 +36,9 @@ export const MAX_PASSWORD_LENGTH = 255;
  */
 export const DNS_LABEL_REGEX = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/** Namespace name regex — alias of DNS_LABEL_REGEX. */
+export const NS_NAME_REGEX = DNS_LABEL_REGEX;
+
 /** Env var name regex (POSIX). */
 export const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
 

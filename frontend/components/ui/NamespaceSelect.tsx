@@ -1,12 +1,14 @@
 import { useSignal } from "@preact/signals";
 import { apiPost } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
+import { NS_NAME_REGEX } from "@/lib/wizard-constants.ts";
 
 interface NamespaceSelectProps {
   value: string;
   namespaces: string[];
   error?: string;
   onChange: (ns: string) => void;
+  /** Called after a namespace is created — use to add it to the parent's list. */
   onNamespaceCreated?: (ns: string) => void;
 }
 
@@ -32,9 +34,18 @@ export function NamespaceSelect(
   const handleCreate = async () => {
     const name = newName.value.trim();
     if (!name) return;
-    if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+    if (!NS_NAME_REGEX.test(name)) {
       createError.value =
         "Must be lowercase alphanumeric with dashes, max 63 chars";
+      return;
+    }
+    if (name.startsWith("kube-")) {
+      createError.value =
+        'Names starting with "kube-" are reserved for Kubernetes system namespaces';
+      return;
+    }
+    if (namespaces.includes(name)) {
+      createError.value = `Namespace "${name}" already exists`;
       return;
     }
 
@@ -85,6 +96,7 @@ export function NamespaceSelect(
               onInput={(e) =>
                 newName.value = (e.target as HTMLInputElement).value}
               placeholder="new-namespace"
+              maxLength={63}
               class="flex-1 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-sm text-slate-900 dark:text-white"
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
