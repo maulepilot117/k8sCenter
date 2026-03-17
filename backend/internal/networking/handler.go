@@ -7,21 +7,24 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Handler serves networking-related HTTP endpoints.
 type Handler struct {
-	K8sClient   *k8s.ClientFactory
-	Detector    *Detector
-	AuditLogger audit.Logger
-	Logger      *slog.Logger
-	ClusterID   string
+	K8sClient    *k8s.ClientFactory
+	Detector     *Detector
+	HubbleClient *HubbleClient
+	AuditLogger  audit.Logger
+	Logger       *slog.Logger
+	ClusterID    string
 }
 
 // HandleCNIStatus returns the detected CNI plugin information.
@@ -175,6 +178,56 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 
 	// Refresh cached CNI features asynchronously (non-blocking)
 	go h.Detector.Detect(context.Background())
+}
+
+// HandleHubbleFlows returns network flows from Hubble Relay filtered by namespace and verdict.
+// GET /api/v1/networking/hubble/flows?namespace=default&verdict=DROPPED&limit=100
+func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if h.HubbleClient == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "Hubble is not available", "")
+		return
+	}
+
+	namespace := r.URL.Query().Get("namespace")
+	if namespace == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace parameter is required", "")
+		return
+	}
+
+	// RBAC: check user can get pods in the requested namespace (flow visibility = pod observability)
+	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to check permissions", "")
+		return
+	}
+	_, err = cs.CoreV1().Pods(namespace).List(r.Context(), k8smetav1.ListOptions{Limit: 1})
+	if err != nil {
+		httputil.WriteError(w, http.StatusForbidden,
+			"you do not have permission to view flows in namespace "+namespace, "")
+		return
+	}
+
+	verdict := r.URL.Query().Get("verdict")
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+
+	flows, err := h.HubbleClient.GetFlows(r.Context(), namespace, verdict, limit)
+	if err != nil {
+		h.Logger.Error("hubble flow query failed", "error", err, "namespace", namespace)
+		httputil.WriteError(w, http.StatusBadGateway, "failed to query Hubble flows", "")
+		return
+	}
+
+	httputil.WriteData(w, flows)
 }
 
 // formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.

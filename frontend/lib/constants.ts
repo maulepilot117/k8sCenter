@@ -162,6 +162,11 @@ export const NAV_SECTIONS = [
         href: "/networking/cilium-policies",
         icon: "networkpolicies",
       },
+      {
+        label: "Network Flows",
+        href: "/networking/flows",
+        icon: "networking",
+      },
       { label: "CNI Plugin", href: "/networking/cni", icon: "networking" },
       { label: "Endpoints", href: "/networking/endpoints", icon: "services" },
       {

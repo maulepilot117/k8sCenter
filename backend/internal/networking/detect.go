@@ -2,6 +2,7 @@ package networking
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -45,11 +46,12 @@ type CNIStatus struct {
 
 // CNIFeatures describes detected CNI capabilities (Cilium-specific for now).
 type CNIFeatures struct {
-	Hubble         bool   `json:"hubble"`
-	Encryption     bool   `json:"encryption"`
-	EncryptionMode string `json:"encryptionMode,omitempty"`
-	ClusterMesh    bool   `json:"clusterMesh"`
-	WireGuard      bool   `json:"wireguard"`
+	Hubble           bool   `json:"hubble"`
+	HubbleRelayAddr  string `json:"hubbleRelayAddr,omitempty"`
+	Encryption       bool   `json:"encryption"`
+	EncryptionMode   string `json:"encryptionMode,omitempty"`
+	ClusterMesh      bool   `json:"clusterMesh"`
+	WireGuard        bool   `json:"wireguard"`
 }
 
 // Detector probes the cluster for the installed CNI plugin.
@@ -230,6 +232,19 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 		features.EncryptionMode = cm.Data["encryption-type"]
 		features.ClusterMesh = cm.Data["cluster-mesh-config"] != ""
 		features.WireGuard = cm.Data["encryption-type"] == "wireguard"
+
+		// Discover Hubble Relay service address
+		if features.Hubble {
+			if svc, err := cs.CoreV1().Services(ns).Get(ctx, "hubble-relay", metav1.GetOptions{}); err == nil {
+				port := int32(80)
+				if len(svc.Spec.Ports) > 0 {
+					port = svc.Spec.Ports[0].Port
+				}
+				features.HubbleRelayAddr = fmt.Sprintf("hubble-relay.%s.svc.cluster.local:%d", ns, port)
+				d.logger.Info("hubble relay discovered", "addr", features.HubbleRelayAddr)
+			}
+		}
+
 		return features
 	}
 

@@ -207,6 +207,11 @@ func (s *Server) registerNetworkingRoutes(ar chi.Router) {
 		nr.Get("/cni", h.HandleCNIStatus)
 		nr.Get("/cni/config", h.HandleCNIConfig)
 		nr.Put("/cni/config", h.HandleUpdateCNIConfig)
+
+		// Hubble flow endpoint (no rate limit — read-only, behind auth)
+		if h.HubbleClient != nil {
+			nr.Get("/hubble/flows", h.HandleHubbleFlows)
+		}
 	})
 }
 

@@ -228,12 +228,25 @@ func main() {
 		Logger:    logger,
 	}
 
+	// Connect to Hubble Relay if detected
+	var hubbleClient *networking.HubbleClient
+	if cniInfo := cniDetector.CachedInfo(); cniInfo != nil && cniInfo.Features.HubbleRelayAddr != "" {
+		hc, err := networking.NewHubbleClient(cniInfo.Features.HubbleRelayAddr)
+		if err != nil {
+			logger.Warn("failed to connect to hubble relay", "addr", cniInfo.Features.HubbleRelayAddr, "error", err)
+		} else {
+			hubbleClient = hc
+			logger.Info("hubble relay connected", "addr", cniInfo.Features.HubbleRelayAddr)
+		}
+	}
+
 	networkingHandler := &networking.Handler{
-		K8sClient:   k8sClient,
-		Detector:    cniDetector,
-		AuditLogger: auditLogger,
-		Logger:      logger,
-		ClusterID:   cfg.ClusterID,
+		K8sClient:    k8sClient,
+		Detector:     cniDetector,
+		HubbleClient: hubbleClient,
+		AuditLogger:  auditLogger,
+		Logger:       logger,
+		ClusterID:    cfg.ClusterID,
 	}
 
 	// Initialize alerting
