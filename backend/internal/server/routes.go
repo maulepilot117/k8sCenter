@@ -413,6 +413,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/ciliumnetworkpolicies/{namespace}", h.HandleListCiliumPolicies)
 	ar.Get("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleGetCiliumPolicy)
 	ar.Post("/resources/ciliumnetworkpolicies/{namespace}", h.HandleCreateCiliumPolicy)
+	ar.Put("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleUpdateCiliumPolicy)
 	ar.Delete("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleDeleteCiliumPolicy)
 
 	// RBAC Viewer (read-only)

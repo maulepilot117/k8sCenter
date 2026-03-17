@@ -159,6 +159,56 @@ func (h *Handler) HandleDeleteCiliumPolicy(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// HandleUpdateCiliumPolicy updates an existing CiliumNetworkPolicy from a structured request.
+func (h *Handler) HandleUpdateCiliumPolicy(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if !h.checkAccess(w, r, user, "update", kindCiliumNetworkPolicy, ns) {
+		return
+	}
+
+	var req CiliumPolicyRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+	req.Namespace = ns
+	req.Name = name
+
+	if errs := validateCiliumPolicy(&req); len(errs) > 0 {
+		writeError(w, http.StatusBadRequest, "validation failed: "+strings.Join(errs, "; "), "")
+		return
+	}
+
+	warnings := detectDangerousPolicy(&req)
+	obj := buildCiliumPolicy(&req)
+
+	dc, err := h.impersonatingDynamic(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+		return
+	}
+
+	updated, err := dc.Resource(ciliumPolicyGVR).Namespace(ns).Update(r.Context(), obj, metav1.UpdateOptions{})
+	if err != nil {
+		h.auditWrite(r, user, audit.ActionUpdate, "CiliumNetworkPolicy", ns, name, audit.ResultFailure)
+		mapK8sError(w, err, "update", "CiliumNetworkPolicy", ns, name)
+		return
+	}
+
+	h.auditWrite(r, user, audit.ActionUpdate, "CiliumNetworkPolicy", ns, name, audit.ResultSuccess)
+
+	result := map[string]any{"resource": updated.Object}
+	if len(warnings) > 0 {
+		result["warnings"] = warnings
+	}
+	writeData(w, result)
+}
+
 // HandleCreateCiliumPolicy creates a CiliumNetworkPolicy from a structured request.
 func (h *Handler) HandleCreateCiliumPolicy(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)

@@ -103,6 +103,18 @@ export default function CiliumPolicyEditor() {
     showYaml.value,
   ]);
 
+  // Warn on unsaved changes
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      if (name.value || rules.value.length > 1) {
+        e.preventDefault();
+      }
+    };
+    globalThis.addEventListener("beforeunload", handler);
+    return () => globalThis.removeEventListener("beforeunload", handler);
+  }, []);
+
   if (!IS_BROWSER) {
     return (
       <div class="p-6">
@@ -150,10 +162,44 @@ export default function CiliumPolicyEditor() {
     );
   };
 
+  const validateForm = (): string | null => {
+    if (!name.value.trim()) return "Policy name is required";
+    if (!/^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$/.test(name.value)) {
+      return "Invalid policy name: must be lowercase alphanumeric with dashes";
+    }
+    for (let i = 0; i < rules.value.length; i++) {
+      const r = rules.value[i];
+      if (r.peerType === "entities" && r.entities.length === 0) {
+        return `Rule ${i + 1}: select at least one entity`;
+      }
+      if (r.peerType === "cidr" && !r.cidrs.trim()) {
+        return `Rule ${i + 1}: enter at least one CIDR`;
+      }
+      if (r.ports.trim()) {
+        for (
+          const p of r.ports.split(",").map((s) => s.trim()).filter(Boolean)
+        ) {
+          const n = parseInt(p, 10);
+          if (isNaN(n) || n < 1 || n > 65535) {
+            return `Rule ${i + 1}: invalid port "${p}" (must be 1-65535)`;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
   const handleSubmit = async () => {
     submitError.value = null;
     submitSuccess.value = false;
     warnings.value = [];
+
+    const validationError = validateForm();
+    if (validationError) {
+      submitError.value = validationError;
+      return;
+    }
+
     submitting.value = true;
 
     try {
