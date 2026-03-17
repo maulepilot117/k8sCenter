@@ -259,12 +259,30 @@ export interface CronJob extends K8sResource {
 }
 
 // -- NetworkPolicies --
+export interface NetworkPolicyPort {
+  port?: number | string;
+  protocol?: string;
+  endPort?: number;
+}
+
+export interface NetworkPolicyPeer {
+  podSelector?: { matchLabels?: Record<string, string> };
+  namespaceSelector?: { matchLabels?: Record<string, string> };
+  ipBlock?: { cidr: string; except?: string[] };
+}
+
+export interface NetworkPolicyRule {
+  ports?: NetworkPolicyPort[];
+  from?: NetworkPolicyPeer[];
+  to?: NetworkPolicyPeer[];
+}
+
 export interface NetworkPolicy extends K8sResource {
   spec: {
     podSelector: { matchLabels?: Record<string, string> };
     policyTypes?: string[];
-    ingress?: unknown[];
-    egress?: unknown[];
+    ingress?: NetworkPolicyRule[];
+    egress?: NetworkPolicyRule[];
   };
 }
 

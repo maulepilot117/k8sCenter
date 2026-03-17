@@ -371,9 +371,33 @@ const networkpolicyColumns: Column<K8sResource>[] = [
   nameCol,
   namespaceCol,
   {
+    key: "podSelector",
+    label: "Applies To",
+    render: (r) => {
+      const labels = (r as NetworkPolicy).spec?.podSelector?.matchLabels;
+      if (!labels || Object.keys(labels).length === 0) return "All pods";
+      return Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(", ");
+    },
+    class: "max-w-xs truncate",
+  },
+  {
     key: "policyTypes",
     label: "Policy Types",
-    render: (r) => (r as NetworkPolicy).spec?.policyTypes?.join(", ") ?? "-",
+    render: (r) =>
+      (r as NetworkPolicy).spec?.policyTypes?.join(", ") ?? "Ingress",
+  },
+  {
+    key: "rules",
+    label: "Rules",
+    render: (r) => {
+      const spec = (r as NetworkPolicy).spec;
+      const ing = spec?.ingress?.length ?? 0;
+      const egr = spec?.egress?.length ?? 0;
+      const parts: string[] = [];
+      if (ing > 0) parts.push(`${ing} ingress`);
+      if (egr > 0) parts.push(`${egr} egress`);
+      return parts.length > 0 ? parts.join(", ") : "0 rules";
+    },
   },
   ageCol,
 ];
