@@ -11,9 +11,28 @@ permissions:
   packages: write
 
 jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
+
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.backend == 'true'
     defaults:
       run:
         working-directory: backend
@@ -37,6 +56,8 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.frontend == 'true'
     defaults:
       run:
         working-directory: frontend
@@ -62,37 +83,37 @@ jobs:
   version-tag:
     name: Auto Version Tag
     runs-on: ubuntu-latest
-    needs: [backend, frontend]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, backend, frontend]
+    if: |
+      always() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true') &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     outputs:
       version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history for git describe
+          fetch-depth: 0
 
       - name: Bump version tag
         id: bump
         run: |
-          # Get latest semver tag (default to v0.0.0 if none)
           LATEST=$(git tag -l 'v*' --sort=-v:refname | head -1)
           if [ -z "$LATEST" ]; then
             LATEST="v0.0.0"
           fi
 
-          # Parse major.minor.patch
           MAJOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f1)
           MINOR=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f2)
           PATCH=$(echo "$LATEST" | sed 's/^v//' | cut -d. -f3)
 
-          # Detect merge vs direct push
           COMMIT_MSG=$(git log -1 --pretty=%s)
           if echo "$COMMIT_MSG" | grep -qE '^Merge pull request'; then
-            # PR merge → bump minor, reset patch
             MINOR=$((MINOR + 1))
             PATCH=0
           else
-            # Direct push → bump patch
             PATCH=$((PATCH + 1))
           fi
 
@@ -100,7 +121,6 @@ jobs:
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${LATEST} → ${NEW_VERSION}"
 
-          # Create and push tag
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "$NEW_VERSION"
@@ -109,8 +129,12 @@ jobs:
   build-backend-image:
     name: Build Backend Image
     runs-on: ubuntu-latest
-    needs: [version-tag]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, backend, version-tag]
+    if: |
+      always() &&
+      needs.changes.outputs.backend == 'true' &&
+      needs.backend.result == 'success' &&
+      needs.version-tag.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
@@ -156,8 +180,12 @@ jobs:
   build-frontend-image:
     name: Build Frontend Image
     runs-on: ubuntu-latest
-    needs: [version-tag]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [changes, frontend, version-tag]
+    if: |
+      always() &&
+      needs.changes.outputs.frontend == 'true' &&
+      needs.frontend.result == 'success' &&
+      needs.version-tag.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
