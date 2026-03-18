@@ -4,7 +4,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { NAV_SECTIONS } from "@/lib/constants.ts";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
-import { apiGet } from "@/lib/api.ts";
+import { apiGet, getAccessToken } from "@/lib/api.ts";
+import { useAuth } from "@/lib/auth.ts";
 
 interface SidebarProps {
   currentPath: string;
@@ -12,10 +13,11 @@ interface SidebarProps {
 
 export default function Sidebar({ currentPath }: SidebarProps) {
   const collapsed = useSignal<Record<string, boolean>>({});
-  const appVersion = useSignal("...");
+  const appVersion = useSignal("");
+  const { isAuthenticated } = useAuth();
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
+    if (!IS_BROWSER || !isAuthenticated.value || !getAccessToken()) return;
     apiGet<{
       kubecenter?: { version?: string };
     }>("/v1/cluster/info").then((res) => {
@@ -23,7 +25,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
         appVersion.value = res.value.data.kubecenter.version;
       }
     });
-  }, []);
+  }, [isAuthenticated.value]);
 
   function toggleSection(title: string) {
     collapsed.value = {
