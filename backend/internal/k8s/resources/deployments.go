@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 )
 
 const kindDeployment = "deployments"
@@ -300,33 +302,9 @@ func (h *Handler) HandleRollbackDeployment(w http.ResponseWriter, r *http.Reques
 
 // HandleRestartDeployment handles POST /api/v1/resources/deployments/:namespace/:name/restart
 func (h *Handler) HandleRestartDeployment(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
-	if !ok {
-		return
-	}
-	ns := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
-	if !h.checkAccess(w, r, user, "update", kindDeployment, ns) {
-		return
-	}
-
-	cs, err := h.impersonatingClient(user)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
-		return
-	}
-
-	// Rolling restart by patching the pod template annotation
-	patchData := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, timeNow().Format("2006-01-02T15:04:05Z"))
-	result, err := cs.AppsV1().Deployments(ns).Patch(r.Context(), name, types.StrategicMergePatchType, []byte(patchData), metav1.PatchOptions{})
-	if err != nil {
-		h.auditWrite(r, user, audit.ActionUpdate, "Deployment", ns, name, audit.ResultFailure)
-		mapK8sError(w, err, "restart", "Deployment", ns, name)
-		return
-	}
-
-	h.auditWrite(r, user, audit.ActionUpdate, "Deployment", ns, name, audit.ResultSuccess)
-	writeData(w, result)
+	h.restartWorkload(w, r, kindDeployment, "Deployment", func(cs kubernetes.Interface, ctx context.Context, ns, name string) (any, error) {
+		return cs.AppsV1().Deployments(ns).Patch(ctx, name, types.StrategicMergePatchType, restartPatch(), metav1.PatchOptions{})
+	})
 }
 
 // parseSelector converts a label selector string to a labels.Selector.

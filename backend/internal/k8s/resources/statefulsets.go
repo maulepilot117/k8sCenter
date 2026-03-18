@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -8,6 +9,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 )
 
 const kindStatefulSet = "statefulsets"
@@ -185,4 +188,11 @@ func (h *Handler) HandleScaleStatefulSet(w http.ResponseWriter, r *http.Request)
 	}
 	h.auditWrite(r, user, audit.ActionUpdate, "StatefulSet", ns, name, audit.ResultSuccess)
 	writeData(w, result)
+}
+
+// HandleRestartStatefulSet handles POST /api/v1/resources/statefulsets/:namespace/:name/restart
+func (h *Handler) HandleRestartStatefulSet(w http.ResponseWriter, r *http.Request) {
+	h.restartWorkload(w, r, kindStatefulSet, "StatefulSet", func(cs kubernetes.Interface, ctx context.Context, ns, name string) (any, error) {
+		return cs.AppsV1().StatefulSets(ns).Patch(ctx, name, types.StrategicMergePatchType, restartPatch(), metav1.PatchOptions{})
+	})
 }

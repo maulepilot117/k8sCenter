@@ -1,7 +1,9 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -105,6 +107,44 @@ func (h *Handler) auditWrite(r *http.Request, user *auth.User, action audit.Acti
 		ResourceName:      name,
 		Result:            result,
 	})
+}
+
+// restartWorkload performs a rolling restart by patching the pod template annotation.
+// This is the shared logic used by Deployments, StatefulSets, and DaemonSets.
+// The patchFn receives the impersonating clientset so it can call the correct API.
+func (h *Handler) restartWorkload(w http.ResponseWriter, r *http.Request, kind, displayKind string,
+	patchFn func(cs kubernetes.Interface, ctx context.Context, ns, name string) (any, error),
+) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if !h.checkAccess(w, r, user, "update", kind, ns) {
+		return
+	}
+
+	cs, err := h.impersonatingClient(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+		return
+	}
+
+	result, err := patchFn(cs, r.Context(), ns, name)
+	if err != nil {
+		h.auditWrite(r, user, audit.ActionUpdate, displayKind, ns, name, audit.ResultFailure)
+		mapK8sError(w, err, "restart", displayKind, ns, name)
+		return
+	}
+
+	h.auditWrite(r, user, audit.ActionUpdate, displayKind, ns, name, audit.ResultSuccess)
+	writeData(w, result)
+}
+
+// restartPatch returns the JSON patch for a rolling restart annotation.
+func restartPatch() []byte {
+	return []byte(fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":"%s"}}}}}`, timeNow().Format("2006-01-02T15:04:05Z")))
 }
 
 // maxRequestBodySize is the maximum allowed request body for create/update operations (1 MB).

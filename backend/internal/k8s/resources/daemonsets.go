@@ -1,12 +1,15 @@
 package resources
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 )
 
 const kindDaemonSet = "daemonsets"
@@ -146,4 +149,11 @@ func (h *Handler) HandleDeleteDaemonSet(w http.ResponseWriter, r *http.Request) 
 	}
 	h.auditWrite(r, user, audit.ActionDelete, "DaemonSet", ns, name, audit.ResultSuccess)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleRestartDaemonSet handles POST /api/v1/resources/daemonsets/:namespace/:name/restart
+func (h *Handler) HandleRestartDaemonSet(w http.ResponseWriter, r *http.Request) {
+	h.restartWorkload(w, r, kindDaemonSet, "DaemonSet", func(cs kubernetes.Interface, ctx context.Context, ns, name string) (any, error) {
+		return cs.AppsV1().DaemonSets(ns).Patch(ctx, name, types.StrategicMergePatchType, restartPatch(), metav1.PatchOptions{})
+	})
 }

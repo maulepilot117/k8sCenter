@@ -1,12 +1,14 @@
 package resources
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -227,4 +229,156 @@ func (h *Handler) HandleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
 	}
 	h.auditWrite(r, user, audit.ActionDelete, "CronJob", ns, name, audit.ResultSuccess)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleSuspendJob handles POST /api/v1/resources/jobs/:namespace/:name/suspend
+func (h *Handler) HandleSuspendJob(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if !h.checkAccess(w, r, user, "update", kindJob, ns) {
+		return
+	}
+
+	var req struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := decodeBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	// Guard: suspending a completed job is a no-op that confuses users
+	job, err := h.Informers.Jobs().Jobs(ns).Get(name)
+	if err != nil {
+		mapK8sError(w, err, "get", "Job", ns, name)
+		return
+	}
+	if job.Status.CompletionTime != nil {
+		writeError(w, http.StatusUnprocessableEntity, "job has already completed", "")
+		return
+	}
+
+	cs, err := h.impersonatingClient(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+		return
+	}
+
+	patchData := fmt.Sprintf(`{"spec":{"suspend":%v}}`, req.Suspend)
+	result, err := cs.BatchV1().Jobs(ns).Patch(r.Context(), name, types.StrategicMergePatchType, []byte(patchData), metav1.PatchOptions{})
+	if err != nil {
+		h.auditWrite(r, user, audit.ActionUpdate, "Job", ns, name, audit.ResultFailure)
+		mapK8sError(w, err, "suspend", "Job", ns, name)
+		return
+	}
+
+	h.auditWrite(r, user, audit.ActionUpdate, "Job", ns, name, audit.ResultSuccess)
+	writeData(w, result)
+}
+
+// HandleSuspendCronJob handles POST /api/v1/resources/cronjobs/:namespace/:name/suspend
+func (h *Handler) HandleSuspendCronJob(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if !h.checkAccess(w, r, user, "update", kindCronJob, ns) {
+		return
+	}
+
+	var req struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := decodeBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	cs, err := h.impersonatingClient(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+		return
+	}
+
+	patchData := fmt.Sprintf(`{"spec":{"suspend":%v}}`, req.Suspend)
+	result, err := cs.BatchV1().CronJobs(ns).Patch(r.Context(), name, types.StrategicMergePatchType, []byte(patchData), metav1.PatchOptions{})
+	if err != nil {
+		h.auditWrite(r, user, audit.ActionUpdate, "CronJob", ns, name, audit.ResultFailure)
+		mapK8sError(w, err, "suspend", "CronJob", ns, name)
+		return
+	}
+
+	h.auditWrite(r, user, audit.ActionUpdate, "CronJob", ns, name, audit.ResultSuccess)
+	writeData(w, result)
+}
+
+// HandleTriggerCronJob handles POST /api/v1/resources/cronjobs/:namespace/:name/trigger
+func (h *Handler) HandleTriggerCronJob(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	// Triggering creates a Job, so check create on jobs
+	if !h.checkAccess(w, r, user, "create", kindJob, ns) {
+		return
+	}
+
+	// Fetch the CronJob to get its job template
+	cronJob, err := h.Informers.CronJobs().CronJobs(ns).Get(name)
+	if err != nil {
+		mapK8sError(w, err, "get", "CronJob", ns, name)
+		return
+	}
+
+	cs, err := h.impersonatingClient(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+		return
+	}
+
+	// Build Job from CronJob template using generateName for uniqueness
+	prefix := name
+	if len(prefix) > 43 {
+		prefix = prefix[:43]
+	}
+
+	isController := true
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: prefix + "-manual-",
+			Namespace:    ns,
+			Labels:       cronJob.Spec.JobTemplate.Labels,
+			Annotations: map[string]string{
+				"cronjob.kubernetes.io/instantiate": "manual",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: "batch/v1",
+					Kind:       "CronJob",
+					Name:       cronJob.Name,
+					UID:        cronJob.UID,
+					Controller: &isController,
+				},
+			},
+		},
+		Spec: cronJob.Spec.JobTemplate.Spec,
+	}
+
+	created, err := cs.BatchV1().Jobs(ns).Create(r.Context(), job, metav1.CreateOptions{})
+	if err != nil {
+		h.auditWrite(r, user, audit.ActionCreate, "Job", ns, name, audit.ResultFailure)
+		mapK8sError(w, err, "trigger", "CronJob", ns, name)
+		return
+	}
+
+	h.auditWrite(r, user, audit.ActionCreate, "Job", ns, created.Name, audit.ResultSuccess)
+	writeCreated(w, created)
 }

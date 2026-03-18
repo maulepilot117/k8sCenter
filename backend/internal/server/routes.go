@@ -267,6 +267,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Put("/resources/statefulsets/{namespace}/{name}", h.HandleUpdateStatefulSet)
 	ar.Delete("/resources/statefulsets/{namespace}/{name}", h.HandleDeleteStatefulSet)
 	ar.Post("/resources/statefulsets/{namespace}/{name}/scale", h.HandleScaleStatefulSet)
+	ar.Post("/resources/statefulsets/{namespace}/{name}/restart", h.HandleRestartStatefulSet)
 
 	// DaemonSets
 	ar.Get("/resources/daemonsets", h.HandleListDaemonSets)
@@ -275,6 +276,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Post("/resources/daemonsets/{namespace}", h.HandleCreateDaemonSet)
 	ar.Put("/resources/daemonsets/{namespace}/{name}", h.HandleUpdateDaemonSet)
 	ar.Delete("/resources/daemonsets/{namespace}/{name}", h.HandleDeleteDaemonSet)
+	ar.Post("/resources/daemonsets/{namespace}/{name}/restart", h.HandleRestartDaemonSet)
 
 	// Pods
 	ar.Get("/resources/pods", h.HandleListPods)
@@ -342,6 +344,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/jobs/{namespace}/{name}", h.HandleGetJob)
 	ar.Post("/resources/jobs/{namespace}", h.HandleCreateJob)
 	ar.Delete("/resources/jobs/{namespace}/{name}", h.HandleDeleteJob)
+	ar.Post("/resources/jobs/{namespace}/{name}/suspend", h.HandleSuspendJob)
 
 	// CronJobs
 	ar.Get("/resources/cronjobs", h.HandleListCronJobs)
@@ -349,6 +352,8 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/cronjobs/{namespace}/{name}", h.HandleGetCronJob)
 	ar.Post("/resources/cronjobs/{namespace}", h.HandleCreateCronJob)
 	ar.Delete("/resources/cronjobs/{namespace}/{name}", h.HandleDeleteCronJob)
+	ar.Post("/resources/cronjobs/{namespace}/{name}/suspend", h.HandleSuspendCronJob)
+	ar.Post("/resources/cronjobs/{namespace}/{name}/trigger", h.HandleTriggerCronJob)
 
 	// NetworkPolicies
 	ar.Get("/resources/networkpolicies", h.HandleListNetworkPolicies)

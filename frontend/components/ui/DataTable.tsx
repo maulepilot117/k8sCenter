@@ -17,6 +17,7 @@ interface DataTableProps<T> {
   rowKey: (item: T) => string;
   onRowClick?: (item: T) => void;
   emptyMessage?: string;
+  renderRowActions?: (item: T) => ComponentChildren;
 }
 
 export function DataTable<T>({
@@ -28,7 +29,9 @@ export function DataTable<T>({
   rowKey,
   onRowClick,
   emptyMessage = "No resources found",
+  renderRowActions,
 }: DataTableProps<T>) {
+  const totalCols = columns.length + (renderRowActions ? 1 : 0);
   return (
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
@@ -54,6 +57,9 @@ export function DataTable<T>({
                 </span>
               </th>
             ))}
+            {renderRowActions && (
+              <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 w-12" />
+            )}
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
@@ -61,7 +67,7 @@ export function DataTable<T>({
             ? (
               <tr>
                 <td
-                  colSpan={columns.length}
+                  colSpan={totalCols}
                   class="px-4 py-12 text-center text-sm text-slate-400 dark:text-slate-500"
                 >
                   {emptyMessage}
@@ -89,6 +95,11 @@ export function DataTable<T>({
                       )}
                     </td>
                   ))}
+                  {renderRowActions && (
+                    <td class="px-4 py-3 text-right">
+                      {renderRowActions(item)}
+                    </td>
+                  )}
                 </tr>
               ))
             )}

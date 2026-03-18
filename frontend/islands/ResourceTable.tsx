@@ -18,6 +18,11 @@ import {
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
+import {
+  ACTIONS_BY_KIND,
+  executeAction,
+  getActionMeta,
+} from "@/lib/action-handlers.ts";
 
 interface ResourceTableProps {
   /** API kind string matching backend route, e.g. "pods", "deployments" */
@@ -51,7 +56,26 @@ export default function ResourceTable({
   const totalCount = useSignal<number | null>(null);
   const loadingMore = useSignal(false);
 
+  // Action state
+  const actionMenuOpen = useSignal<string | null>(null); // UID of open menu
+  const confirmAction = useSignal<
+    {
+      actionId: string;
+      resource: K8sResource;
+    } | null
+  >(null);
+  const scaleTarget = useSignal<K8sResource | null>(null);
+  const scaleValue = useSignal(1);
+  const actionLoading = useSignal(false);
+  const toast = useSignal<
+    { message: string; type: "success" | "error" } | null
+  >(
+    null,
+  );
+  const confirmInput = useSignal("");
+
   const columns = RESOURCE_COLUMNS[kind] ?? [];
+  const actions = ACTIONS_BY_KIND[kind] ?? [];
 
   // Namespace for API calls
   const ns = useComputed(() =>
@@ -241,6 +265,73 @@ export default function ResourceTable({
     }
   };
 
+  // Close action menu when clicking outside
+  useEffect(() => {
+    if (!IS_BROWSER || !actionMenuOpen.value) return;
+    const handler = () => {
+      actionMenuOpen.value = null;
+    };
+    globalThis.addEventListener("click", handler);
+    return () => globalThis.removeEventListener("click", handler);
+  }, [actionMenuOpen.value]);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!toast.value) return;
+    const id = setTimeout(() => {
+      toast.value = null;
+    }, 4000);
+    return () => clearTimeout(id);
+  }, [toast.value]);
+
+  // Action execution
+  const runAction = async (
+    actionId: string,
+    resource: K8sResource,
+    params?: Record<string, unknown>,
+  ) => {
+    actionLoading.value = true;
+    try {
+      const message = await executeAction(
+        actionId,
+        kind,
+        resource.metadata.namespace ?? "",
+        resource.metadata.name,
+        params,
+      );
+      toast.value = { message, type: "success" };
+      confirmAction.value = null;
+      scaleTarget.value = null;
+      confirmInput.value = "";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Action failed";
+      toast.value = { message: msg, type: "error" };
+    } finally {
+      actionLoading.value = false;
+    }
+  };
+
+  const handleActionClick = (actionId: string, resource: K8sResource) => {
+    actionMenuOpen.value = null;
+    const meta = getActionMeta(actionId, resource);
+
+    if (actionId === "scale") {
+      // deno-lint-ignore no-explicit-any
+      const spec = (resource as any).spec;
+      scaleValue.value = spec?.replicas ?? 1;
+      scaleTarget.value = resource;
+      return;
+    }
+
+    if (meta.confirm) {
+      confirmAction.value = { actionId, resource };
+      confirmInput.value = "";
+      return;
+    }
+
+    runAction(actionId, resource);
+  };
+
   // Item count display — show "X of Y" when total is known and more exist
   const itemCountText = useComputed(() => {
     if (loading.value) return "Loading...";
@@ -252,8 +343,83 @@ export default function ResourceTable({
     return `${shown} items`;
   });
 
+  // Kebab menu renderer for each row
+  const renderActions = actions.length > 0
+    ? (resource: K8sResource) => {
+      const isOpen = actionMenuOpen.value === resource.metadata.uid;
+      return (
+        <div class="relative">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
+            }}
+            class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+            title="Actions"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="8" cy="3" r="1.5" />
+              <circle cx="8" cy="8" r="1.5" />
+              <circle cx="8" cy="13" r="1.5" />
+            </svg>
+          </button>
+          {isOpen && (
+            <div
+              class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {actions.map((actionId) => {
+                const meta = getActionMeta(actionId, resource);
+                return (
+                  <button
+                    key={actionId}
+                    type="button"
+                    onClick={() => handleActionClick(actionId, resource)}
+                    class={`w-full px-3 py-1.5 text-left text-sm ${
+                      meta.danger
+                        ? "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                        : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+                    }`}
+                  >
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+    : undefined;
+
+  // Confirmation dialog
+  const confirmMeta = confirmAction.value
+    ? getActionMeta(
+      confirmAction.value.actionId,
+      confirmAction.value.resource,
+    )
+    : null;
+  const isDestructive = confirmMeta?.confirm === "destructive";
+  const confirmName = confirmAction.value?.resource.metadata.name ?? "";
+  const canConfirm = !isDestructive ||
+    confirmInput.value === confirmName;
+
   return (
     <div class="space-y-4">
+      {/* Toast notification */}
+      {toast.value && (
+        <div
+          class={`fixed top-4 right-4 z-50 rounded-md px-4 py-3 text-sm shadow-lg ${
+            toast.value.type === "success"
+              ? "bg-green-600 text-white"
+              : "bg-red-600 text-white"
+          }`}
+        >
+          {toast.value.message}
+        </div>
+      )}
+
       {/* Header */}
       <div class="flex items-center justify-between">
         <h1 class="text-xl font-semibold text-slate-900 dark:text-white">
@@ -335,6 +501,7 @@ export default function ResourceTable({
           emptyMessage={loading.value
             ? "Loading resources..."
             : `No ${title.toLowerCase()} found`}
+          renderRowActions={renderActions}
         />
       </div>
 
@@ -349,6 +516,145 @@ export default function ResourceTable({
           >
             {loadingMore.value ? "Loading..." : "Load More"}
           </button>
+        </div>
+      )}
+
+      {/* Confirm Dialog */}
+      {confirmAction.value && confirmMeta && (
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => {
+            confirmAction.value = null;
+            confirmInput.value = "";
+          }}
+        >
+          <div
+            class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
+              {confirmMeta.label} {confirmAction.value.resource.metadata.name}
+            </h3>
+            {confirmMeta.confirmMessage && (
+              <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+                {confirmMeta.confirmMessage}
+              </p>
+            )}
+            {isDestructive && (
+              <div class="mt-4">
+                <label class="block text-sm text-slate-600 dark:text-slate-400">
+                  Type <strong>{confirmName}</strong> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={confirmInput.value}
+                  onInput={(e) =>
+                    confirmInput.value = (e.target as HTMLInputElement).value}
+                  class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                  placeholder={confirmName}
+                />
+              </div>
+            )}
+            <div class="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  confirmAction.value = null;
+                  confirmInput.value = "";
+                }}
+                class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!canConfirm || actionLoading.value}
+                onClick={() =>
+                  runAction(
+                    confirmAction.value!.actionId,
+                    confirmAction.value!.resource,
+                    confirmAction.value!.actionId === "suspend"
+                      ? {
+                        suspend:
+                          // deno-lint-ignore no-explicit-any
+                          !(confirmAction.value!.resource as any).spec
+                            ?.suspend,
+                      }
+                      : undefined,
+                  )}
+                class={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+                  confirmMeta.danger
+                    ? "bg-red-600 hover:bg-red-700"
+                    : "bg-brand hover:bg-brand/90"
+                }`}
+              >
+                {actionLoading.value ? "..." : confirmMeta.label}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Scale Dialog */}
+      {scaleTarget.value && (
+        <div
+          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => {
+            scaleTarget.value = null;
+          }}
+        >
+          <div
+            class="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
+              Scale {scaleTarget.value.metadata.name}
+            </h3>
+            <div class="mt-4">
+              <label class="block text-sm text-slate-600 dark:text-slate-400">
+                Replicas
+              </label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                value={scaleValue.value}
+                onInput={(e) =>
+                  scaleValue.value = parseInt(
+                    (e.target as HTMLInputElement).value,
+                  ) || 0}
+                class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+              />
+              <p class="mt-1 text-xs text-slate-500">
+                Current: {
+                  // deno-lint-ignore no-explicit-any
+                  (scaleTarget.value as any).spec?.replicas ?? "?"
+                }
+              </p>
+            </div>
+            <div class="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  scaleTarget.value = null;
+                }}
+                class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionLoading.value}
+                onClick={() =>
+                  runAction("scale", scaleTarget.value!, {
+                    replicas: scaleValue.value,
+                  })}
+                class="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+              >
+                {actionLoading.value ? "..." : "Scale"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
