@@ -62,6 +62,7 @@ export default function ResourceTable({
     {
       actionId: string;
       resource: K8sResource;
+      params?: Record<string, unknown>;
     } | null
   >(null);
   const scaleTarget = useSignal<K8sResource | null>(null);
@@ -324,7 +325,13 @@ export default function ResourceTable({
     }
 
     if (meta.confirm) {
-      confirmAction.value = { actionId, resource };
+      // Pre-compute action params so the confirm dialog onClick is simple
+      let params: Record<string, unknown> | undefined;
+      if (actionId === "suspend") {
+        // deno-lint-ignore no-explicit-any
+        params = { suspend: !(resource as any).spec?.suspend };
+      }
+      confirmAction.value = { actionId, resource, params };
       confirmInput.value = "";
       return;
     }
@@ -573,14 +580,7 @@ export default function ResourceTable({
                   runAction(
                     confirmAction.value!.actionId,
                     confirmAction.value!.resource,
-                    confirmAction.value!.actionId === "suspend"
-                      ? {
-                        suspend:
-                          // deno-lint-ignore no-explicit-any
-                          !(confirmAction.value!.resource as any).spec
-                            ?.suspend,
-                      }
-                      : undefined,
+                    confirmAction.value!.params,
                   )}
                 class={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
                   confirmMeta.danger

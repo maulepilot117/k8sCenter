@@ -194,6 +194,10 @@ func (h *Handler) HandleScaleDeployment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
+	if req.Replicas < 0 || req.Replicas > 1000 {
+		writeError(w, http.StatusBadRequest, "replicas must be between 0 and 1000", "")
+		return
+	}
 
 	cs, err := h.impersonatingClient(user)
 	if err != nil {
