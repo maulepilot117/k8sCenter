@@ -1,11 +1,10 @@
-import { effect, useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { NAV_SECTIONS } from "@/lib/constants.ts";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
-import { apiGet } from "@/lib/api.ts";
-import { useAuth } from "@/lib/auth.ts";
+import { getAccessToken } from "@/lib/api.ts";
 
 interface SidebarProps {
   currentPath: string;
@@ -14,27 +13,42 @@ interface SidebarProps {
 export default function Sidebar({ currentPath }: SidebarProps) {
   const collapsed = useSignal<Record<string, boolean>>({});
   const appVersion = useSignal("");
-  const { isAuthenticated } = useAuth();
-  const fetched = useRef(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    // effect() auto-tracks signal reads, so it re-runs when isAuthenticated changes
-    const dispose = effect(() => {
-      if (!isAuthenticated.value || fetched.current) return;
-      fetched.current = true;
-      apiGet<{
-        kubecenter?: { version?: string };
-      }>("/v1/cluster/info").then((res) => {
-        if (res.data?.kubecenter?.version) {
-          appVersion.value = res.data.kubecenter.version;
+    let cancelled = false;
+
+    async function fetchVersion() {
+      // Wait for auth token to be available (set after login/refresh)
+      for (let i = 0; i < 20; i++) {
+        if (getAccessToken()) break;
+        await new Promise((r) => setTimeout(r, 500));
+        if (cancelled) return;
+      }
+      const token = getAccessToken();
+      if (!token) return;
+
+      try {
+        const res = await fetch("/api/v1/cluster/info", {
+          headers: {
+            "Authorization": `Bearer ${token}`,
+            "X-Requested-With": "XMLHttpRequest",
+          },
+        });
+        if (!res.ok) return;
+        const body = await res.json();
+        if (!cancelled && body.data?.kubecenter?.version) {
+          appVersion.value = body.data.kubecenter.version;
         }
-      }).catch(() => {
-        // Ignore — version display is best-effort
-        fetched.current = false;
-      });
-    });
-    return dispose;
+      } catch {
+        // best-effort
+      }
+    }
+
+    fetchVersion();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function toggleSection(title: string) {
