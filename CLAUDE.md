@@ -160,7 +160,7 @@ kubecenter/
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
-│   │   ├── _middleware.ts             # Security headers (CSP, X-Frame-Options, XCTO, Referrer-Policy)
+│   │   # _middleware.ts removed — security headers now in main.ts via Fresh csp() middleware
 │   │   ├── _error.tsx                 # Error page (404, 500)
 │   │   ├── index.tsx                  # Dashboard page (renders Dashboard island)
 │   │   ├── login.tsx                  # Login page (renders LoginForm island)
