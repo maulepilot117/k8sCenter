@@ -233,6 +233,7 @@ export interface Job extends K8sResource {
     completions?: number;
     parallelism?: number;
     backoffLimit?: number;
+    suspend?: boolean;
   };
   status: {
     active?: number;

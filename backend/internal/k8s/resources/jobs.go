@@ -326,7 +326,10 @@ func (h *Handler) HandleTriggerCronJob(w http.ResponseWriter, r *http.Request) {
 	}
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
-	// Triggering creates a Job, so check create on jobs
+	// Triggering reads the CronJob template and creates a Job
+	if !h.checkAccess(w, r, user, "get", kindCronJob, ns) {
+		return
+	}
 	if !h.checkAccess(w, r, user, "create", kindJob, ns) {
 		return
 	}

@@ -189,7 +189,7 @@ No per-row API calls. RBAC data refreshes when namespace changes (already handle
 
 - [ ] Deployment, StatefulSet, DaemonSet, Pod, Job, CronJob tables have kebab menus
 - [ ] Actions are context-appropriate per resource type (no Scale on DaemonSet, etc.)
-- [ ] Scale dialog shows current replicas with number input (0-100)
+- [ ] Scale dialog shows current replicas with number input (0-1000, matches backend)
 - [ ] Restart triggers rolling restart for Deployments, StatefulSets, DaemonSets
 - [ ] Delete shows type-name-to-confirm with owner warning for managed resources
 - [ ] Job/CronJob suspend/resume toggles based on current `spec.suspend` state

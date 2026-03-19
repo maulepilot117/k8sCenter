@@ -151,7 +151,8 @@ kubecenter/
 │   │   ├── namespace.ts              # Client-only selectedNamespace signal
 │   │   ├── ws.ts                     # WebSocket client — auth, subscribe, reconnect with backoff
 │   │   ├── resource-columns.ts       # Column definitions for all 15 resource types
-│   │   └── status-colors.ts          # Shared status → color mapping utility
+│   │   ├── status-colors.ts          # Shared status → color mapping utility
+│   │   └── action-handlers.ts        # Resource action definitions + API execution (scale, restart, delete, suspend, trigger)
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
@@ -167,7 +168,7 @@ kubecenter/
 │   ├── islands/
 │   │   ├── Dashboard.tsx              # Cluster overview — stat cards, cluster details
 │   │   ├── LoginForm.tsx              # Login form with error handling
-│   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination
+│   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination, kebab action menus
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
@@ -207,7 +208,9 @@ kubecenter/
 │   ├── 044-066: Step 4 review         # 5 P1 + 7 P2 fixed, 12 deferred (P2/P3)
 │   ├── 054,056-060,062-066: pending   # Step 4 deferred findings
 │   ├── 067-096: Step 5 review         # 7 P1 + 16 P2 + 1 P3 fixed
-│   └── 083,090,092-096: pending       # Step 5 deferred findings (1 P2 + 6 P3)
+│   ├── 083,090,092-096: pending       # Step 5 deferred findings (1 P2 + 6 P3)
+│   ├── 206-208,211-212: complete      # Resource action buttons review — 2 P1 + 3 P2 fixed
+│   └── 209-210,213: pending           # Resource action buttons deferred (2 P3 + 1 P2 pre-existing)
 │
 ├── .github/
 │   └── workflows/
@@ -289,6 +292,17 @@ DELETE /api/v1/resources/:kind/:namespace/:name    # Delete resource
 POST   /api/v1/resources/nodes/:name/cordon        # Cordon/uncordon node
 POST   /api/v1/resources/nodes/:name/drain         # Drain node (async, returns task ID)
 GET    /api/v1/tasks/:taskID                       # Poll long-running task status
+
+# Resource Actions (Step 5+)
+POST   /api/v1/resources/deployments/:ns/:name/scale    # Scale deployment (body: {"replicas": N})
+POST   /api/v1/resources/deployments/:ns/:name/restart  # Rolling restart deployment
+POST   /api/v1/resources/deployments/:ns/:name/rollback # Rollback to revision
+POST   /api/v1/resources/statefulsets/:ns/:name/scale   # Scale statefulset
+POST   /api/v1/resources/statefulsets/:ns/:name/restart # Rolling restart statefulset
+POST   /api/v1/resources/daemonsets/:ns/:name/restart   # Rolling restart daemonset
+POST   /api/v1/resources/jobs/:ns/:name/suspend         # Suspend/resume job (body: {"suspend": bool})
+POST   /api/v1/resources/cronjobs/:ns/:name/suspend     # Suspend/resume cronjob
+POST   /api/v1/resources/cronjobs/:ns/:name/trigger     # Create Job from CronJob template
 
 # Frontend BFF Proxy (Step 4 — routes/api/[...path].ts)
 # All /api/* requests from the browser are proxied through the Fresh BFF to the Go backend.

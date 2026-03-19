@@ -18,6 +18,7 @@ import {
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
+import type { ActionId } from "@/lib/action-handlers.ts";
 import {
   ACTIONS_BY_KIND,
   executeAction,
@@ -60,7 +61,7 @@ export default function ResourceTable({
   const actionMenuOpen = useSignal<string | null>(null); // UID of open menu
   const confirmAction = useSignal<
     {
-      actionId: string;
+      actionId: ActionId;
       resource: K8sResource;
       params?: Record<string, unknown>;
     } | null
@@ -69,7 +70,7 @@ export default function ResourceTable({
   const scaleValue = useSignal(1);
   const actionLoading = useSignal(false);
   const toast = useSignal<
-    { message: string; type: "success" | "error" } | null
+    { message: string; type: "success" | "error"; ts: number } | null
   >(
     null,
   );
@@ -285,12 +286,13 @@ export default function ResourceTable({
     return () => clearTimeout(id);
   }, [toast.value]);
 
-  // Action execution
+  // Action execution — guarded against concurrent invocation
   const runAction = async (
-    actionId: string,
+    actionId: ActionId,
     resource: K8sResource,
     params?: Record<string, unknown>,
   ) => {
+    if (actionLoading.value) return;
     actionLoading.value = true;
     try {
       const message = await executeAction(
@@ -300,25 +302,25 @@ export default function ResourceTable({
         resource.metadata.name,
         params,
       );
-      toast.value = { message, type: "success" };
+      toast.value = { message, type: "success", ts: Date.now() };
       confirmAction.value = null;
       scaleTarget.value = null;
       confirmInput.value = "";
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Action failed";
-      toast.value = { message: msg, type: "error" };
+      toast.value = { message: msg, type: "error", ts: Date.now() };
     } finally {
       actionLoading.value = false;
     }
   };
 
-  const handleActionClick = (actionId: string, resource: K8sResource) => {
+  const handleActionClick = (actionId: ActionId, resource: K8sResource) => {
+    if (actionLoading.value) return;
     actionMenuOpen.value = null;
     const meta = getActionMeta(actionId, resource);
 
     if (actionId === "scale") {
-      // deno-lint-ignore no-explicit-any
-      const spec = (resource as any).spec;
+      const spec = resource.spec as { replicas?: number } | undefined;
       scaleValue.value = spec?.replicas ?? 1;
       scaleTarget.value = resource;
       return;
@@ -328,8 +330,8 @@ export default function ResourceTable({
       // Pre-compute action params so the confirm dialog onClick is simple
       let params: Record<string, unknown> | undefined;
       if (actionId === "suspend") {
-        // deno-lint-ignore no-explicit-any
-        params = { suspend: !(resource as any).spec?.suspend };
+        const spec = resource.spec as { suspend?: boolean } | undefined;
+        params = { suspend: !spec?.suspend };
       }
       confirmAction.value = { actionId, resource, params };
       confirmInput.value = "";
@@ -376,7 +378,7 @@ export default function ResourceTable({
               class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
               onClick={(e) => e.stopPropagation()}
             >
-              {actions.map((actionId) => {
+              {actions.map((actionId: ActionId) => {
                 const meta = getActionMeta(actionId, resource);
                 return (
                   <button
@@ -617,18 +619,25 @@ export default function ResourceTable({
               <input
                 type="number"
                 min="0"
-                max="100"
+                max="1000"
                 value={scaleValue.value}
-                onInput={(e) =>
-                  scaleValue.value = parseInt(
+                onInput={(e) => {
+                  const raw = parseInt(
                     (e.target as HTMLInputElement).value,
-                  ) || 0}
+                  );
+                  scaleValue.value = Number.isNaN(raw)
+                    ? 0
+                    : Math.min(Math.max(raw, 0), 1000);
+                }}
                 class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
               />
               <p class="mt-1 text-xs text-slate-500">
                 Current: {
-                  // deno-lint-ignore no-explicit-any
-                  (scaleTarget.value as any).spec?.replicas ?? "?"
+                  (
+                    scaleTarget.value.spec as
+                      | { replicas?: number }
+                      | undefined
+                  )?.replicas ?? "?"
                 }
               </p>
             </div>
