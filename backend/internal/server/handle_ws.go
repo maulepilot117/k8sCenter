@@ -11,7 +11,26 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin:     nil, // set in handleWSResources based on config
+	CheckOrigin:     nil, // set per-handler after origin validation
+}
+
+// validateWSOrigin validates the Origin header for WebSocket connections.
+// Returns true if the origin is acceptable, false if the request was rejected.
+// In production, requires a valid Origin header to prevent CSWSH attacks.
+// In dev mode, allows empty Origin for non-browser clients (curl, CLI tools).
+func (s *Server) validateWSOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" && !s.Config.Dev {
+		s.Logger.Warn("websocket rejected: missing Origin header")
+		http.Error(w, "Origin header required", http.StatusForbidden)
+		return false
+	}
+	if origin != "" && !s.isAllowedOrigin(origin) {
+		s.Logger.Warn("websocket origin rejected", "origin", origin)
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // handleWSResources handles WebSocket upgrade for the resource event stream.
@@ -26,22 +45,10 @@ func (s *Server) handleWSResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate Origin header against allowed origins.
-	// In production, require a valid Origin header to prevent CSWSH attacks.
-	// In dev mode, allow empty Origin for non-browser clients (curl, CLI tools).
-	origin := r.Header.Get("Origin")
-	if origin == "" && !s.Config.Dev {
-		s.Logger.Warn("websocket rejected: missing Origin header")
-		http.Error(w, "Origin header required", http.StatusForbidden)
-		return
-	}
-	if origin != "" && !s.isAllowedOrigin(origin) {
-		s.Logger.Warn("websocket origin rejected", "origin", origin)
-		http.Error(w, "origin not allowed", http.StatusForbidden)
+	if !s.validateWSOrigin(w, r) {
 		return
 	}
 
-	// Upgrade with permissive CheckOrigin since we validated above
 	up := upgrader
 	up.CheckOrigin = func(r *http.Request) bool { return true }
 
@@ -62,7 +69,7 @@ func (s *Server) handleWSResources(w http.ResponseWriter, r *http.Request) {
 // isAllowedOrigin checks if the origin is in the allowed origins list.
 func (s *Server) isAllowedOrigin(origin string) bool {
 	if s.Config.Dev {
-		return true // allow all origins in dev mode
+		return true
 	}
 	for _, allowed := range s.Config.CORS.AllowedOrigins {
 		if strings.EqualFold(origin, allowed) {

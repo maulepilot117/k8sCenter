@@ -113,6 +113,52 @@ func (c *HubbleClient) GetFlows(ctx context.Context, namespace, verdict string, 
 	return flows, nil
 }
 
+// StreamFlows opens a continuous gRPC stream of flows matching the given filters.
+// It calls cb for each flow received. Returns when ctx is cancelled or the stream errors.
+// Uses Follow: true for real-time streaming (unlike GetFlows which fetches a batch).
+func (c *HubbleClient) StreamFlows(ctx context.Context, namespace, verdict string, cb func(FlowRecord)) error {
+	srcFilter := &flowpb.FlowFilter{
+		SourcePod: []string{namespace + "/"},
+	}
+	dstFilter := &flowpb.FlowFilter{
+		DestinationPod: []string{namespace + "/"},
+	}
+
+	if verdict != "" {
+		v, _ := verdictFromString(verdict)
+		srcFilter.Verdict = []flowpb.Verdict{v}
+		dstFilter.Verdict = []flowpb.Verdict{v}
+	}
+
+	req := &observerpb.GetFlowsRequest{
+		Number:    0, // no limit — continuous stream
+		Follow:    true,
+		Whitelist: []*flowpb.FlowFilter{srcFilter, dstFilter},
+	}
+
+	stream, err := c.client.GetFlows(ctx, req)
+	if err != nil {
+		return fmt.Errorf("opening flow stream: %w", err)
+	}
+
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("receiving flow: %w", err)
+		}
+
+		f := resp.GetFlow()
+		if f == nil {
+			continue
+		}
+
+		cb(convertFlow(f))
+	}
+}
+
 // Close closes the gRPC connection.
 func (c *HubbleClient) Close() {
 	if c.conn != nil {

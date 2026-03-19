@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
+import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
@@ -19,6 +19,7 @@ interface FlowRecord {
 }
 
 const VERDICT_OPTIONS = ["", "FORWARDED", "DROPPED", "ERROR", "AUDIT"];
+const MAX_FLOWS = 1000;
 
 function verdictBadgeClass(verdict: string): string {
   switch (verdict) {
@@ -46,6 +47,29 @@ export default function FlowViewer() {
   const flows = useSignal<FlowRecord[]>([]);
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
+  const wsState = useSignal<"disconnected" | "connecting" | "live">(
+    "disconnected",
+  );
+
+  // Connection generation counter — prevents stale WS callbacks from clobbering state
+  const wsIdRef = useRef(0);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // RAF batching for high-volume flow updates
+  const pendingFlows = useRef<FlowRecord[]>([]);
+  const rafId = useRef<number>(0);
+
+  const flushFlows = () => {
+    rafId.current = 0;
+    const batch = pendingFlows.current;
+    if (batch.length === 0) return;
+    pendingFlows.current = [];
+    const current = flows.value;
+    const merged = [...batch.reverse(), ...current];
+    flows.value = merged.length > MAX_FLOWS
+      ? merged.slice(0, MAX_FLOWS)
+      : merged;
+  };
 
   // Fetch namespaces
   useEffect(() => {
@@ -59,32 +83,128 @@ export default function FlowViewer() {
       .catch(() => {});
   }, []);
 
-  const fetchFlows = async () => {
+  // HTTP fallback fetch
+  const fetchFlows = () => {
     if (!IS_BROWSER) return;
     loading.value = true;
     error.value = null;
-    try {
-      let url = `/v1/networking/hubble/flows?namespace=${
-        encodeURIComponent(namespace.value)
-      }&limit=200`;
-      if (verdict.value) {
-        url += `&verdict=${encodeURIComponent(verdict.value)}`;
-      }
-      const resp = await apiGet<FlowRecord[]>(url);
-      flows.value = Array.isArray(resp.data) ? resp.data : [];
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch flows";
-      error.value = msg;
-      flows.value = [];
-    } finally {
-      loading.value = false;
+    let url = `/v1/networking/hubble/flows?namespace=${
+      encodeURIComponent(namespace.value)
+    }&limit=200`;
+    if (verdict.value) {
+      url += `&verdict=${encodeURIComponent(verdict.value)}`;
     }
+    apiGet<FlowRecord[]>(url)
+      .then((resp) => {
+        flows.value = Array.isArray(resp.data) ? resp.data : [];
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error
+          ? err.message
+          : "Failed to fetch flows";
+        error.value = msg;
+        flows.value = [];
+      })
+      .finally(() => {
+        loading.value = false;
+      });
   };
 
-  // Fetch on mount and when filters change
+  // Connect WebSocket for live streaming
+  const connectWS = () => {
+    // Close existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    const token = getAccessToken();
+    if (!token) {
+      fetchFlows();
+      return;
+    }
+
+    // Increment generation — all callbacks check staleness against this
+    const connectionId = ++wsIdRef.current;
+    const isStale = () => wsIdRef.current !== connectionId;
+
+    wsState.value = "connecting";
+
+    const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(
+      `${proto}//${globalThis.location.host}/ws/v1/ws/flows`,
+    );
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (isStale()) {
+        ws.close();
+        return;
+      }
+      ws.send(JSON.stringify({ type: "auth", token }));
+      ws.send(
+        JSON.stringify({
+          namespace: namespace.value,
+          verdict: verdict.value,
+        }),
+      );
+    };
+
+    ws.onmessage = (event) => {
+      if (isStale()) return;
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "flow" && msg.data) {
+          // Batch flows for RAF flush
+          pendingFlows.current.push(msg.data);
+          if (!rafId.current) {
+            rafId.current = requestAnimationFrame(flushFlows);
+          }
+        } else if (msg.type === "subscribed") {
+          wsState.value = "live";
+          error.value = null;
+          flows.value = [];
+        } else if (msg.type === "error") {
+          error.value = msg.message;
+          wsState.value = "disconnected";
+        }
+      } catch {
+        // Ignore malformed messages
+      }
+    };
+
+    ws.onclose = () => {
+      if (isStale()) return;
+      wsState.value = "disconnected";
+      wsRef.current = null;
+    };
+
+    ws.onerror = () => {
+      if (isStale()) return;
+      wsState.value = "disconnected";
+      wsRef.current = null;
+      fetchFlows();
+    };
+  };
+
+  // Connect on mount and when filters change
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchFlows();
+    connectWS();
+    return () => {
+      // Increment generation so any in-flight callbacks become stale
+      wsIdRef.current++;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      wsState.value = "disconnected";
+      if (rafId.current) {
+        cancelAnimationFrame(rafId.current);
+        rafId.current = 0;
+      }
+      pendingFlows.current = [];
+    };
   }, [namespace.value, verdict.value]);
 
   if (!IS_BROWSER) {
@@ -100,9 +220,22 @@ export default function FlowViewer() {
   return (
     <div class="p-6">
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">
-          Network Flows
-        </h1>
+        <div class="flex items-center gap-3">
+          <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">
+            Network Flows
+          </h1>
+          {wsState.value === "live" && (
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+              <span class="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+              Live
+            </span>
+          )}
+          {wsState.value === "connecting" && (
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+              Connecting...
+            </span>
+          )}
+        </div>
         <Button
           variant="secondary"
           onClick={fetchFlows}
@@ -177,13 +310,15 @@ export default function FlowViewer() {
                 >
                   {error.value
                     ? "Failed to load flows"
+                    : wsState.value === "live"
+                    ? "Waiting for flows..."
                     : "No flows found. Hubble may not be enabled or there is no traffic in this namespace."}
                 </td>
               </tr>
             )}
             {flows.value.map((f, i) => (
               <tr
-                key={i}
+                key={`${f.time}-${i}`}
                 class="border-t border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/30"
               >
                 <td class="py-1.5 px-3 text-slate-500 dark:text-slate-400 whitespace-nowrap font-mono text-xs">
