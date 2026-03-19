@@ -2,6 +2,12 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+import {
+  EVENT_ADDED,
+  EVENT_DELETED,
+  EVENT_RESYNC,
+  subscribe,
+} from "@/lib/ws.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
 
 export default function AlertBanner() {
@@ -20,14 +26,43 @@ export default function AlertBanner() {
 
   useEffect(() => {
     if (!IS_BROWSER) return;
+
+    // Fetch initial state via REST
     fetchAlerts();
 
-    // TODO(perf): Replace 30s polling with WebSocket subscription to kind "alerts"
-    // via lib/ws.ts. Fetch initial state via REST, then update via WS events.
-    // This would reduce N requests/30s for N users and improve alert latency
-    // from up to 30s to near-real-time. Blocked on fixing WS alerts RBAC (todo 164).
-    const interval = setInterval(fetchAlerts, 30_000);
-    return () => clearInterval(interval);
+    // Subscribe to real-time alert events via WebSocket.
+    // "alerts" is in alwaysAllowKinds — JWT auth only, no RBAC check.
+    const unsubscribe = subscribe(
+      "alertbanner",
+      "alerts",
+      "", // all namespaces
+      (eventType, object) => {
+        if (eventType === EVENT_RESYNC) {
+          fetchAlerts();
+          return;
+        }
+
+        const alert = object as AlertEvent;
+        if (!alert?.fingerprint) return;
+
+        if (eventType === EVENT_ADDED) {
+          // Add if not already present (deduplicate by fingerprint)
+          const exists = alerts.value.some(
+            (a) => a.fingerprint === alert.fingerprint,
+          );
+          if (!exists) {
+            alerts.value = [...alerts.value, alert];
+          }
+        } else if (eventType === EVENT_DELETED) {
+          // Remove resolved alert
+          alerts.value = alerts.value.filter(
+            (a) => a.fingerprint !== alert.fingerprint,
+          );
+        }
+      },
+    );
+
+    return unsubscribe;
   }, []);
 
   if (!IS_BROWSER || dismissed.value || alerts.value.length === 0) {
