@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Use class-based dark mode (.dark on <html>) instead of @media prefers-color-scheme */
+@variant dark (&:where(.dark, .dark *));
+
 @theme {
   /* Status colors — consistent k8s resource state mapping */
   --color-success: #22c55e;
