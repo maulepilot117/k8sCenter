@@ -59,6 +59,8 @@ kubecenter/
 │   │   │   ├── handle_setup.go        # POST /setup/init — first admin creation (one-time)
 │   │   │   ├── handle_health.go       # GET /healthz, GET /readyz
 │   │   │   ├── handle_cluster.go      # GET /cluster/info (version, node count, KubeCenter version)
+│   │   │   ├── handle_users.go       # Admin-only user management: list, delete, change password
+│   │   │   ├── handle_users_test.go  # 7 httptest integration tests (guards, RBAC, password validation)
 │   │   │   └── middleware/
 │   │   │       ├── auth.go            # JWT validation middleware + CSRF (X-Requested-With header)
 │   │   │       ├── auth_test.go       # Middleware unit tests
@@ -82,7 +84,8 @@ kubecenter/
 │   │   │
 │   │   ├── k8s/
 │   │   │   ├── client.go              # ClientFactory — in-cluster/kubeconfig, impersonation cache (sync.Map, 5-min TTL)
-│   │   │   ├── informers.go           # InformerManager — 18 resource types, 5-min resync
+│   │   │   ├── informers.go           # InformerManager — 31 typed + dynamic CRD informers, 5-min resync
+│   │   │   ├── informers_test.go      # Discovery probe + nil-lister tests
 │   │   │   └── resources/
 │   │   │       ├── handler.go         # Shared handler struct, helpers (writeJSON, writeError, pagination, validation)
 │   │   │       ├── access.go          # RBAC AccessChecker — SelfSubjectAccessReview, 60s cache, sweeper
@@ -152,7 +155,8 @@ kubecenter/
 │   │   ├── ws.ts                     # WebSocket client — auth, subscribe, reconnect with backoff
 │   │   ├── resource-columns.ts       # Column definitions for all 15 resource types
 │   │   ├── status-colors.ts          # Shared status → color mapping utility
-│   │   └── action-handlers.ts        # Resource action definitions + API execution (scale, restart, delete, suspend, trigger)
+│   │   ├── action-handlers.ts        # Resource action definitions + API execution (scale, restart, delete, suspend, trigger)
+│   │   └── user-types.ts             # LocalUser interface for admin user management
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
@@ -169,11 +173,14 @@ kubecenter/
 │   │   ├── Dashboard.tsx              # Cluster overview — stat cards, cluster details
 │   │   ├── LoginForm.tsx              # Login form with error handling
 │   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination, kebab action menus
+│   │   ├── UserManager.tsx            # Admin user management — list, delete, change password
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
 │       ├── ui/
 │       │   ├── Button.tsx             # Reusable button (variants: primary, secondary, danger, ghost)
+│       │   ├── ConfirmDialog.tsx       # Reusable confirm dialog with type-to-confirm + ARIA
+│       │   ├── Toast.tsx              # Toast notification component + useToast hook
 │       │   ├── Card.tsx               # Card container with optional title
 │       │   ├── DataTable.tsx          # Generic sortable table component
 │       │   ├── Input.tsx              # Form input with label and error state
@@ -210,7 +217,8 @@ kubecenter/
 │   ├── 067-096: Step 5 review         # 7 P1 + 16 P2 + 1 P3 fixed
 │   ├── 083,090,092-096: pending       # Step 5 deferred findings (1 P2 + 6 P3)
 │   ├── 206-208,211-212: complete      # Resource action buttons review — 2 P1 + 3 P2 fixed
-│   └── 209-210,213: pending           # Resource action buttons deferred (2 P3 + 1 P2 pre-existing)
+│   ├── 209-210,213: pending           # Resource action buttons deferred (2 P3 + 1 P2 pre-existing)
+│   └── 214-215: complete              # User management review — ARIA dialogs + Toast extraction
 │
 ├── .github/
 │   └── workflows/
@@ -303,6 +311,11 @@ POST   /api/v1/resources/daemonsets/:ns/:name/restart   # Rolling restart daemon
 POST   /api/v1/resources/jobs/:ns/:name/suspend         # Suspend/resume job (body: {"suspend": bool})
 POST   /api/v1/resources/cronjobs/:ns/:name/suspend     # Suspend/resume cronjob
 POST   /api/v1/resources/cronjobs/:ns/:name/trigger     # Create Job from CronJob template
+
+# User Management (admin only)
+GET    /api/v1/users                          # List all local users (no password data)
+DELETE /api/v1/users/{id}                     # Delete user (guards: self-delete, last-admin)
+PUT    /api/v1/users/{id}/password            # Change password (validates 8-128 chars)
 
 # Frontend BFF Proxy (Step 4 — routes/api/[...path].ts)
 # All /api/* requests from the browser are proxied through the Fresh BFF to the Go backend.

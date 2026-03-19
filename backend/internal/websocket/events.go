@@ -87,6 +87,12 @@ var allowedKinds = map[string]bool{
 	"mutatingwebhookconfigurations":        true,
 }
 
+// RegisterAllowedKind dynamically adds a kind to the subscription allowlist.
+// Used for CRD-backed resources that are only available when the CRD is installed.
+func RegisterAllowedKind(kind string) {
+	allowedKinds[kind] = true
+}
+
 // isAllowedKind returns true if the kind is in the subscription allowlist.
 func isAllowedKind(kind string) bool {
 	return allowedKinds[kind]

@@ -8,6 +8,10 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	admissionregistrationv1listers "k8s.io/client-go/listers/admissionregistration/v1"
@@ -25,15 +29,25 @@ import (
 
 const defaultResyncPeriod = 5 * time.Minute
 
-// InformerManager wraps a SharedInformerFactory and manages its lifecycle.
+// CiliumPolicyGVR is the GroupVersionResource for CiliumNetworkPolicy.
+// Defined here (not in resources/cilium.go) to avoid circular imports.
+var CiliumPolicyGVR = schema.GroupVersionResource{
+	Group:    "cilium.io",
+	Version:  "v2",
+	Resource: "ciliumnetworkpolicies",
+}
+
+// InformerManager wraps typed and dynamic informer factories and manages their lifecycle.
 type InformerManager struct {
-	factory informers.SharedInformerFactory
-	logger  *slog.Logger
+	factory    informers.SharedInformerFactory
+	dynFactory dynamicinformer.DynamicSharedInformerFactory // nil if no CRDs detected
+	logger     *slog.Logger
 }
 
 // NewInformerManager creates a new InformerManager with informers for all
-// resource types KubeCenter needs to watch.
-func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *InformerManager {
+// resource types KubeCenter needs to watch. The dynClient parameter may be nil
+// if the dynamic client failed to initialize.
+func NewInformerManager(clientset kubernetes.Interface, dynClient dynamic.Interface, disco discovery.DiscoveryInterface, logger *slog.Logger) *InformerManager {
 	factory := informers.NewSharedInformerFactory(clientset, defaultResyncPeriod)
 
 	// Pre-register informers so the factory knows what to start.
@@ -91,20 +105,52 @@ func NewInformerManager(clientset kubernetes.Interface, logger *slog.Logger) *In
 	factory.Admissionregistration().V1().ValidatingWebhookConfigurations().Informer()
 	factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()
 
-	logger.Info("informer manager created",
-		"resourceTypes", 31,
-		"resyncPeriod", defaultResyncPeriod,
-	)
-
-	return &InformerManager{
+	mgr := &InformerManager{
 		factory: factory,
 		logger:  logger,
 	}
+
+	// Dynamic informer for CRDs — probe discovery first to avoid reflector
+	// spin on clusters where the CRD is not installed.
+	if dynClient != nil {
+		mgr.dynFactory = probeCRDsAndCreateFactory(dynClient, disco, defaultResyncPeriod, logger)
+	}
+
+	typedCount := 31
+	dynCount := 0
+	if mgr.dynFactory != nil {
+		dynCount = 1
+	}
+	logger.Info("informer manager created",
+		"typedResources", typedCount,
+		"dynamicResources", dynCount,
+		"resyncPeriod", defaultResyncPeriod,
+	)
+
+	return mgr
+}
+
+// probeCRDsAndCreateFactory checks if known CRDs exist via discovery and creates
+// a dynamic informer factory for those that are present. Returns nil if no CRDs found.
+func probeCRDsAndCreateFactory(dynClient dynamic.Interface, disco discovery.DiscoveryInterface, resync time.Duration, logger *slog.Logger) dynamicinformer.DynamicSharedInformerFactory {
+	_, err := disco.ServerResourcesForGroupVersion("cilium.io/v2")
+	if err != nil {
+		logger.Info("cilium.io/v2 CRD not found — skipping dynamic informer", "error", err)
+		return nil
+	}
+
+	logger.Info("cilium.io/v2 CRD detected — registering dynamic informer")
+	dynFactory := dynamicinformer.NewDynamicSharedInformerFactory(dynClient, resync)
+	dynFactory.ForResource(CiliumPolicyGVR)
+	return dynFactory
 }
 
 // Start begins all registered informers. Call this once after creating the manager.
 func (m *InformerManager) Start(ctx context.Context) {
 	m.factory.Start(ctx.Done())
+	if m.dynFactory != nil {
+		m.dynFactory.Start(ctx.Done())
+	}
 	m.logger.Info("informers started")
 }
 
@@ -119,6 +165,17 @@ func (m *InformerManager) WaitForSync(ctx context.Context) error {
 		}
 	}
 
+	if m.dynFactory != nil {
+		dynSynced := m.dynFactory.WaitForCacheSync(ctx.Done())
+		for gvr, ok := range dynSynced {
+			if !ok {
+				m.logger.Warn("dynamic informer sync failed", "gvr", gvr.String())
+				// Don't fail startup — the CRD may have been removed after discovery probe.
+				// Handlers will get errors from the lister and return appropriate HTTP responses.
+			}
+		}
+	}
+
 	m.logger.Info("all informer caches synced")
 	return nil
 }
@@ -126,6 +183,15 @@ func (m *InformerManager) WaitForSync(ctx context.Context) error {
 // Factory returns the underlying SharedInformerFactory for direct access to listers.
 func (m *InformerManager) Factory() informers.SharedInformerFactory {
 	return m.factory
+}
+
+// CiliumNetworkPolicies returns the dynamic lister for CiliumNetworkPolicy CRDs.
+// Returns nil if the Cilium CRD was not detected at startup.
+func (m *InformerManager) CiliumNetworkPolicies() cache.GenericLister {
+	if m.dynFactory == nil {
+		return nil
+	}
+	return m.dynFactory.ForResource(CiliumPolicyGVR).Lister()
 }
 
 // Typed lister accessors — Core
@@ -318,6 +384,13 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 		{"mutatingwebhookconfigurations", m.factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()},
 	}
 
+	// Dynamic CRD informers
+	if m.dynFactory != nil {
+		specs = append(specs, informerSpec{
+			"ciliumnetworkpolicies", m.dynFactory.ForResource(CiliumPolicyGVR).Informer(),
+		})
+	}
+
 	for _, spec := range specs {
 		kind := spec.kind
 		handler := cache.ResourceEventHandlerDetailedFuncs{
@@ -350,16 +423,19 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 	m.logger.Info("informer event handlers registered", "kinds", len(specs))
 }
 
-// emitEvent extracts metadata from a k8s object and invokes the callback.
+// emitEvent deep-copies a k8s object and invokes the callback with its metadata.
+// Metadata is read AFTER deep copy to avoid races with the informer cache —
+// particularly important for *unstructured.Unstructured where GetNamespace/GetName
+// traverse a mutable map[string]interface{}.
 func (m *InformerManager) emitEvent(cb EventCallback, eventType, kind string, obj interface{}) {
+	// Deep copy first to avoid data races with informer cache
+	if copier, ok := obj.(runtime.Object); ok {
+		obj = copier.DeepCopyObject()
+	}
 	meta, ok := obj.(metav1.Object)
 	if !ok {
 		m.logger.Warn("event object does not implement metav1.Object", "kind", kind)
 		return
-	}
-	// Deep copy to avoid data races with informer cache
-	if copier, ok := obj.(runtime.Object); ok {
-		obj = copier.DeepCopyObject()
 	}
 	cb(eventType, kind, meta.GetNamespace(), meta.GetName(), obj)
 }

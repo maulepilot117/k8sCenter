@@ -9,18 +9,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 const kindCiliumNetworkPolicy = "ciliumnetworkpolicies"
-
-var ciliumPolicyGVR = schema.GroupVersionResource{
-	Group:    "cilium.io",
-	Version:  "v2",
-	Resource: "ciliumnetworkpolicies",
-}
 
 // CiliumPolicyRequest is the structured payload for creating a CiliumNetworkPolicy.
 type CiliumPolicyRequest struct {
@@ -67,7 +62,7 @@ type PolicyWarning struct {
 	Message string `json:"message"`
 }
 
-// HandleListCiliumPolicies lists CiliumNetworkPolicies via dynamic client.
+// HandleListCiliumPolicies lists CiliumNetworkPolicies from the informer cache.
 func (h *Handler) HandleListCiliumPolicies(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -80,33 +75,44 @@ func (h *Handler) HandleListCiliumPolicies(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	dc, err := h.impersonatingDynamic(user)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+	lister := h.Informers.CiliumNetworkPolicies()
+	if lister == nil {
+		writeError(w, http.StatusNotFound, "CiliumNetworkPolicy CRD is not installed on this cluster", "")
 		return
 	}
 
-	opts := metav1.ListOptions{
-		LabelSelector: params.LabelSelector,
-		Limit:         int64(params.Limit),
-		Continue:      params.Continue,
+	sel, ok := parseSelectorOrReject(w, params.LabelSelector)
+	if !ok {
+		return
 	}
 
-	var list *unstructured.UnstructuredList
+	var objs []runtime.Object
+	var err error
 	if ns != "" {
-		list, err = dc.Resource(ciliumPolicyGVR).Namespace(ns).List(r.Context(), opts)
+		objs, err = lister.ByNamespace(ns).List(sel)
 	} else {
-		list, err = dc.Resource(ciliumPolicyGVR).List(r.Context(), opts)
+		objs, err = lister.List(sel)
 	}
 	if err != nil {
 		mapK8sError(w, err, "list", "CiliumNetworkPolicy", ns, "")
 		return
 	}
 
-	writeList(w, list.Items, len(list.Items), list.GetContinue())
+	// Convert runtime.Object slice to *unstructured.Unstructured for pagination
+	items := make([]*unstructured.Unstructured, 0, len(objs))
+	for _, obj := range objs {
+		if u, ok := obj.(*unstructured.Unstructured); ok {
+			items = append(items, u)
+		} else {
+			h.Logger.Warn("unexpected object type in CiliumNetworkPolicy lister", "type", fmt.Sprintf("%T", obj))
+		}
+	}
+
+	page, cont := paginate(items, params.Limit, params.Continue)
+	writeList(w, page, len(items), cont)
 }
 
-// HandleGetCiliumPolicy gets a single CiliumNetworkPolicy.
+// HandleGetCiliumPolicy gets a single CiliumNetworkPolicy from the informer cache.
 func (h *Handler) HandleGetCiliumPolicy(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -118,13 +124,13 @@ func (h *Handler) HandleGetCiliumPolicy(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dc, err := h.impersonatingDynamic(user)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
+	lister := h.Informers.CiliumNetworkPolicies()
+	if lister == nil {
+		writeError(w, http.StatusNotFound, "CiliumNetworkPolicy CRD is not installed on this cluster", "")
 		return
 	}
 
-	obj, err := dc.Resource(ciliumPolicyGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
+	obj, err := lister.ByNamespace(ns).Get(name)
 	if err != nil {
 		mapK8sError(w, err, "get", "CiliumNetworkPolicy", ns, name)
 		return
@@ -150,7 +156,7 @@ func (h *Handler) HandleDeleteCiliumPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := dc.Resource(ciliumPolicyGVR).Namespace(ns).Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
+	if err := dc.Resource(k8s.CiliumPolicyGVR).Namespace(ns).Delete(r.Context(), name, metav1.DeleteOptions{}); err != nil {
 		h.auditWrite(r, user, audit.ActionDelete, "CiliumNetworkPolicy", ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "delete", "CiliumNetworkPolicy", ns, name)
 		return
@@ -193,7 +199,7 @@ func (h *Handler) HandleUpdateCiliumPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	updated, err := dc.Resource(ciliumPolicyGVR).Namespace(ns).Update(r.Context(), obj, metav1.UpdateOptions{})
+	updated, err := dc.Resource(k8s.CiliumPolicyGVR).Namespace(ns).Update(r.Context(), obj, metav1.UpdateOptions{})
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionUpdate, "CiliumNetworkPolicy", ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "update", "CiliumNetworkPolicy", ns, name)
@@ -245,7 +251,7 @@ func (h *Handler) HandleCreateCiliumPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	created, err := dc.Resource(ciliumPolicyGVR).Namespace(ns).Create(r.Context(), obj, metav1.CreateOptions{})
+	created, err := dc.Resource(k8s.CiliumPolicyGVR).Namespace(ns).Create(r.Context(), obj, metav1.CreateOptions{})
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionCreate, "CiliumNetworkPolicy", ns, req.Name, audit.ResultFailure)
 		mapK8sError(w, err, "create", "CiliumNetworkPolicy", ns, req.Name)

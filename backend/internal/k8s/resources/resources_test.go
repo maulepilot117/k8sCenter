@@ -35,7 +35,7 @@ func testHandler(t *testing.T, objs ...runtime.Object) (*Handler, *fake.Clientse
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	im := k8s.NewInformerManager(fakeCS, logger)
+	im := k8s.NewInformerManager(fakeCS, nil, fakeCS.Discovery(), logger)
 	im.Start(ctx)
 	if err := im.WaitForSync(ctx); err != nil {
 		t.Fatalf("informer sync failed: %v", err)
