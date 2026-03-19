@@ -14,10 +14,16 @@ export default function ThemeToggle() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const stored = localStorage.getItem("theme") as Theme | null;
-    if (stored) {
-      theme.value = stored;
-      applyTheme(stored);
-    }
+    theme.value = stored ?? "system";
+    applyTheme(theme.value);
+
+    // Listen for OS preference changes so "system" stays in sync
+    const mq = globalThis.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      if (theme.value === "system") applyTheme("system");
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
   }, []);
 
   function cycle() {
