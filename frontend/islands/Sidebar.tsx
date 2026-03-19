@@ -5,7 +5,7 @@ import { NAV_SECTIONS } from "@/lib/constants.ts";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
 import { getAccessToken } from "@/lib/api.ts";
-import { useAuth } from "@/lib/auth.ts";
+import { fetchCurrentUser, useAuth } from "@/lib/auth.ts";
 
 interface SidebarProps {
   currentPath: string;
@@ -24,7 +24,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
     if (!IS_BROWSER) return;
     let cancelled = false;
 
-    async function fetchVersion() {
+    async function init() {
       // Wait for auth token to be available (set after login/refresh)
       for (let i = 0; i < 20; i++) {
         if (getAccessToken()) break;
@@ -34,6 +34,13 @@ export default function Sidebar({ currentPath }: SidebarProps) {
       const token = getAccessToken();
       if (!token) return;
 
+      // Fetch user info (populates admin role for Settings visibility)
+      if (!user.value) {
+        await fetchCurrentUser();
+        if (cancelled) return;
+      }
+
+      // Fetch version info
       try {
         const res = await fetch("/api/v1/cluster/info", {
           headers: {
@@ -51,7 +58,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
       }
     }
 
-    fetchVersion();
+    init();
     return () => {
       cancelled = true;
     };
