@@ -5,7 +5,6 @@ import { apiGet, apiPostRaw } from "@/lib/api.ts";
 import { RESOURCE_API_KINDS, RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import {
   type ActionId,
-  ACTIONS_BY_KIND,
   executeAction,
   getActionMeta,
   getVisibleActions,
