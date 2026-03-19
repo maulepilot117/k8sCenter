@@ -15,6 +15,7 @@ import {
   CLUSTER_SCOPED_KINDS,
   RESOURCE_DETAIL_PATHS,
 } from "@/lib/constants.ts";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
@@ -74,7 +75,6 @@ export default function ResourceTable({
   >(
     null,
   );
-  const confirmInput = useSignal("");
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
   const actions = ACTIONS_BY_KIND[kind] ?? [];
@@ -305,7 +305,6 @@ export default function ResourceTable({
       toast.value = { message, type: "success", ts: Date.now() };
       confirmAction.value = null;
       scaleTarget.value = null;
-      confirmInput.value = "";
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Action failed";
       toast.value = { message: msg, type: "error", ts: Date.now() };
@@ -334,7 +333,6 @@ export default function ResourceTable({
         params = { suspend: !spec?.suspend };
       }
       confirmAction.value = { actionId, resource, params };
-      confirmInput.value = "";
       return;
     }
 
@@ -411,8 +409,6 @@ export default function ResourceTable({
     : null;
   const isDestructive = confirmMeta?.confirm === "destructive";
   const confirmName = confirmAction.value?.resource.metadata.name ?? "";
-  const canConfirm = !isDestructive ||
-    confirmInput.value === confirmName;
 
   return (
     <div class="space-y-4">
@@ -530,71 +526,23 @@ export default function ResourceTable({
 
       {/* Confirm Dialog */}
       {confirmAction.value && confirmMeta && (
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => {
+        <ConfirmDialog
+          title={`${confirmMeta.label} ${confirmAction.value.resource.metadata.name}`}
+          message={confirmMeta.confirmMessage}
+          confirmLabel={confirmMeta.label}
+          danger={confirmMeta.danger}
+          typeToConfirm={isDestructive ? confirmName : undefined}
+          loading={actionLoading.value}
+          onConfirm={() =>
+            runAction(
+              confirmAction.value!.actionId,
+              confirmAction.value!.resource,
+              confirmAction.value!.params,
+            )}
+          onCancel={() => {
             confirmAction.value = null;
-            confirmInput.value = "";
           }}
-        >
-          <div
-            class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
-              {confirmMeta.label} {confirmAction.value.resource.metadata.name}
-            </h3>
-            {confirmMeta.confirmMessage && (
-              <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
-                {confirmMeta.confirmMessage}
-              </p>
-            )}
-            {isDestructive && (
-              <div class="mt-4">
-                <label class="block text-sm text-slate-600 dark:text-slate-400">
-                  Type <strong>{confirmName}</strong> to confirm
-                </label>
-                <input
-                  type="text"
-                  value={confirmInput.value}
-                  onInput={(e) =>
-                    confirmInput.value = (e.target as HTMLInputElement).value}
-                  class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                  placeholder={confirmName}
-                />
-              </div>
-            )}
-            <div class="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  confirmAction.value = null;
-                  confirmInput.value = "";
-                }}
-                class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!canConfirm || actionLoading.value}
-                onClick={() =>
-                  runAction(
-                    confirmAction.value!.actionId,
-                    confirmAction.value!.resource,
-                    confirmAction.value!.params,
-                  )}
-                class={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
-                  confirmMeta.danger
-                    ? "bg-red-600 hover:bg-red-700"
-                    : "bg-brand hover:bg-brand/90"
-                }`}
-              >
-                {actionLoading.value ? "..." : confirmMeta.label}
-              </button>
-            </div>
-          </div>
-        </div>
+        />
       )}
 
       {/* Scale Dialog */}

@@ -79,6 +79,34 @@ func NewLocalProvider(store UserStore, logger *slog.Logger) *LocalProvider {
 
 func (p *LocalProvider) Type() string { return "local" }
 
+// Store returns the underlying UserStore for direct List/Delete access.
+func (p *LocalProvider) Store() UserStore { return p.store }
+
+// UpdatePassword validates, hashes, and stores a new password for the given user.
+// Password validation (8-128 chars) is enforced here as the single source of truth.
+func (p *LocalProvider) UpdatePassword(ctx context.Context, id, newPassword string) error {
+	if len(newPassword) < 8 || len(newPassword) > 128 {
+		return ErrPasswordInvalid
+	}
+
+	// Acquire hash semaphore with context cancellation support.
+	select {
+	case p.hashSem <- struct{}{}:
+		defer func() { <-p.hashSem }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	salt := make([]byte, argon2SaltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("generating salt: %w", err)
+	}
+	hash := argon2.IDKey([]byte(newPassword), salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen)
+	phc := encodePHC(salt, hash)
+
+	return p.store.UpdatePassword(ctx, id, phc)
+}
+
 // Authenticate validates credentials against the database.
 func (p *LocalProvider) Authenticate(ctx context.Context, creds Credentials) (*User, error) {
 	stored, err := p.store.GetByUsername(ctx, creds.Username)

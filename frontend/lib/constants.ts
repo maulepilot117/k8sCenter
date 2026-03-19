@@ -313,6 +313,11 @@ export const NAV_SECTIONS = [
         icon: "nodes",
       },
       {
+        label: "Users",
+        href: "/settings/users",
+        icon: "settings",
+      },
+      {
         label: "Authentication",
         href: "/settings/auth",
         icon: "settings",

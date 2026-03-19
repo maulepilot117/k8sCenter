@@ -129,6 +129,11 @@ export async function api<T>(
     );
   }
 
+  // 204 No Content has no body — return empty response instead of failing on res.json()
+  if (res.status === 204) {
+    return {} as APIResponse<T>;
+  }
+
   return await res.json();
 }
 

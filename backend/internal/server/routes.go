@@ -98,6 +98,14 @@ func (s *Server) registerRoutes() {
 				s.registerAlertingRoutes(ar)
 			}
 
+			// User management — admin only
+			ar.Route("/users", func(ur chi.Router) {
+				ur.Use(middleware.RequireAdmin)
+				ur.Get("/", s.handleListUsers)
+				ur.Delete("/{id}", s.handleDeleteUser)
+				ur.Put("/{id}/password", s.handleUpdateUserPassword)
+			})
+
 			// Audit log route — admin only
 			ar.With(middleware.RequireAdmin).Get("/audit/logs", s.handleAuditLogs)
 

@@ -49,6 +49,9 @@ var (
 	ErrUserNotFound       = errors.New("user not found")
 	ErrDuplicateUser      = errors.New("user already exists")
 	ErrSetupCompleted     = errors.New("setup already completed")
+	ErrPasswordInvalid    = errors.New("password must be 8-128 characters")
+	ErrLastAdmin          = errors.New("cannot delete the last admin user")
+	ErrSelfDelete         = errors.New("cannot delete your own account")
 )
 
 // contextKey is an unexported type for context keys to prevent collisions.
