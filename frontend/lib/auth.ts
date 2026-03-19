@@ -5,11 +5,14 @@
  */
 import { computed, signal } from "@preact/signals";
 import { api, getAccessToken, setAccessToken } from "@/lib/api.ts";
-import type { UserInfo } from "@/lib/k8s-types.ts";
+import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);
 const loadingSignal = signal(false);
+
+/** RBAC permissions from /auth/me — keyed by namespace + cluster-scoped. */
+const rbacSignal = signal<RBACSummary | null>(null);
 
 /** Whether the user is authenticated. */
 const isAuthenticated = computed(() => userSignal.value !== null);
@@ -75,27 +78,52 @@ export async function logout(): Promise<void> {
   }
   setAccessToken(null);
   userSignal.value = null;
+  rbacSignal.value = null;
 }
 
 /**
- * Fetch current user info from /auth/me.
- * Called on app load to check if the session is still valid.
+ * Fetch current user info and RBAC permissions from /auth/me.
+ * Optionally scoped to a single namespace for efficiency.
  */
-export async function fetchCurrentUser(): Promise<UserInfo | null> {
+export async function fetchCurrentUser(
+  namespace?: string,
+): Promise<UserInfo | null> {
   if (!getAccessToken()) return null;
   try {
     loadingSignal.value = true;
-    const res = await api<{ user: UserInfo; rbac: unknown }>(
-      "/v1/auth/me",
+    const params = namespace
+      ? `?namespace=${encodeURIComponent(namespace)}`
+      : "";
+    const res = await api<{ user: UserInfo; rbac: RBACSummary }>(
+      `/v1/auth/me${params}`,
       { method: "GET" },
     );
     userSignal.value = res.data.user;
+    rbacSignal.value = res.data.rbac;
     return res.data.user;
   } catch {
     userSignal.value = null;
+    rbacSignal.value = null;
     return null;
   } finally {
     loadingSignal.value = false;
+  }
+}
+
+/**
+ * Re-fetch RBAC permissions for a specific namespace.
+ * Called when the namespace selector changes.
+ */
+export async function refreshPermissions(namespace: string): Promise<void> {
+  if (!getAccessToken()) return;
+  try {
+    const res = await api<{ user: UserInfo; rbac: RBACSummary }>(
+      `/v1/auth/me?namespace=${encodeURIComponent(namespace)}`,
+      { method: "GET" },
+    );
+    rbacSignal.value = res.data.rbac;
+  } catch {
+    // Silently fail — existing permissions stay, backend still enforces
   }
 }
 
@@ -105,10 +133,12 @@ export async function fetchCurrentUser(): Promise<UserInfo | null> {
 export function useAuth() {
   return {
     user: userSignal,
+    rbac: rbacSignal,
     isAuthenticated,
     loading: loadingSignal,
     login,
     logout,
     fetchCurrentUser,
+    refreshPermissions,
   };
 }

@@ -9,6 +9,12 @@ export interface APIResponse<T> {
   };
 }
 
+/** RBAC summary from /auth/me — maps resource kinds to allowed verbs. */
+export interface RBACSummary {
+  clusterScoped: Record<string, string[]>;
+  namespaces: Record<string, Record<string, string[]>>;
+}
+
 /** Standard API error response from the Go backend. */
 export interface APIError {
   error: {

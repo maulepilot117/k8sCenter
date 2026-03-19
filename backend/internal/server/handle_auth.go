@@ -283,27 +283,42 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nsList, err := s.Informers.Factory().Core().V1().Namespaces().Lister().List(labels.Everything())
-	if err != nil {
-		s.Logger.Error("failed to list namespaces for RBAC summary", "error", err)
-		writeJSON(w, http.StatusInternalServerError, api.Response{
-			Error: &api.APIError{Code: 500, Message: "failed to get RBAC summary"},
-		})
-		return
-	}
+	// If ?namespace= is specified, return permissions for that namespace only (+ cluster-scoped).
+	// This is the fast path for frontend permission gating (2 API calls instead of N).
+	var summary *auth.RBACSummary
+	if ns := r.URL.Query().Get("namespace"); ns != "" {
+		var err error
+		summary, err = s.RBACChecker.GetNamespacePermissions(r.Context(), user, ns)
+		if err != nil {
+			s.Logger.Error("failed to get namespace RBAC permissions", "error", err, "user", user.Username, "namespace", ns)
+			writeJSON(w, http.StatusInternalServerError, api.Response{
+				Error: &api.APIError{Code: 500, Message: "failed to get RBAC summary"},
+			})
+			return
+		}
+	} else {
+		nsList, err := s.Informers.Factory().Core().V1().Namespaces().Lister().List(labels.Everything())
+		if err != nil {
+			s.Logger.Error("failed to list namespaces for RBAC summary", "error", err)
+			writeJSON(w, http.StatusInternalServerError, api.Response{
+				Error: &api.APIError{Code: 500, Message: "failed to get RBAC summary"},
+			})
+			return
+		}
 
-	namespaces := make([]string, len(nsList))
-	for i, ns := range nsList {
-		namespaces[i] = ns.Name
-	}
+		namespaces := make([]string, len(nsList))
+		for i, ns := range nsList {
+			namespaces[i] = ns.Name
+		}
 
-	summary, err := s.RBACChecker.GetSummary(r.Context(), user, namespaces)
-	if err != nil {
-		s.Logger.Error("failed to get RBAC summary", "error", err, "user", user.Username)
-		writeJSON(w, http.StatusInternalServerError, api.Response{
-			Error: &api.APIError{Code: 500, Message: "failed to get RBAC summary"},
-		})
-		return
+		summary, err = s.RBACChecker.GetSummary(r.Context(), user, namespaces)
+		if err != nil {
+			s.Logger.Error("failed to get RBAC summary", "error", err, "user", user.Username)
+			writeJSON(w, http.StatusInternalServerError, api.Response{
+				Error: &api.APIError{Code: 500, Message: "failed to get RBAC summary"},
+			})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, api.Response{

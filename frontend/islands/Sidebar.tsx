@@ -5,12 +5,15 @@ import { NAV_SECTIONS } from "@/lib/constants.ts";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
 import { getAccessToken } from "@/lib/api.ts";
+import { useAuth } from "@/lib/auth.ts";
 
 interface SidebarProps {
   currentPath: string;
 }
 
 export default function Sidebar({ currentPath }: SidebarProps) {
+  const { user } = useAuth();
+  const userIsAdmin = user.value?.roles?.includes("admin") ?? false;
   const collapsed = useSignal<Record<string, boolean>>({});
   const appVersion = useSignal("");
 
@@ -68,7 +71,10 @@ export default function Sidebar({ currentPath }: SidebarProps) {
 
       {/* Navigation */}
       <nav class="flex-1 overflow-y-auto py-2">
-        {NAV_SECTIONS.map((section) => (
+        {NAV_SECTIONS.filter((section) =>
+          // Hide "Settings" section for non-admin users
+          section.title !== "Settings" || userIsAdmin
+        ).map((section) => (
           <div key={section.title} class="mb-1">
             <button
               type="button"

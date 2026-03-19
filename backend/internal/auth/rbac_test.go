@@ -47,11 +47,12 @@ func TestRBACChecker_CacheExpiry(t *testing.T) {
 		t.Fatalf("first GetSummary failed: %v", err)
 	}
 
-	// Manually expire the cache entry
+	// Manually expire the cache entry using the hash key
+	cacheKey := rbacCacheKey(user.KubernetesUsername, user.KubernetesGroups)
 	checker.mu.Lock()
-	if entry, ok := checker.cache[user.Username]; ok {
+	if entry, ok := checker.cache[cacheKey]; ok {
 		entry.expiresAt = time.Now().Add(-1 * time.Second)
-		checker.cache[user.Username] = entry
+		checker.cache[cacheKey] = entry
 	}
 	checker.mu.Unlock()
 

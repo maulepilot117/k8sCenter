@@ -3,7 +3,8 @@
  * Used by ResourceTable's kebab menu.
  */
 import { apiDelete, apiPost } from "@/lib/api.ts";
-import type { K8sResource } from "@/lib/k8s-types.ts";
+import type { K8sResource, RBACSummary } from "@/lib/k8s-types.ts";
+import { canPerform } from "@/lib/permissions.ts";
 
 /** Valid action identifiers. */
 export type ActionId = "scale" | "restart" | "delete" | "suspend" | "trigger";
@@ -17,6 +18,28 @@ export const ACTIONS_BY_KIND: Record<string, ActionId[]> = {
   jobs: ["suspend", "delete"],
   cronjobs: ["suspend", "trigger", "delete"],
 };
+
+/** Maps action IDs to the k8s verb needed to perform them. */
+const ACTION_VERB_MAP: Record<ActionId, string> = {
+  scale: "update",
+  restart: "update",
+  delete: "delete",
+  suspend: "update",
+  trigger: "create", // trigger creates a Job
+};
+
+/** Filter actions to only those the user has k8s permission for. */
+export function getVisibleActions(
+  kind: string,
+  namespace: string,
+  rbac: RBACSummary | null,
+): ActionId[] {
+  const all = ACTIONS_BY_KIND[kind] ?? [];
+  if (!rbac) return all; // Permissions not loaded — show all (optimistic)
+  return all.filter((actionId) =>
+    canPerform(rbac, kind, ACTION_VERB_MAP[actionId], namespace)
+  );
+}
 
 /** Action metadata for UI rendering. */
 export interface ActionMeta {
