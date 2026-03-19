@@ -19,7 +19,7 @@ require (
 	github.com/prometheus/common v0.66.1
 	golang.org/x/crypto v0.49.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/grpc v1.79.2
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.35.2
 	k8s.io/apimachinery v0.35.2
