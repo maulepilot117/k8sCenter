@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
-import { IS_BROWSER } from "fresh/runtime";
 
 export interface ConfirmDialogProps {
   title: string;
@@ -14,6 +13,8 @@ export interface ConfirmDialogProps {
   onCancel: () => void;
 }
 
+let dialogIdCounter = 0;
+
 export function ConfirmDialog({
   title,
   message,
@@ -26,16 +27,16 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const input = useSignal("");
   const dialogRef = useRef<HTMLDivElement>(null);
+  const idPrefix = useRef(`confirm-dialog-${++dialogIdCounter}`);
+  const titleId = `${idPrefix.current}-title`;
+  const descId = `${idPrefix.current}-desc`;
 
   const canConfirm = !typeToConfirm || input.value === typeToConfirm;
 
-  // Focus trap + Escape key
+  // Escape key handler
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onCancel();
-      }
+      if (e.key === "Escape") onCancel();
     };
     globalThis.addEventListener("keydown", handler);
 
@@ -43,9 +44,10 @@ export function ConfirmDialog({
     const el = dialogRef.current;
     if (el) {
       const focusTarget = el.querySelector<HTMLElement>(
-        "input, button:last-of-type",
+        "[data-autofocus], input",
       );
-      focusTarget?.focus();
+      (focusTarget ?? el.querySelector<HTMLElement>("button:last-of-type"))
+        ?.focus();
     }
 
     return () => globalThis.removeEventListener("keydown", handler);
@@ -58,14 +60,24 @@ export function ConfirmDialog({
     >
       <div
         ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={message ? descId : undefined}
         class="w-full max-w-md rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
+        <h3
+          id={titleId}
+          class="text-lg font-semibold text-slate-900 dark:text-white"
+        >
           {title}
         </h3>
         {message && (
-          <p class="mt-2 text-sm text-slate-600 dark:text-slate-400">
+          <p
+            id={descId}
+            class="mt-2 text-sm text-slate-600 dark:text-slate-400"
+          >
             {message}
           </p>
         )}
@@ -75,6 +87,7 @@ export function ConfirmDialog({
               Type <strong>{typeToConfirm}</strong> to confirm
             </label>
             <input
+              data-autofocus
               type="text"
               value={input.value}
               onInput={(e) =>

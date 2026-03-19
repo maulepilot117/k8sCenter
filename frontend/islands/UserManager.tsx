@@ -1,9 +1,10 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { Toast, useToast } from "@/components/ui/Toast.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
 
 type DialogState =
@@ -19,9 +20,7 @@ export default function UserManager() {
   const error = useSignal<string | null>(null);
   const dialog = useSignal<DialogState>({ kind: "idle" });
   const actionLoading = useSignal(false);
-  const toast = useSignal<
-    { message: string; type: "success" | "error"; ts: number } | null
-  >(null);
+  const { toast, show: showToast } = useToast();
 
   const fetchUsers = useCallback(async () => {
     loading.value = true;
@@ -41,15 +40,6 @@ export default function UserManager() {
     fetchUsers();
   }, []);
 
-  // Auto-dismiss toast
-  useEffect(() => {
-    if (!toast.value) return;
-    const id = setTimeout(() => {
-      toast.value = null;
-    }, 4000);
-    return () => clearTimeout(id);
-  }, [toast.value]);
-
   const handleDelete = async (user: LocalUser) => {
     if (actionLoading.value) return;
     actionLoading.value = true;
@@ -58,17 +48,13 @@ export default function UserManager() {
     users.value = users.value.filter((u) => u.id !== user.id);
     try {
       await apiDelete(`/v1/users/${user.id}`);
-      toast.value = {
-        message: `Deleted user "${user.username}"`,
-        type: "success",
-        ts: Date.now(),
-      };
+      showToast(`Deleted user "${user.username}"`, "success");
       dialog.value = { kind: "idle" };
     } catch (err) {
       // Restore on failure
       users.value = prev;
       const msg = err instanceof Error ? err.message : "Delete failed";
-      toast.value = { message: msg, type: "error", ts: Date.now() };
+      showToast(msg, "error");
     } finally {
       actionLoading.value = false;
     }
@@ -79,15 +65,11 @@ export default function UserManager() {
     actionLoading.value = true;
     try {
       await apiPut(`/v1/users/${user.id}/password`, { password });
-      toast.value = {
-        message: `Password updated for "${user.username}"`,
-        type: "success",
-        ts: Date.now(),
-      };
+      showToast(`Password updated for "${user.username}"`, "success");
       dialog.value = { kind: "idle" };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Update failed";
-      toast.value = { message: msg, type: "error", ts: Date.now() };
+      showToast(msg, "error");
     } finally {
       actionLoading.value = false;
     }
@@ -97,18 +79,7 @@ export default function UserManager() {
 
   return (
     <div class="space-y-4">
-      {/* Toast */}
-      {toast.value && (
-        <div
-          class={`fixed top-4 right-4 z-50 rounded-md px-4 py-3 text-sm shadow-lg ${
-            toast.value.type === "success"
-              ? "bg-green-600 text-white"
-              : "bg-red-600 text-white"
-          }`}
-        >
-          {toast.value.message}
-        </div>
-      )}
+      <Toast toast={toast} />
 
       {/* Error */}
       {error.value && (
@@ -297,12 +268,14 @@ function PasswordDialog({
   onCancel: () => void;
 }) {
   const isValid = password.length >= 8;
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
     globalThis.addEventListener("keydown", handler);
+    inputRef.current?.focus();
     return () => globalThis.removeEventListener("keydown", handler);
   }, [onCancel]);
 
@@ -312,10 +285,16 @@ function PasswordDialog({
       onClick={onCancel}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="password-dialog-title"
         class="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
+        <h3
+          id="password-dialog-title"
+          class="text-lg font-semibold text-slate-900 dark:text-white"
+        >
           Change Password for {username}
         </h3>
         <div class="mt-4">
@@ -323,6 +302,7 @@ function PasswordDialog({
             New Password
           </label>
           <input
+            ref={inputRef}
             type="password"
             value={password}
             onInput={(e) =>

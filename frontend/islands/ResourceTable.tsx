@@ -18,6 +18,7 @@ import {
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { Toast, useToast } from "@/components/ui/Toast.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import type { ActionId } from "@/lib/action-handlers.ts";
 import {
@@ -70,11 +71,7 @@ export default function ResourceTable({
   const scaleTarget = useSignal<K8sResource | null>(null);
   const scaleValue = useSignal(1);
   const actionLoading = useSignal(false);
-  const toast = useSignal<
-    { message: string; type: "success" | "error"; ts: number } | null
-  >(
-    null,
-  );
+  const { toast, show: showToast } = useToast();
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
   const actions = ACTIONS_BY_KIND[kind] ?? [];
@@ -277,15 +274,6 @@ export default function ResourceTable({
     return () => globalThis.removeEventListener("click", handler);
   }, [actionMenuOpen.value]);
 
-  // Auto-dismiss toast
-  useEffect(() => {
-    if (!toast.value) return;
-    const id = setTimeout(() => {
-      toast.value = null;
-    }, 4000);
-    return () => clearTimeout(id);
-  }, [toast.value]);
-
   // Action execution — guarded against concurrent invocation
   const runAction = async (
     actionId: ActionId,
@@ -302,12 +290,12 @@ export default function ResourceTable({
         resource.metadata.name,
         params,
       );
-      toast.value = { message, type: "success", ts: Date.now() };
+      showToast(message, "success");
       confirmAction.value = null;
       scaleTarget.value = null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Action failed";
-      toast.value = { message: msg, type: "error", ts: Date.now() };
+      showToast(msg, "error");
     } finally {
       actionLoading.value = false;
     }
@@ -412,18 +400,7 @@ export default function ResourceTable({
 
   return (
     <div class="space-y-4">
-      {/* Toast notification */}
-      {toast.value && (
-        <div
-          class={`fixed top-4 right-4 z-50 rounded-md px-4 py-3 text-sm shadow-lg ${
-            toast.value.type === "success"
-              ? "bg-green-600 text-white"
-              : "bg-red-600 text-white"
-          }`}
-        >
-          {toast.value.message}
-        </div>
-      )}
+      <Toast toast={toast} />
 
       {/* Header */}
       <div class="flex items-center justify-between">
