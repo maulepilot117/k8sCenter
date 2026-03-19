@@ -26,6 +26,7 @@ export const handler = define.handlers({
       /^v1\/ws\/logs\/[^/]+\/[^/]+\/[^/]+$/,
       /^v1\/ws\/exec\/[^/]+\/[^/]+\/[^/]+$/,
       /^v1\/ws\/alerts$/,
+      /^v1\/ws\/flows$/,
     ];
     if (!allowedPatterns.some((p) => p.test(path))) {
       return new Response(

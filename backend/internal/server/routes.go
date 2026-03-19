@@ -18,6 +18,11 @@ func (s *Server) registerRoutes() {
 		s.Router.Get("/api/v1/ws/resources", s.handleWSResources)
 	}
 
+	// Hubble flow WebSocket — auth in-band (same as resource WS), no timeout
+	if s.NetworkingHandler != nil && s.NetworkingHandler.HubbleClient != nil {
+		s.Router.Get("/api/v1/ws/flows", s.handleWSFlows)
+	}
+
 	// Pod exec WebSocket — auth via middleware (not in-band), no timeout
 	if s.ResourceHandler != nil {
 		s.Router.Group(func(r chi.Router) {

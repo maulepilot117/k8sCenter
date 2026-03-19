@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
+import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
@@ -19,6 +19,7 @@ interface FlowRecord {
 }
 
 const VERDICT_OPTIONS = ["", "FORWARDED", "DROPPED", "ERROR", "AUDIT"];
+const MAX_FLOWS = 1000;
 
 function verdictBadgeClass(verdict: string): string {
   switch (verdict) {
@@ -46,6 +47,8 @@ export default function FlowViewer() {
   const flows = useSignal<FlowRecord[]>([]);
   const loading = useSignal(false);
   const error = useSignal<string | null>(null);
+  const live = useSignal(false);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Fetch namespaces
   useEffect(() => {
@@ -59,7 +62,8 @@ export default function FlowViewer() {
       .catch(() => {});
   }, []);
 
-  const fetchFlows = async () => {
+  // HTTP fallback fetch
+  const fetchFlows = useCallback(async () => {
     if (!IS_BROWSER) return;
     loading.value = true;
     error.value = null;
@@ -79,12 +83,87 @@ export default function FlowViewer() {
     } finally {
       loading.value = false;
     }
-  };
+  }, []);
 
-  // Fetch on mount and when filters change
+  // Connect WebSocket for live streaming
+  const connectWS = useCallback(() => {
+    // Close existing connection
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    const token = getAccessToken();
+    if (!token) {
+      // No token — fall back to HTTP
+      fetchFlows();
+      return;
+    }
+
+    const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(
+      `${proto}//${globalThis.location.host}/ws/v1/ws/flows`,
+    );
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Send auth
+      ws.send(JSON.stringify({ type: "auth", token }));
+      // Send filter
+      ws.send(
+        JSON.stringify({
+          namespace: namespace.value,
+          verdict: verdict.value,
+        }),
+      );
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "flow" && msg.data) {
+          // Prepend new flow, trim if over limit
+          const current = flows.value;
+          flows.value = current.length >= MAX_FLOWS
+            ? [msg.data, ...current.slice(0, MAX_FLOWS - 1)]
+            : [msg.data, ...current];
+        } else if (msg.type === "subscribed") {
+          live.value = true;
+          error.value = null;
+          flows.value = []; // Clear old flows on new subscription
+        } else if (msg.type === "error") {
+          error.value = msg.message;
+          live.value = false;
+        }
+      } catch {
+        // Ignore malformed messages
+      }
+    };
+
+    ws.onclose = () => {
+      live.value = false;
+      wsRef.current = null;
+    };
+
+    ws.onerror = () => {
+      // WS failed — fall back to HTTP silently
+      live.value = false;
+      wsRef.current = null;
+      fetchFlows();
+    };
+  }, []);
+
+  // Connect on mount and when filters change
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchFlows();
+    connectWS();
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+        live.value = false;
+      }
+    };
   }, [namespace.value, verdict.value]);
 
   if (!IS_BROWSER) {
@@ -100,9 +179,17 @@ export default function FlowViewer() {
   return (
     <div class="p-6">
       <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">
-          Network Flows
-        </h1>
+        <div class="flex items-center gap-3">
+          <h1 class="text-2xl font-semibold text-slate-900 dark:text-white">
+            Network Flows
+          </h1>
+          {live.value && (
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+              <span class="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
         <Button
           variant="secondary"
           onClick={fetchFlows}
@@ -177,13 +264,15 @@ export default function FlowViewer() {
                 >
                   {error.value
                     ? "Failed to load flows"
+                    : live.value
+                    ? "Waiting for flows..."
                     : "No flows found. Hubble may not be enabled or there is no traffic in this namespace."}
                 </td>
               </tr>
             )}
             {flows.value.map((f, i) => (
               <tr
-                key={i}
+                key={`${f.time}-${i}`}
                 class="border-t border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-800/30"
               >
                 <td class="py-1.5 px-3 text-slate-500 dark:text-slate-400 whitespace-nowrap font-mono text-xs">
