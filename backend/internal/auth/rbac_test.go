@@ -139,6 +139,53 @@ func TestAppendUnique(t *testing.T) {
 	}
 }
 
+func TestGetNamespacePermissions_UsesCacheWhenAvailable(t *testing.T) {
+	factory := &fakeClientFactory{}
+	checker := NewRBACChecker(factory, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	user := &User{Username: "test-user", KubernetesUsername: "test-user"}
+
+	// Populate the full-summary cache
+	_, err := checker.GetSummary(context.Background(), user, []string{"default"})
+	if err != nil {
+		t.Fatalf("GetSummary failed: %v", err)
+	}
+
+	callsBefore := factory.callCount
+
+	// GetNamespacePermissions should use the cached full summary, not make new API calls
+	result, err := checker.GetNamespacePermissions(context.Background(), user, "default")
+	if err != nil {
+		t.Fatalf("GetNamespacePermissions failed: %v", err)
+	}
+
+	if factory.callCount != callsBefore {
+		t.Errorf("expected cache hit (no new API calls), but callCount went from %d to %d",
+			callsBefore, factory.callCount)
+	}
+
+	if result.ClusterScoped == nil {
+		t.Error("expected non-nil ClusterScoped in result")
+	}
+}
+
+func TestGetNamespacePermissions_SystemNamespaceSkipped(t *testing.T) {
+	factory := &fakeClientFactory{}
+	checker := NewRBACChecker(factory, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	user := &User{Username: "test-user", KubernetesUsername: "test-user"}
+
+	result, err := checker.GetNamespacePermissions(context.Background(), user, "kube-system")
+	if err != nil {
+		t.Fatalf("GetNamespacePermissions failed: %v", err)
+	}
+
+	// System namespace should be skipped — no namespace permissions returned
+	if len(result.Namespaces) != 0 {
+		t.Errorf("expected no namespace permissions for kube-system, got %v", result.Namespaces)
+	}
+}
+
 // fakeClientFactory returns a fake clientset for testing.
 // The clientset's AuthorizationV1 will fail on actual API calls,
 // but that's fine — we're testing cache behavior, not the API call itself.

@@ -3,9 +3,7 @@
  * Sources permissions from Kubernetes RBAC via the /auth/me response.
  * This is a UX optimization — the backend still enforces on every request.
  */
-import { computed, type Signal } from "@preact/signals";
 import type { RBACSummary } from "@/lib/k8s-types.ts";
-import type { UserInfo } from "@/lib/k8s-types.ts";
 
 /**
  * Check if the user can perform a verb on a resource kind in a namespace.
@@ -38,19 +36,4 @@ export function canPerform(
   }
 
   return false;
-}
-
-/**
- * Check if the user has the app-level "admin" role.
- * This controls non-k8s features (user management, audit logs, settings).
- */
-export function isAdmin(user: Signal<UserInfo | null>): boolean {
-  return user.value?.roles?.includes("admin") ?? false;
-}
-
-/**
- * Create a computed isAdmin signal from a user signal.
- */
-export function computedIsAdmin(user: Signal<UserInfo | null>) {
-  return computed(() => user.value?.roles?.includes("admin") ?? false);
 }

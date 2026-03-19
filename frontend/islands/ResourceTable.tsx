@@ -345,55 +345,55 @@ export default function ResourceTable({
     getVisibleActions(kind, ns.value, rbac.value)
   );
 
-  // Kebab menu renderer for each row
-  const renderActions = actions.value.length > 0
-    ? (resource: K8sResource) => {
-      const isOpen = actionMenuOpen.value === resource.metadata.uid;
-      return (
-        <div class="relative">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
-            }}
-            class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
-            title="Actions"
+  // Kebab menu renderer for each row — reads actions.value reactively inside the callback
+  const renderActions = (resource: K8sResource) => {
+    const currentActions = actions.value;
+    if (currentActions.length === 0) return null;
+    const isOpen = actionMenuOpen.value === resource.metadata.uid;
+    return (
+      <div class="relative">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
+          }}
+          class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+          title="Actions"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
+            <circle cx="8" cy="3" r="1.5" />
+            <circle cx="8" cy="8" r="1.5" />
+            <circle cx="8" cy="13" r="1.5" />
+          </svg>
+        </button>
+        {isOpen && (
+          <div
+            class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
+            onClick={(e) => e.stopPropagation()}
           >
-            <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-              <circle cx="8" cy="3" r="1.5" />
-              <circle cx="8" cy="8" r="1.5" />
-              <circle cx="8" cy="13" r="1.5" />
-            </svg>
-          </button>
-          {isOpen && (
-            <div
-              class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {actions.value.map((actionId: ActionId) => {
-                const meta = getActionMeta(actionId, resource);
-                return (
-                  <button
-                    key={actionId}
-                    type="button"
-                    onClick={() => handleActionClick(actionId, resource)}
-                    class={`w-full px-3 py-1.5 text-left text-sm ${
-                      meta.danger
-                        ? "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
-                        : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
-                    }`}
-                  >
-                    {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      );
-    }
-    : undefined;
+            {currentActions.map((actionId: ActionId) => {
+              const meta = getActionMeta(actionId, resource);
+              return (
+                <button
+                  key={actionId}
+                  type="button"
+                  onClick={() => handleActionClick(actionId, resource)}
+                  class={`w-full px-3 py-1.5 text-left text-sm ${
+                    meta.danger
+                      ? "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+                  }`}
+                >
+                  {meta.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // Confirmation dialog
   const confirmMeta = confirmAction.value

@@ -35,12 +35,29 @@ type rbacCacheEntry struct {
 var systemNamespacePrefixes = []string{"kube-"}
 
 // trackedResources are the resource types we check permissions for.
+// Must include every kind the frontend renders in RESOURCE_COLUMNS and ACTIONS_BY_KIND.
 var trackedResources = map[string]bool{
-	"pods": true, "deployments": true, "services": true,
-	"configmaps": true, "secrets": true, "ingresses": true,
-	"statefulsets": true, "daemonsets": true, "jobs": true,
-	"networkpolicies": true, "nodes": true, "namespaces": true,
-	"clusterroles": true, "clusterrolebindings": true,
+	// Core
+	"pods": true, "services": true, "configmaps": true, "secrets": true,
+	"namespaces": true, "nodes": true, "persistentvolumeclaims": true,
+	"persistentvolumes": true, "endpoints": true, "events": true,
+	"resourcequotas": true, "limitranges": true, "serviceaccounts": true,
+	// Apps
+	"deployments": true, "statefulsets": true, "daemonsets": true, "replicasets": true,
+	// Batch
+	"jobs": true, "cronjobs": true,
+	// Networking
+	"ingresses": true, "networkpolicies": true,
+	// Policy
+	"poddisruptionbudgets": true,
+	// Autoscaling
+	"horizontalpodautoscalers": true,
+	// Storage
+	"storageclasses": true,
+	// RBAC
+	"roles": true, "clusterroles": true, "rolebindings": true, "clusterrolebindings": true,
+	// Discovery
+	"endpointslices": true,
 }
 
 // RBACChecker queries Kubernetes RBAC permissions for users.
@@ -215,9 +232,26 @@ func rbacCacheKey(username string, groups []string) string {
 
 // GetNamespacePermissions returns permissions for a single namespace plus cluster-scoped.
 // This is more efficient than GetSummary for the common case (frontend requesting permissions
-// for the currently selected namespace). Results are NOT cached separately — the full summary
-// cache may serve this if available.
+// for the currently selected namespace). Checks the full-summary cache first to avoid
+// redundant API calls; falls back to fresh SelfSubjectRulesReview if not cached.
 func (rc *RBACChecker) GetNamespacePermissions(ctx context.Context, user *User, namespace string) (*RBACSummary, error) {
+	// Check existing full-summary cache — if we have a warm entry, extract the subset
+	cacheKey := rbacCacheKey(user.KubernetesUsername, user.KubernetesGroups)
+	rc.mu.Lock()
+	if entry, ok := rc.cache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+		rc.mu.Unlock()
+		// Extract requested namespace + cluster-scoped from cached full summary
+		result := &RBACSummary{
+			ClusterScoped: entry.summary.ClusterScoped,
+			Namespaces:    make(map[string]map[string][]string),
+		}
+		if nsPerms, ok := entry.summary.Namespaces[namespace]; ok {
+			result.Namespaces[namespace] = nsPerms
+		}
+		return result, nil
+	}
+	rc.mu.Unlock()
+
 	cs, err := rc.clientFactory.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		return nil, fmt.Errorf("creating client for RBAC check: %w", err)

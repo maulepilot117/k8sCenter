@@ -287,6 +287,13 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 	// This is the fast path for frontend permission gating (2 API calls instead of N).
 	var summary *auth.RBACSummary
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
+		// Validate namespace — prevent arbitrary strings hitting the k8s API
+		if len(ns) > 63 || !isValidDNSLabel(ns) {
+			writeJSON(w, http.StatusBadRequest, api.Response{
+				Error: &api.APIError{Code: 400, Message: "invalid namespace"},
+			})
+			return
+		}
 		var err error
 		summary, err = s.RBACChecker.GetNamespacePermissions(r.Context(), user, ns)
 		if err != nil {

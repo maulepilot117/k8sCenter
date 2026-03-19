@@ -13,6 +13,14 @@ let accessToken: string | null = null;
 /** Track in-flight refresh to avoid concurrent refresh requests. */
 let refreshPromise: Promise<boolean> | null = null;
 
+/** Optional callback invoked on 403 responses — used by auth.ts to refresh permissions. */
+let on403Callback: (() => void) | null = null;
+
+/** Register a callback for 403 responses (permission denied). */
+export function onForbidden(cb: () => void) {
+  on403Callback = cb;
+}
+
 export function setAccessToken(token: string | null) {
   accessToken = token;
 }
@@ -121,6 +129,10 @@ export async function api<T>(
       errorBody = await res.json();
     } catch {
       // Response wasn't JSON
+    }
+    // On 403, notify auth layer to refresh permissions (self-correcting mechanism)
+    if (res.status === 403 && on403Callback) {
+      on403Callback();
     }
     throw new ApiError(
       res.status,

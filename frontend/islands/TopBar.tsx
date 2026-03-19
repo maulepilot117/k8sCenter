@@ -1,7 +1,7 @@
 import { useComputed, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { useAuth } from "@/lib/auth.ts";
+import { refreshPermissions, useAuth } from "@/lib/auth.ts";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import ThemeToggle from "@/islands/ThemeToggle.tsx";
@@ -62,7 +62,12 @@ export default function TopBar() {
           id="namespace-select"
           value={selectedNamespace.value}
           onChange={(e) => {
-            selectedNamespace.value = (e.target as HTMLSelectElement).value;
+            const ns = (e.target as HTMLSelectElement).value;
+            selectedNamespace.value = ns;
+            // Refresh RBAC permissions for the new namespace
+            if (ns && ns !== "all") {
+              refreshPermissions(ns);
+            }
           }}
           class="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm text-slate-700 focus:border-brand focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200"
         >

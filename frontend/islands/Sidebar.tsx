@@ -1,4 +1,4 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { NAV_SECTIONS } from "@/lib/constants.ts";
@@ -13,7 +13,10 @@ interface SidebarProps {
 
 export default function Sidebar({ currentPath }: SidebarProps) {
   const { user } = useAuth();
-  const userIsAdmin = user.value?.roles?.includes("admin") ?? false;
+  // Reactive — re-evaluates when user signal changes (e.g., after login)
+  const userIsAdmin = useComputed(() =>
+    user.value?.roles?.includes("admin") ?? false
+  );
   const collapsed = useSignal<Record<string, boolean>>({});
   const appVersion = useSignal("");
 
@@ -73,7 +76,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
       <nav class="flex-1 overflow-y-auto py-2">
         {NAV_SECTIONS.filter((section) =>
           // Hide "Settings" section for non-admin users
-          section.title !== "Settings" || userIsAdmin
+          section.title !== "Settings" || userIsAdmin.value
         ).map((section) => (
           <div key={section.title} class="mb-1">
             <button

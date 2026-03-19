@@ -4,8 +4,9 @@
  * this server-side would leak auth state across SSR requests.
  */
 import { computed, signal } from "@preact/signals";
-import { api, getAccessToken, setAccessToken } from "@/lib/api.ts";
+import { api, getAccessToken, onForbidden, setAccessToken } from "@/lib/api.ts";
 import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
+import { selectedNamespace } from "@/lib/namespace.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);
@@ -16,6 +17,15 @@ const rbacSignal = signal<RBACSummary | null>(null);
 
 /** Whether the user is authenticated. */
 const isAuthenticated = computed(() => userSignal.value !== null);
+
+// Self-correcting: on any 403, refresh RBAC permissions for the current namespace.
+// This handles the case where permissions changed while the user was active.
+onForbidden(() => {
+  const ns = selectedNamespace.value;
+  if (ns && ns !== "all") {
+    refreshPermissions(ns);
+  }
+});
 
 /**
  * Log in with username and password.
@@ -123,7 +133,10 @@ export async function refreshPermissions(namespace: string): Promise<void> {
     );
     rbacSignal.value = res.data.rbac;
   } catch {
-    // Silently fail — existing permissions stay, backend still enforces
+    // Clear stale permissions from previous namespace — prevents showing
+    // actions that were valid for namespace A but not namespace B.
+    // canPerform defaults to true when null, so actions show optimistically.
+    rbacSignal.value = null;
   }
 }
 

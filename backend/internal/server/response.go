@@ -4,11 +4,20 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 )
+
+// dnsLabelRegex matches valid RFC 1123 DNS labels (used for namespace validation).
+var dnsLabelRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$`)
+
+// isValidDNSLabel checks whether s is a valid RFC 1123 DNS label.
+func isValidDNSLabel(s string) bool {
+	return dnsLabelRegex.MatchString(s)
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
