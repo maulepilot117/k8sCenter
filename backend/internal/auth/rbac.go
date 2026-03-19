@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,13 +69,14 @@ func NewRBACChecker(clientFactory interface {
 // SelfSubjectAccessReview (1 call per resource per verb per namespace).
 // Results are cached for 60 seconds per user.
 func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []string) (*RBACSummary, error) {
+	cacheKey := rbacCacheKey(user.KubernetesUsername, user.KubernetesGroups)
 	rc.mu.Lock()
-	if entry, ok := rc.cache[user.Username]; ok {
+	if entry, ok := rc.cache[cacheKey]; ok {
 		if time.Now().Before(entry.expiresAt) {
 			rc.mu.Unlock()
 			return entry.summary, nil
 		}
-		delete(rc.cache, user.Username)
+		delete(rc.cache, cacheKey)
 	}
 	rc.mu.Unlock()
 
@@ -143,7 +146,7 @@ func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []
 			}
 		}
 	}
-	rc.cache[user.Username] = rbacCacheEntry{
+	rc.cache[cacheKey] = rbacCacheEntry{
 		summary:   summary,
 		expiresAt: time.Now().Add(rbacCacheTTL),
 	}
@@ -198,4 +201,62 @@ func appendUnique(slice []string, val string) []string {
 		}
 	}
 	return append(slice, val)
+}
+
+// rbacCacheKey produces a cache key from username + groups to avoid serving
+// stale permissions when groups change (e.g., OIDC token refresh with new groups).
+func rbacCacheKey(username string, groups []string) string {
+	sorted := make([]string, len(groups))
+	copy(sorted, groups)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(username + "\x00" + strings.Join(sorted, "\x00")))
+	return fmt.Sprintf("%x", h[:16])
+}
+
+// GetNamespacePermissions returns permissions for a single namespace plus cluster-scoped.
+// This is more efficient than GetSummary for the common case (frontend requesting permissions
+// for the currently selected namespace). Results are NOT cached separately — the full summary
+// cache may serve this if available.
+func (rc *RBACChecker) GetNamespacePermissions(ctx context.Context, user *User, namespace string) (*RBACSummary, error) {
+	cs, err := rc.clientFactory.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return nil, fmt.Errorf("creating client for RBAC check: %w", err)
+	}
+
+	summary := &RBACSummary{
+		ClusterScoped: make(map[string][]string),
+		Namespaces:    make(map[string]map[string][]string),
+	}
+
+	// Cluster-scoped permissions
+	clusterRules, err := rc.getRulesForNamespace(ctx, cs, "")
+	if err != nil {
+		rc.logger.Warn("failed to get cluster-scoped rules", "error", err, "user", user.Username)
+	} else {
+		for resource, verbs := range clusterRules {
+			if len(verbs) > 0 {
+				summary.ClusterScoped[resource] = verbs
+			}
+		}
+	}
+
+	// Single namespace permissions
+	if namespace != "" && !isSystemNamespace(namespace) {
+		nsRules, err := rc.getRulesForNamespace(ctx, cs, namespace)
+		if err != nil {
+			rc.logger.Debug("failed to get rules for namespace", "namespace", namespace, "error", err)
+		} else {
+			nsPerms := make(map[string][]string)
+			for resource, verbs := range nsRules {
+				if len(verbs) > 0 {
+					nsPerms[resource] = verbs
+				}
+			}
+			if len(nsPerms) > 0 {
+				summary.Namespaces[namespace] = nsPerms
+			}
+		}
+	}
+
+	return summary, nil
 }

@@ -22,10 +22,12 @@ import { Toast, useToast } from "@/components/ui/Toast.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import type { ActionId } from "@/lib/action-handlers.ts";
 import {
-  ACTIONS_BY_KIND,
   executeAction,
   getActionMeta,
+  getVisibleActions,
 } from "@/lib/action-handlers.ts";
+import { useAuth } from "@/lib/auth.ts";
+import { canPerform as canPerformCheck } from "@/lib/permissions.ts";
 
 interface ResourceTableProps {
   /** API kind string matching backend route, e.g. "pods", "deployments" */
@@ -72,9 +74,9 @@ export default function ResourceTable({
   const scaleValue = useSignal(1);
   const actionLoading = useSignal(false);
   const { toast, show: showToast } = useToast();
+  const { rbac } = useAuth();
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
-  const actions = ACTIONS_BY_KIND[kind] ?? [];
 
   // Namespace for API calls
   const ns = useComputed(() =>
@@ -338,8 +340,13 @@ export default function ResourceTable({
     return `${shown} items`;
   });
 
+  // Filter actions by k8s permissions for the current namespace
+  const actions = useComputed(() =>
+    getVisibleActions(kind, ns.value, rbac.value)
+  );
+
   // Kebab menu renderer for each row
-  const renderActions = actions.length > 0
+  const renderActions = actions.value.length > 0
     ? (resource: K8sResource) => {
       const isOpen = actionMenuOpen.value === resource.metadata.uid;
       return (
@@ -364,7 +371,7 @@ export default function ResourceTable({
               class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
               onClick={(e) => e.stopPropagation()}
             >
-              {actions.map((actionId: ActionId) => {
+              {actions.value.map((actionId: ActionId) => {
                 const meta = getActionMeta(actionId, resource);
                 return (
                   <button
@@ -411,7 +418,8 @@ export default function ResourceTable({
           <span class="text-sm text-slate-500 dark:text-slate-400">
             {itemCountText.value}
           </span>
-          {createHref && (
+          {createHref &&
+            canPerformCheck(rbac.value, kind, "create", ns.value) && (
             <a
               href={createHref}
               class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90 transition-colors"
