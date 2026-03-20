@@ -443,65 +443,123 @@ export default function ResourceDetail({
                 </label>
               </div>
               <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    yamlEditContent.value = yamlContent;
-                    yamlEditing.value = true;
-                    yamlApplyError.value = null;
-                    yamlApplySuccess.value = false;
-                  }}
-                  disabled={isSecret}
-                  title={isSecret
-                    ? "Secrets cannot be edited via YAML"
-                    : "Edit YAML"}
-                  class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
-                >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      const exportPath = namespace
-                        ? `/v1/yaml/export/${kind}/${namespace}/${name}`
-                        : `/v1/yaml/export/${kind}/_/${name}`;
-                      const res = await apiGet<string>(exportPath);
-                      const blob = new Blob(
-                        [
-                          typeof res.data === "string"
-                            ? res.data
-                            : JSON.stringify(res.data, null, 2),
-                        ],
-                        { type: "text/yaml" },
-                      );
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `${name}.yaml`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                    } catch (err) {
-                      yamlApplyError.value = err instanceof Error
-                        ? err.message
-                        : "Export failed";
-                    }
-                  }}
-                  disabled={isSecret}
-                  title={isSecret
-                    ? "Secrets cannot be exported (values are masked)"
-                    : "Export clean YAML"}
-                  class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
-                >
-                  Export
-                </button>
+                {!yamlEditing.value
+                  ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          yamlEditContent.value = yamlContent;
+                          yamlEditing.value = true;
+                          yamlApplyError.value = null;
+                          yamlApplySuccess.value = false;
+                        }}
+                        disabled={isSecret}
+                        title={isSecret
+                          ? "Secrets cannot be edited via YAML"
+                          : "Edit YAML"}
+                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const exportPath = namespace
+                              ? `/v1/yaml/export/${kind}/${namespace}/${name}`
+                              : `/v1/yaml/export/${kind}/_/${name}`;
+                            const res = await apiGet<string>(exportPath);
+                            const blob = new Blob(
+                              [
+                                typeof res.data === "string"
+                                  ? res.data
+                                  : JSON.stringify(res.data, null, 2),
+                              ],
+                              { type: "text/yaml" },
+                            );
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `${name}.yaml`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          } catch (err) {
+                            yamlApplyError.value = err instanceof Error
+                              ? err.message
+                              : "Export failed";
+                          }
+                        }}
+                        disabled={isSecret}
+                        title={isSecret
+                          ? "Secrets cannot be exported (values are masked)"
+                          : "Export clean YAML"}
+                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        Export
+                      </button>
+                    </>
+                  )
+                  : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (yamlApplying.value) return;
+                          yamlApplying.value = true;
+                          yamlApplyError.value = null;
+                          yamlApplySuccess.value = false;
+                          try {
+                            await apiPostRaw(
+                              "/v1/yaml/apply",
+                              yamlEditContent.value,
+                            );
+                            yamlApplySuccess.value = true;
+                            yamlEditing.value = false;
+                            await fetchResource();
+                          } catch (err) {
+                            yamlApplyError.value = err instanceof Error
+                              ? err.message
+                              : "Apply failed";
+                          } finally {
+                            yamlApplying.value = false;
+                          }
+                        }}
+                        disabled={yamlApplying.value ||
+                          yamlEditContent.value === yamlContent}
+                        class="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {yamlApplying.value ? "Applying..." : "Apply"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          yamlEditing.value = false;
+                          yamlEditContent.value = "";
+                          yamlApplyError.value = null;
+                        }}
+                        disabled={yamlApplying.value}
+                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        Discard
+                      </button>
+                    </>
+                  )}
               </div>
             </div>
 
-            {/* YAML: plain <pre> for reading */}
-            <pre class="overflow-auto rounded-md border border-slate-700 bg-slate-900 p-4 text-sm text-slate-100 font-mono leading-relaxed max-h-[calc(100vh-300px)]">
-              {yamlContent}
-            </pre>
+            {/* CodeMirror YAML editor — native DOM, works inline */}
+            <div class="rounded-md border border-slate-700 overflow-hidden">
+              <CodeMirrorEditor
+                value={yamlEditing.value ? yamlEditContent.value : yamlContent}
+                onChange={yamlEditing.value
+                  ? (v) => {
+                    yamlEditContent.value = v;
+                  }
+                  : undefined}
+                readOnly={!yamlEditing.value}
+              />
+            </div>
           </div>
         );
       },
@@ -692,82 +750,6 @@ export default function ResourceDetail({
           onTabChange={handleTabChange}
         />
       </div>
-
-      {/* Full-screen YAML editor modal — rendered outside scrollable layout */}
-      {yamlEditing.value && (
-        <div class="fixed inset-0 z-50 flex flex-col bg-slate-900">
-          {/* Modal header */}
-          <div class="flex items-center justify-between border-b border-slate-700 px-4 py-3">
-            <div class="flex items-center gap-3">
-              <h2 class="text-sm font-semibold text-white">
-                Editing: {name}
-              </h2>
-              {yamlApplyError.value && (
-                <span class="text-xs text-red-400">
-                  {yamlApplyError.value}
-                </span>
-              )}
-              {yamlApplySuccess.value && (
-                <span class="text-xs text-green-400">
-                  Applied successfully
-                </span>
-              )}
-            </div>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={async () => {
-                  if (yamlApplying.value) return;
-                  yamlApplying.value = true;
-                  yamlApplyError.value = null;
-                  yamlApplySuccess.value = false;
-                  try {
-                    await apiPostRaw(
-                      "/v1/yaml/apply",
-                      yamlEditContent.value,
-                    );
-                    yamlApplySuccess.value = true;
-                    yamlEditing.value = false;
-                    await fetchResource();
-                  } catch (err) {
-                    yamlApplyError.value = err instanceof Error
-                      ? err.message
-                      : "Apply failed";
-                  } finally {
-                    yamlApplying.value = false;
-                  }
-                }}
-                disabled={yamlApplying.value ||
-                  yamlEditContent.value === yamlContent}
-                class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {yamlApplying.value ? "Applying..." : "Apply"}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  yamlEditing.value = false;
-                  yamlEditContent.value = "";
-                  yamlApplyError.value = null;
-                }}
-                disabled={yamlApplying.value}
-                class="rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-          {/* CodeMirror 6 editor — native DOM rendering, no scroll issues */}
-          <div class="flex-1 min-h-0">
-            <CodeMirrorEditor
-              value={yamlEditContent.value}
-              onChange={(v) => {
-                yamlEditContent.value = v;
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Confirm dialog */}
       {confirmAction.value && resource.value && (() => {
