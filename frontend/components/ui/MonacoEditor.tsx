@@ -43,6 +43,8 @@ export function MonacoEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditorInstance>(null);
   const monacoRef = useRef<MonacoModule>(null);
+  const scrollParentRef = useRef<Element | null>(null);
+  const scrollHandlerRef = useRef<(() => void) | null>(null);
   const loading = useSignal(true);
   const failed = useSignal(false);
 
@@ -77,6 +79,7 @@ export function MonacoEditor({
           theme: "vs-dark",
           minimap: { enabled: false },
           automaticLayout: true,
+          fixedOverflowWidgets: true,
           readOnly,
           scrollBeyondLastLine: false,
           fontSize: 13,
@@ -88,9 +91,24 @@ export function MonacoEditor({
           scrollbar: {
             verticalScrollbarSize: 10,
             horizontalScrollbarSize: 10,
+            alwaysConsumeMouseWheel: true,
           },
           padding: { top: 8 },
         });
+
+        // Force layout recalc when nearest scrollable ancestor scrolls.
+        // Monaco's virtual viewport rendering can desync when a parent scrolls.
+        const scrollParent = containerRef.current!.closest(
+          ".overflow-y-auto, .overflow-auto",
+        );
+        if (scrollParent) {
+          const onParentScroll = () => editor.layout();
+          scrollParent.addEventListener("scroll", onParentScroll, {
+            passive: true,
+          });
+          scrollParentRef.current = scrollParent;
+          scrollHandlerRef.current = onParentScroll;
+        }
 
         if (disposed) {
           editor.dispose();
@@ -120,6 +138,12 @@ export function MonacoEditor({
 
     return () => {
       disposed = true;
+      if (scrollParentRef.current) {
+        scrollParentRef.current.removeEventListener(
+          "scroll",
+          scrollHandlerRef.current!,
+        );
+      }
       const editor = editorRef.current;
       if (editor) {
         editor.getModel()?.dispose();
