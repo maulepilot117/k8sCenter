@@ -28,7 +28,6 @@ import type { K8sEvent, K8sResource } from "@/lib/k8s-types.ts";
 import { getOverviewComponent } from "@/components/k8s/detail/index.tsx";
 import { MetadataSection } from "@/components/k8s/detail/MetadataSection.tsx";
 import { stringify } from "yaml";
-import YamlEditor from "@/islands/YamlEditor.tsx";
 import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
 import PodExec from "@/islands/PodExec.tsx";
@@ -757,17 +756,17 @@ export default function ResourceDetail({
               </button>
             </div>
           </div>
-          {/* Monaco fills the rest of the viewport */}
-          <div class="flex-1">
-            <YamlEditor
-              value={yamlEditContent.value}
-              onChange={(v) => {
-                yamlEditContent.value = v;
-              }}
-              readOnly={false}
-              height="100%"
-            />
-          </div>
+          {/* Textarea editor — Monaco's virtual viewport is broken with esm.sh CDN */}
+          <textarea
+            value={yamlEditContent.value}
+            onInput={(e) => {
+              yamlEditContent.value = (e.target as HTMLTextAreaElement).value;
+            }}
+            class="flex-1 w-full bg-slate-900 text-slate-100 font-mono text-sm p-4 resize-none focus:outline-none border-none"
+            spellcheck={false}
+            autocomplete="off"
+            autocapitalize="off"
+          />
         </div>
       )}
 
