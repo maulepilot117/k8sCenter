@@ -12,8 +12,6 @@ export interface MonacoEditorProps {
   readOnly?: boolean;
   /** Editor height (CSS value) */
   height?: string;
-  /** Fill remaining space in scrollable parent — prevents dual-scroll issues */
-  fillContainer?: boolean;
   /** Validation markers to display */
   markers?: Array<{
     line: number;
@@ -40,15 +38,11 @@ export function MonacoEditor({
   onChange,
   readOnly = false,
   height = "500px",
-  fillContainer = false,
   markers,
 }: MonacoEditorProps) {
-  const computedHeight = useSignal(height);
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditorInstance>(null);
   const monacoRef = useRef<MonacoModule>(null);
-  const scrollParentRef = useRef<Element | null>(null);
-  const scrollHandlerRef = useRef<(() => void) | null>(null);
   const loading = useSignal(true);
   const failed = useSignal(false);
 
@@ -59,29 +53,23 @@ export function MonacoEditor({
   // Guard to suppress onChange during programmatic setValue calls
   const isSettingExternally = useRef(false);
 
-  // Compute height to exactly fill the scrollable parent (prevents dual-scroll)
+  // Lock the scrollable parent when Monaco is active to prevent dual-scroll.
+  // Monaco's virtual viewport rendering breaks when a parent element scrolls.
   useEffect(() => {
-    if (!IS_BROWSER || !fillContainer || !containerRef.current) return;
-    const compute = () => {
-      const el = containerRef.current;
-      if (!el) return;
-      const scrollParent = el.closest(".overflow-y-auto, .overflow-auto") as
-        | HTMLElement
-        | null;
-      if (!scrollParent) return;
-      const rect = el.getBoundingClientRect();
-      const parentRect = scrollParent.getBoundingClientRect();
-      // Available space = bottom of scroll parent - top of our container - parent's bottom padding
-      const parentPadBottom = parseInt(
-        getComputedStyle(scrollParent).paddingBottom,
-      ) || 0;
-      const available = parentRect.bottom - rect.top - parentPadBottom;
-      computedHeight.value = `${Math.max(300, Math.floor(available))}px`;
+    if (!IS_BROWSER || !containerRef.current) return;
+    const scrollParent = containerRef.current.closest(
+      ".overflow-y-auto, .overflow-auto",
+    ) as HTMLElement | null;
+    if (!scrollParent) return;
+
+    // Scroll to top and lock
+    scrollParent.scrollTop = 0;
+    scrollParent.style.overflow = "hidden";
+
+    return () => {
+      scrollParent.style.overflow = "";
     };
-    compute();
-    globalThis.addEventListener("resize", compute);
-    return () => globalThis.removeEventListener("resize", compute);
-  }, [fillContainer]);
+  }, []);
 
   // Initialize Monaco
   useEffect(() => {
@@ -124,20 +112,6 @@ export function MonacoEditor({
           padding: { top: 8 },
         });
 
-        // Force layout recalc when nearest scrollable ancestor scrolls.
-        // Monaco's virtual viewport rendering can desync when a parent scrolls.
-        const scrollParent = containerRef.current!.closest(
-          ".overflow-y-auto, .overflow-auto",
-        );
-        if (scrollParent) {
-          const onParentScroll = () => editor.layout();
-          scrollParent.addEventListener("scroll", onParentScroll, {
-            passive: true,
-          });
-          scrollParentRef.current = scrollParent;
-          scrollHandlerRef.current = onParentScroll;
-        }
-
         if (disposed) {
           editor.dispose();
           return;
@@ -166,12 +140,6 @@ export function MonacoEditor({
 
     return () => {
       disposed = true;
-      if (scrollParentRef.current) {
-        scrollParentRef.current.removeEventListener(
-          "scroll",
-          scrollHandlerRef.current!,
-        );
-      }
       const editor = editorRef.current;
       if (editor) {
         editor.getModel()?.dispose();
@@ -239,7 +207,7 @@ export function MonacoEditor({
   if (!IS_BROWSER) {
     return (
       <div
-        style={{ height: fillContainer ? computedHeight.value : height }}
+        style={{ height }}
         class="bg-slate-900 rounded-md border border-slate-700"
       />
     );
@@ -248,7 +216,7 @@ export function MonacoEditor({
   if (failed.value) {
     return (
       <div
-        style={{ height: fillContainer ? computedHeight.value : height }}
+        style={{ height }}
         class="relative"
       >
         <textarea
@@ -265,7 +233,7 @@ export function MonacoEditor({
   return (
     <div
       class="relative rounded-md border border-slate-700"
-      style={{ height: fillContainer ? computedHeight.value : height }}
+      style={{ height }}
     >
       {loading.value && (
         <div class="absolute inset-0 z-10 flex items-center justify-center bg-slate-900 text-slate-400">
