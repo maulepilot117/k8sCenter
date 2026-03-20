@@ -12,6 +12,8 @@ export interface MonacoEditorProps {
   readOnly?: boolean;
   /** Editor height (CSS value) */
   height?: string;
+  /** Fill remaining space in scrollable parent — prevents dual-scroll issues */
+  fillContainer?: boolean;
   /** Validation markers to display */
   markers?: Array<{
     line: number;
@@ -38,8 +40,10 @@ export function MonacoEditor({
   onChange,
   readOnly = false,
   height = "500px",
+  fillContainer = false,
   markers,
 }: MonacoEditorProps) {
+  const computedHeight = useSignal(height);
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MonacoEditorInstance>(null);
   const monacoRef = useRef<MonacoModule>(null);
@@ -54,6 +58,30 @@ export function MonacoEditor({
 
   // Guard to suppress onChange during programmatic setValue calls
   const isSettingExternally = useRef(false);
+
+  // Compute height to exactly fill the scrollable parent (prevents dual-scroll)
+  useEffect(() => {
+    if (!IS_BROWSER || !fillContainer || !containerRef.current) return;
+    const compute = () => {
+      const el = containerRef.current;
+      if (!el) return;
+      const scrollParent = el.closest(".overflow-y-auto, .overflow-auto") as
+        | HTMLElement
+        | null;
+      if (!scrollParent) return;
+      const rect = el.getBoundingClientRect();
+      const parentRect = scrollParent.getBoundingClientRect();
+      // Available space = bottom of scroll parent - top of our container - parent's bottom padding
+      const parentPadBottom = parseInt(
+        getComputedStyle(scrollParent).paddingBottom,
+      ) || 0;
+      const available = parentRect.bottom - rect.top - parentPadBottom;
+      computedHeight.value = `${Math.max(300, Math.floor(available))}px`;
+    };
+    compute();
+    globalThis.addEventListener("resize", compute);
+    return () => globalThis.removeEventListener("resize", compute);
+  }, [fillContainer]);
 
   // Initialize Monaco
   useEffect(() => {
@@ -211,7 +239,7 @@ export function MonacoEditor({
   if (!IS_BROWSER) {
     return (
       <div
-        style={{ height }}
+        style={{ height: fillContainer ? computedHeight.value : height }}
         class="bg-slate-900 rounded-md border border-slate-700"
       />
     );
@@ -219,7 +247,10 @@ export function MonacoEditor({
 
   if (failed.value) {
     return (
-      <div style={{ height }} class="relative">
+      <div
+        style={{ height: fillContainer ? computedHeight.value : height }}
+        class="relative"
+      >
         <textarea
           value={value}
           onInput={(e) => onChange?.((e.target as HTMLTextAreaElement).value)}
@@ -234,7 +265,7 @@ export function MonacoEditor({
   return (
     <div
       class="relative rounded-md border border-slate-700"
-      style={{ height }}
+      style={{ height: fillContainer ? computedHeight.value : height }}
     >
       {loading.value && (
         <div class="absolute inset-0 z-10 flex items-center justify-center bg-slate-900 text-slate-400">

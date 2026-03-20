@@ -557,7 +557,8 @@ export default function ResourceDetail({
                 yamlEditContent.value = v;
               }}
               readOnly={!yamlEditing.value}
-              height="calc(100vh - 300px)"
+              height="auto"
+              fillContainer
             />
           </div>
         );
