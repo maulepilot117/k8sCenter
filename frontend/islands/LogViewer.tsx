@@ -69,7 +69,8 @@ export default function LogViewer(
   useEffect(() => {
     if (!IS_BROWSER) return;
     import("ansi_up").then((mod) => {
-      const AnsiUp = mod.default || mod;
+      // deno-lint-ignore no-explicit-any -- ansi_up export varies by bundler
+      const AnsiUp = (mod as any).default ?? mod;
       const instance = new AnsiUp();
       instance.use_classes = true;
       instance.escape_html = true;
@@ -416,7 +417,6 @@ export default function LogViewer(
 
         {mode.value === "snapshot" && (
           <Button
-            type="button"
             variant="ghost"
             size="sm"
             onClick={() => fetchSnapshot(activeTab.value)}
@@ -426,7 +426,6 @@ export default function LogViewer(
         )}
 
         <Button
-          type="button"
           variant="ghost"
           size="sm"
           onClick={() => downloadLogs(activeTab.value)}
@@ -474,7 +473,7 @@ export default function LogViewer(
         </div>
         {search.value && (
           <span class="text-xs text-slate-400">
-            {matchCount.value} matching lines
+            {matchCount} matching lines
           </span>
         )}
       </div>

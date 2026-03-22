@@ -8,6 +8,7 @@ interface ButtonProps extends JSX.HTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
+  disabled?: boolean;
 }
 
 const variantClasses: Record<ButtonVariant, string> = {
