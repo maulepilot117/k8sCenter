@@ -642,11 +642,15 @@ export default function ResourceDetail({
         const containers: string[] =
           // deno-lint-ignore no-explicit-any
           res?.spec?.containers?.map((c: any) => c.name) ?? [];
+        const initContainers: string[] =
+          // deno-lint-ignore no-explicit-any
+          res?.spec?.initContainers?.map((c: any) => c.name) ?? [];
         return (
           <LogViewer
             namespace={namespace}
             pod={name}
             containers={containers.length > 0 ? containers : ["default"]}
+            initContainers={initContainers}
           />
         );
       },

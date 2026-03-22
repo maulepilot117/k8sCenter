@@ -43,6 +43,7 @@
     "npm:@prefresh/vite@^2.4.8": "2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2",
     "npm:@tailwindcss/postcss@^4.1.10": "4.2.1",
     "npm:@tailwindcss/vite@^4.1.10": "4.2.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2",
+    "npm:ansi_up@^6.0.2": "6.0.6",
     "npm:esbuild-wasm@~0.25.11": "0.25.12",
     "npm:esbuild@0.25.7": "0.25.7",
     "npm:esbuild@~0.25.5": "0.25.12",
@@ -1255,6 +1256,9 @@
     "@types/estree@1.0.8": {
       "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="
     },
+    "ansi_up@6.0.6": {
+      "integrity": "sha512-yIa1x3Ecf8jWP4UWEunNjqNX6gzE4vg2gGz+xqRGY+TBSucnYp6RRdPV4brmtg6bQ1ljD48mZ5iGSEj7QEpRKA=="
+    },
     "baseline-browser-mapping@2.10.7": {
       "integrity": "sha512-1ghYO3HnxGec0TCGBXiDLVns4eCSx4zJpxnHrlqFQajmhfKMQBzUGDdkMK7fUW7PTHTeLf+j87aTuKuuwWzMGw==",
       "bin": true
@@ -1678,6 +1682,7 @@
       "npm:@codemirror/view@^6.40.0",
       "npm:@preact/signals@^2.7.1",
       "npm:@tailwindcss/vite@^4.1.10",
+      "npm:ansi_up@^6.0.2",
       "npm:preact@^10.28.3",
       "npm:tailwindcss@^4.1.10",
       "npm:yaml@^2.7.1"

@@ -33,7 +33,8 @@
     "@codemirror/language": "npm:@codemirror/language@^6.12.2",
     "@codemirror/lang-yaml": "npm:@codemirror/lang-yaml@^6.1.2",
     "@codemirror/search": "npm:@codemirror/search@^6.5.11",
-    "@codemirror/theme-one-dark": "npm:@codemirror/theme-one-dark@^6.1.3"
+    "@codemirror/theme-one-dark": "npm:@codemirror/theme-one-dark@^6.1.3",
+    "ansi_up": "npm:ansi_up@^6.0.2"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.asynciterable", "dom.iterable", "deno.ns"],
