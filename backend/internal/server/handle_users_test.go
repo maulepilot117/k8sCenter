@@ -35,7 +35,7 @@ func TestHandleListUsers(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a second user
-	_, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"})
+	_, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestHandleDeleteUser(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a user to delete
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "to-delete", "password1234", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "to-delete", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestHandleDeleteUser_LastAdmin(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a second admin so the first admin can make the request
-	admin2, err := srv.LocalAuth.CreateUser(context.Background(), "admin2", "password1234", []string{"admin"})
+	admin2, err := srv.LocalAuth.CreateUser(context.Background(), "admin2", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestHandleDeleteUser_LastAdmin(t *testing.T) {
 
 	// Now create a non-admin and try to delete the last admin (self-delete guard fires first)
 	// Instead, create another admin, login as them, and try to delete the original last admin
-	admin3, err := srv.LocalAuth.CreateUser(context.Background(), "admin3", "password1234", []string{"admin"})
+	admin3, err := srv.LocalAuth.CreateUser(context.Background(), "admin3", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestHandleUpdateUserPassword(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a user
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "oldpassword1", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "oldpassword1", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestHandleUpdateUserPassword_TooShort(t *testing.T) {
 	srv := testServer(t)
 	token, _ := loginAdmin(t, srv)
 
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "password1234", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -238,13 +238,13 @@ func TestHandleUsers_NonAdminAccess(t *testing.T) {
 	srv := testServer(t)
 
 	// Create admin first (needed for setup)
-	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"})
+	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser admin: %v", err)
 	}
 
 	// Create non-admin user
-	viewer, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"})
+	viewer, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser viewer: %v", err)
 	}
@@ -283,5 +283,177 @@ func TestHandleUsers_NonAdminAccess(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Errorf("%s %s: expected 403, got %d: %s", ep.method, ep.path, w.Code, w.Body.String())
 		}
+	}
+}
+
+func TestHandleCreateUser(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"newuser","password":"password1234","roles":["viewer"]}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			ID          string   `json:"id"`
+			Username    string   `json:"username"`
+			K8sUsername string   `json:"k8sUsername"`
+			K8sGroups   []string `json:"k8sGroups"`
+			Roles       []string `json:"roles"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Data.ID == "" {
+		t.Error("expected non-empty id in response")
+	}
+	if resp.Data.Username != "newuser" {
+		t.Errorf("expected username=newuser, got %s", resp.Data.Username)
+	}
+	if resp.Data.K8sUsername != "newuser" {
+		t.Errorf("expected k8sUsername=newuser (default), got %s", resp.Data.K8sUsername)
+	}
+	if len(resp.Data.K8sGroups) == 0 {
+		t.Error("expected k8sGroups in response")
+	}
+}
+
+func TestHandleCreateUser_WithK8sIdentity(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"oidcuser","password":"password1234","k8sUsername":"oidc:jane@example.com","k8sGroups":["devs","system:authenticated"],"roles":["admin"]}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			K8sUsername string   `json:"k8sUsername"`
+			K8sGroups   []string `json:"k8sGroups"`
+		} `json:"data"`
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Data.K8sUsername != "oidc:jane@example.com" {
+		t.Errorf("expected custom k8sUsername, got %s", resp.Data.K8sUsername)
+	}
+	if len(resp.Data.K8sGroups) != 2 {
+		t.Errorf("expected 2 k8sGroups, got %d", len(resp.Data.K8sGroups))
+	}
+}
+
+func TestHandleCreateUser_DuplicateUsername(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	// admin already exists from loginAdmin
+	body := `{"username":"admin","password":"password1234"}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_SystemK8sUsername(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"testuser","password":"password1234","k8sUsername":"system:admin"}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for system: k8sUsername, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_SystemMastersGroup(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"testuser","password":"password1234","k8sGroups":["system:masters"]}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for system:masters group, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_SystemPrefixGroup(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"testuser","password":"password1234","k8sGroups":["system:nodes"]}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for system: group prefix, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_InvalidRole(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"testuser","password":"password1234","roles":["superuser"]}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid role, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_TooManyGroups(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	// Build JSON with 21 groups
+	groups := make([]string, 21)
+	for i := range groups {
+		groups[i] = "group" + strings.Repeat("x", i)
+	}
+	groupsJSON, _ := json.Marshal(groups)
+	body := `{"username":"testuser","password":"password1234","k8sGroups":` + string(groupsJSON) + `}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for too many groups, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCreateUser_PasswordTooShort(t *testing.T) {
+	srv := testServer(t)
+	token, _ := loginAdmin(t, srv)
+
+	body := `{"username":"testuser","password":"short"}`
+	req := authedRequest(http.MethodPost, "/api/v1/users", token, body)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short password, got %d: %s", w.Code, w.Body.String())
 	}
 }

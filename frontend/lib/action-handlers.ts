@@ -17,6 +17,8 @@ export const ACTIONS_BY_KIND: Record<string, ActionId[]> = {
   pods: ["delete"],
   jobs: ["suspend", "delete"],
   cronjobs: ["suspend", "trigger", "delete"],
+  rolebindings: ["delete"],
+  clusterrolebindings: ["delete"],
 };
 
 /** Maps action IDs to the k8s verb needed to perform them. */

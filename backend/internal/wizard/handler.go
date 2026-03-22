@@ -113,6 +113,41 @@ func (h *Handler) HandleStorageClassPreview(w http.ResponseWriter, r *http.Reque
 	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
 }
 
+// HandleRoleBindingPreview handles POST /api/v1/wizards/rolebinding/preview.
+// It validates the input, constructs a RoleBinding or ClusterRoleBinding, and returns YAML.
+func (h *Handler) HandleRoleBindingPreview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	var input RoleBindingInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	if errs := input.Validate(); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	var obj any
+	if input.ClusterScope {
+		obj = input.ToClusterRoleBinding()
+	} else {
+		obj = input.ToRoleBinding()
+	}
+
+	yamlBytes, err := sigsyaml.Marshal(obj)
+	if err != nil {
+		h.Logger.Error("failed to marshal role binding to YAML", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+		return
+	}
+
+	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
+}
+
 func writeValidationErrors(w http.ResponseWriter, errs []FieldError) {
 	// Encode field errors as JSON in the Detail field to follow the
 	// project convention of using Error only (never both Data and Error).

@@ -159,11 +159,28 @@ func (p *LocalProvider) CreateFirstUser(ctx context.Context, username, password 
 	return record.toUser(), nil
 }
 
+// CreateUserOpts holds optional parameters for CreateUser.
+type CreateUserOpts struct {
+	K8sUsername string
+	K8sGroups   []string
+}
+
 // CreateUser adds a new local user with Argon2id-hashed password.
-func (p *LocalProvider) CreateUser(ctx context.Context, username, password string, roles []string) (*User, error) {
+// If opts is provided, k8sUsername and k8sGroups override defaults.
+func (p *LocalProvider) CreateUser(ctx context.Context, username, password string, roles []string, opts *CreateUserOpts) (*User, error) {
 	record, err := p.hashAndBuild(ctx, username, password, roles)
 	if err != nil {
 		return nil, err
+	}
+
+	// Apply optional k8s identity overrides
+	if opts != nil {
+		if opts.K8sUsername != "" {
+			record.K8sUsername = opts.K8sUsername
+		}
+		if len(opts.K8sGroups) > 0 {
+			record.K8sGroups = opts.K8sGroups
+		}
 	}
 
 	if err := p.store.Create(ctx, *record); err != nil {
@@ -173,7 +190,8 @@ func (p *LocalProvider) CreateUser(ctx context.Context, username, password strin
 		return nil, fmt.Errorf("creating user: %w", err)
 	}
 
-	p.logger.Info("local user created", "username", username, "roles", roles)
+	p.logger.Info("local user created", "username", username, "roles", roles,
+		"k8sUsername", record.K8sUsername, "k8sGroups", record.K8sGroups)
 	return record.toUser(), nil
 }
 

@@ -113,6 +113,7 @@ func (s *Server) registerRoutes() {
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
 				ur.Get("/", s.handleListUsers)
+				ur.With(middleware.RateLimit(s.RateLimiter)).Post("/", s.handleCreateUser)
 				ur.Delete("/{id}", s.handleDeleteUser)
 				ur.Put("/{id}/password", s.handleUpdateUserPassword)
 			})
@@ -192,6 +193,7 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/deployment/preview", h.HandleDeploymentPreview)
 		wr.Post("/service/preview", h.HandleServicePreview)
 		wr.Post("/storageclass/preview", h.HandleStorageClassPreview)
+		wr.Post("/rolebinding/preview", h.HandleRoleBindingPreview)
 	})
 }
 
@@ -459,7 +461,7 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Put("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleUpdateCiliumPolicy)
 	ar.Delete("/resources/ciliumnetworkpolicies/{namespace}/{name}", h.HandleDeleteCiliumPolicy)
 
-	// RBAC Viewer (read-only)
+	// RBAC — Roles and ClusterRoles (read-only), Bindings (full CRUD)
 	ar.Get("/resources/roles", h.HandleListRoles)
 	ar.Get("/resources/roles/{namespace}", h.HandleListRoles)
 	ar.Get("/resources/roles/{namespace}/{name}", h.HandleGetRole)
@@ -468,6 +470,12 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/rolebindings", h.HandleListRoleBindings)
 	ar.Get("/resources/rolebindings/{namespace}", h.HandleListRoleBindings)
 	ar.Get("/resources/rolebindings/{namespace}/{name}", h.HandleGetRoleBinding)
+	ar.Post("/resources/rolebindings/{namespace}", h.HandleCreateRoleBinding)
+	ar.Put("/resources/rolebindings/{namespace}/{name}", h.HandleUpdateRoleBinding)
+	ar.Delete("/resources/rolebindings/{namespace}/{name}", h.HandleDeleteRoleBinding)
 	ar.Get("/resources/clusterrolebindings", h.HandleListClusterRoleBindings)
 	ar.Get("/resources/clusterrolebindings/{name}", h.HandleGetClusterRoleBinding)
+	ar.Post("/resources/clusterrolebindings", h.HandleCreateClusterRoleBinding)
+	ar.Put("/resources/clusterrolebindings/{name}", h.HandleUpdateClusterRoleBinding)
+	ar.Delete("/resources/clusterrolebindings/{name}", h.HandleDeleteClusterRoleBinding)
 }

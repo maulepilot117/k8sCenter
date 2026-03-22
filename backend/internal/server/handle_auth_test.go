@@ -63,7 +63,7 @@ func loginAdmin(t *testing.T, srv *Server) (token string, cookies []*http.Cookie
 	t.Helper()
 
 	// Create admin
-	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"})
+	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestHandleSetupInit_AlreadyDone(t *testing.T) {
 	srv := testServer(t)
 
 	// Create a user first
-	srv.LocalAuth.CreateUser(context.Background(), "existing", "password1234", []string{"admin"})
+	srv.LocalAuth.CreateUser(context.Background(), "existing", "password1234", []string{"admin"}, nil)
 
 	body := `{"username":"admin","password":"password1234"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/init", strings.NewReader(body))
@@ -192,7 +192,7 @@ func TestHandleSetupInit_Validation(t *testing.T) {
 
 func TestHandleLogin(t *testing.T) {
 	srv := testServer(t)
-	srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"})
+	srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"}, nil)
 
 	body := `{"username":"admin","password":"password1234"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
@@ -242,7 +242,7 @@ func TestHandleLogin(t *testing.T) {
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	srv := testServer(t)
-	srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"})
+	srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"}, nil)
 
 	body := `{"username":"admin","password":"wrongpassword"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))

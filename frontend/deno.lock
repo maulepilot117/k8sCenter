@@ -1686,6 +1686,9 @@
       "bin": true
     }
   },
+  "remote": {
+    "https://esm.sh/monaco-editor@0.52.2/esm/vs/editor/editor.api.js": "854b86e2b552dee71aaf2e641cadefabafa52723580861861fabad24f5580c0c"
+  },
   "workspace": {
     "dependencies": [
       "jsr:@fresh/core@^2.2.0",

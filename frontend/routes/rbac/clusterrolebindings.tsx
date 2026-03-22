@@ -7,6 +7,7 @@ export default define.page(function ClusterRoleBindingsPage() {
       kind="clusterrolebindings"
       title="ClusterRoleBindings"
       clusterScoped
+      createHref="/rbac/clusterrolebindings/new"
     />
   );
 });
