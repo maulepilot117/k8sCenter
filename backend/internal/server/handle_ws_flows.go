@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/networking"
 )
@@ -19,11 +18,7 @@ type flowSubRequest struct {
 }
 
 const (
-	flowWriteWait      = 10 * time.Second
-	flowPongWait       = 60 * time.Second
-	flowPingPeriod     = (flowPongWait * 9) / 10
-	flowMaxReadSize    = 4096 // only expect small auth/filter messages
-	maxFlowConnections = 100  // concurrent flow WS connections
+	maxFlowConnections = 100 // concurrent flow WS connections
 )
 
 // flowWSCount tracks active flow WebSocket connections for DoS protection.
@@ -46,48 +41,16 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.validateWSOrigin(w, r) {
-		return
-	}
-
-	up := upgrader
-	up.CheckOrigin = func(r *http.Request) bool { return true }
-	conn, err := up.Upgrade(w, r, nil)
-	if err != nil {
-		s.Logger.Error("flow ws upgrade failed", "error", err)
+	conn, user := s.wsAuthAndUpgrade(w, r)
+	if conn == nil {
 		return
 	}
 	defer conn.Close()
 
-	// Prevent oversized messages before auth (DoS protection)
-	conn.SetReadLimit(flowMaxReadSize)
-
 	flowWSCount.Add(1)
 	defer flowWSCount.Add(-1)
 
-	// Step 1: Read auth message (JWT token)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	var authMsg struct {
-		Type  string `json:"type"`
-		Token string `json:"token"`
-	}
-	if err := conn.ReadJSON(&authMsg); err != nil {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "auth required"})
-		return
-	}
-	if authMsg.Type != "auth" || authMsg.Token == "" {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "invalid auth message"})
-		return
-	}
-
-	claims, err := s.TokenManager.ValidateAccessToken(authMsg.Token)
-	if err != nil {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "invalid token"})
-		return
-	}
-	user := auth.UserFromClaims(claims)
-
-	// Step 2: Read filter message
+	// Read filter message
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var filter flowSubRequest
 	if err := conn.ReadJSON(&filter); err != nil {
@@ -103,7 +66,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 3: RBAC check — flow visibility = pod observability (SelfSubjectAccessReview, cached 60s)
+	// RBAC check — flow visibility = pod observability (SelfSubjectAccessReview, cached 60s)
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
 		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
 		"list", "pods", filter.Namespace,
@@ -134,26 +97,8 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	// Ping/pong keepalive
-	conn.SetReadDeadline(time.Now().Add(flowPongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(flowPongWait))
-		return nil
-	})
-
-	// Read pump: detect close/errors (runs in background)
-	go func() {
-		defer cancel()
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	// Ping ticker
-	ticker := time.NewTicker(flowPingPeriod)
+	// Ping/pong keepalive + read pump
+	ticker := wsStartKeepalive(conn, cancel)
 	defer ticker.Stop()
 
 	// Stream flows from gRPC → WebSocket
@@ -175,7 +120,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case flow := <-flowCh:
-			conn.SetWriteDeadline(time.Now().Add(flowWriteWait))
+			conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			msg := map[string]any{
 				"type": "flow",
 				"data": flow,
@@ -186,7 +131,7 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-ticker.C:
-			conn.SetWriteDeadline(time.Now().Add(flowWriteWait))
+			conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

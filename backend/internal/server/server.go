@@ -116,13 +116,14 @@ func New(deps Deps) *Server {
 			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
 		}
 		s.ResourceHandler = &resources.Handler{
-			K8sClient:     deps.K8sClient,
-			Informers:     deps.Informers,
-			AccessChecker: ac,
-			AuditLogger:   deps.AuditLogger,
-			Logger:        deps.Logger,
-			TaskManager:   resources.NewTaskManager(),
-			ClusterID:     deps.Config.ClusterID,
+			K8sClient:       deps.K8sClient,
+			Informers:       deps.Informers,
+			AccessChecker:   ac,
+			AuditLogger:     deps.AuditLogger,
+			Logger:          deps.Logger,
+			TaskManager:     resources.NewTaskManager(),
+			ClusterID:       deps.Config.ClusterID,
+			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{
 			K8sClient:   deps.K8sClient,

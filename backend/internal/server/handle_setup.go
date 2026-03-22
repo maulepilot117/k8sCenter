@@ -20,6 +20,24 @@ const (
 
 var validUsername = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.@-]*$`)
 
+// handleSetupStatus returns whether the instance needs initial setup.
+// Public endpoint — only returns a boolean, never leaks user count or settings state.
+func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	count, err := s.LocalAuth.Store().Count(r.Context())
+	if err != nil {
+		s.Logger.Error("failed to count users for setup status", "error", err)
+		writeJSON(w, http.StatusInternalServerError, api.Response{
+			Error: &api.APIError{Code: 500, Message: "internal error"},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.Response{
+		Data: map[string]any{
+			"needsSetup": count == 0,
+		},
+	})
+}
+
 // handleSetupInit creates the first admin user. Returns 410 Gone if any user exists.
 func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
@@ -90,7 +108,8 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, api.Response{
 		Data: map[string]any{
-			"user": user,
+			"username": user.Username,
+			"created":  true,
 		},
 	})
 }

@@ -113,15 +113,16 @@ func TestHandleSetupInit(t *testing.T) {
 
 	var resp struct {
 		Data struct {
-			User auth.User `json:"user"`
+			Username string `json:"username"`
+			Created  bool   `json:"created"`
 		} `json:"data"`
 	}
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp.Data.User.Username != "admin" {
-		t.Errorf("expected username admin, got %s", resp.Data.User.Username)
+	if resp.Data.Username != "admin" {
+		t.Errorf("expected username admin, got %s", resp.Data.Username)
 	}
-	if resp.Data.User.Provider != "local" {
-		t.Errorf("expected provider local, got %s", resp.Data.User.Provider)
+	if !resp.Data.Created {
+		t.Errorf("expected created=true")
 	}
 }
 

@@ -20,13 +20,16 @@ import (
 
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
-	Informers     *k8s.InformerManager
-	AccessChecker *AccessChecker
-	AuditLogger   audit.Logger
-	Logger        *slog.Logger
-	TaskManager   *TaskManager
-	ClusterID     string
+	K8sClient       *k8s.ClientFactory
+	Informers       *k8s.InformerManager
+	AccessChecker   *AccessChecker
+	AuditLogger     audit.Logger
+	Logger          *slog.Logger
+	TaskManager     *TaskManager
+	ClusterID       string
+	// OriginValidator checks the Origin header for WebSocket connections.
+	// Set by the server at wiring time. If nil, rejects all WS upgrades.
+	OriginValidator func(w http.ResponseWriter, r *http.Request) bool
 }
 
 // ListParams holds query parameters for list operations.

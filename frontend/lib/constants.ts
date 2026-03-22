@@ -308,6 +308,11 @@ export const NAV_SECTIONS = [
     title: "Settings",
     items: [
       {
+        label: "General",
+        href: "/settings/general",
+        icon: "settings",
+      },
+      {
         label: "Clusters",
         href: "/settings/clusters",
         icon: "nodes",
