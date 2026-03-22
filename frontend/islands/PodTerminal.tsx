@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { getAccessToken } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
@@ -34,6 +34,15 @@ export default function PodTerminal(
   const fullscreen = useSignal(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Ref callback registry: maps session id -> DOM element
+  const terminalRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // Track which sessions have been initialized (idempotency guard)
+  const initializedSessions = useRef<Set<number>>(new Set());
+  // Track pending async opens for cancellation
+  const pendingOpens = useRef<Map<number, { canceled: boolean }>>(new Map());
+  // Track ResizeObservers for cleanup
+  const resizeObservers = useRef<Map<number, ResizeObserver>>(new Map());
+
   // Cleanup all sessions on unmount
   useEffect(() => {
     return () => {
@@ -41,6 +50,18 @@ export default function PodTerminal(
         session.ws?.close();
         session.terminal?.dispose();
       }
+      // Cancel any pending opens
+      for (const token of pendingOpens.current.values()) {
+        token.canceled = true;
+      }
+      // Disconnect all resize observers
+      for (const observer of resizeObservers.current.values()) {
+        observer.disconnect();
+      }
+      terminalRefs.current.clear();
+      initializedSessions.current.clear();
+      pendingOpens.current.clear();
+      resizeObservers.current.clear();
     };
   }, []);
 
@@ -63,6 +84,130 @@ export default function PodTerminal(
     }
   }, [fullscreen.value]);
 
+  // Initialize terminal when ref callback fires for an active, uninitialized session
+  const initTerminalInDom = useCallback((id: number, el: HTMLDivElement) => {
+    if (initializedSessions.current.has(id)) return;
+
+    const session = sessions.value.find((s) => s.id === id);
+    if (!session?.terminal || !session?.fitAddon) return;
+
+    // Only init if the element is visible (active tab)
+    if (el.offsetWidth === 0 || el.offsetHeight === 0) return;
+
+    initializedSessions.current.add(id);
+
+    const { terminal, fitAddon } = session;
+    terminal.open(el);
+    fitAddon.fit();
+
+    // ResizeObserver for auto-fit — declare timer before closure
+    let resizeTimer = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      clearTimeout(resizeTimer);
+      resizeTimer = globalThis.setTimeout(() => fitAddon.fit(), 100);
+    });
+    resizeObserver.observe(el);
+    resizeObservers.current.set(id, resizeObserver);
+
+    // Connect WebSocket
+    const token = getAccessToken();
+    if (!token) return;
+
+    const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl =
+      `${proto}//${globalThis.location.host}/ws/v1/ws/exec/${namespace}/${name}/${session.container}`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = () => {
+      updateSession(id, { ws, connected: true });
+      terminal.focus();
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "shell") {
+            updateSession(id, { shell: msg.name });
+          } else if (msg.type === "error") {
+            updateSession(id, { error: msg.message });
+            terminal.writeln(`\r\n\x1b[31mError: ${msg.message}\x1b[0m`);
+          }
+        } catch {
+          terminal.write(event.data);
+        }
+      } else if (event.data instanceof ArrayBuffer) {
+        terminal.write(new Uint8Array(event.data));
+      }
+    };
+
+    ws.onclose = () => {
+      updateSession(id, { connected: false, ws: null });
+      terminal.writeln("\r\n\x1b[33mSession ended.\x1b[0m");
+    };
+
+    ws.onerror = () => {
+      updateSession(id, {
+        error: "WebSocket connection failed",
+        connected: false,
+      });
+    };
+
+    // Terminal input -> WS (base64-encoded JSON)
+    terminal.onData((data: string) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        const encoded = btoa(data);
+        ws.send(JSON.stringify({ type: "input", data: encoded }));
+      }
+    });
+
+    // Terminal resize -> WS
+    terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "resize", cols, rows }));
+      }
+    });
+
+    updateSession(id, { ws });
+  }, [namespace, name]);
+
+  // Ref callback for terminal container divs
+  const termRefCallback = useCallback(
+    (id: number) => (el: HTMLDivElement | null) => {
+      if (el) {
+        terminalRefs.current.set(id, el);
+        // Try to initialize immediately if session data is ready
+        initTerminalInDom(id, el);
+      } else {
+        terminalRefs.current.delete(id);
+      }
+    },
+    [initTerminalInDom],
+  );
+
+  // When active session changes, try to init any session that was deferred
+  // because it was hidden (0x0) when its ref first mounted
+  useEffect(() => {
+    if (!IS_BROWSER || activeSessionId.value === null) return;
+    const id = activeSessionId.value;
+    if (initializedSessions.current.has(id)) {
+      // Already initialized — just refit
+      const session = sessions.value.find((s) => s.id === id);
+      if (session?.fitAddon) {
+        requestAnimationFrame(() => session.fitAddon.fit());
+      }
+      return;
+    }
+    const el = terminalRefs.current.get(id);
+    if (el) {
+      // Element exists but wasn't initialized (was hidden). Use rAF to
+      // allow the browser to apply display:block first.
+      requestAnimationFrame(() => initTerminalInDom(id, el));
+    }
+  }, [activeSessionId.value, initTerminalInDom]);
+
   const openSession = async (container: string) => {
     if (!IS_BROWSER) return;
 
@@ -71,10 +216,22 @@ export default function PodTerminal(
 
     const id = ++sessionIdCounter;
 
+    // Register cancellation token before async work
+    const cancelToken = { canceled: false };
+    pendingOpens.current.set(id, cancelToken);
+
     // Dynamic import to avoid SSR failures (xterm accesses DOM at import time)
     const { Terminal } = await import("@xterm/xterm");
+    if (cancelToken.canceled) return;
+
     const { FitAddon } = await import("@xterm/addon-fit");
+    if (cancelToken.canceled) return;
+
     const { WebLinksAddon } = await import("@xterm/addon-web-links");
+    if (cancelToken.canceled) return;
+
+    // Imports complete — remove from pending
+    pendingOpens.current.delete(id);
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -97,87 +254,9 @@ export default function PodTerminal(
       error: "",
     };
 
-    // Add session and activate it
+    // Add session and activate it — ref callback will handle DOM init
     sessions.value = [...sessions.value, session];
     activeSessionId.value = id;
-
-    // Wait a frame for the DOM to render the terminal container
-    requestAnimationFrame(() => {
-      const el = document.getElementById(`term-${id}`);
-      if (!el) return;
-      terminal.open(el);
-      fitAddon.fit();
-
-      // ResizeObserver for auto-fit
-      const resizeObserver = new ResizeObserver(() => {
-        clearTimeout(resizeTimer);
-        resizeTimer = globalThis.setTimeout(() => fitAddon.fit(), 100);
-      });
-      let resizeTimer = 0;
-      resizeObserver.observe(el);
-
-      // Connect WebSocket
-      const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl =
-        `${proto}//${globalThis.location.host}/ws/v1/ws/exec/${namespace}/${name}/${container}`;
-      const ws = new WebSocket(wsUrl);
-
-      ws.binaryType = "arraybuffer";
-
-      ws.onopen = () => {
-        updateSession(id, { ws, connected: true });
-        terminal.focus();
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data === "string") {
-          // JSON control message from server
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === "shell") {
-              updateSession(id, { shell: msg.name });
-            } else if (msg.type === "error") {
-              updateSession(id, { error: msg.message });
-              terminal.writeln(`\r\n\x1b[31mError: ${msg.message}\x1b[0m`);
-            }
-          } catch {
-            // Plain text — write to terminal
-            terminal.write(event.data);
-          }
-        } else if (event.data instanceof ArrayBuffer) {
-          terminal.write(new Uint8Array(event.data));
-        }
-      };
-
-      ws.onclose = () => {
-        updateSession(id, { connected: false, ws: null });
-        terminal.writeln("\r\n\x1b[33mSession ended.\x1b[0m");
-      };
-
-      ws.onerror = () => {
-        updateSession(id, {
-          error: "WebSocket connection failed",
-          connected: false,
-        });
-      };
-
-      // Terminal input → WS (base64-encoded JSON)
-      terminal.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          const encoded = btoa(data);
-          ws.send(JSON.stringify({ type: "input", data: encoded }));
-        }
-      });
-
-      // Terminal resize → WS
-      terminal.onResize(({ cols, rows }: { cols: number; rows: number }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "resize", cols, rows }));
-        }
-      });
-
-      updateSession(id, { ws });
-    });
   };
 
   const updateSession = (id: number, update: Partial<Session>) => {
@@ -187,11 +266,30 @@ export default function PodTerminal(
   };
 
   const closeSession = (id: number) => {
+    // Cancel any pending async open for this id
+    const pendingToken = pendingOpens.current.get(id);
+    if (pendingToken) {
+      pendingToken.canceled = true;
+      pendingOpens.current.delete(id);
+    }
+
     const session = sessions.value.find((s) => s.id === id);
     if (session) {
       session.ws?.close();
       session.terminal?.dispose();
     }
+
+    // Disconnect and remove ResizeObserver
+    const observer = resizeObservers.current.get(id);
+    if (observer) {
+      observer.disconnect();
+      resizeObservers.current.delete(id);
+    }
+
+    // Clean up refs
+    terminalRefs.current.delete(id);
+    initializedSessions.current.delete(id);
+
     const remaining = sessions.value.filter((s) => s.id !== id);
     sessions.value = remaining;
     if (activeSessionId.value === id) {
@@ -338,7 +436,7 @@ export default function PodTerminal(
                 }}
               >
                 <div
-                  id={`term-${s.id}`}
+                  ref={termRefCallback(s.id)}
                   class="h-full w-full"
                 />
                 {/* Reconnect overlay */}
