@@ -3,7 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
-import { getAccessToken, setAccessToken } from "@/lib/api.ts";
+import { apiPut, setAccessToken } from "@/lib/api.ts";
 
 const STEPS = [
   { title: "Welcome" },
@@ -121,24 +121,11 @@ export default function SetupWizard() {
     error.value = "";
 
     try {
-      const res = await fetch("/api/v1/settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-          "Authorization": `Bearer ${getAccessToken() ?? ""}`,
-        },
-        body: JSON.stringify({
-          monitoringPrometheusUrl: promUrl.value || null,
-          monitoringGrafanaUrl: grafUrl.value || null,
-          monitoringGrafanaToken: grafToken.value || null,
-        }),
+      await apiPut("/v1/settings", {
+        monitoringPrometheusUrl: promUrl.value || null,
+        monitoringGrafanaUrl: grafUrl.value || null,
+        monitoringGrafanaToken: grafToken.value || null,
       });
-
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error?.message ?? "Failed to save");
-      }
 
       monitoringConfigured.value = true;
       step.value = 3;
@@ -159,27 +146,14 @@ export default function SetupWizard() {
     error.value = "";
 
     try {
-      const res = await fetch("/api/v1/settings", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-          "Authorization": `Bearer ${getAccessToken() ?? ""}`,
-        },
-        body: JSON.stringify({
-          alertingEnabled: true,
-          alertingSmtpHost: smtpHost.value,
-          alertingSmtpPort: smtpPort.value,
-          alertingSmtpFrom: smtpFrom.value || null,
-          alertingSmtpUsername: smtpUser.value || null,
-          alertingSmtpPassword: smtpPass.value || null,
-        }),
+      await apiPut("/v1/settings", {
+        alertingEnabled: true,
+        alertingSmtpHost: smtpHost.value,
+        alertingSmtpPort: smtpPort.value,
+        alertingSmtpFrom: smtpFrom.value || null,
+        alertingSmtpUsername: smtpUser.value || null,
+        alertingSmtpPassword: smtpPass.value || null,
       });
-
-      if (!res.ok) {
-        const body = await res.json();
-        throw new Error(body.error?.message ?? "Failed to save");
-      }
 
       alertingConfigured.value = true;
       step.value = 4;

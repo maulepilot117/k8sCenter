@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p3
 issue_id: "230"
 tags: [code-review, backend, security, information-disclosure]

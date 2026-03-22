@@ -118,6 +118,10 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	if filter.Container == "" {
 		filter.Container = container
 	}
+	if filter.Container != "" && !resources.ValidateK8sName(filter.Container) {
+		conn.WriteJSON(map[string]any{"type": "error", "message": "invalid container name"})
+		return
+	}
 
 	// Defaults
 	if filter.TailLines <= 0 {

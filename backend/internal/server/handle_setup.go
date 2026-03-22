@@ -108,7 +108,8 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusCreated, api.Response{
 		Data: map[string]any{
-			"user": user,
+			"username": user.Username,
+			"created":  true,
 		},
 	})
 }

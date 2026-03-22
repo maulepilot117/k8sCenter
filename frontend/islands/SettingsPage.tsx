@@ -27,7 +27,6 @@ export default function SettingsPage() {
   const { toast, show: showToast } = useToast();
 
   // Per-section dirty tracking
-  const dirtyGeneral = useSignal(false);
   const dirtyMonitoring = useSignal(false);
   const dirtyAlerting = useSignal(false);
   const savingSection = useSignal<string | null>(null);
@@ -54,15 +53,14 @@ export default function SettingsPage() {
   // Beforeunload guard
   useEffect(() => {
     if (!IS_BROWSER) return;
-    const dirty = dirtyGeneral.value || dirtyMonitoring.value ||
-      dirtyAlerting.value;
+    const dirty = dirtyMonitoring.value || dirtyAlerting.value;
     if (!dirty) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
     };
     globalThis.addEventListener("beforeunload", handler);
     return () => globalThis.removeEventListener("beforeunload", handler);
-  }, [dirtyGeneral.value, dirtyMonitoring.value, dirtyAlerting.value]);
+  }, [dirtyMonitoring.value, dirtyAlerting.value]);
 
   async function fetchSettings() {
     try {

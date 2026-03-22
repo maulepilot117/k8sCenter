@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p3
 issue_id: "232"
 tags: [code-review, frontend, performance, logviewer, resource-leak]

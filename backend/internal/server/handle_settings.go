@@ -87,15 +87,8 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetAppSettings returns the application settings with sensitive fields masked.
-// Admin-only — even masked settings reveal infrastructure URLs.
+// Admin-only — RequireAdmin middleware enforces auth before this handler runs.
 func (s *Server) handleGetAppSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := auth.UserFromContext(r.Context()); !ok {
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "authentication required"},
-		})
-		return
-	}
-
 	settings, err := s.SettingsService.Get(r.Context())
 	if err != nil {
 		s.Logger.Error("failed to get settings", "error", err)
@@ -111,15 +104,10 @@ func (s *Server) handleGetAppSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUpdateAppSettings updates application settings (partial patch).
-// Admin-only, audit logged.
+// Admin-only (RequireAdmin middleware), audit logged.
 func (s *Server) handleUpdateAppSettings(w http.ResponseWriter, r *http.Request) {
-	user, ok := auth.UserFromContext(r.Context())
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "authentication required"},
-		})
-		return
-	}
+	// User is guaranteed by RequireAdmin middleware
+	user, _ := auth.UserFromContext(r.Context())
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
 	var patch store.AppSettings

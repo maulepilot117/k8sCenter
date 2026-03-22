@@ -408,7 +408,7 @@ func (s *wsStream) readPump() {
 				return
 			}
 		case "resize":
-			if m.Cols > 0 && m.Rows > 0 {
+			if m.Cols > 0 && m.Cols <= 500 && m.Rows > 0 && m.Rows <= 500 {
 				s.sizeQueue.Send(uint16(m.Cols), uint16(m.Rows))
 			}
 		}

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p2
 issue_id: "228"
 tags: [code-review, frontend, auth, setupwizard, dead-code]
