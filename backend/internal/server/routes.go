@@ -55,6 +55,7 @@ func (s *Server) registerRoutes() {
 
 		// Setup — rate limited, no auth
 		r.With(middleware.RateLimit(s.RateLimiter)).Post("/setup/init", s.handleSetupInit)
+		r.Get("/setup/status", s.handleSetupStatus)
 
 		// Alertmanager webhook — bearer token auth (not JWT), dedicated rate limiter
 		if s.AlertingHandler != nil {
@@ -118,6 +119,13 @@ func (s *Server) registerRoutes() {
 
 			// Audit log route — admin only
 			ar.With(middleware.RequireAdmin).Get("/audit/logs", s.handleAuditLogs)
+
+			// Application settings — admin only
+			ar.Route("/settings", func(sr chi.Router) {
+				sr.Use(middleware.RequireAdmin)
+				sr.Get("/", s.handleGetAppSettings)
+				sr.Put("/", s.handleUpdateAppSettings)
+			})
 
 			// Auth settings routes — admin only (prevents SSRF via test endpoints)
 			ar.Route("/settings/auth", func(sr chi.Router) {

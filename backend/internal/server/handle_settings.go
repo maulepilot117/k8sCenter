@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -81,5 +83,73 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: map[string]string{"status": "ok"},
+	})
+}
+
+// handleGetAppSettings returns the application settings with sensitive fields masked.
+// Admin-only — even masked settings reveal infrastructure URLs.
+func (s *Server) handleGetAppSettings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.UserFromContext(r.Context()); !ok {
+		writeJSON(w, http.StatusUnauthorized, api.Response{
+			Error: &api.APIError{Code: 401, Message: "authentication required"},
+		})
+		return
+	}
+
+	settings, err := s.SettingsService.Get(r.Context())
+	if err != nil {
+		s.Logger.Error("failed to get settings", "error", err)
+		writeJSON(w, http.StatusInternalServerError, api.Response{
+			Error: &api.APIError{Code: 500, Message: "failed to load settings"},
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, api.Response{
+		Data: store.MaskedSettings(settings),
+	})
+}
+
+// handleUpdateAppSettings updates application settings (partial patch).
+// Admin-only, audit logged.
+func (s *Server) handleUpdateAppSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, api.Response{
+			Error: &api.APIError{Code: 401, Message: "authentication required"},
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
+	var patch store.AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid request body"},
+		})
+		return
+	}
+
+	if err := s.SettingsService.Update(r.Context(), patch); err != nil {
+		s.Logger.Error("failed to update settings", "error", err)
+		writeJSON(w, http.StatusInternalServerError, api.Response{
+			Error: &api.APIError{Code: 500, Message: "failed to update settings"},
+		})
+		return
+	}
+
+	entry := s.newAuditEntry(r, user.Username, audit.ActionUpdate, audit.ResultSuccess)
+	entry.ResourceKind = "Settings"
+	entry.Detail = "application settings updated"
+	s.AuditLogger.Log(r.Context(), entry)
+
+	// Return updated (masked) settings
+	settings, err := s.SettingsService.Get(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, api.Response{Data: map[string]any{"updated": true}})
+		return
+	}
+	writeJSON(w, http.StatusOK, api.Response{
+		Data: store.MaskedSettings(settings),
 	})
 }
