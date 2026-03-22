@@ -40,6 +40,9 @@ let reconnectTimer: number | null = null;
 const subscriptions = new Map<string, Subscription>();
 let authenticated = false;
 
+/** Cancellation token for in-flight reconnect attempts (todo-213). */
+let reconnectCancelToken = { canceled: false };
+
 const BASE_DELAY = 1000;
 const MAX_DELAY = 30000;
 const JITTER = 0.2;
@@ -230,10 +233,13 @@ function scheduleReconnect(): void {
 
   const delay = reconnectDelay();
   reconnectAttempt++;
+  const token = reconnectCancelToken;
   reconnectTimer = globalThis.setTimeout(async () => {
     reconnectTimer = null;
+    if (token.canceled) return;
     // Refresh token before reconnecting (may have expired during disconnect)
     await refreshTokenForWS();
+    if (token.canceled) return;
     connectWS();
   }, delay) as unknown as number;
 }
@@ -267,6 +273,10 @@ export function subscribe(
 
 /** Disconnect and clean up the WebSocket connection. */
 export function disconnectWS(): void {
+  // Cancel any in-flight reconnect attempt (todo-213: clearTimeout alone is
+  // insufficient when the async callback is already executing).
+  reconnectCancelToken.canceled = true;
+  reconnectCancelToken = { canceled: false };
   if (reconnectTimer !== null) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;

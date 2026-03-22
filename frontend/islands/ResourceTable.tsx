@@ -17,6 +17,7 @@ import {
 } from "@/lib/constants.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { DataTable } from "@/components/ui/DataTable.tsx";
+import { ScaleDialog } from "@/components/ui/ScaleDialog.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Toast, useToast } from "@/components/ui/Toast.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
@@ -532,70 +533,24 @@ export default function ResourceTable({
 
       {/* Scale Dialog */}
       {scaleTarget.value && (
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => {
+        <ScaleDialog
+          resourceName={scaleTarget.value.metadata.name}
+          currentReplicas={(scaleTarget.value.spec as
+            | { replicas?: number }
+            | undefined)?.replicas}
+          value={scaleValue.value}
+          onValueChange={(v) => {
+            scaleValue.value = v;
+          }}
+          loading={actionLoading.value}
+          onConfirm={() =>
+            runAction("scale", scaleTarget.value!, {
+              replicas: scaleValue.value,
+            })}
+          onCancel={() => {
             scaleTarget.value = null;
           }}
-        >
-          <div
-            class="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl dark:bg-slate-800"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 class="text-lg font-semibold text-slate-900 dark:text-white">
-              Scale {scaleTarget.value.metadata.name}
-            </h3>
-            <div class="mt-4">
-              <label class="block text-sm text-slate-600 dark:text-slate-400">
-                Replicas
-              </label>
-              <input
-                type="number"
-                min="0"
-                max="1000"
-                value={scaleValue.value}
-                onInput={(e) => {
-                  const raw = parseInt(
-                    (e.target as HTMLInputElement).value,
-                  );
-                  scaleValue.value = Number.isNaN(raw)
-                    ? 0
-                    : Math.min(Math.max(raw, 0), 1000);
-                }}
-                class="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-              />
-              <p class="mt-1 text-xs text-slate-500">
-                Current: {(
-                  scaleTarget.value.spec as
-                    | { replicas?: number }
-                    | undefined
-                )?.replicas ?? "?"}
-              </p>
-            </div>
-            <div class="mt-6 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  scaleTarget.value = null;
-                }}
-                class="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={actionLoading.value}
-                onClick={() =>
-                  runAction("scale", scaleTarget.value!, {
-                    replicas: scaleValue.value,
-                  })}
-                class="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90 disabled:opacity-50"
-              >
-                {actionLoading.value ? "..." : "Scale"}
-              </button>
-            </div>
-          </div>
-        </div>
+        />
       )}
     </div>
   );
