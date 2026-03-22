@@ -81,6 +81,16 @@ export default function UserManager() {
     <div class="space-y-4">
       <Toast toast={toast} />
 
+      {/* Create User button */}
+      <div class="flex justify-end">
+        <a
+          href="/settings/users/new"
+          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90"
+        >
+          Create User
+        </a>
+      </div>
+
       {/* Error */}
       {error.value && (
         <div class="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">

@@ -4,12 +4,126 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
+
+// handleCreateUser creates a new local user with optional k8s identity. Admin only.
+func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	caller, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, api.Response{
+			Error: &api.APIError{Code: 401, Message: "not authenticated"},
+		})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
+	var req struct {
+		Username    string   `json:"username"`
+		Password    string   `json:"password"`
+		K8sUsername string   `json:"k8sUsername"`
+		K8sGroups   []string `json:"k8sGroups"`
+		Roles       []string `json:"roles"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid request body"},
+		})
+		return
+	}
+
+	// Validate username
+	if req.Username == "" || len(req.Username) > maxUsernameLen || !validUsername.MatchString(req.Username) {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid username format"},
+		})
+		return
+	}
+
+	// Validate password
+	if len(req.Password) < 8 || len(req.Password) > maxPasswordLen {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "password must be 8-128 characters"},
+		})
+		return
+	}
+
+	// Validate k8sUsername: reject system: prefix
+	k8sUser := req.K8sUsername
+	if k8sUser == "" {
+		k8sUser = req.Username
+	}
+	if strings.HasPrefix(k8sUser, "system:") {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "k8sUsername cannot start with 'system:' (reserved by Kubernetes)"},
+		})
+		return
+	}
+	if len(k8sUser) > maxUsernameLen || !validUsername.MatchString(k8sUser) {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid k8sUsername format"},
+		})
+		return
+	}
+
+	// Validate k8sGroups: reject system:masters
+	k8sGroups := req.K8sGroups
+	if len(k8sGroups) == 0 {
+		k8sGroups = []string{"system:authenticated"}
+	}
+	for _, g := range k8sGroups {
+		if g == "system:masters" {
+			writeJSON(w, http.StatusBadRequest, api.Response{
+				Error: &api.APIError{Code: 400, Message: "group 'system:masters' cannot be assigned (bypasses all RBAC)"},
+			})
+			return
+		}
+	}
+
+	// Default roles to empty if not provided
+	roles := req.Roles
+	if roles == nil {
+		roles = []string{}
+	}
+
+	opts := &auth.CreateUserOpts{
+		K8sUsername: k8sUser,
+		K8sGroups:   k8sGroups,
+	}
+
+	user, err := s.LocalAuth.CreateUser(r.Context(), req.Username, req.Password, roles, opts)
+	if err != nil {
+		if errors.Is(err, auth.ErrDuplicateUser) {
+			writeJSON(w, http.StatusConflict, api.Response{
+				Error: &api.APIError{Code: 409, Message: "username already exists"},
+			})
+			return
+		}
+		s.Logger.Error("failed to create user", "error", err)
+		writeJSON(w, http.StatusInternalServerError, api.Response{
+			Error: &api.APIError{Code: 500, Message: "failed to create user"},
+		})
+		return
+	}
+
+	entry := s.newAuditEntry(r, caller.Username, audit.ActionCreate, audit.ResultSuccess)
+	entry.ResourceKind = "User"
+	entry.ResourceName = user.Username
+	s.AuditLogger.Log(r.Context(), entry)
+
+	writeJSON(w, http.StatusCreated, api.Response{
+		Data: map[string]any{
+			"username":    user.Username,
+			"k8sUsername": user.KubernetesUsername,
+			"roles":       user.Roles,
+		},
+	})
+}
 
 // handleListUsers returns all local users. Admin only.
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {

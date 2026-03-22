@@ -18,7 +18,7 @@ func testProvider() *LocalProvider {
 func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
 	p := testProvider()
 
-	user, err := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
+	user, err := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser failed: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestLocalProvider_CreateAndAuthenticate(t *testing.T) {
 
 func TestLocalProvider_WrongPassword(t *testing.T) {
 	p := testProvider()
-	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
+	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"}, nil)
 
 	_, err := p.Authenticate(context.Background(), Credentials{
 		Username: "admin",
@@ -71,9 +71,9 @@ func TestLocalProvider_UnknownUser(t *testing.T) {
 
 func TestLocalProvider_DuplicateUser(t *testing.T) {
 	p := testProvider()
-	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
+	p.CreateUser(context.Background(), "admin", "password123", []string{"admin"}, nil)
 
-	_, err := p.CreateUser(context.Background(), "admin", "otherpass", []string{"admin"})
+	_, err := p.CreateUser(context.Background(), "admin", "otherpass", []string{"admin"}, nil)
 	if err == nil {
 		t.Fatal("expected error for duplicate user")
 	}
@@ -86,12 +86,12 @@ func TestLocalProvider_UserCount(t *testing.T) {
 		t.Errorf("expected 0 users, got %d", p.UserCount())
 	}
 
-	p.CreateUser(context.Background(), "user1", "password123", []string{"viewer"})
+	p.CreateUser(context.Background(), "user1", "password123", []string{"viewer"}, nil)
 	if p.UserCount() != 1 {
 		t.Errorf("expected 1 user, got %d", p.UserCount())
 	}
 
-	p.CreateUser(context.Background(), "user2", "password123", []string{"viewer"})
+	p.CreateUser(context.Background(), "user2", "password123", []string{"viewer"}, nil)
 	if p.UserCount() != 2 {
 		t.Errorf("expected 2 users, got %d", p.UserCount())
 	}
@@ -99,7 +99,7 @@ func TestLocalProvider_UserCount(t *testing.T) {
 
 func TestLocalProvider_GetUserByID(t *testing.T) {
 	p := testProvider()
-	created, _ := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"})
+	created, _ := p.CreateUser(context.Background(), "admin", "password123", []string{"admin"}, nil)
 
 	found, err := p.GetUserByID(created.ID)
 	if err != nil {

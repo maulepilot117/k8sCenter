@@ -35,7 +35,7 @@ func TestHandleListUsers(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a second user
-	_, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"})
+	_, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestHandleDeleteUser(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a user to delete
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "to-delete", "password1234", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "to-delete", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestHandleDeleteUser_LastAdmin(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a second admin so the first admin can make the request
-	admin2, err := srv.LocalAuth.CreateUser(context.Background(), "admin2", "password1234", []string{"admin"})
+	admin2, err := srv.LocalAuth.CreateUser(context.Background(), "admin2", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestHandleDeleteUser_LastAdmin(t *testing.T) {
 
 	// Now create a non-admin and try to delete the last admin (self-delete guard fires first)
 	// Instead, create another admin, login as them, and try to delete the original last admin
-	admin3, err := srv.LocalAuth.CreateUser(context.Background(), "admin3", "password1234", []string{"admin"})
+	admin3, err := srv.LocalAuth.CreateUser(context.Background(), "admin3", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestHandleUpdateUserPassword(t *testing.T) {
 	token, _ := loginAdmin(t, srv)
 
 	// Create a user
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "oldpassword1", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "oldpassword1", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestHandleUpdateUserPassword_TooShort(t *testing.T) {
 	srv := testServer(t)
 	token, _ := loginAdmin(t, srv)
 
-	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "password1234", []string{"viewer"})
+	user, err := srv.LocalAuth.CreateUser(context.Background(), "testuser", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -238,13 +238,13 @@ func TestHandleUsers_NonAdminAccess(t *testing.T) {
 	srv := testServer(t)
 
 	// Create admin first (needed for setup)
-	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"})
+	_, err := srv.LocalAuth.CreateUser(context.Background(), "admin", "password1234", []string{"admin"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser admin: %v", err)
 	}
 
 	// Create non-admin user
-	viewer, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"})
+	viewer, err := srv.LocalAuth.CreateUser(context.Background(), "viewer", "password1234", []string{"viewer"}, nil)
 	if err != nil {
 		t.Fatalf("CreateUser viewer: %v", err)
 	}
