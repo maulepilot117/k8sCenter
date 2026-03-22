@@ -28,7 +28,8 @@ New WebSocket endpoint following Pattern B (direct per-connection, same as `hand
 - Ping: 30s heartbeat, 60s pong wait
 - Connection limit: `atomic.Int64` counter, max 100 concurrent log streams
 - Audit: log stream initiation logged as `ActionReadLogs`
-- Message format: `{"type":"log","data":"line text","timestamp":"RFC3339"}` or `{"type":"error","message":"..."}` or `{"type":"dropped","count":N}`
+- Message format: `{"type":"log","data":"line text","timestamp":"RFC3339"}` or `{"type":"error","message":"..."}` or `{"type":"dropped","count":N}` (drop notifications batched every 5s, not per-drop)
+- Lines exceeding 256KB scanner buffer are silently truncated — document this behavior
 
 Register in `routes.go` alongside existing WS routes (around line 22).
 
@@ -60,6 +61,8 @@ Full rewrite of the existing HTTP-polling LogViewer:
 
 Modify existing `HandlePodExec` (lines 165-284):
 
+- **Connection limit**: add `atomic.Int64` counter, max 50 concurrent exec sessions (same pattern as `handle_ws_flows.go` `maxFlowConnections`). Return 503 when exceeded.
+- **Auth model**: keep existing middleware-based auth (Auth + CSRF middleware on the exec route group). Do NOT move to in-band auth — middleware auth is already working and more secure (auth happens before WS upgrade).
 - **Message framing protocol**: client sends JSON for control messages, raw bytes for stdin:
   - `{"type":"input","data":"base64-encoded-bytes"}` — stdin data
   - `{"type":"resize","cols":N,"rows":N}` — terminal resize
@@ -70,7 +73,7 @@ Modify existing `HandlePodExec` (lines 165-284):
   - `done chan struct{}` for stop signal
   - `Next()` blocks on channel, returns nil on done
   - `Send(width, height)` non-blocking send (drop if pending)
-- **Shell detection**: try shells in order: `/bin/bash`, `/bin/sh`, `/bin/ash`. Use `exec.StreamWithContext` with `Command: []string{shell}`. If first attempt fails, retry with next shell.
+- **Shell detection**: try shells in order: `/bin/bash`, `/bin/sh`, `/bin/ash` (max 3 attempts). Use `exec.StreamWithContext` with `Command: []string{shell}`. If first attempt fails, retry with next shell. If all fail, send `{"type":"error","message":"no shell found"}` and close the connection — do not hang.
 - **Read pump refactor**: separate goroutine reads WS messages, dispatches `input` to `io.PipeWriter` (stdin), dispatches `resize` to `termSizeQueue.Send()`
 - **StreamOptions**: add `TerminalSizeQueue: sizeQueue` to the existing `StreamOptions`
 
@@ -105,8 +108,8 @@ Modify existing `HandlePodExec` (lines 165-284):
 **Backend additions:**
 
 - `GET /api/v1/setup/status` — public endpoint, returns `{"data":{"needsSetup": bool}}` based on `userStore.Count() == 0`. Add to routes.go in the public (no-auth) group alongside `/setup/init`.
-- `GET /api/v1/settings` — authenticated, returns masked settings via `settingsService.Get()` + `MaskedSettings()`. Add to authenticated group.
-- `PUT /api/v1/settings` — admin-only, accepts partial update JSON, calls `settingsService.Update()`. Already partially wired, verify route exists.
+- `GET /api/v1/settings` — **admin-only**, returns masked settings via `settingsService.Get()` + `MaskedSettings()`. Must be admin-only because even masked settings reveal SMTP hosts, Grafana URLs, etc.
+- `PUT /api/v1/settings` — admin-only, accepts partial update JSON, calls `settingsService.Update()`. Route does not yet exist — must be explicitly added to routes.go.
 - Add `ClusterDisplayName` and `DefaultNamespace` fields to settings table if not present (migration `000005_add_general_settings.up.sql`)
 
 **Frontend: `frontend/islands/SettingsPage.tsx` (new)**
@@ -124,13 +127,14 @@ Modify existing `HandlePodExec` (lines 165-284):
 - BFF middleware: check `GET /api/v1/setup/status` — if `needsSetup: false`, redirect to `/`
 - Steps using WizardStepper (existing component):
   1. Welcome — static branding, "Get Started" button
-  2. Admin Account — username + password + confirm (POST `/api/v1/setup/init` with setup token)
-  3. Monitoring — optional Prometheus/Grafana URLs (PUT `/api/v1/settings`)
-  4. Alerting — optional SMTP config (PUT `/api/v1/settings`)
+  2. Admin Account — username + password + confirm (POST `/api/v1/setup/init` with setup token). **On success, auto-login** by immediately calling `POST /api/v1/auth/login` with the just-created credentials and storing the access token. This is required because steps 3-4 call authenticated endpoints.
+  3. Monitoring — optional Prometheus/Grafana URLs (PUT `/api/v1/settings`, now authenticated). Skip button.
+  4. Alerting — optional SMTP config (PUT `/api/v1/settings`). Skip button.
   5. Review — summary of what was configured
-  6. Done — "Go to Login" link
-- Each optional step has "Skip" button
+  6. Done — redirect to dashboard (already authenticated)
+- **Partial completion**: if user completes step 2 but closes browser before step 5, `needsSetup` will be `false` (user exists). Steps 3-4 are non-critical — the system functions without them. User can configure monitoring/alerting later from the Settings page.
 - Setup token: read from env var, passed as hidden field or prompt if not configured
+- `GET /api/v1/setup/status` must only return `{needsSetup: bool}` — never leak user count, settings state, or other information
 
 **Files to create/modify:**
 - `backend/internal/server/handle_setup.go` (add `handleSetupStatus`)
@@ -294,7 +298,7 @@ Register routes in `registerStorageRoutes()`.
 
 ### Step 4C.4 — Restore Wizard
 
-**Frontend: `frontend/islands/SnapshotRestoreWizard.tsx` (new)**
+**Frontend: `frontend/islands/RestoreSnapshotWizard.tsx` (new)**
 
 - Launched from snapshot detail page "Restore" action
 - Route: `frontend/routes/resources/volumesnapshots/restore.tsx?ns={ns}&name={name}`
@@ -317,11 +321,14 @@ Register routes in `registerStorageRoutes()`.
   4. Retention — number input: keep last N snapshots (default 5)
   5. Review — YAML preview of CronJob
 - Generates a CronJob spec:
-  - Container: `bitnami/kubectl:latest` (or configurable)
+  - Container: `bitnami/kubectl:1.31` (pinned version, NOT `latest` — mutable tags are a production risk)
   - Command: `kubectl create -f /tmp/snapshot.yaml` (snapshot YAML mounted via ConfigMap)
   - Labels: `k8scenter.io/scheduled-snapshot: "true"`, `k8scenter.io/source-pvc: "{name}"`
-- Optionally generates a second CronJob for retention cleanup (list snapshots by label, delete oldest beyond N)
-- Uses existing CronJob create: `POST /api/v1/resources/cronjobs/{ns}`
+- Generates a retention CronJob (mandatory, not optional — without retention, snapshots accumulate forever):
+  - Lists snapshots by label, deletes oldest beyond N
+  - Consider combining create + cleanup into a single CronJob with a shell script for simplicity
+- **RBAC output**: the wizard must also generate a ServiceAccount + Role + RoleBinding granting the CronJob permission to create/list/delete VolumeSnapshots in the target namespace. These resources are included in the YAML preview and applied alongside the CronJob.
+- Uses existing CronJob create: `POST /api/v1/resources/cronjobs/{ns}` (multi-doc YAML for CronJob + ServiceAccount + Role + RoleBinding)
 
 ### Step 4C.6 — PVC Wizard
 
@@ -348,10 +355,10 @@ Register routes in `registerStorageRoutes()`.
 - `backend/internal/wizard/handler.go` (add preview routes)
 - `backend/internal/server/routes.go` (add storage + wizard routes)
 - `frontend/islands/SnapshotWizard.tsx` (new)
-- `frontend/islands/SnapshotRestoreWizard.tsx` (new)
+- `frontend/islands/RestoreSnapshotWizard.tsx` (new)
 - `frontend/islands/ScheduledSnapshotWizard.tsx` (new)
 - `frontend/islands/PVCWizard.tsx` (new)
-- `frontend/components/wizard/CronScheduleInput.tsx` (new — shared)
+- `frontend/components/wizard/CronScheduleInput.tsx` (new — shared, created here in Phase 4C, reused by Phase 4D CronJob wizard)
 - `frontend/lib/resource-columns.ts` (add VolumeSnapshot columns)
 - `frontend/lib/constants.ts` (add snapshot routes + nav)
 - `frontend/routes/resources/volumesnapshots/*.tsx` (new routes)
@@ -369,7 +376,7 @@ Before building wizards, extract the reusable container config from `DeploymentB
 
 **`frontend/components/wizard/ContainerForm.tsx` (new)**
 
-Consolidates: image, command, args, env vars, ports, resource limits (CPU/memory requests + limits), liveness/readiness/startup probes, volume mounts.
+Consolidates: image, command, args, env vars, ports, resource limits (CPU/memory requests + limits), liveness/readiness/startup probes. **Does NOT include volume mounts** — those do not exist in the current DeploymentWizard and should be added as a separate enhancement later, not smuggled in via extraction.
 
 Props: `container: ContainerState`, `onChange: (field, value) => void`, `errors: Record<string,string>`
 
@@ -520,14 +527,46 @@ Label selector builder: rows of `{key, operator, values[]}` for matchExpressions
 
 ---
 
-## Shared Validation Extraction
+## Shared Validation & Generic Handler Extraction
 
-Before Phase 4D, extract shared validation helpers from `backend/internal/wizard/deployment.go` into `backend/internal/wizard/validation.go`:
+Before Phase 4D, extract shared infrastructure from the wizard package:
 
+**`backend/internal/wizard/validation.go` (new):**
 - `dnsLabelRegex`, `envVarNameRegex`
 - `validateQuantity(field, value string) *FieldError`
 - `validateProbe(prefix string, probe *ProbeInput) []FieldError`
 - `ContainerInput` struct + `ValidateContainer()` method (shared across Deployment, Job, CronJob, DaemonSet, StatefulSet)
+
+**`backend/internal/wizard/handler.go` — define `WizardInput` interface + generic preview handler:**
+
+```go
+// WizardInput is the contract all wizard input types must implement.
+type WizardInput interface {
+    Validate() []FieldError
+    ToYAML() ([]byte, error)
+}
+
+// handlePreview is the single generic preview handler that replaces 13 copy-pasted methods.
+func (h *Handler) handlePreview(input WizardInput) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        if _, ok := httputil.RequireUser(w, r); !ok { return }
+        if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(input); err != nil { ... }
+        if errs := input.Validate(); len(errs) > 0 { writeValidationErrors(w, errs); return }
+        yamlBytes, err := input.ToYAML()
+        if err != nil { ... }
+        httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
+    }
+}
+```
+
+Each wizard input type (DeploymentInput, ServiceInput, etc.) implements `WizardInput`. Route registration becomes:
+```go
+wr.Post("/deployment/preview", h.handlePreview(&DeploymentInput{}))
+wr.Post("/configmap/preview", h.handlePreview(&ConfigMapInput{}))
+// ... one line per wizard, zero boilerplate
+```
+
+Refactor existing 3 wizard handlers (deployment, service, storage) to use this interface first, verify tests pass, then add new wizards using it.
 
 ---
 
@@ -542,6 +581,12 @@ Each phase includes:
   - Phase 4C: create snapshot (requires CSI driver with snapshot support — may need to test with Longhorn or mock)
   - Phase 4D: create one resource of each type via wizard, verify YAML preview accuracy
 
+**Phase-specific test requirements (from plan review):**
+
+- **WebSocket handlers (4A)**: test that connects, authenticates, sends messages, and verifies response format. Test backpressure (slow consumer), connection limit enforcement, and context cancellation cleanup. Test exec shell detection with container that has no shell (should return error, not hang).
+- **Wizard validation (4D)**: table-driven tests for each wizard input's `Validate()` method covering edge cases (empty required fields, invalid DNS labels, out-of-range ports, duplicate entries). One test file per wizard: `wizard/{type}_test.go`.
+- **Shared components**: the `WizardInput` interface contract should have a test that verifies all implementations produce valid YAML (parse the output with `sigs.k8s.io/yaml`).
+
 ---
 
 ## Dependencies & Risk
@@ -551,7 +596,9 @@ Each phase includes:
 | xterm.js SSR failure | Dynamic import() inside useEffect — CodeMirror precedent proves pattern works |
 | VolumeSnapshot CRDs not installed on homelab | Graceful degradation — detect CRDs, hide UI if absent. Test with mock or install snapshot controller |
 | CiliumNetworkPolicy CRD not on all clusters | Already handled — dynamic informer pattern from PR #49 |
-| Large number of new files (40+ frontend, 15+ backend) | Independent phases reduce blast radius. Each wizard follows identical pattern. |
+| Large number of new files (40+ frontend, 15+ backend) | Independent phases reduce blast radius. Each wizard follows identical pattern via `WizardInput` interface. |
+| Phase dependency: CronScheduleInput needed in 4C but shared with 4D | Create the component in Phase 4C (scheduled snapshots), reuse in 4D (CronJob wizard) |
+| Scheduled snapshot CronJob needs RBAC | Wizard generates ServiceAccount + Role + RoleBinding alongside CronJob in multi-doc YAML |
 | Shared ContainerForm extraction breaking DeploymentWizard | Extract first in Phase 4D step 0, verify deployment wizard still works before proceeding |
 | gorilla/websocket archived | Stable, widely used, already throughout codebase. No action needed. |
 
