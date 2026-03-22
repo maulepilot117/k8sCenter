@@ -23,6 +23,11 @@ func (s *Server) registerRoutes() {
 		s.Router.Get("/api/v1/ws/flows", s.handleWSFlows)
 	}
 
+	// Pod log streaming WebSocket — auth in-band (same as resource WS), no timeout
+	if s.ResourceHandler != nil {
+		s.Router.Get("/api/v1/ws/logs/{namespace}/{pod}/{container}", s.handleWSLogs)
+	}
+
 	// Pod exec WebSocket — auth via middleware (not in-band), no timeout
 	if s.ResourceHandler != nil {
 		s.Router.Group(func(r chi.Router) {
