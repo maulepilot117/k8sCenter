@@ -2,10 +2,15 @@ package resources
 
 import (
 	"bufio"
+	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -18,6 +23,14 @@ import (
 const kindPod = "pods"
 
 var validContainerName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}$`)
+
+// execWSCount tracks the number of concurrent exec WebSocket connections.
+var execWSCount atomic.Int64
+
+const maxExecConnections = 50
+
+// shellCandidates is the ordered list of shells to try in a container.
+var shellCandidates = []string{"/bin/bash", "/bin/sh", "/bin/ash"}
 
 func (h *Handler) HandleListPods(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
@@ -165,6 +178,12 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 // HandlePodExec upgrades to WebSocket and opens an exec session to a pod container.
 // WS /api/v1/ws/exec/{namespace}/{name}/{container}
 func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
+	// Connection limit check
+	if execWSCount.Load() >= maxExecConnections {
+		writeError(w, http.StatusServiceUnavailable, "too many exec connections", "")
+		return
+	}
+
 	user, ok := requireUser(w, r)
 	if !ok {
 		return
@@ -193,91 +212,203 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Create SPDY executor
+	// Track connection count
+	execWSCount.Add(1)
+	defer execWSCount.Add(-1)
+
+	// Create impersonating client
 	cs, err := h.impersonatingClient(user)
 	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"failed to create client"}`))
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"failed to create client"}`))
 		return
 	}
-
-	execReq := cs.CoreV1().RESTClient().Post().
-		Resource("pods").
-		Name(name).
-		Namespace(ns).
-		SubResource("exec").
-		Param("container", container).
-		Param("stdin", "true").
-		Param("stdout", "true").
-		Param("stderr", "true").
-		Param("tty", "true").
-		Param("command", "/bin/sh")
 
 	cfg := h.K8sClient.BaseConfig()
 	cfg.Impersonate.UserName = user.KubernetesUsername
 	cfg.Impersonate.Groups = user.KubernetesGroups
 
-	exec, err := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
-	if err != nil {
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"failed to create exec session"}`))
-		h.Logger.Error("SPDY executor creation failed", "error", err)
-		return
+	// Set up stdin pipe and terminal size queue
+	sizeQueue := newTermSizeQueue()
+	defer sizeQueue.Stop()
+
+	stdinReader, stdinWriter := io.Pipe()
+	defer stdinWriter.Close()
+
+	ws := newWSStream(conn, stdinWriter, sizeQueue)
+
+	// Start the read goroutine that decodes client JSON messages
+	go ws.readPump()
+
+	// Shell detection: try each shell candidate
+	var foundShell string
+	for _, shell := range shellCandidates {
+		execReq := cs.CoreV1().RESTClient().Post().
+			Resource("pods").
+			Name(name).
+			Namespace(ns).
+			SubResource("exec").
+			Param("container", container).
+			Param("stdin", "true").
+			Param("stdout", "true").
+			Param("stderr", "true").
+			Param("tty", "true").
+			Param("command", shell)
+
+		executor, execErr := remotecommand.NewSPDYExecutor(cfg, "POST", execReq.URL())
+		if execErr != nil {
+			h.Logger.Debug("SPDY executor creation failed", "shell", shell, "error", execErr)
+			continue
+		}
+
+		// Try running the shell with a short timeout to detect failure
+		shellCtx, shellCancel := context.WithCancel(r.Context())
+		streamDone := make(chan error, 1)
+		go func() {
+			streamDone <- executor.StreamWithContext(shellCtx, remotecommand.StreamOptions{
+				Stdin:             stdinReader,
+				Stdout:            ws,
+				Stderr:            ws,
+				Tty:               true,
+				TerminalSizeQueue: sizeQueue,
+			})
+		}()
+
+		// Wait briefly to see if the shell fails immediately
+		select {
+		case streamErr := <-streamDone:
+			// Shell exited immediately — try next candidate
+			shellCancel()
+			h.Logger.Debug("shell exited immediately", "shell", shell, "error", streamErr)
+			continue
+		case <-time.After(1 * time.Second):
+			// Shell is running — this is the one
+			foundShell = shell
+
+			// Notify client of successful shell
+			shellMsg, _ := json.Marshal(map[string]string{"type": "shell", "name": shell})
+			conn.WriteMessage(websocket.TextMessage, shellMsg)
+
+			h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultSuccess)
+
+			// Wait for stream to finish
+			streamErr := <-streamDone
+			shellCancel()
+			if streamErr != nil {
+				h.Logger.Debug("exec session ended", "error", streamErr, "pod", name, "shell", shell)
+			}
+			return
+		}
 	}
 
-	h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultSuccess)
-
-	// Bridge WebSocket ↔ SPDY streams
-	wsStream := newWSStream(conn)
-	err = exec.StreamWithContext(r.Context(), remotecommand.StreamOptions{
-		Stdin:  wsStream,
-		Stdout: wsStream,
-		Stderr: wsStream,
-		Tty:    true,
-	})
-	if err != nil {
-		h.Logger.Debug("exec session ended", "error", err, "pod", name)
+	// All shells failed
+	if foundShell == "" {
+		errMsg, _ := json.Marshal(map[string]string{"type": "error", "message": "no shell found in container"})
+		conn.WriteMessage(websocket.TextMessage, errMsg)
+		h.Logger.Warn("no shell found in container", "pod", name, "namespace", ns, "container", container)
 	}
+}
+
+// termSizeQueue implements remotecommand.TerminalSizeQueue.
+type termSizeQueue struct {
+	ch   chan remotecommand.TerminalSize
+	done chan struct{}
+}
+
+func newTermSizeQueue() *termSizeQueue {
+	return &termSizeQueue{
+		ch:   make(chan remotecommand.TerminalSize, 1),
+		done: make(chan struct{}),
+	}
+}
+
+// Next blocks until a new terminal size is available or the queue is stopped.
+func (q *termSizeQueue) Next() *remotecommand.TerminalSize {
+	select {
+	case size := <-q.ch:
+		return &size
+	case <-q.done:
+		return nil
+	}
+}
+
+// Send sends a terminal size update without blocking.
+func (q *termSizeQueue) Send(width, height uint16) {
+	select {
+	case q.ch <- remotecommand.TerminalSize{Width: width, Height: height}:
+	default:
+	}
+}
+
+// Stop closes the queue, causing Next to return nil.
+func (q *termSizeQueue) Stop() {
+	select {
+	case <-q.done:
+	default:
+		close(q.done)
+	}
+}
+
+// wsClientMsg is the JSON message format sent by the client.
+type wsClientMsg struct {
+	Type string `json:"type"`
+	Data string `json:"data"` // base64-encoded stdin data (for type="input")
+	Cols int    `json:"cols"` // terminal columns (for type="resize")
+	Rows int    `json:"rows"` // terminal rows (for type="resize")
 }
 
 // wsStream bridges a gorilla WebSocket connection to io.Reader/io.Writer
 // for use with remotecommand SPDY streams.
 type wsStream struct {
-	conn   *websocket.Conn
-	buf    []byte
-	closed bool
+	conn        *websocket.Conn
+	stdinWriter *io.PipeWriter
+	sizeQueue   *termSizeQueue
 }
 
-func newWSStream(conn *websocket.Conn) *wsStream {
-	return &wsStream{conn: conn}
+func newWSStream(conn *websocket.Conn, stdinWriter *io.PipeWriter, sizeQueue *termSizeQueue) *wsStream {
+	return &wsStream{
+		conn:        conn,
+		stdinWriter: stdinWriter,
+		sizeQueue:   sizeQueue,
+	}
 }
 
-func (s *wsStream) Read(p []byte) (int, error) {
-	if s.closed {
-		return 0, io.EOF
+// readPump reads JSON messages from the WebSocket, dispatches resize events
+// to the terminal size queue, and writes decoded stdin data to the pipe.
+func (s *wsStream) readPump() {
+	defer s.stdinWriter.Close()
+	for {
+		_, msg, err := s.conn.ReadMessage()
+		if err != nil {
+			return
+		}
+
+		var m wsClientMsg
+		if err := json.Unmarshal(msg, &m); err != nil {
+			// Ignore malformed messages
+			continue
+		}
+
+		switch m.Type {
+		case "input":
+			data, err := base64.StdEncoding.DecodeString(m.Data)
+			if err != nil {
+				continue
+			}
+			if _, err := s.stdinWriter.Write(data); err != nil {
+				return
+			}
+		case "resize":
+			if m.Cols > 0 && m.Rows > 0 {
+				s.sizeQueue.Send(uint16(m.Cols), uint16(m.Rows))
+			}
+		}
 	}
-	if len(s.buf) > 0 {
-		n := copy(p, s.buf)
-		s.buf = s.buf[n:]
-		return n, nil
-	}
-	_, msg, err := s.conn.ReadMessage()
-	if err != nil {
-		s.closed = true
-		return 0, io.EOF
-	}
-	n := copy(p, msg)
-	if n < len(msg) {
-		s.buf = msg[n:]
-	}
-	return n, nil
 }
 
+// Write sends raw binary data to the WebSocket (stdout/stderr output).
 func (s *wsStream) Write(p []byte) (int, error) {
-	if s.closed {
-		return 0, io.EOF
-	}
 	err := s.conn.WriteMessage(websocket.BinaryMessage, p)
 	if err != nil {
-		s.closed = true
 		return 0, err
 	}
 	return len(p), nil
