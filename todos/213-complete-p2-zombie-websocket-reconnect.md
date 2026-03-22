@@ -1,5 +1,5 @@
 ---
-status: pending
+status: complete
 priority: p2
 issue_id: "213"
 tags: [code-review, frontend-races, security]
