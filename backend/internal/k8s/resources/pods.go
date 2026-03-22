@@ -246,8 +246,9 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 
 	ws := newWSStream(conn, stdinWriter, sizeQueue)
 
-	// Start the read goroutine that decodes client JSON messages
-	go ws.readPump()
+	// Note: readPump is started AFTER shell detection succeeds (below).
+	// This ensures no stdin data is consumed during the detection phase,
+	// preventing data loss if a shell candidate fails after reading from the pipe.
 
 	// Shell detection: try each shell candidate
 	var foundShell string
@@ -293,6 +294,10 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(1 * time.Second):
 			// Shell is running — this is the one
 			foundShell = shell
+
+			// Start the read pump now that we have a working shell.
+			// This ensures no stdin data is consumed during shell detection.
+			go ws.readPump()
 
 			// Notify client of successful shell
 			shellMsg, _ := json.Marshal(map[string]string{"type": "shell", "name": shell})

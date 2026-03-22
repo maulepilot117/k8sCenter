@@ -4,6 +4,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Toast, useToast } from "@/components/ui/Toast.tsx";
+import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
+import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 
 interface Settings {
   monitoringPrometheusUrl?: string | null;
@@ -167,9 +169,6 @@ export default function SettingsPage() {
     );
   }
 
-  const inputClass =
-    "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white";
-
   return (
     <div class="space-y-4">
       <Toast toast={toast} />
@@ -183,70 +182,15 @@ export default function SettingsPage() {
           Monitoring
         </summary>
         <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
-          <div class="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Prometheus URL
-              </label>
-              <input
-                type="url"
-                value={promUrl.value}
-                onInput={(e) => {
-                  promUrl.value = (e.target as HTMLInputElement).value;
-                  dirtyMonitoring.value = true;
-                }}
-                placeholder="http://prometheus:9090"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Grafana URL
-              </label>
-              <input
-                type="url"
-                value={grafUrl.value}
-                onInput={(e) => {
-                  grafUrl.value = (e.target as HTMLInputElement).value;
-                  dirtyMonitoring.value = true;
-                }}
-                placeholder="http://grafana:3000"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Grafana API Token
-              </label>
-              <input
-                type="password"
-                value={grafToken.value}
-                onInput={(e) => {
-                  grafToken.value = (e.target as HTMLInputElement).value;
-                  dirtyMonitoring.value = true;
-                }}
-                placeholder={grafToken.value === "****"
-                  ? "****"
-                  : "Enter token"}
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Monitoring Namespace
-              </label>
-              <input
-                type="text"
-                value={monNs.value}
-                onInput={(e) => {
-                  monNs.value = (e.target as HTMLInputElement).value;
-                  dirtyMonitoring.value = true;
-                }}
-                placeholder="monitoring"
-                class={inputClass}
-              />
-            </div>
-          </div>
+          <MonitoringFields
+            promUrl={promUrl}
+            grafUrl={grafUrl}
+            grafToken={grafToken}
+            monNs={monNs}
+            onDirty={() => {
+              dirtyMonitoring.value = true;
+            }}
+          />
           <div class="mt-4 flex justify-end">
             <Button
               variant="primary"
@@ -268,127 +212,19 @@ export default function SettingsPage() {
           Alerting
         </summary>
         <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
-          <div class="mb-4">
-            <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-              <input
-                type="checkbox"
-                checked={alertEnabled.value}
-                onChange={(e) => {
-                  alertEnabled.value = (e.target as HTMLInputElement).checked;
-                  dirtyAlerting.value = true;
-                }}
-              />
-              Enable email alerting
-            </label>
-          </div>
-          <div class="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Host
-              </label>
-              <input
-                type="text"
-                value={smtpHost.value}
-                onInput={(e) => {
-                  smtpHost.value = (e.target as HTMLInputElement).value;
-                  dirtyAlerting.value = true;
-                }}
-                placeholder="smtp.example.com"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Port
-              </label>
-              <input
-                type="number"
-                value={smtpPort.value}
-                onInput={(e) => {
-                  smtpPort.value =
-                    parseInt((e.target as HTMLInputElement).value) || 587;
-                  dirtyAlerting.value = true;
-                }}
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Username
-              </label>
-              <input
-                type="text"
-                value={smtpUser.value}
-                onInput={(e) => {
-                  smtpUser.value = (e.target as HTMLInputElement).value;
-                  dirtyAlerting.value = true;
-                }}
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Password
-              </label>
-              <input
-                type="password"
-                value={smtpPass.value}
-                onInput={(e) => {
-                  smtpPass.value = (e.target as HTMLInputElement).value;
-                  dirtyAlerting.value = true;
-                }}
-                placeholder={smtpPass.value === "****" ? "****" : ""}
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                From Address
-              </label>
-              <input
-                type="email"
-                value={smtpFrom.value}
-                onInput={(e) => {
-                  smtpFrom.value = (e.target as HTMLInputElement).value;
-                  dirtyAlerting.value = true;
-                }}
-                placeholder="alerts@example.com"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Rate Limit (per hour)
-              </label>
-              <input
-                type="number"
-                value={alertRate.value}
-                onInput={(e) => {
-                  alertRate.value =
-                    parseInt((e.target as HTMLInputElement).value) || 5;
-                  dirtyAlerting.value = true;
-                }}
-                min="1"
-                max="100"
-                class={inputClass}
-              />
-            </div>
-            <div class="sm:col-span-2">
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Recipients (comma-separated)
-              </label>
-              <input
-                type="text"
-                value={alertRecipients.value}
-                onInput={(e) => {
-                  alertRecipients.value = (e.target as HTMLInputElement).value;
-                  dirtyAlerting.value = true;
-                }}
-                placeholder="admin@example.com, ops@example.com"
-                class={inputClass}
-              />
-            </div>
-          </div>
+          <AlertingFields
+            alertEnabled={alertEnabled}
+            smtpHost={smtpHost}
+            smtpPort={smtpPort}
+            smtpUser={smtpUser}
+            smtpPass={smtpPass}
+            smtpFrom={smtpFrom}
+            alertRate={alertRate}
+            alertRecipients={alertRecipients}
+            onDirty={() => {
+              dirtyAlerting.value = true;
+            }}
+          />
           <div class="mt-4 flex items-center justify-end gap-3">
             <Button variant="ghost" size="sm" onClick={testEmail}>
               Send Test Email

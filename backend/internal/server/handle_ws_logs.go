@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
-	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -24,14 +23,10 @@ type logSubRequest struct {
 }
 
 const (
-	logWriteWait      = 10 * time.Second
-	logPongWait       = 60 * time.Second
-	logPingPeriod     = (logPongWait * 9) / 10 // 54s
-	logMaxReadSize    = 4096                    // only expect small auth/filter messages
-	maxLogConnections = 100                     // concurrent log stream WS connections
-	logMaxLineBuffer  = 256 * 1024              // 256KB max line — lines exceeding this are truncated by bufio.Scanner
-	logChannelSize    = 256                     // bounded channel for backpressure
-	logDropBatchEvery = 5 * time.Second         // batch drop notifications
+	maxLogConnections = 100        // concurrent log stream WS connections
+	logMaxLineBuffer  = 256 * 1024 // 256KB max line — lines exceeding this are truncated by bufio.Scanner
+	logChannelSize    = 256        // bounded channel for backpressure
+	logDropBatchEvery = 5 * time.Second
 )
 
 // logWSCount tracks active log stream WebSocket connections for DoS protection.
@@ -52,20 +47,11 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.validateWSOrigin(w, r) {
-		return
-	}
-
-	up := upgrader
-	up.CheckOrigin = func(r *http.Request) bool { return true }
-	conn, err := up.Upgrade(w, r, nil)
-	if err != nil {
-		s.Logger.Error("log ws upgrade failed", "error", err)
+	conn, user := s.wsAuthAndUpgrade(w, r)
+	if conn == nil {
 		return
 	}
 	defer conn.Close()
-
-	conn.SetReadLimit(logMaxReadSize)
 
 	logWSCount.Add(1)
 	defer logWSCount.Add(-1)
@@ -84,29 +70,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Step 1: Read auth message (JWT token)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	var authMsg struct {
-		Type  string `json:"type"`
-		Token string `json:"token"`
-	}
-	if err := conn.ReadJSON(&authMsg); err != nil {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "auth required"})
-		return
-	}
-	if authMsg.Type != "auth" || authMsg.Token == "" {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "invalid auth message"})
-		return
-	}
-
-	claims, err := s.TokenManager.ValidateAccessToken(authMsg.Token)
-	if err != nil {
-		conn.WriteJSON(map[string]any{"type": "error", "message": "invalid token"})
-		return
-	}
-	user := auth.UserFromClaims(claims)
-
-	// Step 2: Read filter/options message
+	// Read filter/options message
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var filter logSubRequest
 	if err := conn.ReadJSON(&filter); err != nil {
@@ -131,7 +95,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		filter.TailLines = 10000
 	}
 
-	// Step 3: RBAC check — get on pods/log subresource
+	// RBAC check — get on pods/log subresource
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
 		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
 		"get", "pods/log", ns,
@@ -197,23 +161,9 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stream.Close()
 
-	// Ping/pong keepalive
-	conn.SetReadDeadline(time.Now().Add(logPongWait))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(logPongWait))
-		return nil
-	})
-
-	// Read pump: detect WS close/errors (runs in background)
-	go func() {
-		defer cancel()
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-		}
-	}()
+	// Ping/pong keepalive + read pump
+	ticker := wsStartKeepalive(conn, cancel)
+	defer ticker.Stop()
 
 	// Log reader goroutine: scan lines from k8s stream into bounded channel
 	logCh := make(chan string, logChannelSize)
@@ -237,10 +187,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Ping ticker
-	ticker := time.NewTicker(logPingPeriod)
-	defer ticker.Stop()
-
 	// Drop notification ticker (batch every 5s)
 	dropTicker := time.NewTicker(logDropBatchEvery)
 	defer dropTicker.Stop()
@@ -254,7 +200,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 				conn.WriteJSON(map[string]any{"type": "end"})
 				return
 			}
-			conn.SetWriteDeadline(time.Now().Add(logWriteWait))
+			conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := conn.WriteJSON(map[string]any{
 				"type": "log",
 				"data": line,
@@ -266,7 +212,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		case <-dropTicker.C:
 			dropped := droppedCount.Swap(0)
 			if dropped > 0 {
-				conn.SetWriteDeadline(time.Now().Add(logWriteWait))
+				conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 				conn.WriteJSON(map[string]any{
 					"type":  "dropped",
 					"count": dropped,
@@ -274,7 +220,7 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case <-ticker.C:
-			conn.SetWriteDeadline(time.Now().Add(logWriteWait))
+			conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}

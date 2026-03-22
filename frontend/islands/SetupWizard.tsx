@@ -4,6 +4,9 @@ import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
 import { apiPut, setAccessToken } from "@/lib/api.ts";
+import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
+import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
+import { settingsInputClass } from "@/components/settings/shared.ts";
 
 const STEPS = [
   { title: "Welcome" },
@@ -39,8 +42,8 @@ export default function SetupWizard() {
   const monitoringConfigured = useSignal(false);
   const alertingConfigured = useSignal(false);
 
-  const inputClass =
-    "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-white";
+  // Alerting needs an enabled signal even though wizard doesn't show toggle
+  const alertEnabled = useSignal(true);
 
   const createAdmin = async () => {
     if (loading.value) return; // guard against double-click
@@ -225,7 +228,7 @@ export default function SetupWizard() {
               onInput={(e) => {
                 username.value = (e.target as HTMLInputElement).value;
               }}
-              class={inputClass}
+              class={settingsInputClass}
               autoFocus
             />
           </div>
@@ -239,7 +242,7 @@ export default function SetupWizard() {
               onInput={(e) => {
                 password.value = (e.target as HTMLInputElement).value;
               }}
-              class={inputClass}
+              class={settingsInputClass}
             />
           </div>
           <div>
@@ -252,7 +255,7 @@ export default function SetupWizard() {
               onInput={(e) => {
                 confirmPassword.value = (e.target as HTMLInputElement).value;
               }}
-              class={inputClass}
+              class={settingsInputClass}
             />
           </div>
           <div>
@@ -267,7 +270,7 @@ export default function SetupWizard() {
                 setupToken.value = (e.target as HTMLInputElement).value;
               }}
               placeholder="Leave empty if not required"
-              class={inputClass}
+              class={settingsInputClass}
             />
           </div>
           <div class="flex justify-end pt-2">
@@ -293,47 +296,11 @@ export default function SetupWizard() {
             Connect to your Prometheus and Grafana instances. You can configure
             this later from Settings.
           </p>
-          <div>
-            <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Prometheus URL
-            </label>
-            <input
-              type="url"
-              value={promUrl.value}
-              onInput={(e) => {
-                promUrl.value = (e.target as HTMLInputElement).value;
-              }}
-              placeholder="http://prometheus:9090"
-              class={inputClass}
-            />
-          </div>
-          <div>
-            <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Grafana URL
-            </label>
-            <input
-              type="url"
-              value={grafUrl.value}
-              onInput={(e) => {
-                grafUrl.value = (e.target as HTMLInputElement).value;
-              }}
-              placeholder="http://grafana:3000"
-              class={inputClass}
-            />
-          </div>
-          <div>
-            <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-              Grafana API Token
-            </label>
-            <input
-              type="password"
-              value={grafToken.value}
-              onInput={(e) => {
-                grafToken.value = (e.target as HTMLInputElement).value;
-              }}
-              class={inputClass}
-            />
-          </div>
+          <MonitoringFields
+            promUrl={promUrl}
+            grafUrl={grafUrl}
+            grafToken={grafToken}
+          />
           <div class="flex justify-end gap-3 pt-2">
             <Button
               variant="ghost"
@@ -364,76 +331,14 @@ export default function SetupWizard() {
             Configure SMTP for email alerts. You can configure this later from
             Settings.
           </p>
-          <div class="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Host
-              </label>
-              <input
-                type="text"
-                value={smtpHost.value}
-                onInput={(e) => {
-                  smtpHost.value = (e.target as HTMLInputElement).value;
-                }}
-                placeholder="smtp.example.com"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Port
-              </label>
-              <input
-                type="number"
-                value={smtpPort.value}
-                onInput={(e) => {
-                  smtpPort.value =
-                    parseInt((e.target as HTMLInputElement).value) || 587;
-                }}
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                From Address
-              </label>
-              <input
-                type="email"
-                value={smtpFrom.value}
-                onInput={(e) => {
-                  smtpFrom.value = (e.target as HTMLInputElement).value;
-                }}
-                placeholder="alerts@example.com"
-                class={inputClass}
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Username
-              </label>
-              <input
-                type="text"
-                value={smtpUser.value}
-                onInput={(e) => {
-                  smtpUser.value = (e.target as HTMLInputElement).value;
-                }}
-                class={inputClass}
-              />
-            </div>
-            <div class="sm:col-span-2">
-              <label class="mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300">
-                SMTP Password
-              </label>
-              <input
-                type="password"
-                value={smtpPass.value}
-                onInput={(e) => {
-                  smtpPass.value = (e.target as HTMLInputElement).value;
-                }}
-                class={inputClass}
-              />
-            </div>
-          </div>
+          <AlertingFields
+            alertEnabled={alertEnabled}
+            smtpHost={smtpHost}
+            smtpPort={smtpPort}
+            smtpUser={smtpUser}
+            smtpPass={smtpPass}
+            smtpFrom={smtpFrom}
+          />
           <div class="flex justify-end gap-3 pt-2">
             <Button
               variant="ghost"

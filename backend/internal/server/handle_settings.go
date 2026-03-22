@@ -2,7 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -86,6 +89,29 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// validateSettingsURL checks that a URL is http/https and not pointing at private/loopback addresses.
+// Returns an error message string, or empty string if valid.
+func validateSettingsURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "invalid URL: " + raw
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "URL must use http or https scheme"
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return "URL must not point to private/loopback addresses"
+		}
+	}
+	return ""
+}
+
 // handleGetAppSettings returns the application settings with sensitive fields masked.
 // Admin-only — RequireAdmin middleware enforces auth before this handler runs.
 func (s *Server) handleGetAppSettings(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +142,18 @@ func (s *Server) handleUpdateAppSettings(w http.ResponseWriter, r *http.Request)
 			Error: &api.APIError{Code: 400, Message: "invalid request body"},
 		})
 		return
+	}
+
+	// Validate URLs to prevent SSRF
+	for _, u := range []*string{patch.MonitoringPrometheusURL, patch.MonitoringGrafanaURL} {
+		if u != nil {
+			if msg := validateSettingsURL(*u); msg != "" {
+				writeJSON(w, http.StatusBadRequest, api.Response{
+					Error: &api.APIError{Code: 400, Message: msg},
+				})
+				return
+			}
+		}
 	}
 
 	if err := s.SettingsService.Update(r.Context(), patch); err != nil {
