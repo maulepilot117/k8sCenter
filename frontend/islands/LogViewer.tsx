@@ -19,9 +19,13 @@ interface LogResponse {
   count: number;
 }
 
+interface LogLine {
+  raw: string;
+  html: string; // pre-computed ANSI HTML (cached at ingestion time)
+}
+
 interface TabState {
-  lines: string[];
-  ws: WebSocket | null;
+  lines: LogLine[];
   droppedCount: number;
   connected: boolean;
   error: string;
@@ -38,11 +42,10 @@ export default function LogViewer(
   const previous = useSignal(false);
   const splitView = useSignal(false);
   const splitTab = useSignal(1); // second tab in split view
-  // Per-tab state stored as array signal
+  // Per-tab state stored as array signal (display-relevant data only)
   const tabStates = useSignal<TabState[]>(
     containers.map(() => ({
       lines: [],
-      ws: null,
       droppedCount: 0,
       connected: false,
       error: "",
@@ -53,6 +56,15 @@ export default function LogViewer(
   const preRefs = useRef<(HTMLPreElement | null)[]>([]);
   // deno-lint-ignore no-explicit-any -- ansi_up has no TypeScript types in npm package
   const ansiUpRef = useRef<any>(null);
+
+  // WS refs — tracked separately from signal to avoid storing non-serializable objects in signals
+  const wsRefs = useRef<Map<number, WebSocket>>(new Map());
+
+  // RAF batching — accumulate incoming lines, flush once per animation frame
+  const pendingLines = useRef<Map<number, string[]>>(new Map());
+  const pendingDrops = useRef<Map<number, number>>(new Map());
+  const flushRafId = useRef(0);
+  const scrollRafId = useRef(0);
 
   const allContainers = [
     ...containers.map((c) => ({
@@ -82,7 +94,6 @@ export default function LogViewer(
   const getTabState = (idx: number): TabState =>
     tabStates.value[idx] ?? {
       lines: [],
-      ws: null,
       droppedCount: 0,
       connected: false,
       error: "",
@@ -94,35 +105,91 @@ export default function LogViewer(
     tabStates.value = states;
   };
 
-  // Connect WS for follow mode
+  // Convert a raw log line to a LogLine with cached HTML
+  const toLogLine = (raw: string): LogLine => {
+    const ansi = ansiUpRef.current;
+    return {
+      raw,
+      html: ansi ? ansi.ansi_to_html(raw) : escapeHtml(raw),
+    };
+  };
+
+  // Flush pending log lines from buffer into signal (called once per RAF)
+  const flushPendingLines = () => {
+    flushRafId.current = 0;
+    let changed = false;
+
+    const states = [...tabStates.value];
+    for (const [idx, rawLines] of pendingLines.current) {
+      if (rawLines.length === 0) continue;
+      const logLines = rawLines.map(toLogLine);
+      const merged = [...(states[idx]?.lines ?? []), ...logLines];
+      const trimmed = merged.length > MAX_LINES
+        ? merged.slice(merged.length - MAX_LINES)
+        : merged;
+      states[idx] = { ...states[idx], lines: trimmed };
+      changed = true;
+    }
+    pendingLines.current.clear();
+
+    for (const [idx, count] of pendingDrops.current) {
+      if (count > 0) {
+        states[idx] = {
+          ...states[idx],
+          droppedCount: (states[idx]?.droppedCount ?? 0) + count,
+        };
+        changed = true;
+      }
+    }
+    pendingDrops.current.clear();
+
+    if (changed) {
+      tabStates.value = states;
+      // Auto-scroll after batch flush
+      if (autoScroll.value && !scrollRafId.current) {
+        scrollRafId.current = requestAnimationFrame(() => {
+          scrollRafId.current = 0;
+          const pre = preRefs.current[activeTab.value];
+          if (pre) pre.scrollTop = pre.scrollHeight;
+        });
+      }
+    }
+  };
+
+  // Close a specific tab's WS connection
+  const closeTabWS = (tabIdx: number) => {
+    const ws = wsRefs.current.get(tabIdx);
+    if (ws) {
+      ws.close();
+      wsRefs.current.delete(tabIdx);
+    }
+  };
+
+  // Connect WS for follow mode — returns the WS for cleanup tracking
   const connectWS = useCallback((tabIdx: number) => {
     const container = allContainers[tabIdx]?.name;
     if (!container) return;
 
-    // Close existing connection
-    const existing = getTabState(tabIdx).ws;
-    if (existing) {
-      existing.close();
-    }
+    // Close existing connection for this tab
+    closeTabWS(tabIdx);
 
     const proto = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
     const url =
       `${proto}//${globalThis.location.host}/ws/v1/ws/logs/${namespace}/${pod}/${container}`;
 
     const ws = new WebSocket(url);
-    updateTabState(tabIdx, { ws, error: "", connected: false });
+    wsRefs.current.set(tabIdx, ws);
+    updateTabState(tabIdx, { error: "", connected: false });
 
     ws.onopen = () => {
-      // Send auth
       const token = getAccessToken();
       if (!token) {
         ws.close();
-        updateTabState(tabIdx, { error: "Not authenticated", ws: null });
+        wsRefs.current.delete(tabIdx);
+        updateTabState(tabIdx, { error: "Not authenticated" });
         return;
       }
       ws.send(JSON.stringify({ type: "auth", token }));
-
-      // Send filter
       ws.send(JSON.stringify({
         container,
         tailLines: 500,
@@ -132,6 +199,9 @@ export default function LogViewer(
     };
 
     ws.onmessage = (event) => {
+      // Mode guard: discard messages if we've switched to snapshot mode
+      if (mode.value !== "follow") return;
+
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "subscribed") {
@@ -140,27 +210,21 @@ export default function LogViewer(
           return;
         }
         if (msg.type === "log") {
-          const state = getTabState(tabIdx);
-          const newLines = [...state.lines, msg.data];
-          // Trim to MAX_LINES
-          const trimmed = newLines.length > MAX_LINES
-            ? newLines.slice(newLines.length - MAX_LINES)
-            : newLines;
-          updateTabState(tabIdx, { lines: trimmed });
-          // Auto-scroll
-          if (autoScroll.value) {
-            requestAnimationFrame(() => {
-              const pre = preRefs.current[tabIdx];
-              if (pre) pre.scrollTop = pre.scrollHeight;
-            });
+          // Batch into pending buffer — flushed once per RAF
+          const pending = pendingLines.current.get(tabIdx) ?? [];
+          pending.push(msg.data);
+          pendingLines.current.set(tabIdx, pending);
+          if (!flushRafId.current) {
+            flushRafId.current = requestAnimationFrame(flushPendingLines);
           }
           return;
         }
         if (msg.type === "dropped") {
-          const state = getTabState(tabIdx);
-          updateTabState(tabIdx, {
-            droppedCount: state.droppedCount + (msg.count ?? 0),
-          });
+          const current = pendingDrops.current.get(tabIdx) ?? 0;
+          pendingDrops.current.set(tabIdx, current + (msg.count ?? 0));
+          if (!flushRafId.current) {
+            flushRafId.current = requestAnimationFrame(flushPendingLines);
+          }
           return;
         }
         if (msg.type === "error") {
@@ -177,7 +241,8 @@ export default function LogViewer(
     };
 
     ws.onclose = () => {
-      updateTabState(tabIdx, { ws: null, connected: false });
+      wsRefs.current.delete(tabIdx);
+      updateTabState(tabIdx, { connected: false });
     };
 
     ws.onerror = () => {
@@ -201,7 +266,9 @@ export default function LogViewer(
       const res = await apiGet<LogResponse>(
         `/v1/resources/pods/${namespace}/${pod}/logs?${params}`,
       );
-      updateTabState(tabIdx, { lines: res.data.lines ?? [] });
+      updateTabState(tabIdx, {
+        lines: (res.data.lines ?? []).map(toLogLine),
+      });
       loading.value = false;
       // Scroll to bottom
       requestAnimationFrame(() => {
@@ -228,21 +295,28 @@ export default function LogViewer(
         connectWS(splitTab.value);
       }
     } else {
-      // Close any WS connections
-      tabStates.value.forEach((state, i) => {
-        if (state.ws) {
-          state.ws.close();
-          updateTabState(i, { ws: null, connected: false });
-        }
-      });
+      // Close ALL WS connections when switching to snapshot mode
+      for (const [i, ws] of wsRefs.current) {
+        ws.close();
+        wsRefs.current.delete(i);
+        updateTabState(i, { connected: false });
+      }
       fetchSnapshot(idx);
     }
 
     return () => {
-      // Cleanup WS on unmount
-      tabStates.value.forEach((state) => {
-        if (state.ws) state.ws.close();
-      });
+      // Cleanup all WS on unmount or dependency change
+      for (const [, ws] of wsRefs.current) {
+        ws.close();
+      }
+      wsRefs.current.clear();
+      // Cancel pending RAFs
+      if (flushRafId.current) cancelAnimationFrame(flushRafId.current);
+      if (scrollRafId.current) cancelAnimationFrame(scrollRafId.current);
+      flushRafId.current = 0;
+      scrollRafId.current = 0;
+      pendingLines.current.clear();
+      pendingDrops.current.clear();
     };
   }, [activeTab.value, mode.value, previous.value]);
 
@@ -256,15 +330,15 @@ export default function LogViewer(
     }
   };
 
-  // Search filtering
-  const getFilteredLines = (tabIdx: number): string[] => {
+  // Search filtering — operates on raw text, returns LogLine[]
+  const getFilteredLines = (tabIdx: number): LogLine[] => {
     const state = getTabState(tabIdx);
     if (!search.value.trim()) return state.lines;
     const q = search.value.toLowerCase();
-    return state.lines.filter((line) => line.toLowerCase().includes(q));
+    return state.lines.filter((line) => line.raw.toLowerCase().includes(q));
   };
 
-  // Render log content with ANSI colors and search highlighting
+  // Render log content using pre-cached HTML + search highlighting on raw text
   const renderLogContent = (tabIdx: number): string => {
     const filteredLines = getFilteredLines(tabIdx);
     if (filteredLines.length === 0) {
@@ -272,27 +346,35 @@ export default function LogViewer(
       return "No log output";
     }
 
-    const ansi = ansiUpRef.current;
     const q = search.value.trim().toLowerCase();
 
-    return filteredLines.map((line) => {
-      let html = ansi ? ansi.ansi_to_html(line) : escapeHtml(line);
-      // Highlight search matches
-      if (q) {
-        html = html.replace(
-          new RegExp(escapeRegExp(q), "gi"),
-          (match: string) =>
-            `<mark class="bg-yellow-300 dark:bg-yellow-700">${match}</mark>`,
-        );
-      }
-      return html;
+    if (!q) {
+      // Fast path: no search, just join pre-computed HTML
+      return filteredLines.map((l) => l.html).join("\n");
+    }
+
+    // Search highlighting: apply on the pre-computed HTML but only on text
+    // content (skip inside HTML tags to avoid breaking <span class="...">)
+    const re = new RegExp(escapeRegExp(q), "gi");
+    return filteredLines.map((l) => {
+      return l.html.replace(
+        /(<[^>]*>)|([^<]+)/g,
+        (_full: string, tag: string, text: string) => {
+          if (tag) return tag; // pass HTML tags through unchanged
+          return text.replace(
+            re,
+            (match: string) =>
+              `<mark class="bg-yellow-300 dark:bg-yellow-700">${match}</mark>`,
+          );
+        },
+      );
     }).join("\n");
   };
 
   // Download logs
   const downloadLogs = (tabIdx: number) => {
     const state = getTabState(tabIdx);
-    const content = state.lines.join("\n");
+    const content = state.lines.map((l) => l.raw).join("\n");
     const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -401,14 +483,19 @@ export default function LogViewer(
               type="checkbox"
               checked={splitView.value}
               onChange={(e) => {
-                splitView.value = (e.target as HTMLInputElement).checked;
-                if ((e.target as HTMLInputElement).checked) {
+                const checked = (e.target as HTMLInputElement).checked;
+                if (checked) {
                   // Pick second container different from active
                   const other = activeTab.value === 0 ? 1 : 0;
                   splitTab.value = other;
                   if (mode.value === "follow") connectWS(other);
                   else fetchSnapshot(other);
+                } else {
+                  // Close the split tab's WS when disabling split view
+                  closeTabWS(splitTab.value);
+                  updateTabState(splitTab.value, { connected: false });
                 }
+                splitView.value = checked;
               }}
             />
             Split view

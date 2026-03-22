@@ -201,9 +201,16 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate WebSocket origin
+	if h.OriginValidator != nil && !h.OriginValidator(w, r) {
+		return // origin validator already wrote the HTTP error
+	}
+
 	// Upgrade to WebSocket
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin:     func(r *http.Request) bool { return true }, // origin already validated above
 	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -211,6 +218,9 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	// Limit incoming message size (16KB — sufficient for input + resize JSON)
+	conn.SetReadLimit(16384)
 
 	// Track connection count
 	execWSCount.Add(1)
