@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
 
 /* Use class-based dark mode (.dark on <html>) instead of @media prefers-color-scheme */
 @variant dark (&:where(.dark, .dark *));

@@ -30,7 +30,7 @@ import { MetadataSection } from "@/components/k8s/detail/MetadataSection.tsx";
 import { stringify } from "yaml";
 import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
-import PodExec from "@/islands/PodExec.tsx";
+import PodTerminal from "@/islands/PodTerminal.tsx";
 import RelatedPods from "@/islands/RelatedPods.tsx";
 import { CodeMirrorEditor } from "@/components/ui/CodeMirrorEditor.tsx";
 
@@ -656,8 +656,8 @@ export default function ResourceDetail({
       },
     });
     tabDefs.push({
-      id: "exec",
-      label: "Exec",
+      id: "terminal",
+      label: "Terminal",
       content: () => {
         // deno-lint-ignore no-explicit-any
         const res = resource.value as any;
@@ -665,7 +665,7 @@ export default function ResourceDetail({
           // deno-lint-ignore no-explicit-any
           res?.spec?.containers?.map((c: any) => c.name) ?? [];
         return (
-          <PodExec
+          <PodTerminal
             namespace={namespace}
             name={name}
             containers={containers.length > 0 ? containers : ["default"]}
