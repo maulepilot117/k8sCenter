@@ -3,6 +3,7 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -37,8 +38,6 @@ const STEPS = [
   { title: "Review" },
 ];
 
-const DNS_LABEL_REGEX = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
-
 function initialState(clusterScoped: boolean): BindingFormState {
   const ns = IS_BROWSER && selectedNamespace.value !== "all"
     ? selectedNamespace.value
@@ -65,6 +64,7 @@ export default function RoleBindingWizard(
   const roles = useSignal<RoleItem[]>([]);
   const clusterRoles = useSignal<RoleItem[]>([]);
   const localUsers = useSignal<LocalUser[]>([]);
+  const localUsersFetched = useSignal(false);
   const showUserPicker = useSignal<number | null>(null);
 
   // Review step state
@@ -89,13 +89,19 @@ export default function RoleBindingWizard(
     if (!IS_BROWSER) return;
     const ns = form.value.namespace;
     if (!clusterScoped && ns) {
+      let cancelled = false;
       apiGet<RoleItem[]>(`/v1/resources/roles/${ns}?limit=500`)
         .then((resp) => {
-          roles.value = Array.isArray(resp.data) ? resp.data : [];
+          if (!cancelled) {
+            roles.value = Array.isArray(resp.data) ? resp.data : [];
+          }
         })
         .catch(() => {
-          roles.value = [];
+          if (!cancelled) roles.value = [];
         });
+      return () => {
+        cancelled = true;
+      };
     }
   }, [form.value.namespace]);
 
@@ -125,6 +131,12 @@ export default function RoleBindingWizard(
     dirty.value = true;
     form.value = { ...form.value, [field]: value };
   }, []);
+
+  const updateSubject = (idx: number, patch: Partial<SubjectRow>) => {
+    const subs = [...form.value.subjects];
+    subs[idx] = { ...subs[idx], ...patch };
+    updateField("subjects", subs);
+  };
 
   const validateStep = (step: number): boolean => {
     const f = form.value;
@@ -220,6 +232,8 @@ export default function RoleBindingWizard(
   };
 
   const fetchLocalUsers = async () => {
+    if (localUsersFetched.value) return;
+    localUsersFetched.value = true;
     try {
       const resp = await apiGet<LocalUser[]>("/v1/users");
       localUsers.value = Array.isArray(resp.data) ? resp.data : [];
@@ -232,10 +246,7 @@ export default function RoleBindingWizard(
     return <div class="p-6">Loading wizard...</div>;
   }
 
-  const cancelHref = clusterScoped
-    ? "/rbac/clusterrolebindings"
-    : "/rbac/rolebindings";
-  const detailBasePath = clusterScoped
+  const basePath = clusterScoped
     ? "/rbac/clusterrolebindings"
     : "/rbac/rolebindings";
 
@@ -246,7 +257,7 @@ export default function RoleBindingWizard(
           Create {clusterScoped ? "ClusterRoleBinding" : "RoleBinding"}
         </h1>
         <a
-          href={cancelHref}
+          href={basePath}
           class="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
         >
           Cancel
@@ -398,15 +409,11 @@ export default function RoleBindingWizard(
                       <td class="px-4 py-2">
                         <select
                           value={subject.kind}
-                          onChange={(e) => {
-                            const subs = [...form.value.subjects];
-                            subs[idx] = {
-                              ...subs[idx],
+                          onChange={(e) =>
+                            updateSubject(idx, {
                               kind: (e.target as HTMLSelectElement)
                                 .value as SubjectRow["kind"],
-                            };
-                            updateField("subjects", subs);
-                          }}
+                            })}
                           class="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                         >
                           <option value="User">User</option>
@@ -419,14 +426,10 @@ export default function RoleBindingWizard(
                           <input
                             type="text"
                             value={subject.name}
-                            onInput={(e) => {
-                              const subs = [...form.value.subjects];
-                              subs[idx] = {
-                                ...subs[idx],
+                            onInput={(e) =>
+                              updateSubject(idx, {
                                 name: (e.target as HTMLInputElement).value,
-                              };
-                              updateField("subjects", subs);
-                            }}
+                              })}
                             class="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                             placeholder="Subject name"
                           />
@@ -434,9 +437,7 @@ export default function RoleBindingWizard(
                             <button
                               type="button"
                               onClick={async () => {
-                                if (localUsers.value.length === 0) {
-                                  await fetchLocalUsers();
-                                }
+                                await fetchLocalUsers();
                                 showUserPicker.value =
                                   showUserPicker.value === idx
                                     ? null
@@ -457,12 +458,9 @@ export default function RoleBindingWizard(
                                 key={u.id}
                                 type="button"
                                 onClick={() => {
-                                  const subs = [...form.value.subjects];
-                                  subs[idx] = {
-                                    ...subs[idx],
+                                  updateSubject(idx, {
                                     name: u.k8sUsername,
-                                  };
-                                  updateField("subjects", subs);
+                                  });
                                   showUserPicker.value = null;
                                 }}
                                 class="block w-full px-3 py-1 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700"
@@ -488,15 +486,11 @@ export default function RoleBindingWizard(
                               <input
                                 type="text"
                                 value={subject.namespace}
-                                onInput={(e) => {
-                                  const subs = [...form.value.subjects];
-                                  subs[idx] = {
-                                    ...subs[idx],
+                                onInput={(e) =>
+                                  updateSubject(idx, {
                                     namespace:
                                       (e.target as HTMLInputElement).value,
-                                  };
-                                  updateField("subjects", subs);
-                                }}
+                                  })}
                                 class="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"
                                 placeholder="Namespace"
                               />
@@ -546,13 +540,15 @@ export default function RoleBindingWizard(
 
             <button
               type="button"
+              disabled={form.value.subjects.length >= 50}
               onClick={() => {
+                if (form.value.subjects.length >= 50) return;
                 updateField("subjects", [
                   ...form.value.subjects,
                   { kind: "User", name: "", namespace: "" },
                 ]);
               }}
-              class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-700"
+              class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-700"
             >
               <svg
                 class="h-4 w-4"
@@ -581,13 +577,15 @@ export default function RoleBindingWizard(
             }}
             loading={previewLoading.value}
             error={previewError.value}
-            detailBasePath={detailBasePath}
+            detailBasePath={basePath}
           />
         )}
       </div>
 
       {/* Navigation buttons */}
-      {currentStep.value < 3 && (
+      {(currentStep.value < 3 ||
+        (currentStep.value === 3 && !previewLoading.value &&
+          previewError.value === null)) && (
         <div class="mt-8 flex justify-between">
           <Button
             variant="ghost"
@@ -596,18 +594,11 @@ export default function RoleBindingWizard(
           >
             Back
           </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 2 ? "Preview YAML" : "Next"}
-          </Button>
-        </div>
-      )}
-
-      {currentStep.value === 3 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
+          {currentStep.value < 3 && (
+            <Button variant="primary" onClick={goNext}>
+              {currentStep.value === 2 ? "Preview YAML" : "Next"}
+            </Button>
+          )}
         </div>
       )}
     </div>

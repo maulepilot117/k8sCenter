@@ -6,7 +6,7 @@ export default define.page(function RoleBindingsPage() {
     <ResourceTable
       kind="rolebindings"
       title="RoleBindings"
-      createHref="/resources/rolebindings/new"
+      createHref="/rbac/rolebindings/new"
     />
   );
 });

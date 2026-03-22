@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
@@ -39,7 +39,7 @@ export default function UserWizard() {
   const submitting = useSignal(false);
   const submitError = useSignal<string | null>(null);
   const created = useSignal(false);
-  const createdUsername = useSignal("");
+  const dirty = useSignal(false);
   const usernameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -51,7 +51,7 @@ export default function UserWizard() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     const handler = (e: BeforeUnloadEvent) => {
-      if (form.value.username && !created.value) {
+      if (dirty.value && !created.value) {
         e.preventDefault();
       }
     };
@@ -59,9 +59,10 @@ export default function UserWizard() {
     return () => globalThis.removeEventListener("beforeunload", handler);
   }, []);
 
-  const updateField = (field: string, value: unknown) => {
+  const updateField = useCallback((field: string, value: unknown) => {
+    dirty.value = true;
     form.value = { ...form.value, [field]: value };
-  };
+  }, []);
 
   const validateStep = (step: number): boolean => {
     const f = form.value;
@@ -81,13 +82,13 @@ export default function UserWizard() {
       if (f.password !== f.confirmPassword) {
         errs.confirmPassword = "Passwords do not match";
       }
-      // Validate k8s identity if provided
-      if (f.showAdvanced) {
-        const k8sUser = f.k8sUsername || f.username;
-        if (k8sUser.startsWith("system:")) {
-          errs.k8sUsername =
-            "Cannot start with 'system:' (reserved by Kubernetes)";
-        }
+      // Validate k8s identity (always, not just when advanced is open)
+      const k8sUser = f.k8sUsername || f.username;
+      if (k8sUser.startsWith("system:")) {
+        errs.k8sUsername =
+          "Cannot start with 'system:' (reserved by Kubernetes)";
+      }
+      if (f.k8sGroups) {
         const groups = f.k8sGroups
           .split(",")
           .map((g) => g.trim())
@@ -139,7 +140,6 @@ export default function UserWizard() {
     try {
       await apiPost("/v1/users", payload);
       created.value = true;
-      createdUsername.value = f.username;
     } catch (err) {
       if (err instanceof Error) {
         submitError.value = err.message;
@@ -180,7 +180,7 @@ export default function UserWizard() {
               </h2>
             </div>
             <p class="mt-2 text-sm text-green-700 dark:text-green-400">
-              User "{createdUsername.value}" has been created successfully. To
+              User "{form.value.username}" has been created successfully. To
               grant permissions, create a Role Binding.
             </p>
             <div class="mt-4 flex gap-3">
@@ -296,6 +296,32 @@ export default function UserWizard() {
                   {errors.value.confirmPassword}
                 </p>
               )}
+            </div>
+
+            {/* Admin role toggle */}
+            <div class="flex items-center gap-3">
+              <input
+                type="checkbox"
+                id="admin-role"
+                checked={f.roles.includes("admin")}
+                onChange={(e) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  updateField(
+                    "roles",
+                    checked ? ["admin"] : [],
+                  );
+                }}
+                class="h-4 w-4 rounded border-slate-300 text-brand focus:ring-brand dark:border-slate-600"
+              />
+              <label
+                for="admin-role"
+                class="text-sm font-medium text-slate-700 dark:text-slate-300"
+              >
+                Admin role
+              </label>
+              <span class="text-xs text-slate-400">
+                Grants access to user management, settings, and audit logs
+              </span>
             </div>
 
             {/* Collapsible Advanced section */}

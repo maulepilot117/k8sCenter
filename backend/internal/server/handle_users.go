@@ -64,9 +64,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if len(k8sUser) > maxUsernameLen || !validUsername.MatchString(k8sUser) {
+	if k8sUser == "" || len(k8sUser) > maxUsernameLen {
 		writeJSON(w, http.StatusBadRequest, api.Response{
-			Error: &api.APIError{Code: 400, Message: "invalid k8sUsername format"},
+			Error: &api.APIError{Code: 400, Message: "k8sUsername must be 1-253 characters"},
 		})
 		return
 	}
@@ -141,12 +141,15 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	entry := s.newAuditEntry(r, caller.Username, audit.ActionCreate, audit.ResultSuccess)
 	entry.ResourceKind = "User"
 	entry.ResourceName = user.Username
+	entry.Detail = "k8sUsername=" + user.KubernetesUsername + " k8sGroups=" + strings.Join(user.KubernetesGroups, ",")
 	s.AuditLogger.Log(r.Context(), entry)
 
 	writeJSON(w, http.StatusCreated, api.Response{
 		Data: map[string]any{
+			"id":          user.ID,
 			"username":    user.Username,
 			"k8sUsername": user.KubernetesUsername,
+			"k8sGroups":   user.KubernetesGroups,
 			"roles":       user.Roles,
 		},
 	})

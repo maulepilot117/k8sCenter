@@ -49,6 +49,9 @@ func (rb *RoleBindingInput) Validate() []FieldError {
 	if rb.RoleRef.Kind != "Role" && rb.RoleRef.Kind != "ClusterRole" {
 		errs = append(errs, FieldError{Field: "roleRef.kind", Message: "must be Role or ClusterRole"})
 	}
+	if rb.ClusterScope && rb.RoleRef.Kind == "Role" {
+		errs = append(errs, FieldError{Field: "roleRef.kind", Message: "ClusterRoleBinding can only reference a ClusterRole"})
+	}
 	if rb.RoleRef.Name == "" {
 		errs = append(errs, FieldError{Field: "roleRef.name", Message: "is required"})
 	}
