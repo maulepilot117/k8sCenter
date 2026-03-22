@@ -89,7 +89,7 @@ export default function RoleBindingWizard(
     if (!IS_BROWSER) return;
     const ns = form.value.namespace;
     if (!clusterScoped && ns) {
-      apiGet<RoleItem[]>(`/v1/resources/roles/${ns}`)
+      apiGet<RoleItem[]>(`/v1/resources/roles/${ns}?limit=500`)
         .then((resp) => {
           roles.value = Array.isArray(resp.data) ? resp.data : [];
         })
@@ -102,7 +102,7 @@ export default function RoleBindingWizard(
   // Fetch cluster roles
   useEffect(() => {
     if (!IS_BROWSER) return;
-    apiGet<RoleItem[]>("/v1/resources/clusterroles")
+    apiGet<RoleItem[]>("/v1/resources/clusterroles?limit=500")
       .then((resp) => {
         clusterRoles.value = Array.isArray(resp.data) ? resp.data : [];
       })

@@ -113,7 +113,7 @@ func (s *Server) registerRoutes() {
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
 				ur.Get("/", s.handleListUsers)
-				ur.Post("/", s.handleCreateUser)
+				ur.With(middleware.RateLimit(s.RateLimiter)).Post("/", s.handleCreateUser)
 				ur.Delete("/{id}", s.handleDeleteUser)
 				ur.Put("/{id}/password", s.handleUpdateUserPassword)
 			})

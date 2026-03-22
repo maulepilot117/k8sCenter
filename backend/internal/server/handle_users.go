@@ -71,24 +71,51 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate k8sGroups: reject system:masters
+	// Validate k8sGroups: reject system: prefix (except system:authenticated), enforce bounds
 	k8sGroups := req.K8sGroups
 	if len(k8sGroups) == 0 {
 		k8sGroups = []string{"system:authenticated"}
 	}
+	if len(k8sGroups) > 20 {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "too many groups (max 20)"},
+		})
+		return
+	}
 	for _, g := range k8sGroups {
-		if g == "system:masters" {
+		if len(g) > maxUsernameLen {
 			writeJSON(w, http.StatusBadRequest, api.Response{
-				Error: &api.APIError{Code: 400, Message: "group 'system:masters' cannot be assigned (bypasses all RBAC)"},
+				Error: &api.APIError{Code: 400, Message: "group name too long (max 253 characters)"},
+			})
+			return
+		}
+		if strings.HasPrefix(g, "system:") && g != "system:authenticated" {
+			writeJSON(w, http.StatusBadRequest, api.Response{
+				Error: &api.APIError{Code: 400, Message: "group '" + g + "' cannot be assigned ('system:' prefix is reserved by Kubernetes)"},
 			})
 			return
 		}
 	}
 
-	// Default roles to empty if not provided
+	// Validate roles against allowlist
+	validRoles := map[string]bool{"admin": true, "viewer": true}
 	roles := req.Roles
 	if roles == nil {
 		roles = []string{}
+	}
+	if len(roles) > 10 {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "too many roles (max 10)"},
+		})
+		return
+	}
+	for _, role := range roles {
+		if !validRoles[role] {
+			writeJSON(w, http.StatusBadRequest, api.Response{
+				Error: &api.APIError{Code: 400, Message: "invalid role: " + role + " (allowed: admin, viewer)"},
+			})
+			return
+		}
 	}
 
 	opts := &auth.CreateUserOpts{
