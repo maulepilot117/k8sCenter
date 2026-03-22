@@ -75,11 +75,11 @@ func (h *Handler) HandleListClusterRoles(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	params := parseListParams(r)
-	if !h.checkAccess(w, r, user, "list", kindClusterRole, "") {
-		return
-	}
 	sel, ok := parseSelectorOrReject(w, params.LabelSelector)
 	if !ok {
+		return
+	}
+	if !h.checkAccess(w, r, user, "list", kindClusterRole, "") {
 		return
 	}
 	all, err := h.Informers.ClusterRoles().List(sel)
@@ -182,11 +182,11 @@ func (h *Handler) HandleListClusterRoleBindings(w http.ResponseWriter, r *http.R
 		return
 	}
 	params := parseListParams(r)
-	if !h.checkAccess(w, r, user, "list", kindClusterRoleBinding, "") {
-		return
-	}
 	sel, ok := parseSelectorOrReject(w, params.LabelSelector)
 	if !ok {
+		return
+	}
+	if !h.checkAccess(w, r, user, "list", kindClusterRoleBinding, "") {
 		return
 	}
 	all, err := h.Informers.ClusterRoleBindings().List(sel)
