@@ -213,6 +213,27 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
         'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~".*",container!=""}[5m])) by (pod)',
     },
   ],
+  pvs: [
+    {
+      title: "Capacity (GiB)",
+      query:
+        'kube_persistentvolume_capacity_bytes{persistentvolume="{name}"} / 1024 / 1024 / 1024',
+    },
+    {
+      title: "Phase",
+      query: 'kube_persistentvolume_status_phase{persistentvolume="{name}"}',
+    },
+    {
+      title: "Bound PVC Usage (GiB)",
+      query:
+        'kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*"} * on(persistentvolumeclaim, namespace) group_left kube_persistentvolumeclaim_info{volumename="{name}"} / 1024 / 1024 / 1024',
+    },
+    {
+      title: "Bound PVC Inodes Used",
+      query:
+        'kubelet_volume_stats_inodes_used * on(persistentvolumeclaim, namespace) group_left kube_persistentvolumeclaim_info{volumename="{name}"}',
+    },
+  ],
   pvcs: [
     {
       title: "Volume Usage (GiB)",
