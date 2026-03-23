@@ -148,6 +148,92 @@ func (h *Handler) HandleRoleBindingPreview(w http.ResponseWriter, r *http.Reques
 	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
 }
 
+// HandlePVCPreview handles POST /api/v1/wizards/pvc/preview.
+// It validates the input, constructs a typed PVC, and returns YAML.
+func (h *Handler) HandlePVCPreview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	var input PVCInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	if errs := input.Validate(); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	pvc := input.ToPersistentVolumeClaim()
+	yamlBytes, err := sigsyaml.Marshal(pvc)
+	if err != nil {
+		h.Logger.Error("failed to marshal PVC to YAML", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+		return
+	}
+
+	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
+}
+
+// HandleScheduledSnapshotPreview handles POST /api/v1/wizards/scheduled-snapshot/preview.
+// It validates the input, generates multi-doc YAML (SA + Role + RoleBinding + CronJob), and returns it.
+func (h *Handler) HandleScheduledSnapshotPreview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	var input ScheduledSnapshotInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	if errs := input.Validate(); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	yamlStr, err := input.ToMultiDocYAML()
+	if err != nil {
+		h.Logger.Error("failed to generate scheduled snapshot YAML", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+		return
+	}
+
+	httputil.WriteData(w, map[string]string{"yaml": yamlStr})
+}
+
+// HandleSnapshotPreview handles POST /api/v1/wizards/snapshot/preview.
+// It validates the input, constructs an unstructured VolumeSnapshot, and returns YAML.
+func (h *Handler) HandleSnapshotPreview(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	var input SnapshotInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	if errs := input.Validate(); len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	obj := input.ToVolumeSnapshot()
+	yamlBytes, err := sigsyaml.Marshal(obj.Object)
+	if err != nil {
+		h.Logger.Error("failed to marshal volume snapshot to YAML", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+		return
+	}
+
+	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
+}
+
 func writeValidationErrors(w http.ResponseWriter, errs []FieldError) {
 	// Encode field errors as JSON in the Detail field to follow the
 	// project convention of using Error only (never both Data and Error).

@@ -48,3 +48,37 @@ export const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * cannot start or end with hyphen, no consecutive hyphens.
  */
 export const PORT_NAME_REGEX = /^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$|^[a-z0-9]$/;
+
+/** StorageClass item shape returned by the API. */
+export interface StorageClassItem {
+  metadata: { name: string };
+  provisioner?: string;
+}
+
+/** PVC access mode options for wizard radio groups. */
+export const ACCESS_MODES = [
+  {
+    value: "ReadWriteOnce",
+    label: "ReadWriteOnce",
+    desc: "Single node read-write",
+  },
+  {
+    value: "ReadWriteMany",
+    label: "ReadWriteMany",
+    desc: "Multi-node read-write",
+  },
+  {
+    value: "ReadOnlyMany",
+    label: "ReadOnlyMany",
+    desc: "Multi-node read-only",
+  },
+  {
+    value: "ReadWriteOncePod",
+    label: "ReadWriteOncePod",
+    desc: "Single pod read-write",
+  },
+];
+
+/** Standard Tailwind input class for wizard form fields. */
+export const WIZARD_INPUT_CLASS =
+  "mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-white";

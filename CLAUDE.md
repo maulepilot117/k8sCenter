@@ -59,8 +59,8 @@ kubecenter/
 │   │   │   ├── handle_setup.go        # POST /setup/init — first admin creation (one-time)
 │   │   │   ├── handle_health.go       # GET /healthz, GET /readyz
 │   │   │   ├── handle_cluster.go      # GET /cluster/info (version, node count, KubeCenter version)
-│   │   │   ├── handle_users.go       # Admin-only user management: list, delete, change password
-│   │   │   ├── handle_users_test.go  # 7 httptest integration tests (guards, RBAC, password validation)
+│   │   │   ├── handle_users.go       # Admin-only user management: list, create, delete, change password
+│   │   │   ├── handle_users_test.go  # 16 httptest integration tests (CRUD, guards, RBAC, validation)
 │   │   │   ├── handle_ws.go          # WebSocket upgrade for resource events + shared origin validation
 │   │   │   ├── handle_ws_flows.go    # WebSocket for Hubble flow streaming (gRPC→WS pipe, per-client)
 │   │   │   └── middleware/
@@ -106,7 +106,7 @@ kubecenter/
 │   │   │       ├── pvcs.go            # List, get, create, delete
 │   │   │       ├── jobs.go            # Jobs + CronJobs CRUD
 │   │   │       ├── networkpolicies.go # CRUD
-│   │   │       ├── rbac_viewer.go     # Read-only: Roles, ClusterRoles, RoleBindings, ClusterRoleBindings
+│   │   │       ├── rbac.go            # Roles/ClusterRoles (read-only) + RoleBinding/ClusterRoleBinding CRUD
 │   │   │       └── resources_test.go  # 19 tests — list, get, pagination, RBAC, masking, validation
 │   │   │   # [planned] storage/       # CSI/StorageClass (Step 10)
 │   │   │   # [planned] networking/    # CNI detection (Step 10)
@@ -159,7 +159,11 @@ kubecenter/
 │   │   ├── status-colors.ts          # Shared status → color mapping utility
 │   │   ├── action-handlers.ts        # Resource action definitions + API execution (scale, restart, delete, suspend, trigger)
 │   │   ├── permissions.ts            # K8s RBAC permission checking (canPerform) for UI gating
-│   │   └── user-types.ts             # LocalUser interface for admin user management
+│   │   ├── user-types.ts             # LocalUser interface for admin user management
+│   │   └── hooks/
+│   │       ├── use-namespaces.ts     # Shared hook: fetch namespace names for dropdowns
+│   │       ├── use-dirty-guard.ts    # Shared hook: beforeunload guard for unsaved changes
+│   │       └── use-storage-classes.ts # Shared hook: fetch StorageClasses for dropdowns
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
@@ -176,7 +180,13 @@ kubecenter/
 │   │   ├── Dashboard.tsx              # Cluster overview — stat cards, cluster details
 │   │   ├── LoginForm.tsx              # Login form with error handling
 │   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination, kebab action menus
-│   │   ├── UserManager.tsx            # Admin user management — list, delete, change password
+│   │   ├── UserManager.tsx            # Admin user management — list, create, delete, change password
+│   │   ├── UserWizard.tsx             # 2-step user creation wizard with k8s identity
+│   │   ├── RoleBindingWizard.tsx      # 4-step RoleBinding/ClusterRoleBinding wizard
+│   │   ├── PVCWizard.tsx              # 2-step PVC creation wizard with DataSource support
+│   │   ├── SnapshotWizard.tsx         # 2-step VolumeSnapshot creation wizard (driver-filtered)
+│   │   ├── RestoreSnapshotWizard.tsx  # 2-step restore-from-snapshot wizard
+│   │   ├── ScheduledSnapshotWizard.tsx # 3-step scheduled snapshot CronJob wizard
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
@@ -317,8 +327,29 @@ POST   /api/v1/resources/cronjobs/:ns/:name/trigger     # Create Job from CronJo
 
 # User Management (admin only)
 GET    /api/v1/users                          # List all local users (no password data)
+POST   /api/v1/users                          # Create user with k8s identity (rate limited)
 DELETE /api/v1/users/{id}                     # Delete user (guards: self-delete, last-admin)
 PUT    /api/v1/users/{id}/password            # Change password (validates 8-128 chars)
+
+# RBAC Binding CRUD (Phase 4B)
+POST   /api/v1/resources/rolebindings/{namespace}        # Create RoleBinding
+PUT    /api/v1/resources/rolebindings/{namespace}/{name}  # Update RoleBinding
+DELETE /api/v1/resources/rolebindings/{namespace}/{name}  # Delete RoleBinding
+POST   /api/v1/resources/clusterrolebindings              # Create ClusterRoleBinding
+PUT    /api/v1/resources/clusterrolebindings/{name}       # Update ClusterRoleBinding
+DELETE /api/v1/resources/clusterrolebindings/{name}       # Delete ClusterRoleBinding
+
+# Storage Snapshots (Phase 4C)
+POST   /api/v1/storage/snapshots/{namespace}              # Create VolumeSnapshot
+GET    /api/v1/storage/snapshots/{namespace}/{name}       # Get VolumeSnapshot
+DELETE /api/v1/storage/snapshots/{namespace}/{name}       # Delete VolumeSnapshot
+GET    /api/v1/storage/snapshot-classes                   # List VolumeSnapshotClasses
+
+# Wizard Preview Endpoints (Phase 4B/4C)
+POST   /api/v1/wizards/rolebinding/preview                # RoleBinding YAML preview
+POST   /api/v1/wizards/pvc/preview                        # PVC YAML preview (with DataSource)
+POST   /api/v1/wizards/snapshot/preview                   # VolumeSnapshot YAML preview
+POST   /api/v1/wizards/scheduled-snapshot/preview         # Scheduled snapshot multi-doc YAML
 
 # Frontend BFF Proxy (Step 4 — routes/api/[...path].ts)
 # All /api/* requests from the browser are proxied through the Fresh BFF to the Go backend.
@@ -702,6 +733,15 @@ All 8 steps implemented (Steps 16-23).
 | 5 | CSP Fresh Middleware + Hardening | #51 |
 | 6 | AlertBanner WebSocket Migration | #52 |
 | 7 | Frontend Permission Gating (k8s RBAC) | #53, #54 |
+
+### Phase 4 (Features & Wizards) — IN PROGRESS
+
+| Sub-phase | Feature | Status |
+|-----------|---------|--------|
+| **4A** | Core Infrastructure (pod logs WS, pod exec xterm.js, persistent settings, setup wizard) | COMPLETE (PR #58, #59) |
+| **4B** | User & RBAC Management (user creation with k8s identity, RoleBinding/ClusterRoleBinding CRUD + wizards) | COMPLETE |
+| **4C** | Storage (snapshot CRUD, snapshot/restore/scheduled snapshot wizards, PVC wizard, shared wizard hooks) | COMPLETE |
+| **4D** | Resource Wizards (StatefulSet, DaemonSet, Job, CronJob, ConfigMap, Secret, Ingress, NetworkPolicy, HPA, PDB) | Not started |
 
 ---
 
