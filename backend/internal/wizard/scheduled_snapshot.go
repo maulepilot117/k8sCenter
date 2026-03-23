@@ -2,15 +2,10 @@ package wizard
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	sigsyaml "sigs.k8s.io/yaml"
 )
-
-// cronRegex validates basic 5-field cron expressions (min hour dom month dow).
-// Allows *, digits, ranges (1-5), steps (*/2), lists (1,3,5), and common shortcuts.
-var cronRegex = regexp.MustCompile(`^(\S+\s+){4}\S+$`)
 
 // ScheduledSnapshotInput represents the wizard form data for creating a
 // CronJob-based scheduled VolumeSnapshot workflow.

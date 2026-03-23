@@ -187,6 +187,13 @@ kubecenter/
 │   │   ├── SnapshotWizard.tsx         # 2-step VolumeSnapshot creation wizard (driver-filtered)
 │   │   ├── RestoreSnapshotWizard.tsx  # 2-step restore-from-snapshot wizard
 │   │   ├── ScheduledSnapshotWizard.tsx # 3-step scheduled snapshot CronJob wizard
+│   │   ├── ConfigMapWizard.tsx        # 2-step ConfigMap creation wizard
+│   │   ├── SecretWizard.tsx           # 2-step Secret wizard with type-specific forms
+│   │   ├── IngressWizard.tsx          # 2-step Ingress wizard with host/path rules
+│   │   ├── JobWizard.tsx              # 3-step Job wizard with ContainerForm
+│   │   ├── CronJobWizard.tsx          # 3-step CronJob wizard with schedule + ContainerForm
+│   │   ├── DaemonSetWizard.tsx        # 2-step DaemonSet wizard with nodeSelector
+│   │   ├── StatefulSetWizard.tsx      # 3-step StatefulSet wizard with VCT editor
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
@@ -199,6 +206,10 @@ kubecenter/
 │       │   ├── Input.tsx              # Form input with label and error state
 │       │   ├── SearchBar.tsx          # Search input with icon
 │       │   └── StatusBadge.tsx        # Status indicator with color variants
+│       ├── wizard/
+│       │   ├── WizardStepper.tsx      # Step navigation bar
+│       │   ├── WizardReviewStep.tsx   # YAML preview + edit + apply
+│       │   └── ContainerForm.tsx      # Shared container config (image, ports, env, resources)
 │       ├── k8s/
 │       │   └── ResourceIcon.tsx       # SVG icons for k8s resource types
 │       └── layout/
@@ -350,6 +361,13 @@ POST   /api/v1/wizards/rolebinding/preview                # RoleBinding YAML pre
 POST   /api/v1/wizards/pvc/preview                        # PVC YAML preview (with DataSource)
 POST   /api/v1/wizards/snapshot/preview                   # VolumeSnapshot YAML preview
 POST   /api/v1/wizards/scheduled-snapshot/preview         # Scheduled snapshot multi-doc YAML
+POST   /api/v1/wizards/configmap/preview                  # ConfigMap YAML preview
+POST   /api/v1/wizards/secret/preview                     # Secret YAML preview (unmasked stringData)
+POST   /api/v1/wizards/ingress/preview                    # Ingress YAML preview
+POST   /api/v1/wizards/job/preview                        # Job YAML preview
+POST   /api/v1/wizards/cronjob/preview                    # CronJob YAML preview
+POST   /api/v1/wizards/daemonset/preview                  # DaemonSet YAML preview
+POST   /api/v1/wizards/statefulset/preview                # StatefulSet YAML preview
 
 # Frontend BFF Proxy (Step 4 — routes/api/[...path].ts)
 # All /api/* requests from the browser are proxied through the Fresh BFF to the Go backend.
@@ -741,7 +759,9 @@ All 8 steps implemented (Steps 16-23).
 | **4A** | Core Infrastructure (pod logs WS, pod exec xterm.js, persistent settings, setup wizard) | COMPLETE (PR #58, #59) |
 | **4B** | User & RBAC Management (user creation with k8s identity, RoleBinding/ClusterRoleBinding CRUD + wizards) | COMPLETE |
 | **4C** | Storage (snapshot CRUD, snapshot/restore/scheduled snapshot wizards, PVC wizard, shared wizard hooks) | COMPLETE |
-| **4D** | Resource Wizards (StatefulSet, DaemonSet, Job, CronJob, ConfigMap, Secret, Ingress, NetworkPolicy, HPA, PDB) | Not started |
+| **4D** | Resource Wizards — Batch 1 (generic handler + ConfigMap, Secret, Ingress) | COMPLETE |
+| **4D** | Resource Wizards — Batch 2 (ContainerForm + Job, CronJob, DaemonSet, StatefulSet) | COMPLETE |
+| **4D** | Resource Wizards — Batch 3 (NetworkPolicy, HPA, PDB + integration) | Not started |
 
 ---
 
