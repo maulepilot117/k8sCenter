@@ -77,6 +77,8 @@ export default function ScheduledSnapshotWizard() {
   const pvcs = useSignal<PVCItem[]>([]);
   const snapshotClasses = useSignal<SnapshotClassItem[]>([]);
 
+  const snapshotsAvailable = useSignal(true);
+
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
@@ -107,14 +109,21 @@ export default function ScheduledSnapshotWizard() {
   // Fetch snapshot classes
   useEffect(() => {
     if (!IS_BROWSER) return;
-    apiGet<SnapshotClassItem[]>("/v1/storage/snapshot-classes")
+    apiGet<
+      { data: SnapshotClassItem[]; metadata: { available: boolean } }
+    >("/v1/storage/snapshot-classes")
       .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          snapshotClasses.value = resp.data;
-          if (resp.data.length > 0 && !form.value.volumeSnapshotClassName) {
+        if (resp.data?.metadata?.available === false) {
+          snapshotsAvailable.value = false;
+          return;
+        }
+        const classes = resp.data?.data;
+        if (Array.isArray(classes)) {
+          snapshotClasses.value = classes;
+          if (classes.length > 0 && !form.value.volumeSnapshotClassName) {
             form.value = {
               ...form.value,
-              volumeSnapshotClassName: resp.data[0].metadata.name,
+              volumeSnapshotClassName: classes[0].name,
             };
           }
         }
@@ -208,6 +217,29 @@ export default function ScheduledSnapshotWizard() {
 
   if (!IS_BROWSER) {
     return <div class="p-6">Loading wizard...</div>;
+  }
+
+  if (!snapshotsAvailable.value) {
+    return (
+      <div class="p-6">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-900/20">
+          <p class="text-lg font-medium text-amber-800 dark:text-amber-200">
+            VolumeSnapshot CRDs Not Installed
+          </p>
+          <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">
+            This cluster does not have the snapshot.storage.k8s.io CRDs
+            installed. VolumeSnapshot support is required for scheduled
+            snapshots.
+          </p>
+          <a
+            href="/storage/snapshots"
+            class="mt-4 inline-block text-sm text-amber-600 hover:text-amber-800 dark:text-amber-400"
+          >
+            Back to Snapshots
+          </a>
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
+import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiPost } from "@/lib/api.ts";
+import { apiGet, apiPost } from "@/lib/api.ts";
 import {
   ACCESS_MODES,
   DNS_LABEL_REGEX,
@@ -87,9 +87,22 @@ export default function RestoreSnapshotWizard() {
   const namespaces = useNamespaces();
   const storageClasses = useStorageClasses();
 
+  const snapshotsAvailable = useSignal(true);
+
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    apiGet<{ metadata: { available: boolean } }>("/v1/storage/snapshot-classes")
+      .then((resp) => {
+        if (resp.data?.metadata?.available === false) {
+          snapshotsAvailable.value = false;
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Parse restoreSize from params for initial form state and validation
   const parsedRestore = snapshotParams
@@ -188,6 +201,29 @@ export default function RestoreSnapshotWizard() {
 
   if (!IS_BROWSER) {
     return <div class="p-6">Loading wizard...</div>;
+  }
+
+  if (!snapshotsAvailable.value) {
+    return (
+      <div class="p-6">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-900/20">
+          <p class="text-lg font-medium text-amber-800 dark:text-amber-200">
+            VolumeSnapshot CRDs Not Installed
+          </p>
+          <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">
+            This cluster does not have the snapshot.storage.k8s.io CRDs
+            installed. VolumeSnapshot support is required for restore
+            operations.
+          </p>
+          <a
+            href="/storage/snapshots"
+            class="mt-4 inline-block text-sm text-amber-600 hover:text-amber-800 dark:text-amber-400"
+          >
+            Back to Snapshots
+          </a>
+        </div>
+      </div>
+    );
   }
 
   // Guard: if no snapshot name in URL params, show error and link back
