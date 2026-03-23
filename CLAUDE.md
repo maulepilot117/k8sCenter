@@ -2,7 +2,7 @@
 
 ## Project Vision
 
-KubeCenter is a web-based Kubernetes management platform that delivers vCenter-level functionality for Kubernetes clusters. It provides GUI-driven wizards for all cluster operations (deployments, CSI, CNI, networking, storage), integrated Prometheus/Grafana observability, RBAC-aware multi-tenancy, and full YAML escape hatches for power users. It is deployed via Helm chart inside the managed cluster, with architecture designed from day one to support multi-cluster management in a future phase.
+KubeCenter is a web-based Kubernetes management platform that delivers vCenter-level functionality for Kubernetes clusters. It provides GUI-driven wizards for all cluster operations (deployments, CSI, CNI, networking, storage), integrated Prometheus/Grafana observability, RBAC-aware multi-tenancy, and full YAML escape hatches for power users. It is deployed via Helm chart inside the managed cluster, with multi-cluster management support.
 
 ---
 
@@ -21,18 +21,16 @@ KubeCenter is a web-based Kubernetes management platform that delivers vCenter-l
 | Frontend Framework | Fresh | 2.x via JSR @fresh/core@^2.2.0 |
 | Language | TypeScript | Strict mode, ESM only |
 | CSS | Tailwind CSS | v4.x (@tailwindcss/vite) |
-| YAML Editor | Monaco Editor | Latest (planned) |
-| Monitoring | Prometheus + Grafana | kube-prometheus-stack compatible (planned — Step 9) |
-| Alerting | Prometheus Alertmanager + SMTP | Via Go SMTP client (planned — Step 11) |
+| YAML Editor | Monaco Editor | Latest |
+| Monitoring | Prometheus + Grafana | kube-prometheus-stack (deployed as Helm subchart) |
+| Alerting | Prometheus Alertmanager + SMTP | Via Go SMTP client |
 | Auth | Local (Argon2id, PHC format, PostgreSQL-backed) + OIDC + LDAP | golang-jwt/jwt/v5, golang.org/x/crypto |
-| Deployment | Helm | v3.x chart (skeleton deployed) |
+| Deployment | Helm | v3.x chart (production) |
 | Container | Distroless / Alpine-based multi-stage | Scratch for Go, Deno slim for frontend |
 
 ---
 
-## Project Structure (Actual — as of Step 4 completion)
-
-Files marked with `[planned]` do not exist yet and will be created in later steps.
+## Project Structure (current)
 
 ```
 kubecenter/
@@ -41,6 +39,7 @@ kubecenter/
 ├── LICENSE                            # Apache 2.0
 ├── SECURITY.md                        # Security policy
 ├── Makefile                           # Build, test, lint, Docker targets
+├── docker-compose.yml                 # Local dev stack (backend, frontend, PostgreSQL)
 ├── .gitignore
 │
 ├── backend/                           # Go 1.26 backend
@@ -54,15 +53,20 @@ kubecenter/
 │   │   │   ├── server.go              # Server struct + Deps, chi router, global middleware chain
 │   │   │   ├── routes.go              # Route registration (per-group auth/CSRF, not global skip list)
 │   │   │   ├── response.go            # writeJSON, setRefreshCookie, newAuditEntry, issueTokenPair
-│   │   │   ├── handle_auth.go         # Login, refresh, logout, providers, /auth/me handlers
-│   │   │   ├── handle_auth_test.go    # 19 httptest integration tests (68% server coverage)
+│   │   │   ├── ws_helpers.go          # Shared WebSocket origin validation helpers
+│   │   │   ├── handle_auth.go         # Login, refresh, logout, providers, /auth/me, OIDC callback
+│   │   │   ├── handle_auth_test.go    # httptest integration tests
 │   │   │   ├── handle_setup.go        # POST /setup/init — first admin creation (one-time)
 │   │   │   ├── handle_health.go       # GET /healthz, GET /readyz
 │   │   │   ├── handle_cluster.go      # GET /cluster/info (version, node count, KubeCenter version)
-│   │   │   ├── handle_users.go       # Admin-only user management: list, create, delete, change password
-│   │   │   ├── handle_users_test.go  # 16 httptest integration tests (CRUD, guards, RBAC, validation)
-│   │   │   ├── handle_ws.go          # WebSocket upgrade for resource events + shared origin validation
-│   │   │   ├── handle_ws_flows.go    # WebSocket for Hubble flow streaming (gRPC→WS pipe, per-client)
+│   │   │   ├── handle_clusters.go     # Multi-cluster management endpoints
+│   │   │   ├── handle_users.go        # Admin-only user management: list, create, delete, change password
+│   │   │   ├── handle_users_test.go   # httptest integration tests (CRUD, guards, RBAC, validation)
+│   │   │   ├── handle_settings.go     # GET/PUT /settings — persistent application settings
+│   │   │   ├── handle_audit.go        # GET /audit/logs — paginated, filterable audit log query
+│   │   │   ├── handle_ws.go           # WebSocket upgrade for resource events + shared origin validation
+│   │   │   ├── handle_ws_flows.go     # WebSocket for Hubble flow streaming (gRPC→WS pipe, per-client)
+│   │   │   ├── handle_ws_logs.go      # WebSocket for real-time pod log streaming
 │   │   │   └── middleware/
 │   │   │       ├── auth.go            # JWT validation middleware + CSRF (X-Requested-With header)
 │   │   │       ├── auth_test.go       # Middleware unit tests
@@ -74,45 +78,107 @@ kubecenter/
 │   │   │   ├── provider.go            # AuthProvider interface + StoredUser/User types
 │   │   │   ├── provider_test.go
 │   │   │   ├── local.go               # Local account provider (Argon2id, PHC format, PostgreSQL-backed)
-│   │   │   ├── memory_store.go        # In-memory UserStore for tests
 │   │   │   ├── local_test.go
+│   │   │   ├── memory_store.go        # In-memory UserStore for tests
 │   │   │   ├── jwt.go                 # JWT TokenManager — HMAC-SHA256, 15min access, 7day refresh
 │   │   │   ├── jwt_test.go
+│   │   │   ├── oidc.go                # OIDC auth provider (coreos/go-oidc/v3)
+│   │   │   ├── oidc_test.go
+│   │   │   ├── oidcstate.go           # OIDC state parameter management
+│   │   │   ├── ldap.go                # LDAP auth provider (go-ldap/ldap/v3)
+│   │   │   ├── registry.go            # Multi-provider auth registry
 │   │   │   ├── rbac.go                # RBACChecker — SelfSubjectRulesReview (1 call/ns, cached 60s)
+│   │   │   ├── rbac_test.go
 │   │   │   ├── session.go             # SessionStore — in-memory refresh tokens, rotation on use
 │   │   │   └── session_test.go
-│   │   │   # [planned] oidc.go        # OIDC provider (Step 12)
-│   │   │   # [planned] ldap.go        # LDAP provider (Step 12)
 │   │   │
 │   │   ├── k8s/
 │   │   │   ├── client.go              # ClientFactory — in-cluster/kubeconfig, impersonation cache (sync.Map, 5-min TTL)
 │   │   │   ├── informers.go           # InformerManager — 31 typed + dynamic CRD informers, 5-min resync
 │   │   │   ├── informers_test.go      # Discovery probe + nil-lister tests
-│   │   │   └── resources/
+│   │   │   └── resources/             # 33 resource handler files — CRUD for all k8s resource types
 │   │   │       ├── handler.go         # Shared handler struct, helpers (writeJSON, writeError, pagination, validation)
 │   │   │       ├── access.go          # RBAC AccessChecker — SelfSubjectAccessReview, 60s cache, sweeper
 │   │   │       ├── errors.go          # mapK8sError — translate k8s API errors to HTTP status codes
 │   │   │       ├── tasks.go           # TaskManager — long-running ops (drain), reaper, deduplication
 │   │   │       ├── deployments.go     # CRUD + scale + rollback + restart, generic paginate[T]
-│   │   │       ├── statefulsets.go    # CRUD + scale
-│   │   │       ├── daemonsets.go      # CRUD
+│   │   │       ├── statefulsets.go, daemonsets.go, replicasets.go  # Workload CRUD
 │   │   │       ├── pods.go            # List, get, delete
-│   │   │       ├── services.go        # CRUD
-│   │   │       ├── ingresses.go       # CRUD
-│   │   │       ├── configmaps.go      # CRUD
-│   │   │       ├── secrets.go         # CRUD with value masking + audit-logged reveal
+│   │   │       ├── services.go, ingresses.go, endpoints.go, endpointslices.go  # Networking CRUD
+│   │   │       ├── configmaps.go, secrets.go  # Config CRUD (secrets with value masking)
 │   │   │       ├── namespaces.go      # CRUD (cluster-scoped)
 │   │   │       ├── nodes.go           # List, get, cordon/uncordon, async drain with task tracking
-│   │   │       ├── pvcs.go            # List, get, create, delete
+│   │   │       ├── pvcs.go, pvs.go, storageclasses.go  # Storage CRUD
 │   │   │       ├── jobs.go            # Jobs + CronJobs CRUD
+│   │   │       ├── hpas.go, pdbs.go   # Scaling policy CRUD
 │   │   │       ├── networkpolicies.go # CRUD
-│   │   │       ├── rbac.go            # Roles/ClusterRoles (read-only) + RoleBinding/ClusterRoleBinding CRUD
-│   │   │       └── resources_test.go  # 19 tests — list, get, pagination, RBAC, masking, validation
-│   │   │   # [planned] storage/       # CSI/StorageClass (Step 10)
-│   │   │   # [planned] networking/    # CNI detection (Step 10)
-│   │   │   # [planned] monitoring/    # Prometheus/Grafana integration (Step 9)
-│   │   │   # [planned] alerting/      # Alertmanager webhook, SMTP (Step 11)
-│   │   │   # [planned] yaml/          # YAML parse, validate, apply, diff (Step 7)
+│   │   │       ├── rbac.go            # Roles/ClusterRoles + RoleBinding/ClusterRoleBinding CRUD
+│   │   │       ├── serviceaccounts.go, resourcequotas.go, limitranges.go  # Admin CRUD
+│   │   │       ├── events.go          # Cluster events (read-only)
+│   │   │       ├── webhooks.go        # Validating/MutatingWebhookConfiguration (read-only)
+│   │   │       ├── cilium.go, cilium_test.go  # CiliumNetworkPolicy CRUD (dynamic CRD)
+│   │   │       └── resources_test.go  # Integration tests
+│   │   │
+│   │   ├── storage/
+│   │   │   ├── handler.go             # CSI/StorageClass handler, snapshot CRUD
+│   │   │   ├── presets.go             # StorageClass presets for common CSI drivers
+│   │   │   └── storage_test.go
+│   │   │
+│   │   ├── networking/
+│   │   │   ├── detect.go              # CNI auto-detection (Cilium, Calico, Flannel, etc.)
+│   │   │   ├── handler.go             # CNI status + config endpoints
+│   │   │   ├── cilium.go              # Cilium-specific status and config
+│   │   │   ├── hubble_client.go       # Hubble gRPC client for network flow streaming
+│   │   │   ├── hubbleproto/           # Hubble protobuf definitions
+│   │   │   └── networking_test.go
+│   │   │
+│   │   ├── monitoring/
+│   │   │   ├── discovery.go           # Auto-discover Prometheus/Grafana in cluster
+│   │   │   ├── prometheus.go          # Prometheus query proxy (instant + range)
+│   │   │   ├── grafana.go             # Grafana dashboard provisioning + iframe proxy
+│   │   │   ├── metrics.go             # Pre-built PromQL query templates for all resource types
+│   │   │   ├── handler.go             # Monitoring REST endpoints
+│   │   │   ├── dashboards/            # Grafana dashboard JSON definitions
+│   │   │   └── monitoring_test.go
+│   │   │
+│   │   ├── alerting/
+│   │   │   ├── handler.go             # Alert REST endpoints (list, rules, settings, test)
+│   │   │   ├── webhook.go             # Alertmanager webhook receiver
+│   │   │   ├── notifier.go            # SMTP email notifier
+│   │   │   ├── rules.go               # Alert rule management
+│   │   │   ├── store.go               # Alert persistence
+│   │   │   ├── templates/             # Email notification templates
+│   │   │   └── alerting_test.go
+│   │   │
+│   │   ├── yaml/
+│   │   │   ├── handler.go             # YAML REST endpoints (validate, apply, diff, export)
+│   │   │   ├── parser.go              # Multi-doc YAML parser
+│   │   │   ├── applier.go             # Server-side apply implementation
+│   │   │   ├── differ.go              # Dry-run diff against current state
+│   │   │   ├── export.go              # Clean YAML export (strip managed fields)
+│   │   │   ├── security.go            # YAML security validation
+│   │   │   └── yaml_test.go
+│   │   │
+│   │   ├── wizard/                    # 35 files — wizard input types, handler, shared helpers
+│   │   │   ├── handler.go             # Generic wizard preview endpoint dispatcher
+│   │   │   ├── container.go           # Shared container spec builder + cron regex validation
+│   │   │   ├── configmap.go, secret.go, ingress.go, service.go  # Config/networking wizards
+│   │   │   ├── pvc.go, snapshot.go, scheduled_snapshot.go, storage.go  # Storage wizards
+│   │   │   ├── rolebinding.go         # RoleBinding/ClusterRoleBinding wizard
+│   │   │   ├── deployment.go, job.go, cronjob.go  # Workload wizards
+│   │   │   ├── daemonset.go, statefulset.go  # Workload wizards
+│   │   │   ├── networkpolicy.go, hpa.go, pdb.go  # Policy/scaling wizards
+│   │   │   ├── wizard_test.go         # Shared wizard tests
+│   │   │   └── *_test.go              # Per-wizard unit tests
+│   │   │
+│   │   ├── store/                     # PostgreSQL persistence layer
+│   │   │   ├── store.go               # DB connection pool, health checks
+│   │   │   ├── migrate.go             # Schema migration runner
+│   │   │   ├── migrations/            # SQL migration files
+│   │   │   ├── users.go               # User CRUD queries
+│   │   │   ├── settings.go            # Application settings persistence
+│   │   │   ├── clusters.go            # Multi-cluster registry persistence
+│   │   │   └── encrypt.go             # Field-level encryption for sensitive data
 │   │   │
 │   │   ├── websocket/
 │   │   │   ├── hub.go                 # Hub — single-goroutine event loop, fan-out, RBAC revalidation
@@ -121,8 +187,14 @@ kubecenter/
 │   │   │
 │   │   ├── audit/
 │   │   │   ├── logger.go              # Audit Logger interface + SlogLogger implementation
-│   │   │   └── logger_test.go
-│   │   │   # [planned] store.go       # SQLite persistence (Step 14)
+│   │   │   ├── logger_test.go
+│   │   │   ├── store.go               # PostgreSQL audit persistence
+│   │   │   ├── store_test.go
+│   │   │   ├── sqlite_logger.go       # SQLite fallback logger
+│   │   │   └── query.go               # Audit log query/filter support
+│   │   │
+│   │   ├── httputil/
+│   │   │   └── response.go            # Shared HTTP response utilities
 │   │   │
 │   │   └── config/
 │   │       ├── config.go              # Config struct — koanf (YAML + env), validation
@@ -154,12 +226,16 @@ kubecenter/
 │   │   ├── constants.ts               # BACKEND_URL, CLUSTER_ID, NAV_SECTIONS
 │   │   ├── k8s-types.ts              # APIResponse<T>, APIError, UserInfo type definitions
 │   │   ├── namespace.ts              # Client-only selectedNamespace signal
+│   │   ├── cluster.ts                # Multi-cluster state management
 │   │   ├── ws.ts                     # WebSocket client — auth, subscribe, reconnect with backoff
-│   │   ├── resource-columns.ts       # Column definitions for all 15 resource types
+│   │   ├── resource-columns.ts       # Column definitions for all resource types
 │   │   ├── status-colors.ts          # Shared status → color mapping utility
-│   │   ├── action-handlers.ts        # Resource action definitions + API execution (scale, restart, delete, suspend, trigger)
+│   │   ├── format.ts                 # Date/number/byte formatting utilities
+│   │   ├── action-handlers.ts        # Resource action definitions + API execution
 │   │   ├── permissions.ts            # K8s RBAC permission checking (canPerform) for UI gating
 │   │   ├── user-types.ts             # LocalUser interface for admin user management
+│   │   ├── wizard-constants.ts       # Shared wizard configuration constants
+│   │   ├── wizard-types.ts           # Shared wizard TypeScript type definitions
 │   │   └── hooks/
 │   │       ├── use-namespaces.ts     # Shared hook: fetch namespace names for dropdowns
 │   │       ├── use-dirty-guard.ts    # Shared hook: beforeunload guard for unsaved changes
@@ -167,92 +243,133 @@ kubecenter/
 │   ├── routes/
 │   │   ├── _app.tsx                   # HTML shell — <head>, viewport, stylesheet link
 │   │   ├── _layout.tsx                # App layout — Sidebar + TopBar + main content area
-│   │   # _middleware.ts removed — security headers now in main.ts via Fresh csp() middleware
 │   │   ├── _error.tsx                 # Error page (404, 500)
 │   │   ├── index.tsx                  # Dashboard page (renders Dashboard island)
 │   │   ├── login.tsx                  # Login page (renders LoginForm island)
-│   │   ├── resources/                 # Resource browser pages (15 types)
+│   │   ├── setup.tsx                  # First-run setup page
+│   │   ├── admin/                     # Admin pages (users, audit log)
+│   │   ├── alerting/                  # Alert pages (list, rules, settings)
 │   │   ├── api/
 │   │   │   └── [...path].ts          # BFF proxy — allowlisted headers, SSRF protection, timeout
+│   │   ├── auth/                      # OIDC callback page
+│   │   ├── cluster/                   # Multi-cluster management pages
+│   │   ├── config/                    # ConfigMap, Secret browser pages
+│   │   ├── monitoring/                # Monitoring dashboards, PromQL query pages
+│   │   ├── networking/                # Services, Ingress, NetworkPolicy, CNI status pages
+│   │   ├── rbac/                      # Roles, RoleBindings browser pages
+│   │   ├── scaling/                   # HPA, PDB browser pages
+│   │   ├── settings/                  # Application settings pages
+│   │   ├── storage/                   # PVC, PV, StorageClass, snapshot browser pages
+│   │   ├── tools/                     # YAML apply/validate tools
+│   │   ├── workloads/                 # Deployment, StatefulSet, DaemonSet, Job, CronJob pages
 │   │   └── ws/
 │   │       └── [...path].ts          # WS proxy — path allowlist, message buffering, bidirectional relay
-│   ├── islands/
+│   ├── islands/                       # 57 interactive island components
 │   │   ├── Dashboard.tsx              # Cluster overview — stat cards, cluster details
-│   │   ├── LoginForm.tsx              # Login form with error handling
-│   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination, kebab action menus
-│   │   ├── UserManager.tsx            # Admin user management — list, create, delete, change password
-│   │   ├── UserWizard.tsx             # 2-step user creation wizard with k8s identity
-│   │   ├── RoleBindingWizard.tsx      # 4-step RoleBinding/ClusterRoleBinding wizard
-│   │   ├── PVCWizard.tsx              # 2-step PVC creation wizard with DataSource support
-│   │   ├── SnapshotWizard.tsx         # 2-step VolumeSnapshot creation wizard (driver-filtered)
-│   │   ├── RestoreSnapshotWizard.tsx  # 2-step restore-from-snapshot wizard
-│   │   ├── ScheduledSnapshotWizard.tsx # 3-step scheduled snapshot CronJob wizard
-│   │   ├── ConfigMapWizard.tsx        # 2-step ConfigMap creation wizard
-│   │   ├── SecretWizard.tsx           # 2-step Secret wizard with type-specific forms
-│   │   ├── IngressWizard.tsx          # 2-step Ingress wizard with host/path rules
-│   │   ├── JobWizard.tsx              # 3-step Job wizard with ContainerForm
-│   │   ├── CronJobWizard.tsx          # 3-step CronJob wizard with schedule + ContainerForm
-│   │   ├── DaemonSetWizard.tsx        # 2-step DaemonSet wizard with nodeSelector
-│   │   ├── StatefulSetWizard.tsx      # 3-step StatefulSet wizard with VCT editor
-│   │   ├── NetworkPolicyWizard.tsx    # 3-step NetworkPolicy wizard with rule builder
-│   │   ├── HPAWizard.tsx              # 2-step HPA wizard with metric configuration
-│   │   ├── PDBWizard.tsx              # 2-step PDB wizard with minAvailable/maxUnavailable
-│   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
-│   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
+│   │   ├── LoginForm.tsx, SetupWizard.tsx  # Auth flows
+│   │   ├── ResourceTable.tsx          # Generic resource table — WS live updates, search, sort, pagination, kebab menus
+│   │   ├── ResourceDetail.tsx         # Generic resource detail view with type-specific overviews
+│   │   ├── Sidebar.tsx, TopBar.tsx    # Layout islands
+│   │   ├── ThemeToggle.tsx, KeyboardShortcuts.tsx, ToastProvider.tsx  # UI utilities
+│   │   ├── ClusterSelector.tsx, ClusterManager.tsx  # Multi-cluster management
+│   │   ├── UserManager.tsx, UserWizard.tsx  # User management
+│   │   ├── RoleBindingWizard.tsx      # RoleBinding/ClusterRoleBinding wizard
+│   │   ├── DeploymentWizard.tsx, ServiceWizard.tsx  # Core workload wizards
+│   │   ├── ConfigMapWizard.tsx, SecretWizard.tsx, IngressWizard.tsx  # Config wizards
+│   │   ├── JobWizard.tsx, CronJobWizard.tsx  # Job wizards
+│   │   ├── DaemonSetWizard.tsx, StatefulSetWizard.tsx  # Workload wizards
+│   │   ├── NetworkPolicyWizard.tsx, HPAWizard.tsx, PDBWizard.tsx  # Policy/scaling wizards
+│   │   ├── PVCWizard.tsx, SnapshotWizard.tsx, RestoreSnapshotWizard.tsx  # Storage wizards
+│   │   ├── ScheduledSnapshotWizard.tsx, SnapshotList.tsx, StorageOverview.tsx  # Storage UI
+│   │   ├── StorageClassWizard.tsx     # StorageClass creation wizard
+│   │   ├── NamespaceCreator.tsx       # Namespace creation dialog
+│   │   ├── LogViewer.tsx, PodExec.tsx, PodTerminal.tsx  # Pod operations
+│   │   ├── FlowViewer.tsx, CiliumPolicyEditor.tsx, CniStatus.tsx  # Networking
+│   │   ├── MonitoringStatus.tsx, MonitoringDashboards.tsx, PromQLQuery.tsx  # Monitoring
+│   │   ├── PerformancePanel.tsx, RelatedPods.tsx  # Resource detail panels
+│   │   ├── AlertBanner.tsx, AlertsPage.tsx, AlertRulesPage.tsx, AlertSettings.tsx  # Alerting
+│   │   ├── AuditLogViewer.tsx         # Audit log browser
+│   │   ├── SettingsPage.tsx           # Application settings UI
+│   │   ├── AuthProviderButtons.tsx, AuthSettings.tsx, OIDCCallbackHandler.tsx  # Auth
+│   │   └── YamlEditor.tsx, YamlApplyPage.tsx  # YAML tools
 │   └── components/
-│       ├── ui/
-│       │   ├── Button.tsx             # Reusable button (variants: primary, secondary, danger, ghost)
-│       │   ├── ConfirmDialog.tsx       # Reusable confirm dialog with type-to-confirm + ARIA
-│       │   ├── Toast.tsx              # Toast notification component + useToast hook
-│       │   ├── Card.tsx               # Card container with optional title
-│       │   ├── DataTable.tsx          # Generic sortable table component
-│       │   ├── Input.tsx              # Form input with label and error state
-│       │   ├── SearchBar.tsx          # Search input with icon
-│       │   └── StatusBadge.tsx        # Status indicator with color variants
-│       ├── wizard/
+│       ├── ui/                        # 24 reusable UI components
+│       │   ├── Button.tsx, Input.tsx, Select.tsx  # Form controls
+│       │   ├── Card.tsx, DataTable.tsx, StatusBadge.tsx  # Display components
+│       │   ├── ConfirmDialog.tsx, Toast.tsx, Alert.tsx  # Feedback components
+│       │   ├── SearchBar.tsx, Tabs.tsx, Field.tsx  # Navigation/form helpers
+│       │   ├── MonacoEditor.tsx, CodeMirrorEditor.tsx, CodeBlock.tsx  # Code editors
+│       │   ├── LoadingSpinner.tsx, Spinner.tsx, Skeleton.tsx  # Loading states
+│       │   ├── ErrorBanner.tsx, Logo.tsx, NamespaceSelect.tsx  # Misc UI
+│       │   ├── ScaleDialog.tsx        # Scale replica dialog
+│       │   ├── RemoveButton.tsx       # List item remove button
+│       │   └── KeyValueListEditor.tsx # Key-value pair list editor
+│       ├── wizard/                    # 8 shared wizard components
 │       │   ├── WizardStepper.tsx      # Step navigation bar
 │       │   ├── WizardReviewStep.tsx   # YAML preview + edit + apply
-│       │   └── ContainerForm.tsx      # Shared container config (image, ports, env, resources)
+│       │   ├── ContainerForm.tsx      # Shared container config (image, ports, env, resources)
+│       │   ├── DeploymentBasicsStep.tsx, DeploymentNetworkStep.tsx, DeploymentResourcesStep.tsx
+│       │   └── ServiceBasicsStep.tsx, ServicePortsStep.tsx
 │       ├── k8s/
-│       │   └── ResourceIcon.tsx       # SVG icons for k8s resource types
+│       │   ├── ResourceIcon.tsx       # SVG icons for k8s resource types
+│       │   └── detail/               # 23 resource detail overview components
+│       │       ├── MetadataSection.tsx, ConditionsTable.tsx, KeyValueTable.tsx, RulesTable.tsx
+│       │       ├── DeploymentOverview.tsx, StatefulSetOverview.tsx, DaemonSetOverview.tsx
+│       │       ├── PodOverview.tsx, ServiceOverview.tsx, IngressOverview.tsx
+│       │       ├── ConfigMapOverview.tsx, SecretOverview.tsx, NamespaceOverview.tsx
+│       │       ├── NodeOverview.tsx, PVCOverview.tsx, JobOverview.tsx, CronJobOverview.tsx
+│       │       ├── RoleOverview.tsx, ClusterRoleOverview.tsx
+│       │       ├── RoleBindingOverview.tsx, ClusterRoleBindingOverview.tsx
+│       │       ├── NetworkPolicyOverview.tsx
+│       │       └── index.tsx          # Detail component registry
+│       ├── settings/
+│       │   ├── AlertingFields.tsx     # Alerting settings form fields
+│       │   ├── MonitoringFields.tsx   # Monitoring settings form fields
+│       │   └── shared.ts             # Shared settings utilities
 │       └── layout/
 │           └── EmptyState.tsx         # Empty state placeholder
 │
 ├── helm/
-│   └── kubecenter/                    # Helm chart (skeleton — Step 1)
+│   └── kubecenter/                    # Helm chart (production)
 │       ├── Chart.yaml
+│       ├── Chart.lock
 │       ├── values.yaml
-│       ├── templates/
-│       │   ├── _helpers.tpl
-│       │   ├── deployment-backend.yaml
-│       │   ├── service-backend.yaml
-│       │   ├── serviceaccount.yaml
-│       │   ├── clusterrole.yaml
-│       │   └── clusterrolebinding.yaml
-│       # [planned] ingress, networkpolicy, frontend templates (Step 13)
+│       ├── values.schema.json         # Values JSON schema for validation
+│       ├── values-homelab.yaml        # Homelab-specific overrides
+│       ├── charts/                    # Subchart archives
+│       │   ├── kube-prometheus-stack-82.10.4.tgz
+│       │   └── postgresql-16.4.16.tgz
+│       └── templates/
+│           ├── _helpers.tpl
+│           ├── deployment-backend.yaml
+│           ├── deployment-frontend.yaml
+│           ├── service-backend.yaml
+│           ├── service-frontend.yaml
+│           ├── serviceaccount.yaml
+│           ├── clusterrole.yaml
+│           ├── clusterrolebinding.yaml
+│           ├── configmap-app.yaml
+│           ├── secret-app.yaml
+│           ├── ingress.yaml
+│           ├── networkpolicy.yaml
+│           └── monitoring/            # Grafana ConfigMap dashboards
+│               ├── grafana-config-cm.yaml
+│               └── grafana-dashboards-cm.yaml
 │
 ├── plans/
 │   └── feat-kubecenter-phase1-mvp.md  # Full 15-step implementation plan with progress tracker
 │
 ├── todos/                             # Tracked findings and improvements (file-based todo system)
-│   ├── 001-014: complete              # Step 2 review — all fixed
-│   ├── 015-020, 022-023: pending      # Step 2 deferred findings
-│   ├── 021: complete                  # Handler integration tests
-│   ├── 024-043: complete              # Step 3 review — all fixed
-│   ├── 044-066: Step 4 review         # 5 P1 + 7 P2 fixed, 12 deferred (P2/P3)
-│   ├── 054,056-060,062-066: pending   # Step 4 deferred findings
-│   ├── 067-096: Step 5 review         # 7 P1 + 16 P2 + 1 P3 fixed
-│   ├── 083,090,092-096: pending       # Step 5 deferred findings (1 P2 + 6 P3)
-│   ├── 206-208,211-212: complete      # Resource action buttons review — 2 P1 + 3 P2 fixed
-│   ├── 209-210,213: pending           # Resource action buttons deferred (2 P3 + 1 P2 pre-existing)
-│   └── 214-215: complete              # User management review — ARIA dialogs + Toast extraction
 │
-├── .github/
-│   └── workflows/
-│       └── ci.yml                     # go vet + go test -race + go build
+├── docs/
+│   └── homelab-deployment.md          # Homelab deployment guide
 │
-# [planned] docs/                      # Architecture, API reference, deployment docs
-# [planned] scripts/                   # Dev setup, cert generation, demo data
+├── scripts/
+│   └── build-push.sh                 # Container image build and push script
+│
+└── .github/
+    └── workflows/
+        └── ci.yml                     # go vet + go test -race + go build
 ```
 
 ---
@@ -301,7 +418,7 @@ kubecenter/
 
 ## API Design
 
-### Implemented Endpoints (as of Step 4)
+### Implemented Endpoints
 
 ```
 # Public (no auth)
@@ -311,7 +428,7 @@ POST   /api/v1/setup/init              # Create first admin account (one-time, r
 POST   /api/v1/auth/login              # Local login — returns JWT access token + refresh cookie (rate limited)
 POST   /api/v1/auth/refresh            # Refresh access token using httpOnly cookie (rate limited)
 POST   /api/v1/auth/logout             # Invalidate refresh token
-GET    /api/v1/auth/providers          # List configured auth providers (currently: ["local"])
+GET    /api/v1/auth/providers          # List configured auth providers (["local", "oidc", "ldap"])
 
 # Authenticated (requires Bearer token + X-Requested-With header for CSRF)
 GET    /api/v1/auth/me                 # Current user info + k8s RBAC summary (SelfSubjectRulesReview)
@@ -380,36 +497,14 @@ POST   /api/v1/wizards/pdb/preview                        # PDB YAML preview
 # The proxy validates paths (v1/ prefix, no traversal), allowlists headers, and adds a 30s timeout.
 ```
 
-### Full Planned REST Endpoints (Go Backend)
+### Additional REST Endpoints (beyond resource CRUD)
 
-All endpoints are prefixed with `/api/v1`.
+All endpoints are prefixed with `/api/v1`. In addition to the resource CRUD and wizard preview
+endpoints listed above, the following specialized endpoints are implemented:
 
 ```
-# Authentication
-POST   /api/v1/auth/login            # Local login (username + password)
-POST   /api/v1/auth/oidc/callback    # OIDC callback [planned]
-POST   /api/v1/auth/refresh           # Refresh access token
-POST   /api/v1/auth/logout            # Invalidate session
-GET    /api/v1/auth/providers         # List configured auth providers
-GET    /api/v1/auth/me                # Current user info + k8s RBAC summary
-
-# Generic Kubernetes Resources (pattern repeats for each resource type)
-GET    /api/v1/resources/:kind                    # List across all namespaces
-GET    /api/v1/resources/:kind/:namespace          # List in namespace
-GET    /api/v1/resources/:kind/:namespace/:name    # Get specific resource
-POST   /api/v1/resources/:kind/:namespace          # Create resource (JSON or YAML body)
-PUT    /api/v1/resources/:kind/:namespace/:name    # Update resource
-DELETE /api/v1/resources/:kind/:namespace/:name    # Delete resource
-PATCH  /api/v1/resources/:kind/:namespace/:name    # Patch resource (strategic merge)
-
-# Specialized Resource Endpoints
-POST   /api/v1/deployments/:ns/:name/scale        # Scale deployment
-POST   /api/v1/deployments/:ns/:name/rollback      # Rollback to revision
-POST   /api/v1/deployments/:ns/:name/restart        # Rolling restart
-GET    /api/v1/pods/:ns/:name/logs                  # Stream pod logs (SSE)
-POST   /api/v1/pods/:ns/:name/exec                  # WebSocket pod exec
-GET    /api/v1/nodes/:name/drain                    # Drain node (long-running)
-POST   /api/v1/nodes/:name/cordon                   # Cordon/uncordon
+# Auth (OIDC)
+POST   /api/v1/auth/oidc/callback     # OIDC callback
 
 # YAML Operations
 POST   /api/v1/yaml/validate          # Validate YAML against cluster's OpenAPI schema
@@ -421,7 +516,6 @@ POST   /api/v1/yaml/export/:kind/:ns/:name   # Export resource as clean YAML
 GET    /api/v1/storage/drivers         # List CSI drivers and their capabilities
 GET    /api/v1/storage/classes         # List StorageClasses with CSI driver info
 POST   /api/v1/storage/classes         # Create StorageClass via wizard payload
-GET    /api/v1/storage/snapshots       # List VolumeSnapshots
 
 # Networking (CNI)
 GET    /api/v1/networking/cni          # Detected CNI plugin and version
@@ -446,10 +540,14 @@ PUT    /api/v1/alerts/settings         # SMTP configuration, notification routin
 POST   /api/v1/alerts/test             # Send test email
 
 # Cluster
-GET    /api/v1/cluster/info            # Cluster version, node count, resource summary
 GET    /api/v1/cluster/events          # Cluster events (paginated)
 GET    /api/v1/cluster/namespaces      # Namespace list (for selector dropdowns)
 GET    /api/v1/cluster/api-resources   # Available API resources (for dynamic resource discovery)
+
+# Multi-Cluster
+GET    /api/v1/clusters                # List registered clusters
+POST   /api/v1/clusters                # Register new cluster
+DELETE /api/v1/clusters/:id            # Remove cluster registration
 
 # Audit
 GET    /api/v1/audit/logs              # Audit log entries (paginated, filterable)
@@ -542,6 +640,8 @@ Every wizard follows this data flow:
 make dev              # Alias for dev-backend
 make dev-backend      # cd backend && go run ./cmd/kubecenter --config ""
 make dev-frontend     # cd frontend && deno task dev (Vite dev server on :5173)
+make dev-db           # Start local PostgreSQL via docker-compose
+make dev-db-stop      # Stop local PostgreSQL
 make build            # Build both backend and frontend
 make build-backend    # go build with ldflags (version, commit, date) → bin/kubecenter
 make build-frontend   # cd frontend && deno task build (outputs to _fresh/)
@@ -557,10 +657,6 @@ make helm-template    # helm template (dry-run)
 make clean            # rm -rf backend/bin frontend/_fresh
 ```
 
-Targets not yet added (planned for later steps):
-- `make test-e2e` (Step 15)
-- `make docker-push` (Step 13)
-
 ### Go Module (backend/go.mod)
 
 ```
@@ -569,23 +665,21 @@ module github.com/kubecenter/kubecenter
 go 1.26.1
 
 require (
-    github.com/go-chi/chi/v5     v5.2.5
-    github.com/go-chi/cors        v1.2.2
-    github.com/golang-jwt/jwt/v5  v5.3.1
-    github.com/knadh/koanf/v2     v2.3.3   // Config: YAML file + env vars
-    golang.org/x/crypto           v0.49.0  // Argon2id password hashing
-    k8s.io/api                    v0.35.2
-    k8s.io/apimachinery           v0.35.2
-    k8s.io/client-go              v0.35.2
+    github.com/go-chi/chi/v5       v5.2.5
+    github.com/go-chi/cors          v1.2.2
+    github.com/golang-jwt/jwt/v5    v5.3.1
+    github.com/knadh/koanf/v2       v2.3.3   // Config: YAML file + env vars
+    golang.org/x/crypto             v0.49.0  // Argon2id password hashing
+    k8s.io/api                      v0.35.2
+    k8s.io/apimachinery             v0.35.2
+    k8s.io/client-go                v0.35.2
+    github.com/coreos/go-oidc/v3    ...      // OIDC auth provider
+    github.com/go-ldap/ldap/v3      ...      // LDAP auth provider
+    github.com/prometheus/client_golang ...   // Prometheus metrics + query
+    github.com/jackc/pgx/v5         ...      // PostgreSQL driver
+    github.com/gorilla/websocket    v1.5.3
 )
 ```
-
-Dependencies not yet added (will be added in later steps):
-- `coreos/go-oidc/v3` (Step 12: OIDC auth)
-- `go-ldap/ldap/v3` (Step 12: LDAP auth)
-- `prometheus/client_golang` (Step 9: monitoring)
-- `grafana-api-golang-client` (Step 9: Grafana integration)
-- `mattn/go-sqlite3` or `modernc.org/sqlite` (Step 14: audit persistence)
 
 ### Deno Config (frontend/deno.json)
 
@@ -758,27 +852,21 @@ All 8 steps implemented (Steps 16-23).
 | 6 | AlertBanner WebSocket Migration | #52 |
 | 7 | Frontend Permission Gating (k8s RBAC) | #53, #54 |
 
-### Phase 4 (Features & Wizards) — IN PROGRESS
+### Phase 4 (Features & Wizards) — COMPLETE ✅
 
-| Sub-phase | Feature | Status |
-|-----------|---------|--------|
-| **4A** | Core Infrastructure (pod logs WS, pod exec xterm.js, persistent settings, setup wizard) | COMPLETE (PR #58, #59) |
-| **4B** | User & RBAC Management (user creation with k8s identity, RoleBinding/ClusterRoleBinding CRUD + wizards) | COMPLETE |
-| **4C** | Storage (snapshot CRUD, snapshot/restore/scheduled snapshot wizards, PVC wizard, shared wizard hooks) | COMPLETE |
-| **4D** | Resource Wizards — Batch 1 (generic handler + ConfigMap, Secret, Ingress) | COMPLETE |
-| **4D** | Resource Wizards — Batch 2 (ContainerForm + Job, CronJob, DaemonSet, StatefulSet) | COMPLETE |
-| **4D** | Resource Wizards — Batch 3 (NetworkPolicy, HPA, PDB + integration) | COMPLETE |
+All sub-phases complete: 4A (core infrastructure), 4B (user/RBAC management), 4C (storage wizards), 4D (all resource wizards including NetworkPolicy, HPA, PDB).
 
 ---
 
-## Multi-Cluster Preparation (Phase 2 Hooks)
+## Multi-Cluster Support (Phase 2)
 
-Even in Phase 1, structure the code to support multi-cluster later:
+Multi-cluster management is fully implemented:
 
-- **Backend:** All k8s client operations accept a `clusterID` parameter (defaults to `"local"` in Phase 1). The client factory returns a client for the given cluster ID. In Phase 1, there is only one entry in the cluster registry.
-- **Frontend:** The top bar includes a cluster selector component (disabled/hidden in Phase 1 with only one cluster). All API calls include a `X-Cluster-ID` header.
-- **Database:** If any persistent state is added (audit logs, user preferences, alert history), include a `cluster_id` column from day one.
-- **Helm:** The values.yaml includes a `clusters` array (with one entry in Phase 1) anticipating remote cluster kubeconfig registration.
+- **Backend:** All k8s client operations accept a `clusterID` parameter. The client factory (`internal/k8s/client.go`) returns a client for the given cluster ID from the cluster registry. The store layer (`internal/store/clusters.go`) persists cluster registrations with encrypted kubeconfig storage.
+- **Frontend:** The top bar includes a `ClusterSelector` island for switching between clusters. The `ClusterManager` island handles cluster registration/removal. All API calls include a `X-Cluster-ID` header.
+- **Database:** All persistent state tables (audit logs, settings) include a `cluster_id` column.
+- **API:** `GET/POST/DELETE /api/v1/clusters` endpoints for cluster registry management.
+- **Helm:** The values.yaml includes a `clusters` array for remote cluster kubeconfig registration.
 
 ---
 
