@@ -201,6 +201,10 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/configmap/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ConfigMapInput{} }))
 		wr.Post("/secret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.SecretInput{} }))
 		wr.Post("/ingress/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.IngressInput{} }))
+		wr.Post("/job/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.JobInput{} }))
+		wr.Post("/cronjob/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.CronJobInput{} }))
+		wr.Post("/daemonset/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.DaemonSetInput{} }))
+		wr.Post("/statefulset/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.StatefulSetInput{} }))
 	})
 }
 
