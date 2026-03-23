@@ -230,9 +230,11 @@ func main() {
 	cniDetector.Detect(ctx)
 
 	storageHandler := &storage.Handler{
-		K8sClient: k8sClient,
-		Informers: informerMgr,
-		Logger:    logger,
+		K8sClient:   k8sClient,
+		Informers:   informerMgr,
+		AuditLogger: auditLogger,
+		Logger:      logger,
+		ClusterID:   cfg.ClusterID,
 	}
 
 	// Connect to Hubble Relay if detected

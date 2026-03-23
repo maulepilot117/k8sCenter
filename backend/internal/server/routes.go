@@ -194,6 +194,9 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/service/preview", h.HandleServicePreview)
 		wr.Post("/storageclass/preview", h.HandleStorageClassPreview)
 		wr.Post("/rolebinding/preview", h.HandleRoleBindingPreview)
+		wr.Post("/pvc/preview", h.HandlePVCPreview)
+		wr.Post("/snapshot/preview", h.HandleSnapshotPreview)
+		wr.Post("/scheduled-snapshot/preview", h.HandleScheduledSnapshotPreview)
 	})
 }
 
@@ -227,6 +230,10 @@ func (s *Server) registerStorageRoutes(ar chi.Router) {
 		sr.Get("/classes", h.HandleListClasses)
 		sr.Get("/snapshots", h.HandleListSnapshots)
 		sr.Get("/snapshots/{namespace}", h.HandleListSnapshots)
+		sr.Get("/snapshots/{namespace}/{name}", h.HandleGetSnapshot)
+		sr.Post("/snapshots/{namespace}", h.HandleCreateSnapshot)
+		sr.Delete("/snapshots/{namespace}/{name}", h.HandleDeleteSnapshot)
+		sr.Get("/snapshot-classes", h.HandleListSnapshotClasses)
 		sr.Get("/presets", h.HandleListPresets)
 	})
 }
