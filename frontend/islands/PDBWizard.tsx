@@ -3,17 +3,12 @@ import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { DNS_LABEL_REGEX, LabelEntry, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface LabelEntry {
-  key: string;
-  value: string;
-}
 
 interface PDBFormState {
   name: string;
@@ -190,7 +185,7 @@ export default function PDBWizard() {
             {/* Name */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-danger">*</span>
               </label>
               <input
                 type="text"
@@ -201,14 +196,14 @@ export default function PDBWizard() {
                 placeholder="e.g. my-app-pdb"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
               )}
             </div>
 
             {/* Namespace */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-danger">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -224,7 +219,7 @@ export default function PDBWizard() {
                 ))}
               </select>
               {errors.value.namespace && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-danger">
                   {errors.value.namespace}
                 </p>
               )}
@@ -233,7 +228,7 @@ export default function PDBWizard() {
             {/* Pod Selector */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Pod Selector <span class="text-red-500">*</span>
+                Pod Selector <span class="text-danger">*</span>
               </label>
               <p class="mb-2 text-xs text-slate-500 dark:text-slate-400">
                 Labels used to select the pods this budget applies to.
@@ -272,7 +267,7 @@ export default function PDBWizard() {
                     <button
                       type="button"
                       onClick={() => removeLabel(i)}
-                      class="mt-1 rounded p-2 text-slate-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                      class="mt-1 rounded p-2 text-slate-400 hover:bg-red-50 hover:text-danger dark:hover:bg-red-900/20"
                       title="Remove label"
                     >
                       <svg
@@ -293,7 +288,7 @@ export default function PDBWizard() {
                 ))}
               </div>
               {errors.value.selectorLabels && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-danger">
                   {errors.value.selectorLabels}
                 </p>
               )}
@@ -309,7 +304,7 @@ export default function PDBWizard() {
             {/* Disruption Budget */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Disruption Budget <span class="text-red-500">*</span>
+                Disruption Budget <span class="text-danger">*</span>
               </label>
               <div class="mt-2 flex gap-4">
                 <label class="flex items-center gap-2 cursor-pointer">
@@ -354,7 +349,7 @@ export default function PDBWizard() {
                 Enter a number (e.g. 2) or percentage (e.g. 50%)
               </p>
               {errors.value.budgetValue && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-danger">
                   {errors.value.budgetValue}
                 </p>
               )}

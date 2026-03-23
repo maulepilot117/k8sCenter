@@ -126,8 +126,8 @@ export default function HPAWizard() {
       errs.targetName =
         "Must be lowercase alphanumeric with hyphens, 1-63 characters";
     }
-    if (f.maxReplicas < 1) {
-      errs.maxReplicas = "Must be at least 1";
+    if (f.maxReplicas < 1 || f.maxReplicas > 1000) {
+      errs.maxReplicas = "Must be between 1 and 1000";
     }
     if (f.minReplicas > f.maxReplicas) {
       errs.minReplicas = "Min replicas cannot exceed max replicas";
@@ -135,8 +135,10 @@ export default function HPAWizard() {
 
     for (let i = 0; i < f.metrics.length; i++) {
       const m = f.metrics[i];
-      if (m.targetAverageValue < 1) {
-        errs[`metric_${i}_value`] = "Must be at least 1";
+      if (m.targetType === "Utilization" && (m.targetAverageValue < 1 || m.targetAverageValue > 100)) {
+        errs[`metrics_${i}_targetAverageValue`] = "Must be between 1 and 100 for Utilization (percentage)";
+      } else if (m.targetAverageValue < 1) {
+        errs[`metrics_${i}_targetAverageValue`] = "Must be at least 1";
       }
     }
 
@@ -221,7 +223,7 @@ export default function HPAWizard() {
             {/* Name */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-danger">*</span>
               </label>
               <input
                 type="text"
@@ -232,14 +234,14 @@ export default function HPAWizard() {
                 placeholder="e.g. my-app-hpa"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
               )}
             </div>
 
             {/* Namespace */}
             <div>
               <label class="block text-sm font-medium text-slate-700 dark:text-slate-300">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-danger">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -255,7 +257,7 @@ export default function HPAWizard() {
                 ))}
               </select>
               {errors.value.namespace && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-danger">
                   {errors.value.namespace}
                 </p>
               )}
@@ -287,7 +289,7 @@ export default function HPAWizard() {
                 </div>
                 <div>
                   <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    Name <span class="text-red-500">*</span>
+                    Name <span class="text-danger">*</span>
                   </label>
                   <input
                     type="text"
@@ -301,7 +303,7 @@ export default function HPAWizard() {
                     placeholder="e.g. my-app"
                   />
                   {errors.value.targetName && (
-                    <p class="mt-1 text-xs text-red-500">
+                    <p class="mt-1 text-xs text-danger">
                       {errors.value.targetName}
                     </p>
                   )}
@@ -331,14 +333,14 @@ export default function HPAWizard() {
                     class={WIZARD_INPUT_CLASS}
                   />
                   {errors.value.minReplicas && (
-                    <p class="mt-1 text-xs text-red-500">
+                    <p class="mt-1 text-xs text-danger">
                       {errors.value.minReplicas}
                     </p>
                   )}
                 </div>
                 <div>
                   <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    Max Replicas <span class="text-red-500">*</span>
+                    Max Replicas <span class="text-danger">*</span>
                   </label>
                   <input
                     type="number"
@@ -352,7 +354,7 @@ export default function HPAWizard() {
                     class={WIZARD_INPUT_CLASS}
                   />
                   {errors.value.maxReplicas && (
-                    <p class="mt-1 text-xs text-red-500">
+                    <p class="mt-1 text-xs text-danger">
                       {errors.value.maxReplicas}
                     </p>
                   )}
@@ -378,7 +380,7 @@ export default function HPAWizard() {
                       <button
                         type="button"
                         onClick={() => removeMetric(i)}
-                        class="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                        class="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-danger dark:hover:bg-red-900/20"
                         title="Remove metric"
                       >
                         <svg
@@ -435,7 +437,7 @@ export default function HPAWizard() {
                       </div>
                       <div>
                         <label class="block text-xs text-slate-500 dark:text-slate-400 mb-1">
-                          Target Value <span class="text-red-500">*</span>
+                          Target Value <span class="text-danger">*</span>
                         </label>
                         <input
                           type="number"
@@ -453,9 +455,9 @@ export default function HPAWizard() {
                           class={WIZARD_INPUT_CLASS}
                           placeholder="80"
                         />
-                        {errors.value[`metric_${i}_value`] && (
-                          <p class="mt-1 text-xs text-red-500">
-                            {errors.value[`metric_${i}_value`]}
+                        {errors.value[`metrics_${i}_targetAverageValue`] && (
+                          <p class="mt-1 text-xs text-danger">
+                            {errors.value[`metrics_${i}_targetAverageValue`]}
                           </p>
                         )}
                       </div>

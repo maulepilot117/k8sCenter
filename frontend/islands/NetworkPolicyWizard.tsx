@@ -5,6 +5,7 @@ import { apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import {
   DNS_LABEL_REGEX,
+  type LabelEntry,
   MAX_PORT,
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
@@ -13,11 +14,6 @@ import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface LabelEntry {
-  key: string;
-  value: string;
-}
 
 interface NPPortState {
   port: number;
@@ -118,10 +114,6 @@ export default function NetworkPolicyWizard() {
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
 
-  const markDirty = useCallback(() => {
-    dirty.value = true;
-  }, []);
-
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;
     form.value = { ...form.value, [field]: value };
@@ -129,7 +121,7 @@ export default function NetworkPolicyWizard() {
 
   // Pod selector label helpers
   const addPodSelectorLabel = useCallback(() => {
-    markDirty();
+    dirty.value = true;
     form.value = {
       ...form.value,
       podSelectorLabels: [...form.value.podSelectorLabels, newLabelEntry()],
@@ -137,7 +129,7 @@ export default function NetworkPolicyWizard() {
   }, []);
 
   const removePodSelectorLabel = useCallback((idx: number) => {
-    markDirty();
+    dirty.value = true;
     form.value = {
       ...form.value,
       podSelectorLabels: form.value.podSelectorLabels.filter((_, i) => i !== idx),
@@ -146,7 +138,7 @@ export default function NetworkPolicyWizard() {
 
   const updatePodSelectorLabel = useCallback(
     (idx: number, field: "key" | "value", value: string) => {
-      markDirty();
+      dirty.value = true;
       const labels = [...form.value.podSelectorLabels];
       labels[idx] = { ...labels[idx], [field]: value };
       form.value = { ...form.value, podSelectorLabels: labels };
@@ -156,7 +148,7 @@ export default function NetworkPolicyWizard() {
 
   // Policy type toggle
   const togglePolicyType = useCallback((type: string, checked: boolean) => {
-    markDirty();
+    dirty.value = true;
     const current = form.value.policyTypes;
     const next = checked
       ? [...current, type]
@@ -164,37 +156,20 @@ export default function NetworkPolicyWizard() {
     form.value = { ...form.value, policyTypes: next };
   }, []);
 
-  // Ingress rule helpers
-  const addIngressRule = useCallback(() => {
-    markDirty();
+  // Rule helpers (parameterized by rule type)
+  const addRule = useCallback((ruleType: "ingressRules" | "egressRules") => {
+    dirty.value = true;
     form.value = {
       ...form.value,
-      ingressRules: [...form.value.ingressRules, newRule()],
+      [ruleType]: [...form.value[ruleType], newRule()],
     };
   }, []);
 
-  const removeIngressRule = useCallback((ruleIdx: number) => {
-    markDirty();
+  const removeRule = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+    dirty.value = true;
     form.value = {
       ...form.value,
-      ingressRules: form.value.ingressRules.filter((_, i) => i !== ruleIdx),
-    };
-  }, []);
-
-  // Egress rule helpers
-  const addEgressRule = useCallback(() => {
-    markDirty();
-    form.value = {
-      ...form.value,
-      egressRules: [...form.value.egressRules, newRule()],
-    };
-  }, []);
-
-  const removeEgressRule = useCallback((ruleIdx: number) => {
-    markDirty();
-    form.value = {
-      ...form.value,
-      egressRules: form.value.egressRules.filter((_, i) => i !== ruleIdx),
+      [ruleType]: form.value[ruleType].filter((_, i) => i !== ruleIdx),
     };
   }, []);
 
@@ -205,7 +180,7 @@ export default function NetworkPolicyWizard() {
       ruleIdx: number,
       updater: (rule: NPRuleState) => NPRuleState,
     ) => {
-      markDirty();
+      dirty.value = true;
       const rules = [...form.value[ruleType]];
       rules[ruleIdx] = updater(rules[ruleIdx]);
       form.value = { ...form.value, [ruleType]: rules };
@@ -213,24 +188,32 @@ export default function NetworkPolicyWizard() {
     [],
   );
 
-  // Peer helpers (ingress)
-  const addIngressPeer = useCallback((ruleIdx: number) => {
-    updateRuleArray("ingressRules", ruleIdx, (rule) => ({
+  // Peer helpers (parameterized by rule type)
+  const addPeer = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
       ...rule,
       peers: [...rule.peers, newPeer()],
     }));
   }, []);
 
-  const removeIngressPeer = useCallback((ruleIdx: number, peerIdx: number) => {
-    updateRuleArray("ingressRules", ruleIdx, (rule) => ({
-      ...rule,
-      peers: rule.peers.filter((_, i) => i !== peerIdx),
-    }));
-  }, []);
+  const removePeer = useCallback(
+    (ruleType: "ingressRules" | "egressRules", ruleIdx: number, peerIdx: number) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => ({
+        ...rule,
+        peers: rule.peers.filter((_, i) => i !== peerIdx),
+      }));
+    },
+    [],
+  );
 
-  const updateIngressPeer = useCallback(
-    (ruleIdx: number, peerIdx: number, updater: (peer: NPPeerState) => NPPeerState) => {
-      updateRuleArray("ingressRules", ruleIdx, (rule) => {
+  const updatePeer = useCallback(
+    (
+      ruleType: "ingressRules" | "egressRules",
+      ruleIdx: number,
+      peerIdx: number,
+      updater: (peer: NPPeerState) => NPPeerState,
+    ) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => {
         const peers = [...rule.peers];
         peers[peerIdx] = updater(peers[peerIdx]);
         return { ...rule, peers };
@@ -239,76 +222,33 @@ export default function NetworkPolicyWizard() {
     [],
   );
 
-  // Port helpers (ingress)
-  const addIngressPort = useCallback((ruleIdx: number) => {
-    updateRuleArray("ingressRules", ruleIdx, (rule) => ({
+  // Port helpers (parameterized by rule type)
+  const addPort = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+    updateRuleArray(ruleType, ruleIdx, (rule) => ({
       ...rule,
       ports: [...rule.ports, newPort()],
     }));
   }, []);
 
-  const removeIngressPort = useCallback((ruleIdx: number, portIdx: number) => {
-    updateRuleArray("ingressRules", ruleIdx, (rule) => ({
-      ...rule,
-      ports: rule.ports.filter((_, i) => i !== portIdx),
-    }));
-  }, []);
-
-  const updateIngressPort = useCallback(
-    (ruleIdx: number, portIdx: number, field: keyof NPPortState, value: unknown) => {
-      updateRuleArray("ingressRules", ruleIdx, (rule) => {
-        const ports = [...rule.ports];
-        ports[portIdx] = { ...ports[portIdx], [field]: value };
-        return { ...rule, ports };
-      });
+  const removePort = useCallback(
+    (ruleType: "ingressRules" | "egressRules", ruleIdx: number, portIdx: number) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => ({
+        ...rule,
+        ports: rule.ports.filter((_, i) => i !== portIdx),
+      }));
     },
     [],
   );
 
-  // Peer helpers (egress)
-  const addEgressPeer = useCallback((ruleIdx: number) => {
-    updateRuleArray("egressRules", ruleIdx, (rule) => ({
-      ...rule,
-      peers: [...rule.peers, newPeer()],
-    }));
-  }, []);
-
-  const removeEgressPeer = useCallback((ruleIdx: number, peerIdx: number) => {
-    updateRuleArray("egressRules", ruleIdx, (rule) => ({
-      ...rule,
-      peers: rule.peers.filter((_, i) => i !== peerIdx),
-    }));
-  }, []);
-
-  const updateEgressPeer = useCallback(
-    (ruleIdx: number, peerIdx: number, updater: (peer: NPPeerState) => NPPeerState) => {
-      updateRuleArray("egressRules", ruleIdx, (rule) => {
-        const peers = [...rule.peers];
-        peers[peerIdx] = updater(peers[peerIdx]);
-        return { ...rule, peers };
-      });
-    },
-    [],
-  );
-
-  // Port helpers (egress)
-  const addEgressPort = useCallback((ruleIdx: number) => {
-    updateRuleArray("egressRules", ruleIdx, (rule) => ({
-      ...rule,
-      ports: [...rule.ports, newPort()],
-    }));
-  }, []);
-
-  const removeEgressPort = useCallback((ruleIdx: number, portIdx: number) => {
-    updateRuleArray("egressRules", ruleIdx, (rule) => ({
-      ...rule,
-      ports: rule.ports.filter((_, i) => i !== portIdx),
-    }));
-  }, []);
-
-  const updateEgressPort = useCallback(
-    (ruleIdx: number, portIdx: number, field: keyof NPPortState, value: unknown) => {
-      updateRuleArray("egressRules", ruleIdx, (rule) => {
+  const updatePort = useCallback(
+    (
+      ruleType: "ingressRules" | "egressRules",
+      ruleIdx: number,
+      portIdx: number,
+      field: keyof NPPortState,
+      value: unknown,
+    ) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => {
         const ports = [...rule.ports];
         ports[portIdx] = { ...ports[portIdx], [field]: value };
         return { ...rule, ports };
@@ -332,38 +272,40 @@ export default function NetworkPolicyWizard() {
     }
 
     if (step === 1) {
-      if (f.policyTypes.includes("Ingress")) {
-        f.ingressRules.forEach((rule, ruleIdx) => {
+      const CIDR_REGEX = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+
+      const validateRules = (
+        rules: NPRuleState[],
+        direction: "ingress" | "egress",
+      ) => {
+        rules.forEach((rule, ruleIdx) => {
           rule.ports.forEach((p, portIdx) => {
             if (p.port !== 0 && (p.port < 1 || p.port > MAX_PORT)) {
-              errs[`ingress[${ruleIdx}].ports[${portIdx}].port`] =
+              errs[`${direction}[${ruleIdx}].ports[${portIdx}].port`] =
                 `Must be 1-${MAX_PORT}`;
             }
           });
           rule.peers.forEach((peer, peerIdx) => {
-            if (peer.type === "ipBlock" && peer.cidr && !peer.cidr.includes("/")) {
-              errs[`ingress[${ruleIdx}].peers[${peerIdx}].cidr`] =
+            if (peer.type === "ipBlock" && (!peer.cidr || !CIDR_REGEX.test(peer.cidr))) {
+              errs[`${direction}[${ruleIdx}].peers[${peerIdx}].cidr`] =
                 "Must be a valid CIDR (e.g. 10.0.0.0/8)";
             }
+            peer.except.forEach((exc, excIdx) => {
+              if (exc && !CIDR_REGEX.test(exc)) {
+                errs[`${direction}Rules[${ruleIdx}].peers[${peerIdx}].except[${excIdx}]`] =
+                  "Must be a valid CIDR";
+              }
+            });
           });
         });
+      };
+
+      if (f.policyTypes.includes("Ingress")) {
+        validateRules(f.ingressRules, "ingress");
       }
 
       if (f.policyTypes.includes("Egress")) {
-        f.egressRules.forEach((rule, ruleIdx) => {
-          rule.ports.forEach((p, portIdx) => {
-            if (p.port !== 0 && (p.port < 1 || p.port > MAX_PORT)) {
-              errs[`egress[${ruleIdx}].ports[${portIdx}].port`] =
-                `Must be 1-${MAX_PORT}`;
-            }
-          });
-          rule.peers.forEach((peer, peerIdx) => {
-            if (peer.type === "ipBlock" && peer.cidr && !peer.cidr.includes("/")) {
-              errs[`egress[${ruleIdx}].peers[${peerIdx}].cidr`] =
-                "Must be a valid CIDR (e.g. 10.0.0.0/8)";
-            }
-          });
-        });
+        validateRules(f.egressRules, "egress");
       }
     }
 
@@ -608,7 +550,7 @@ export default function NetworkPolicyWizard() {
                   <h3 class="text-base font-semibold text-slate-800 dark:text-white">
                     Ingress Rules
                   </h3>
-                  <Button variant="ghost" onClick={addIngressRule}>
+                  <Button variant="ghost" onClick={() => addRule("ingressRules")}>
                     + Add Ingress Rule
                   </Button>
                 </div>
@@ -626,15 +568,15 @@ export default function NetworkPolicyWizard() {
                       direction="Ingress"
                       errors={errors.value}
                       errorPrefix={`ingress[${ruleIdx}]`}
-                      onRemove={() => removeIngressRule(ruleIdx)}
-                      onAddPeer={() => addIngressPeer(ruleIdx)}
-                      onRemovePeer={(peerIdx) => removeIngressPeer(ruleIdx, peerIdx)}
+                      onRemove={() => removeRule("ingressRules", ruleIdx)}
+                      onAddPeer={() => addPeer("ingressRules", ruleIdx)}
+                      onRemovePeer={(peerIdx) => removePeer("ingressRules", ruleIdx, peerIdx)}
                       onUpdatePeer={(peerIdx, updater) =>
-                        updateIngressPeer(ruleIdx, peerIdx, updater)}
-                      onAddPort={() => addIngressPort(ruleIdx)}
-                      onRemovePort={(portIdx) => removeIngressPort(ruleIdx, portIdx)}
+                        updatePeer("ingressRules", ruleIdx, peerIdx, updater)}
+                      onAddPort={() => addPort("ingressRules", ruleIdx)}
+                      onRemovePort={(portIdx) => removePort("ingressRules", ruleIdx, portIdx)}
                       onUpdatePort={(portIdx, field, value) =>
-                        updateIngressPort(ruleIdx, portIdx, field, value)}
+                        updatePort("ingressRules", ruleIdx, portIdx, field, value)}
                     />
                   ))}
                 </div>
@@ -648,7 +590,7 @@ export default function NetworkPolicyWizard() {
                   <h3 class="text-base font-semibold text-slate-800 dark:text-white">
                     Egress Rules
                   </h3>
-                  <Button variant="ghost" onClick={addEgressRule}>
+                  <Button variant="ghost" onClick={() => addRule("egressRules")}>
                     + Add Egress Rule
                   </Button>
                 </div>
@@ -666,15 +608,15 @@ export default function NetworkPolicyWizard() {
                       direction="Egress"
                       errors={errors.value}
                       errorPrefix={`egress[${ruleIdx}]`}
-                      onRemove={() => removeEgressRule(ruleIdx)}
-                      onAddPeer={() => addEgressPeer(ruleIdx)}
-                      onRemovePeer={(peerIdx) => removeEgressPeer(ruleIdx, peerIdx)}
+                      onRemove={() => removeRule("egressRules", ruleIdx)}
+                      onAddPeer={() => addPeer("egressRules", ruleIdx)}
+                      onRemovePeer={(peerIdx) => removePeer("egressRules", ruleIdx, peerIdx)}
                       onUpdatePeer={(peerIdx, updater) =>
-                        updateEgressPeer(ruleIdx, peerIdx, updater)}
-                      onAddPort={() => addEgressPort(ruleIdx)}
-                      onRemovePort={(portIdx) => removeEgressPort(ruleIdx, portIdx)}
+                        updatePeer("egressRules", ruleIdx, peerIdx, updater)}
+                      onAddPort={() => addPort("egressRules", ruleIdx)}
+                      onRemovePort={(portIdx) => removePort("egressRules", ruleIdx, portIdx)}
                       onUpdatePort={(portIdx, field, value) =>
-                        updateEgressPort(ruleIdx, portIdx, field, value)}
+                        updatePort("egressRules", ruleIdx, portIdx, field, value)}
                     />
                   ))}
                 </div>
@@ -797,7 +739,6 @@ function RuleEditor({
             <PeerEditor
               key={peerIdx}
               peer={peer}
-              peerIdx={peerIdx}
               errors={errors}
               errorPrefix={`${errorPrefix}.peers[${peerIdx}]`}
               onRemove={() => onRemovePeer(peerIdx)}
@@ -881,7 +822,6 @@ function RuleEditor({
 
 interface PeerEditorProps {
   peer: NPPeerState;
-  peerIdx: number;
   errors: Record<string, string>;
   errorPrefix: string;
   onRemove: () => void;
@@ -890,7 +830,6 @@ interface PeerEditorProps {
 
 function PeerEditor({
   peer,
-  peerIdx: _peerIdx,
   errors,
   errorPrefix,
   onRemove,

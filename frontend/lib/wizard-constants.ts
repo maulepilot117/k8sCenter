@@ -82,3 +82,9 @@ export const ACCESS_MODES = [
 /** Standard Tailwind input class for wizard form fields. */
 export const WIZARD_INPUT_CLASS =
   "mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-white";
+
+/** Label key-value pair for wizard label editors. */
+export interface LabelEntry {
+  key: string;
+  value: string;
+}
