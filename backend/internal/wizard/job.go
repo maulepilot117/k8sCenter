@@ -103,9 +103,7 @@ func (j *JobInput) ToJob() (*batchv1.Job, error) {
 			Labels:    lbls,
 		},
 		Spec: batchv1.JobSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: lbls,
-			},
+			// Selector omitted — k8s auto-generates a unique selector for Jobs
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: lbls,
