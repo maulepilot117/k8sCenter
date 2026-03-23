@@ -194,6 +194,9 @@ kubecenter/
 │   │   ├── CronJobWizard.tsx          # 3-step CronJob wizard with schedule + ContainerForm
 │   │   ├── DaemonSetWizard.tsx        # 2-step DaemonSet wizard with nodeSelector
 │   │   ├── StatefulSetWizard.tsx      # 3-step StatefulSet wizard with VCT editor
+│   │   ├── NetworkPolicyWizard.tsx    # 3-step NetworkPolicy wizard with rule builder
+│   │   ├── HPAWizard.tsx              # 2-step HPA wizard with metric configuration
+│   │   ├── PDBWizard.tsx              # 2-step PDB wizard with minAvailable/maxUnavailable
 │   │   ├── Sidebar.tsx                # Collapsible nav sidebar with resource sections
 │   │   └── TopBar.tsx                 # Namespace selector, cluster indicator, user menu
 │   └── components/
@@ -368,6 +371,9 @@ POST   /api/v1/wizards/job/preview                        # Job YAML preview
 POST   /api/v1/wizards/cronjob/preview                    # CronJob YAML preview
 POST   /api/v1/wizards/daemonset/preview                  # DaemonSet YAML preview
 POST   /api/v1/wizards/statefulset/preview                # StatefulSet YAML preview
+POST   /api/v1/wizards/networkpolicy/preview              # NetworkPolicy YAML preview
+POST   /api/v1/wizards/hpa/preview                        # HPA YAML preview
+POST   /api/v1/wizards/pdb/preview                        # PDB YAML preview
 
 # Frontend BFF Proxy (Step 4 — routes/api/[...path].ts)
 # All /api/* requests from the browser are proxied through the Fresh BFF to the Go backend.
@@ -761,7 +767,7 @@ All 8 steps implemented (Steps 16-23).
 | **4C** | Storage (snapshot CRUD, snapshot/restore/scheduled snapshot wizards, PVC wizard, shared wizard hooks) | COMPLETE |
 | **4D** | Resource Wizards — Batch 1 (generic handler + ConfigMap, Secret, Ingress) | COMPLETE |
 | **4D** | Resource Wizards — Batch 2 (ContainerForm + Job, CronJob, DaemonSet, StatefulSet) | COMPLETE |
-| **4D** | Resource Wizards — Batch 3 (NetworkPolicy, HPA, PDB + integration) | Not started |
+| **4D** | Resource Wizards — Batch 3 (NetworkPolicy, HPA, PDB + integration) | COMPLETE |
 
 ---
 
