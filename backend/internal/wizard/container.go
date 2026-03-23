@@ -15,6 +15,10 @@ var dnsLabelRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // envVarNameRegex validates k8s environment variable names.
 var envVarNameRegex = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// cronRegex validates basic 5-field cron expressions (min hour dom month dow).
+// Allows *, digits, ranges (1-5), steps (*/2), lists (1,3,5), and common shortcuts.
+var cronRegex = regexp.MustCompile(`^(\S+\s+){4}\S+$`)
+
 // PortInput represents a container port.
 type PortInput struct {
 	Name          string `json:"name,omitempty"`
