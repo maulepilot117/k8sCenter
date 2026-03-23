@@ -59,6 +59,15 @@ func (s *SecretInput) Validate() []FieldError {
 		}
 	}
 
+	// Check total data size (k8s Secrets have 1MB etcd limit)
+	totalSize := 0
+	for k, v := range s.Data {
+		totalSize += len(k) + len(v)
+	}
+	if totalSize > 1<<20 {
+		errs = append(errs, FieldError{Field: "data", Message: "total data size must be less than 1MB"})
+	}
+
 	return errs
 }
 
