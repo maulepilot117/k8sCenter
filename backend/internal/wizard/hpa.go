@@ -3,11 +3,12 @@ package wizard
 import (
 	"fmt"
 
+	sigsyaml "sigs.k8s.io/yaml"
+
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // HPAInput represents the wizard form data for creating a HorizontalPodAutoscaler.
@@ -55,12 +56,16 @@ func (h *HPAInput) Validate() []FieldError {
 		errs = append(errs, FieldError{Field: "targetName", Message: "must be a valid DNS label"})
 	}
 
-	if h.MaxReplicas < 1 {
-		errs = append(errs, FieldError{Field: "maxReplicas", Message: "must be at least 1"})
+	if h.MaxReplicas < 1 || h.MaxReplicas > 1000 {
+		errs = append(errs, FieldError{Field: "maxReplicas", Message: "must be between 1 and 1000"})
 	}
 
-	if h.MinReplicas != nil && *h.MinReplicas > h.MaxReplicas {
-		errs = append(errs, FieldError{Field: "minReplicas", Message: "must not exceed maxReplicas"})
+	if h.MinReplicas != nil {
+		if *h.MinReplicas < 1 {
+			errs = append(errs, FieldError{Field: "minReplicas", Message: "must be at least 1"})
+		} else if *h.MinReplicas > h.MaxReplicas {
+			errs = append(errs, FieldError{Field: "minReplicas", Message: "must not exceed maxReplicas"})
+		}
 	}
 
 	if len(h.Metrics) == 0 {
@@ -91,7 +96,11 @@ func validateHPAMetric(i int, m HPAMetricInput) []FieldError {
 		errs = append(errs, FieldError{Field: prefix + ".targetType", Message: "must be Utilization or AverageValue"})
 	}
 
-	if m.TargetAverageValue < 1 {
+	if m.TargetType == "Utilization" {
+		if m.TargetAverageValue < 1 || m.TargetAverageValue > 100 {
+			errs = append(errs, FieldError{Field: prefix + ".targetAverageValue", Message: "must be between 1 and 100 for Utilization (percentage)"})
+		}
+	} else if m.TargetAverageValue < 1 {
 		errs = append(errs, FieldError{Field: prefix + ".targetAverageValue", Message: "must be at least 1"})
 	}
 
@@ -100,10 +109,7 @@ func validateHPAMetric(i int, m HPAMetricInput) []FieldError {
 
 // ToYAML implements WizardInput by converting to an HPA and marshaling to YAML.
 func (h *HPAInput) ToYAML() (string, error) {
-	hpa, err := h.ToHPA()
-	if err != nil {
-		return "", err
-	}
+	hpa := h.ToHPA()
 	yamlBytes, err := sigsyaml.Marshal(hpa)
 	if err != nil {
 		return "", err
@@ -113,11 +119,8 @@ func (h *HPAInput) ToYAML() (string, error) {
 
 // ToHPA converts the wizard input to a typed Kubernetes HorizontalPodAutoscaler.
 // Validate() should be called before ToHPA() to ensure inputs are well-formed.
-func (h *HPAInput) ToHPA() (*autoscalingv2.HorizontalPodAutoscaler, error) {
-	metrics, err := buildHPAMetrics(h.Metrics)
-	if err != nil {
-		return nil, err
-	}
+func (h *HPAInput) ToHPA() *autoscalingv2.HorizontalPodAutoscaler {
+	metrics := buildHPAMetrics(h.Metrics)
 
 	hpa := &autoscalingv2.HorizontalPodAutoscaler{
 		TypeMeta: metav1.TypeMeta{
@@ -143,23 +146,16 @@ func (h *HPAInput) ToHPA() (*autoscalingv2.HorizontalPodAutoscaler, error) {
 		hpa.Spec.MinReplicas = h.MinReplicas
 	}
 
-	return hpa, nil
+	return hpa
 }
 
 // buildHPAMetrics converts HPAMetricInput slice to autoscalingv2.MetricSpec slice.
-func buildHPAMetrics(inputs []HPAMetricInput) ([]autoscalingv2.MetricSpec, error) {
+func buildHPAMetrics(inputs []HPAMetricInput) []autoscalingv2.MetricSpec {
 	metrics := make([]autoscalingv2.MetricSpec, 0, len(inputs))
 
 	for _, m := range inputs {
-		resourceName, err := toK8sResourceName(m.ResourceName)
-		if err != nil {
-			return nil, err
-		}
-
-		metricTarget, err := buildMetricTarget(m)
-		if err != nil {
-			return nil, err
-		}
+		resourceName := toK8sResourceName(m.ResourceName)
+		metricTarget := buildMetricTarget(m)
 
 		metrics = append(metrics, autoscalingv2.MetricSpec{
 			Type: autoscalingv2.ResourceMetricSourceType,
@@ -170,37 +166,39 @@ func buildHPAMetrics(inputs []HPAMetricInput) ([]autoscalingv2.MetricSpec, error
 		})
 	}
 
-	return metrics, nil
+	return metrics
 }
 
 // toK8sResourceName maps a string resource name to a corev1.ResourceName.
-func toK8sResourceName(name string) (corev1.ResourceName, error) {
+// Panics on unsupported values — Validate() must be called first.
+func toK8sResourceName(name string) corev1.ResourceName {
 	switch name {
 	case "cpu":
-		return corev1.ResourceCPU, nil
+		return corev1.ResourceCPU
 	case "memory":
-		return corev1.ResourceMemory, nil
+		return corev1.ResourceMemory
 	default:
-		return "", fmt.Errorf("unsupported resource name: %s", name)
+		panic("toK8sResourceName: unsupported resource name (call Validate first): " + name)
 	}
 }
 
 // buildMetricTarget constructs the MetricTarget based on the TargetType.
-func buildMetricTarget(m HPAMetricInput) (autoscalingv2.MetricTarget, error) {
+// Panics on unsupported values — Validate() must be called first.
+func buildMetricTarget(m HPAMetricInput) autoscalingv2.MetricTarget {
 	switch m.TargetType {
 	case "Utilization":
 		utilization := m.TargetAverageValue
 		return autoscalingv2.MetricTarget{
 			Type:               autoscalingv2.UtilizationMetricType,
 			AverageUtilization: &utilization,
-		}, nil
+		}
 	case "AverageValue":
 		qty := resource.NewMilliQuantity(int64(m.TargetAverageValue)*1000, resource.DecimalSI)
 		return autoscalingv2.MetricTarget{
 			Type:         autoscalingv2.AverageValueMetricType,
 			AverageValue: qty,
-		}, nil
+		}
 	default:
-		return autoscalingv2.MetricTarget{}, fmt.Errorf("unsupported target type: %s", m.TargetType)
+		panic("buildMetricTarget: unsupported target type (call Validate first): " + m.TargetType)
 	}
 }

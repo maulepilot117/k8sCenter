@@ -38,6 +38,8 @@ func (p *PDBInput) Validate() []FieldError {
 
 	if len(p.Selector) == 0 {
 		errs = append(errs, FieldError{Field: "selector", Message: "at least one label selector is required"})
+	} else {
+		errs = append(errs, validateLabelMap("selector", p.Selector)...)
 	}
 
 	// Exactly one of MinAvailable or MaxUnavailable must be set.
@@ -66,18 +68,18 @@ func validatePDBValue(field, value string) *FieldError {
 	if !pdbValueRegex.MatchString(value) {
 		return &FieldError{Field: field, Message: "must be a non-negative integer or percentage (e.g. \"2\" or \"50%\")"}
 	}
-	// For non-percentage values, confirm it parses as a non-negative integer.
-	if !strings.HasSuffix(value, "%") {
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 0 {
-			return &FieldError{Field: field, Message: "must be a non-negative integer or percentage (e.g. \"2\" or \"50%\")"}
+	if strings.HasSuffix(value, "%") {
+		pct, _ := strconv.Atoi(strings.TrimSuffix(value, "%"))
+		if pct > 100 {
+			return &FieldError{Field: field, Message: "percentage must be between 0% and 100%"}
 		}
 	}
 	return nil
 }
 
-// ToYAML implements WizardInput by converting to a PodDisruptionBudget and marshaling to YAML.
-func (p *PDBInput) ToYAML() (string, error) {
+// ToPDB converts the wizard input to a typed Kubernetes PodDisruptionBudget.
+// Validate() should be called before ToPDB() to ensure inputs are well-formed.
+func (p *PDBInput) ToPDB() *policyv1.PodDisruptionBudget {
 	pdb := &policyv1.PodDisruptionBudget{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "policy/v1",
@@ -103,6 +105,12 @@ func (p *PDBInput) ToYAML() (string, error) {
 		pdb.Spec.MaxUnavailable = &val
 	}
 
+	return pdb
+}
+
+// ToYAML implements WizardInput by converting to a PodDisruptionBudget and marshaling to YAML.
+func (p *PDBInput) ToYAML() (string, error) {
+	pdb := p.ToPDB()
 	yamlBytes, err := sigsyaml.Marshal(pdb)
 	if err != nil {
 		return "", err

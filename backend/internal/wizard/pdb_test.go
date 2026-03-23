@@ -174,6 +174,26 @@ func TestPDBInputValidate(t *testing.T) {
 			},
 			wantErrors: 0,
 		},
+		{
+			name: "percentage over 100 is invalid",
+			input: PDBInput{
+				Name:         "my-pdb",
+				Namespace:    "default",
+				Selector:     validSelector,
+				MinAvailable: strPtr("200%"),
+			},
+			wantErrors: 1, wantFields: []string{"minAvailable"},
+		},
+		{
+			name: "100 percent is valid",
+			input: PDBInput{
+				Name:         "my-pdb",
+				Namespace:    "default",
+				Selector:     validSelector,
+				MinAvailable: strPtr("100%"),
+			},
+			wantErrors: 0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -199,45 +219,47 @@ func TestPDBInputValidate(t *testing.T) {
 }
 
 func TestPDBInputToYAML(t *testing.T) {
-	input := PDBInput{
-		Name:         "my-pdb",
-		Namespace:    "prod",
-		Selector:     map[string]string{"app": "myapp"},
-		MinAvailable: strPtr("2"),
-	}
-	yaml, err := input.ToYAML()
-	if err != nil {
-		t.Fatalf("ToYAML: %v", err)
-	}
-	if !strings.Contains(yaml, "kind: PodDisruptionBudget") {
-		t.Errorf("expected kind: PodDisruptionBudget, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "name: my-pdb") {
-		t.Errorf("expected name: my-pdb, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "app: myapp") {
-		t.Errorf("expected app: myapp in matchLabels, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "minAvailable: 2") {
-		t.Errorf("expected minAvailable: 2, got:\n%s", yaml)
-	}
-	if !strings.Contains(yaml, "policy/v1") {
-		t.Errorf("expected apiVersion policy/v1, got:\n%s", yaml)
-	}
-}
+	t.Run("minAvailable integer", func(t *testing.T) {
+		input := PDBInput{
+			Name:         "my-pdb",
+			Namespace:    "prod",
+			Selector:     map[string]string{"app": "myapp"},
+			MinAvailable: strPtr("2"),
+		}
+		yaml, err := input.ToYAML()
+		if err != nil {
+			t.Fatalf("ToYAML: %v", err)
+		}
+		if !strings.Contains(yaml, "kind: PodDisruptionBudget") {
+			t.Errorf("expected kind: PodDisruptionBudget, got:\n%s", yaml)
+		}
+		if !strings.Contains(yaml, "name: my-pdb") {
+			t.Errorf("expected name: my-pdb, got:\n%s", yaml)
+		}
+		if !strings.Contains(yaml, "app: myapp") {
+			t.Errorf("expected app: myapp in matchLabels, got:\n%s", yaml)
+		}
+		if !strings.Contains(yaml, "minAvailable: 2") {
+			t.Errorf("expected minAvailable: 2, got:\n%s", yaml)
+		}
+		if !strings.Contains(yaml, "policy/v1") {
+			t.Errorf("expected apiVersion policy/v1, got:\n%s", yaml)
+		}
+	})
 
-func TestPDBInputToYAMLPercentage(t *testing.T) {
-	input := PDBInput{
-		Name:           "my-pdb",
-		Namespace:      "default",
-		Selector:       map[string]string{"tier": "frontend"},
-		MaxUnavailable: strPtr("50%"),
-	}
-	yaml, err := input.ToYAML()
-	if err != nil {
-		t.Fatalf("ToYAML: %v", err)
-	}
-	if !strings.Contains(yaml, "maxUnavailable: 50%") {
-		t.Errorf("expected maxUnavailable: 50%%, got:\n%s", yaml)
-	}
+	t.Run("maxUnavailable percentage", func(t *testing.T) {
+		input := PDBInput{
+			Name:           "my-pdb",
+			Namespace:      "default",
+			Selector:       map[string]string{"tier": "frontend"},
+			MaxUnavailable: strPtr("50%"),
+		}
+		yaml, err := input.ToYAML()
+		if err != nil {
+			t.Fatalf("ToYAML: %v", err)
+		}
+		if !strings.Contains(yaml, "maxUnavailable: 50%") {
+			t.Errorf("expected maxUnavailable: 50%%, got:\n%s", yaml)
+		}
+	})
 }

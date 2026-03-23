@@ -236,6 +236,21 @@ func TestNetworkPolicyInputValidate(t *testing.T) {
 			wantErrors: 1, wantFields: []string{"ingress[0].from[0].ipBlock.cidr"},
 		},
 		{
+			name: "invalid ipblock cidr has host bits set",
+			input: NetworkPolicyInput{
+				Name: "my-policy", Namespace: "default",
+				PolicyTypes: []string{"Ingress"},
+				Ingress: []NetworkPolicyRuleInput{
+					{
+						From: []NetworkPolicyPeerInput{
+							{IPBlock: &IPBlockInput{CIDR: "10.0.0.1/24"}},
+						},
+					},
+				},
+			},
+			wantErrors: 1, wantFields: []string{"ingress[0].from[0].ipBlock.cidr"},
+		},
+		{
 			name: "invalid except cidr",
 			input: NetworkPolicyInput{
 				Name: "my-policy", Namespace: "default",

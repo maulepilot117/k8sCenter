@@ -11,6 +11,13 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
+const (
+	maxNetworkPolicyRules = 50
+	maxPeersPerRule       = 20
+	maxPortsPerRule       = 20
+	maxExceptCIDRs        = 10
+)
+
 // NetworkPolicyInput represents the wizard form data for creating a NetworkPolicy.
 type NetworkPolicyInput struct {
 	Name        string                   `json:"name"`
@@ -76,6 +83,8 @@ func (np *NetworkPolicyInput) Validate() []FieldError {
 		errs = append(errs, FieldError{Field: "namespace", Message: "must be a valid DNS label"})
 	}
 
+	errs = append(errs, validateLabelMap("podSelector", np.PodSelector)...)
+
 	if len(np.PolicyTypes) == 0 {
 		errs = append(errs, FieldError{Field: "policyTypes", Message: "at least one policy type is required"})
 	}
@@ -86,6 +95,13 @@ func (np *NetworkPolicyInput) Validate() []FieldError {
 				Message: "must be Ingress or Egress",
 			})
 		}
+	}
+
+	if len(np.Ingress) > maxNetworkPolicyRules {
+		errs = append(errs, FieldError{Field: "ingress", Message: "must have 50 or fewer rules"})
+	}
+	if len(np.Egress) > maxNetworkPolicyRules {
+		errs = append(errs, FieldError{Field: "egress", Message: "must have 50 or fewer rules"})
 	}
 
 	for i, rule := range np.Ingress {
@@ -102,6 +118,16 @@ func (np *NetworkPolicyInput) Validate() []FieldError {
 // isIngress controls whether to check "from" (ingress) or "to" (egress) peers.
 func validateNetworkPolicyRule(prefix string, rule NetworkPolicyRuleInput, isIngress bool) []FieldError {
 	var errs []FieldError
+
+	if isIngress && len(rule.From) > maxPeersPerRule {
+		errs = append(errs, FieldError{Field: prefix + ".from", Message: "must have 20 or fewer peers"})
+	}
+	if !isIngress && len(rule.To) > maxPeersPerRule {
+		errs = append(errs, FieldError{Field: prefix + ".to", Message: "must have 20 or fewer peers"})
+	}
+	if len(rule.Ports) > maxPortsPerRule {
+		errs = append(errs, FieldError{Field: prefix + ".ports", Message: "must have 20 or fewer ports"})
+	}
 
 	if isIngress {
 		for i, peer := range rule.From {
@@ -124,18 +150,43 @@ func validateNetworkPolicyRule(prefix string, rule NetworkPolicyRuleInput, isIng
 func validateNetworkPolicyPeer(prefix string, peer NetworkPolicyPeerInput) []FieldError {
 	var errs []FieldError
 
+	if peer.PodSelector != nil {
+		errs = append(errs, validateLabelMap(prefix+".podSelector", peer.PodSelector)...)
+	}
+	if peer.NamespaceSelector != nil {
+		errs = append(errs, validateLabelMap(prefix+".namespaceSelector", peer.NamespaceSelector)...)
+	}
+
 	if peer.IPBlock != nil {
-		if _, _, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
+		if _, network, err := net.ParseCIDR(peer.IPBlock.CIDR); err != nil {
 			errs = append(errs, FieldError{
 				Field:   prefix + ".ipBlock.cidr",
 				Message: "must be a valid CIDR (e.g. 10.0.0.0/8)",
 			})
+		} else if network.String() != peer.IPBlock.CIDR {
+			errs = append(errs, FieldError{
+				Field:   prefix + ".ipBlock.cidr",
+				Message: fmt.Sprintf("must be a network address, not a host address (did you mean %s?)", network.String()),
+			})
 		}
+
+		if len(peer.IPBlock.Except) > maxExceptCIDRs {
+			errs = append(errs, FieldError{
+				Field:   prefix + ".ipBlock.except",
+				Message: "must have 10 or fewer entries",
+			})
+		}
+
 		for j, except := range peer.IPBlock.Except {
-			if _, _, err := net.ParseCIDR(except); err != nil {
+			if _, network, err := net.ParseCIDR(except); err != nil {
 				errs = append(errs, FieldError{
 					Field:   fmt.Sprintf("%s.ipBlock.except[%d]", prefix, j),
 					Message: "must be a valid CIDR",
+				})
+			} else if network.String() != except {
+				errs = append(errs, FieldError{
+					Field:   fmt.Sprintf("%s.ipBlock.except[%d]", prefix, j),
+					Message: fmt.Sprintf("must be a network address, not a host address (did you mean %s?)", network.String()),
 				})
 			}
 		}

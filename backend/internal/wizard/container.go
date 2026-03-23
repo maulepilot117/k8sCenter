@@ -391,3 +391,26 @@ func validateQuantity(field, value string) []FieldError {
 	}
 	return nil
 }
+
+// validateLabelMap checks a label map for entry count and key/value length limits.
+func validateLabelMap(field string, labels map[string]string) []FieldError {
+	var errs []FieldError
+	if len(labels) > 50 {
+		errs = append(errs, FieldError{Field: field, Message: "must have 50 or fewer entries"})
+	}
+	for k, v := range labels {
+		if len(k) > 253 {
+			errs = append(errs, FieldError{
+				Field:   fmt.Sprintf("%s[%s]", field, k),
+				Message: "key must be 253 characters or fewer",
+			})
+		}
+		if len(v) > 63 {
+			errs = append(errs, FieldError{
+				Field:   fmt.Sprintf("%s[%s]", field, k),
+				Message: "value must be 63 characters or fewer",
+			})
+		}
+	}
+	return errs
+}

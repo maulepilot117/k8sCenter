@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+func int32Ptr(v int32) *int32 { return &v }
+
 func TestHPAInputValidate(t *testing.T) {
 	validMetric := HPAMetricInput{
 		Type:               "Resource",
@@ -169,6 +171,43 @@ func TestHPAInputValidate(t *testing.T) {
 			wantErrors: 1, wantFields: []string{"maxReplicas"},
 		},
 		{
+			name: "maxReplicas over 1000",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MaxReplicas: 1001,
+				Metrics:     []HPAMetricInput{validMetric},
+			},
+			wantErrors: 1, wantFields: []string{"maxReplicas"},
+		},
+		{
+			name: "maxReplicas exactly 1000 is valid",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MaxReplicas: 1000,
+				Metrics:     []HPAMetricInput{validMetric},
+			},
+			wantErrors: 0,
+		},
+		{
+			name: "minReplicas zero",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MinReplicas: int32Ptr(0),
+				MaxReplicas: 5,
+				Metrics:     []HPAMetricInput{validMetric},
+			},
+			wantErrors: 1, wantFields: []string{"minReplicas"},
+		},
+		{
 			name: "minReplicas exceeds maxReplicas",
 			input: HPAInput{
 				Name:        "my-hpa",
@@ -279,6 +318,63 @@ func TestHPAInputValidate(t *testing.T) {
 				},
 			},
 			wantErrors: 1, wantFields: []string{"metrics[0].targetAverageValue"},
+		},
+		{
+			name: "utilization over 100 percent",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MaxReplicas: 5,
+				Metrics: []HPAMetricInput{
+					{
+						Type:               "Resource",
+						ResourceName:       "cpu",
+						TargetType:         "Utilization",
+						TargetAverageValue: 150,
+					},
+				},
+			},
+			wantErrors: 1, wantFields: []string{"metrics[0].targetAverageValue"},
+		},
+		{
+			name: "utilization exactly 100 is valid",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MaxReplicas: 5,
+				Metrics: []HPAMetricInput{
+					{
+						Type:               "Resource",
+						ResourceName:       "cpu",
+						TargetType:         "Utilization",
+						TargetAverageValue: 100,
+					},
+				},
+			},
+			wantErrors: 0,
+		},
+		{
+			name: "averagevalue over 100 is valid (not a percentage)",
+			input: HPAInput{
+				Name:        "my-hpa",
+				Namespace:   "default",
+				TargetKind:  "Deployment",
+				TargetName:  "my-app",
+				MaxReplicas: 5,
+				Metrics: []HPAMetricInput{
+					{
+						Type:               "Resource",
+						ResourceName:       "memory",
+						TargetType:         "AverageValue",
+						TargetAverageValue: 500,
+					},
+				},
+			},
+			wantErrors: 0,
 		},
 	}
 
