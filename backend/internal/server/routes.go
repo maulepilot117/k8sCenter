@@ -205,6 +205,9 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/cronjob/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.CronJobInput{} }))
 		wr.Post("/daemonset/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.DaemonSetInput{} }))
 		wr.Post("/statefulset/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.StatefulSetInput{} }))
+		wr.Post("/networkpolicy/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.NetworkPolicyInput{} }))
+		wr.Post("/hpa/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.HPAInput{} }))
+		wr.Post("/pdb/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PDBInput{} }))
 	})
 }
 
