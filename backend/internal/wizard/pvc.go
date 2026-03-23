@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,4 +110,14 @@ func (p *PVCInput) ToPersistentVolumeClaim() *corev1.PersistentVolumeClaim {
 	}
 
 	return pvc
+}
+
+// ToYAML implements WizardInput by converting to a PVC and marshaling to YAML.
+func (p *PVCInput) ToYAML() (string, error) {
+	pvc := p.ToPersistentVolumeClaim()
+	yamlBytes, err := sigsyaml.Marshal(pvc)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }

@@ -5,6 +5,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/wizard"
 )
 
 func (s *Server) registerRoutes() {
@@ -190,13 +191,16 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		}
 		wr.Use(middleware.RateLimit(yamlRL))
 
-		wr.Post("/deployment/preview", h.HandleDeploymentPreview)
-		wr.Post("/service/preview", h.HandleServicePreview)
-		wr.Post("/storageclass/preview", h.HandleStorageClassPreview)
-		wr.Post("/rolebinding/preview", h.HandleRoleBindingPreview)
-		wr.Post("/pvc/preview", h.HandlePVCPreview)
-		wr.Post("/snapshot/preview", h.HandleSnapshotPreview)
-		wr.Post("/scheduled-snapshot/preview", h.HandleScheduledSnapshotPreview)
+		wr.Post("/deployment/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.DeploymentInput{} }))
+		wr.Post("/service/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ServiceInput{} }))
+		wr.Post("/storageclass/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.StorageClassInput{} }))
+		wr.Post("/rolebinding/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.RoleBindingInput{} }))
+		wr.Post("/pvc/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PVCInput{} }))
+		wr.Post("/snapshot/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.SnapshotInput{} }))
+		wr.Post("/scheduled-snapshot/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ScheduledSnapshotInput{} }))
+		wr.Post("/configmap/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ConfigMapInput{} }))
+		wr.Post("/secret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.SecretInput{} }))
+		wr.Post("/ingress/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.IngressInput{} }))
 	})
 }
 

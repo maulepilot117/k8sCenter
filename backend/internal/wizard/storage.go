@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
 	"regexp"
 
@@ -124,4 +125,14 @@ func (s *StorageClassInput) ToStorageClass() *storagev1.StorageClass {
 	}
 
 	return sc
+}
+
+// ToYAML implements WizardInput by converting to a StorageClass and marshaling to YAML.
+func (s *StorageClassInput) ToYAML() (string, error) {
+	sc := s.ToStorageClass()
+	yamlBytes, err := sigsyaml.Marshal(sc)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }
