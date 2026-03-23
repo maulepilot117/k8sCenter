@@ -1,8 +1,16 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPost } from "@/lib/api.ts";
-import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
+import { apiPost } from "@/lib/api.ts";
+import {
+  ACCESS_MODES,
+  DNS_LABEL_REGEX,
+  type StorageClassItem,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -16,11 +24,6 @@ interface RestoreFormState {
   accessMode: string;
 }
 
-interface StorageClassItem {
-  metadata: { name: string };
-  provisioner?: string;
-}
-
 interface SnapshotParams {
   ns: string;
   name: string;
@@ -31,29 +34,6 @@ interface SnapshotParams {
 const STEPS = [
   { title: "Configure" },
   { title: "Review" },
-];
-
-const ACCESS_MODES = [
-  {
-    value: "ReadWriteOnce",
-    label: "ReadWriteOnce",
-    desc: "Single node read-write",
-  },
-  {
-    value: "ReadWriteMany",
-    label: "ReadWriteMany",
-    desc: "Multi-node read-write",
-  },
-  {
-    value: "ReadOnlyMany",
-    label: "ReadOnlyMany",
-    desc: "Multi-node read-only",
-  },
-  {
-    value: "ReadWriteOncePod",
-    label: "ReadWriteOncePod",
-    desc: "Single pod read-write",
-  },
 ];
 
 /** Parse restoreSize string (e.g. "10Gi", "500Mi", "1Ti") into value and unit. */
@@ -104,8 +84,8 @@ export default function RestoreSnapshotWizard() {
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
 
-  const namespaces = useSignal<string[]>(["default"]);
-  const storageClasses = useSignal<StorageClassItem[]>([]);
+  const namespaces = useNamespaces();
+  const storageClasses = useStorageClasses();
 
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
@@ -127,44 +107,7 @@ export default function RestoreSnapshotWizard() {
     accessMode: "ReadWriteOnce",
   });
 
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<StorageClassItem[]>("/v1/resources/storageclasses?limit=500")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          storageClasses.value = resp.data;
-          if (resp.data.length > 0 && !form.value.storageClassName) {
-            form.value = {
-              ...form.value,
-              storageClassName: resp.data[0].metadata.name,
-            };
-          }
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;
@@ -268,9 +211,6 @@ export default function RestoreSnapshotWizard() {
     );
   }
 
-  const inputClass =
-    "mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-white";
-
   return (
     <div class="p-6">
       <div class="mb-6 flex items-center justify-between">
@@ -313,7 +253,7 @@ export default function RestoreSnapshotWizard() {
                 value={form.value.name}
                 onInput={(e) =>
                   updateField("name", (e.target as HTMLInputElement).value)}
-                class={inputClass}
+                class={WIZARD_INPUT_CLASS}
                 placeholder="e.g. my-data-restore"
               />
               {errors.value.name && (
@@ -332,7 +272,7 @@ export default function RestoreSnapshotWizard() {
                     "namespace",
                     (e.target as HTMLSelectElement).value,
                   )}
-                class={inputClass}
+                class={WIZARD_INPUT_CLASS}
               >
                 {namespaces.value.map((ns) => (
                   <option key={ns} value={ns}>{ns}</option>
@@ -351,10 +291,10 @@ export default function RestoreSnapshotWizard() {
                     "storageClassName",
                     (e.target as HTMLSelectElement).value,
                   )}
-                class={inputClass}
+                class={WIZARD_INPUT_CLASS}
               >
                 <option value="">Select a storage class...</option>
-                {storageClasses.value.map((sc) => (
+                {storageClasses.value.map((sc: StorageClassItem) => (
                   <option key={sc.metadata.name} value={sc.metadata.name}>
                     {sc.metadata.name}
                   </option>

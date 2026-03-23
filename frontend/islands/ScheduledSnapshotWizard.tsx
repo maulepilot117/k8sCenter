@@ -3,7 +3,9 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
+import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -71,25 +73,13 @@ export default function ScheduledSnapshotWizard() {
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
 
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespaces = useNamespaces();
   const pvcs = useSignal<PVCItem[]>([]);
   const snapshotClasses = useSignal<SnapshotClassItem[]>([]);
 
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
-
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // Fetch PVCs when namespace changes (bound only)
   useEffect(() => {
@@ -132,17 +122,7 @@ export default function ScheduledSnapshotWizard() {
       .catch(() => {});
   }, []);
 
-  // Warn on unsaved changes
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;
@@ -230,9 +210,6 @@ export default function ScheduledSnapshotWizard() {
     return <div class="p-6">Loading wizard...</div>;
   }
 
-  const inputClass =
-    "mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-white";
-
   return (
     <div class="p-6">
       <div class="mb-6 flex items-center justify-between">
@@ -268,7 +245,7 @@ export default function ScheduledSnapshotWizard() {
                 value={form.value.name}
                 onInput={(e) =>
                   updateField("name", (e.target as HTMLInputElement).value)}
-                class={inputClass}
+                class={WIZARD_INPUT_CLASS}
                 placeholder="e.g. daily-db-backup"
               />
               {errors.value.name && (
@@ -287,7 +264,7 @@ export default function ScheduledSnapshotWizard() {
                     "namespace",
                     (e.target as HTMLSelectElement).value,
                   )}
-                class={inputClass}
+                class={WIZARD_INPUT_CLASS}
               >
                 {namespaces.value.map((ns) => (
                   <option key={ns} value={ns}>{ns}</option>
@@ -313,7 +290,7 @@ export default function ScheduledSnapshotWizard() {
                         "sourcePVC",
                         (e.target as HTMLSelectElement).value,
                       )}
-                    class={inputClass}
+                    class={WIZARD_INPUT_CLASS}
                   >
                     <option value="">Select a PVC...</option>
                     {pvcs.value.map((p) => (
@@ -348,7 +325,7 @@ export default function ScheduledSnapshotWizard() {
                         "volumeSnapshotClassName",
                         (e.target as HTMLSelectElement).value,
                       )}
-                    class={inputClass}
+                    class={WIZARD_INPUT_CLASS}
                   >
                     <option value="">Select a snapshot class...</option>
                     {snapshotClasses.value.map((sc) => (
@@ -407,7 +384,7 @@ export default function ScheduledSnapshotWizard() {
                       "schedule",
                       (e.target as HTMLInputElement).value,
                     )}
-                  class={`${inputClass} mt-2`}
+                  class={`${WIZARD_INPUT_CLASS} mt-2`}
                   placeholder="e.g. 0 */6 * * *"
                 />
               )}
