@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -409,6 +410,14 @@ func (h *Handler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "name and sourcePVC are required", "")
 		return
 	}
+	if !k8sNameRegexp.MatchString(req.Name) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid snapshot name: "+req.Name, "")
+		return
+	}
+	if !k8sNameRegexp.MatchString(req.SourcePVC) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid sourcePVC name: "+req.SourcePVC, "")
+		return
+	}
 
 	// Build unstructured VolumeSnapshot
 	spec := map[string]any{
@@ -477,7 +486,13 @@ func (h *Handler) HandleGetSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	obj, err := dynClient.Resource(volumeSnapshotGVR).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	if err != nil {
-		httputil.WriteError(w, http.StatusNotFound, "volume snapshot not found", "")
+		h.Logger.Error("failed to get volume snapshot", "error", err, "name", name, "namespace", ns)
+		// Check if it's a not-found error specifically
+		if strings.Contains(err.Error(), "not found") {
+			httputil.WriteError(w, http.StatusNotFound, "volume snapshot not found", "")
+		} else {
+			httputil.WriteError(w, http.StatusBadGateway, "failed to get volume snapshot", "")
+		}
 		return
 	}
 

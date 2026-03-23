@@ -2,10 +2,15 @@ package wizard
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	sigsyaml "sigs.k8s.io/yaml"
 )
+
+// cronRegex validates basic 5-field cron expressions (min hour dom month dow).
+// Allows *, digits, ranges (1-5), steps (*/2), lists (1,3,5), and common shortcuts.
+var cronRegex = regexp.MustCompile(`^(\S+\s+){4}\S+$`)
 
 // ScheduledSnapshotInput represents the wizard form data for creating a
 // CronJob-based scheduled VolumeSnapshot workflow.
@@ -44,8 +49,11 @@ func (s *ScheduledSnapshotInput) Validate() []FieldError {
 		errs = append(errs, FieldError{Field: "volumeSnapshotClassName", Message: "must be a valid DNS label"})
 	}
 
-	if strings.TrimSpace(s.Schedule) == "" {
+	schedule := strings.TrimSpace(s.Schedule)
+	if schedule == "" {
 		errs = append(errs, FieldError{Field: "schedule", Message: "is required"})
+	} else if !cronRegex.MatchString(schedule) {
+		errs = append(errs, FieldError{Field: "schedule", Message: "must be a valid 5-field cron expression (e.g. '0 * * * *')"})
 	}
 
 	if s.RetentionCount < 1 || s.RetentionCount > 100 {
