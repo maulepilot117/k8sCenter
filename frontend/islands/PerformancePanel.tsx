@@ -213,6 +213,26 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
         'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~".*",container!=""}[5m])) by (pod)',
     },
   ],
+  storageclasses: [
+    {
+      title: "PV Count",
+      query: 'count(kube_persistentvolume_info{storageclass="{name}"})',
+    },
+    {
+      title: "PVC Count",
+      query: 'count(kube_persistentvolumeclaim_info{storageclass="{name}"})',
+    },
+    {
+      title: "Total Provisioned (GiB)",
+      query:
+        'sum(kube_persistentvolume_capacity_bytes{storageclass="{name}"}) / 1024 / 1024 / 1024',
+    },
+    {
+      title: "Total Used (GiB)",
+      query:
+        'sum(kubelet_volume_stats_used_bytes * on(persistentvolumeclaim, namespace) group_left(storageclass) kube_persistentvolumeclaim_info{storageclass="{name}"}) / 1024 / 1024 / 1024',
+    },
+  ],
   pvs: [
     {
       title: "Capacity (GiB)",
