@@ -3,7 +3,11 @@ import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX, LabelEntry, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import {
+  DNS_LABEL_REGEX,
+  LabelEntry,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
@@ -98,12 +102,12 @@ export default function PDBWizard() {
 
     const hasValidLabel = f.selectorLabels.some((l) => l.key.trim() !== "");
     if (!hasValidLabel) {
-      errs.selectorLabels = "At least one selector label with a non-empty key is required";
+      errs.selectorLabels =
+        "At least one selector label with a non-empty key is required";
     }
 
     if (!f.budgetValue || !/^\d+%?$/.test(f.budgetValue.trim())) {
-      errs.budgetValue =
-        "Enter a number (e.g. 2) or percentage (e.g. 50%)";
+      errs.budgetValue = "Enter a number (e.g. 2) or percentage (e.g. 50%)";
     }
 
     errors.value = errs;
@@ -266,7 +270,8 @@ export default function PDBWizard() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => removeLabel(i)}
+                      onClick={() =>
+                        removeLabel(i)}
                       class="mt-1 rounded p-2 text-slate-400 hover:bg-red-50 hover:text-danger dark:hover:bg-red-900/20"
                       title="Remove label"
                     >

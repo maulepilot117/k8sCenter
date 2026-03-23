@@ -102,14 +102,12 @@ export default function HPAWizard() {
     const metrics = form.value.metrics.filter((_, i) => i !== index);
     form.value = {
       ...form.value,
-      metrics: metrics.length > 0
-        ? metrics
-        : [{
-          type: "Resource",
-          resourceName: "cpu",
-          targetType: "Utilization",
-          targetAverageValue: 80,
-        }],
+      metrics: metrics.length > 0 ? metrics : [{
+        type: "Resource",
+        resourceName: "cpu",
+        targetType: "Utilization",
+        targetAverageValue: 80,
+      }],
     };
   }, []);
 
@@ -135,8 +133,12 @@ export default function HPAWizard() {
 
     for (let i = 0; i < f.metrics.length; i++) {
       const m = f.metrics[i];
-      if (m.targetType === "Utilization" && (m.targetAverageValue < 1 || m.targetAverageValue > 100)) {
-        errs[`metrics_${i}_targetAverageValue`] = "Must be between 1 and 100 for Utilization (percentage)";
+      if (
+        m.targetType === "Utilization" &&
+        (m.targetAverageValue < 1 || m.targetAverageValue > 100)
+      ) {
+        errs[`metrics_${i}_targetAverageValue`] =
+          "Must be between 1 and 100 for Utilization (percentage)";
       } else if (m.targetAverageValue < 1) {
         errs[`metrics_${i}_targetAverageValue`] = "Must be at least 1";
       }

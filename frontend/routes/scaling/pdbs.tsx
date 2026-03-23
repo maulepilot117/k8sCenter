@@ -3,6 +3,10 @@ import ResourceTable from "@/islands/ResourceTable.tsx";
 
 export default define.page(function PDBsPage() {
   return (
-    <ResourceTable kind="poddisruptionbudgets" title="PodDisruptionBudgets" createHref="/scaling/pdbs/new" />
+    <ResourceTable
+      kind="poddisruptionbudgets"
+      title="PodDisruptionBudgets"
+      createHref="/scaling/pdbs/new"
+    />
   );
 });

@@ -63,7 +63,12 @@ function newPort(): NPPortState {
 }
 
 function newPeer(): NPPeerState {
-  return { type: "podSelector", labels: [newLabelEntry()], cidr: "", except: [] };
+  return {
+    type: "podSelector",
+    labels: [newLabelEntry()],
+    cidr: "",
+    except: [],
+  };
 }
 
 function newRule(): NPRuleState {
@@ -132,7 +137,9 @@ export default function NetworkPolicyWizard() {
     dirty.value = true;
     form.value = {
       ...form.value,
-      podSelectorLabels: form.value.podSelectorLabels.filter((_, i) => i !== idx),
+      podSelectorLabels: form.value.podSelectorLabels.filter((_, i) =>
+        i !== idx
+      ),
     };
   }, []);
 
@@ -165,13 +172,16 @@ export default function NetworkPolicyWizard() {
     };
   }, []);
 
-  const removeRule = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      [ruleType]: form.value[ruleType].filter((_, i) => i !== ruleIdx),
-    };
-  }, []);
+  const removeRule = useCallback(
+    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+      dirty.value = true;
+      form.value = {
+        ...form.value,
+        [ruleType]: form.value[ruleType].filter((_, i) => i !== ruleIdx),
+      };
+    },
+    [],
+  );
 
   // Generic rule update helper
   const updateRuleArray = useCallback(
@@ -189,15 +199,22 @@ export default function NetworkPolicyWizard() {
   );
 
   // Peer helpers (parameterized by rule type)
-  const addPeer = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-    updateRuleArray(ruleType, ruleIdx, (rule) => ({
-      ...rule,
-      peers: [...rule.peers, newPeer()],
-    }));
-  }, []);
+  const addPeer = useCallback(
+    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => ({
+        ...rule,
+        peers: [...rule.peers, newPeer()],
+      }));
+    },
+    [],
+  );
 
   const removePeer = useCallback(
-    (ruleType: "ingressRules" | "egressRules", ruleIdx: number, peerIdx: number) => {
+    (
+      ruleType: "ingressRules" | "egressRules",
+      ruleIdx: number,
+      peerIdx: number,
+    ) => {
       updateRuleArray(ruleType, ruleIdx, (rule) => ({
         ...rule,
         peers: rule.peers.filter((_, i) => i !== peerIdx),
@@ -223,15 +240,22 @@ export default function NetworkPolicyWizard() {
   );
 
   // Port helpers (parameterized by rule type)
-  const addPort = useCallback((ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
-    updateRuleArray(ruleType, ruleIdx, (rule) => ({
-      ...rule,
-      ports: [...rule.ports, newPort()],
-    }));
-  }, []);
+  const addPort = useCallback(
+    (ruleType: "ingressRules" | "egressRules", ruleIdx: number) => {
+      updateRuleArray(ruleType, ruleIdx, (rule) => ({
+        ...rule,
+        ports: [...rule.ports, newPort()],
+      }));
+    },
+    [],
+  );
 
   const removePort = useCallback(
-    (ruleType: "ingressRules" | "egressRules", ruleIdx: number, portIdx: number) => {
+    (
+      ruleType: "ingressRules" | "egressRules",
+      ruleIdx: number,
+      portIdx: number,
+    ) => {
       updateRuleArray(ruleType, ruleIdx, (rule) => ({
         ...rule,
         ports: rule.ports.filter((_, i) => i !== portIdx),
@@ -263,7 +287,8 @@ export default function NetworkPolicyWizard() {
 
     if (step === 0) {
       if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
-        errs.name = "Must be lowercase alphanumeric with hyphens, 1-63 characters";
+        errs.name =
+          "Must be lowercase alphanumeric with hyphens, 1-63 characters";
       }
       if (!f.namespace) errs.namespace = "Required";
       if (f.policyTypes.length === 0) {
@@ -286,14 +311,18 @@ export default function NetworkPolicyWizard() {
             }
           });
           rule.peers.forEach((peer, peerIdx) => {
-            if (peer.type === "ipBlock" && (!peer.cidr || !CIDR_REGEX.test(peer.cidr))) {
+            if (
+              peer.type === "ipBlock" &&
+              (!peer.cidr || !CIDR_REGEX.test(peer.cidr))
+            ) {
               errs[`${direction}[${ruleIdx}].peers[${peerIdx}].cidr`] =
                 "Must be a valid CIDR (e.g. 10.0.0.0/8)";
             }
             peer.except.forEach((exc, excIdx) => {
               if (exc && !CIDR_REGEX.test(exc)) {
-                errs[`${direction}Rules[${ruleIdx}].peers[${peerIdx}].except[${excIdx}]`] =
-                  "Must be a valid CIDR";
+                errs[
+                  `${direction}Rules[${ruleIdx}].peers[${peerIdx}].except[${excIdx}]`
+                ] = "Must be a valid CIDR";
               }
             });
           });
@@ -499,7 +528,8 @@ export default function NetworkPolicyWizard() {
                     />
                     <button
                       type="button"
-                      onClick={() => removePodSelectorLabel(idx)}
+                      onClick={() =>
+                        removePodSelectorLabel(idx)}
                       class="text-xs text-danger hover:text-danger/80 shrink-0"
                     >
                       Remove
@@ -516,7 +546,10 @@ export default function NetworkPolicyWizard() {
               </label>
               <div class="flex gap-6">
                 {["Ingress", "Egress"].map((type) => (
-                  <label key={type} class="flex items-center gap-2 cursor-pointer">
+                  <label
+                    key={type}
+                    class="flex items-center gap-2 cursor-pointer"
+                  >
                     <input
                       type="checkbox"
                       checked={f.policyTypes.includes(type)}
@@ -534,7 +567,9 @@ export default function NetworkPolicyWizard() {
                 ))}
               </div>
               {errors.value.policyTypes && (
-                <p class="mt-1 text-sm text-danger">{errors.value.policyTypes}</p>
+                <p class="mt-1 text-sm text-danger">
+                  {errors.value.policyTypes}
+                </p>
               )}
             </div>
           </div>
@@ -550,7 +585,10 @@ export default function NetworkPolicyWizard() {
                   <h3 class="text-base font-semibold text-slate-800 dark:text-white">
                     Ingress Rules
                   </h3>
-                  <Button variant="ghost" onClick={() => addRule("ingressRules")}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => addRule("ingressRules")}
+                  >
                     + Add Ingress Rule
                   </Button>
                 </div>
@@ -570,13 +608,21 @@ export default function NetworkPolicyWizard() {
                       errorPrefix={`ingress[${ruleIdx}]`}
                       onRemove={() => removeRule("ingressRules", ruleIdx)}
                       onAddPeer={() => addPeer("ingressRules", ruleIdx)}
-                      onRemovePeer={(peerIdx) => removePeer("ingressRules", ruleIdx, peerIdx)}
+                      onRemovePeer={(peerIdx) =>
+                        removePeer("ingressRules", ruleIdx, peerIdx)}
                       onUpdatePeer={(peerIdx, updater) =>
                         updatePeer("ingressRules", ruleIdx, peerIdx, updater)}
                       onAddPort={() => addPort("ingressRules", ruleIdx)}
-                      onRemovePort={(portIdx) => removePort("ingressRules", ruleIdx, portIdx)}
+                      onRemovePort={(portIdx) =>
+                        removePort("ingressRules", ruleIdx, portIdx)}
                       onUpdatePort={(portIdx, field, value) =>
-                        updatePort("ingressRules", ruleIdx, portIdx, field, value)}
+                        updatePort(
+                          "ingressRules",
+                          ruleIdx,
+                          portIdx,
+                          field,
+                          value,
+                        )}
                     />
                   ))}
                 </div>
@@ -590,7 +636,10 @@ export default function NetworkPolicyWizard() {
                   <h3 class="text-base font-semibold text-slate-800 dark:text-white">
                     Egress Rules
                   </h3>
-                  <Button variant="ghost" onClick={() => addRule("egressRules")}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => addRule("egressRules")}
+                  >
                     + Add Egress Rule
                   </Button>
                 </div>
@@ -610,13 +659,21 @@ export default function NetworkPolicyWizard() {
                       errorPrefix={`egress[${ruleIdx}]`}
                       onRemove={() => removeRule("egressRules", ruleIdx)}
                       onAddPeer={() => addPeer("egressRules", ruleIdx)}
-                      onRemovePeer={(peerIdx) => removePeer("egressRules", ruleIdx, peerIdx)}
+                      onRemovePeer={(peerIdx) =>
+                        removePeer("egressRules", ruleIdx, peerIdx)}
                       onUpdatePeer={(peerIdx, updater) =>
                         updatePeer("egressRules", ruleIdx, peerIdx, updater)}
                       onAddPort={() => addPort("egressRules", ruleIdx)}
-                      onRemovePort={(portIdx) => removePort("egressRules", ruleIdx, portIdx)}
+                      onRemovePort={(portIdx) =>
+                        removePort("egressRules", ruleIdx, portIdx)}
                       onUpdatePort={(portIdx, field, value) =>
-                        updatePort("egressRules", ruleIdx, portIdx, field, value)}
+                        updatePort(
+                          "egressRules",
+                          ruleIdx,
+                          portIdx,
+                          field,
+                          value,
+                        )}
                     />
                   ))}
                 </div>
@@ -678,10 +735,17 @@ interface RuleEditorProps {
   onRemove: () => void;
   onAddPeer: () => void;
   onRemovePeer: (peerIdx: number) => void;
-  onUpdatePeer: (peerIdx: number, updater: (peer: NPPeerState) => NPPeerState) => void;
+  onUpdatePeer: (
+    peerIdx: number,
+    updater: (peer: NPPeerState) => NPPeerState,
+  ) => void;
   onAddPort: () => void;
   onRemovePort: (portIdx: number) => void;
-  onUpdatePort: (portIdx: number, field: keyof NPPortState, value: unknown) => void;
+  onUpdatePort: (
+    portIdx: number,
+    field: keyof NPPortState,
+    value: unknown,
+  ) => void;
 }
 
 function RuleEditor({
@@ -731,7 +795,8 @@ function RuleEditor({
         </div>
         {rule.peers.length === 0 && (
           <p class="text-xs text-slate-500 italic">
-            No peers — matches all {direction === "Ingress" ? "sources" : "destinations"}.
+            No peers — matches all{" "}
+            {direction === "Ingress" ? "sources" : "destinations"}.
           </p>
         )}
         <div class="space-y-3">
@@ -800,7 +865,8 @@ function RuleEditor({
               </select>
               <button
                 type="button"
-                onClick={() => onRemovePort(portIdx)}
+                onClick={() =>
+                  onRemovePort(portIdx)}
                 class="text-xs text-danger hover:text-danger/80 shrink-0"
               >
                 Remove
@@ -887,7 +953,8 @@ function PeerEditor({
           onChange={(e) =>
             onUpdate((p) => ({
               ...p,
-              type: (e.target as HTMLSelectElement).value as NPPeerState["type"],
+              type: (e.target as HTMLSelectElement)
+                .value as NPPeerState["type"],
               labels: [newLabelEntry()],
               cidr: "",
               except: [],
@@ -923,7 +990,9 @@ function PeerEditor({
             </button>
           </div>
           {peer.labels.length === 0 && (
-            <p class="text-xs text-slate-500 italic">No labels — matches all.</p>
+            <p class="text-xs text-slate-500 italic">
+              No labels — matches all.
+            </p>
           )}
           <div class="space-y-1">
             {peer.labels.map((label, idx) => (
@@ -932,7 +1001,11 @@ function PeerEditor({
                   type="text"
                   value={label.key}
                   onInput={(e) =>
-                    updateLabel(idx, "key", (e.target as HTMLInputElement).value)}
+                    updateLabel(
+                      idx,
+                      "key",
+                      (e.target as HTMLInputElement).value,
+                    )}
                   placeholder="key"
                   class={WIZARD_INPUT_CLASS + " flex-1"}
                 />
@@ -951,7 +1024,8 @@ function PeerEditor({
                 />
                 <button
                   type="button"
-                  onClick={() => removeLabel(idx)}
+                  onClick={() =>
+                    removeLabel(idx)}
                   class="text-xs text-danger hover:text-danger/80 shrink-0"
                 >
                   ×
@@ -1011,7 +1085,8 @@ function PeerEditor({
                   />
                   <button
                     type="button"
-                    onClick={() => removeExcept(idx)}
+                    onClick={() =>
+                      removeExcept(idx)}
                     class="text-xs text-danger hover:text-danger/80 shrink-0"
                   >
                     ×
