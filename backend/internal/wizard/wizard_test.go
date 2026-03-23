@@ -488,7 +488,7 @@ func TestHandleDeploymentPreview_Valid(t *testing.T) {
 	req = addAuthContext(req)
 
 	rr := httptest.NewRecorder()
-	h.HandleDeploymentPreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &DeploymentInput{} })(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -521,7 +521,7 @@ func TestHandleDeploymentPreview_ValidationError(t *testing.T) {
 	req = addAuthContext(req)
 
 	rr := httptest.NewRecorder()
-	h.HandleDeploymentPreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &DeploymentInput{} })(rr, req)
 
 	if rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", rr.Code, rr.Body.String())
@@ -535,7 +535,7 @@ func TestHandleDeploymentPreview_BadJSON(t *testing.T) {
 	req = addAuthContext(req)
 
 	rr := httptest.NewRecorder()
-	h.HandleDeploymentPreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &DeploymentInput{} })(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rr.Code)
@@ -546,7 +546,7 @@ func TestHandleDeploymentPreview_NoAuth(t *testing.T) {
 	h := testHandler()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/deployment/preview", nil)
 	rr := httptest.NewRecorder()
-	h.HandleDeploymentPreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &DeploymentInput{} })(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rr.Code)
@@ -566,7 +566,7 @@ func TestHandleServicePreview_Valid(t *testing.T) {
 	req = addAuthContext(req)
 
 	rr := httptest.NewRecorder()
-	h.HandleServicePreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &ServiceInput{} })(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -590,7 +590,7 @@ func TestHandleServicePreview_ValidationError(t *testing.T) {
 	req = addAuthContext(req)
 
 	rr := httptest.NewRecorder()
-	h.HandleServicePreview(rr, req)
+	h.HandlePreview(func() WizardInput { return &ServiceInput{} })(rr, req)
 
 	if rr.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d", rr.Code)

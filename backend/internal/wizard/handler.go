@@ -8,7 +8,6 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/pkg/api"
-	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // FieldError represents a single validation error for a specific field.
@@ -17,221 +16,46 @@ type FieldError struct {
 	Message string `json:"message"`
 }
 
+// WizardInput is the contract all wizard input types must implement.
+// Validate returns field-level errors. ToYAML returns the resource(s) as YAML.
+type WizardInput interface {
+	Validate() []FieldError
+	ToYAML() (string, error)
+}
+
 // Handler handles wizard preview HTTP endpoints.
 type Handler struct {
 	Logger *slog.Logger
 }
 
-// HandleDeploymentPreview handles POST /api/v1/wizards/deployment/preview.
-// It validates the input, constructs a typed Deployment, and returns YAML.
-func (h *Handler) HandleDeploymentPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
+// HandlePreview returns a generic HTTP handler for any WizardInput type.
+// The newInput factory creates a fresh instance per request (required for json.Decode).
+func (h *Handler) HandlePreview(newInput func() WizardInput) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := httputil.RequireUser(w, r); !ok {
+			return
+		}
+
+		input := newInput()
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(input); err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+			return
+		}
+
+		if errs := input.Validate(); len(errs) > 0 {
+			writeValidationErrors(w, errs)
+			return
+		}
+
+		yaml, err := input.ToYAML()
+		if err != nil {
+			h.Logger.Error("failed to generate YAML preview", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
+			return
+		}
+
+		httputil.WriteData(w, map[string]string{"yaml": yaml})
 	}
-
-	var input DeploymentInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	dep, err := input.ToDeployment()
-	if err != nil {
-		httputil.WriteError(w, http.StatusUnprocessableEntity, err.Error(), "")
-		return
-	}
-	yamlBytes, err := sigsyaml.Marshal(dep)
-	if err != nil {
-		h.Logger.Error("failed to marshal deployment to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
-}
-
-// HandleServicePreview handles POST /api/v1/wizards/service/preview.
-// It validates the input, constructs a typed Service, and returns YAML.
-func (h *Handler) HandleServicePreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input ServiceInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	svc := input.ToService()
-	yamlBytes, err := sigsyaml.Marshal(svc)
-	if err != nil {
-		h.Logger.Error("failed to marshal service to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
-}
-
-// HandleStorageClassPreview handles POST /api/v1/wizards/storageclass/preview.
-// It validates the input, constructs a typed StorageClass, and returns YAML.
-func (h *Handler) HandleStorageClassPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input StorageClassInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	sc := input.ToStorageClass()
-	yamlBytes, err := sigsyaml.Marshal(sc)
-	if err != nil {
-		h.Logger.Error("failed to marshal storage class to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
-}
-
-// HandleRoleBindingPreview handles POST /api/v1/wizards/rolebinding/preview.
-// It validates the input, constructs a RoleBinding or ClusterRoleBinding, and returns YAML.
-func (h *Handler) HandleRoleBindingPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input RoleBindingInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	var obj any
-	if input.ClusterScope {
-		obj = input.ToClusterRoleBinding()
-	} else {
-		obj = input.ToRoleBinding()
-	}
-
-	yamlBytes, err := sigsyaml.Marshal(obj)
-	if err != nil {
-		h.Logger.Error("failed to marshal role binding to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
-}
-
-// HandlePVCPreview handles POST /api/v1/wizards/pvc/preview.
-// It validates the input, constructs a typed PVC, and returns YAML.
-func (h *Handler) HandlePVCPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input PVCInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	pvc := input.ToPersistentVolumeClaim()
-	yamlBytes, err := sigsyaml.Marshal(pvc)
-	if err != nil {
-		h.Logger.Error("failed to marshal PVC to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
-}
-
-// HandleScheduledSnapshotPreview handles POST /api/v1/wizards/scheduled-snapshot/preview.
-// It validates the input, generates multi-doc YAML (SA + Role + RoleBinding + CronJob), and returns it.
-func (h *Handler) HandleScheduledSnapshotPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input ScheduledSnapshotInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	yamlStr, err := input.ToMultiDocYAML()
-	if err != nil {
-		h.Logger.Error("failed to generate scheduled snapshot YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": yamlStr})
-}
-
-// HandleSnapshotPreview handles POST /api/v1/wizards/snapshot/preview.
-// It validates the input, constructs an unstructured VolumeSnapshot, and returns YAML.
-func (h *Handler) HandleSnapshotPreview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := httputil.RequireUser(w, r); !ok {
-		return
-	}
-
-	var input SnapshotInput
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
-		return
-	}
-
-	if errs := input.Validate(); len(errs) > 0 {
-		writeValidationErrors(w, errs)
-		return
-	}
-
-	obj := input.ToVolumeSnapshot()
-	yamlBytes, err := sigsyaml.Marshal(obj.Object)
-	if err != nil {
-		h.Logger.Error("failed to marshal volume snapshot to YAML", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to generate YAML", "")
-		return
-	}
-
-	httputil.WriteData(w, map[string]string{"yaml": string(yamlBytes)})
 }
 
 func writeValidationErrors(w http.ResponseWriter, errs []FieldError) {

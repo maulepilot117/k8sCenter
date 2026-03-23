@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -65,4 +66,14 @@ func (s *SnapshotInput) ToVolumeSnapshot() *unstructured.Unstructured {
 	}
 
 	return obj
+}
+
+// ToYAML implements WizardInput by marshaling the unstructured VolumeSnapshot.
+func (s *SnapshotInput) ToYAML() (string, error) {
+	obj := s.ToVolumeSnapshot()
+	yamlBytes, err := sigsyaml.Marshal(obj.Object)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }

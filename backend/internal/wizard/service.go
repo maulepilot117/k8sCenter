@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
 	"regexp"
 
@@ -175,4 +176,14 @@ func (s *ServiceInput) ToService() *corev1.Service {
 			Ports:    ports,
 		},
 	}
+}
+
+// ToYAML implements WizardInput by converting to a Service and marshaling to YAML.
+func (s *ServiceInput) ToYAML() (string, error) {
+	svc := s.ToService()
+	yamlBytes, err := sigsyaml.Marshal(svc)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }

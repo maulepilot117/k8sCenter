@@ -226,3 +226,8 @@ done`,
 
 	return strings.Join(docs, "---\n"), nil
 }
+
+// ToYAML implements WizardInput by generating multi-document YAML.
+func (s *ScheduledSnapshotInput) ToYAML() (string, error) {
+	return s.ToMultiDocYAML()
+}

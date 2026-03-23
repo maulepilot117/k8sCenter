@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -143,4 +144,19 @@ func (rb *RoleBindingInput) buildSubjects() []rbacv1.Subject {
 		subjects[i] = sub
 	}
 	return subjects
+}
+
+// ToYAML implements WizardInput by converting to a RoleBinding or ClusterRoleBinding.
+func (rb *RoleBindingInput) ToYAML() (string, error) {
+	var obj any
+	if rb.ClusterScope {
+		obj = rb.ToClusterRoleBinding()
+	} else {
+		obj = rb.ToRoleBinding()
+	}
+	yamlBytes, err := sigsyaml.Marshal(obj)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }

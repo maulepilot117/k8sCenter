@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
 	"regexp"
 
@@ -432,4 +433,17 @@ func validateQuantity(field, value string) []FieldError {
 		}}
 	}
 	return nil
+}
+
+// ToYAML implements WizardInput by converting to a Deployment and marshaling to YAML.
+func (d *DeploymentInput) ToYAML() (string, error) {
+	dep, err := d.ToDeployment()
+	if err != nil {
+		return "", err
+	}
+	yamlBytes, err := sigsyaml.Marshal(dep)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
 }
