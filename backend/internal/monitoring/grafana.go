@@ -137,7 +137,7 @@ func (g *GrafanaClient) ProvisionDashboards(ctx context.Context, logger *slog.Lo
 
 	count := 0
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == "embed.go" {
+		if entry.IsDir() {
 			continue
 		}
 		data, err := dashboards.FS.ReadFile(entry.Name())
