@@ -2,6 +2,7 @@ import type { K8sResource, Pod } from "@/lib/k8s-types.ts";
 import { statusColor } from "@/lib/status-colors.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { ConditionsTable } from "./ConditionsTable.tsx";
+import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";
 
 function containerStateLabel(state: Record<string, unknown>): string {
   if (state.running) return "Running";
@@ -124,6 +125,9 @@ export function PodOverview({ resource }: { resource: K8sResource }) {
           </div>
         </div>
       )}
+
+      {/* Resource Requests & Limits */}
+      <ContainerResourcesTable containers={spec.containers ?? []} />
 
       {/* Conditions */}
       {status?.conditions && <ConditionsTable conditions={status.conditions} />}

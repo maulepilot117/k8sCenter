@@ -1,6 +1,7 @@
 import type { Deployment, K8sResource } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { ConditionsTable } from "./ConditionsTable.tsx";
+import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";
 import { KeyValueTable } from "./KeyValueTable.tsx";
 
 export function DeploymentOverview({ resource }: { resource: K8sResource }) {
@@ -80,6 +81,9 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
           </div>
         </div>
       )}
+
+      {/* Resource Requests & Limits */}
+      <ContainerResourcesTable containers={containers} />
 
       {/* Selector */}
       {spec.selector?.matchLabels && (
