@@ -27,11 +27,11 @@ spec:
         - port: {{ .Values.backend.port }}
           protocol: TCP
     {{- if .Values.ingress.enabled }}
-    # Allow traffic from ingress controller namespace
-    # NOTE: For tighter security, restrict namespaceSelector to your ingress namespace
+    # Allow traffic from ingress controller namespace only
     - from:
-        - namespaceSelector: {}
-          podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace | default "ingress-nginx" }}
       ports:
         - port: {{ .Values.backend.port }}
           protocol: TCP

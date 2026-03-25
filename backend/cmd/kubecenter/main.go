@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS from cgroup CPU quota
+
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
