@@ -13,7 +13,9 @@ export default defineConfig({
     : [["html", { open: "on-failure" }]],
 
   use: {
-    baseURL: process.env.BASE_URL ?? "http://localhost:5173",
+    baseURL:
+      process.env.BASE_URL ??
+      (process.env.CI ? "http://localhost:8000" : "http://localhost:5173"),
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
@@ -45,9 +47,11 @@ export default defineConfig({
       },
     },
     {
-      command: "deno task dev",
+      // In CI, use the pre-built production server (more stable than Vite dev server).
+      // Locally, use Vite dev server for HMR convenience.
+      command: process.env.CI ? "deno task start" : "deno task dev",
       cwd: "../frontend",
-      url: "http://localhost:5173",
+      url: process.env.CI ? "http://localhost:8000" : "http://localhost:5173",
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
     },

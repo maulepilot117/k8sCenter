@@ -42,6 +42,10 @@ jobs:
         working-directory: frontend
         run: deno install
 
+      - name: Build frontend
+        working-directory: frontend
+        run: deno task build
+
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*

@@ -6,10 +6,10 @@ test.describe("Dashboard @smoke", () => {
 
     // Dashboard should show cluster overview heading
     await expect(
-      page.getByText(/cluster overview|dashboard/i),
+      page.getByRole("heading", { name: /cluster overview/i }),
     ).toBeVisible();
 
     // Stat cards should display real data from the kind cluster
-    await expect(page.getByText(/node/i)).toBeVisible();
+    await expect(page.getByText("Nodes")).toBeVisible();
   });
 });

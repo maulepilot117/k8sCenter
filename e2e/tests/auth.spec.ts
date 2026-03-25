@@ -8,7 +8,7 @@ test.describe("Auth @smoke", () => {
     // transparent token refresh, then dashboard loads normally
     await page.goto("/");
     await expect(
-      page.getByText(/cluster overview|dashboard/i),
+      page.getByRole("heading", { name: /cluster overview/i }),
     ).toBeVisible();
   });
 
