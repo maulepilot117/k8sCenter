@@ -12,7 +12,9 @@ test.describe("Settings pages", () => {
     await page.goto("/settings/users");
 
     // Admin user should appear in the user list
-    await expect(page.getByRole("cell", { name: "admin" })).toBeVisible();
+    await expect(
+      page.getByRole("cell", { name: "admin" }).first(),
+    ).toBeVisible();
 
     // "you" badge should be next to our own username
     await expect(page.getByText("you", { exact: true })).toBeVisible();

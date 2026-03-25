@@ -4,11 +4,13 @@ test.describe("Resource detail page", () => {
   test.beforeEach(async ({ page }) => {
     // Navigate directly to coredns deployment detail page (always exists in kind)
     await page.goto("/workloads/deployments/kube-system/coredns");
-    await expect(page.getByText("coredns")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "coredns" }),
+    ).toBeVisible();
   });
 
   test("Overview tab renders deployment details", async ({ page }) => {
-    await expect(page.getByText(/replicas|available|ready/i)).toBeVisible();
+    await expect(page.getByText(/replicas|available|ready/i).first()).toBeVisible();
   });
 
   test("YAML tab shows editor", async ({ page }) => {
@@ -26,6 +28,7 @@ test.describe("Resource detail page", () => {
 
   test("Pods tab shows related pods", async ({ page }) => {
     await page.getByRole("tab", { name: "Pods" }).click();
-    await expect(page.getByText(/coredns/i)).toBeVisible();
+    // Should show at least one coredns pod
+    await expect(page.getByRole("cell", { name: /coredns/i }).first()).toBeVisible();
   });
 });

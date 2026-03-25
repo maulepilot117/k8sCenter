@@ -6,7 +6,12 @@ interface WizardConfig {
   createPath: string;
   apiKind: string;
   namespace: string | null;
-  fields: { label: string; value: string; generated?: boolean }[];
+  fields: {
+    label: string;
+    value: string;
+    generated?: boolean;
+    usePlaceholder?: string;
+  }[];
   submitButton?: string;
 }
 
@@ -34,7 +39,7 @@ const WIZARDS: WizardConfig[] = [
     apiKind: "jobs",
     namespace: "default",
     fields: [
-      { label: "Job Name", value: "", generated: true },
+      { label: "Job Name", value: "", generated: true, usePlaceholder: "my-batch-job" },
       { label: "Container Image", value: "busybox:1.37" },
     ],
   },
@@ -66,7 +71,9 @@ for (const w of WIZARDS) {
         // Fill form fields
         for (const field of w.fields) {
           const value = field.generated ? resourceName : field.value;
-          const input = page.getByLabel(field.label, { exact: true });
+          const input = field.usePlaceholder
+            ? page.getByPlaceholder(field.usePlaceholder)
+            : page.getByLabel(field.label, { exact: true });
           await input.fill(value);
         }
 

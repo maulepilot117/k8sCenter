@@ -5,7 +5,9 @@ test.describe("YAML Apply", () => {
     // Block Monaco CDN so the textarea fallback renders
     await page.route("**/esm.sh/monaco-editor**", (route) => route.abort());
     await page.goto("/tools/yaml-apply");
-    await expect(page.getByText("YAML Apply")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "YAML Apply" }),
+    ).toBeVisible();
   });
 
   test("validates valid YAML", async ({ page }) => {
