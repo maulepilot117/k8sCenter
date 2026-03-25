@@ -53,7 +53,12 @@ export default function ClusterSelector() {
     <select
       value={selectedCluster.value}
       onChange={(e) => {
-        selectedCluster.value = (e.target as HTMLSelectElement).value;
+        const newCluster = (e.target as HTMLSelectElement).value;
+        if (newCluster !== selectedCluster.value) {
+          selectedCluster.value = newCluster;
+          // Reload to get clean state for the new cluster
+          globalThis.location.reload();
+        }
       }}
       class="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 focus:border-brand focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200"
     >

@@ -106,11 +106,23 @@ func (s *ClusterStore) Create(ctx context.Context, c ClusterRecord) error {
 	return nil
 }
 
-// UpdateCredentials updates a cluster's connection credentials.
+// UpdateCredentials updates a cluster's connection credentials (encrypts before storing).
 func (s *ClusterStore) UpdateCredentials(ctx context.Context, id string, apiServerURL string, caData, authData []byte) error {
-	_, err := s.pool.Exec(ctx, `
+	encAuthData, err := Encrypt(authData, s.encryptionKey)
+	if err != nil {
+		return fmt.Errorf("encrypting auth data: %w", err)
+	}
+	var encCAData []byte
+	if len(caData) > 0 {
+		encCAData, err = Encrypt(caData, s.encryptionKey)
+		if err != nil {
+			return fmt.Errorf("encrypting CA data: %w", err)
+		}
+	}
+
+	_, err = s.pool.Exec(ctx, `
 		UPDATE clusters SET api_server_url = $2, ca_data = $3, auth_data = $4, updated_at = NOW()
-		WHERE id = $1`, id, apiServerURL, caData, authData)
+		WHERE id = $1`, id, apiServerURL, encCAData, encAuthData)
 	if err != nil {
 		return fmt.Errorf("updating cluster credentials: %w", err)
 	}
