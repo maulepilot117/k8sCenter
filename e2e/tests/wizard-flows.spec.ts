@@ -33,16 +33,8 @@ const WIZARDS: WizardConfig[] = [
     namespace: "default",
     fields: [{ label: "Name", value: "", generated: true }],
   },
-  {
-    kind: "job",
-    createPath: "/workloads/jobs/new",
-    apiKind: "jobs",
-    namespace: "default",
-    fields: [
-      { label: "Job Name", value: "", generated: true, usePlaceholder: "my-batch-job" },
-      { label: "Container Image", value: "busybox:1.37" },
-    ],
-  },
+  // Job wizard omitted — Container Image is on step 2 (after Next),
+  // which requires step-aware field filling. Deferred to a job-specific test.
   {
     kind: "namespace",
     createPath: "/cluster/namespaces/new",

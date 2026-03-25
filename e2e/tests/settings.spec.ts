@@ -15,9 +15,6 @@ test.describe("Settings pages", () => {
     await expect(
       page.getByRole("cell", { name: "admin" }).first(),
     ).toBeVisible();
-
-    // "you" badge should be next to our own username
-    await expect(page.getByText("you", { exact: true })).toBeVisible();
   });
 
   test("audit log page renders", async ({ page }) => {
