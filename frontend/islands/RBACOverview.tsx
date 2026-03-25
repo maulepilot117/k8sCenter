@@ -74,7 +74,7 @@ export default function RBACOverview() {
         roleMap.value = rMap;
 
         rows.value = resolveBindings(allBindings, rMap);
-      } catch (e) {
+      } catch {
         error.value = "Failed to load RBAC data";
       }
       loading.value = false;

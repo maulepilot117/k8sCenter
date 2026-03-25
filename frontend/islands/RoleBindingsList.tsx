@@ -2,11 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-import { resolveRoleHref } from "@/lib/rbac-utils.ts";
-import {
-  RESOURCE_DETAIL_PATHS,
-  CLUSTER_SCOPED_KINDS,
-} from "@/lib/constants.ts";
+import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 
 interface Binding {
   metadata: { name: string; namespace?: string };
