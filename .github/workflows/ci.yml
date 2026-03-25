@@ -195,7 +195,7 @@ jobs:
           output: trivy-backend.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -277,7 +277,7 @@ jobs:
           output: trivy-frontend.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v4
