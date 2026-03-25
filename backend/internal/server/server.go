@@ -40,6 +40,7 @@ type Server struct {
 	RBACChecker     *auth.RBACChecker
 	AuditLogger     audit.Logger
 	ClusterStore    *store.ClusterStore
+	ClusterRouter   *k8s.ClusterRouter
 	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
@@ -70,6 +71,7 @@ type Deps struct {
 	RBACChecker   *auth.RBACChecker
 	AuditLogger     audit.Logger
 	ClusterStore    *store.ClusterStore
+	ClusterRouter   *k8s.ClusterRouter
 	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
@@ -100,6 +102,7 @@ func New(deps Deps) *Server {
 		RBACChecker:  deps.RBACChecker,
 		AuditLogger:     deps.AuditLogger,
 		ClusterStore:    deps.ClusterStore,
+		ClusterRouter:   deps.ClusterRouter,
 		SettingsService: deps.SettingsService,
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
@@ -117,6 +120,7 @@ func New(deps Deps) *Server {
 		}
 		s.ResourceHandler = &resources.Handler{
 			K8sClient:       deps.K8sClient,
+			ClusterRouter:   deps.ClusterRouter,
 			Informers:       deps.Informers,
 			AccessChecker:   ac,
 			AuditLogger:     deps.AuditLogger,

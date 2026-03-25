@@ -65,14 +65,7 @@ func RequireAdmin(next http.Handler) http.Handler {
 			writeAuthError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
-		isAdmin := false
-		for _, role := range user.Roles {
-			if role == "admin" {
-				isAdmin = true
-				break
-			}
-		}
-		if !isAdmin {
+		if !auth.IsAdmin(user) {
 			writeAuthError(w, http.StatusForbidden, "admin access required")
 			return
 		}

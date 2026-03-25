@@ -129,7 +129,7 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 		LimitBytes: &limitBytes,
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", "")
 		return
@@ -227,7 +227,7 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	defer execWSCount.Add(-1)
 
 	// Create impersonating client
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","message":"failed to create client"}`))
 		return
@@ -439,7 +439,7 @@ func (h *Handler) HandleDeletePod(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAccess(w, r, user, "delete", kindPod, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

@@ -77,7 +77,7 @@ func (h *Handler) HandleCreateNetworkPolicy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -109,7 +109,7 @@ func (h *Handler) HandleUpdateNetworkPolicy(w http.ResponseWriter, r *http.Reque
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -134,7 +134,7 @@ func (h *Handler) HandleDeleteNetworkPolicy(w http.ResponseWriter, r *http.Reque
 	if !h.checkAccess(w, r, user, "delete", kindNetworkPolicy, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

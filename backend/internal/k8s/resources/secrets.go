@@ -59,7 +59,7 @@ func (h *Handler) HandleListSecrets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -103,7 +103,7 @@ func (h *Handler) HandleGetSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -130,7 +130,7 @@ func (h *Handler) HandleRevealSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -170,7 +170,7 @@ func (h *Handler) HandleCreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -202,7 +202,7 @@ func (h *Handler) HandleUpdateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -227,7 +227,7 @@ func (h *Handler) HandleDeleteSecret(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAccess(w, r, user, "delete", kindSecret, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

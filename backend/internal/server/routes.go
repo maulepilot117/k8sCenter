@@ -71,6 +71,7 @@ func (s *Server) registerRoutes() {
 		r.Group(func(ar chi.Router) {
 			ar.Use(middleware.Auth(s.TokenManager))
 			ar.Use(middleware.CSRF)
+			ar.Use(middleware.ClusterContext)
 
 			ar.Get("/auth/me", s.handleAuthMe)
 			ar.Get("/cluster/info", s.handleClusterInfo)

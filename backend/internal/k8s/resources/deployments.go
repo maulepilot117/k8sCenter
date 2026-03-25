@@ -93,7 +93,7 @@ func (h *Handler) HandleCreateDeployment(w http.ResponseWriter, r *http.Request)
 	}
 	dep.Namespace = ns
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -130,7 +130,7 @@ func (h *Handler) HandleUpdateDeployment(w http.ResponseWriter, r *http.Request)
 	dep.Namespace = ns
 	dep.Name = name
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -159,7 +159,7 @@ func (h *Handler) HandleDeleteDeployment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -199,7 +199,7 @@ func (h *Handler) HandleScaleDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -241,7 +241,7 @@ func (h *Handler) HandleRollbackDeployment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

@@ -84,7 +84,7 @@ func (h *Handler) HandleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -109,7 +109,7 @@ func (h *Handler) HandleDeleteJob(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAccess(w, r, user, "delete", kindJob, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -192,7 +192,7 @@ func (h *Handler) HandleCreateCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -217,7 +217,7 @@ func (h *Handler) HandleDeleteCronJob(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAccess(w, r, user, "delete", kindCronJob, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -262,7 +262,7 @@ func (h *Handler) HandleSuspendJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -300,7 +300,7 @@ func (h *Handler) HandleSuspendCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -341,7 +341,7 @@ func (h *Handler) HandleTriggerCronJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

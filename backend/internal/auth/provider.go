@@ -15,6 +15,16 @@ type User struct {
 	Roles              []string `json:"roles"`
 }
 
+// IsAdmin returns true if the user has the "admin" role.
+func IsAdmin(u *User) bool {
+	for _, r := range u.Roles {
+		if r == "admin" {
+			return true
+		}
+	}
+	return false
+}
+
 // Credentials holds login credentials for authentication.
 type Credentials struct {
 	Username string `json:"username"`
