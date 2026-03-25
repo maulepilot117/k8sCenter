@@ -47,18 +47,26 @@ spec:
           env:
             - name: BACKEND_URL
               value: "http://{{ include "kubecenter.fullname" . }}-backend:{{ .Values.service.port }}"
-          livenessProbe:
-            httpGet:
-              path: /
+          startupProbe:
+            tcpSocket:
               port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 20
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 3
           readinessProbe:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 3
-            periodSeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
           resources:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
 {{- end }}

@@ -6,14 +6,15 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-  packages: write
+# Deny by default — each job declares minimum permissions
+permissions: {}
 
 jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
@@ -31,6 +32,8 @@ jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [changes]
     if: needs.changes.outputs.backend == 'true'
     defaults:
@@ -56,6 +59,8 @@ jobs:
   frontend:
     name: Frontend
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: [changes]
     if: needs.changes.outputs.frontend == 'true'
     defaults:
@@ -83,6 +88,8 @@ jobs:
   version-tag:
     name: Auto Version Tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: [changes, backend, frontend]
     if: |
       always() &&
@@ -129,6 +136,10 @@ jobs:
   build-backend-image:
     name: Build Backend Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     needs: [changes, backend, version-tag]
     if: |
       always() &&
@@ -160,6 +171,40 @@ jobs:
           echo "commit=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+      # Trivy: build amd64-only for local scanning before multi-arch push
+      - name: Build amd64 image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: k8scenter-backend:scan
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            COMMIT=${{ steps.version.outputs.commit }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
+          cache-from: type=gha,scope=backend
+
+      - name: Scan backend image with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: k8scenter-backend:scan
+          format: sarif
+          output: trivy-backend.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
+
+      # Multi-arch build + push (only runs if Trivy passed)
       - name: Build & push backend
         uses: docker/build-push-action@v6
         with:
@@ -180,6 +225,10 @@ jobs:
   build-frontend-image:
     name: Build Frontend Image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     needs: [changes, frontend, version-tag]
     if: |
       always() &&
@@ -208,6 +257,36 @@ jobs:
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
+      # Trivy: build amd64-only for local scanning before multi-arch push
+      - name: Build amd64 image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: k8scenter-frontend:scan
+          cache-from: type=gha,scope=frontend
+
+      - name: Scan frontend image with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: k8scenter-frontend:scan
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend
+
+      # Multi-arch build + push (only runs if Trivy passed)
       - name: Build & push frontend
         uses: docker/build-push-action@v6
         with:

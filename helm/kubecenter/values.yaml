@@ -18,10 +18,11 @@ backend:
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: 500m
       memory: 256Mi
+  goMemLimit: "230MiB"    # GOMEMLIMIT — set to ~90% of memory limit
   config:
     dev: false
     logLevel: info     # debug, info, warn, error
@@ -164,6 +165,7 @@ cors:
 # -- Network Policy
 networkPolicy:
   enabled: true
+  ingressNamespace: "ingress-nginx"   # Namespace of the ingress controller (for backend ingress rule)
 
 # -- Subchart overrides (only when monitoring.deploy=true)
 monitoring-stack:
