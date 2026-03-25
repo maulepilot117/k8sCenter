@@ -5,7 +5,7 @@ import { apiDelete, apiGet } from "@/lib/api.ts";
 import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
-import { Toast, useToast } from "@/components/ui/Toast.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 
 interface SnapshotInfo {
   name: string;
@@ -30,7 +30,6 @@ export default function SnapshotList() {
   const error = useSignal<string | null>(null);
   const deleteTarget = useSignal<SnapshotInfo | null>(null);
   const deleting = useSignal(false);
-  const { toast, show: showToast } = useToast();
 
   const fetchSnapshots = () => {
     loading.value = true;
@@ -114,8 +113,6 @@ export default function SnapshotList() {
 
   return (
     <div class="space-y-4">
-      <Toast toast={toast} />
-
       {/* Action buttons */}
       <div class="flex gap-2">
         <a

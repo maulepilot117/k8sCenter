@@ -10,8 +10,9 @@ import {
   getVisibleActions,
 } from "@/lib/action-handlers.ts";
 import { useAuth } from "@/lib/auth.ts";
+import { Breadcrumb } from "@/components/ui/Breadcrumb.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
-import { useToast } from "@/components/ui/Toast.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import {
   EVENT_DELETED,
   EVENT_MODIFIED,
@@ -85,7 +86,6 @@ export default function ResourceDetail({
 
   // Action buttons state
   const { rbac } = useAuth();
-  const { showToast } = useToast();
   const actionLoading = useSignal(false);
   const confirmAction = useSignal<
     {
@@ -690,22 +690,13 @@ export default function ResourceDetail({
       {/* Header */}
       <div class="flex items-center justify-between">
         <div>
-          <div class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 mb-1">
-            <a
-              href={listUrl}
-              class="hover:text-slate-700 dark:hover:text-slate-200"
-            >
-              {pluralize(title)}
-            </a>
-            <span>/</span>
-            {namespace && (
-              <>
-                <span>{namespace}</span>
-                <span>/</span>
-              </>
-            )}
-            <span class="text-slate-700 dark:text-slate-200">{name}</span>
-          </div>
+          <Breadcrumb
+            items={[
+              { label: pluralize(title), href: listUrl },
+              ...(namespace ? [{ label: namespace }] : []),
+              { label: name },
+            ]}
+          />
           <div class="flex items-center gap-3">
             <ResourceIcon kind={kind} size={24} class="text-slate-500" />
             <h1 class="text-xl font-semibold text-slate-900 dark:text-white">

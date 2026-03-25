@@ -4,7 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
-import { Toast, useToast } from "@/components/ui/Toast.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
 
 type DialogState =
@@ -20,7 +20,6 @@ export default function UserManager() {
   const error = useSignal<string | null>(null);
   const dialog = useSignal<DialogState>({ kind: "idle" });
   const actionLoading = useSignal(false);
-  const { toast, show: showToast } = useToast();
 
   const fetchUsers = useCallback(async () => {
     loading.value = true;
@@ -79,8 +78,6 @@ export default function UserManager() {
 
   return (
     <div class="space-y-4">
-      <Toast toast={toast} />
-
       {/* Create User button */}
       <div class="flex justify-end">
         <a

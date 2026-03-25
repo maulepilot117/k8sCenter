@@ -43,7 +43,7 @@ export default function ToastProvider() {
   if (!IS_BROWSER) return null;
 
   return (
-    <div class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+    <div role="status" aria-live="polite" class="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
       {toasts.value.map((toast) => (
         <div
           key={toast.id}

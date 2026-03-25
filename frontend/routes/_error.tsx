@@ -15,6 +15,9 @@ export default define.page(function ErrorPage({ error }) {
     }
   }
 
+  const is404 = status === 404;
+  const isServerError = status >= 500;
+
   return (
     <div class="flex min-h-full items-center justify-center p-6">
       <div class="text-center">
@@ -25,13 +28,29 @@ export default define.page(function ErrorPage({ error }) {
           {message}
         </h1>
         <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
-          {status === 404
+          {is404
             ? "The page you're looking for doesn't exist."
             : "An unexpected error occurred. Please try again."}
         </p>
-        <div class="mt-6">
+        <div class="mt-6 flex items-center justify-center gap-3">
+          {isServerError && (
+            <Button
+              variant="primary"
+              onClick={() => globalThis.location?.reload()}
+            >
+              Retry
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            onClick={() => globalThis.history?.back()}
+          >
+            Go Back
+          </Button>
           <a href="/">
-            <Button variant="primary">Back to Dashboard</Button>
+            <Button variant={isServerError ? "secondary" : "primary"}>
+              Dashboard
+            </Button>
           </a>
         </div>
       </div>

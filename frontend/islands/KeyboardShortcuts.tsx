@@ -6,7 +6,6 @@ const shortcuts = [
   { key: "?", description: "Show keyboard shortcuts" },
   { key: "/", description: "Focus search" },
   { key: "Escape", description: "Close modal / blur focus" },
-  { key: "g h", description: "Go to dashboard (home)" },
 ];
 
 /**
