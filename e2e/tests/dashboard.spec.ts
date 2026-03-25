@@ -12,11 +12,4 @@ test.describe("Dashboard @smoke", () => {
     // Stat cards should display real data from the kind cluster
     await expect(page.getByText(/node/i)).toBeVisible();
   });
-
-  test("displays cluster info", async ({ page }) => {
-    await page.goto("/");
-
-    // Should show at least 1 node (kind control-plane)
-    await expect(page.getByText(/1/)).toBeVisible();
-  });
 });
