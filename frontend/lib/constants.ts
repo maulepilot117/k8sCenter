@@ -236,6 +236,11 @@ export const NAV_SECTIONS = [
   {
     title: "Access Control",
     items: [
+      {
+        label: "RBAC Overview",
+        href: "/rbac/overview",
+        icon: "roles",
+      },
       { label: "Roles", href: "/rbac/roles", icon: "roles" },
       {
         label: "ClusterRoles",

@@ -1,5 +1,6 @@
 import type { K8sResource, RoleBinding } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import { resolveRoleHref } from "@/lib/rbac-utils.ts";
 
 export function RoleBindingOverview({ resource }: { resource: K8sResource }) {
   return <BindingDetail resource={resource} />;
@@ -17,7 +18,25 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
         <SectionHeader>Role Reference</SectionHeader>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <Field label="Kind" value={roleRef?.kind ?? "-"} />
-          <Field label="Name" value={roleRef?.name ?? "-"} />
+          <Field
+            label="Name"
+            value={
+              roleRef?.name ? (
+                <a
+                  href={resolveRoleHref(
+                    roleRef.kind,
+                    roleRef.name,
+                    b.metadata?.namespace,
+                  )}
+                  class="text-brand hover:underline"
+                >
+                  {roleRef.name}
+                </a>
+              ) : (
+                "-"
+              )
+            }
+          />
           <Field
             label="API Group"
             value={roleRef?.apiGroup ?? "rbac.authorization.k8s.io"}

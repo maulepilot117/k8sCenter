@@ -33,6 +33,7 @@ import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
 import PodTerminal from "@/islands/PodTerminal.tsx";
 import RelatedPods from "@/islands/RelatedPods.tsx";
+import RoleBindingsList from "@/islands/RoleBindingsList.tsx";
 import { CodeMirrorEditor } from "@/components/ui/CodeMirrorEditor.tsx";
 
 interface ResourceDetailProps {
@@ -368,6 +369,13 @@ export default function ResourceDetail({
           <div class="space-y-6 p-6">
             <MetadataSection resource={resource.value} />
             <OverviewComponent resource={resource.value} />
+            {(kind === "roles" || kind === "clusterroles") && (
+              <RoleBindingsList
+                roleName={name}
+                roleKind={kind === "clusterroles" ? "ClusterRole" : "Role"}
+                namespace={namespace}
+              />
+            )}
           </div>
         );
       },
