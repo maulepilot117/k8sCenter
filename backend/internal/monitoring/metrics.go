@@ -70,6 +70,138 @@ var QueryTemplates = map[string]QueryTemplate{
 		Query:       `kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$pvc"} / kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim="$pvc"} * 100`,
 		Variables:   []string{"namespace", "pvc"},
 	},
+
+	// PodDisruptionBudget metrics
+	"pdb_current_healthy": {
+		Name:        "pdb_current_healthy",
+		Description: "Number of currently healthy pods for the PDB",
+		Query:       `kube_poddisruptionbudget_status_current_healthy{namespace="$namespace",poddisruptionbudget="$pdb"}`,
+		Variables:   []string{"namespace", "pdb"},
+	},
+	"pdb_desired_healthy": {
+		Name:        "pdb_desired_healthy",
+		Description: "Minimum desired healthy pods for the PDB",
+		Query:       `kube_poddisruptionbudget_status_desired_healthy{namespace="$namespace",poddisruptionbudget="$pdb"}`,
+		Variables:   []string{"namespace", "pdb"},
+	},
+	"pdb_disruptions_allowed": {
+		Name:        "pdb_disruptions_allowed",
+		Description: "Number of pod disruptions currently allowed",
+		Query:       `kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="$namespace",poddisruptionbudget="$pdb"}`,
+		Variables:   []string{"namespace", "pdb"},
+	},
+	"pdb_expected_pods": {
+		Name:        "pdb_expected_pods",
+		Description: "Total number of pods counted by the PDB",
+		Query:       `kube_poddisruptionbudget_status_expected_pods{namespace="$namespace",poddisruptionbudget="$pdb"}`,
+		Variables:   []string{"namespace", "pdb"},
+	},
+
+	// ResourceQuota metrics
+	"resourcequota_cpu_used": {
+		Name:        "resourcequota_cpu_used",
+		Description: "CPU requests currently used in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="requests.cpu",type="used"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+	"resourcequota_cpu_hard": {
+		Name:        "resourcequota_cpu_hard",
+		Description: "CPU requests hard limit in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="requests.cpu",type="hard"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+	"resourcequota_memory_used": {
+		Name:        "resourcequota_memory_used",
+		Description: "Memory requests currently used in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="requests.memory",type="used"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+	"resourcequota_memory_hard": {
+		Name:        "resourcequota_memory_hard",
+		Description: "Memory requests hard limit in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="requests.memory",type="hard"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+	"resourcequota_pods_used": {
+		Name:        "resourcequota_pods_used",
+		Description: "Pods currently used in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="pods",type="used"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+	"resourcequota_pods_hard": {
+		Name:        "resourcequota_pods_hard",
+		Description: "Pods hard limit in quota",
+		Query:       `kube_resourcequota{namespace="$namespace",resourcequota="$resourcequota",resource="pods",type="hard"}`,
+		Variables:   []string{"namespace", "resourcequota"},
+	},
+
+	// LimitRange metrics
+	"limitrange_cpu_default": {
+		Name:        "limitrange_cpu_default",
+		Description: "Default CPU limit for containers",
+		Query:       `kube_limitrange{namespace="$namespace",limitrange="$limitrange",resource="cpu",type="Container",constraint="default"}`,
+		Variables:   []string{"namespace", "limitrange"},
+	},
+	"limitrange_memory_default": {
+		Name:        "limitrange_memory_default",
+		Description: "Default memory limit for containers",
+		Query:       `kube_limitrange{namespace="$namespace",limitrange="$limitrange",resource="memory",type="Container",constraint="default"}`,
+		Variables:   []string{"namespace", "limitrange"},
+	},
+
+	// Endpoint metrics
+	"endpoint_address_available": {
+		Name:        "endpoint_address_available",
+		Description: "Number of available (ready) addresses",
+		Query:       `kube_endpoint_address_available{namespace="$namespace",endpoint="$endpoint"}`,
+		Variables:   []string{"namespace", "endpoint"},
+	},
+	"endpoint_address_not_ready": {
+		Name:        "endpoint_address_not_ready",
+		Description: "Number of not-ready addresses",
+		Query:       `kube_endpoint_address_not_ready{namespace="$namespace",endpoint="$endpoint"}`,
+		Variables:   []string{"namespace", "endpoint"},
+	},
+
+	// Webhook metrics (from kube-apiserver)
+	"webhook_admission_latency_p99": {
+		Name:        "webhook_admission_latency_p99",
+		Description: "99th percentile admission webhook latency in milliseconds",
+		Query:       `histogram_quantile(0.99, sum(rate(apiserver_admission_webhook_admission_duration_seconds_bucket{name="$webhook"}[5m])) by (le)) * 1000`,
+		Variables:   []string{"webhook"},
+	},
+	"webhook_request_rate": {
+		Name:        "webhook_request_rate",
+		Description: "Admission webhook requests per second",
+		Query:       `sum(rate(apiserver_admission_webhook_request_total{name="$webhook"}[5m]))`,
+		Variables:   []string{"webhook"},
+	},
+	"webhook_rejection_rate": {
+		Name:        "webhook_rejection_rate",
+		Description: "Admission webhook rejections per second",
+		Query:       `sum(rate(apiserver_admission_webhook_request_total{name="$webhook",rejected="true"}[5m]))`,
+		Variables:   []string{"webhook"},
+	},
+
+	// CiliumNetworkPolicy metrics (via Hubble)
+	"cilium_policy_forwarded": {
+		Name:        "cilium_policy_forwarded",
+		Description: "Forwarded flows in namespace (Hubble)",
+		Query:       `sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"$namespace/.*"}[5m]))`,
+		Variables:   []string{"namespace"},
+	},
+	"cilium_policy_dropped": {
+		Name:        "cilium_policy_dropped",
+		Description: "Dropped flows in namespace (Hubble)",
+		Query:       `sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"$namespace/.*"}[5m]))`,
+		Variables:   []string{"namespace"},
+	},
+	"cilium_policy_denied": {
+		Name:        "cilium_policy_denied",
+		Description: "Policy denied drops in namespace (Hubble)",
+		Query:       `sum(rate(hubble_drop_total{reason="Policy denied",destination=~"$namespace/.*"}[5m]))`,
+		Variables:   []string{"namespace"},
+	},
 }
 
 // ResourceDashboardMap maps resource kinds to their Grafana dashboard UIDs

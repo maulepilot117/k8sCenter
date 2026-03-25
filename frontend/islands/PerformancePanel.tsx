@@ -348,6 +348,177 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
         'sum(rate(hubble_tcp_flags_total{flag="SYN",destination=~"{namespace}/.*"}[5m]))',
     },
   ],
+  ciliumnetworkpolicies: [
+    {
+      title: "Cilium Forwarded Flows",
+      query:
+        'sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{namespace}/.*"}[5m]))',
+    },
+    {
+      title: "Cilium Dropped Flows",
+      query:
+        'sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{namespace}/.*"}[5m]))',
+    },
+    {
+      title: "Policy Denied Drops",
+      query:
+        'sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{namespace}/.*"}[5m]))',
+    },
+    {
+      title: "Policy Verdicts",
+      query:
+        'sum(rate(hubble_policy_verdict_total{destination=~"{namespace}/.*"}[5m])) by (action)',
+    },
+  ],
+  pdbs: [
+    {
+      title: "Current Healthy",
+      query:
+        'kube_poddisruptionbudget_status_current_healthy{namespace="{namespace}",poddisruptionbudget="{name}"}',
+    },
+    {
+      title: "Desired Healthy",
+      query:
+        'kube_poddisruptionbudget_status_desired_healthy{namespace="{namespace}",poddisruptionbudget="{name}"}',
+    },
+    {
+      title: "Disruptions Allowed",
+      query:
+        'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="{namespace}",poddisruptionbudget="{name}"}',
+    },
+    {
+      title: "Expected Pods",
+      query:
+        'kube_poddisruptionbudget_status_expected_pods{namespace="{namespace}",poddisruptionbudget="{name}"}',
+    },
+  ],
+  resourcequotas: [
+    {
+      title: "CPU Requests Used",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.cpu",type="used"}',
+    },
+    {
+      title: "CPU Requests Hard Limit",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.cpu",type="hard"}',
+    },
+    {
+      title: "Memory Requests Used (MB)",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.memory",type="used"} / 1024 / 1024',
+    },
+    {
+      title: "Memory Requests Hard Limit (MB)",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.memory",type="hard"} / 1024 / 1024',
+    },
+    {
+      title: "Pods Used",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="pods",type="used"}',
+    },
+    {
+      title: "Pods Hard Limit",
+      query:
+        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="pods",type="hard"}',
+    },
+  ],
+  limitranges: [
+    {
+      title: "Default CPU Limit",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="default"}',
+    },
+    {
+      title: "Default Memory Limit (MB)",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="default"} / 1024 / 1024',
+    },
+    {
+      title: "Min CPU Request",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="min"}',
+    },
+    {
+      title: "Max CPU Limit",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="max"}',
+    },
+    {
+      title: "Min Memory Request (MB)",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="min"} / 1024 / 1024',
+    },
+    {
+      title: "Max Memory Limit (MB)",
+      query:
+        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="max"} / 1024 / 1024',
+    },
+  ],
+  endpoints: [
+    {
+      title: "Available Addresses",
+      query:
+        'kube_endpoint_address_available{namespace="{namespace}",endpoint="{name}"}',
+    },
+    {
+      title: "Not Ready Addresses",
+      query:
+        'kube_endpoint_address_not_ready{namespace="{namespace}",endpoint="{name}"}',
+    },
+  ],
+  endpointslices: [
+    {
+      title: "Ready Endpoints",
+      query:
+        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",ready="true"}',
+    },
+    {
+      title: "Serving Endpoints",
+      query:
+        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",serving="true"}',
+    },
+    {
+      title: "Terminating Endpoints",
+      query:
+        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",terminating="true"}',
+    },
+  ],
+  validatingwebhookconfigurations: [
+    {
+      title: "Admission Latency (p99, ms)",
+      query:
+        'histogram_quantile(0.99, sum(rate(apiserver_admission_webhook_admission_duration_seconds_bucket{name="{name}",type="validating"}[5m])) by (le)) * 1000',
+    },
+    {
+      title: "Request Rate (req/s)",
+      query:
+        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="validating"}[5m]))',
+    },
+    {
+      title: "Rejection Rate (req/s)",
+      query:
+        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="validating",rejected="true"}[5m]))',
+    },
+  ],
+  mutatingwebhookconfigurations: [
+    {
+      title: "Admission Latency (p99, ms)",
+      query:
+        'histogram_quantile(0.99, sum(rate(apiserver_admission_webhook_admission_duration_seconds_bucket{name="{name}",type="mutating"}[5m])) by (le)) * 1000',
+    },
+    {
+      title: "Request Rate (req/s)",
+      query:
+        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="mutating"}[5m]))',
+    },
+    {
+      title: "Rejection Rate (req/s)",
+      query:
+        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="mutating",rejected="true"}[5m]))',
+    },
+  ],
 };
 
 interface ChartData {
