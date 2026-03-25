@@ -23,12 +23,15 @@ export default defineConfig({
 
   // Backend must start first — frontend BFF proxy depends on it.
   // Playwright starts webServer entries sequentially in array order.
+  // In CI, E2E_BACKEND_COMMAND uses the pre-built binary to avoid compile time.
   webServer: [
     {
-      command: 'go run ./cmd/kubecenter --config ""',
+      command:
+        process.env.E2E_BACKEND_COMMAND ??
+        'go run ./cmd/kubecenter --config ""',
       cwd: "../backend",
       url: "http://localhost:8080/healthz",
-      timeout: 60_000,
+      timeout: 120_000,
       reuseExistingServer: !process.env.CI,
       env: {
         KUBECENTER_DEV: "true",

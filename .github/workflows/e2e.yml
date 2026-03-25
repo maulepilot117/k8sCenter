@@ -56,6 +56,10 @@ jobs:
       - name: Apply test RBAC
         run: kubectl apply -f e2e/fixtures/k8s/
 
+      - name: Build backend binary
+        working-directory: backend
+        run: go build -o bin/kubecenter ./cmd/kubecenter
+
       - name: Install Playwright
         working-directory: e2e
         run: |
@@ -66,6 +70,7 @@ jobs:
         working-directory: e2e
         env:
           CI: "true"
+          E2E_BACKEND_COMMAND: "../backend/bin/kubecenter --config ''"
         run: npx playwright test
 
       - name: Cleanup orphaned E2E resources
