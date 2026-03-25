@@ -34,10 +34,14 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
       env: {
+        ...process.env,
         KUBECENTER_DEV: "true",
         KUBECENTER_AUTH_JWTSECRET:
           "e2e-test-secret-minimum-32-bytes-long!!",
         KUBECENTER_AUTH_SETUPTOKEN: "e2e-setup-token",
+        KUBECENTER_DATABASE_URL:
+          process.env.KUBECENTER_DATABASE_URL ??
+          "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable",
       },
     },
     {

@@ -71,6 +71,7 @@ jobs:
         env:
           CI: "true"
           E2E_BACKEND_COMMAND: "../backend/bin/kubecenter --config ''"
+          KUBECENTER_DATABASE_URL: "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable"
         run: npx playwright test
 
       - name: Cleanup orphaned E2E resources
