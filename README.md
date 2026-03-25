@@ -22,6 +22,10 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Multi-cluster management** with cluster registry, wizard registration, and per-cluster context switching
 - **Frontend permission gating** — UI hides actions the user lacks k8s RBAC permission for (SelfSubjectRulesReview-backed)
 - **CSP hardening** via Fresh middleware with base-uri, object-src, and form-action directives
+- **E2E testing** with Playwright against a real kind cluster (95 tests, CI workflow with PostgreSQL)
+- **Container security scanning** via Trivy before GHCR push (SARIF to GitHub Security tab)
+- **Go runtime tuning** with automaxprocs (cgroup-aware GOMAXPROCS) and configurable GOMEMLIMIT
+- **NetworkPolicy enforcement** scoped to ingress controller namespace (deny-by-default)
 
 ## Architecture
 
