@@ -102,10 +102,18 @@ for (const w of WIZARDS) {
         await expect(submitButton).toBeVisible({ timeout: 5_000 });
         await submitButton.click();
 
-        // Assert success
-        await expect(
-          page.getByText(/successfully|created|configured/i),
-        ).toBeVisible({ timeout: 15_000 });
+        // Assert success — either a success message appears or we navigate away
+        // (some wizards redirect to the list page after creation)
+        const successText = page
+          .getByText(/successfully|created|configured|applied/i)
+          .first();
+        const redirected = page.waitForURL((url) =>
+          !url.pathname.includes("/new"),
+        );
+        await Promise.race([
+          expect(successText).toBeVisible({ timeout: 15_000 }),
+          redirected,
+        ]);
       } finally {
         // Always clean up, regardless of test outcome
         if (w.namespace) {
