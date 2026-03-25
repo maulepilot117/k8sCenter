@@ -63,7 +63,7 @@ func (h *Handler) HandleCreateNamespace(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -87,7 +87,7 @@ func (h *Handler) HandleDeleteNamespace(w http.ResponseWriter, r *http.Request) 
 	if !h.checkAccess(w, r, user, "delete", kindNamespace, "") {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

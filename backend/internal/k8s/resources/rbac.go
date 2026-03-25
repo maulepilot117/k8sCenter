@@ -215,7 +215,7 @@ func (h *Handler) HandleCreateRoleBinding(w http.ResponseWriter, r *http.Request
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -247,7 +247,7 @@ func (h *Handler) HandleUpdateRoleBinding(w http.ResponseWriter, r *http.Request
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -272,7 +272,7 @@ func (h *Handler) HandleDeleteRoleBinding(w http.ResponseWriter, r *http.Request
 	if !h.checkAccess(w, r, user, "delete", kindRoleBinding, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -301,7 +301,7 @@ func (h *Handler) HandleCreateClusterRoleBinding(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, "invalid request body", err.Error())
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -331,7 +331,7 @@ func (h *Handler) HandleUpdateClusterRoleBinding(w http.ResponseWriter, r *http.
 		return
 	}
 	obj.Name = name
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -355,7 +355,7 @@ func (h *Handler) HandleDeleteClusterRoleBinding(w http.ResponseWriter, r *http.
 	if !h.checkAccess(w, r, user, "delete", kindClusterRoleBinding, "") {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

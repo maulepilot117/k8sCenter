@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
@@ -114,6 +115,14 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF protection: reject URLs that resolve to private/loopback/CGNAT addresses
+	if err := k8s.ValidateRemoteURL(req.APIServerURL); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "API server URL resolves to a private or reserved address"},
+		})
+		return
+	}
+
 	// Validate token length
 	if len(req.Token) > 65536 {
 		writeJSON(w, http.StatusBadRequest, api.Response{
@@ -181,6 +190,11 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 			Error: &api.APIError{Code: 400, Message: "cluster not found or cannot be deleted"},
 		})
 		return
+	}
+
+	// Evict cached remote clients for the deleted cluster
+	if s.ClusterRouter != nil {
+		s.ClusterRouter.EvictCluster(id)
 	}
 
 	// Audit log

@@ -82,7 +82,7 @@ func (h *Handler) HandleCreateStatefulSet(w http.ResponseWriter, r *http.Request
 	}
 	obj.Namespace = ns
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -115,7 +115,7 @@ func (h *Handler) HandleUpdateStatefulSet(w http.ResponseWriter, r *http.Request
 	obj.Namespace = ns
 	obj.Name = name
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -140,7 +140,7 @@ func (h *Handler) HandleDeleteStatefulSet(w http.ResponseWriter, r *http.Request
 	if !h.checkAccess(w, r, user, "delete", kindStatefulSet, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -175,7 +175,7 @@ func (h *Handler) HandleScaleStatefulSet(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "replicas must be between 0 and 1000", "")
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

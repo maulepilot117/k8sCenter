@@ -13,6 +13,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -21,6 +22,7 @@ import (
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
 	K8sClient       *k8s.ClientFactory
+	ClusterRouter   *k8s.ClusterRouter
 	Informers       *k8s.InformerManager
 	AccessChecker   *AccessChecker
 	AuditLogger     audit.Logger
@@ -67,15 +69,19 @@ func requireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {
 	return user, true
 }
 
-// impersonatingClient returns a k8s clientset impersonating the authenticated user.
-func (h *Handler) impersonatingClient(user *auth.User) (*kubernetes.Clientset, error) {
-	return h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+// impersonatingClient returns a k8s clientset impersonating the authenticated user,
+// routed to the correct cluster based on the X-Cluster-ID request context.
+func (h *Handler) impersonatingClient(r *http.Request, user *auth.User) (*kubernetes.Clientset, error) {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	return h.ClusterRouter.ClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 }
 
-// impersonatingDynamic returns a dynamic client impersonating the authenticated user.
+// impersonatingDynamic returns a dynamic client impersonating the authenticated user,
+// routed to the correct cluster based on the X-Cluster-ID request context.
 // Used for CRD resources (e.g., CiliumNetworkPolicy) that have no typed client.
-func (h *Handler) impersonatingDynamic(user *auth.User) (dynamic.Interface, error) {
-	return h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+func (h *Handler) impersonatingDynamic(r *http.Request, user *auth.User) (dynamic.Interface, error) {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	return h.ClusterRouter.DynamicClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // checkAccess verifies the user can perform the verb on the resource in the namespace.
@@ -128,7 +134,7 @@ func (h *Handler) restartWorkload(w http.ResponseWriter, r *http.Request, kind, 
 		return
 	}
 
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

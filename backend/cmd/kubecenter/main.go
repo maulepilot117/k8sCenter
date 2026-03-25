@@ -288,6 +288,14 @@ func main() {
 	webhookRateLimiter := middleware.NewRateLimiterWithRate(300, time.Minute)
 	webhookRateLimiter.StartCleanup(ctx)
 
+	// Multi-cluster routing — always construct (nil store = local-only fallback)
+	dbEncKey := cfg.Database.EncryptionKey
+	if dbEncKey == "" {
+		dbEncKey = cfg.Auth.JWTSecret
+	}
+	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
+	go clusterRouter.StartCacheSweeper(ctx)
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -306,6 +314,7 @@ func main() {
 		RBACChecker:   rbacChecker,
 		AuditLogger:     auditLogger,
 		ClusterStore:    clusterStore,
+		ClusterRouter:   clusterRouter,
 		SettingsService: settingsService,
 		RateLimiter:     rateLimiter,
 		YAMLRateLimiter: yamlRateLimiter,

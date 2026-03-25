@@ -80,7 +80,7 @@ func (h *Handler) HandleCreateHPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	obj.Namespace = ns
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -113,7 +113,7 @@ func (h *Handler) HandleUpdateHPA(w http.ResponseWriter, r *http.Request) {
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -139,7 +139,7 @@ func (h *Handler) HandleDeleteHPA(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAccess(w, r, user, "delete", kindHPA, ns) {
 		return
 	}
-	cs, err := h.impersonatingClient(user)
+	cs, err := h.impersonatingClient(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return

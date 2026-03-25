@@ -150,7 +150,7 @@ func (h *Handler) HandleDeleteCiliumPolicy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	dc, err := h.impersonatingDynamic(user)
+	dc, err := h.impersonatingDynamic(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -193,7 +193,7 @@ func (h *Handler) HandleUpdateCiliumPolicy(w http.ResponseWriter, r *http.Reques
 	warnings := detectDangerousPolicy(&req)
 	obj := buildCiliumPolicy(&req)
 
-	dc, err := h.impersonatingDynamic(user)
+	dc, err := h.impersonatingDynamic(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
@@ -245,7 +245,7 @@ func (h *Handler) HandleCreateCiliumPolicy(w http.ResponseWriter, r *http.Reques
 	// Build unstructured CiliumNetworkPolicy
 	obj := buildCiliumPolicy(&req)
 
-	dc, err := h.impersonatingDynamic(user)
+	dc, err := h.impersonatingDynamic(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create client", err.Error())
 		return
