@@ -15,6 +15,14 @@ RUN deno task build
 # Cache all runtime dependencies (ensures no network fetches at startup)
 RUN deno cache _fresh/server.js || true
 
+# Remove esbuild native binaries — build-only tool, not needed at runtime.
+# These contain an embedded Go binary that triggers Go stdlib CVEs in Trivy.
+RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
+    find /app/node_modules -path '*/@esbuild/*/bin/esbuild' -delete 2>/dev/null; \
+    find /deno-dir -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
+    find /deno-dir -path '*/@esbuild/*/bin/esbuild' -delete 2>/dev/null; \
+    true
+
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
 FROM denoland/deno:distroless-2.7.8
