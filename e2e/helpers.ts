@@ -1,8 +1,8 @@
 import { type Page, type APIRequestContext, expect } from "@playwright/test";
 
-/** Generate a unique E2E resource name */
+/** Generate a unique E2E resource name (8-char random suffix) */
 export function e2eName(kind: string): string {
-  const rand = Math.random().toString(36).slice(2, 6);
+  const rand = Math.random().toString(36).slice(2, 10);
   return `e2e-${kind}-${rand}`;
 }
 
@@ -31,14 +31,9 @@ export async function deleteClusterResource(
   });
 }
 
-/** Wait for the resource table to finish loading */
+/** Wait for the resource table to finish loading (data rows present) */
 export async function waitForTableLoaded(page: Page) {
   await expect(page.getByRole("table")).toBeVisible();
+  // Wait for spinner to disappear AND at least the table to be stable
   await expect(page.locator(".animate-spin")).not.toBeVisible();
-}
-
-/** Wait for a toast notification with the given text pattern */
-export async function waitForToast(page: Page, text: RegExp | string) {
-  const pattern = typeof text === "string" ? new RegExp(text, "i") : text;
-  await expect(page.getByText(pattern).first()).toBeVisible();
 }

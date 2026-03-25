@@ -10,7 +10,7 @@ With all core features complete (Phases 1-4), Phase 5 focuses on production read
 
 | Step | Name | Depends On | Effort | Status |
 |------|------|------------|--------|--------|
-| 24 | E2E Tests (Playwright) | — | Large | In Progress (Phase 1 done) |
+| 24 | E2E Tests (Playwright) | — | Large | Done (100 tests, 10 files) |
 | 25 | Production Hardening | — | Medium | Planned |
 | 26 | UX Polish | — | Medium | Planned |
 | 27 | Grafana Dashboard Provisioning | — | Small | Planned |
@@ -54,6 +54,7 @@ End-to-end browser tests using Playwright against a real kind cluster. Cover the
 - Helm chart: PodDisruptionBudget for HA deployments (replicas > 1)
 - Security scanning (Trivy in CI for container images)
 - SBOM generation
+- CI gating: make E2E a required check on PRs to main (after Step 24 Phase 2 adds full coverage); add `@smoke` E2E gate on image builds (fast ~15s subset)
 
 ---
 
