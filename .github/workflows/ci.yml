@@ -188,7 +188,7 @@ jobs:
           cache-from: type=gha,scope=backend
 
       - name: Scan backend image with Trivy
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: k8scenter-backend:scan
           format: sarif
@@ -270,7 +270,7 @@ jobs:
           cache-from: type=gha,scope=frontend
 
       - name: Scan frontend image with Trivy
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: k8scenter-frontend:scan
           format: sarif
