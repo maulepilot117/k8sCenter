@@ -2,6 +2,10 @@ import type { K8sResource } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { age } from "@/lib/format.ts";
 import { KeyValueTable } from "./KeyValueTable.tsx";
+import {
+  RESOURCE_DETAIL_PATHS,
+  CLUSTER_SCOPED_KINDS,
+} from "@/lib/constants.ts";
 
 interface MetadataSectionProps {
   resource: K8sResource;
@@ -35,17 +39,39 @@ export function MetadataSection({ resource }: MetadataSectionProps) {
         <div>
           <SectionHeader>Owner References</SectionHeader>
           <div class="space-y-1">
-            {meta.ownerReferences.map((ref) => (
-              <div
-                key={ref.uid}
-                class="text-sm text-slate-700 dark:text-slate-300"
-              >
-                {ref.kind}/{ref.name}
-                {ref.controller && (
-                  <span class="ml-2 text-xs text-slate-400">(controller)</span>
-                )}
-              </div>
-            ))}
+            {meta.ownerReferences.map((ref) => {
+              // Build a link to the owner's detail page if we know its route
+              const kindKey = ref.kind.toLowerCase() + "s";
+              const path = RESOURCE_DETAIL_PATHS[kindKey];
+              const href = path
+                ? CLUSTER_SCOPED_KINDS.has(kindKey)
+                  ? `${path}/${ref.name}`
+                  : `${path}/${meta.namespace}/${ref.name}`
+                : null;
+
+              return (
+                <div
+                  key={ref.uid}
+                  class="text-sm text-slate-700 dark:text-slate-300"
+                >
+                  {href
+                    ? (
+                      <a
+                        href={href}
+                        class="text-brand hover:underline"
+                      >
+                        {ref.kind}/{ref.name}
+                      </a>
+                    )
+                    : <span>{ref.kind}/{ref.name}</span>}
+                  {ref.controller && (
+                    <span class="ml-2 text-xs text-slate-400">
+                      (controller)
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

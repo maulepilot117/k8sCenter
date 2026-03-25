@@ -19,7 +19,7 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { DataTable } from "@/components/ui/DataTable.tsx";
 import { ScaleDialog } from "@/components/ui/ScaleDialog.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { Toast, useToast } from "@/components/ui/Toast.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import type { K8sResource } from "@/lib/k8s-types.ts";
 import type { ActionId } from "@/lib/action-handlers.ts";
 import {
@@ -74,7 +74,6 @@ export default function ResourceTable({
   const scaleTarget = useSignal<K8sResource | null>(null);
   const scaleValue = useSignal(1);
   const actionLoading = useSignal(false);
-  const { toast, show: showToast } = useToast();
   const { rbac } = useAuth();
 
   const columns = RESOURCE_COLUMNS[kind] ?? [];
@@ -408,8 +407,6 @@ export default function ResourceTable({
 
   return (
     <div class="space-y-4">
-      <Toast toast={toast} />
-
       {/* Header */}
       <div class="flex items-center justify-between">
         <h1 class="text-xl font-semibold text-slate-900 dark:text-white">

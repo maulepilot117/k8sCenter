@@ -27,6 +27,7 @@ export function SearchBar(
         onInput={(e: JSX.TargetedEvent<HTMLInputElement>) =>
           onInput(e.currentTarget.value)}
         placeholder={placeholder}
+        data-search-input
         class="w-full rounded-md border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 placeholder-slate-400 focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:placeholder-slate-500"
       />
     </div>

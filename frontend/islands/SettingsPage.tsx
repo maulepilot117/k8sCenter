@@ -3,7 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
-import { Toast, useToast } from "@/components/ui/Toast.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 
@@ -26,7 +26,6 @@ export default function SettingsPage() {
   const settings = useSignal<Settings>({});
   const loading = useSignal(true);
   const error = useSignal("");
-  const { toast, show: showToast } = useToast();
 
   // Per-section dirty tracking
   const dirtyMonitoring = useSignal(false);
@@ -171,8 +170,6 @@ export default function SettingsPage() {
 
   return (
     <div class="space-y-4">
-      <Toast toast={toast} />
-
       {/* Monitoring Section */}
       <details
         open
