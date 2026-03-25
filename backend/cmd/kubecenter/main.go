@@ -294,7 +294,7 @@ func main() {
 		dbEncKey = cfg.Auth.JWTSecret
 	}
 	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
-	go clusterRouter.StartCacheSweeper(ctx)
+	clusterRouter.StartCacheSweeper(ctx)
 
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool

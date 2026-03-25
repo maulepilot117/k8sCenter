@@ -107,7 +107,7 @@ func (h *Handler) checkAccess(w http.ResponseWriter, r *http.Request, user *auth
 func (h *Handler) auditWrite(r *http.Request, user *auth.User, action audit.Action, kind, namespace, name string, result audit.Result) {
 	h.AuditLogger.Log(r.Context(), audit.Entry{
 		Timestamp:         timeNow(),
-		ClusterID:         h.ClusterID,
+		ClusterID:         middleware.ClusterIDFromContext(r.Context()),
 		User:              user.Username,
 		SourceIP:          r.RemoteAddr,
 		Action:            action,

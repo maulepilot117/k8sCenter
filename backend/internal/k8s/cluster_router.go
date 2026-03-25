@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,13 +60,13 @@ func (cr *ClusterRouter) DynamicClientForCluster(ctx context.Context, clusterID,
 func (cr *ClusterRouter) EvictCluster(clusterID string) {
 	prefix := clusterID + "\x00"
 	cr.remoteCache.Range(func(key, _ any) bool {
-		if k, ok := key.(string); ok && len(k) > len(prefix) && k[:len(prefix)] == prefix {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
 			cr.remoteCache.Delete(key)
 		}
 		return true
 	})
 	cr.remoteDynCache.Range(func(key, _ any) bool {
-		if k, ok := key.(string); ok && len(k) > len(prefix) && k[:len(prefix)] == prefix {
+		if k, ok := key.(string); ok && strings.HasPrefix(k, prefix) {
 			cr.remoteDynCache.Delete(key)
 		}
 		return true
@@ -202,6 +203,7 @@ func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username s
 	// If no CA data, allow insecure TLS (self-signed certs common in homelabs)
 	if len(caData) == 0 {
 		cfg.TLSClientConfig.Insecure = true
+		cr.logger.Warn("TLS verification disabled for remote cluster — no CA data provided", "clusterID", clusterID)
 	}
 
 	return cfg, nil
@@ -240,7 +242,7 @@ func ValidateRemoteURL(apiServerURL string) error {
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			return fmt.Errorf("URL resolves to private/loopback address %s", ipStr)
 		}
 		if cgnatNet.Contains(ip) {

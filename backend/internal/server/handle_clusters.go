@@ -98,6 +98,14 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate display name length
+	if len(req.DisplayName) > 128 {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "displayName too long (max 128 chars)"},
+		})
+		return
+	}
+
 	// Validate cluster name format (DNS label)
 	if !validClusterName.MatchString(req.Name) {
 		writeJSON(w, http.StatusBadRequest, api.Response{
