@@ -76,16 +76,14 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	// SSRF check — re-resolve DNS at probe time (DNS rebinding defense)
 	if err := ValidateRemoteURL(cluster.APIServerURL); err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "blocked", "URL resolves to private address", "", 0)
-		updated, _ := p.clusterStore.Get(ctx, clusterID)
-		return updated, fmt.Errorf("SSRF blocked: %w", err)
+		return nil, fmt.Errorf("SSRF blocked: %w", err)
 	}
 
 	// Decrypt credentials
 	token, err := store.Decrypt(cluster.AuthData, p.encKey)
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
-		updated, _ := p.clusterStore.Get(ctx, clusterID)
-		return updated, fmt.Errorf("decryption failed: %w", err)
+		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 
 	var caData []byte
@@ -94,15 +92,15 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		if err != nil {
 			// CA was stored but can't be decrypted — don't auto-downgrade to insecure
 			_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
-			updated, _ := p.clusterStore.Get(ctx, clusterID)
-			return updated, fmt.Errorf("CA decryption failed: %w", err)
+			return nil, fmt.Errorf("CA decryption failed: %w", err)
 		}
 	}
 
-	// Build rest.Config
+	// Build rest.Config with 10s timeout enforced at transport level
 	cfg := &rest.Config{
 		Host:        cluster.APIServerURL,
 		BearerToken: string(token),
+		Timeout:     10 * time.Second,
 		QPS:         10,
 		Burst:       20,
 	}
@@ -112,27 +110,21 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	}
 
-	// Probe with 10s timeout
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", sanitizeProbeError(err), "", 0)
-		updated, _ := p.clusterStore.Get(ctx, clusterID)
-		return updated, err
+		return nil, err
 	}
 
 	version, err := cs.Discovery().ServerVersion()
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", sanitizeProbeError(err), "", 0)
-		updated, _ := p.clusterStore.Get(ctx, clusterID)
-		return updated, err
+		return nil, err
 	}
 
 	// Node count (limit=500 — sufficient for any real cluster)
 	nodeCount := 0
-	nodes, err := cs.CoreV1().Nodes().List(probeCtx, metav1.ListOptions{Limit: 500})
+	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{Limit: 500})
 	if err == nil {
 		nodeCount = len(nodes.Items)
 	}

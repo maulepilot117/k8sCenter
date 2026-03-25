@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -143,18 +142,17 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Connection test — verify the cluster is reachable before saving
+	// Connection test — verify the cluster is reachable before saving (10s timeout)
 	testCfg := &rest.Config{
 		Host:        req.APIServerURL,
 		BearerToken: req.Token,
+		Timeout:     10 * time.Second,
 	}
 	if len(req.CACert) > 0 {
 		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
 	} else {
 		testCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
 	}
-	testCtx, testCancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer testCancel()
 	testClient, err := kubernetes.NewForConfig(testCfg)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, api.Response{
@@ -169,7 +167,6 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	_ = testCtx // used by testClient internally
 
 	id, err := generateClusterID()
 	if err != nil {

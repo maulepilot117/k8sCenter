@@ -21,7 +21,7 @@ interface ClusterInfo {
   lastProbedAt?: string;
 }
 
-type WizardStep = "list" | "connect" | "confirm";
+type WizardStep = "list" | "connect";
 
 /**
  * Cluster management island — list clusters + add cluster wizard.
