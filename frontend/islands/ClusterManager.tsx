@@ -245,7 +245,9 @@ export default function ClusterManager() {
                   nodes &middot; {c.apiServerUrl || c.id}
                   {c.lastProbedAt && (
                     <span>
-                      {` · checked ${new Date(c.lastProbedAt).toLocaleTimeString()}`}
+                      {` · checked ${
+                        new Date(c.lastProbedAt).toLocaleTimeString()
+                      }`}
                     </span>
                   )}
                 </p>

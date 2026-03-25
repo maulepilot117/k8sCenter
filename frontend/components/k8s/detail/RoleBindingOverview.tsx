@@ -20,8 +20,8 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
           <Field label="Kind" value={roleRef?.kind ?? "-"} />
           <Field
             label="Name"
-            value={
-              roleRef?.name ? (
+            value={roleRef?.name
+              ? (
                 <a
                   href={resolveRoleHref(
                     roleRef.kind,
@@ -32,10 +32,10 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
                 >
                   {roleRef.name}
                 </a>
-              ) : (
-                "-"
               )
-            }
+              : (
+                "-"
+              )}
           />
           <Field
             label="API Group"

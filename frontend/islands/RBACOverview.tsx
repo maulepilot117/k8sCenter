@@ -3,10 +3,10 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import {
-  type EffectiveRule,
-  type ResolvedBinding,
   computeEffectivePermissions,
+  type EffectiveRule,
   resolveBindings,
+  type ResolvedBinding,
   resolveRoleHref,
 } from "@/lib/rbac-utils.ts";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
@@ -156,9 +156,7 @@ export default function RBACOverview() {
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
-      )}
+      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
 
       {!loading.value && !error.value && (
         <div class="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
@@ -187,12 +185,11 @@ export default function RBACOverview() {
             </thead>
             <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
               {filtered.map((r, i) => {
-                const bindingPath =
-                  RESOURCE_DETAIL_PATHS[
-                    r.bindingKind === "ClusterRoleBinding"
-                      ? "clusterrolebindings"
-                      : "rolebindings"
-                  ];
+                const bindingPath = RESOURCE_DETAIL_PATHS[
+                  r.bindingKind === "ClusterRoleBinding"
+                    ? "clusterrolebindings"
+                    : "rolebindings"
+                ];
                 const bindingHref = r.bindingNamespace
                   ? `${bindingPath}/${r.bindingNamespace}/${r.bindingName}`
                   : `${bindingPath}/${r.bindingName}`;
@@ -203,13 +200,14 @@ export default function RBACOverview() {
                   r.bindingNamespace,
                 );
 
-                const isSelected =
-                  selectedSubject.value === r.subjectName;
+                const isSelected = selectedSubject.value === r.subjectName;
 
                 return (
                   <tr
                     key={`${r.subjectName}-${r.bindingName}-${i}`}
-                    class={`cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 ${isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""}`}
+                    class={`cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 ${
+                      isSelected ? "bg-blue-50 dark:bg-blue-900/20" : ""
+                    }`}
                     onClick={() => handleSubjectClick(r.subjectName)}
                   >
                     <td class="px-3 py-2 font-medium text-slate-900 dark:text-white">

@@ -54,8 +54,7 @@ export default function RoleBindingsList(
 
         // Filter to bindings that reference this role
         bindings.value = results.filter(
-          (b) =>
-            b.roleRef.name === roleName && b.roleRef.kind === roleKind,
+          (b) => b.roleRef.name === roleName && b.roleRef.kind === roleKind,
         );
       } catch {
         // Silently fail — this is a supplementary section
@@ -127,9 +126,7 @@ export default function RoleBindingsList(
                     )}
                   </td>
                   <td class="px-3 py-1.5 text-slate-600 dark:text-slate-400">
-                    {isClusterScoped
-                      ? "ClusterRoleBinding"
-                      : "RoleBinding"}
+                    {isClusterScoped ? "ClusterRoleBinding" : "RoleBinding"}
                   </td>
                   <td class="px-3 py-1.5 text-slate-600 dark:text-slate-400">
                     {b.subjects

@@ -80,10 +80,9 @@ export function resolveBindings(
   for (const b of bindings) {
     if (!b.subjects) continue;
 
-    const roleKey =
-      b.roleRef.kind === "ClusterRole"
-        ? `cluster:${b.roleRef.name}`
-        : `${b.metadata.namespace}:${b.roleRef.name}`;
+    const roleKey = b.roleRef.kind === "ClusterRole"
+      ? `cluster:${b.roleRef.name}`
+      : `${b.metadata.namespace}:${b.roleRef.name}`;
     const role = roles.get(roleKey);
 
     for (const s of b.subjects) {
@@ -91,7 +90,9 @@ export function resolveBindings(
         subjectKind: s.kind,
         subjectName: s.name,
         subjectNamespace: s.namespace,
-        bindingKind: b.metadata.namespace ? "RoleBinding" : "ClusterRoleBinding",
+        bindingKind: b.metadata.namespace
+          ? "RoleBinding"
+          : "ClusterRoleBinding",
         bindingName: b.metadata.name,
         bindingNamespace: b.metadata.namespace,
         roleKind: b.roleRef.kind,
@@ -118,10 +119,9 @@ export function computeEffectivePermissions(
   for (const b of bindings) {
     if (!b.subjects?.some((s) => s.name === subjectName)) continue;
 
-    const roleKey =
-      b.roleRef.kind === "ClusterRole"
-        ? `cluster:${b.roleRef.name}`
-        : `${b.metadata.namespace}:${b.roleRef.name}`;
+    const roleKey = b.roleRef.kind === "ClusterRole"
+      ? `cluster:${b.roleRef.name}`
+      : `${b.metadata.namespace}:${b.roleRef.name}`;
     const role = roles.get(roleKey);
 
     if (!role?.rules) {
@@ -130,7 +130,9 @@ export function computeEffectivePermissions(
         apiGroups: ["*"],
         resources: ["(aggregated)"],
         verbs: ["(see child roles)"],
-        source: `${b.roleRef.kind}: ${b.roleRef.name} (via ${b.metadata.name}${b.metadata.namespace ? ` in ${b.metadata.namespace}` : ""})`,
+        source: `${b.roleRef.kind}: ${b.roleRef.name} (via ${b.metadata.name}${
+          b.metadata.namespace ? ` in ${b.metadata.namespace}` : ""
+        })`,
       });
       continue;
     }
@@ -140,7 +142,9 @@ export function computeEffectivePermissions(
         apiGroups: rule.apiGroups ?? [""],
         resources: rule.resources ?? [],
         verbs: rule.verbs ?? [],
-        source: `${b.roleRef.kind}: ${b.roleRef.name} (via ${b.metadata.name}${b.metadata.namespace ? ` in ${b.metadata.namespace}` : ""})`,
+        source: `${b.roleRef.kind}: ${b.roleRef.name} (via ${b.metadata.name}${
+          b.metadata.namespace ? ` in ${b.metadata.namespace}` : ""
+        })`,
       });
     }
   }
