@@ -145,6 +145,7 @@ func (s *Server) registerRoutes() {
 				cr.Post("/", s.handleCreateCluster)
 				cr.Get("/{clusterID}", s.handleGetCluster)
 				cr.Delete("/{clusterID}", s.handleDeleteCluster)
+				cr.Post("/{clusterID}/test", s.handleTestCluster)
 			})
 		})
 	})

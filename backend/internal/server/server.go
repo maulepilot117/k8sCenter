@@ -41,6 +41,7 @@ type Server struct {
 	AuditLogger     audit.Logger
 	ClusterStore    *store.ClusterStore
 	ClusterRouter   *k8s.ClusterRouter
+	ClusterProber   *k8s.ClusterProber
 	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
@@ -72,6 +73,7 @@ type Deps struct {
 	AuditLogger     audit.Logger
 	ClusterStore    *store.ClusterStore
 	ClusterRouter   *k8s.ClusterRouter
+	ClusterProber   *k8s.ClusterProber
 	SettingsService *store.SettingsService
 	RateLimiter     *middleware.RateLimiter
 	YAMLRateLimiter *middleware.RateLimiter
@@ -103,6 +105,7 @@ func New(deps Deps) *Server {
 		AuditLogger:     deps.AuditLogger,
 		ClusterStore:    deps.ClusterStore,
 		ClusterRouter:   deps.ClusterRouter,
+		ClusterProber:   deps.ClusterProber,
 		SettingsService: deps.SettingsService,
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
