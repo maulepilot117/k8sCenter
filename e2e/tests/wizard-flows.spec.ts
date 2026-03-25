@@ -80,7 +80,9 @@ for (const w of WIZARDS) {
         const submitButton = page.getByRole("button", {
           name: new RegExp(submitText, "i"),
         });
-        const nextButton = page.getByRole("button", { name: /next/i });
+        const nextButton = page.getByRole("button", {
+          name: /next|preview/i,
+        });
 
         // Click Next until review step (submit button visible) — max 5 iterations
         for (let i = 0; i < 5; i++) {
