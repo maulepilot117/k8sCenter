@@ -3,8 +3,8 @@ import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { age } from "@/lib/format.ts";
 import { KeyValueTable } from "./KeyValueTable.tsx";
 import {
-  RESOURCE_DETAIL_PATHS,
   CLUSTER_SCOPED_KINDS,
+  RESOURCE_DETAIL_PATHS,
 } from "@/lib/constants.ts";
 
 interface MetadataSectionProps {
