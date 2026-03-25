@@ -56,15 +56,24 @@ interface PolicyRule {
   verbs?: string[];
 }
 
-interface BindingLike {
+export interface BindingLike {
   metadata: { name: string; namespace?: string };
   roleRef: RoleRef;
   subjects?: Subject[];
 }
 
-interface RoleLike {
+export interface RoleLike {
   metadata: { name: string; namespace?: string };
   rules?: PolicyRule[];
+}
+
+/** Build a consistent map key for a role lookup. Use everywhere to avoid key drift. */
+export function roleMapKey(
+  kind: string,
+  namespace: string | undefined,
+  name: string,
+): string {
+  return kind === "ClusterRole" ? `cluster:${name}` : `${namespace}:${name}`;
 }
 
 /**
@@ -80,9 +89,11 @@ export function resolveBindings(
   for (const b of bindings) {
     if (!b.subjects) continue;
 
-    const roleKey = b.roleRef.kind === "ClusterRole"
-      ? `cluster:${b.roleRef.name}`
-      : `${b.metadata.namespace}:${b.roleRef.name}`;
+    const roleKey = roleMapKey(
+      b.roleRef.kind,
+      b.metadata.namespace,
+      b.roleRef.name,
+    );
     const role = roles.get(roleKey);
 
     for (const s of b.subjects) {
@@ -119,9 +130,11 @@ export function computeEffectivePermissions(
   for (const b of bindings) {
     if (!b.subjects?.some((s) => s.name === subjectName)) continue;
 
-    const roleKey = b.roleRef.kind === "ClusterRole"
-      ? `cluster:${b.roleRef.name}`
-      : `${b.metadata.namespace}:${b.roleRef.name}`;
+    const roleKey = roleMapKey(
+      b.roleRef.kind,
+      b.metadata.namespace,
+      b.roleRef.name,
+    );
     const role = roles.get(roleKey);
 
     if (!role?.rules) {

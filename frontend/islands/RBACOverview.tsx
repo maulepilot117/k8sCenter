@@ -8,6 +8,7 @@ import {
   resolveBindings,
   type ResolvedBinding,
   resolveRoleHref,
+  roleMapKey,
 } from "@/lib/rbac-utils.ts";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -59,16 +60,22 @@ export default function RBACOverview() {
         if (Array.isArray(crb.data)) allBindings.push(...crb.data);
         rawBindings.value = allBindings;
 
-        // Build role lookup map (keyed by "cluster:name" or "namespace:name")
+        // Build role lookup map using shared key scheme
         const rMap = new Map<string, Role>();
         if (Array.isArray(roles.data)) {
           for (const r of roles.data) {
-            rMap.set(`${r.metadata.namespace}:${r.metadata.name}`, r);
+            rMap.set(
+              roleMapKey("Role", r.metadata.namespace, r.metadata.name),
+              r,
+            );
           }
         }
         if (Array.isArray(clusterRoles.data)) {
           for (const cr of clusterRoles.data) {
-            rMap.set(`cluster:${cr.metadata.name}`, cr);
+            rMap.set(
+              roleMapKey("ClusterRole", undefined, cr.metadata.name),
+              cr,
+            );
           }
         }
         roleMap.value = rMap;
