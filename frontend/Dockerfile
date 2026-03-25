@@ -1,6 +1,6 @@
 # Stage 1: Install dependencies and build (always on amd64 — Deno WASM loader
 # crashes under QEMU ARM64 emulation, but build output is arch-independent JS)
-FROM --platform=linux/amd64 denoland/deno:2.7.4 AS builder
+FROM --platform=linux/amd64 denoland/deno:2.7.8 AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,8 @@ RUN deno task build
 RUN deno cache _fresh/server.js || true
 
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
-FROM denoland/deno:2.7.4
+# Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
+FROM denoland/deno:distroless-2.7.8
 
 WORKDIR /app
 
@@ -29,9 +30,6 @@ COPY --from=builder /app/node_modules ./node_modules
 
 # Copy Deno cache from builder (includes ESM modules like Monaco)
 COPY --from=builder /deno-dir /deno-dir
-
-# Run as non-root
-USER deno
 
 EXPOSE 8000
 
