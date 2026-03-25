@@ -1,25 +1,25 @@
 import { test, expect } from "../fixtures/base.ts";
-import { e2eName, waitForTableLoaded } from "../helpers.ts";
+import { e2eName, waitForTableLoaded, getAuthHeaders } from "../helpers.ts";
 
 test.describe("WebSocket live updates", () => {
   test("new resource appears in table via WebSocket", async ({
     page,
     request,
   }) => {
-    // Navigate to configmaps — they're the simplest resource to create/delete
+    // Navigate to configmaps first to establish auth context
     await page.goto("/config/configmaps");
     await waitForTableLoaded(page);
 
     const name = e2eName("ws");
 
-    // Create a ConfigMap via BFF proxy (request uses frontend origin, carries cookies)
+    // Get auth headers from the page's localStorage (set by auth setup)
+    const headers = await getAuthHeaders(page);
+
+    // Create a ConfigMap via BFF proxy with explicit auth
     const createRes = await request.post(
       `/api/v1/resources/configmaps/default`,
       {
-        headers: {
-          "X-Requested-With": "XMLHttpRequest",
-          "Content-Type": "application/json",
-        },
+        headers,
         data: {
           apiVersion: "v1",
           kind: "ConfigMap",
@@ -39,7 +39,7 @@ test.describe("WebSocket live updates", () => {
 
     // Delete the resource
     await request.delete(`/api/v1/resources/configmaps/default/${name}`, {
-      headers: { "X-Requested-With": "XMLHttpRequest" },
+      headers,
       failOnStatusCode: false,
     });
 

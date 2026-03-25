@@ -1,4 +1,23 @@
-import { type Page, type APIRequestContext, expect } from "@playwright/test";
+import {
+  type Page,
+  type BrowserContext,
+  type APIRequestContext,
+  expect,
+} from "@playwright/test";
+
+/** Get the stored E2E access token from the browser context's localStorage */
+export async function getAuthHeaders(
+  page: Page,
+): Promise<Record<string, string>> {
+  const token = await page.evaluate(() =>
+    localStorage.getItem("e2e_access_token"),
+  );
+  return {
+    "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 /** Generate a unique E2E resource name (8-char random suffix) */
 export function e2eName(kind: string): string {

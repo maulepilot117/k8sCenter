@@ -22,7 +22,7 @@ const WIZARDS: WizardConfig[] = [
     apiKind: "deployments",
     namespace: "default",
     fields: [
-      { label: "Name", value: "", generated: true },
+      { label: "Name", value: "", generated: true, usePlaceholder: "my-deployment" },
       { label: "Container Image", value: "nginx:alpine" },
     ],
   },
@@ -31,7 +31,9 @@ const WIZARDS: WizardConfig[] = [
     createPath: "/config/configmaps/new",
     apiKind: "configmaps",
     namespace: "default",
-    fields: [{ label: "Name", value: "", generated: true }],
+    fields: [
+      { label: "Name", value: "", generated: true, usePlaceholder: "e.g. my-config" },
+    ],
   },
   // Job wizard omitted — Container Image is on step 2 (after Next),
   // which requires step-aware field filling. Deferred to a job-specific test.
@@ -40,7 +42,9 @@ const WIZARDS: WizardConfig[] = [
     createPath: "/cluster/namespaces/new",
     apiKind: "namespaces",
     namespace: null,
-    fields: [{ label: "Name", value: "", generated: true }],
+    fields: [
+      { label: "Name", value: "", generated: true, usePlaceholder: "my-namespace" },
+    ],
     submitButton: "Create",
   },
   {
@@ -48,7 +52,9 @@ const WIZARDS: WizardConfig[] = [
     createPath: "/networking/networkpolicies/new",
     apiKind: "networkpolicies",
     namespace: "default",
-    fields: [{ label: "Name", value: "", generated: true }],
+    fields: [
+      { label: "Name", value: "", generated: true, usePlaceholder: "my-network-policy" },
+    ],
   },
 ];
 
