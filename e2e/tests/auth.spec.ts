@@ -13,13 +13,14 @@ test.describe("Auth @smoke", () => {
   });
 
   test("redirects to login when unauthenticated", async ({ browser }) => {
-    // Create a fresh context without storageState (no cookies)
+    // Create a fresh context without storageState (no cookies, no token)
     const context = await browser.newContext();
     const page = await context.newPage();
 
     await page.goto("/");
-    // Should redirect to /login since there are no auth cookies
-    await expect(page).toHaveURL(/\/login/);
+    // The SSR page renders first, then the island hydrates and detects no auth.
+    // The redirect to /login happens client-side after hydration.
+    await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
 
     await context.close();
   });

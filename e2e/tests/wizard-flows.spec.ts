@@ -66,7 +66,7 @@ for (const w of WIZARDS) {
         // Fill form fields
         for (const field of w.fields) {
           const value = field.generated ? resourceName : field.value;
-          const input = page.getByLabel(field.label, { exact: false });
+          const input = page.getByLabel(field.label, { exact: true });
           await input.fill(value);
         }
 

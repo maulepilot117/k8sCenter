@@ -43,7 +43,8 @@ test.describe("Resource browsing", () => {
       await waitForTableLoaded(page);
       if (r.hasRows) {
         // Header row + at least 1 data row
-        await expect(page.getByRole("row")).toHaveCount({ minimum: 2 });
+        const rowCount = await page.getByRole("row").count();
+        expect(rowCount).toBeGreaterThanOrEqual(2);
       }
     });
   }
