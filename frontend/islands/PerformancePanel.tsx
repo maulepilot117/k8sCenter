@@ -52,6 +52,16 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
       query:
         'kube_deployment_status_replicas_unavailable{namespace="{namespace}",deployment="{name}"}',
     },
+    {
+      title: "CPU Request (cores)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
+    },
+    {
+      title: "Memory Request (MB)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
+    },
   ],
   pods: [
     {
@@ -147,6 +157,16 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
       query:
         'kube_statefulset_status_replicas_ready{namespace="{namespace}",statefulset="{name}"}',
     },
+    {
+      title: "CPU Request (cores)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
+    },
+    {
+      title: "Memory Request (MB)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
+    },
   ],
   daemonsets: [
     {
@@ -168,6 +188,16 @@ const QUERIES: Record<string, { title: string; query: string }[]> = {
       title: "Ready / Desired",
       query:
         'kube_daemonset_status_number_ready{namespace="{namespace}",daemonset="{name}"}',
+    },
+    {
+      title: "CPU Request (cores)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
+    },
+    {
+      title: "Memory Request (MB)",
+      query:
+        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
     },
   ],
   replicasets: [
@@ -748,7 +778,7 @@ export default function PerformancePanel(
                   No data
                 </div>
               )
-              : <MiniChart values={chart.values} />}
+              : <MiniChart values={chart.values} chartId={`${kind}-${i}`} />}
           </div>
         ))}
       </div>
@@ -758,7 +788,10 @@ export default function PerformancePanel(
 
 /** Simple SVG sparkline chart */
 function MiniChart(
-  { values }: { values: { time: Date; value: number }[] },
+  { values, chartId }: {
+    values: { time: Date; value: number }[];
+    chartId?: string;
+  },
 ) {
   if (values.length < 2) return <div class="h-32 text-slate-400">No data</div>;
 
@@ -799,7 +832,7 @@ function MiniChart(
           points={`${points[0].split(",")[0]},${height} ${points.join(" ")} ${
             points[points.length - 1].split(",")[0]
           },${height}`}
-          fill="url(#gradient)"
+          fill={`url(#grad-${chartId ?? "default"})`}
           opacity="0.3"
         />
         {/* Line */}
@@ -811,7 +844,13 @@ function MiniChart(
           vector-effect="non-scaling-stroke"
         />
         <defs>
-          <linearGradient id="gradient" x1="0" y1="0" x2="0" y2="1">
+          <linearGradient
+            id={`grad-${chartId ?? "default"}`}
+            x1="0"
+            y1="0"
+            x2="0"
+            y2="1"
+          >
             <stop offset="0%" stop-color="rgb(59, 130, 246)" />
             <stop offset="100%" stop-color="transparent" />
           </linearGradient>

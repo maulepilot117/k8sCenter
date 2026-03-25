@@ -34,6 +34,8 @@ export default function Dashboard() {
     services: 0,
     namespaces: 0,
   });
+  const cpuUtil = useSignal<number | null>(null);
+  const memUtil = useSignal<number | null>(null);
   const loading = useSignal(true);
   const error = useSignal("");
 
@@ -46,14 +48,21 @@ export default function Dashboard() {
 
       try {
         // Fetch auth and cluster data in parallel (no waterfall)
-        const [, infoRes, deplRes, podRes, svcRes, nsRes] = await Promise
-          .allSettled([
+        const [, infoRes, deplRes, podRes, svcRes, nsRes, cpuRes, memRes] =
+          await Promise.allSettled([
             fetchCurrentUser(),
             apiGet<ClusterInfoData>("/v1/cluster/info"),
             apiGet<unknown>("/v1/resources/deployments?limit=1"),
             apiGet<unknown>("/v1/resources/pods?limit=1"),
             apiGet<unknown>("/v1/resources/services?limit=1"),
             apiGet<unknown>("/v1/resources/namespaces?limit=1"),
+            // Cluster utilization (graceful 503 if no Prometheus)
+            apiGet<{ result: { value: [number, string] }[] }>(
+              `/v1/monitoring/query?query=${encodeURIComponent('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)')}`,
+            ),
+            apiGet<{ result: { value: [number, string] }[] }>(
+              `/v1/monitoring/query?query=${encodeURIComponent("100 * (1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes))")}`,
+            ),
           ]);
 
         if (infoRes.status === "fulfilled") {
@@ -74,6 +83,14 @@ export default function Dashboard() {
             ? nsRes.value.metadata?.total ?? 0
             : 0,
         };
+
+        // Parse utilization metrics (null if Prometheus unavailable)
+        if (cpuRes.status === "fulfilled" && cpuRes.value.data?.result?.[0]) {
+          cpuUtil.value = parseFloat(cpuRes.value.data.result[0].value[1]);
+        }
+        if (memRes.status === "fulfilled" && memRes.value.data?.result?.[0]) {
+          memUtil.value = parseFloat(memRes.value.data.result[0].value[1]);
+        }
       } catch {
         error.value = "Failed to load cluster information";
       } finally {
@@ -173,6 +190,56 @@ export default function Dashboard() {
           </a>
         ))}
       </div>
+
+      {/* Utilization cards (only if Prometheus available) */}
+      {(cpuUtil.value !== null || memUtil.value !== null) && (
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2">
+          {cpuUtil.value !== null && (
+            <Card>
+              <p class="text-sm font-medium text-slate-500 dark:text-slate-400">
+                CPU Utilization
+              </p>
+              <p class="mt-1 text-3xl font-bold text-slate-900 dark:text-white">
+                {cpuUtil.value.toFixed(1)}%
+              </p>
+              <div class="mt-2 h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700">
+                <div
+                  class={`h-2 rounded-full ${
+                    cpuUtil.value > 80
+                      ? "bg-danger"
+                      : cpuUtil.value > 60
+                      ? "bg-warning"
+                      : "bg-success"
+                  }`}
+                  style={{ width: `${Math.min(cpuUtil.value, 100)}%` }}
+                />
+              </div>
+            </Card>
+          )}
+          {memUtil.value !== null && (
+            <Card>
+              <p class="text-sm font-medium text-slate-500 dark:text-slate-400">
+                Memory Utilization
+              </p>
+              <p class="mt-1 text-3xl font-bold text-slate-900 dark:text-white">
+                {memUtil.value.toFixed(1)}%
+              </p>
+              <div class="mt-2 h-2 w-full rounded-full bg-slate-200 dark:bg-slate-700">
+                <div
+                  class={`h-2 rounded-full ${
+                    memUtil.value > 80
+                      ? "bg-danger"
+                      : memUtil.value > 60
+                      ? "bg-warning"
+                      : "bg-success"
+                  }`}
+                  style={{ width: `${Math.min(memUtil.value, 100)}%` }}
+                />
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
 
       {/* Cluster details */}
       {clusterInfo.value && (
