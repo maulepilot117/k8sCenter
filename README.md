@@ -19,7 +19,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Admin user management** — list, delete, and change passwords for local accounts
 - **Alerting** via Alertmanager webhook receiver with SMTP email notifications, PrometheusRule CRD management, and real-time WebSocket alert banner
 - **Audit logging** with PostgreSQL persistence, paginated query API, filterable viewer, and 90-day retention
-- **Multi-cluster management** with cluster registry, wizard registration, and per-cluster context switching
+- **Multi-cluster management** with cluster routing (X-Cluster-ID), encrypted credential storage, SSRF-protected registration, background health probing (60s), and connection testing
 - **Frontend permission gating** — UI hides actions the user lacks k8s RBAC permission for (SelfSubjectRulesReview-backed)
 - **CSP hardening** via Fresh middleware with base-uri, object-src, and form-action directives
 - **E2E testing** with Playwright against a real kind cluster (95 tests, CI workflow with PostgreSQL)

@@ -165,7 +165,7 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Step 25: Production Hardening — DONE (Trivy, automaxprocs, probes, NetworkPolicy)
   - Step 26: UX Polish — DONE (breadcrumbs, owner refs, toast cleanup)
   - Step 27: Grafana Dashboards — DONE (7 JSONs, Helm ConfigMap, provision-once)
-  - Step 28: Multi-Cluster UX — IN PROGRESS (28A+28B done, 28C planned)
+  - Step 28: Multi-Cluster UX — DONE (28A encryption fix, 28B routing, 28C health probing)
   - Steps 29-30: Planned (RBAC Visualization, Cost Analysis)
 
 ---
@@ -176,6 +176,7 @@ make check-dashboards                             # Verify Grafana JSON sync
 - **ClusterContext middleware** (`middleware/cluster.go`): Extracts X-Cluster-ID header, admin gate for non-local.
 - **Cluster registry**: PostgreSQL-backed, AES-256-GCM encrypted credentials, SSRF-validated URLs.
 - **Remote clusters use direct API calls only** — no informers, no WebSocket events. Local cluster uses informers.
+- **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). Connection tested before registration. `POST /clusters/:id/test` for on-demand probing.
 - **Known limitation:** AccessChecker queries local cluster RBAC, not remote. Kubernetes API enforces real permissions.
 
 ---

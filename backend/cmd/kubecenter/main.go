@@ -296,6 +296,13 @@ func main() {
 	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
 	clusterRouter.StartCacheSweeper(ctx)
 
+	// Cluster health probing — background goroutine
+	var clusterProber *k8s.ClusterProber
+	if clusterStore != nil {
+		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, logger)
+		go clusterProber.Run(ctx)
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -315,6 +322,7 @@ func main() {
 		AuditLogger:     auditLogger,
 		ClusterStore:    clusterStore,
 		ClusterRouter:   clusterRouter,
+		ClusterProber:   clusterProber,
 		SettingsService: settingsService,
 		RateLimiter:     rateLimiter,
 		YAMLRateLimiter: yamlRateLimiter,

@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
-import { api, apiGet } from "@/lib/api.ts";
+import { api, apiGet, apiPost } from "@/lib/api.ts";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Card } from "@/components/ui/Card.tsx";
@@ -17,9 +18,10 @@ interface ClusterInfo {
   k8sVersion: string;
   nodeCount: number;
   isLocal: boolean;
+  lastProbedAt?: string;
 }
 
-type WizardStep = "list" | "connect" | "confirm";
+type WizardStep = "list" | "connect";
 
 /**
  * Cluster management island — list clusters + add cluster wizard.
@@ -241,7 +243,16 @@ export default function ClusterManager() {
                 <p class="text-xs text-slate-500 dark:text-slate-400">
                   {c.k8sVersion || "unknown"} &middot; {c.nodeCount}{" "}
                   nodes &middot; {c.apiServerUrl || c.id}
+                  {c.lastProbedAt && (
+                    <span>
+                      {" "}&middot; checked{" "}
+                      {new Date(c.lastProbedAt).toLocaleTimeString()}
+                    </span>
+                  )}
                 </p>
+                {c.status !== "connected" && c.statusMessage && (
+                  <p class="text-xs text-danger mt-0.5">{c.statusMessage}</p>
+                )}
               </div>
             </div>
             <div class="flex items-center gap-2">
@@ -250,14 +261,42 @@ export default function ClusterManager() {
                 label={c.status}
               />
               {!c.isLocal && (
-                <Button
-                  type="button"
-                  variant="danger"
-                  size="sm"
-                  onClick={() => deleteCluster(c.id)}
-                >
-                  Remove
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const res = await apiPost<ClusterInfo>(
+                          `/v1/clusters/${c.id}/test`,
+                        );
+                        // Update the cluster in the list with fresh probe data
+                        clusters.value = clusters.value.map((cl) =>
+                          cl.id === c.id ? { ...cl, ...res.data } : cl
+                        );
+                        showToast(
+                          res.data.status === "connected"
+                            ? "Connection successful"
+                            : "Connection failed",
+                          res.data.status === "connected" ? "success" : "error",
+                        );
+                      } catch {
+                        showToast("Test failed", "error");
+                      }
+                    }}
+                  >
+                    Test
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    onClick={() => deleteCluster(c.id)}
+                  >
+                    Remove
+                  </Button>
+                </>
               )}
             </div>
           </div>

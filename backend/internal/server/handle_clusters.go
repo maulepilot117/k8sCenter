@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -15,6 +16,8 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 var validClusterName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -139,6 +142,32 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Connection test — verify the cluster is reachable before saving (10s timeout)
+	testCfg := &rest.Config{
+		Host:        req.APIServerURL,
+		BearerToken: req.Token,
+		Timeout:     10 * time.Second,
+	}
+	if len(req.CACert) > 0 {
+		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
+	} else {
+		testCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	}
+	testClient, err := kubernetes.NewForConfig(testCfg)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid cluster configuration"},
+		})
+		return
+	}
+	testVersion, err := testClient.Discovery().ServerVersion()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "connection test failed — verify URL, token, and CA certificate"},
+		})
+		return
+	}
+
 	id, err := generateClusterID()
 	if err != nil {
 		s.Logger.Error("failed to generate cluster ID", "error", err)
@@ -165,6 +194,9 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Set initial status from connection test
+	_ = s.ClusterStore.UpdateStatus(r.Context(), id, "connected", "", testVersion.GitVersion, 0)
 
 	// Audit log
 	user, _ := auth.UserFromContext(r.Context())
@@ -215,6 +247,40 @@ func (s *Server) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, api.Response{Data: map[string]string{"status": "deleted"}})
+}
+
+// handleTestCluster triggers an on-demand health probe for a registered cluster.
+func (s *Server) handleTestCluster(w http.ResponseWriter, r *http.Request) {
+	if s.ClusterStore == nil || s.ClusterProber == nil {
+		writeJSON(w, http.StatusServiceUnavailable, api.Response{
+			Error: &api.APIError{Code: 503, Message: "cluster management requires a database"},
+		})
+		return
+	}
+
+	id := chi.URLParam(r, "clusterID")
+
+	record, err := s.ClusterProber.ProbeOne(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "probe failed"},
+		})
+		return
+	}
+
+	// Audit log
+	user, _ := auth.UserFromContext(r.Context())
+	if user != nil {
+		entry := s.newAuditEntry(r, user.Username, "test", audit.ResultSuccess)
+		entry.ResourceKind = "cluster"
+		entry.ResourceName = id
+		s.AuditLogger.Log(r.Context(), entry)
+	}
+
+	// Return fresh record directly (credentials stripped by json:"-" tags)
+	record.CAData = nil
+	record.AuthData = nil
+	writeJSON(w, http.StatusOK, api.Response{Data: record})
 }
 
 // generateClusterID creates a 128-bit cryptographically random ID.
