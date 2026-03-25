@@ -83,6 +83,9 @@ helm-lint:
 helm-template:
 	helm template kubecenter helm/kubecenter
 
+check-dashboards:
+	@diff <(ls backend/internal/monitoring/dashboards/*.json | xargs -I{} basename {}) <(ls helm/kubecenter/dashboards/*.json | xargs -I{} basename {}) && echo "Dashboard files in sync" || (echo "ERROR: Dashboard JSON files out of sync between backend/internal/monitoring/dashboards/ and helm/kubecenter/dashboards/" && exit 1)
+
 # Clean
 clean:
 	rm -rf backend/bin frontend/_fresh

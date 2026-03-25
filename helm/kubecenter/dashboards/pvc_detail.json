@@ -1,0 +1,50 @@
+{
+  "uid": "kubecenter-pvc-detail",
+  "title": "KubeCenter: PVC Detail",
+  "tags": ["kubecenter"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      { "name": "namespace", "type": "custom", "current": { "text": "default", "value": "default" } },
+      { "name": "pvc", "type": "custom", "current": { "text": "", "value": "" } }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Volume Usage",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [{ "expr": "kubelet_volume_stats_used_bytes{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"} / kubelet_volume_stats_capacity_bytes{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"} * 100", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } } }
+    },
+    {
+      "id": 2,
+      "title": "Used Bytes",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [{ "expr": "kubelet_volume_stats_used_bytes{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "steps": [{ "color": "blue", "value": null }] } } }
+    },
+    {
+      "id": 3,
+      "title": "Capacity",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [{ "expr": "kubelet_volume_stats_capacity_bytes{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "bytes", "thresholds": { "steps": [{ "color": "blue", "value": null }] } } }
+    },
+    {
+      "id": 4,
+      "title": "Inodes Usage",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+      "targets": [{ "expr": "kubelet_volume_stats_inodes_used{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"} / kubelet_volume_stats_inodes{namespace=\"$namespace\",persistentvolumeclaim=\"$pvc\"} * 100", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } } }
+    }
+  ]
+}

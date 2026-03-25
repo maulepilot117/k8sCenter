@@ -1,0 +1,62 @@
+{
+  "uid": "kubecenter-daemonset-detail",
+  "title": "KubeCenter: DaemonSet Detail",
+  "tags": ["kubecenter"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      { "name": "namespace", "type": "custom", "current": { "text": "default", "value": "default" } },
+      { "name": "daemonset", "type": "custom", "current": { "text": "", "value": "" } }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Ready / Desired Nodes",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [{ "expr": "kube_daemonset_status_number_ready{namespace=\"$namespace\",daemonset=\"$daemonset\"} / kube_daemonset_status_desired_number_scheduled{namespace=\"$namespace\",daemonset=\"$daemonset\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 1 }] } } }
+    },
+    {
+      "id": 2,
+      "title": "Misscheduled",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [{ "expr": "kube_daemonset_status_number_misscheduled{namespace=\"$namespace\",daemonset=\"$daemonset\"} or vector(0)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "id": 3,
+      "title": "Ready vs Desired Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        { "expr": "kube_daemonset_status_desired_number_scheduled{namespace=\"$namespace\",daemonset=\"$daemonset\"}", "refId": "A", "legendFormat": "Desired" },
+        { "expr": "kube_daemonset_status_number_ready{namespace=\"$namespace\",daemonset=\"$daemonset\"}", "refId": "B", "legendFormat": "Ready" },
+        { "expr": "kube_daemonset_status_number_available{namespace=\"$namespace\",daemonset=\"$daemonset\"}", "refId": "C", "legendFormat": "Available" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 0 } } }
+    },
+    {
+      "id": 4,
+      "title": "Pod CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [{ "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"$namespace\",pod=~\"$daemonset-.*\"}[5m])) by (pod)", "refId": "A", "legendFormat": "{{pod}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "id": 5,
+      "title": "Pod Memory Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [{ "expr": "sum(container_memory_working_set_bytes{container!=\"\",namespace=\"$namespace\",pod=~\"$daemonset-.*\"}) by (pod)", "refId": "A", "legendFormat": "{{pod}}" }],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    }
+  ]
+}
