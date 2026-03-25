@@ -11,10 +11,6 @@ const (
 	DefaultClusterID       = "local"
 	DefaultDevMode         = false
 
-	// Database pool defaults
-	DefaultDatabaseMaxConns = 10
-	DefaultDatabaseMinConns = 2
-
 	// Audit defaults
 	DefaultAuditRetentionDays = 90
 

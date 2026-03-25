@@ -189,7 +189,6 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 3
-            successThreshold: 1
             timeoutSeconds: 5
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}

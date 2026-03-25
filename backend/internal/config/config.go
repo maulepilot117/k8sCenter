@@ -141,8 +141,6 @@ func Load(configPath string) (*Config, error) {
 		"alerting.retentiondays":      DefaultAlertingRetentionDays,
 		"alerting.ratelimit":          DefaultAlertingRateLimit,
 		"alerting.smtp.port":          DefaultAlertingSMTPPort,
-		"database.maxconns":           DefaultDatabaseMaxConns,
-		"database.minconns":           DefaultDatabaseMinConns,
 	}
 	for key, val := range defaults {
 		k.Set(key, val)

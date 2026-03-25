@@ -82,7 +82,17 @@ spec:
     - Ingress
     - Egress
   ingress:
-    - from: []
+    # Allow traffic from ingress controller namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace | default "ingress-nginx" }}
+      ports:
+        - port: {{ .Values.frontend.port }}
+          protocol: TCP
+    # Allow traffic from within the release namespace (e.g. for service mesh, probes)
+    - from:
+        - podSelector: {}
       ports:
         - port: {{ .Values.frontend.port }}
           protocol: TCP

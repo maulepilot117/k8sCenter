@@ -1,0 +1,6 @@
+# Trivy vulnerability ignore list for k8sCenter
+# Add CVE IDs here to acknowledge accepted risks
+# Format: one CVE-ID per line, optional comment after #
+#
+# Example:
+# CVE-2024-XXXXX  # accepted: no fix available in distroless base
