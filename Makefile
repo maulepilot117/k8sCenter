@@ -8,7 +8,8 @@ LDFLAGS := -s -w \
 
 .PHONY: dev dev-backend dev-frontend dev-db dev-db-stop \
        build build-backend build-frontend \
-       test test-backend test-frontend lint lint-backend lint-frontend \
+       test test-backend test-frontend test-e2e test-e2e-ui \
+       lint lint-backend lint-frontend \
        clean docker-build docker-build-backend docker-build-frontend \
        helm-lint helm-template
 
@@ -45,6 +46,12 @@ test-backend:
 
 test-frontend:
 	cd frontend && deno task test
+
+test-e2e:
+	cd e2e && npx playwright test
+
+test-e2e-ui:
+	cd e2e && npx playwright test --ui
 
 # Linting
 lint: lint-backend lint-frontend
