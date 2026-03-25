@@ -1,8 +1,7 @@
 import { HttpError } from "fresh";
 import { define } from "@/utils.ts";
-import { Button } from "@/components/ui/Button.tsx";
 
-export default define.page(function ErrorPage({ error }) {
+export default define.page(function ErrorPage({ error, url }) {
   let status = 500;
   let message = "Something went wrong";
 
@@ -16,6 +15,7 @@ export default define.page(function ErrorPage({ error }) {
   }
 
   const is404 = status === 404;
+  const is403 = status === 403;
   const isServerError = status >= 500;
 
   return (
@@ -30,27 +30,30 @@ export default define.page(function ErrorPage({ error }) {
         <p class="mt-2 text-sm text-slate-500 dark:text-slate-400">
           {is404
             ? "The page you're looking for doesn't exist."
+            : is403
+            ? "You don't have permission to access this page."
             : "An unexpected error occurred. Please try again."}
         </p>
         <div class="mt-6 flex items-center justify-center gap-3">
           {isServerError && (
-            <Button
-              variant="primary"
-              onClick={() => globalThis.location?.reload()}
+            <a
+              href={url.pathname}
+              class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand/90"
             >
               Retry
-            </Button>
+            </a>
           )}
-          <Button
-            variant="secondary"
-            onClick={() => globalThis.history?.back()}
+          <a
+            href="javascript:history.back()"
+            class="inline-flex items-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
           >
             Go Back
-          </Button>
-          <a href="/">
-            <Button variant={isServerError ? "secondary" : "primary"}>
-              Dashboard
-            </Button>
+          </a>
+          <a
+            href="/"
+            class="inline-flex items-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+          >
+            Dashboard
           </a>
         </div>
       </div>
