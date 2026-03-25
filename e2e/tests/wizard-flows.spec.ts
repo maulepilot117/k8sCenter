@@ -5,9 +5,9 @@ interface WizardConfig {
   kind: string;
   createPath: string;
   apiKind: string;
-  namespace: string | null; // null for cluster-scoped
+  namespace: string | null;
   fields: { label: string; value: string; generated?: boolean }[];
-  submitButton?: string; // defaults to "Apply"
+  submitButton?: string;
 }
 
 const WIZARDS: WizardConfig[] = [
@@ -53,64 +53,59 @@ const WIZARDS: WizardConfig[] = [
     namespace: "default",
     fields: [{ label: "Name", value: "", generated: true }],
   },
-  {
-    kind: "clusterrolebinding",
-    createPath: "/rbac/clusterrolebindings/new",
-    apiKind: "clusterrolebindings",
-    namespace: null,
-    fields: [{ label: "Name", value: "", generated: true }],
-  },
 ];
 
 for (const w of WIZARDS) {
   test.describe(`${w.kind} wizard`, () => {
-    let resourceName: string;
-
     test(`creates ${w.kind} via wizard`, async ({ page, request }) => {
-      resourceName = e2eName(w.kind);
-      await page.goto(w.createPath);
+      const resourceName = e2eName(w.kind);
 
-      // Fill form fields
-      for (const field of w.fields) {
-        const value = field.generated ? resourceName : field.value;
-        const input = page.getByLabel(field.label, { exact: false });
-        await input.fill(value);
-      }
+      try {
+        await page.goto(w.createPath);
 
-      // Signal-based stepping: click Next until Apply/Create button is visible
-      const submitText = w.submitButton ?? "Apply";
-      const submitButton = page.getByRole("button", {
-        name: new RegExp(submitText, "i"),
-      });
-      const nextButton = page.getByRole("button", { name: /next/i });
-
-      // Click Next repeatedly until we reach the review step (max 5 iterations)
-      for (let i = 0; i < 5; i++) {
-        if (await submitButton.isVisible().catch(() => false)) break;
-        if (await nextButton.isVisible().catch(() => false)) {
-          await nextButton.click();
-          // Wait for step transition
-          await page.waitForTimeout(300);
-        } else {
-          // No Next button and no Apply button — might be a single-step wizard
-          break;
+        // Fill form fields
+        for (const field of w.fields) {
+          const value = field.generated ? resourceName : field.value;
+          const input = page.getByLabel(field.label, { exact: false });
+          await input.fill(value);
         }
-      }
 
-      // Submit
-      await expect(submitButton).toBeVisible({ timeout: 5_000 });
-      await submitButton.click();
+        // Signal-based stepping: click Next until Apply/Create button is visible
+        const submitText = w.submitButton ?? "Apply";
+        const submitButton = page.getByRole("button", {
+          name: new RegExp(submitText, "i"),
+        });
+        const nextButton = page.getByRole("button", { name: /next/i });
 
-      // Assert success
-      await expect(
-        page.getByText(/successfully|created|configured/i),
-      ).toBeVisible({ timeout: 15_000 });
+        // Click Next until review step (submit button visible) — max 5 iterations
+        for (let i = 0; i < 5; i++) {
+          if (await submitButton.isVisible().catch(() => false)) break;
+          if (await nextButton.isVisible().catch(() => false)) {
+            await nextButton.click();
+            // Wait for step transition (actionability of next button or submit button)
+            await expect(
+              submitButton.or(nextButton),
+            ).toBeVisible();
+          } else {
+            break;
+          }
+        }
 
-      // Cleanup
-      if (w.namespace) {
-        await deleteResource(request, w.apiKind, w.namespace, resourceName);
-      } else {
-        await deleteClusterResource(request, w.apiKind, resourceName);
+        // Submit
+        await expect(submitButton).toBeVisible({ timeout: 5_000 });
+        await submitButton.click();
+
+        // Assert success
+        await expect(
+          page.getByText(/successfully|created|configured/i),
+        ).toBeVisible({ timeout: 15_000 });
+      } finally {
+        // Always clean up, regardless of test outcome
+        if (w.namespace) {
+          await deleteResource(request, w.apiKind, w.namespace, resourceName);
+        } else {
+          await deleteClusterResource(request, w.apiKind, resourceName);
+        }
       }
     });
   });

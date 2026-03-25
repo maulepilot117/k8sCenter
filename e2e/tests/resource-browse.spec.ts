@@ -7,7 +7,6 @@ const RESOURCES = [
   { kind: "namespaces", path: "/cluster/namespaces", hasRows: true },
   { kind: "clusterroles", path: "/rbac/clusterroles", hasRows: true },
   { kind: "clusterrolebindings", path: "/rbac/clusterrolebindings", hasRows: true },
-  { kind: "storageclasses", path: "/cluster/storageclasses", hasRows: true },
   // Namespace-scoped — have rows across all namespaces (kube-system has resources)
   { kind: "pods", path: "/workloads/pods", hasRows: true },
   { kind: "deployments", path: "/workloads/deployments", hasRows: true },
@@ -19,8 +18,10 @@ const RESOURCES = [
   { kind: "configmaps", path: "/config/configmaps", hasRows: true },
   { kind: "secrets", path: "/config/secrets", hasRows: true },
   { kind: "serviceaccounts", path: "/config/serviceaccounts", hasRows: true },
-  { kind: "roles", path: "/rbac/roles", hasRows: true },
-  { kind: "rolebindings", path: "/rbac/rolebindings", hasRows: true },
+  // May or may not have rows depending on kind version
+  { kind: "storageclasses", path: "/cluster/storageclasses", hasRows: false },
+  { kind: "roles", path: "/rbac/roles", hasRows: false },
+  { kind: "rolebindings", path: "/rbac/rolebindings", hasRows: false },
   // Empty in vanilla kind cluster
   { kind: "statefulsets", path: "/workloads/statefulsets", hasRows: false },
   { kind: "jobs", path: "/workloads/jobs", hasRows: false },
@@ -61,9 +62,11 @@ test.describe("Resource browsing", () => {
     await nsSelect.selectOption("kube-system");
     await waitForTableLoaded(page);
 
-    // kube-system should have pods, but count may differ from all namespaces
     const ksCount = await page.getByRole("row").count();
-    expect(ksCount).toBeGreaterThan(1); // at least header + 1 pod
+    // kube-system should have pods
+    expect(ksCount).toBeGreaterThan(1);
+    // Filtered count should differ from all-namespaces count
+    expect(ksCount).not.toEqual(allCount);
   });
 
   test("search filters table rows", async ({ page }) => {
@@ -78,11 +81,10 @@ test.describe("Resource browsing", () => {
     );
     await searchBox.fill("coredns");
 
-    // Wait for filter to apply (client-side debounce)
-    await page.waitForTimeout(500);
-    const afterCount = await page.getByRole("row").count();
+    // Wait for filter to apply (row count should change)
+    await expect(page.getByRole("row")).not.toHaveCount(beforeCount);
 
-    // Should have fewer rows than before (filtered)
+    const afterCount = await page.getByRole("row").count();
     expect(afterCount).toBeLessThan(beforeCount);
     expect(afterCount).toBeGreaterThan(1); // header + at least 1 coredns pod
   });

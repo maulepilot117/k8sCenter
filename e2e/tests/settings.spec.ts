@@ -13,7 +13,7 @@ test.describe("Settings pages", () => {
     await expect(page.getByText("admin")).toBeVisible();
 
     // "you" badge should be next to our own username
-    await expect(page.getByText("you")).toBeVisible();
+    await expect(page.getByText("you", { exact: true })).toBeVisible();
   });
 
   test("audit log page renders", async ({ page }) => {
