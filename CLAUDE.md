@@ -356,6 +356,18 @@ kubecenter/
 │               ├── grafana-config-cm.yaml
 │               └── grafana-dashboards-cm.yaml
 │
+├── e2e/                               # Playwright E2E tests (Node.js project)
+│   ├── package.json                   # @playwright/test dependency
+│   ├── tsconfig.json                  # Strict TypeScript config
+│   ├── playwright.config.ts           # Config: webServer, projects, timeouts
+│   ├── kind-config.yaml               # kind cluster config for CI
+│   ├── helpers.ts                     # Shared utility functions
+│   ├── fixtures/
+│   │   ├── auth.setup.ts              # Global auth: setup/init + login + storageState
+│   │   ├── base.ts                    # Extended test fixture (reducedMotion)
+│   │   └── k8s/                       # K8s YAML fixtures (RBAC, namespace)
+│   └── tests/                         # Test spec files (flat, data-driven)
+│
 ├── plans/
 │   └── feat-kubecenter-phase1-mvp.md  # Full 15-step implementation plan with progress tracker
 │
@@ -369,7 +381,8 @@ kubecenter/
 │
 └── .github/
     └── workflows/
-        └── ci.yml                     # go vet + go test -race + go build
+        ├── ci.yml                     # go vet + go test -race + go build
+        └── e2e.yml                    # Playwright E2E tests with kind cluster
 ```
 
 ---
@@ -648,6 +661,8 @@ make build-frontend   # cd frontend && deno task build (outputs to _fresh/)
 make test             # Run all tests (backend + frontend)
 make test-backend     # go test ./... -race -cover -count=1
 make test-frontend    # cd frontend && deno test -A
+make test-e2e         # cd e2e && npx playwright test (requires kind cluster + backend + frontend)
+make test-e2e-ui      # cd e2e && npx playwright test --ui (interactive mode)
 make lint             # Lint both backend and frontend
 make lint-backend     # go vet ./...
 make lint-frontend    # deno lint && deno fmt --check
@@ -875,7 +890,7 @@ Multi-cluster management is fully implemented:
 - **Backend unit tests:** Test each resource handler, auth provider, and monitoring client in isolation. Mock the k8s clientset using `k8s.io/client-go/kubernetes/fake`.
 - **Backend integration tests:** Use `envtest` (from controller-runtime) to spin up a real API server for testing against actual k8s behavior.
 - **Frontend tests:** Deno's built-in test runner for utility functions. Component tests with Preact Testing Library.
-- **E2E tests:** Use a `kind` cluster with Playwright or Cypress driving the browser. Test the full wizard→apply→verify cycle.
+- **E2E tests:** Playwright (Node.js) in `e2e/` directory against a kind cluster. Tests auth flows, resource browsing, wizard creation, YAML tools, WebSocket live updates, and settings pages. CI runs via `.github/workflows/e2e.yml` with a kind cluster + PostgreSQL service container. Auth uses `storageState` with httpOnly refresh cookie (access token refreshes transparently on each test start).
 - **Helm tests:** `helm lint`, `helm template` validation, and `helm test` hooks.
 
 ---

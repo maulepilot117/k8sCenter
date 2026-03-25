@@ -51,6 +51,13 @@ helm/kubecenter/charts/*.tgz
 # Docker
 docker-compose.override.yml
 
+# E2E tests (Playwright)
+e2e/node_modules/
+e2e/playwright/.auth/
+e2e/playwright-report/
+e2e/blob-report/
+e2e/test-results/
+
 # Misc
 *.log
 *.tmp
