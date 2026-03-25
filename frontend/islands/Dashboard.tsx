@@ -193,7 +193,7 @@ export default function Dashboard() {
 
       {/* Utilization cards (only if Prometheus available) */}
       {(cpuUtil.value !== null || memUtil.value !== null) && (
-        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2">
+        <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
           {cpuUtil.value !== null && (
             <Card>
               <p class="text-sm font-medium text-slate-500 dark:text-slate-400">
