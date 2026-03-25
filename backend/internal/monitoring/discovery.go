@@ -49,11 +49,13 @@ type Discoverer struct {
 	config    config.MonitoringConfig
 	logger    *slog.Logger
 
-	mu         sync.RWMutex
-	status     *MonitoringStatus
-	promClient *PrometheusClient
-	grafProxy  http.Handler
-	grafClient *GrafanaClient
+	mu                     sync.RWMutex
+	status                 *MonitoringStatus
+	promClient             *PrometheusClient
+	grafProxy              http.Handler
+	grafClient             *GrafanaClient
+	dashboardsProvisioned  bool
+	dashboardsProvCount    int
 }
 
 // NewDiscoverer creates a new monitoring discoverer.
@@ -179,16 +181,30 @@ func (d *Discoverer) Discover(ctx context.Context) {
 		}
 	}
 
-	// Provision dashboards if Grafana client is available
-	if grafClient != nil {
+	// Provision dashboards once when Grafana is first discovered (or rediscovered)
+	d.mu.RLock()
+	alreadyProvisioned := d.dashboardsProvisioned
+	lastCount := d.dashboardsProvCount
+	d.mu.RUnlock()
+
+	if grafClient == nil {
+		// Reset flag so we re-provision when Grafana comes back
+		alreadyProvisioned = false
+		lastCount = 0
+	} else if !alreadyProvisioned {
 		count, err := grafClient.ProvisionDashboards(ctx, d.logger)
 		if err != nil {
 			d.logger.Error("dashboard provisioning failed", "error", err)
 			status.Dashboards = DashboardStatus{Error: err.Error()}
 		} else {
+			alreadyProvisioned = true
+			lastCount = count
 			status.Dashboards = DashboardStatus{Provisioned: true, Count: count}
 			d.logger.Info("dashboards provisioned", "count", count)
 		}
+	} else {
+		// Already provisioned — report cached status
+		status.Dashboards = DashboardStatus{Provisioned: true, Count: lastCount}
 	}
 
 	d.mu.Lock()
@@ -196,6 +212,8 @@ func (d *Discoverer) Discover(ctx context.Context) {
 	d.promClient = promClient
 	d.grafProxy = grafProxy
 	d.grafClient = grafClient
+	d.dashboardsProvisioned = alreadyProvisioned
+	d.dashboardsProvCount = lastCount
 	d.mu.Unlock()
 
 	d.logger.Info("monitoring discovery complete",

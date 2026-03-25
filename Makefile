@@ -83,6 +83,9 @@ helm-lint:
 helm-template:
 	helm template kubecenter helm/kubecenter
 
+check-dashboards:
+	@diff -r backend/internal/monitoring/dashboards/ helm/kubecenter/dashboards/ --exclude=embed.go > /dev/null 2>&1 && echo "Dashboard files in sync" || (echo "ERROR: Dashboard JSON files out of sync between backend/internal/monitoring/dashboards/ and helm/kubecenter/dashboards/"; diff -r backend/internal/monitoring/dashboards/ helm/kubecenter/dashboards/ --exclude=embed.go; exit 1)
+
 # Clean
 clean:
 	rm -rf backend/bin frontend/_fresh

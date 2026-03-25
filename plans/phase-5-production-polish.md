@@ -13,7 +13,7 @@ With all core features complete (Phases 1-4), Phase 5 focuses on production read
 | 24 | E2E Tests (Playwright) | — | Large | Done (100 tests, 10 files) |
 | 25 | Production Hardening | — | Medium | Done |
 | 26 | UX Polish | — | Medium | Done |
-| 27 | Grafana Dashboard Provisioning | — | Small | Planned |
+| 27 | Grafana Dashboard Provisioning | — | Small | Done |
 | 28 | Multi-Cluster UX | — | Large | Planned |
 | 29 | RBAC Visualization | — | Medium | Planned |
 | 30 | Cost Analysis & Resource Recommendations | 27 | Large | Planned |

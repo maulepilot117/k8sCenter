@@ -354,7 +354,8 @@ kubecenter/
 │           ├── networkpolicy.yaml
 │           └── monitoring/            # Grafana ConfigMap dashboards
 │               ├── grafana-config-cm.yaml
-│               └── grafana-dashboards-cm.yaml
+│               └── grafana-dashboards-cm.yaml  # .Files.Glob from dashboards/
+│       └── dashboards/                # Grafana dashboard JSON files (synced with backend)
 │
 ├── e2e/                               # Playwright E2E tests (Node.js project)
 │   ├── package.json                   # @playwright/test dependency
@@ -669,6 +670,7 @@ make lint-frontend    # deno lint && deno fmt --check
 make docker-build     # Docker build for both backend and frontend
 make helm-lint        # helm lint helm/kubecenter
 make helm-template    # helm template (dry-run)
+make check-dashboards # diff dashboard JSONs between backend/ and helm/ (catches drift)
 make clean            # rm -rf backend/bin frontend/_fresh
 ```
 

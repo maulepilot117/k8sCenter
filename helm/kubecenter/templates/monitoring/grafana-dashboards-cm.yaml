@@ -1,23 +1,16 @@
 {{- if .Values.monitoring.deploy }}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "kubecenter.fullname" . }}-grafana-dashboards
+  name: {{ include "kubecenter.fullname" $ }}-dashboard-{{ trimSuffix ".json" (base $path) | replace "_" "-" }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "kubecenter.labels" . | nindent 4 }}
+    {{- include "kubecenter.labels" $ | nindent 4 }}
     grafana_dashboard: "1"
 data:
-  # Dashboard JSON files are embedded in the Go binary and provisioned via
-  # the Grafana HTTP API at startup. This ConfigMap is a fallback for
-  # environments using Grafana's sidecar dashboard provisioner.
-  kubecenter-cluster-overview.json: |
-    {}
-  kubecenter-pod-detail.json: |
-    {}
-  kubecenter-node-detail.json: |
-    {}
-  kubecenter-deployment-detail.json: |
-    {}
-  kubecenter-pvc-detail.json: |
-    {}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
 {{- end }}

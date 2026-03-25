@@ -1,0 +1,62 @@
+{
+  "uid": "kubecenter-deployment-detail",
+  "title": "KubeCenter: Deployment Detail",
+  "tags": ["kubecenter"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 0,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      { "name": "namespace", "type": "custom", "current": { "text": "default", "value": "default" } },
+      { "name": "deployment", "type": "custom", "current": { "text": "", "value": "" } }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Replica Availability",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "targets": [{ "expr": "kube_deployment_status_replicas_available{namespace=\"$namespace\",deployment=\"$deployment\"} / kube_deployment_spec_replicas{namespace=\"$namespace\",deployment=\"$deployment\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 1 }] } } }
+    },
+    {
+      "id": 2,
+      "title": "Unavailable Replicas",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [{ "expr": "kube_deployment_status_replicas_unavailable{namespace=\"$namespace\",deployment=\"$deployment\"} or vector(0)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "id": 3,
+      "title": "Desired vs Available Replicas",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        { "expr": "kube_deployment_spec_replicas{namespace=\"$namespace\",deployment=\"$deployment\"}", "refId": "A", "legendFormat": "Desired" },
+        { "expr": "kube_deployment_status_replicas_available{namespace=\"$namespace\",deployment=\"$deployment\"}", "refId": "B", "legendFormat": "Available" },
+        { "expr": "kube_deployment_status_replicas_ready{namespace=\"$namespace\",deployment=\"$deployment\"}", "refId": "C", "legendFormat": "Ready" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 0 } } }
+    },
+    {
+      "id": 4,
+      "title": "Aggregate Pod CPU Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "targets": [{ "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\",namespace=\"$namespace\",pod=~\"$deployment-.*\"}[5m])) by (pod)", "refId": "A", "legendFormat": "{{pod}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "id": 5,
+      "title": "Aggregate Pod Memory Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "targets": [{ "expr": "sum(container_memory_working_set_bytes{container!=\"\",namespace=\"$namespace\",pod=~\"$deployment-.*\"}) by (pod)", "refId": "A", "legendFormat": "{{pod}}" }],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    }
+  ]
+}
