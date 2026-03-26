@@ -1,126 +1,31 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useMemo } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { calculateHealthScore, scoreColor } from "@/lib/health-score.ts";
 import type { HealthMetrics, HealthScore } from "@/lib/health-score.ts";
 
-interface NodeItem {
-  status?: {
-    conditions?: { type: string; status: string }[];
-  };
+interface HealthScoreRingProps {
+  nodes: { total: number; ready: number };
+  pods: { total: number; running: number; pending: number; failed: number };
+  alerts: { active: number; critical: number };
 }
 
-interface PodItem {
-  status?: {
-    phase?: string;
-  };
-}
-
-interface AlertItem {
-  labels?: {
-    severity?: string;
-  };
-}
-
-const REFRESH_INTERVAL = 60_000;
-
-export default function HealthScoreRing() {
-  const score = useSignal<HealthScore | null>(null);
-  const loading = useSignal(true);
-  const error = useSignal(false);
-
-  async function fetchMetrics(): Promise<HealthMetrics> {
-    const [nodesRes, podsRes, alertsRes] = await Promise
-      .allSettled([
-        apiGet<NodeItem[]>("/v1/resources/nodes"),
-        apiGet<PodItem[]>("/v1/resources/pods"),
-        apiGet<AlertItem[]>("/v1/alerts"),
-      ]);
-
-    // Nodes
-    let nodesTotal = 0;
-    let nodesReady = 0;
-    if (nodesRes.status === "fulfilled" && Array.isArray(nodesRes.value.data)) {
-      const nodes = nodesRes.value.data;
-      nodesTotal = nodes.length;
-      nodesReady = nodes.filter((n) =>
-        n.status?.conditions?.some((c) =>
-          c.type === "Ready" && c.status === "True"
-        )
-      ).length;
-    }
-
-    // Pods
-    let podsTotal = 0;
-    let podsRunning = 0;
-    let podsPending = 0;
-    let podsFailed = 0;
-    if (podsRes.status === "fulfilled" && Array.isArray(podsRes.value.data)) {
-      const pods = podsRes.value.data;
-      podsTotal = pods.length;
-      for (const p of pods) {
-        const phase = p.status?.phase?.toLowerCase();
-        if (phase === "running" || phase === "succeeded") podsRunning++;
-        else if (phase === "pending") podsPending++;
-        else if (phase === "failed") podsFailed++;
-      }
-    }
-
-    // Alerts
-    let activeAlerts = 0;
-    let criticalAlerts = 0;
-    if (
-      alertsRes.status === "fulfilled" && Array.isArray(alertsRes.value.data)
-    ) {
-      const alerts = alertsRes.value.data;
-      activeAlerts = alerts.length;
-      criticalAlerts = alerts.filter((a) =>
-        a.labels?.severity === "critical"
-      ).length;
-    }
-
-    return {
-      nodesTotal,
-      nodesReady,
-      podsTotal,
-      podsRunning,
-      podsPending,
-      podsFailed,
-      activeAlerts,
-      criticalAlerts,
+export default function HealthScoreRing(
+  { nodes, pods, alerts }: HealthScoreRingProps,
+) {
+  const score: HealthScore = useMemo(() => {
+    const metrics: HealthMetrics = {
+      nodesTotal: nodes.total,
+      nodesReady: nodes.ready,
+      podsTotal: pods.total,
+      podsRunning: pods.running,
+      podsPending: pods.pending,
+      podsFailed: pods.failed,
+      activeAlerts: alerts.active,
+      criticalAlerts: alerts.critical,
     };
-  }
-
-  async function loadScore() {
-    if (document.hidden) return;
-    try {
-      const metrics = await fetchMetrics();
-      score.value = calculateHealthScore(metrics);
-      error.value = false;
-    } catch {
-      error.value = true;
-      // Keep last known score if we had one
-      if (!score.value) {
-        score.value = {
-          overall: 0,
-          nodes: 0,
-          pods: 0,
-          alerts: 0,
-        };
-      }
-    } finally {
-      loading.value = false;
-    }
-  }
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    loadScore();
-    const interval = setInterval(loadScore, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, []);
+    return calculateHealthScore(metrics);
+  }, [nodes, pods, alerts]);
 
   if (!IS_BROWSER) {
     return (
@@ -135,54 +40,10 @@ export default function HealthScoreRing() {
     );
   }
 
-  if (loading.value) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: "16px",
-          padding: "20px",
-          background: "var(--bg-surface)",
-          borderRadius: "12px",
-          border: "1px solid var(--border-subtle)",
-        }}
-      >
-        {/* Skeleton ring */}
-        <div
-          style={{
-            width: "160px",
-            height: "160px",
-            borderRadius: "50%",
-            background: "var(--bg-elevated)",
-            animation: "pulse 2s ease-in-out infinite",
-          }}
-        />
-        {/* Skeleton sub-scores */}
-        <div style={{ display: "flex", gap: "8px" }}>
-          {[1, 2, 3].map((i) => (
-            <div
-              key={i}
-              style={{
-                width: "64px",
-                height: "48px",
-                borderRadius: "8px",
-                background: "var(--bg-elevated)",
-                animation: "pulse 2s ease-in-out infinite",
-              }}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const s = score.value!;
   const subScores = [
-    { label: "Nodes", value: s.nodes, category: "nodes" },
-    { label: "Pods", value: s.pods, category: "pods" },
-    { label: "Alerts", value: s.alerts, category: "alerts" },
+    { label: "Nodes", value: score.nodes, category: "nodes" },
+    { label: "Pods", value: score.pods, category: "pods" },
+    { label: "Alerts", value: score.alerts, category: "alerts" },
   ];
 
   return (
@@ -200,25 +61,13 @@ export default function HealthScoreRing() {
     >
       {/* Main gauge */}
       <GaugeRing
-        value={s.overall}
+        value={score.overall}
         size={160}
         strokeWidth={10}
         color="var(--accent)"
         secondaryColor="var(--success)"
         label="Health"
       />
-
-      {error.value && (
-        <div
-          style={{
-            fontSize: "11px",
-            color: "var(--warning)",
-            textAlign: "center",
-          }}
-        >
-          Some metrics unavailable
-        </div>
-      )}
 
       {/* Sub-scores */}
       <div

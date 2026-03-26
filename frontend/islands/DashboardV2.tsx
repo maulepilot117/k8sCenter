@@ -3,10 +3,6 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 
-interface CountResponse {
-  items: unknown[];
-  metadata?: { total?: number };
-}
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
@@ -28,12 +24,13 @@ interface ClusterInfoData {
   };
 }
 
-interface ResourceCounts {
-  deployments: number;
-  pods: number;
-  services: number;
-  namespaces: number;
-  nodes: number;
+interface DashboardSummary {
+  nodes: { total: number; ready: number };
+  pods: { total: number; running: number; pending: number; failed: number };
+  services: { total: number };
+  alerts: { active: number; critical: number };
+  cpu: { percentage: number } | null;
+  memory: { percentage: number } | null;
 }
 
 interface UtilData {
@@ -42,19 +39,48 @@ interface UtilData {
   total: string;
 }
 
+const REFRESH_INTERVAL = 60_000;
+
 export default function DashboardV2() {
   const clusterInfo = useSignal<ClusterInfoData | null>(null);
-  const counts = useSignal<ResourceCounts>({
-    deployments: 0,
-    pods: 0,
-    services: 0,
-    namespaces: 0,
-    nodes: 0,
-  });
+  const summary = useSignal<DashboardSummary | null>(null);
   const events = useSignal<K8sEvent[]>([]);
   const cpuUtil = useSignal<UtilData | null>(null);
   const memUtil = useSignal<UtilData | null>(null);
   const loading = useSignal(true);
+
+  async function fetchSummary() {
+    const summaryRes = await apiGet<DashboardSummary>(
+      "/v1/cluster/dashboard-summary",
+    );
+    if (summaryRes.data) {
+      summary.value = summaryRes.data;
+
+      // Extract CPU utilization
+      if (summaryRes.data.cpu) {
+        const val = summaryRes.data.cpu.percentage;
+        cpuUtil.value = {
+          value: val,
+          used: `${val.toFixed(1)}%`,
+          total: "100%",
+        };
+      } else {
+        cpuUtil.value = null;
+      }
+
+      // Extract Memory utilization
+      if (summaryRes.data.memory) {
+        const val = summaryRes.data.memory.percentage;
+        memUtil.value = {
+          value: val,
+          used: `${val.toFixed(1)}%`,
+          total: "100%",
+        };
+      } else {
+        memUtil.value = null;
+      }
+    }
+  }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -62,61 +88,15 @@ export default function DashboardV2() {
     async function load() {
       loading.value = true;
 
-      const [
-        infoRes,
-        deplRes,
-        podRes,
-        svcRes,
-        nsRes,
-        eventsRes,
-        cpuRes,
-        memRes,
-      ] = await Promise.allSettled([
+      const [infoRes, _summaryResult, eventsRes] = await Promise.allSettled([
         apiGet<ClusterInfoData>("/v1/cluster/info"),
-        apiGet<CountResponse>("/v1/resources/deployments?limit=1"),
-        apiGet<CountResponse>("/v1/resources/pods?limit=1"),
-        apiGet<CountResponse>("/v1/resources/services?limit=1"),
-        apiGet<CountResponse>("/v1/resources/namespaces?limit=1"),
+        fetchSummary(),
         apiGet<K8sEvent[]>("/v1/resources/events?limit=10"),
-        apiGet<{ result: { value: [number, string] }[] }>(
-          `/v1/monitoring/query?query=${
-            encodeURIComponent(
-              '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
-            )
-          }`,
-        ),
-        apiGet<{ result: { value: [number, string] }[] }>(
-          `/v1/monitoring/query?query=${
-            encodeURIComponent(
-              "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-            )
-          }`,
-        ),
       ]);
 
       if (infoRes.status === "fulfilled") {
         clusterInfo.value = infoRes.value.data;
       }
-
-      const nodeCount = infoRes.status === "fulfilled"
-        ? infoRes.value.data?.nodeCount ?? 0
-        : 0;
-
-      counts.value = {
-        nodes: nodeCount,
-        deployments: deplRes.status === "fulfilled"
-          ? deplRes.value.metadata?.total ?? 0
-          : 0,
-        pods: podRes.status === "fulfilled"
-          ? podRes.value.metadata?.total ?? 0
-          : 0,
-        services: svcRes.status === "fulfilled"
-          ? svcRes.value.metadata?.total ?? 0
-          : 0,
-        namespaces: nsRes.status === "fulfilled"
-          ? nsRes.value.metadata?.total ?? 0
-          : 0,
-      };
 
       if (
         eventsRes.status === "fulfilled" &&
@@ -125,30 +105,21 @@ export default function DashboardV2() {
         events.value = eventsRes.value.data;
       }
 
-      // CPU utilization
-      if (cpuRes.status === "fulfilled" && cpuRes.value.data?.result?.[0]) {
-        const val = parseFloat(cpuRes.value.data.result[0].value[1]);
-        cpuUtil.value = {
-          value: val,
-          used: `${val.toFixed(1)}%`,
-          total: "100%",
-        };
-      }
-
-      // Memory utilization
-      if (memRes.status === "fulfilled" && memRes.value.data?.result?.[0]) {
-        const val = parseFloat(memRes.value.data.result[0].value[1]);
-        memUtil.value = {
-          value: val,
-          used: `${val.toFixed(1)}%`,
-          total: "100%",
-        };
-      }
-
       loading.value = false;
     }
 
     load();
+
+    // 60-second auto-refresh for summary data
+    const interval = setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        await fetchSummary();
+      } catch {
+        // Keep last known data on error
+      }
+    }, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
   }, []);
 
   if (!IS_BROWSER) {
@@ -198,36 +169,43 @@ export default function DashboardV2() {
   }
 
   const info = clusterInfo.value;
-  const c = counts.value;
+  const s = summary.value;
+  const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
 
   const metricCards = [
     {
-      value: c.nodes,
+      value: s?.nodes.total ?? 0,
       label: "Nodes",
-      status: c.nodes > 0 ? "success" : "warning",
-      statusText: c.nodes > 0 ? "Healthy" : "None",
+      status: (s?.nodes.total ?? 0) > 0 ? "success" : "warning",
+      statusText: s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "None",
       href: "/cluster/nodes",
     },
     {
-      value: c.pods,
+      value: s?.pods.total ?? 0,
       label: "Pods",
-      status: c.pods > 0 ? "success" : "info",
-      statusText: c.pods > 0 ? "Running" : "None",
+      status: (s?.pods.total ?? 0) > 0 ? "success" : "info",
+      statusText: s?.pods.total ? `${s.pods.running} Running` : "None",
       href: "/workloads/pods",
     },
     {
-      value: c.services,
+      value: s?.services.total ?? 0,
       label: "Services",
       status: "info" as const,
       statusText: "Active",
       href: "/networking/services",
     },
     {
-      value: c.deployments,
-      label: "Deployments",
-      status: c.deployments > 0 ? "success" : "info",
-      statusText: c.deployments > 0 ? "Available" : "None",
-      href: "/workloads/deployments",
+      value: s?.alerts.active ?? 0,
+      label: "Alerts",
+      status: (s?.alerts.critical ?? 0) > 0
+        ? "error"
+        : (s?.alerts.active ?? 0) > 0
+        ? "warning"
+        : "success",
+      statusText: (s?.alerts.active ?? 0) > 0
+        ? `${s?.alerts.critical ?? 0} Critical`
+        : "None",
+      href: "/alerts",
     },
   ] as const;
 
@@ -261,7 +239,7 @@ export default function DashboardV2() {
               }}
             >
               {info.platform} &middot; Kubernetes {info.kubernetesVersion}
-              {` \u00B7 ${c.nodes} node${c.nodes !== 1 ? "s" : ""}`}
+              {` \u00B7 ${nodeCount} node${nodeCount !== 1 ? "s" : ""}`}
             </p>
           )}
         </div>
@@ -369,7 +347,16 @@ export default function DashboardV2() {
               Cluster Health
             </span>
           </div>
-          <HealthScoreRing />
+          <HealthScoreRing
+            nodes={s?.nodes ?? { total: 0, ready: 0 }}
+            pods={s?.pods ?? {
+              total: 0,
+              running: 0,
+              pending: 0,
+              failed: 0,
+            }}
+            alerts={s?.alerts ?? { active: 0, critical: 0 }}
+          />
         </div>
 
         {/* Metric Cards */}
