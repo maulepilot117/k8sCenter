@@ -9,6 +9,7 @@ import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import HealthScoreRing from "@/islands/HealthScoreRing.tsx";
 import MetricCard from "@/islands/MetricCard.tsx";
 import UtilizationGauge from "@/islands/UtilizationGauge.tsx";
+import ClusterTopology from "@/islands/ClusterTopology.tsx";
 
 interface ClusterInfoData {
   clusterID: string;
@@ -464,18 +465,7 @@ export default function DashboardV2() {
               Cluster Topology
             </span>
           </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "200px",
-              color: "var(--text-muted)",
-              fontSize: "13px",
-            }}
-          >
-            Topology visualization will be implemented in a future update.
-          </div>
+          <ClusterTopology />
         </div>
 
         {/* Recent Events */}

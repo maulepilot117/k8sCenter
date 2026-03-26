@@ -7,6 +7,7 @@ import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
+import ThemeSelector from "@/islands/ThemeSelector.tsx";
 
 interface NamespaceMeta {
   metadata: { name: string };
@@ -181,8 +182,11 @@ export default function TopBarV2() {
         </button>
       </div>
 
-      {/* Right section: notifications + user */}
+      {/* Right section: theme + notifications + user */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Theme selector */}
+        <ThemeSelector />
+
         {/* Notification bell */}
         <button
           type="button"
