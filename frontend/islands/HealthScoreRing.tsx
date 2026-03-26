@@ -32,11 +32,10 @@ export default function HealthScoreRing() {
   const error = useSignal(false);
 
   async function fetchMetrics(): Promise<HealthMetrics> {
-    const [nodesRes, podsRes, servicesRes, alertsRes] = await Promise
+    const [nodesRes, podsRes, alertsRes] = await Promise
       .allSettled([
         apiGet<NodeItem[]>("/v1/resources/nodes"),
         apiGet<PodItem[]>("/v1/resources/pods"),
-        apiGet<unknown>("/v1/resources/services?limit=1"),
         apiGet<AlertItem[]>("/v1/alerts"),
       ]);
 
@@ -69,12 +68,6 @@ export default function HealthScoreRing() {
       }
     }
 
-    // Services
-    let servicesTotal = 0;
-    if (servicesRes.status === "fulfilled") {
-      servicesTotal = servicesRes.value.metadata?.total ?? 0;
-    }
-
     // Alerts
     let activeAlerts = 0;
     let criticalAlerts = 0;
@@ -95,7 +88,6 @@ export default function HealthScoreRing() {
       podsRunning,
       podsPending,
       podsFailed,
-      servicesTotal,
       activeAlerts,
       criticalAlerts,
     };
@@ -115,7 +107,6 @@ export default function HealthScoreRing() {
           overall: 0,
           nodes: 0,
           pods: 0,
-          services: 0,
           alerts: 0,
         };
       }
@@ -170,7 +161,7 @@ export default function HealthScoreRing() {
         />
         {/* Skeleton sub-scores */}
         <div style={{ display: "flex", gap: "8px" }}>
-          {[1, 2, 3, 4].map((i) => (
+          {[1, 2, 3].map((i) => (
             <div
               key={i}
               style={{
@@ -191,7 +182,6 @@ export default function HealthScoreRing() {
   const subScores = [
     { label: "Nodes", value: s.nodes, category: "nodes" },
     { label: "Pods", value: s.pods, category: "pods" },
-    { label: "Services", value: s.services, category: "services" },
     { label: "Alerts", value: s.alerts, category: "alerts" },
   ];
 
