@@ -347,7 +347,7 @@ export default function DashboardV2() {
           style={{
             gridColumn: "span 8",
             display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            gridTemplateColumns: "repeat(4, 1fr)",
             gap: "12px",
           }}
         >
@@ -375,7 +375,7 @@ export default function DashboardV2() {
         <div style={{ gridColumn: "span 6" }}>
           <UtilizationGauge
             title="CPU Utilization"
-            value={summary.value?.cpu?.percentage ?? 0}
+            value={Math.round(summary.value?.cpu?.percentage ?? 0)}
             used={summary.value?.cpu
               ? `${summary.value.cpu.percentage.toFixed(1)}%`
               : "N/A"}
@@ -387,7 +387,7 @@ export default function DashboardV2() {
         <div style={{ gridColumn: "span 6" }}>
           <UtilizationGauge
             title="Memory Utilization"
-            value={summary.value?.memory?.percentage ?? 0}
+            value={Math.round(summary.value?.memory?.percentage ?? 0)}
             used={summary.value?.memory
               ? `${summary.value.memory.percentage.toFixed(1)}%`
               : "N/A"}
@@ -509,9 +509,11 @@ export default function DashboardV2() {
                       style={{
                         flex: 1,
                         minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
                         fontSize: "12px",
                         color: "var(--text-secondary)",
-                        lineHeight: "1.4",
                       }}
                     >
                       {evt.involvedObject && (
@@ -523,19 +525,8 @@ export default function DashboardV2() {
                           }}
                         >
                           {evt.involvedObject.name}
-                          {""}
                         </span>
-                      )}
-                      <span
-                        style={{
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          display: "inline",
-                        }}
-                      >
-                        {evt.message}
-                      </span>
+                      )} {evt.message}
                     </div>
                     <span
                       style={{

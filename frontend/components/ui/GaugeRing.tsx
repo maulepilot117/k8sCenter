@@ -76,7 +76,7 @@ export function GaugeRing({
           class="text-sm font-semibold"
           style={{ color: "var(--text-primary)" }}
         >
-          {clampedValue}%
+          {Math.round(clampedValue)}%
         </span>
         {label && (
           <span class="text-xs" style={{ color: "var(--text-muted)" }}>
