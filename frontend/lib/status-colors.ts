@@ -12,16 +12,11 @@ export type StatusVariant =
   | "neutral";
 
 export const VARIANT_CLASSES: Record<StatusVariant, string> = {
-  success:
-    "bg-success/10 text-success ring-success/20",
-  warning:
-    "bg-warning/10 text-warning ring-warning/20",
-  danger:
-    "bg-danger/10 text-danger ring-danger/20",
-  info:
-    "bg-accent/10 text-accent ring-accent/20",
-  neutral:
-    "bg-elevated text-text-muted ring-border-primary/20",
+  success: "bg-success/10 text-success ring-success/20",
+  warning: "bg-warning/10 text-warning ring-warning/20",
+  danger: "bg-danger/10 text-danger ring-danger/20",
+  info: "bg-accent/10 text-accent ring-accent/20",
+  neutral: "bg-elevated text-text-muted ring-border-primary/20",
 };
 
 const SUCCESS_STATUSES = new Set([

@@ -49,7 +49,9 @@ export default define.page(function ToolsPage(ctx) {
           >
             Select a tool from the tabs above to get started.
           </p>
-          <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+          <div
+            style={{ display: "flex", gap: "12px", justifyContent: "center" }}
+          >
             <a
               href="/tools/yaml-apply"
               style={{
