@@ -168,6 +168,17 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Step 28: Multi-Cluster UX (routing, health probing, SSRF protection)
   - Step 29: RBAC Visualization (relationship table, cross-links, effective permissions)
   - Step 30: Cost Analysis (utilization cards, resource display, request-vs-actual)
+- **Phase 6 (Frontend Redesign):** COMPLETE — 14 tasks
+  - Theme system: 7 named dark themes (Nexus, Dracula, Tokyo Night, Catppuccin, Nord, One Dark, Gruvbox)
+  - Navigation: 56px icon rail replacing 240px sidebar, 8 domain sections
+  - Dashboard-first: Health score ring, metric cards, utilization gauges, cluster topology
+  - Command Palette: Cmd+K fuzzy search across resources and actions
+  - Split Pane: Resizable side-by-side resource views
+  - Quick Actions FAB: Floating action button for common operations
+  - Sub-navigation tabs with live resource counts per domain
+  - Typography: Geist Sans (UI) + Geist Mono (data/code)
+  - 174 files migrated from Tailwind dark: classes to CSS custom properties
+  - Deferred: Backend summary endpoints for API call deduplication, FOUC fix for non-default themes
 
 ---
 

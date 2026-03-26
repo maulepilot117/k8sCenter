@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>k8sCenter — Split Pane Detail View Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #0B0E14;
+    --bg-surface: #131720;
+    --bg-elevated: #1A1F2B;
+    --bg-hover: #212735;
+    --border-primary: #252B37;
+    --border-subtle: #1E2330;
+    --text-primary: #E0E4EB;
+    --text-secondary: #8B95A5;
+    --text-muted: #5A6478;
+    --accent: #00C2FF;
+    --accent-glow: rgba(0, 194, 255, 0.15);
+    --accent-dim: rgba(0, 194, 255, 0.08);
+    --accent-secondary: #7C5CFC;
+    --success: #00E676;
+    --success-dim: rgba(0, 230, 118, 0.12);
+    --warning: #FFB300;
+    --warning-dim: rgba(255, 179, 0, 0.12);
+    --error: #FF5252;
+    --error-dim: rgba(255, 82, 82, 0.12);
+
+    --rail-width: 60px;
+    --topbar-height: 52px;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'Geist Mono', 'JetBrains Mono', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-base);
+    color: var(--text-primary);
+    overflow: hidden;
+    height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: var(--rail-width) 1fr;
+    grid-template-rows: var(--topbar-height) 1fr;
+    height: 100vh;
+  }
+
+  /* === ICON RAIL (compact) === */
+  .icon-rail {
+    grid-row: 1 / -1;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-primary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .rail-logo {
+    width: 100%;
+    height: var(--topbar-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  .rail-logo svg { width: 28px; height: 28px; }
+
+  .rail-nav {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+  }
+
+  .rail-item {
+    width: 42px; height: 42px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-sm);
+    cursor: pointer; position: relative;
+    transition: all 0.2s ease;
+    color: var(--text-muted);
+  }
+
+  .rail-item:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .rail-item.active { background: var(--accent-dim); color: var(--accent); }
+
+  .rail-item.active::before {
+    content: ''; position: absolute; left: -9px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 20px; background: var(--accent); border-radius: 0 2px 2px 0;
+  }
+
+  .rail-item svg { width: 20px; height: 20px; }
+
+  /* === TOP BAR === */
+  .topbar {
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-primary);
+    display: flex; align-items: center; padding: 0 20px; gap: 12px;
+  }
+
+  .topbar-left { flex: 1; display: flex; align-items: center; gap: 16px; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+
+  .selector {
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+    background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;
+    color: var(--text-primary); cursor: pointer;
+  }
+
+  .selector .label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-right: 4px; }
+  .selector .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+  .selector svg { width: 14px; height: 14px; color: var(--text-muted); }
+
+  .search-bar {
+    display: flex; align-items: center; gap: 8px; padding: 6px 14px;
+    background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm); color: var(--text-muted); font-size: 13px;
+    cursor: pointer; min-width: 240px;
+  }
+
+  .search-bar .shortcut {
+    margin-left: auto; padding: 2px 6px;
+    background: var(--bg-base); border: 1px solid var(--border-primary);
+    border-radius: 4px; font-size: 11px; font-family: var(--font-mono);
+  }
+
+  .topbar-icon {
+    width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-sm); cursor: pointer; color: var(--text-muted);
+  }
+
+  .topbar-icon:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .topbar-icon svg { width: 18px; height: 18px; }
+
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600; color: white; cursor: pointer;
+  }
+
+  .divider-v { width: 1px; height: 24px; background: var(--border-primary); }
+
+  /* === SPLIT PANE LAYOUT === */
+  .split-pane {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .pane {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+  }
+
+  .pane::-webkit-scrollbar { width: 6px; }
+  .pane::-webkit-scrollbar-track { background: transparent; }
+  .pane::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }
+
+  .pane-left {
+    border-right: 1px solid var(--border-primary);
+    padding: 20px;
+  }
+
+  .pane-right {
+    padding: 20px;
+    background: var(--bg-base);
+  }
+
+  .pane-divider {
+    width: 4px;
+    cursor: col-resize;
+    background: transparent;
+    transition: background 0.15s ease;
+    position: relative;
+  }
+
+  .pane-divider:hover { background: var(--accent); }
+
+  /* === DETAIL HEADER === */
+  .detail-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+
+  .detail-icon {
+    width: 44px; height: 44px;
+    border-radius: var(--radius);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .detail-icon.deploy {
+    background: linear-gradient(135deg, rgba(0, 194, 255, 0.15), rgba(0, 194, 255, 0.05));
+    border: 1px solid rgba(0, 194, 255, 0.3);
+    color: var(--accent);
+  }
+
+  .detail-icon svg { width: 22px; height: 22px; }
+
+  .detail-title-section { flex: 1; }
+
+  .detail-title {
+    font-size: 18px; font-weight: 600; letter-spacing: -0.02em;
+    font-family: var(--font-mono);
+  }
+
+  .detail-breadcrumb {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-muted); margin-top: 4px;
+  }
+
+  .detail-breadcrumb a {
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+
+  .detail-breadcrumb a:hover { color: var(--accent); }
+  .detail-breadcrumb .sep { opacity: 0.5; }
+
+  .detail-actions {
+    display: flex; gap: 6px;
+  }
+
+  .btn-sm {
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    border: 1px solid var(--border-primary);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s ease;
+  }
+
+  .btn-sm:hover { background: var(--bg-elevated); border-color: var(--text-muted); }
+  .btn-sm.danger { border-color: rgba(255, 82, 82, 0.3); color: var(--error); }
+  .btn-sm.danger:hover { background: var(--error-dim); }
+  .btn-sm svg { width: 13px; height: 13px; }
+
+  /* === TABS === */
+  .detail-tabs {
+    display: flex; gap: 2px;
+    border-bottom: 1px solid var(--border-primary);
+    margin-bottom: 20px;
+  }
+
+  .detail-tab {
+    padding: 8px 14px;
+    font-size: 13px; font-weight: 500;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.15s ease;
+  }
+
+  .detail-tab:hover { color: var(--text-secondary); }
+  .detail-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* === INFO GRID === */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border-subtle);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 20px;
+  }
+
+  .info-item {
+    padding: 12px 14px;
+    background: var(--bg-surface);
+  }
+
+  .info-label {
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+
+  .info-value {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+  }
+
+  .info-value.status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .info-value .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+  }
+
+  .info-value .dot.green { background: var(--success); box-shadow: 0 0 6px rgba(0, 230, 118, 0.4); }
+  .info-value .dot.amber { background: var(--warning); }
+
+  /* === SECTION === */
+  .section { margin-bottom: 20px; }
+
+  .section-title {
+    font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border-subtle);
+  }
+
+  /* === CONDITIONS TABLE === */
+  .conditions {
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .condition-row {
+    display: grid;
+    grid-template-columns: 140px 60px 1fr 80px;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px;
+    align-items: center;
+  }
+
+  .condition-row:last-child { border-bottom: none; }
+  .condition-row:hover { background: var(--bg-elevated); }
+
+  .condition-type { font-weight: 500; color: var(--text-primary); }
+  .condition-status { font-family: var(--font-mono); font-weight: 500; }
+  .condition-status.true { color: var(--success); }
+  .condition-status.false { color: var(--error); }
+  .condition-msg { color: var(--text-secondary); }
+  .condition-age { color: var(--text-muted); font-family: var(--font-mono); }
+
+  /* === CONTAINERS === */
+  .container-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+
+  .container-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .container-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+
+  .container-status-badge {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .container-status-badge.running { background: var(--success-dim); color: var(--success); }
+
+  .container-details {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .container-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .container-detail-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .container-detail-value {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+  }
+
+  /* === RESOURCE USAGE BARS === */
+  .usage-bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  .usage-bar-container { }
+
+  .usage-bar-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+
+  .usage-bar-label { color: var(--text-muted); }
+  .usage-bar-value { font-family: var(--font-mono); color: var(--text-secondary); }
+
+  .usage-bar {
+    height: 4px;
+    background: var(--border-primary);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .usage-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 1s ease;
+  }
+
+  .usage-bar-fill.cpu { background: linear-gradient(90deg, var(--accent), #00E5A0); }
+  .usage-bar-fill.mem { background: linear-gradient(90deg, var(--accent-secondary), #FF79C6); }
+
+  /* === PODS LIST (RIGHT PANE) === */
+  .pods-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .pods-title {
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+
+  .pods-count {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    padding: 3px 8px;
+    background: var(--bg-elevated);
+    border-radius: 10px;
+  }
+
+  .pod-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    padding: 14px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .pod-card:hover { border-color: #2F3545; background: var(--bg-elevated); }
+
+  .pod-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .pod-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--accent);
+  }
+
+  .pod-status {
+    display: flex; align-items: center; gap: 5px;
+    font-size: 11px; font-weight: 500;
+  }
+
+  .pod-status.running { color: var(--success); }
+  .pod-status.running .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .pod-status.pending { color: var(--warning); }
+  .pod-status.pending .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); animation: pulse 2s ease-in-out infinite; }
+
+  .pod-meta {
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .pod-meta-item {
+    display: flex; align-items: center; gap: 4px;
+  }
+
+  .pod-meta-item .label { color: var(--text-muted); }
+  .pod-meta-item .val { font-family: var(--font-mono); color: var(--text-secondary); }
+
+  .pod-bars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .pod-bar-item { }
+  .pod-bar-label { font-size: 10px; color: var(--text-muted); margin-bottom: 3px; display: flex; justify-content: space-between; }
+  .pod-bar-label span:last-child { font-family: var(--font-mono); }
+  .pod-bar { height: 3px; background: var(--border-primary); border-radius: 2px; overflow: hidden; }
+  .pod-bar-fill { height: 100%; border-radius: 2px; }
+  .pod-bar-fill.cpu { background: var(--accent); }
+  .pod-bar-fill.mem { background: var(--accent-secondary); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.4); }
+    50% { opacity: 0.5; }
+  }
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .pane-left > * { animation: fadeInUp 0.4s ease forwards; }
+  .pod-card { animation: fadeInUp 0.3s ease forwards; opacity: 0; }
+  .pod-card:nth-child(1) { animation-delay: 0.1s; }
+  .pod-card:nth-child(2) { animation-delay: 0.15s; }
+  .pod-card:nth-child(3) { animation-delay: 0.2s; }
+  .pod-card:nth-child(4) { animation-delay: 0.25s; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ICON RAIL (abbreviated) -->
+  <nav class="icon-rail">
+    <div class="rail-logo">
+      <svg viewBox="0 0 28 28" fill="none">
+        <path d="M14 2L3 8.5V19.5L14 26L25 19.5V8.5L14 2Z" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+        <circle cx="14" cy="14" r="4" fill="var(--accent)" opacity="0.8"/>
+        <circle cx="14" cy="6" r="1.5" fill="var(--accent)"/><circle cx="7" cy="18" r="1.5" fill="var(--accent)"/><circle cx="21" cy="18" r="1.5" fill="var(--accent)"/>
+      </svg>
+    </div>
+    <div class="rail-nav">
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg></div>
+      <div class="rail-item active"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M7 4V2M13 4V2"/><circle cx="10" cy="10" r="2"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7"/><path d="M2 10h4M14 10h4M10 2v4M10 14v4"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="14" height="4" rx="1"/><rect x="3" y="11" width="14" height="4" rx="1"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2l1.5 3.5L15 7l-3.5 1.5L10 12 8.5 8.5 5 7l3.5-1.5L10 2Z"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,14 7,8 11,11 14,5 17,9"/><line x1="3" y1="17" x2="17" y2="17"/></svg></div>
+      <div class="rail-item"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4v4l3 2"/><circle cx="10" cy="10" r="7"/></svg></div>
+    </div>
+  </nav>
+
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="selector"><span class="dot"></span><span class="label">Cluster</span>prod-us-east-1<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg></div>
+      <div class="selector"><span class="label">Namespace</span>production<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg></div>
+      <div class="search-bar">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        Search resources, actions...
+        <span class="shortcut">⌘K</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3a5 5 0 015 5c0 3.5 1.5 4.5 1.5 4.5H3.5S5 11.5 5 8a5 5 0 015-5zM8.5 15.5a2 2 0 003 0"/></svg></div>
+      <div class="divider-v"></div>
+      <div class="avatar">C</div>
+    </div>
+  </header>
+
+  <!-- SPLIT PANE CONTENT -->
+  <div class="split-pane">
+    <!-- LEFT PANE: Resource Detail -->
+    <div class="pane pane-left">
+      <div class="detail-header">
+        <div class="detail-icon deploy">
+          <svg viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="16" height="14" rx="2"/><path d="M7 4V2M15 4V2"/><circle cx="11" cy="11" r="3"/></svg>
+        </div>
+        <div class="detail-title-section">
+          <div class="detail-title">api-gateway</div>
+          <div class="detail-breadcrumb">
+            <a href="#">Workloads</a>
+            <span class="sep">/</span>
+            <a href="#">Deployments</a>
+            <span class="sep">/</span>
+            <span style="color:var(--text-secondary);">api-gateway</span>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="btn-sm">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 3v8M3 7h8"/></svg>
+            Scale
+          </button>
+          <button class="btn-sm">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 7a5 5 0 019.5-1.5M12 7a5 5 0 01-9.5 1.5"/></svg>
+            Restart
+          </button>
+          <button class="btn-sm">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="10" height="8" rx="1"/><path d="M5 7h4"/></svg>
+            YAML
+          </button>
+          <button class="btn-sm danger">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h8M5 4V3h4v1M4 4v7a1 1 0 001 1h4a1 1 0 001-1V4"/></svg>
+            Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="detail-tabs">
+        <div class="detail-tab active">Overview</div>
+        <div class="detail-tab">YAML</div>
+        <div class="detail-tab">Events</div>
+        <div class="detail-tab">Metrics</div>
+      </div>
+
+      <!-- Info Grid -->
+      <div class="info-grid">
+        <div class="info-item">
+          <div class="info-label">Status</div>
+          <div class="info-value status"><span class="dot green"></span>Available</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Replicas</div>
+          <div class="info-value">4/4 ready</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Namespace</div>
+          <div class="info-value">production</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Strategy</div>
+          <div class="info-value">RollingUpdate</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Created</div>
+          <div class="info-value">2026-03-12 14:22:08 UTC</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Revision</div>
+          <div class="info-value">#7</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Selector</div>
+          <div class="info-value" style="font-size:11px;">app=api-gateway</div>
+        </div>
+        <div class="info-item">
+          <div class="info-label">Image</div>
+          <div class="info-value" style="font-size:11px;">ghcr.io/acme/api-gw:v2.14.1</div>
+        </div>
+      </div>
+
+      <!-- Conditions -->
+      <div class="section">
+        <div class="section-title">Conditions</div>
+        <div class="conditions">
+          <div class="condition-row">
+            <span class="condition-type">Available</span>
+            <span class="condition-status true">True</span>
+            <span class="condition-msg">Deployment has minimum availability</span>
+            <span class="condition-age">14d</span>
+          </div>
+          <div class="condition-row">
+            <span class="condition-type">Progressing</span>
+            <span class="condition-status true">True</span>
+            <span class="condition-msg">ReplicaSet "api-gateway-7f8b9c" has successfully progressed</span>
+            <span class="condition-age">14d</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Container -->
+      <div class="section">
+        <div class="section-title">Containers</div>
+        <div class="container-card">
+          <div class="container-header">
+            <span class="container-name">api-gateway</span>
+            <span class="container-status-badge running">Running</span>
+          </div>
+          <div class="container-details">
+            <div class="container-detail">
+              <span class="container-detail-label">Image</span>
+              <span class="container-detail-value">ghcr.io/acme/api-gateway:v2.14.1</span>
+            </div>
+            <div class="container-detail">
+              <span class="container-detail-label">Ports</span>
+              <span class="container-detail-value">8080/TCP, 9090/TCP</span>
+            </div>
+            <div class="container-detail">
+              <span class="container-detail-label">CPU Request/Limit</span>
+              <span class="container-detail-value">250m / 500m</span>
+            </div>
+            <div class="container-detail">
+              <span class="container-detail-label">Memory Request/Limit</span>
+              <span class="container-detail-value">256Mi / 512Mi</span>
+            </div>
+          </div>
+          <div class="usage-bars">
+            <div class="usage-bar-container">
+              <div class="usage-bar-header">
+                <span class="usage-bar-label">CPU</span>
+                <span class="usage-bar-value">180m / 500m</span>
+              </div>
+              <div class="usage-bar"><div class="usage-bar-fill cpu" style="width:36%;"></div></div>
+            </div>
+            <div class="usage-bar-container">
+              <div class="usage-bar-header">
+                <span class="usage-bar-label">Memory</span>
+                <span class="usage-bar-value">320Mi / 512Mi</span>
+              </div>
+              <div class="usage-bar"><div class="usage-bar-fill mem" style="width:62%;"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANE: Related Pods -->
+    <div class="pane pane-right">
+      <div class="pods-header">
+        <div class="pods-title">Related Pods</div>
+        <span class="pods-count">4 pods</span>
+      </div>
+
+      <div class="pod-card">
+        <div class="pod-card-header">
+          <span class="pod-name">api-gateway-7f8b9c-x2k4m</span>
+          <span class="pod-status running"><span class="dot"></span>Running</span>
+        </div>
+        <div class="pod-meta">
+          <div class="pod-meta-item"><span class="label">Node:</span><span class="val">worker-01</span></div>
+          <div class="pod-meta-item"><span class="label">IP:</span><span class="val">10.244.1.42</span></div>
+          <div class="pod-meta-item"><span class="label">Age:</span><span class="val">14d</span></div>
+          <div class="pod-meta-item"><span class="label">Restarts:</span><span class="val">0</span></div>
+        </div>
+        <div class="pod-bars">
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>CPU</span><span>180m / 500m</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill cpu" style="width:36%;"></div></div>
+          </div>
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>Memory</span><span>320Mi / 512Mi</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill mem" style="width:62%;"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pod-card">
+        <div class="pod-card-header">
+          <span class="pod-name">api-gateway-7f8b9c-a9b3n</span>
+          <span class="pod-status running"><span class="dot"></span>Running</span>
+        </div>
+        <div class="pod-meta">
+          <div class="pod-meta-item"><span class="label">Node:</span><span class="val">worker-02</span></div>
+          <div class="pod-meta-item"><span class="label">IP:</span><span class="val">10.244.2.18</span></div>
+          <div class="pod-meta-item"><span class="label">Age:</span><span class="val">14d</span></div>
+          <div class="pod-meta-item"><span class="label">Restarts:</span><span class="val">0</span></div>
+        </div>
+        <div class="pod-bars">
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>CPU</span><span>145m / 500m</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill cpu" style="width:29%;"></div></div>
+          </div>
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>Memory</span><span>280Mi / 512Mi</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill mem" style="width:55%;"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pod-card">
+        <div class="pod-card-header">
+          <span class="pod-name">api-gateway-7f8b9c-k7p2q</span>
+          <span class="pod-status running"><span class="dot"></span>Running</span>
+        </div>
+        <div class="pod-meta">
+          <div class="pod-meta-item"><span class="label">Node:</span><span class="val">worker-01</span></div>
+          <div class="pod-meta-item"><span class="label">IP:</span><span class="val">10.244.1.88</span></div>
+          <div class="pod-meta-item"><span class="label">Age:</span><span class="val">7d</span></div>
+          <div class="pod-meta-item"><span class="label">Restarts:</span><span class="val">1</span></div>
+        </div>
+        <div class="pod-bars">
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>CPU</span><span>210m / 500m</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill cpu" style="width:42%;"></div></div>
+          </div>
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>Memory</span><span>390Mi / 512Mi</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill mem" style="width:76%;"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pod-card">
+        <div class="pod-card-header">
+          <span class="pod-name">api-gateway-7f8b9c-m5w8r</span>
+          <span class="pod-status running"><span class="dot"></span>Running</span>
+        </div>
+        <div class="pod-meta">
+          <div class="pod-meta-item"><span class="label">Node:</span><span class="val">worker-03</span></div>
+          <div class="pod-meta-item"><span class="label">IP:</span><span class="val">10.244.3.22</span></div>
+          <div class="pod-meta-item"><span class="label">Age:</span><span class="val">3d</span></div>
+          <div class="pod-meta-item"><span class="label">Restarts:</span><span class="val">0</span></div>
+        </div>
+        <div class="pod-bars">
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>CPU</span><span>95m / 500m</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill cpu" style="width:19%;"></div></div>
+          </div>
+          <div class="pod-bar-item">
+            <div class="pod-bar-label"><span>Memory</span><span>240Mi / 512Mi</span></div>
+            <div class="pod-bar"><div class="pod-bar-fill mem" style="width:47%;"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

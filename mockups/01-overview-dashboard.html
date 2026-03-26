@@ -1,0 +1,1580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>k8sCenter — Overview Dashboard Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ===== THEME: Nexus (Default Dark) ===== */
+  :root {
+    --bg-base: #0B0E14;
+    --bg-surface: #131720;
+    --bg-elevated: #1A1F2B;
+    --bg-hover: #212735;
+    --border-primary: #252B37;
+    --border-subtle: #1E2330;
+    --text-primary: #E0E4EB;
+    --text-secondary: #8B95A5;
+    --text-muted: #5A6478;
+    --accent: #00C2FF;
+    --accent-glow: rgba(0, 194, 255, 0.15);
+    --accent-dim: rgba(0, 194, 255, 0.08);
+    --accent-secondary: #7C5CFC;
+    --success: #00E676;
+    --success-dim: rgba(0, 230, 118, 0.12);
+    --warning: #FFB300;
+    --warning-dim: rgba(255, 179, 0, 0.12);
+    --error: #FF5252;
+    --error-dim: rgba(255, 82, 82, 0.12);
+    --info: #40C4FF;
+
+    --rail-width: 60px;
+    --topbar-height: 52px;
+    --radius: 10px;
+    --radius-sm: 6px;
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'Geist Mono', 'JetBrains Mono', 'Fira Code', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--font-sans);
+    background: var(--bg-base);
+    color: var(--text-primary);
+    overflow: hidden;
+    height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== LAYOUT ===== */
+  .app {
+    display: grid;
+    grid-template-columns: var(--rail-width) 1fr;
+    grid-template-rows: var(--topbar-height) 1fr;
+    height: 100vh;
+  }
+
+  /* ===== ICON RAIL ===== */
+  .icon-rail {
+    grid-row: 1 / -1;
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-primary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0;
+    z-index: 10;
+  }
+
+  .rail-logo {
+    width: 100%;
+    height: var(--topbar-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid var(--border-primary);
+    position: relative;
+  }
+
+  .rail-logo svg { width: 28px; height: 28px; }
+
+  .rail-logo::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 32px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 1px;
+    opacity: 0;
+  }
+
+  .rail-nav {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+    width: 100%;
+  }
+
+  .rail-item {
+    width: 42px;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    position: relative;
+    transition: all 0.2s ease;
+    color: var(--text-muted);
+  }
+
+  .rail-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+  }
+
+  .rail-item.active {
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .rail-item.active::before {
+    content: '';
+    position: absolute;
+    left: -9px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 20px;
+    background: var(--accent);
+    border-radius: 0 2px 2px 0;
+  }
+
+  .rail-item svg { width: 20px; height: 20px; }
+
+  .rail-item .tooltip {
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    z-index: 100;
+    color: var(--text-primary);
+  }
+
+  .rail-item:hover .tooltip { opacity: 1; }
+
+  .rail-bottom {
+    padding: 12px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    border-top: 1px solid var(--border-primary);
+    width: 100%;
+  }
+
+  /* ===== TOP BAR ===== */
+  .topbar {
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border-primary);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    gap: 12px;
+  }
+
+  .topbar-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .topbar-left { flex: 1; display: flex; align-items: center; gap: 16px; }
+  .topbar-right { display: flex; align-items: center; gap: 12px; }
+
+  .selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    font-family: var(--font-sans);
+  }
+
+  .selector:hover {
+    border-color: var(--text-muted);
+    background: var(--bg-hover);
+  }
+
+  .selector .label {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 400;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-right: 4px;
+  }
+
+  .selector .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+  }
+
+  .selector svg { width: 14px; height: 14px; color: var(--text-muted); }
+
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 13px;
+    cursor: pointer;
+    min-width: 240px;
+    transition: all 0.15s ease;
+  }
+
+  .search-bar:hover { border-color: var(--text-muted); }
+
+  .search-bar .shortcut {
+    margin-left: auto;
+    padding: 2px 6px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-primary);
+    border-radius: 4px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  .topbar-icon {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.15s ease;
+    position: relative;
+  }
+
+  .topbar-icon:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .topbar-icon svg { width: 18px; height: 18px; }
+
+  .topbar-icon .badge {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 8px;
+    height: 8px;
+    background: var(--error);
+    border-radius: 50%;
+    border: 2px solid var(--bg-surface);
+  }
+
+  .avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-secondary));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+  }
+
+  .divider-v {
+    width: 1px;
+    height: 24px;
+    background: var(--border-primary);
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  .main {
+    overflow-y: auto;
+    padding: 24px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--bg-hover) transparent;
+  }
+
+  .main::-webkit-scrollbar { width: 6px; }
+  .main::-webkit-scrollbar-track { background: transparent; }
+  .main::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }
+
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+  }
+
+  .page-title {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .quick-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .btn {
+    padding: 7px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--bg-base);
+  }
+
+  .btn-primary:hover { filter: brightness(1.15); }
+
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border-primary);
+    color: var(--text-secondary);
+  }
+
+  .btn-ghost:hover { background: var(--bg-elevated); border-color: var(--text-muted); }
+
+  .btn svg { width: 15px; height: 15px; }
+
+  /* ===== GRID LAYOUT ===== */
+  .dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 16px;
+  }
+
+  /* ===== CARDS ===== */
+  .card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+  }
+
+  .card:hover { border-color: #2F3545; }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  .card:hover::before { opacity: 1; }
+
+  .card-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .card-title .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.4); }
+    50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(0, 230, 118, 0); }
+  }
+
+  /* ===== HEALTH SCORE CARD ===== */
+  .health-card { grid-column: span 4; }
+
+  .health-ring-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0 20px;
+  }
+
+  .health-ring {
+    position: relative;
+    width: 160px;
+    height: 160px;
+  }
+
+  .health-ring svg {
+    width: 160px;
+    height: 160px;
+    transform: rotate(-90deg);
+  }
+
+  .health-ring .track {
+    fill: none;
+    stroke: var(--border-primary);
+    stroke-width: 8;
+  }
+
+  .health-ring .progress {
+    fill: none;
+    stroke: url(#healthGradient);
+    stroke-width: 8;
+    stroke-linecap: round;
+    stroke-dasharray: 408;
+    stroke-dashoffset: 24.5;
+    transition: stroke-dashoffset 1.5s ease;
+    filter: drop-shadow(0 0 8px rgba(0, 194, 255, 0.4));
+  }
+
+  .health-score {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+  }
+
+  .health-score .number {
+    font-size: 42px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: -0.03em;
+    background: linear-gradient(135deg, var(--accent), #00E5A0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    line-height: 1;
+  }
+
+  .health-score .label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-top: 2px;
+  }
+
+  .health-subscores {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .subscore {
+    text-align: center;
+    padding: 10px 4px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+  }
+
+  .subscore .value {
+    font-size: 18px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    line-height: 1.2;
+  }
+
+  .subscore .name {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .subscore.green .value { color: var(--success); }
+  .subscore.amber .value { color: var(--warning); }
+  .subscore.red .value { color: var(--error); }
+  .subscore.cyan .value { color: var(--accent); }
+
+  /* ===== METRIC CARDS ===== */
+  .metrics-grid { grid-column: span 8; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+  .metric-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s ease;
+  }
+
+  .metric-card:hover { border-color: #2F3545; }
+
+  .metric-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .metric-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .metric-icon svg { width: 16px; height: 16px; }
+  .metric-icon.green { background: var(--success-dim); color: var(--success); }
+  .metric-icon.amber { background: var(--warning-dim); color: var(--warning); }
+
+  .metric-status {
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 3px 8px;
+    border-radius: 10px;
+  }
+
+  .metric-status.healthy { background: var(--success-dim); color: var(--success); }
+  .metric-status.warning { background: var(--warning-dim); color: var(--warning); }
+
+  .metric-value {
+    font-size: 28px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+
+  .metric-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .sparkline {
+    margin-top: 12px;
+    height: 32px;
+    position: relative;
+  }
+
+  .sparkline svg { width: 100%; height: 32px; }
+
+  .sparkline .line {
+    fill: none;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .sparkline .area { opacity: 0.1; }
+
+  /* ===== UTILIZATION CARDS ===== */
+  .util-card { grid-column: span 6; }
+
+  .util-content {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .gauge-container {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    flex-shrink: 0;
+  }
+
+  .gauge-container svg {
+    width: 100px;
+    height: 100px;
+    transform: rotate(-90deg);
+  }
+
+  .gauge-track {
+    fill: none;
+    stroke: var(--border-primary);
+    stroke-width: 10;
+  }
+
+  .gauge-fill {
+    fill: none;
+    stroke-width: 10;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 1s ease;
+  }
+
+  .gauge-value {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 22px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+  }
+
+  .util-details { flex: 1; }
+
+  .util-stat {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 13px;
+  }
+
+  .util-stat:last-child { border-bottom: none; }
+  .util-stat .stat-label { color: var(--text-secondary); }
+  .util-stat .stat-value { font-family: var(--font-mono); font-weight: 500; }
+
+  .trend-chart {
+    margin-top: 16px;
+    height: 48px;
+    position: relative;
+  }
+
+  .trend-chart svg { width: 100%; height: 48px; }
+
+  /* ===== TOPOLOGY CARD ===== */
+  .topology-card { grid-column: span 7; min-height: 280px; }
+
+  .topology-viz {
+    height: 220px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .topo-node {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 9px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .topo-node:hover { transform: scale(1.1); }
+
+  .topo-node.node-type {
+    width: 52px;
+    height: 52px;
+    background: linear-gradient(135deg, rgba(0, 194, 255, 0.15), rgba(0, 194, 255, 0.05));
+    border: 1.5px solid rgba(0, 194, 255, 0.4);
+    color: var(--accent);
+    box-shadow: 0 0 20px rgba(0, 194, 255, 0.1);
+  }
+
+  .topo-node.pod-type {
+    width: 36px;
+    height: 36px;
+    background: linear-gradient(135deg, rgba(0, 230, 118, 0.15), rgba(0, 230, 118, 0.05));
+    border: 1.5px solid rgba(0, 230, 118, 0.4);
+    color: var(--success);
+    font-size: 8px;
+  }
+
+  .topo-node.svc-type {
+    width: 44px;
+    height: 44px;
+    background: linear-gradient(135deg, rgba(124, 92, 252, 0.15), rgba(124, 92, 252, 0.05));
+    border: 1.5px solid rgba(124, 92, 252, 0.4);
+    color: var(--accent-secondary);
+  }
+
+  .topo-node.ing-type {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(255, 179, 0, 0.15), rgba(255, 179, 0, 0.05));
+    border: 1.5px solid rgba(255, 179, 0, 0.4);
+    color: var(--warning);
+  }
+
+  .topo-line {
+    position: absolute;
+    height: 1px;
+    transform-origin: left center;
+    opacity: 0.25;
+  }
+
+  .topo-line.cyan { background: var(--accent); }
+  .topo-line.green { background: var(--success); }
+  .topo-line.purple { background: var(--accent-secondary); }
+  .topo-line.amber { background: var(--warning); }
+
+  @keyframes topo-pulse {
+    0% { opacity: 0.15; }
+    50% { opacity: 0.35; }
+    100% { opacity: 0.15; }
+  }
+
+  .topo-line { animation: topo-pulse 3s ease-in-out infinite; }
+
+  /* ===== EVENTS CARD ===== */
+  .events-card { grid-column: span 5; min-height: 280px; }
+
+  .event-list { display: flex; flex-direction: column; gap: 2px; }
+
+  .event-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s ease;
+    cursor: pointer;
+  }
+
+  .event-item:hover { background: var(--bg-elevated); }
+
+  .event-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+
+  .event-dot.normal { background: var(--accent); }
+  .event-dot.warning { background: var(--warning); }
+  .event-dot.error { background: var(--error); }
+
+  .event-content { flex: 1; min-width: 0; }
+
+  .event-msg {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .event-msg .resource {
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .event-meta {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    font-family: var(--font-mono);
+  }
+
+  .event-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+    margin-top: 1px;
+  }
+
+  /* ===== ANIMATIONS ===== */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .card, .metric-card { animation: fadeInUp 0.5s ease forwards; }
+  .health-card { animation-delay: 0.05s; }
+  .metrics-grid .metric-card:nth-child(1) { animation-delay: 0.1s; }
+  .metrics-grid .metric-card:nth-child(2) { animation-delay: 0.15s; }
+  .metrics-grid .metric-card:nth-child(3) { animation-delay: 0.2s; }
+  .metrics-grid .metric-card:nth-child(4) { animation-delay: 0.25s; }
+  .util-card:nth-of-type(1) { animation-delay: 0.3s; }
+  .util-card:nth-of-type(2) { animation-delay: 0.35s; }
+  .topology-card { animation-delay: 0.4s; }
+  .events-card { animation-delay: 0.45s; }
+
+  /* ===== COMMAND PALETTE HINT ===== */
+  .cmd-palette-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 20vh;
+  }
+
+  .cmd-palette-overlay.active { display: flex; }
+
+  .cmd-palette {
+    width: 560px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  }
+
+  .cmd-input {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  .cmd-input svg { width: 18px; height: 18px; color: var(--text-muted); }
+
+  .cmd-input input {
+    flex: 1;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-family: var(--font-sans);
+    outline: none;
+  }
+
+  .cmd-input input::placeholder { color: var(--text-muted); }
+
+  .cmd-results { padding: 8px; }
+
+  .cmd-section-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 8px 10px 4px;
+  }
+
+  .cmd-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.1s ease;
+  }
+
+  .cmd-item:hover, .cmd-item.selected { background: var(--bg-elevated); }
+
+  .cmd-item .icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  .cmd-item .icon svg { width: 14px; height: 14px; }
+  .cmd-item .text { flex: 1; font-size: 13px; }
+  .cmd-item .hint { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+  .cmd-footer {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 18px;
+    border-top: 1px solid var(--border-primary);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .cmd-footer kbd {
+    padding: 1px 5px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-primary);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
+  /* ===== QUICK ACTIONS FAB ===== */
+  .fab-container {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    display: flex;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    gap: 8px;
+    z-index: 50;
+  }
+
+  .fab {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--accent), #0098CC);
+    border: none;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0, 194, 255, 0.3);
+    transition: all 0.2s ease;
+  }
+
+  .fab:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0, 194, 255, 0.4); }
+  .fab svg { width: 22px; height: 22px; }
+
+  .fab-menu {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .fab-container:hover .fab-menu { display: flex; }
+
+  .fab-action {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+    font-family: var(--font-sans);
+  }
+
+  .fab-action:hover { background: var(--bg-elevated); border-color: var(--accent); }
+  .fab-action svg { width: 14px; height: 14px; color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ===== ICON RAIL ===== -->
+  <nav class="icon-rail">
+    <div class="rail-logo">
+      <svg viewBox="0 0 28 28" fill="none">
+        <path d="M14 2L3 8.5V19.5L14 26L25 19.5V8.5L14 2Z" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+        <circle cx="14" cy="14" r="4" fill="var(--accent)" opacity="0.8"/>
+        <circle cx="14" cy="6" r="1.5" fill="var(--accent)"/>
+        <circle cx="7" cy="18" r="1.5" fill="var(--accent)"/>
+        <circle cx="21" cy="18" r="1.5" fill="var(--accent)"/>
+        <line x1="14" y1="10" x2="14" y2="6" stroke="var(--accent)" stroke-width="1" opacity="0.5"/>
+        <line x1="11" y1="16" x2="7" y2="18" stroke="var(--accent)" stroke-width="1" opacity="0.5"/>
+        <line x1="17" y1="16" x2="21" y2="18" stroke="var(--accent)" stroke-width="1" opacity="0.5"/>
+      </svg>
+    </div>
+    <div class="rail-nav">
+      <div class="rail-item active">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg>
+        <span class="tooltip">Overview</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M7 4V2M13 4V2"/><circle cx="10" cy="10" r="2"/></svg>
+        <span class="tooltip">Workloads</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7"/><path d="M2 10h4M14 10h4M10 2v4M10 14v4"/></svg>
+        <span class="tooltip">Network</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="14" height="4" rx="1"/><rect x="3" y="11" width="14" height="4" rx="1"/><circle cx="6" cy="7" r="1" fill="currentColor"/><circle cx="6" cy="13" r="1" fill="currentColor"/></svg>
+        <span class="tooltip">Storage</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2"/></svg>
+        <span class="tooltip">Config</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 2l1.5 3.5L15 7l-3.5 1.5L10 12 8.5 8.5 5 7l3.5-1.5L10 2Z"/><path d="M4 14l2-1.5M16 14l-2-1.5M10 18v-3"/></svg>
+        <span class="tooltip">Security</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3,14 7,8 11,11 14,5 17,9"/><line x1="3" y1="17" x2="17" y2="17"/></svg>
+        <span class="tooltip">Observability</span>
+      </div>
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 4v4l3 2"/><circle cx="10" cy="10" r="7"/></svg>
+        <span class="tooltip">Tools</span>
+      </div>
+    </div>
+    <div class="rail-bottom">
+      <div class="rail-item">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4" stroke-width="1.2"/></svg>
+        <span class="tooltip">Settings</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== TOP BAR ===== -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="selector">
+        <span class="dot"></span>
+        <span class="label">Cluster</span>
+        prod-us-east-1
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+      </div>
+      <div class="selector">
+        <span class="label">Namespace</span>
+        All Namespaces
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6l4 4 4-4"/></svg>
+      </div>
+      <div class="search-bar">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+        Search resources, actions...
+        <span class="shortcut">⌘K</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-icon">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3a5 5 0 015 5c0 3.5 1.5 4.5 1.5 4.5H3.5S5 11.5 5 8a5 5 0 015-5zM8.5 15.5a2 2 0 003 0"/></svg>
+        <span class="badge"></span>
+      </div>
+      <div class="divider-v"></div>
+      <div class="avatar">C</div>
+    </div>
+  </header>
+
+  <!-- ===== MAIN CONTENT ===== -->
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Cluster Overview</div>
+        <div class="page-subtitle">prod-us-east-1 &middot; Kubernetes v1.31.2 &middot; 5 nodes</div>
+      </div>
+      <div class="quick-actions">
+        <button class="btn btn-ghost">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8M8 4v8"/></svg>
+          Deploy
+        </button>
+        <button class="btn btn-ghost">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 8h6"/></svg>
+          YAML
+        </button>
+      </div>
+    </div>
+
+    <div class="dashboard-grid">
+      <!-- Health Score -->
+      <div class="card health-card">
+        <div class="card-title">
+          <span class="live-dot"></span>
+          Cluster Health
+        </div>
+        <div class="health-ring-container">
+          <div class="health-ring">
+            <svg viewBox="0 0 160 160">
+              <defs>
+                <linearGradient id="healthGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#00C2FF"/>
+                  <stop offset="100%" stop-color="#00E676"/>
+                </linearGradient>
+              </defs>
+              <circle class="track" cx="80" cy="80" r="65"/>
+              <circle class="progress" cx="80" cy="80" r="65"/>
+            </svg>
+            <div class="health-score">
+              <div class="number">94</div>
+              <div class="label">Health</div>
+            </div>
+          </div>
+        </div>
+        <div class="health-subscores">
+          <div class="subscore green">
+            <div class="value">100%</div>
+            <div class="name">Nodes</div>
+          </div>
+          <div class="subscore amber">
+            <div class="value">92%</div>
+            <div class="name">Pods</div>
+          </div>
+          <div class="subscore green">
+            <div class="value">98%</div>
+            <div class="name">Services</div>
+          </div>
+          <div class="subscore cyan">
+            <div class="value">86%</div>
+            <div class="name">Alerts</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric Cards -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon green">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="12" height="12" rx="2"/><circle cx="8" cy="8" r="2"/></svg>
+            </div>
+            <span class="metric-status healthy">Healthy</span>
+          </div>
+          <div class="metric-value">5</div>
+          <div class="metric-label">Nodes</div>
+          <div class="sparkline">
+            <svg viewBox="0 0 120 32" preserveAspectRatio="none">
+              <defs><linearGradient id="sparkGreen" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00E676"/><stop offset="100%" stop-color="transparent"/></linearGradient></defs>
+              <path class="area" d="M0,20 L15,18 30,15 45,16 60,14 75,12 90,10 105,8 120,6 120,32 0,32Z" fill="url(#sparkGreen)"/>
+              <polyline class="line" points="0,20 15,18 30,15 45,16 60,14 75,12 90,10 105,8 120,6" stroke="#00E676"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon amber">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2"/></svg>
+            </div>
+            <span class="metric-status warning">3 Pending</span>
+          </div>
+          <div class="metric-value">127</div>
+          <div class="metric-label">Pods</div>
+          <div class="sparkline">
+            <svg viewBox="0 0 120 32" preserveAspectRatio="none">
+              <defs><linearGradient id="sparkAmber" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFB300"/><stop offset="100%" stop-color="transparent"/></linearGradient></defs>
+              <path class="area" d="M0,22 L15,18 30,20 45,14 60,16 75,10 90,12 105,8 120,10 120,32 0,32Z" fill="url(#sparkAmber)"/>
+              <polyline class="line" points="0,22 15,18 30,20 45,14 60,16 75,10 90,12 105,8 120,10" stroke="#FFB300"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon green">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 8h10M8 3v10"/><circle cx="8" cy="8" r="6"/></svg>
+            </div>
+            <span class="metric-status healthy">Active</span>
+          </div>
+          <div class="metric-value">45</div>
+          <div class="metric-label">Services</div>
+          <div class="sparkline">
+            <svg viewBox="0 0 120 32" preserveAspectRatio="none">
+              <path class="area" d="M0,16 L15,14 30,16 45,12 60,14 75,12 90,10 105,12 120,10 120,32 0,32Z" fill="url(#sparkGreen)"/>
+              <polyline class="line" points="0,16 15,14 30,16 45,12 60,14 75,12 90,10 105,12 120,10" stroke="#00E676"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-header">
+            <div class="metric-icon green">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10v8H3z"/><path d="M6 4V2M10 4V2M3 8h10"/></svg>
+            </div>
+            <span class="metric-status healthy">Ready</span>
+          </div>
+          <div class="metric-value">32</div>
+          <div class="metric-label">Deployments</div>
+          <div class="sparkline">
+            <svg viewBox="0 0 120 32" preserveAspectRatio="none">
+              <path class="area" d="M0,18 L15,16 30,18 45,14 60,12 75,14 90,10 105,12 120,8 120,32 0,32Z" fill="url(#sparkGreen)"/>
+              <polyline class="line" points="0,18 15,16 30,18 45,14 60,12 75,14 90,10 105,12 120,8" stroke="#00E676"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- CPU Utilization -->
+      <div class="card util-card">
+        <div class="card-title">CPU Utilization</div>
+        <div class="util-content">
+          <div class="gauge-container">
+            <svg viewBox="0 0 100 100">
+              <defs>
+                <linearGradient id="cpuGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#00C2FF"/>
+                  <stop offset="100%" stop-color="#00E676"/>
+                </linearGradient>
+              </defs>
+              <circle class="gauge-track" cx="50" cy="50" r="38"/>
+              <circle class="gauge-fill" cx="50" cy="50" r="38" stroke="url(#cpuGrad)" stroke-dasharray="238.76" stroke-dashoffset="131.32" stroke-linecap="round"/>
+            </svg>
+            <div class="gauge-value" style="color: var(--accent);">45%</div>
+          </div>
+          <div class="util-details">
+            <div class="util-stat">
+              <span class="stat-label">Used</span>
+              <span class="stat-value">7.2 / 16 cores</span>
+            </div>
+            <div class="util-stat">
+              <span class="stat-label">Requests</span>
+              <span class="stat-value">12.4 cores</span>
+            </div>
+            <div class="util-stat">
+              <span class="stat-label">Limits</span>
+              <span class="stat-value">14.8 cores</span>
+            </div>
+          </div>
+        </div>
+        <div class="trend-chart">
+          <svg viewBox="0 0 300 48" preserveAspectRatio="none">
+            <defs><linearGradient id="cpuArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00C2FF" stop-opacity="0.15"/><stop offset="100%" stop-color="#00C2FF" stop-opacity="0"/></linearGradient></defs>
+            <path d="M0,30 C20,28 40,32 60,26 C80,20 100,24 120,22 C140,18 160,20 180,16 C200,18 220,14 240,18 C260,22 280,16 300,20 L300,48 L0,48Z" fill="url(#cpuArea)"/>
+            <path d="M0,30 C20,28 40,32 60,26 C80,20 100,24 120,22 C140,18 160,20 180,16 C200,18 220,14 240,18 C260,22 280,16 300,20" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Memory Utilization -->
+      <div class="card util-card">
+        <div class="card-title">Memory Utilization</div>
+        <div class="util-content">
+          <div class="gauge-container">
+            <svg viewBox="0 0 100 100">
+              <defs>
+                <linearGradient id="memGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#7C5CFC"/>
+                  <stop offset="100%" stop-color="#FF79C6"/>
+                </linearGradient>
+              </defs>
+              <circle class="gauge-track" cx="50" cy="50" r="38"/>
+              <circle class="gauge-fill" cx="50" cy="50" r="38" stroke="url(#memGrad)" stroke-dasharray="238.76" stroke-dashoffset="90.73" stroke-linecap="round"/>
+            </svg>
+            <div class="gauge-value" style="color: var(--accent-secondary);">62%</div>
+          </div>
+          <div class="util-details">
+            <div class="util-stat">
+              <span class="stat-label">Used</span>
+              <span class="stat-value">39.7 / 64 GB</span>
+            </div>
+            <div class="util-stat">
+              <span class="stat-label">Requests</span>
+              <span class="stat-value">48.2 GB</span>
+            </div>
+            <div class="util-stat">
+              <span class="stat-label">Limits</span>
+              <span class="stat-value">56.0 GB</span>
+            </div>
+          </div>
+        </div>
+        <div class="trend-chart">
+          <svg viewBox="0 0 300 48" preserveAspectRatio="none">
+            <defs><linearGradient id="memArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7C5CFC" stop-opacity="0.15"/><stop offset="100%" stop-color="#7C5CFC" stop-opacity="0"/></linearGradient></defs>
+            <path d="M0,24 C20,22 40,26 60,20 C80,18 100,22 120,16 C140,14 160,18 180,12 C200,14 220,10 240,14 C260,16 280,12 300,14 L300,48 L0,48Z" fill="url(#memArea)"/>
+            <path d="M0,24 C20,22 40,26 60,20 C80,18 100,22 120,16 C140,14 160,18 180,12 C200,14 220,10 240,14 C260,16 280,12 300,14" fill="none" stroke="var(--accent-secondary)" stroke-width="1.5"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Cluster Topology -->
+      <div class="card topology-card">
+        <div class="card-title">
+          <span class="live-dot"></span>
+          Cluster Topology
+        </div>
+        <div class="topology-viz" id="topoViz">
+          <!-- Topology nodes positioned via JS -->
+        </div>
+      </div>
+
+      <!-- Recent Events -->
+      <div class="card events-card">
+        <div class="card-title">Recent Events</div>
+        <div class="event-list">
+          <div class="event-item">
+            <span class="event-dot normal"></span>
+            <div class="event-content">
+              <div class="event-msg">Scaled <span class="resource">deploy/api-gateway</span> to 4 replicas</div>
+              <div class="event-meta">kube-controller-manager &middot; production</div>
+            </div>
+            <span class="event-time">2m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot warning"></span>
+            <div class="event-content">
+              <div class="event-msg">Pod <span class="resource">cache-redis-0</span> exceeded memory limit</div>
+              <div class="event-meta">kubelet &middot; monitoring</div>
+            </div>
+            <span class="event-time">5m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot normal"></span>
+            <div class="event-content">
+              <div class="event-msg">Successfully pulled image for <span class="resource">pod/worker-7f8b9</span></div>
+              <div class="event-meta">kubelet &middot; default</div>
+            </div>
+            <span class="event-time">8m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot error"></span>
+            <div class="event-content">
+              <div class="event-msg">Readiness probe failed for <span class="resource">pod/auth-svc-2x4k</span></div>
+              <div class="event-meta">kubelet &middot; auth</div>
+            </div>
+            <span class="event-time">12m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot normal"></span>
+            <div class="event-content">
+              <div class="event-msg">Created <span class="resource">job/db-backup-1711411200</span></div>
+              <div class="event-meta">cronjob-controller &middot; infra</div>
+            </div>
+            <span class="event-time">15m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot normal"></span>
+            <div class="event-content">
+              <div class="event-msg">Endpoints <span class="resource">svc/frontend</span> updated (3 ready)</div>
+              <div class="event-meta">endpoint-controller &middot; production</div>
+            </div>
+            <span class="event-time">18m ago</span>
+          </div>
+          <div class="event-item">
+            <span class="event-dot warning"></span>
+            <div class="event-content">
+              <div class="event-msg">HPA <span class="resource">hpa/api-gateway</span> unable to fetch metrics</div>
+              <div class="event-meta">horizontal-pod-autoscaler &middot; production</div>
+            </div>
+            <span class="event-time">22m ago</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ===== COMMAND PALETTE ===== -->
+<div class="cmd-palette-overlay" id="cmdPalette">
+  <div class="cmd-palette">
+    <div class="cmd-input">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+      <input type="text" placeholder="Search resources, actions, namespaces..." autofocus id="cmdInput">
+    </div>
+    <div class="cmd-results">
+      <div class="cmd-section-title">Quick Actions</div>
+      <div class="cmd-item selected">
+        <div class="icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 8h8M8 4v8"/></svg></div>
+        <span class="text">Create Deployment</span>
+        <span class="hint">wizard</span>
+      </div>
+      <div class="cmd-item">
+        <div class="icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 8h6"/></svg></div>
+        <span class="text">Apply YAML</span>
+        <span class="hint">⌘Y</span>
+      </div>
+      <div class="cmd-section-title">Resources</div>
+      <div class="cmd-item">
+        <div class="icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/></svg></div>
+        <span class="text">api-gateway</span>
+        <span class="hint">deployment/production</span>
+      </div>
+      <div class="cmd-item">
+        <div class="icon"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/></svg></div>
+        <span class="text">cache-redis-0</span>
+        <span class="hint">pod/monitoring</span>
+      </div>
+    </div>
+    <div class="cmd-footer">
+      <span><kbd>↑↓</kbd> Navigate</span>
+      <span><kbd>↵</kbd> Select</span>
+      <span><kbd>esc</kbd> Close</span>
+    </div>
+  </div>
+</div>
+
+<!-- ===== QUICK ACTIONS FAB ===== -->
+<div class="fab-container">
+  <div class="fab-menu">
+    <div class="fab-action">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10v8H3z"/><path d="M6 4V2M10 4V2M3 8h10"/></svg>
+      New Deployment
+    </div>
+    <div class="fab-action">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v6M5 8h6"/></svg>
+      New Service
+    </div>
+    <div class="fab-action">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M5 8h6"/></svg>
+      Apply YAML
+    </div>
+    <div class="fab-action">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      Scale Resource
+    </div>
+  </div>
+  <button class="fab">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 4v12M4 10h12"/></svg>
+  </button>
+</div>
+
+<script>
+// Command Palette toggle
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    const palette = document.getElementById('cmdPalette');
+    palette.classList.toggle('active');
+    if (palette.classList.contains('active')) {
+      document.getElementById('cmdInput').focus();
+    }
+  }
+  if (e.key === 'Escape') {
+    document.getElementById('cmdPalette').classList.remove('active');
+  }
+});
+
+document.getElementById('cmdPalette').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
+});
+
+document.querySelector('.search-bar').addEventListener('click', () => {
+  document.getElementById('cmdPalette').classList.add('active');
+  document.getElementById('cmdInput').focus();
+});
+
+// Topology visualization
+function renderTopology() {
+  const viz = document.getElementById('topoViz');
+  const w = viz.offsetWidth;
+  const h = viz.offsetHeight;
+
+  const nodes = [
+    // Nodes (large, cyan)
+    { id: 'n1', type: 'node-type', label: 'N1', x: 0.12, y: 0.3 },
+    { id: 'n2', type: 'node-type', label: 'N2', x: 0.12, y: 0.7 },
+    { id: 'n3', type: 'node-type', label: 'N3', x: 0.05, y: 0.5 },
+    // Services (purple)
+    { id: 's1', type: 'svc-type', label: 'SVC', x: 0.4, y: 0.2 },
+    { id: 's2', type: 'svc-type', label: 'SVC', x: 0.4, y: 0.55 },
+    { id: 's3', type: 'svc-type', label: 'SVC', x: 0.4, y: 0.85 },
+    // Pods (small, green)
+    { id: 'p1', type: 'pod-type', label: 'P', x: 0.62, y: 0.12 },
+    { id: 'p2', type: 'pod-type', label: 'P', x: 0.62, y: 0.32 },
+    { id: 'p3', type: 'pod-type', label: 'P', x: 0.62, y: 0.52 },
+    { id: 'p4', type: 'pod-type', label: 'P', x: 0.62, y: 0.72 },
+    { id: 'p5', type: 'pod-type', label: 'P', x: 0.62, y: 0.92 },
+    // Ingress (amber)
+    { id: 'i1', type: 'ing-type', label: 'ING', x: 0.85, y: 0.3 },
+    { id: 'i2', type: 'ing-type', label: 'ING', x: 0.85, y: 0.7 },
+  ];
+
+  const connections = [
+    { from: 'n1', to: 's1', color: 'cyan' },
+    { from: 'n1', to: 's2', color: 'cyan' },
+    { from: 'n2', to: 's2', color: 'cyan' },
+    { from: 'n2', to: 's3', color: 'cyan' },
+    { from: 'n3', to: 's1', color: 'cyan' },
+    { from: 'n3', to: 's3', color: 'cyan' },
+    { from: 's1', to: 'p1', color: 'purple' },
+    { from: 's1', to: 'p2', color: 'purple' },
+    { from: 's2', to: 'p3', color: 'purple' },
+    { from: 's2', to: 'p4', color: 'purple' },
+    { from: 's3', to: 'p5', color: 'purple' },
+    { from: 'p1', to: 'i1', color: 'amber' },
+    { from: 'p2', to: 'i1', color: 'amber' },
+    { from: 'p4', to: 'i2', color: 'amber' },
+    { from: 'p5', to: 'i2', color: 'amber' },
+  ];
+
+  // Create SVG for lines
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;';
+
+  const colorMap = {
+    cyan: 'rgba(0,194,255,0.2)',
+    green: 'rgba(0,230,118,0.2)',
+    purple: 'rgba(124,92,252,0.2)',
+    amber: 'rgba(255,179,0,0.2)',
+  };
+
+  const nodeMap = {};
+  nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  connections.forEach((c, i) => {
+    const from = nodeMap[c.from];
+    const to = nodeMap[c.to];
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', from.x * w);
+    line.setAttribute('y1', from.y * h);
+    line.setAttribute('x2', to.x * w);
+    line.setAttribute('y2', to.y * h);
+    line.setAttribute('stroke', colorMap[c.color]);
+    line.setAttribute('stroke-width', '1.5');
+    line.style.animation = `topo-pulse ${2 + Math.random() * 2}s ease-in-out ${Math.random() * 2}s infinite`;
+    svg.appendChild(line);
+  });
+
+  viz.appendChild(svg);
+
+  // Create node elements
+  nodes.forEach(n => {
+    const el = document.createElement('div');
+    el.className = `topo-node ${n.type}`;
+    el.textContent = n.label;
+    const size = n.type === 'node-type' ? 52 : n.type === 'svc-type' ? 44 : n.type === 'ing-type' ? 40 : 36;
+    el.style.left = `${n.x * w - size / 2}px`;
+    el.style.top = `${n.y * h - size / 2}px`;
+    viz.appendChild(el);
+  });
+}
+
+// Render on load
+setTimeout(renderTopology, 100);
+
+// Re-render on resize
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const viz = document.getElementById('topoViz');
+    viz.innerHTML = '';
+    renderTopology();
+  }, 200);
+});
+</script>
+
+</body>
+</html>
