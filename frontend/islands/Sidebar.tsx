@@ -18,6 +18,8 @@ export default function Sidebar({ currentPath }: SidebarProps) {
   );
   const navRef = useRef<HTMLElement>(null);
   const appVersion = useSignal("");
+  // Guard: prevent onScroll from overwriting the saved position during restore
+  const isRestoring = useRef(false);
 
   // Restore collapsed state from sessionStorage
   const savedCollapsed = IS_BROWSER
@@ -30,22 +32,46 @@ export default function Sidebar({ currentPath }: SidebarProps) {
   // Restore nav scroll position after hydration AND after admin sections render.
   // The Settings section only appears after the async auth fetch completes
   // (userIsAdmin changes from false → true), which adds content and shifts
-  // the scroll height. Re-run restore whenever userIsAdmin changes.
+  // the scroll height. We read the target once (guarded by restoreTarget)
+  // and re-apply it on each run so the onScroll handler cannot overwrite
+  // the saved value with a clamped intermediate position.
+  const restoreTarget = useRef<number | null>(null);
+
   useEffect(() => {
     if (!IS_BROWSER || !navRef.current) return;
-    const saved = sessionStorage.getItem("sidebar-scroll");
-    if (saved) {
-      const pos = parseInt(saved, 10);
+    // Read sessionStorage once on first run, reuse on subsequent runs
+    if (restoreTarget.current === null) {
+      const saved = sessionStorage.getItem("sidebar-scroll");
+      const parsed = saved ? parseInt(saved, 10) : 0;
+      restoreTarget.current = Number.isFinite(parsed) ? parsed : 0;
+    }
+    const pos = restoreTarget.current;
+    if (pos === 0) return;
+
+    let cancelled = false;
+    isRestoring.current = true;
+    requestAnimationFrame(() => {
+      if (cancelled) return;
       requestAnimationFrame(() => {
+        if (cancelled) return;
+        if (navRef.current) navRef.current.scrollTop = pos;
+        // One more frame for the scroll event to fire and be suppressed
         requestAnimationFrame(() => {
-          if (navRef.current) navRef.current.scrollTop = pos;
+          if (cancelled) return;
+          isRestoring.current = false;
+          restoreTarget.current = null;
         });
       });
-    }
+    });
+    return () => {
+      cancelled = true;
+      isRestoring.current = false;
+    };
   }, [userIsAdmin.value]);
 
-  // Save scroll position continuously
+  // Save scroll position continuously (but not while restoring)
   const saveScrollPos = useCallback(() => {
+    if (isRestoring.current) return;
     if (navRef.current) {
       sessionStorage.setItem(
         "sidebar-scroll",
