@@ -32,42 +32,41 @@ export default function Sidebar({ currentPath }: SidebarProps) {
   // Restore nav scroll position after hydration AND after admin sections render.
   // The Settings section only appears after the async auth fetch completes
   // (userIsAdmin changes from false → true), which adds content and shifts
-  // the scroll height. We read the target position once on mount and keep
-  // re-applying it (guarded by isRestoring) so the onScroll handler cannot
-  // overwrite the saved value with a clamped intermediate position.
+  // the scroll height. We read the target once (guarded by restoreTarget)
+  // and re-apply it on each run so the onScroll handler cannot overwrite
+  // the saved value with a clamped intermediate position.
   const restoreTarget = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!IS_BROWSER) return;
-    // On first mount, capture the target position from sessionStorage
+    if (!IS_BROWSER || !navRef.current) return;
+    // Read sessionStorage once on first run, reuse on subsequent runs
     if (restoreTarget.current === null) {
       const saved = sessionStorage.getItem("sidebar-scroll");
-      restoreTarget.current = saved ? parseInt(saved, 10) : 0;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!IS_BROWSER || !navRef.current || restoreTarget.current === null) {
-      return;
+      const parsed = saved ? parseInt(saved, 10) : 0;
+      restoreTarget.current = Number.isFinite(parsed) ? parsed : 0;
     }
     const pos = restoreTarget.current;
+    if (pos === 0) return;
+
+    let cancelled = false;
     isRestoring.current = true;
     requestAnimationFrame(() => {
+      if (cancelled) return;
       requestAnimationFrame(() => {
-        if (navRef.current) {
-          navRef.current.scrollTop = pos;
-        }
-        // Allow onScroll to save again after restore settles.
-        // Clear restoreTarget once admin sections are rendered so we
-        // don't keep re-applying on future signal changes.
+        if (cancelled) return;
+        if (navRef.current) navRef.current.scrollTop = pos;
+        // One more frame for the scroll event to fire and be suppressed
         requestAnimationFrame(() => {
+          if (cancelled) return;
           isRestoring.current = false;
-          if (userIsAdmin.value) {
-            restoreTarget.current = null;
-          }
+          restoreTarget.current = null;
         });
       });
     });
+    return () => {
+      cancelled = true;
+      isRestoring.current = false;
+    };
   }, [userIsAdmin.value]);
 
   // Save scroll position continuously (but not while restoring)
