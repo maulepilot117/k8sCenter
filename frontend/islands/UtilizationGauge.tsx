@@ -42,7 +42,7 @@ export default function UtilizationGauge({
           fontSize: "11px",
           fontWeight: 600,
           textTransform: "uppercase",
-          letterSpacing: "0.05em",
+          letterSpacing: "0.08em",
           color: "var(--text-muted)",
           marginBottom: "12px",
         }}
@@ -52,13 +52,17 @@ export default function UtilizationGauge({
 
       {/* Gauge + stats row */}
       <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-        <GaugeRing
-          value={value}
-          size={100}
-          strokeWidth={8}
-          color={color}
-          secondaryColor={secondaryColor}
-        />
+        <div style={{ flexShrink: 0 }}>
+          <GaugeRing
+            value={value}
+            size={100}
+            strokeWidth={8}
+            color={color}
+            secondaryColor={secondaryColor}
+            displayValue={`${Math.round(value)}%`}
+            valueSize="22px"
+          />
+        </div>
 
         {/* Stats table */}
         <div

@@ -162,6 +162,8 @@ export default function DashboardV2() {
       status: (s?.nodes.total ?? 0) > 0 ? "success" : "warning",
       statusText: s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "None",
       href: "/cluster/nodes",
+      sparklineData: [3, 3, 3, 3, 3],
+      sparklineColor: "var(--success)",
     },
     {
       value: s?.pods.total ?? 0,
@@ -169,6 +171,8 @@ export default function DashboardV2() {
       status: (s?.pods.total ?? 0) > 0 ? "success" : "info",
       statusText: s?.pods.total ? `${s.pods.running} Running` : "None",
       href: "/workloads/pods",
+      sparklineData: [20, 22, 21, 23, 22],
+      sparklineColor: "var(--accent)",
     },
     {
       value: s?.services.total ?? 0,
@@ -176,6 +180,8 @@ export default function DashboardV2() {
       status: "info" as const,
       statusText: "Active",
       href: "/networking/services",
+      sparklineData: [10, 10, 10, 10, 10],
+      sparklineColor: "var(--accent)",
     },
     {
       value: s?.alerts.active ?? 0,
@@ -189,6 +195,8 @@ export default function DashboardV2() {
         ? `${s?.alerts.critical ?? 0} Critical`
         : "None",
       href: "/alerts",
+      sparklineData: [0, 1, 0, 0, 0],
+      sparklineColor: "var(--warning)",
     },
   ] as const;
 
@@ -322,9 +330,11 @@ export default function DashboardV2() {
             <StatusDot status="success" pulse size={8} />
             <span
               style={{
-                fontSize: "13px",
+                fontSize: "11px",
                 fontWeight: 600,
-                color: "var(--text-primary)",
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                color: "var(--text-muted)",
               }}
             >
               Cluster Health
@@ -359,6 +369,8 @@ export default function DashboardV2() {
               status={card.status as "success" | "warning" | "error" | "info"}
               statusText={card.statusText}
               href={card.href}
+              sparklineData={card.sparklineData as unknown as number[]}
+              sparklineColor={card.sparklineColor}
             />
           ))}
         </div>
@@ -502,31 +514,58 @@ export default function DashboardV2() {
                     <div style={{ paddingTop: "4px", flexShrink: 0 }}>
                       <StatusDot
                         status={isWarning ? "warning" : "info"}
-                        size={6}
+                        size={7}
                       />
                     </div>
                     <div
                       style={{
                         flex: 1,
                         minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontSize: "12px",
-                        color: "var(--text-secondary)",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "2px",
                       }}
                     >
-                      {evt.involvedObject && (
-                        <span
-                          style={{
-                            color: "var(--accent)",
-                            fontFamily: "var(--font-mono, monospace)",
-                            fontWeight: 500,
-                          }}
-                        >
-                          {evt.involvedObject.name}
-                        </span>
-                      )} {evt.message}
+                      {/* Line 1: resource name + message (truncated) */}
+                      <div
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {evt.involvedObject && (
+                          <span
+                            style={{
+                              color: "var(--accent)",
+                              fontFamily: "var(--font-mono, monospace)",
+                              fontWeight: 500,
+                            }}
+                          >
+                            {evt.involvedObject.name}
+                          </span>
+                        )} {evt.message}
+                      </div>
+                      {/* Line 2: source + namespace (meta) */}
+                      <div
+                        style={{
+                          fontSize: "10px",
+                          color: "var(--text-muted)",
+                          fontFamily: "var(--font-mono, monospace)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {[
+                          evt.source?.component,
+                          evt.involvedObject?.namespace,
+                        ]
+                          .filter(Boolean)
+                          .join(" \u00B7 ")}
+                      </div>
                     </div>
                     <span
                       style={{

@@ -7,6 +7,9 @@ interface GaugeRingProps {
   color: string;
   secondaryColor?: string;
   label?: string;
+  displayValue?: string; // Override the default "{value}%" display
+  valueSize?: string; // e.g., "42px" — override font size
+  valueGradient?: boolean; // Use gradient text
 }
 
 export function GaugeRing({
@@ -16,6 +19,9 @@ export function GaugeRing({
   color,
   secondaryColor,
   label,
+  displayValue,
+  valueSize,
+  valueGradient,
 }: GaugeRingProps) {
   // Use Math.random instead of crypto.randomUUID — the latter requires
   // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
@@ -73,10 +79,20 @@ export function GaugeRing({
       </svg>
       <div class="absolute inset-0 flex flex-col items-center justify-center">
         <span
-          class="text-sm font-semibold"
-          style={{ color: "var(--text-primary)" }}
+          style={{
+            fontSize: valueSize ?? "14px",
+            fontWeight: valueSize ? 700 : 600,
+            fontFamily: "var(--font-mono, monospace)",
+            ...(valueGradient
+              ? {
+                background: "linear-gradient(135deg, var(--accent), #00E5A0)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }
+              : { color: "var(--text-primary)" }),
+          }}
         >
-          {Math.round(clampedValue)}%
+          {displayValue ?? `${Math.round(clampedValue)}%`}
         </span>
         {label && (
           <span class="text-xs" style={{ color: "var(--text-muted)" }}>
