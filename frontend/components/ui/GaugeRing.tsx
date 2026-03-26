@@ -9,8 +9,6 @@ interface GaugeRingProps {
  label?: string;
 }
 
-let gaugeCounter = 0;
-
 export function GaugeRing({
  value,
  size = 80,
@@ -20,7 +18,7 @@ export function GaugeRing({
  label,
 }: GaugeRingProps) {
  const gradientId = useMemo(
- () => (secondaryColor ? `gauge-grad-${gaugeCounter++}` : null),
+ () => (secondaryColor ? `gauge-${crypto.randomUUID().slice(0, 8)}` : null),
  [secondaryColor],
  );
 

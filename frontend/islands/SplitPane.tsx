@@ -37,6 +37,10 @@ export default function SplitPane(
 
  {/* Divider */}
  <div
+ role="separator"
+ aria-orientation="vertical"
+ tabIndex={0}
+ aria-label="Resize panels"
  onMouseDown={(e) => {
  e.preventDefault();
  startDrag();

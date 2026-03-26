@@ -7,12 +7,10 @@ interface SparklineChartProps {
  height?: number;
 }
 
-let instanceCounter = 0;
-
 export function SparklineChart(
  { data, color, width = 100, height = 28 }: SparklineChartProps,
 ) {
- const gradientId = useMemo(() => `sparkline-grad-${instanceCounter++}`, []);
+ const gradientId = useMemo(() => `spark-${crypto.randomUUID().slice(0, 8)}`, []);
 
  if (data.length < 2) return null;
 

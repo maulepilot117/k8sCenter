@@ -98,7 +98,7 @@ export const CLUSTER_SCOPED_KINDS = new Set([
   "mutatingwebhookconfigurations",
 ]);
 
-/** Resource navigation sections for the sidebar. */
+/** @deprecated Use DOMAIN_SECTIONS instead */
 export const NAV_SECTIONS = [
   {
     title: "Cluster",

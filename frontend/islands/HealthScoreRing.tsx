@@ -24,7 +24,7 @@ interface AlertItem {
  };
 }
 
-const REFRESH_INTERVAL = 30_000;
+const REFRESH_INTERVAL = 60_000;
 
 export default function HealthScoreRing() {
  const score = useSignal<HealthScore | null>(null);
@@ -98,12 +98,11 @@ export default function HealthScoreRing() {
  servicesTotal,
  activeAlerts,
  criticalAlerts,
- cpuUtilization: 0,
- memoryUtilization: 0,
  };
  }
 
  async function loadScore() {
+ if (document.hidden) return;
  try {
  const metrics = await fetchMetrics();
  score.value = calculateHealthScore(metrics);

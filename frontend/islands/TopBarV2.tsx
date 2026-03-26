@@ -109,6 +109,7 @@ export default function TopBarV2() {
 
  {/* Namespace selector */}
  <select
+  aria-label="Select namespace"
  value={selectedNamespace.value}
  onChange={(e) => {
  const ns = (e.target as HTMLSelectElement).value;
@@ -232,6 +233,8 @@ export default function TopBarV2() {
  <div style={{ position:"relative" }} ref={menuRef}>
  <button
  type="button"
+    aria-expanded={showUserMenu.value}
+    aria-haspopup="true"
  onClick={() => {
  showUserMenu.value = !showUserMenu.value;
  }}

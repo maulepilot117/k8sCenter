@@ -46,31 +46,22 @@ function buildSearchIndex(): SearchItem[] {
  }
  }
 
- // Resource items (top-level resource pages)
- const resources = [
- { label:"Deployments", href:"/workloads/deployments" },
- { label:"Pods", href:"/workloads/pods" },
- { label:"Services", href:"/networking/services" },
- { label:"ConfigMaps", href:"/config/configmaps" },
- { label:"Secrets", href:"/config/secrets" },
- { label:"Ingresses", href:"/networking/ingresses" },
- { label:"Nodes", href:"/cluster/nodes" },
- { label:"Namespaces", href:"/cluster/namespaces" },
- { label:"StatefulSets", href:"/workloads/statefulsets" },
- { label:"DaemonSets", href:"/workloads/daemonsets" },
- { label:"Jobs", href:"/workloads/jobs" },
- { label:"CronJobs", href:"/workloads/cronjobs" },
- ];
- for (const r of resources) {
- items.push({
- id: `res-${r.label}`,
- type:"resource",
- label: r.label,
- detail: r.href,
- href: r.href,
- });
+ // Resource items derived from DOMAIN_SECTIONS tabs
+ for (const section of DOMAIN_SECTIONS) {
+  if (section.tabs) {
+   for (const tab of section.tabs) {
+    if (tab.kind) {
+     items.push({
+      id: `res-${tab.label}`,
+      type:"resource",
+      label: tab.label,
+      detail: tab.href,
+      href: tab.href,
+     });
+    }
+   }
+  }
  }
-
  // Quick actions
  const actions = [
  {
@@ -214,6 +205,9 @@ export default function CommandPalette() {
 
  return (
  <div
+  role="dialog"
+  aria-modal="true"
+  aria-label="Command palette"
  style={{
  position:"fixed",
  inset: 0,
@@ -267,6 +261,11 @@ export default function CommandPalette() {
  type="text"
  placeholder="Search commands, resources, pages..."
  value={query.value}
+ role="combobox"
+ aria-expanded="true"
+ aria-haspopup="listbox"
+ aria-controls="cmd-results"
+ aria-activedescendant={flatResults[selectedIndex.value]?.id}
  onInput={(e) => {
  query.value = (e.target as HTMLInputElement).value;
  selectedIndex.value = 0;
@@ -296,6 +295,8 @@ export default function CommandPalette() {
 
  {/* Results */}
  <div
+    id="cmd-results"
+    role="listbox"
  style={{
  maxHeight:"360px",
  overflowY:"auto",
@@ -322,6 +323,9 @@ export default function CommandPalette() {
  <button
  key={item.id}
  type="button"
+ id={item.id}
+ role="option"
+ aria-selected={index === selectedIndex.value}
  onClick={() => selectItem(item)}
  onMouseEnter={() => {
  selectedIndex.value = index;

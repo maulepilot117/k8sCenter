@@ -2,6 +2,8 @@ import { useSignal } from"@preact/signals";
 import { useEffect } from"preact/hooks";
 import { IS_BROWSER } from"fresh/runtime";
 import { apiGet } from"@/lib/api.ts";
+
+interface CountResponse { items: unknown[]; metadata?: { total?: number } }
 import { age } from"@/lib/format.ts";
 import type { K8sEvent } from"@/lib/k8s-types.ts";
 import { Skeleton } from"@/components/ui/Skeleton.tsx";
@@ -68,10 +70,10 @@ export default function DashboardV2() {
  memRes,
  ] = await Promise.allSettled([
  apiGet<ClusterInfoData>("/v1/cluster/info"),
- apiGet<unknown>("/v1/resources/deployments?limit=1"),
- apiGet<unknown>("/v1/resources/pods?limit=1"),
- apiGet<unknown>("/v1/resources/services?limit=1"),
- apiGet<unknown>("/v1/resources/namespaces?limit=1"),
+ apiGet<CountResponse>("/v1/resources/deployments?limit=1"),
+ apiGet<CountResponse>("/v1/resources/pods?limit=1"),
+ apiGet<CountResponse>("/v1/resources/services?limit=1"),
+ apiGet<CountResponse>("/v1/resources/namespaces?limit=1"),
  apiGet<K8sEvent[]>("/v1/resources/events?limit=10"),
  apiGet<{ result: { value: [number, string] }[] }>(
  `/v1/monitoring/query?query=${

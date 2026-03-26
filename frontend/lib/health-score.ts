@@ -8,8 +8,6 @@ export interface HealthMetrics {
   servicesTotal: number;
   activeAlerts: number;
   criticalAlerts: number;
-  cpuUtilization: number;
-  memoryUtilization: number;
 }
 
 export interface HealthScore {

@@ -27,6 +27,8 @@ export default function ThemeSelector() {
  {/* Trigger button */}
  <button
  type="button"
+ aria-expanded={open.value}
+ aria-haspopup="listbox"
  onClick={() => {
  open.value = !open.value;
  }}
@@ -72,6 +74,7 @@ export default function ThemeSelector() {
  {/* Dropdown */}
  {open.value && (
  <div
+  role="listbox"
  style={{
  position:"absolute",
  right: 0,
@@ -92,6 +95,8 @@ export default function ThemeSelector() {
  <button
  key={theme.id}
  type="button"
+ role="option"
+ aria-selected={currentTheme.value === theme.id}
  onClick={() => {
  applyTheme(theme.id);
  open.value = false;

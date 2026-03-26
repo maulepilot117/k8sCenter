@@ -24,7 +24,7 @@ export default define.page(function App({ Component }) {
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){var t=localStorage.getItem("k8scenter-theme");if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
+              `(function(){var themes=["nexus","dracula","tokyo-night","catppuccin","nord","one-dark","gruvbox"];var t=localStorage.getItem("k8scenter-theme");if(t&&themes.indexOf(t)!==-1)document.documentElement.dataset.theme=t;var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
           }}
         />
       </head>

@@ -200,7 +200,7 @@ export default function WorkloadsDashboard(
  </p>
  </div>
  <a
- href="/workloads/deployments/new"
+ href={createHref ?? "/workloads/deployments/new"}
  style={{
  display:"inline-flex",
  alignItems:"center",
