@@ -1,7 +1,7 @@
 import {
-  MonacoEditor,
-  type MonacoEditorProps,
-} from "../components/ui/MonacoEditor.tsx";
+ MonacoEditor,
+ type MonacoEditorProps,
+} from"../components/ui/MonacoEditor.tsx";
 
 /**
  * YamlEditor island — thin wrapper around MonacoEditor component.
@@ -10,5 +10,5 @@ import {
  * (which would require them to be islands too).
  */
 export default function YamlEditor(props: MonacoEditorProps) {
-  return <MonacoEditor {...props} />;
+ return <MonacoEditor {...props} />;
 }
