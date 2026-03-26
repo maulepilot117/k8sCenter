@@ -86,7 +86,16 @@ export interface PodStatus {
 export interface Pod extends K8sResource {
   spec: {
     nodeName?: string;
-    containers: Array<{ name: string; image: string; resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }>;
+    containers: Array<
+      {
+        name: string;
+        image: string;
+        resources?: {
+          requests?: Record<string, string>;
+          limits?: Record<string, string>;
+        };
+      }
+    >;
     restartPolicy?: string;
   };
   status?: PodStatus;
@@ -98,7 +107,18 @@ export interface Deployment extends K8sResource {
     replicas?: number;
     selector: { matchLabels?: Record<string, string> };
     template?: {
-      spec?: { containers?: Array<{ name: string; image: string; resources?: { requests?: Record<string, string>; limits?: Record<string, string> } }> };
+      spec?: {
+        containers?: Array<
+          {
+            name: string;
+            image: string;
+            resources?: {
+              requests?: Record<string, string>;
+              limits?: Record<string, string>;
+            };
+          }
+        >;
+      };
     };
     strategy?: {
       type?: string;

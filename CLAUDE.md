@@ -160,13 +160,14 @@ make check-dashboards                             # Verify Grafana JSON sync
 - **Phase 2 (Multi-Cluster):** COMPLETE — Steps 16-23
 - **Phase 3 (Enhancements):** COMPLETE — 7 items (Pod Exec, User Mgmt, Cilium, Hubble, CSP, Alerts WS, RBAC gating)
 - **Phase 4 (Wizards):** COMPLETE — 4A-4D (17 wizard types total)
-- **Phase 5 (Production Polish):** IN PROGRESS
-  - Step 24: E2E Tests — DONE (95 tests, Playwright)
-  - Step 25: Production Hardening — DONE (Trivy, automaxprocs, probes, NetworkPolicy)
-  - Step 26: UX Polish — DONE (breadcrumbs, owner refs, toast cleanup)
-  - Step 27: Grafana Dashboards — DONE (7 JSONs, Helm ConfigMap, provision-once)
-  - Step 28: Multi-Cluster UX — DONE (28A encryption fix, 28B routing, 28C health probing)
-  - Steps 29-30: Planned (RBAC Visualization, Cost Analysis)
+- **Phase 5 (Production Polish):** COMPLETE — Steps 24-30
+  - Step 24: E2E Tests (95 tests, Playwright)
+  - Step 25: Production Hardening (Trivy, automaxprocs, probes, NetworkPolicy)
+  - Step 26: UX Polish (breadcrumbs, owner refs, toast cleanup)
+  - Step 27: Grafana Dashboards (7 JSONs, Helm ConfigMap, provision-once)
+  - Step 28: Multi-Cluster UX (routing, health probing, SSRF protection)
+  - Step 29: RBAC Visualization (relationship table, cross-links, effective permissions)
+  - Step 30: Cost Analysis (utilization cards, resource display, request-vs-actual)
 
 ---
 

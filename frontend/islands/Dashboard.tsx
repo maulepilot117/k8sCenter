@@ -58,10 +58,18 @@ export default function Dashboard() {
             apiGet<unknown>("/v1/resources/namespaces?limit=1"),
             // Cluster utilization (graceful 503 if no Prometheus)
             apiGet<{ result: { value: [number, string] }[] }>(
-              `/v1/monitoring/query?query=${encodeURIComponent('100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)')}`,
+              `/v1/monitoring/query?query=${
+                encodeURIComponent(
+                  '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+                )
+              }`,
             ),
             apiGet<{ result: { value: [number, string] }[] }>(
-              `/v1/monitoring/query?query=${encodeURIComponent("100 * (1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes))")}`,
+              `/v1/monitoring/query?query=${
+                encodeURIComponent(
+                  "100 * (1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes))",
+                )
+              }`,
             ),
           ]);
 

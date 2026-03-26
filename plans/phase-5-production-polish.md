@@ -15,8 +15,8 @@ With all core features complete (Phases 1-4), Phase 5 focuses on production read
 | 26 | UX Polish | — | Medium | Done |
 | 27 | Grafana Dashboard Provisioning | — | Small | Done |
 | 28 | Multi-Cluster UX | — | Large | Done (28A+28B+28C) |
-| 29 | RBAC Visualization | — | Medium | Planned |
-| 30 | Cost Analysis & Resource Recommendations | 27 | Large | Planned |
+| 29 | RBAC Visualization | — | Medium | Done |
+| 30 | Cost Analysis & Resource Recommendations | 27 | Large | Done |
 
 ---
 
