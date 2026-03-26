@@ -12,7 +12,8 @@ export function Skeleton(
 ) {
   return (
     <div
-      class={`animate-pulse rounded bg-slate-200 dark:bg-slate-700 ${className}`}
+      class={`animate-pulse rounded ${className}`}
+      style={{ background: "var(--bg-elevated)" }}
     />
   );
 }

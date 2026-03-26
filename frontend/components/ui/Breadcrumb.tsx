@@ -7,22 +7,21 @@ export function Breadcrumb({ items }: BreadcrumbProps) {
   return (
     <nav
       aria-label="Breadcrumb"
-      class="mb-4 flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400"
+      class="mb-4 flex items-center gap-1.5 text-sm"
+      style={{ color: "var(--text-muted)" }}
     >
       {items.map((item, i) => (
         <span key={i} class="flex items-center gap-1.5">
-          {i > 0 && <span class="text-slate-300 dark:text-slate-600">/</span>}
+          {i > 0 && (
+            <span style={{ color: "var(--border-primary)" }}>/</span>
+          )}
           {item.href
-            ? (
-              <a
-                href={item.href}
-                class="hover:text-slate-700 dark:hover:text-slate-200"
-              >
-                {item.label}
-              </a>
-            )
+            ? <a href={item.href} class="hover:underline">{item.label}</a>
             : (
-              <span class="font-medium text-slate-700 dark:text-slate-200">
+              <span
+                class="font-medium"
+                style={{ color: "var(--text-primary)" }}
+              >
                 {item.label}
               </span>
             )}

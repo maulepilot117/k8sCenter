@@ -1,4 +1,4 @@
-import { statusVariant, VARIANT_CLASSES } from "@/lib/status-colors.ts";
+import { statusStyle, statusVariant } from "@/lib/status-colors.ts";
 import type { StatusVariant } from "@/lib/status-colors.ts";
 
 interface StatusBadgeProps {
@@ -6,13 +6,23 @@ interface StatusBadgeProps {
   variant?: StatusVariant;
 }
 
+const VARIANT_STYLES: Record<StatusVariant, Record<string, string>> = {
+  success: { background: "var(--success-dim)", color: "var(--success)" },
+  warning: { background: "var(--warning-dim)", color: "var(--warning)" },
+  danger: { background: "var(--error-dim)", color: "var(--error)" },
+  info: { background: "var(--accent-dim)", color: "var(--accent)" },
+  neutral: { background: "var(--bg-elevated)", color: "var(--text-muted)" },
+};
+
 export function StatusBadge({ status, variant }: StatusBadgeProps) {
-  const v = variant ?? statusVariant(status);
+  const styles = variant
+    ? VARIANT_STYLES[variant]
+    : statusStyle(status);
+
   return (
     <span
-      class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-        VARIANT_CLASSES[v]
-      }`}
+      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
+      style={styles}
     >
       {status}
     </span>

@@ -54,7 +54,8 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
       <div
         role="tablist"
         aria-orientation="horizontal"
-        class="flex border-b border-slate-200 dark:border-slate-700"
+        class="flex border-b"
+        style={{ borderColor: "var(--border-primary)" }}
         onKeyDown={handleKeyDown}
       >
         {tabs.map((tab) => {
@@ -69,11 +70,17 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
               tabIndex={isActive ? 0 : -1}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              class={`px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900 ${
-                isActive
-                  ? "border-b-2 border-brand text-brand"
-                  : "text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+              class={`px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                isActive ? "border-b-2" : ""
               }`}
+              style={isActive
+                ? {
+                  borderColor: "var(--accent)",
+                  color: "var(--accent)",
+                }
+                : {
+                  color: "var(--text-muted)",
+                }}
             >
               {tab.label}
             </button>

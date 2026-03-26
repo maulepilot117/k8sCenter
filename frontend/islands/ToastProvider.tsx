@@ -26,13 +26,22 @@ function dismiss(id: number) {
   toasts.value = toasts.value.filter((t) => t.id !== id);
 }
 
-const typeStyles = {
-  success:
-    "border-green-400 bg-green-50 text-green-800 dark:border-green-600 dark:bg-green-900/30 dark:text-green-300",
-  error:
-    "border-red-400 bg-red-50 text-red-800 dark:border-red-600 dark:bg-red-900/30 dark:text-red-300",
-  info:
-    "border-blue-400 bg-blue-50 text-blue-800 dark:border-blue-600 dark:bg-blue-900/30 dark:text-blue-300",
+const typeStyles: Record<Toast["type"], Record<string, string>> = {
+  success: {
+    background: "var(--success-dim)",
+    color: "var(--success)",
+    borderColor: "var(--success)",
+  },
+  error: {
+    background: "var(--error-dim)",
+    color: "var(--error)",
+    borderColor: "var(--error)",
+  },
+  info: {
+    background: "var(--accent-dim)",
+    color: "var(--accent)",
+    borderColor: "var(--accent)",
+  },
 };
 
 /**
@@ -51,9 +60,8 @@ export default function ToastProvider() {
       {toasts.value.map((toast) => (
         <div
           key={toast.id}
-          class={`pointer-events-auto flex items-center gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg ${
-            typeStyles[toast.type]
-          }`}
+          class="pointer-events-auto flex items-center gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg"
+          style={typeStyles[toast.type]}
         >
           <span class="flex-1">{toast.message}</span>
           <button

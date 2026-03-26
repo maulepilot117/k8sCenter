@@ -9,12 +9,17 @@ interface CardProps {
 export function Card({ title, children, class: className }: CardProps) {
   return (
     <div
-      class={`rounded-lg border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-700 dark:bg-slate-800 ${
-        className ?? ""
-      }`}
+      class={`rounded-lg border p-6 ${className ?? ""}`}
+      style={{
+        background: "var(--bg-surface)",
+        borderColor: "var(--border-primary)",
+      }}
     >
       {title && (
-        <h3 class="mb-4 text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        <h3
+          class="mb-4 text-sm font-semibold uppercase tracking-wider"
+          style={{ color: "var(--text-muted)" }}
+        >
           {title}
         </h3>
       )}

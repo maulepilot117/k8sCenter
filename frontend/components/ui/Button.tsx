@@ -11,14 +11,24 @@ interface ButtonProps extends JSX.HTMLAttributes<HTMLButtonElement> {
   disabled?: boolean;
 }
 
-const variantClasses: Record<ButtonVariant, string> = {
-  primary:
-    "bg-brand text-white hover:bg-brand-dark focus:ring-brand/50 disabled:bg-blue-300",
-  secondary:
-    "bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 focus:ring-slate-300/50 dark:bg-slate-800 dark:text-slate-200 dark:border-slate-600 dark:hover:bg-slate-700",
-  danger: "bg-danger text-white hover:bg-red-600 focus:ring-danger/50",
-  ghost:
-    "text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800",
+const variantStyles: Record<ButtonVariant, Record<string, string>> = {
+  primary: {
+    background: "var(--accent)",
+    color: "var(--bg-base)",
+  },
+  secondary: {
+    background: "transparent",
+    color: "var(--text-secondary)",
+    border: "1px solid var(--border-primary)",
+  },
+  danger: {
+    background: "var(--error)",
+    color: "white",
+  },
+  ghost: {
+    background: "transparent",
+    color: "var(--text-secondary)",
+  },
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
@@ -34,15 +44,22 @@ export function Button({
   disabled,
   class: className,
   children,
+  style,
   ...props
 }: ButtonProps) {
+  const varStyle = variantStyles[variant];
+  const mergedStyle = typeof style === "string"
+    ? varStyle
+    : { ...varStyle, ...(style as Record<string, string> | undefined) };
+
   return (
     <button
       {...props}
       disabled={disabled || loading}
-      class={`inline-flex items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 disabled:cursor-not-allowed ${
-        variantClasses[variant]
-      } ${sizeClasses[size]} ${className ?? ""}`}
+      class={`inline-flex items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+        sizeClasses[size]
+      } ${className ?? ""}`}
+      style={mergedStyle}
     >
       {loading && <Spinner size="sm" class="-ml-1 mr-2" />}
       {children}

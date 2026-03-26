@@ -71,3 +71,16 @@ export function statusVariant(status: string): StatusVariant {
 export function statusColor(status: string): string {
   return VARIANT_CLASSES[statusVariant(status)];
 }
+
+/** Returns inline style object for a given status string using CSS variables. */
+export function statusStyle(status: string): Record<string, string> {
+  const v = statusVariant(status);
+  const map: Record<StatusVariant, Record<string, string>> = {
+    success: { background: "var(--success-dim)", color: "var(--success)" },
+    warning: { background: "var(--warning-dim)", color: "var(--warning)" },
+    danger: { background: "var(--error-dim)", color: "var(--error)" },
+    info: { background: "var(--accent-dim)", color: "var(--accent)" },
+    neutral: { background: "var(--bg-elevated)", color: "var(--text-muted)" },
+  };
+  return map[v];
+}
