@@ -14,8 +14,8 @@ app.use(async (ctx) => {
     [
       "default-src 'self'",
       "script-src 'self' 'unsafe-inline' https://esm.sh/",
-      "style-src 'self' 'unsafe-inline' https://esm.sh/",
-      "font-src 'self'",
+      "style-src 'self' 'unsafe-inline' https://esm.sh/ https://fonts.googleapis.com/",
+      "font-src 'self' https://fonts.gstatic.com/",
       "img-src 'self' data:",
       "connect-src 'self' https://esm.sh/",
       "worker-src 'self' blob: https://esm.sh/",

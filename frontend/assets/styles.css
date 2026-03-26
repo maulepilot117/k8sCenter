@@ -1,28 +1,146 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
-/* Use class-based dark mode (.dark on <html>) instead of @media prefers-color-scheme */
-@variant dark (&:where(.dark, .dark *));
+/* ── Layout & typography tokens ── */
+:root {
+  --rail-width: 60px;
+  --topbar-height: 52px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 
+/* ── Nexus defaults (prevent flash before JS hydration) ── */
+:root {
+  --bg-base: #0B0E14;
+  --bg-surface: #131720;
+  --bg-elevated: #1A1F2B;
+  --bg-hover: #212735;
+  --border-primary: #252B37;
+  --border-subtle: #1E2330;
+  --text-primary: #E0E4EB;
+  --text-secondary: #8B95A5;
+  --text-muted: #5A6478;
+  --accent: #00C2FF;
+  --accent-glow: rgba(0, 194, 255, 0.15);
+  --accent-dim: rgba(0, 194, 255, 0.08);
+  --accent-secondary: #7C5CFC;
+  --success: #00E676;
+  --success-dim: rgba(0, 230, 118, 0.12);
+  --warning: #FFB300;
+  --warning-dim: rgba(255, 179, 0, 0.12);
+  --error: #FF5252;
+  --error-dim: rgba(255, 82, 82, 0.12);
+  --info: #40C4FF;
+}
+
+/* ── Bridge CSS variables into Tailwind v4 ── */
 @theme {
-  /* Status colors — consistent k8s resource state mapping */
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
-  --color-info: #3b82f6;
+  --color-base: var(--bg-base);
+  --color-surface: var(--bg-surface);
+  --color-elevated: var(--bg-elevated);
+  --color-hover: var(--bg-hover);
+  --color-border-primary: var(--border-primary);
+  --color-border-subtle: var(--border-subtle);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-glow: var(--accent-glow);
+  --color-accent-dim: var(--accent-dim);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-success: var(--success);
+  --color-success-dim: var(--success-dim);
+  --color-warning: var(--warning);
+  --color-warning-dim: var(--warning-dim);
+  --color-danger: var(--error);
+  --color-danger-dim: var(--error-dim);
+  --color-error: var(--error);
+  --color-error-dim: var(--error-dim);
+  --color-info: var(--info);
 
-  /* Surface colors */
-  --color-surface: #ffffff;
-  --color-surface-secondary: #f8fafc;
-  --color-surface-dark: #0f172a;
-  --color-surface-dark-secondary: #1e293b;
+  /* Backward compatibility aliases */
+  --color-brand: var(--accent);
+  --color-brand-dark: var(--accent-secondary);
+  --color-surface-dark: var(--bg-base);
+  --color-surface-dark-secondary: var(--bg-surface);
+  --color-surface-secondary: var(--bg-surface);
+  --color-sidebar: var(--bg-surface);
+  --color-sidebar-hover: var(--bg-hover);
+  --color-sidebar-active: var(--accent);
+}
 
-  /* Sidebar */
-  --color-sidebar: #1e293b;
-  --color-sidebar-hover: #334155;
-  --color-sidebar-active: #3b82f6;
+/* ── Base body styles ── */
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 
-  /* Brand */
-  --color-brand: #3b82f6;
-  --color-brand-dark: #2563eb;
+/* ── Thin scrollbar ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-primary) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ── Animation disable ── */
+.no-animations *,
+.no-animations *::before,
+.no-animations *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* ── Utility animations ── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px var(--accent-glow);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }

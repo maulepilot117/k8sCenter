@@ -8,16 +8,27 @@ export default define.page(function App({ Component }) {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>k8sCenter</title>
-        <meta name="color-scheme" content="light dark" />
-        {/* Apply saved theme before render to prevent flash of wrong theme */}
+        <meta name="color-scheme" content="dark" />
+        {/* Geist font */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+          rel="stylesheet"
+        />
+        {/* Apply saved theme + animation prefs before render to prevent flash */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){var t=localStorage.getItem("theme");if(t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme:dark)").matches))document.documentElement.classList.add("dark")})()`,
+              `(function(){var t=localStorage.getItem("k8scenter-theme");if(t)document.documentElement.dataset.theme=t;var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
           }}
         />
       </head>
-      <body class="h-full bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+      <body class="h-full">
         <Component />
       </body>
     </html>
