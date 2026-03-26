@@ -17,8 +17,13 @@ export function GaugeRing({
   secondaryColor,
   label,
 }: GaugeRingProps) {
+  // Use Math.random instead of crypto.randomUUID — the latter requires
+  // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
   const gradientId = useMemo(
-    () => (secondaryColor ? `gauge-${crypto.randomUUID().slice(0, 8)}` : null),
+    () =>
+      secondaryColor
+        ? `gauge-${Math.random().toString(36).slice(2, 10)}`
+        : null,
     [secondaryColor],
   );
 

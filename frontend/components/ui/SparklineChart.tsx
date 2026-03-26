@@ -10,8 +10,10 @@ interface SparklineChartProps {
 export function SparklineChart(
   { data, color, width = 100, height = 28 }: SparklineChartProps,
 ) {
+  // Use Math.random instead of crypto.randomUUID — the latter requires
+  // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
   const gradientId = useMemo(
-    () => `spark-${crypto.randomUUID().slice(0, 8)}`,
+    () => `spark-${Math.random().toString(36).slice(2, 10)}`,
     [],
   );
 
