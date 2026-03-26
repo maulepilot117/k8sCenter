@@ -340,3 +340,234 @@ export const NAV_SECTIONS = [
     ],
   },
 ] as const;
+
+/** Domain-oriented navigation for the redesigned icon rail. */
+export interface DomainSection {
+  id: string;
+  label: string;
+  icon: string;
+  href: string;
+  tabs?: { label: string; href: string; kind?: string; count?: boolean }[];
+}
+
+export const DOMAIN_SECTIONS: DomainSection[] = [
+  {
+    id: "overview",
+    label: "Overview",
+    icon: "grid",
+    href: "/",
+  },
+  {
+    id: "workloads",
+    label: "Workloads",
+    icon: "box",
+    href: "/workloads",
+    tabs: [
+      {
+        label: "Deployments",
+        href: "/workloads/deployments",
+        kind: "deployments",
+        count: true,
+      },
+      {
+        label: "StatefulSets",
+        href: "/workloads/statefulsets",
+        kind: "statefulsets",
+        count: true,
+      },
+      {
+        label: "DaemonSets",
+        href: "/workloads/daemonsets",
+        kind: "daemonsets",
+        count: true,
+      },
+      { label: "Pods", href: "/workloads/pods", kind: "pods", count: true },
+      { label: "Jobs", href: "/workloads/jobs", kind: "jobs", count: true },
+      {
+        label: "CronJobs",
+        href: "/workloads/cronjobs",
+        kind: "cronjobs",
+        count: true,
+      },
+      {
+        label: "ReplicaSets",
+        href: "/workloads/replicasets",
+        kind: "replicasets",
+        count: true,
+      },
+    ],
+  },
+  {
+    id: "network",
+    label: "Network",
+    icon: "globe",
+    href: "/networking",
+    tabs: [
+      {
+        label: "Services",
+        href: "/networking/services",
+        kind: "services",
+        count: true,
+      },
+      {
+        label: "Ingresses",
+        href: "/networking/ingresses",
+        kind: "ingresses",
+        count: true,
+      },
+      {
+        label: "Network Policies",
+        href: "/networking/networkpolicies",
+        kind: "networkpolicies",
+        count: true,
+      },
+      {
+        label: "Cilium Policies",
+        href: "/networking/cilium-policies",
+        kind: "ciliumnetworkpolicies",
+        count: true,
+      },
+      { label: "Flows", href: "/networking/flows" },
+      { label: "CNI", href: "/networking/cni" },
+      {
+        label: "Endpoints",
+        href: "/networking/endpoints",
+        kind: "endpoints",
+        count: true,
+      },
+    ],
+  },
+  {
+    id: "storage",
+    label: "Storage",
+    icon: "harddrive",
+    href: "/storage",
+    tabs: [
+      { label: "Overview", href: "/storage/overview" },
+      {
+        label: "PVCs",
+        href: "/storage/pvcs",
+        kind: "persistentvolumeclaims",
+        count: true,
+      },
+      {
+        label: "PVs",
+        href: "/cluster/pvs",
+        kind: "persistentvolumes",
+        count: true,
+      },
+      {
+        label: "Storage Classes",
+        href: "/cluster/storageclasses",
+        kind: "storageclasses",
+        count: true,
+      },
+      { label: "Snapshots", href: "/storage/snapshots" },
+    ],
+  },
+  {
+    id: "config",
+    label: "Config",
+    icon: "sliders",
+    href: "/config",
+    tabs: [
+      {
+        label: "ConfigMaps",
+        href: "/config/configmaps",
+        kind: "configmaps",
+        count: true,
+      },
+      {
+        label: "Secrets",
+        href: "/config/secrets",
+        kind: "secrets",
+        count: true,
+      },
+      {
+        label: "Service Accounts",
+        href: "/config/serviceaccounts",
+        kind: "serviceaccounts",
+        count: true,
+      },
+      {
+        label: "Resource Quotas",
+        href: "/config/resourcequotas",
+        kind: "resourcequotas",
+        count: true,
+      },
+      {
+        label: "Limit Ranges",
+        href: "/config/limitranges",
+        kind: "limitranges",
+        count: true,
+      },
+    ],
+  },
+  {
+    id: "security",
+    label: "Security",
+    icon: "shield",
+    href: "/rbac",
+    tabs: [
+      { label: "Overview", href: "/rbac/overview" },
+      { label: "Roles", href: "/rbac/roles", kind: "roles", count: true },
+      {
+        label: "Cluster Roles",
+        href: "/rbac/clusterroles",
+        kind: "clusterroles",
+        count: true,
+      },
+      {
+        label: "Role Bindings",
+        href: "/rbac/rolebindings",
+        kind: "rolebindings",
+        count: true,
+      },
+      {
+        label: "Cluster Role Bindings",
+        href: "/rbac/clusterrolebindings",
+        kind: "clusterrolebindings",
+        count: true,
+      },
+      { label: "Webhooks", href: "/admin/validatingwebhooks" },
+    ],
+  },
+  {
+    id: "observability",
+    label: "Observability",
+    icon: "activity",
+    href: "/monitoring",
+    tabs: [
+      { label: "Overview", href: "/monitoring" },
+      { label: "Dashboards", href: "/monitoring/dashboards" },
+      { label: "Prometheus", href: "/monitoring/prometheus" },
+      { label: "Active Alerts", href: "/alerting" },
+      { label: "Alert Rules", href: "/alerting/rules" },
+      { label: "Alert Settings", href: "/alerting/settings" },
+    ],
+  },
+  {
+    id: "tools",
+    label: "Tools",
+    icon: "wrench",
+    href: "/tools",
+    tabs: [
+      { label: "YAML Apply", href: "/tools/yaml-apply" },
+      { label: "StorageClass Wizard", href: "/tools/storageclass-wizard" },
+    ],
+  },
+];
+
+export const SETTINGS_SECTION: DomainSection = {
+  id: "settings",
+  label: "Settings",
+  icon: "settings",
+  href: "/settings/general",
+  tabs: [
+    { label: "General", href: "/settings/general" },
+    { label: "Clusters", href: "/settings/clusters" },
+    { label: "Users", href: "/settings/users" },
+    { label: "Authentication", href: "/settings/auth" },
+    { label: "Audit Log", href: "/settings/audit" },
+  ],
+};
