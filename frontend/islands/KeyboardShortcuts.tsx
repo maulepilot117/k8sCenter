@@ -73,7 +73,7 @@ export default function KeyboardShortcuts() {
  <span class="text-text-secondary">
  {s.description}
  </span>
- <kbd class="rounded bg-elevated px-2 py-0.5 font-mono text-xs text-text-secondary bg-elevated text-text-secondary">
+ <kbd class="rounded bg-elevated px-2 py-0.5 font-mono text-xs text-text-secondary">
  {s.key}
  </kbd>
  </div>
