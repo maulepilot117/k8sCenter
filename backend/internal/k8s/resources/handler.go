@@ -19,6 +19,19 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// UtilizationProvider abstracts Prometheus metric queries for CPU/memory.
+// Used by the dashboard summary endpoint. Can be nil if monitoring is unavailable.
+type UtilizationProvider interface {
+	CPUPercent(ctx context.Context) (float64, error)
+	MemoryPercent(ctx context.Context) (float64, error)
+}
+
+// AlertCounter abstracts counting active alerts without importing the alerting package.
+// Used by the dashboard summary endpoint. Can be nil if alerting is unavailable.
+type AlertCounter interface {
+	ActiveAlertCounts(ctx context.Context) (active int, critical int, err error)
+}
+
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
 	K8sClient       *k8s.ClientFactory
@@ -29,6 +42,8 @@ type Handler struct {
 	Logger          *slog.Logger
 	TaskManager     *TaskManager
 	ClusterID       string
+	Utilization     UtilizationProvider // Optional — nil if monitoring unavailable
+	Alerts          AlertCounter        // Optional — nil if alerting unavailable
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool

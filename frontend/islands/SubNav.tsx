@@ -1,9 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
+import { api } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { CLUSTER_SCOPED_KINDS } from "@/lib/constants.ts";
 
 interface SubNavTab {
   label: string;
@@ -47,28 +46,42 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
     }
     counts.value = initial;
 
-    const promises = countTabs.map(async (t) => {
-      try {
-        const isClusterScoped = CLUSTER_SCOPED_KINDS.has(t.kind!);
-        const nsPath = !isClusterScoped && namespace && namespace !== "all"
-          ? `/${namespace}`
-          : "";
-        const res = await apiGet<unknown>(
-          `/v1/resources/${t.kind}${nsPath}?limit=1`,
-        );
-        return { kind: t.kind!, count: res.metadata?.total ?? 0 };
-      } catch {
-        return { kind: t.kind!, count: 0 };
-      }
-    });
+    // Single batch call replaces N individual ?limit=1 requests.
+    // Debounce by 150ms to avoid rapid-fire fetches when namespace
+    // changes quickly (e.g. keyboard navigation through the selector).
+    const controller = new AbortController();
+    const nsParam = namespace && namespace !== "all"
+      ? `?namespace=${encodeURIComponent(namespace)}`
+      : "";
 
-    Promise.all(promises).then((results) => {
-      const updated: Record<string, number | null> = {};
-      for (const r of results) {
-        updated[r.kind] = r.count;
-      }
-      counts.value = updated;
-    });
+    const timer = setTimeout(() => {
+      api<Record<string, number>>(`/v1/resources/counts${nsParam}`, {
+        method: "GET",
+        signal: controller.signal,
+      })
+        .then((res) => {
+          const updated: Record<string, number | null> = {};
+          const data = res.data ?? {};
+          for (const t of countTabs) {
+            updated[t.kind!] = data[t.kind!] ?? 0;
+          }
+          counts.value = updated;
+        })
+        .catch((err) => {
+          if (err.name === "AbortError") return;
+          // Fallback: zero counts on error
+          const zeroed: Record<string, number | null> = {};
+          for (const t of countTabs) {
+            zeroed[t.kind!] = 0;
+          }
+          counts.value = zeroed;
+        });
+    }, 150);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [namespace, tabs]);
 
   if (!IS_BROWSER) {

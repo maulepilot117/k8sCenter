@@ -35,6 +35,150 @@
   --info: #40c4ff;
 }
 
+/* ── Dracula ── */
+[data-theme="dracula"] {
+  --bg-base: #282a36;
+  --bg-surface: #2d2f3d;
+  --bg-elevated: #343746;
+  --bg-hover: #3e4155;
+  --border-primary: #44475a;
+  --border-subtle: #383b4a;
+  --text-primary: #f8f8f2;
+  --text-secondary: #c0c0d0;
+  --text-muted: #6272a4;
+  --accent: #bd93f9;
+  --accent-glow: rgba(189, 147, 249, 0.15);
+  --accent-dim: rgba(189, 147, 249, 0.08);
+  --accent-secondary: #ff79c6;
+  --success: #50fa7b;
+  --success-dim: rgba(80, 250, 123, 0.12);
+  --warning: #f1fa8c;
+  --warning-dim: rgba(241, 250, 140, 0.12);
+  --error: #ff5555;
+  --error-dim: rgba(255, 85, 85, 0.12);
+  --info: #8be9fd;
+}
+
+/* ── Tokyo Night ── */
+[data-theme="tokyo-night"] {
+  --bg-base: #1a1b26;
+  --bg-surface: #1e2030;
+  --bg-elevated: #24283b;
+  --bg-hover: #2a2e42;
+  --border-primary: #29293d;
+  --border-subtle: #232338;
+  --text-primary: #a9b1d6;
+  --text-secondary: #8890ab;
+  --text-muted: #565f89;
+  --accent: #7aa2f7;
+  --accent-glow: rgba(122, 162, 247, 0.15);
+  --accent-dim: rgba(122, 162, 247, 0.08);
+  --accent-secondary: #bb9af7;
+  --success: #9ece6a;
+  --success-dim: rgba(158, 206, 106, 0.12);
+  --warning: #e0af68;
+  --warning-dim: rgba(224, 175, 104, 0.12);
+  --error: #f7768e;
+  --error-dim: rgba(247, 118, 142, 0.12);
+  --info: #7dcfff;
+}
+
+/* ── Catppuccin Mocha ── */
+[data-theme="catppuccin"] {
+  --bg-base: #1e1e2e;
+  --bg-surface: #24243a;
+  --bg-elevated: #313244;
+  --bg-hover: #3b3c50;
+  --border-primary: #45475a;
+  --border-subtle: #383850;
+  --text-primary: #cdd6f4;
+  --text-secondary: #bac2de;
+  --text-muted: #6c7086;
+  --accent: #89b4fa;
+  --accent-glow: rgba(137, 180, 250, 0.15);
+  --accent-dim: rgba(137, 180, 250, 0.08);
+  --accent-secondary: #cba6f7;
+  --success: #a6e3a1;
+  --success-dim: rgba(166, 227, 161, 0.12);
+  --warning: #fab387;
+  --warning-dim: rgba(250, 179, 135, 0.12);
+  --error: #f38ba8;
+  --error-dim: rgba(243, 139, 168, 0.12);
+  --info: #89dceb;
+}
+
+/* ── Nord ── */
+[data-theme="nord"] {
+  --bg-base: #2e3440;
+  --bg-surface: #333a47;
+  --bg-elevated: #3b4252;
+  --bg-hover: #434c5e;
+  --border-primary: #4c566a;
+  --border-subtle: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #7b88a1;
+  --accent: #88c0d0;
+  --accent-glow: rgba(136, 192, 208, 0.15);
+  --accent-dim: rgba(136, 192, 208, 0.08);
+  --accent-secondary: #b48ead;
+  --success: #a3be8c;
+  --success-dim: rgba(163, 190, 140, 0.12);
+  --warning: #ebcb8b;
+  --warning-dim: rgba(235, 203, 139, 0.12);
+  --error: #bf616a;
+  --error-dim: rgba(191, 97, 106, 0.12);
+  --info: #81a1c1;
+}
+
+/* ── One Dark ── */
+[data-theme="one-dark"] {
+  --bg-base: #282c34;
+  --bg-surface: #2c313a;
+  --bg-elevated: #333842;
+  --bg-hover: #3e4451;
+  --border-primary: #3e4452;
+  --border-subtle: #353b45;
+  --text-primary: #abb2bf;
+  --text-secondary: #9da5b4;
+  --text-muted: #5c6370;
+  --accent: #61afef;
+  --accent-glow: rgba(97, 175, 239, 0.15);
+  --accent-dim: rgba(97, 175, 239, 0.08);
+  --accent-secondary: #c678dd;
+  --success: #98c379;
+  --success-dim: rgba(152, 195, 121, 0.12);
+  --warning: #e5c07b;
+  --warning-dim: rgba(229, 192, 123, 0.12);
+  --error: #e06c75;
+  --error-dim: rgba(224, 108, 117, 0.12);
+  --info: #56b6c2;
+}
+
+/* ── Gruvbox ── */
+[data-theme="gruvbox"] {
+  --bg-base: #1d2021;
+  --bg-surface: #282828;
+  --bg-elevated: #3c3836;
+  --bg-hover: #504945;
+  --border-primary: #504945;
+  --border-subtle: #3c3836;
+  --text-primary: #ebdbb2;
+  --text-secondary: #d5c4a1;
+  --text-muted: #928374;
+  --accent: #83a598;
+  --accent-glow: rgba(131, 165, 152, 0.15);
+  --accent-dim: rgba(131, 165, 152, 0.08);
+  --accent-secondary: #d3869b;
+  --success: #b8bb26;
+  --success-dim: rgba(184, 187, 38, 0.12);
+  --warning: #fabd2f;
+  --warning-dim: rgba(250, 189, 47, 0.12);
+  --error: #fb4934;
+  --error-dim: rgba(251, 73, 52, 0.12);
+  --info: #8ec07c;
+}
+
 /* ── Bridge CSS variables into Tailwind v4 ── */
 @theme {
   --color-base: var(--bg-base);

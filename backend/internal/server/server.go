@@ -121,6 +121,18 @@ func New(deps Deps) *Server {
 			// Fallback for tests that don't provide an AccessChecker
 			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
 		}
+		// Build optional UtilizationProvider if monitoring is available
+		var utilProvider resources.UtilizationProvider
+		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
+			utilProvider = &monitoring.UtilizationAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+		}
+
+		// Build optional AlertCounter if alerting is available
+		var alertCounter resources.AlertCounter
+		if deps.AlertingHandler != nil && deps.AlertingHandler.Store != nil {
+			alertCounter = &alerting.AlertCountAdapter{Store: deps.AlertingHandler.Store}
+		}
+
 		s.ResourceHandler = &resources.Handler{
 			K8sClient:       deps.K8sClient,
 			ClusterRouter:   deps.ClusterRouter,
@@ -130,6 +142,8 @@ func New(deps Deps) *Server {
 			Logger:          deps.Logger,
 			TaskManager:     resources.NewTaskManager(),
 			ClusterID:       deps.Config.ClusterID,
+			Utilization:     utilProvider,
+			Alerts:          alertCounter,
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{

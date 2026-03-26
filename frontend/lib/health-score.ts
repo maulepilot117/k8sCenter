@@ -5,7 +5,6 @@ export interface HealthMetrics {
   podsRunning: number;
   podsPending: number;
   podsFailed: number;
-  servicesTotal: number;
   activeAlerts: number;
   criticalAlerts: number;
 }
@@ -14,15 +13,13 @@ export interface HealthScore {
   overall: number;
   nodes: number;
   pods: number;
-  services: number;
   alerts: number;
 }
 
 const WEIGHTS = {
-  nodes: 0.30,
-  pods: 0.30,
-  services: 0.15,
-  alerts: 0.25,
+  nodes: 0.35,
+  pods: 0.35,
+  alerts: 0.30,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -43,9 +40,6 @@ export function calculateHealthScore(metrics: HealthMetrics): HealthScore {
     pods = clamp(runningRatio - penalty, 0, 100);
   }
 
-  // Services: 100 if any exist
-  const services = metrics.servicesTotal > 0 ? 100 : 0;
-
   // Alerts: deduct for active/critical
   const alerts = clamp(
     100 - (metrics.activeAlerts * 3 + metrics.criticalAlerts * 10),
@@ -56,7 +50,6 @@ export function calculateHealthScore(metrics: HealthMetrics): HealthScore {
   const overall = Math.round(
     nodes * WEIGHTS.nodes +
       pods * WEIGHTS.pods +
-      services * WEIGHTS.services +
       alerts * WEIGHTS.alerts,
   );
 
@@ -64,7 +57,6 @@ export function calculateHealthScore(metrics: HealthMetrics): HealthScore {
     overall: clamp(overall, 0, 100),
     nodes: Math.round(nodes),
     pods: Math.round(pods),
-    services: Math.round(services),
     alerts: Math.round(alerts),
   };
 }

@@ -72,19 +72,27 @@ export default function WorkloadsDashboard(
 
     const fetchSummary = async () => {
       try {
-        const [deploymentsRes, podsRes] = await Promise.all([
+        const nsParam = namespace && namespace !== "all"
+          ? `?namespace=${encodeURIComponent(namespace)}`
+          : "";
+
+        // Batch counts for totals + detailed fetches for status breakdowns
+        const [countsRes, deploymentsRes, podsRes] = await Promise.all([
+          apiGet<Record<string, number>>(
+            `/v1/resources/counts${nsParam}`,
+          ),
           apiGet<{
             data: Array<{ status?: Record<string, unknown> }>;
-            metadata?: { total: number };
           }>(`/v1/resources/deployments${nsPath}?limit=500`),
           apiGet<{
             data: Array<{ status?: { phase?: string } }>;
-            metadata?: { total: number };
           }>(`/v1/resources/pods${nsPath}?limit=500`),
         ]);
 
+        const countsData = countsRes.data ?? {};
+
         const deps = deploymentsRes.data ?? [];
-        const totalDeps = deploymentsRes.metadata?.total ?? deps.length;
+        const totalDeps = countsData["deployments"] ?? deps.length;
         let availableDeps = 0;
         for (const d of deps) {
           const available = (d.status as Record<string, unknown>)
@@ -93,7 +101,7 @@ export default function WorkloadsDashboard(
         }
 
         const pods = podsRes.data ?? [];
-        const totalPods = podsRes.metadata?.total ?? pods.length;
+        const totalPods = countsData["pods"] ?? pods.length;
         let running = 0;
         let pending = 0;
         let failed = 0;

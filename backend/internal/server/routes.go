@@ -76,6 +76,11 @@ func (s *Server) registerRoutes() {
 			ar.Get("/auth/me", s.handleAuthMe)
 			ar.Get("/cluster/info", s.handleClusterInfo)
 
+			// Dashboard summary — aggregated cluster health data
+			if s.ResourceHandler != nil {
+				ar.Get("/cluster/dashboard-summary", s.ResourceHandler.HandleDashboardSummary)
+			}
+
 			// Resource routes — only registered if k8s dependencies are available
 			if s.ResourceHandler != nil {
 				s.registerResourceRoutes(ar)
@@ -156,6 +161,9 @@ func (s *Server) registerResourceRoutes(ar chi.Router) {
 
 	// Task polling endpoint (no name/namespace params to validate)
 	ar.Get("/tasks/{taskID}", h.HandleGetTask)
+
+	// Batch resource counts (no name/namespace params to validate)
+	ar.Get("/resources/counts", h.HandleResourceCounts)
 
 	// All resource routes validate {name}/{namespace} URL params
 	ar.Group(func(rr chi.Router) {
