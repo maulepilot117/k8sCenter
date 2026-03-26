@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
+import { api } from "@/lib/api.ts";
 
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
@@ -33,66 +33,45 @@ interface DashboardSummary {
   memory: { percentage: number } | null;
 }
 
-interface UtilData {
-  value: number;
-  used: string;
-  total: string;
-}
-
 const REFRESH_INTERVAL = 60_000;
 
 export default function DashboardV2() {
   const clusterInfo = useSignal<ClusterInfoData | null>(null);
   const summary = useSignal<DashboardSummary | null>(null);
   const events = useSignal<K8sEvent[]>([]);
-  const cpuUtil = useSignal<UtilData | null>(null);
-  const memUtil = useSignal<UtilData | null>(null);
   const loading = useSignal(true);
 
-  async function fetchSummary() {
-    const summaryRes = await apiGet<DashboardSummary>(
+  async function fetchSummary(signal?: AbortSignal) {
+    const summaryRes = await api<DashboardSummary>(
       "/v1/cluster/dashboard-summary",
+      { method: "GET", signal },
     );
     if (summaryRes.data) {
       summary.value = summaryRes.data;
-
-      // Extract CPU utilization
-      if (summaryRes.data.cpu) {
-        const val = summaryRes.data.cpu.percentage;
-        cpuUtil.value = {
-          value: val,
-          used: `${val.toFixed(1)}%`,
-          total: "100%",
-        };
-      } else {
-        cpuUtil.value = null;
-      }
-
-      // Extract Memory utilization
-      if (summaryRes.data.memory) {
-        const val = summaryRes.data.memory.percentage;
-        memUtil.value = {
-          value: val,
-          used: `${val.toFixed(1)}%`,
-          total: "100%",
-        };
-      } else {
-        memUtil.value = null;
-      }
     }
   }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
 
+    const controller = new AbortController();
+
     async function load() {
       loading.value = true;
 
       const [infoRes, _summaryResult, eventsRes] = await Promise.allSettled([
-        apiGet<ClusterInfoData>("/v1/cluster/info"),
-        fetchSummary(),
-        apiGet<K8sEvent[]>("/v1/resources/events?limit=10"),
+        api<ClusterInfoData>("/v1/cluster/info", {
+          method: "GET",
+          signal: controller.signal,
+        }),
+        fetchSummary(controller.signal),
+        api<K8sEvent[]>("/v1/resources/events?limit=10", {
+          method: "GET",
+          signal: controller.signal,
+        }),
       ]);
+
+      if (controller.signal.aborted) return;
 
       if (infoRes.status === "fulfilled") {
         clusterInfo.value = infoRes.value.data;
@@ -119,7 +98,11 @@ export default function DashboardV2() {
         // Keep last known data on error
       }
     }, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
+
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
   }, []);
 
   if (!IS_BROWSER) {
@@ -390,50 +373,28 @@ export default function DashboardV2() {
         }}
       >
         <div style={{ gridColumn: "span 6" }}>
-          {cpuUtil.value
-            ? (
-              <UtilizationGauge
-                title="CPU Utilization"
-                value={cpuUtil.value.value}
-                used={cpuUtil.value.used}
-                total={cpuUtil.value.total}
-                color="var(--accent)"
-                secondaryColor="var(--accent-secondary)"
-              />
-            )
-            : (
-              <UtilizationGauge
-                title="CPU Utilization"
-                value={0}
-                used="N/A"
-                total="N/A"
-                color="var(--accent)"
-                secondaryColor="var(--accent-secondary)"
-              />
-            )}
+          <UtilizationGauge
+            title="CPU Utilization"
+            value={summary.value?.cpu?.percentage ?? 0}
+            used={summary.value?.cpu
+              ? `${summary.value.cpu.percentage.toFixed(1)}%`
+              : "N/A"}
+            total="100%"
+            color="var(--accent)"
+            secondaryColor="var(--accent-secondary)"
+          />
         </div>
         <div style={{ gridColumn: "span 6" }}>
-          {memUtil.value
-            ? (
-              <UtilizationGauge
-                title="Memory Utilization"
-                value={memUtil.value.value}
-                used={memUtil.value.used}
-                total={memUtil.value.total}
-                color="var(--accent-secondary)"
-                secondaryColor="var(--accent)"
-              />
-            )
-            : (
-              <UtilizationGauge
-                title="Memory Utilization"
-                value={0}
-                used="N/A"
-                total="N/A"
-                color="var(--accent-secondary)"
-                secondaryColor="var(--accent)"
-              />
-            )}
+          <UtilizationGauge
+            title="Memory Utilization"
+            value={summary.value?.memory?.percentage ?? 0}
+            used={summary.value?.memory
+              ? `${summary.value.memory.percentage.toFixed(1)}%`
+              : "N/A"}
+            total="100%"
+            color="var(--accent-secondary)"
+            secondaryColor="var(--accent)"
+          />
         </div>
       </div>
 

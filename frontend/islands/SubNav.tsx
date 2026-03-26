@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
+import { api } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 
 interface SubNavTab {
@@ -47,11 +47,15 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
     counts.value = initial;
 
     // Single batch call replaces N individual ?limit=1 requests
+    const controller = new AbortController();
     const nsParam = namespace && namespace !== "all"
       ? `?namespace=${encodeURIComponent(namespace)}`
       : "";
 
-    apiGet<Record<string, number>>(`/v1/resources/counts${nsParam}`)
+    api<Record<string, number>>(`/v1/resources/counts${nsParam}`, {
+      method: "GET",
+      signal: controller.signal,
+    })
       .then((res) => {
         const updated: Record<string, number | null> = {};
         const data = res.data ?? {};
@@ -60,7 +64,8 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
         }
         counts.value = updated;
       })
-      .catch(() => {
+      .catch((err) => {
+        if (err.name === "AbortError") return;
         // Fallback: zero counts on error
         const zeroed: Record<string, number | null> = {};
         for (const t of countTabs) {
@@ -68,6 +73,8 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
         }
         counts.value = zeroed;
       });
+
+    return () => controller.abort();
   }, [namespace, tabs]);
 
   if (!IS_BROWSER) {

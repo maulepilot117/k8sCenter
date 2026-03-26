@@ -3,13 +3,13 @@ package resources
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"golang.org/x/sync/errgroup"
 )
 
 // DashboardSummary is the response payload for GET /api/v1/cluster/dashboard-summary.
@@ -128,19 +128,20 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		promCtx, promCancel := context.WithTimeout(r.Context(), 1*time.Second)
 		defer promCancel()
 
+		var wg sync.WaitGroup
 		var cpuPct, memPct float64
 		var cpuErr, memErr error
 
-		g, gCtx := errgroup.WithContext(promCtx)
-		g.Go(func() error {
-			cpuPct, cpuErr = h.Utilization.CPUPercent(gCtx)
-			return nil // Don't fail the group — we want both to run
-		})
-		g.Go(func() error {
-			memPct, memErr = h.Utilization.MemoryPercent(gCtx)
-			return nil
-		})
-		_ = g.Wait()
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			cpuPct, cpuErr = h.Utilization.CPUPercent(promCtx)
+		}()
+		go func() {
+			defer wg.Done()
+			memPct, memErr = h.Utilization.MemoryPercent(promCtx)
+		}()
+		wg.Wait()
 
 		if cpuErr == nil {
 			summary.CPU = &Utilization{Percentage: cpuPct}
