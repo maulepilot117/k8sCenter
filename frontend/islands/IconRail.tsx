@@ -1,5 +1,5 @@
+// deno-lint-ignore-file react-no-danger
 import { useSignal } from"@preact/signals";
-import { useEffect } from"preact/hooks";
 import { IS_BROWSER } from"fresh/runtime";
 import { useAuth } from"@/lib/auth.ts";
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from"@/lib/constants.ts";

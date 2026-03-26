@@ -31,9 +31,9 @@ const ACTIONS: QuickAction[] = [
 ];
 
 export default function QuickActionsFab() {
- if (!IS_BROWSER) return null;
-
  const expanded = useSignal(false);
+
+ if (!IS_BROWSER) return null;
 
  function toggle() {
  expanded.value = !expanded.value;

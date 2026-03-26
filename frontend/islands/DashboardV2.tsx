@@ -240,7 +240,7 @@ export default function DashboardV2() {
  }}
  >
  {info.platform} &middot; Kubernetes {info.kubernetesVersion}
- {""}&middot; {c.nodes} node{c.nodes !== 1 ?"s" :""}
+ {` \u00B7 ${c.nodes} node${c.nodes !== 1 ?"s" :""}`}
  </p>
  )}
  </div>

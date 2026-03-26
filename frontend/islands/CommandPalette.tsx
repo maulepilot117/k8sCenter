@@ -98,8 +98,6 @@ const TYPE_LABELS: Record<string, string> = {
 const TYPE_ORDER: string[] = ["action","resource","navigation"];
 
 export default function CommandPalette() {
- if (!IS_BROWSER) return null;
-
  const open = useSignal(false);
  const query = useSignal("");
  const selectedIndex = useSignal(0);
@@ -163,14 +161,16 @@ export default function CommandPalette() {
  const handleOpen = () => openPalette();
  globalThis.addEventListener(
 "open-command-palette",
- handleOpen as EventListener,
+ handleOpen,
  );
  return () =>
  globalThis.removeEventListener(
 "open-command-palette",
- handleOpen as EventListener,
+ handleOpen,
  );
  }, []);
+
+ if (!IS_BROWSER) return null;
 
  if (!open.value) return null;
 

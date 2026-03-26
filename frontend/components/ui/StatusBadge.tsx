@@ -1,4 +1,4 @@
-import { statusStyle, statusVariant } from"@/lib/status-colors.ts";
+import { statusStyle } from"@/lib/status-colors.ts";
 import type { StatusVariant } from"@/lib/status-colors.ts";
 
 interface StatusBadgeProps {
