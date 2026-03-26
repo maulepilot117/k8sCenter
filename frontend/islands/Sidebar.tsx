@@ -13,30 +13,38 @@ interface SidebarProps {
 
 export default function Sidebar({ currentPath }: SidebarProps) {
   const { user } = useAuth();
-  // Reactive — re-evaluates when user signal changes (e.g., after login)
   const userIsAdmin = useComputed(() =>
     user.value?.roles?.includes("admin") ?? false
   );
-  const collapsed = useSignal<Record<string, boolean>>({});
-  const appVersion = useSignal("");
   const navRef = useRef<HTMLElement>(null);
+  const appVersion = useSignal("");
+
+  // Restore collapsed state from sessionStorage
+  const savedCollapsed = IS_BROWSER
+    ? sessionStorage.getItem("sidebar-collapsed")
+    : null;
+  const collapsed = useSignal<Record<string, boolean>>(
+    savedCollapsed ? JSON.parse(savedCollapsed) : {},
+  );
 
   // Restore nav scroll position after hydration.
-  // Use requestAnimationFrame to ensure the nav has its full rendered height
-  // before setting scrollTop (otherwise it gets clamped to 0).
+  // Use a double-rAF to ensure all sections are rendered and expanded/collapsed
+  // before setting scrollTop.
   useEffect(() => {
     if (!IS_BROWSER || !navRef.current) return;
     const saved = sessionStorage.getItem("sidebar-scroll");
     if (saved) {
       const pos = parseInt(saved, 10);
-      // Defer to next frame so the browser has laid out the full nav content
+      // Double rAF: first frame lays out DOM, second frame applies scroll
       requestAnimationFrame(() => {
-        if (navRef.current) navRef.current.scrollTop = pos;
+        requestAnimationFrame(() => {
+          if (navRef.current) navRef.current.scrollTop = pos;
+        });
       });
     }
   }, []);
 
-  // Save scroll position on every scroll and before navigation
+  // Save scroll position continuously
   const saveScrollPos = useCallback(() => {
     if (navRef.current) {
       sessionStorage.setItem(
@@ -46,19 +54,11 @@ export default function Sidebar({ currentPath }: SidebarProps) {
     }
   }, []);
 
-  // Also save on beforeunload (catches navigation that doesn't trigger scroll)
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    globalThis.addEventListener("beforeunload", saveScrollPos);
-    return () => globalThis.removeEventListener("beforeunload", saveScrollPos);
-  }, []);
-
   useEffect(() => {
     if (!IS_BROWSER) return;
     let cancelled = false;
 
     async function init() {
-      // Wait for auth token to be available (set after login/refresh)
       for (let i = 0; i < 20; i++) {
         if (getAccessToken()) break;
         await new Promise((r) => setTimeout(r, 500));
@@ -67,13 +67,11 @@ export default function Sidebar({ currentPath }: SidebarProps) {
       const token = getAccessToken();
       if (!token) return;
 
-      // Fetch user info (populates admin role for Settings visibility)
       if (!user.value) {
         await fetchCurrentUser();
         if (cancelled) return;
       }
 
-      // Fetch version info
       try {
         const res = await fetch("/api/v1/cluster/info", {
           headers: {
@@ -98,10 +96,20 @@ export default function Sidebar({ currentPath }: SidebarProps) {
   }, []);
 
   function toggleSection(title: string) {
-    collapsed.value = {
+    const next = {
       ...collapsed.value,
       [title]: !collapsed.value[title],
     };
+    collapsed.value = next;
+    // Persist collapsed state so it survives navigation
+    if (IS_BROWSER) {
+      sessionStorage.setItem("sidebar-collapsed", JSON.stringify(next));
+    }
+  }
+
+  // Save scroll position right before navigating (click on any nav link)
+  function handleNavClick() {
+    saveScrollPos();
   }
 
   return (
@@ -119,7 +127,6 @@ export default function Sidebar({ currentPath }: SidebarProps) {
         class="flex-1 overflow-y-auto py-2"
       >
         {NAV_SECTIONS.filter((section) =>
-          // Hide "Settings" section for non-admin users
           section.title !== "Settings" || userIsAdmin.value
         ).map((section) => (
           <div key={section.title} class="mb-1">
@@ -149,6 +156,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
                     <li key={item.href}>
                       <a
                         href={item.href}
+                        onClick={handleNavClick}
                         class={`flex items-center gap-2.5 px-4 py-1.5 text-sm transition-colors ${
                           isActive
                             ? "bg-sidebar-active/20 text-white border-r-2 border-sidebar-active"
