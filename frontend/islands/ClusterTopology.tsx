@@ -168,7 +168,14 @@ export default function ClusterTopology() {
       if (count === 0) return;
       const spacing = h / (count + 1);
       items.forEach((item, i) => {
-        const abbr = item.label.substring(0, 2).toUpperCase();
+        const kindAbbr: Record<string, string> = {
+          node: "N",
+          service: "SVC",
+          pod: "P",
+          ingress: "ING",
+        };
+        const abbr = kindAbbr[item.kind] ??
+          item.kind.substring(0, 2).toUpperCase();
         topoNodes.push({
           ...item,
           abbr,
