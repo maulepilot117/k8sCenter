@@ -26,7 +26,7 @@ export function SparklineChart(
  return `${x},${y}`;
  });
 
- const polyline = points.join("");
+ const polyline = points.join(" ");
  const areaPath =
  `M0,${height} L${points.map((p) => `${p}`).join(" L")} L${width},${height} Z`;
 

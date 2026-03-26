@@ -65,10 +65,18 @@ function matchesSelector(
  return Object.entries(selector).every(([k, v]) => labels[k] === v);
 }
 
+interface RawData {
+ k8sNodes: K8sNode[];
+ k8sSvcs: K8sService[];
+ k8sPods: K8sPod[];
+ k8sIngresses: K8sIngress[];
+}
+
 export default function ClusterTopology() {
  const nodes = useSignal<TopoNode[]>([]);
  const edges = useSignal<TopoEdge[]>([]);
  const loading = useSignal(true);
+ const rawData = useSignal<RawData | null>(null);
  const containerRef = useRef<HTMLDivElement>(null);
  const dimensions = useSignal({ width: 600, height: 240 });
 
@@ -100,7 +108,7 @@ export default function ClusterTopology() {
  };
  }, []);
 
- // Fetch data and compute layout
+ // Fetch data once on mount
  useEffect(() => {
  if (!IS_BROWSER) return;
 
@@ -114,26 +122,36 @@ export default function ClusterTopology() {
  apiGet<K8sIngress[]>("/v1/resources/ingresses"),
  ]);
 
- const k8sNodes =
+ rawData.value = {
+ k8sNodes:
  (nodesRes.status ==="fulfilled" && Array.isArray(nodesRes.value.data)
  ? nodesRes.value.data
- : []).slice(0, MAX_NODES);
-
- const k8sSvcs =
+ : []).slice(0, MAX_NODES),
+ k8sSvcs:
  (svcsRes.status ==="fulfilled" && Array.isArray(svcsRes.value.data)
  ? svcsRes.value.data
- : []).slice(0, MAX_SERVICES);
-
- const k8sPods =
+ : []).slice(0, MAX_SERVICES),
+ k8sPods:
  (podsRes.status ==="fulfilled" && Array.isArray(podsRes.value.data)
  ? podsRes.value.data
- : []).slice(0, MAX_PODS);
-
- const k8sIngresses =
+ : []).slice(0, MAX_PODS),
+ k8sIngresses:
  (ingRes.status ==="fulfilled" && Array.isArray(ingRes.value.data)
  ? ingRes.value.data
- : []).slice(0, MAX_INGRESSES);
+ : []).slice(0, MAX_INGRESSES),
+ };
 
+ loading.value = false;
+ }
+
+ load();
+ }, []);
+
+ // Compute layout from raw data + dimensions (re-runs on resize without re-fetching)
+ useEffect(() => {
+ if (!rawData.value) return;
+
+ const { k8sNodes, k8sSvcs, k8sPods, k8sIngresses } = rawData.value;
  const w = dimensions.value.width;
  const h = dimensions.value.height;
 
@@ -264,11 +282,7 @@ export default function ClusterTopology() {
 
  nodes.value = topoNodes;
  edges.value = topoEdges;
- loading.value = false;
- }
-
- load();
- }, [dimensions.value.width, dimensions.value.height]);
+ }, [dimensions.value.width, dimensions.value.height, rawData.value]);
 
  if (!IS_BROWSER) {
  return <div style={{ minHeight:"200px" }} />;
