@@ -60,7 +60,6 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	_ = user // Dashboard summary uses informer cache, no impersonation needed for reads
 
 	// Check for local cluster only
 	clusterID := middleware.ClusterIDFromContext(r.Context())
@@ -71,48 +70,56 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 
 	summary := DashboardSummary{}
 
-	// Node counts from informer
-	nodes, err := h.Informers.Nodes().List(labels.Everything())
-	if err == nil {
-		summary.Nodes.Total = len(nodes)
-		for _, n := range nodes {
-			for _, c := range n.Status.Conditions {
-				if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-					summary.Nodes.Ready++
-					break
+	// Node counts from informer (cluster-scoped: namespace="")
+	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", ""); allowed {
+		nodes, err := h.Informers.Nodes().List(labels.Everything())
+		if err == nil {
+			summary.Nodes.Total = len(nodes)
+			for _, n := range nodes {
+				for _, c := range n.Status.Conditions {
+					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+						summary.Nodes.Ready++
+						break
+					}
 				}
 			}
 		}
 	}
 
-	// Pod counts from informer
-	pods, err := h.Informers.Pods().List(labels.Everything())
-	if err == nil {
-		summary.Pods.Total = len(pods)
-		for _, p := range pods {
-			switch p.Status.Phase {
-			case corev1.PodRunning:
-				summary.Pods.Running++
-			case corev1.PodPending:
-				summary.Pods.Pending++
-			case corev1.PodFailed:
-				summary.Pods.Failed++
+	// Pod counts from informer (cluster-wide)
+	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ""); allowed {
+		pods, err := h.Informers.Pods().List(labels.Everything())
+		if err == nil {
+			summary.Pods.Total = len(pods)
+			for _, p := range pods {
+				switch p.Status.Phase {
+				case corev1.PodRunning:
+					summary.Pods.Running++
+				case corev1.PodPending:
+					summary.Pods.Pending++
+				case corev1.PodFailed:
+					summary.Pods.Failed++
+				}
 			}
 		}
 	}
 
-	// Service count from informer
-	services, err := h.Informers.Services().List(labels.Everything())
-	if err == nil {
-		summary.Services.Total = len(services)
+	// Service count from informer (cluster-wide)
+	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "services", ""); allowed {
+		services, err := h.Informers.Services().List(labels.Everything())
+		if err == nil {
+			summary.Services.Total = len(services)
+		}
 	}
 
 	// Alert counts from alerting store
 	if h.Alerts != nil {
-		active, critical, err := h.Alerts.ActiveAlertCounts(r.Context())
-		if err == nil {
-			summary.Alerts.Active = active
-			summary.Alerts.Critical = critical
+		if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "alertmanagers", ""); allowed {
+			active, critical, err := h.Alerts.ActiveAlertCounts(r.Context())
+			if err == nil {
+				summary.Alerts.Active = active
+				summary.Alerts.Critical = critical
+			}
 		}
 	}
 
