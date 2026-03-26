@@ -27,22 +27,22 @@ export default function Sidebar({ currentPath }: SidebarProps) {
     savedCollapsed ? JSON.parse(savedCollapsed) : {},
   );
 
-  // Restore nav scroll position after hydration.
-  // Use a double-rAF to ensure all sections are rendered and expanded/collapsed
-  // before setting scrollTop.
+  // Restore nav scroll position after hydration AND after admin sections render.
+  // The Settings section only appears after the async auth fetch completes
+  // (userIsAdmin changes from false → true), which adds content and shifts
+  // the scroll height. Re-run restore whenever userIsAdmin changes.
   useEffect(() => {
     if (!IS_BROWSER || !navRef.current) return;
     const saved = sessionStorage.getItem("sidebar-scroll");
     if (saved) {
       const pos = parseInt(saved, 10);
-      // Double rAF: first frame lays out DOM, second frame applies scroll
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (navRef.current) navRef.current.scrollTop = pos;
         });
       });
     }
-  }, []);
+  }, [userIsAdmin.value]);
 
   // Save scroll position continuously
   const saveScrollPos = useCallback(() => {
