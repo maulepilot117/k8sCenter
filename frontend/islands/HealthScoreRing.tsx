@@ -63,20 +63,22 @@ export default function HealthScoreRing(
       <GaugeRing
         value={score.overall}
         size={160}
-        strokeWidth={10}
+        strokeWidth={8}
         color="var(--accent)"
         secondaryColor="var(--success)"
         label="Health"
+        displayValue={String(score.overall)}
+        valueSize="42px"
+        valueGradient
       />
 
       {/* Sub-scores */}
       <div
         style={{
-          display: "flex",
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
           gap: "8px",
           width: "100%",
-          justifyContent: "center",
-          flexWrap: "wrap",
         }}
       >
         {subScores.map((sub) => (
@@ -89,13 +91,14 @@ export default function HealthScoreRing(
               padding: "8px 12px",
               borderRadius: "8px",
               background: "var(--bg-elevated)",
-              minWidth: "64px",
+              border: "1px solid var(--border-subtle)",
             }}
           >
             <span
               style={{
                 fontSize: "18px",
-                fontWeight: 700,
+                fontWeight: 600,
+                fontFamily: "var(--font-mono, monospace)",
                 color: scoreColor(sub.value, sub.category),
               }}
             >
