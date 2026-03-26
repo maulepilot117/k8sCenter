@@ -13,15 +13,15 @@ export type StatusVariant =
 
 export const VARIANT_CLASSES: Record<StatusVariant, string> = {
   success:
-    "bg-green-50 text-green-700 ring-green-600/20 dark:bg-green-500/10 dark:text-green-400 dark:ring-green-500/20",
+    "bg-success/10 text-success ring-success/20",
   warning:
-    "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20",
+    "bg-warning/10 text-warning ring-warning/20",
   danger:
-    "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/20",
+    "bg-danger/10 text-danger ring-danger/20",
   info:
-    "bg-blue-50 text-blue-700 ring-blue-600/20 dark:bg-blue-500/10 dark:text-blue-400 dark:ring-blue-500/20",
+    "bg-accent/10 text-accent ring-accent/20",
   neutral:
-    "bg-slate-50 text-slate-600 ring-slate-500/20 dark:bg-slate-500/10 dark:text-slate-400 dark:ring-slate-500/20",
+    "bg-elevated text-text-muted ring-border-primary/20",
 };
 
 const SUCCESS_STATUSES = new Set([
