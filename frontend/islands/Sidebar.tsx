@@ -21,21 +21,36 @@ export default function Sidebar({ currentPath }: SidebarProps) {
   const appVersion = useSignal("");
   const navRef = useRef<HTMLElement>(null);
 
-  // Restore nav scroll position after hydration
+  // Restore nav scroll position after hydration.
+  // Use requestAnimationFrame to ensure the nav has its full rendered height
+  // before setting scrollTop (otherwise it gets clamped to 0).
   useEffect(() => {
     if (!IS_BROWSER || !navRef.current) return;
     const saved = sessionStorage.getItem("sidebar-scroll");
-    if (saved) navRef.current.scrollTop = parseInt(saved, 10);
+    if (saved) {
+      const pos = parseInt(saved, 10);
+      // Defer to next frame so the browser has laid out the full nav content
+      requestAnimationFrame(() => {
+        if (navRef.current) navRef.current.scrollTop = pos;
+      });
+    }
   }, []);
 
-  // Save scroll position on every scroll
-  const onNavScroll = useCallback(() => {
+  // Save scroll position on every scroll and before navigation
+  const saveScrollPos = useCallback(() => {
     if (navRef.current) {
       sessionStorage.setItem(
         "sidebar-scroll",
         String(navRef.current.scrollTop),
       );
     }
+  }, []);
+
+  // Also save on beforeunload (catches navigation that doesn't trigger scroll)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    globalThis.addEventListener("beforeunload", saveScrollPos);
+    return () => globalThis.removeEventListener("beforeunload", saveScrollPos);
   }, []);
 
   useEffect(() => {
@@ -100,7 +115,7 @@ export default function Sidebar({ currentPath }: SidebarProps) {
       {/* Navigation */}
       <nav
         ref={navRef}
-        onScroll={onNavScroll}
+        onScroll={saveScrollPos}
         class="flex-1 overflow-y-auto py-2"
       >
         {NAV_SECTIONS.filter((section) =>
