@@ -90,6 +90,8 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Wizard previews: `POST /wizards/:type/preview` (17 wizard types)
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
+- Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
+- Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
 - WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows}`
 
@@ -178,7 +180,14 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Sub-navigation tabs with live resource counts per domain
   - Typography: Geist Sans (UI) + Geist Mono (data/code)
   - 174 files migrated from Tailwind dark: classes to CSS custom properties
-  - Deferred: Backend summary endpoints for API call deduplication, FOUC fix for non-default themes
+- **Phase 6B (API Optimization):** COMPLETE — 4 tasks
+  - Dashboard summary endpoint: `GET /cluster/dashboard-summary` (16 API calls → 3)
+  - Batch resource counts: `GET /resources/counts` (7 SubNav calls → 1)
+  - Theme FOUC fix: CSS `[data-theme]` attribute selectors for instant theme on page load
+  - Health score simplified: removed meaningless services sub-score (always 100%)
+  - RBAC-filtered: both endpoints check per-resource permissions, return partial responses
+  - UtilizationProvider interface decouples resources from monitoring package
+  - Async Prometheus with 1s timeout via sync.WaitGroup (never blocks informer data)
 
 ---
 
