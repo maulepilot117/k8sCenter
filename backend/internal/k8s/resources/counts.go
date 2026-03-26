@@ -41,6 +41,19 @@ func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namesp
 // countResources queries the informer cache for each tracked resource kind
 // and returns a map of kind -> count. Only includes resources the user has
 // RBAC "list" permission for.
+//
+// Scaling note: the cluster-wide path calls Lister.List(labels.Everything()),
+// which allocates a full []*T slice just to take len(). For very large clusters
+// (10K+ pods) this creates GC pressure. A lower-allocation alternative is
+// Informer().GetStore().ListKeys() which returns only string keys, e.g.:
+//
+//	store := h.Informers.Factory().Core().V1().Pods().Informer().GetStore()
+//	counts["pods"] = len(store.ListKeys())
+//
+// However, ListKeys() ignores namespace scoping and label selectors, so it
+// can only replace the cluster-wide (else) branch. The namespace-scoped branch
+// must continue using List() for filtering. Kept as-is for now since both
+// paths share the same structure and the current approach is correct.
 func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace string) map[string]int {
 	counts := make(map[string]int)
 	sel := labels.Everything()

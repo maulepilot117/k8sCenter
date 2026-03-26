@@ -46,35 +46,42 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
     }
     counts.value = initial;
 
-    // Single batch call replaces N individual ?limit=1 requests
+    // Single batch call replaces N individual ?limit=1 requests.
+    // Debounce by 150ms to avoid rapid-fire fetches when namespace
+    // changes quickly (e.g. keyboard navigation through the selector).
     const controller = new AbortController();
     const nsParam = namespace && namespace !== "all"
       ? `?namespace=${encodeURIComponent(namespace)}`
       : "";
 
-    api<Record<string, number>>(`/v1/resources/counts${nsParam}`, {
-      method: "GET",
-      signal: controller.signal,
-    })
-      .then((res) => {
-        const updated: Record<string, number | null> = {};
-        const data = res.data ?? {};
-        for (const t of countTabs) {
-          updated[t.kind!] = data[t.kind!] ?? 0;
-        }
-        counts.value = updated;
+    const timer = setTimeout(() => {
+      api<Record<string, number>>(`/v1/resources/counts${nsParam}`, {
+        method: "GET",
+        signal: controller.signal,
       })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        // Fallback: zero counts on error
-        const zeroed: Record<string, number | null> = {};
-        for (const t of countTabs) {
-          zeroed[t.kind!] = 0;
-        }
-        counts.value = zeroed;
-      });
+        .then((res) => {
+          const updated: Record<string, number | null> = {};
+          const data = res.data ?? {};
+          for (const t of countTabs) {
+            updated[t.kind!] = data[t.kind!] ?? 0;
+          }
+          counts.value = updated;
+        })
+        .catch((err) => {
+          if (err.name === "AbortError") return;
+          // Fallback: zero counts on error
+          const zeroed: Record<string, number | null> = {};
+          for (const t of countTabs) {
+            zeroed[t.kind!] = 0;
+          }
+          counts.value = zeroed;
+        });
+    }, 150);
 
-    return () => controller.abort();
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [namespace, tabs]);
 
   if (!IS_BROWSER) {

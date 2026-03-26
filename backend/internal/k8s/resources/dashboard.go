@@ -123,7 +123,10 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Prometheus utilization (async, 1s timeout)
+	// Run CPU and memory queries concurrently with a 1-second timeout.
+	// We use sync.WaitGroup (not errgroup) because we want both queries to
+	// complete independently — a failure in one should not cancel the other.
+	// Each goroutine captures its own error variable for independent handling.
 	if h.Utilization != nil {
 		promCtx, promCancel := context.WithTimeout(r.Context(), 1*time.Second)
 		defer promCancel()
