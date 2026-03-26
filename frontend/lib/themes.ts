@@ -114,7 +114,7 @@ const tokyoNight: Theme = {
 };
 
 const catppuccinMocha: Theme = {
-  id: "catppuccin-mocha",
+  id: "catppuccin",
   name: "Catppuccin Mocha",
   colors: {
     bgBase: "#1E1E2E",
