@@ -36,13 +36,13 @@ export function DataTable<T>({
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="border-b border-slate-200 dark:border-slate-700">
+          <tr class="border-b border-border-primary">
             {columns.map((col) => (
               <th
                 key={col.key}
-                class={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 ${
+                class={`px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-text-muted ${
                   col.sortable
-                    ? "cursor-pointer select-none hover:text-slate-700 dark:hover:text-slate-200"
+                    ? "cursor-pointer select-none hover:text-text-primary"
                     : ""
                 } ${col.class ?? ""}`}
                 onClick={col.sortable && onSort
@@ -58,17 +58,17 @@ export function DataTable<T>({
               </th>
             ))}
             {renderRowActions && (
-              <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 w-12" />
+              <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-text-muted w-12" />
             )}
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
+        <tbody class="divide-y divide-border-subtle">
           {data.length === 0
             ? (
               <tr>
                 <td
                   colSpan={totalCols}
-                  class="px-4 py-12 text-center text-sm text-slate-400 dark:text-slate-500"
+                  class="px-4 py-12 text-center text-sm text-text-muted"
                 >
                   {emptyMessage}
                 </td>
@@ -78,7 +78,7 @@ export function DataTable<T>({
               data.map((item) => (
                 <tr
                   key={rowKey(item)}
-                  class={`transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50 ${
+                  class={`transition-colors hover:bg-hover ${
                     onRowClick ? "cursor-pointer" : ""
                   }`}
                   onClick={onRowClick ? () => onRowClick(item) : undefined}
@@ -86,7 +86,7 @@ export function DataTable<T>({
                   {columns.map((col) => (
                     <td
                       key={col.key}
-                      class={`px-4 py-3 text-slate-700 dark:text-slate-300 ${
+                      class={`px-4 py-3 text-text-secondary ${
                         col.class ?? ""
                       }`}
                     >

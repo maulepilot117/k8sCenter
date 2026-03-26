@@ -358,7 +358,7 @@ export default function ResourceTable({
             e.stopPropagation();
             actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
           }}
-          class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+          class="rounded p-1 text-text-muted hover:bg-hover hover:text-text-primary"
           title="Actions"
         >
           <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
@@ -369,7 +369,7 @@ export default function ResourceTable({
         </button>
         {isOpen && (
           <div
-            class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg dark:border-slate-600 dark:bg-slate-800"
+            class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-border-primary bg-surface py-1 shadow-lg"
             onClick={(e) => e.stopPropagation()}
           >
             {currentActions.map((actionId: ActionId) => {
@@ -381,8 +381,8 @@ export default function ResourceTable({
                   onClick={() => handleActionClick(actionId, resource)}
                   class={`w-full px-3 py-1.5 text-left text-sm ${
                     meta.danger
-                      ? "text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
-                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700"
+                      ? "text-danger hover:bg-danger-dim"
+                      : "text-text-secondary hover:bg-hover"
                   }`}
                 >
                   {meta.label}
@@ -409,11 +409,11 @@ export default function ResourceTable({
     <div class="space-y-4">
       {/* Header */}
       <div class="flex items-center justify-between">
-        <h1 class="text-xl font-semibold text-slate-900 dark:text-white">
+        <h1 class="text-xl font-semibold text-text-primary">
           {title}
         </h1>
         <div class="flex items-center gap-3">
-          <span class="text-sm text-slate-500 dark:text-slate-400">
+          <span class="text-sm text-text-muted">
             {itemCountText.value}
           </span>
           {createHref &&
@@ -441,7 +441,7 @@ export default function ResourceTable({
           <button
             type="button"
             onClick={() => fetchResources()}
-            class="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+            class="rounded-md p-1.5 text-text-muted hover:bg-hover hover:text-text-primary"
             title="Refresh"
           >
             <svg
@@ -471,13 +471,13 @@ export default function ResourceTable({
 
       {/* Error state */}
       {error.value && (
-        <div class="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+        <div class="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger">
           {error.value}
         </div>
       )}
 
       {/* Table */}
-      <div class="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
+      <div class="rounded-lg border border-border-primary bg-surface">
         <DataTable
           columns={columns}
           data={displayed.value}
@@ -500,7 +500,7 @@ export default function ResourceTable({
             type="button"
             onClick={() => fetchResources(true)}
             disabled={loadingMore.value}
-            class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            class="rounded-md border border-border-primary bg-surface px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover disabled:opacity-50"
           >
             {loadingMore.value ? "Loading..." : "Load More"}
           </button>

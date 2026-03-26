@@ -392,7 +392,7 @@ export default function ResourceDetail({
           <div class="p-6 space-y-4">
             {/* Updated externally banner */}
             {updated.value && (
-              <div class="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-400">
+              <div class="flex items-center gap-3 rounded-md border border-info/30 bg-info/10 px-4 py-2 text-sm text-info">
                 Resource was updated externally.
                 <button
                   type="button"
@@ -411,7 +411,7 @@ export default function ResourceDetail({
 
             {/* Apply success banner */}
             {yamlApplySuccess.value && (
-              <div class="flex items-center gap-3 rounded-md border border-green-200 bg-green-50 px-4 py-2 text-sm text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400">
+              <div class="flex items-center gap-3 rounded-md border border-success/30 bg-success-dim px-4 py-2 text-sm text-success">
                 Changes applied successfully.
                 <button
                   type="button"
@@ -427,7 +427,7 @@ export default function ResourceDetail({
 
             {/* Apply error banner */}
             {yamlApplyError.value && (
-              <div class="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+              <div class="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger">
                 <p class="font-medium">Apply failed</p>
                 <p class="mt-1">{yamlApplyError.value}</p>
               </div>
@@ -436,7 +436,7 @@ export default function ResourceDetail({
             {/* Toolbar */}
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
-                <label class="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+                <label class="flex items-center gap-2 text-sm text-text-secondary">
                   <input
                     type="checkbox"
                     checked={showManagedFields.value}
@@ -444,7 +444,7 @@ export default function ResourceDetail({
                       showManagedFields.value =
                         (e.target as HTMLInputElement).checked;
                     }}
-                    class="rounded border-slate-300"
+                    class="rounded border-border-primary"
                     disabled={yamlEditing.value}
                   />
                   Show managed fields
@@ -466,7 +466,7 @@ export default function ResourceDetail({
                         title={isSecret
                           ? "Secrets cannot be edited via YAML"
                           : "Edit YAML"}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Edit
                       </button>
@@ -502,7 +502,7 @@ export default function ResourceDetail({
                         title={isSecret
                           ? "Secrets cannot be exported (values are masked)"
                           : "Export clean YAML"}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Export
                       </button>
@@ -547,7 +547,7 @@ export default function ResourceDetail({
                           yamlApplyError.value = null;
                         }}
                         disabled={yamlApplying.value}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Discard
                       </button>
@@ -557,7 +557,7 @@ export default function ResourceDetail({
             </div>
 
             {/* CodeMirror YAML editor — native DOM, works inline */}
-            <div class="rounded-md border border-slate-700 overflow-hidden">
+            <div class="rounded-md border border-border-primary overflow-hidden">
               <CodeMirrorEditor
                 value={yamlEditing.value ? yamlEditContent.value : yamlContent}
                 onChange={yamlEditing.value
@@ -588,7 +588,7 @@ export default function ResourceDetail({
         }
         if (events.value.length === 0) {
           return (
-            <div class="p-12 text-center text-sm text-slate-400 dark:text-slate-500">
+            <div class="p-12 text-center text-sm text-text-muted">
               No events found for this resource
             </div>
           );
@@ -631,7 +631,7 @@ export default function ResourceDetail({
             />
           )
           : (
-            <div class="py-8 text-center text-sm text-slate-400">
+            <div class="py-8 text-center text-sm text-text-muted">
               Loading pod selector...
             </div>
           );
@@ -687,7 +687,7 @@ export default function ResourceDetail({
     <div class="space-y-4">
       {/* Deleted banner */}
       {deleted.value && (
-        <div class="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400">
+        <div class="rounded-md border border-warning/30 bg-warning-dim px-4 py-3 text-sm text-warning">
           This {title.toLowerCase()} was deleted.{" "}
           <a href={listUrl} class="font-medium underline hover:no-underline">
             Back to {title.toLowerCase()} list
@@ -706,12 +706,12 @@ export default function ResourceDetail({
             ]}
           />
           <div class="flex items-center gap-3">
-            <ResourceIcon kind={kind} size={24} class="text-slate-500" />
-            <h1 class="text-xl font-semibold text-slate-900 dark:text-white">
+            <ResourceIcon kind={kind} size={24} class="text-text-muted" />
+            <h1 class="text-xl font-semibold text-text-primary">
               {name}
             </h1>
             {resource.value && (
-              <span class="text-sm text-slate-400 dark:text-slate-500">
+              <span class="text-sm text-text-muted">
                 {_tick >= 0 && age(resource.value.metadata.creationTimestamp)}
               </span>
             )}
@@ -730,8 +730,8 @@ export default function ResourceDetail({
                   disabled={actionLoading.value}
                   class={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                     meta.danger
-                      ? "border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/20"
-                      : "border border-slate-300 text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+                      ? "border border-danger/30 text-danger hover:bg-danger-dim"
+                      : "border border-border-primary text-text-secondary hover:bg-hover"
                   } disabled:opacity-50`}
                 >
                   {meta.label}
@@ -746,7 +746,7 @@ export default function ResourceDetail({
       {error.value && !resource.value && <ErrorBanner message={error.value} />}
 
       {/* Tab content */}
-      <div class="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
+      <div class="rounded-lg border border-border-primary bg-surface">
         <Tabs
           tabs={tabDefs}
           activeTab={activeTab.value}
@@ -798,7 +798,7 @@ export default function ResourceDetail({
                     10,
                   );
                 }}
-                class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
               />
             </div>
           }
@@ -818,48 +818,48 @@ function EventsTable({ events }: { events: K8sEvent[] }) {
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="border-b border-slate-200 dark:border-slate-700">
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-slate-500">
+          <tr class="border-b border-border-primary">
+            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
               Type
             </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-slate-500">
+            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
               Reason
             </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-slate-500">
+            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
               Message
             </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-slate-500">
+            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
               Count
             </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-slate-500">
+            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
               Last Seen
             </th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-700/50">
+        <tbody class="divide-y divide-border-subtle">
           {events.map((e) => (
             <tr key={e.metadata.uid}>
               <td class="px-4 py-2">
                 <span
                   class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
                     e.type === "Warning"
-                      ? "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-400"
-                      : "bg-slate-50 text-slate-600 ring-slate-500/20 dark:bg-slate-500/10 dark:text-slate-400"
+                      ? "bg-warning-dim text-warning ring-warning/20"
+                      : "bg-elevated text-text-secondary ring-border-primary"
                   }`}
                 >
                   {e.type ?? "Normal"}
                 </span>
               </td>
-              <td class="px-4 py-2 text-slate-700 dark:text-slate-300">
+              <td class="px-4 py-2 text-text-secondary">
                 {e.reason ?? "-"}
               </td>
-              <td class="px-4 py-2 text-slate-600 dark:text-slate-400 max-w-md truncate">
+              <td class="px-4 py-2 text-text-secondary max-w-md truncate">
                 {e.message ?? "-"}
               </td>
-              <td class="px-4 py-2 text-slate-600 dark:text-slate-400">
+              <td class="px-4 py-2 text-text-secondary">
                 {e.count ?? 1}
               </td>
-              <td class="px-4 py-2 text-slate-500 dark:text-slate-500">
+              <td class="px-4 py-2 text-text-muted">
                 {e.lastTimestamp ? age(e.lastTimestamp) : "-"}
               </td>
             </tr>
