@@ -157,6 +157,9 @@ func (s *Server) registerResourceRoutes(ar chi.Router) {
 	// Task polling endpoint (no name/namespace params to validate)
 	ar.Get("/tasks/{taskID}", h.HandleGetTask)
 
+	// Batch resource counts (no name/namespace params to validate)
+	ar.Get("/resources/counts", h.HandleResourceCounts)
+
 	// All resource routes validate {name}/{namespace} URL params
 	ar.Group(func(rr chi.Router) {
 		rr.Use(resources.ValidateURLParams)
