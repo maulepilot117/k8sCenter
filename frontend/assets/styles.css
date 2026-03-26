@@ -13,26 +13,26 @@
 
 /* ── Nexus defaults (prevent flash before JS hydration) ── */
 :root {
-  --bg-base: #0B0E14;
+  --bg-base: #0b0e14;
   --bg-surface: #131720;
-  --bg-elevated: #1A1F2B;
+  --bg-elevated: #1a1f2b;
   --bg-hover: #212735;
-  --border-primary: #252B37;
-  --border-subtle: #1E2330;
-  --text-primary: #E0E4EB;
-  --text-secondary: #8B95A5;
-  --text-muted: #5A6478;
-  --accent: #00C2FF;
+  --border-primary: #252b37;
+  --border-subtle: #1e2330;
+  --text-primary: #e0e4eb;
+  --text-secondary: #8b95a5;
+  --text-muted: #5a6478;
+  --accent: #00c2ff;
   --accent-glow: rgba(0, 194, 255, 0.15);
   --accent-dim: rgba(0, 194, 255, 0.08);
-  --accent-secondary: #7C5CFC;
-  --success: #00E676;
+  --accent-secondary: #7c5cfc;
+  --success: #00e676;
   --success-dim: rgba(0, 230, 118, 0.12);
-  --warning: #FFB300;
+  --warning: #ffb300;
   --warning-dim: rgba(255, 179, 0, 0.12);
-  --error: #FF5252;
+  --error: #ff5252;
   --error-dim: rgba(255, 82, 82, 0.12);
-  --info: #40C4FF;
+  --info: #40c4ff;
 }
 
 /* ── Bridge CSS variables into Tailwind v4 ── */

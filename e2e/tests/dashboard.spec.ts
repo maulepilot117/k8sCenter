@@ -9,7 +9,7 @@ test.describe("Dashboard @smoke", () => {
       page.getByRole("heading", { name: /cluster overview/i }),
     ).toBeVisible();
 
-    // Stat cards should display — check for the Cluster Details card
-    await expect(page.getByText("Cluster Details")).toBeVisible();
+    // Stat cards should display — check for the Cluster Health card
+    await expect(page.getByText("Cluster Health")).toBeVisible();
   });
 });
