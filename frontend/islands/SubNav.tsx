@@ -101,12 +101,10 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
       style={{
         display: "flex",
         alignItems: "stretch",
-        gap: "0",
-        borderBottom: "1px solid var(--border-subtle)",
-        background: "var(--bg-surface)",
+        gap: "2px",
+        borderBottom: "1px solid var(--border-primary)",
         overflowX: "auto",
-        paddingLeft: "16px",
-        paddingRight: "16px",
+        marginBottom: "20px",
         flexShrink: 0,
       }}
     >
@@ -122,15 +120,17 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
               display: "flex",
               alignItems: "center",
               gap: "6px",
-              padding: "8px 12px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: active ? 500 : 400,
+              fontWeight: 500,
               color: active ? "var(--accent)" : "var(--text-muted)",
               textDecoration: "none",
               borderBottom: active
                 ? "2px solid var(--accent)"
                 : "2px solid transparent",
+              marginBottom: "-1px",
               whiteSpace: "nowrap",
+              cursor: "pointer",
               transition: "color 150ms ease, border-color 150ms ease",
             }}
           >
@@ -139,7 +139,7 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
               <span
                 style={{
                   fontSize: "11px",
-                  fontWeight: 500,
+                  fontFamily: "var(--font-mono, monospace)",
                   padding: "1px 6px",
                   borderRadius: "10px",
                   background: active
