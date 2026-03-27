@@ -386,8 +386,8 @@ export default function DashboardV2() {
             value={Math.round(s?.cpu?.percentage ?? 0)}
             used={s?.cpu ? `${s.cpu.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
-            requests="\u2014"
-            limits="\u2014"
+            requests="—"
+            limits="—"
             color="var(--accent)"
             secondaryColor="var(--success)"
           />
@@ -400,8 +400,8 @@ export default function DashboardV2() {
             value={Math.round(s?.memory?.percentage ?? 0)}
             used={s?.memory ? `${s.memory.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
-            requests="\u2014"
-            limits="\u2014"
+            requests="—"
+            limits="—"
             color="var(--accent-secondary)"
             secondaryColor="#FF79C6"
           />
