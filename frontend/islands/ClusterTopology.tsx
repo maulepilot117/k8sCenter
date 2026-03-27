@@ -209,13 +209,15 @@ export default function ClusterTopology() {
       k8sPVCs.length,
     );
     const virtualWidth = Math.max(w, (maxItemsInRow + 1) * ITEM_SPACING_H);
-    const virtualHeight = h;
+    // Virtual height proportional to width to maintain a good aspect ratio.
+    // 4 rows need roughly 40% of the width to look balanced.
+    const virtualHeight = Math.max(h, virtualWidth * 0.45);
     virtualDims.value = { w: virtualWidth, h: virtualHeight };
 
-    // Set initial zoom so topology fills the container width.
-    // With transformOrigin "0 0", scale(fitZoom) makes virtualWidth * fitZoom = containerWidth.
-    const fitZoom = (w * 0.95) / virtualWidth;
-    zoom.value = Math.max(0.5, Math.min(1.5, fitZoom));
+    // Zoom to fill the container: fit both width AND height.
+    const fitW = (w * 0.95) / virtualWidth;
+    const fitH = (h * 0.95) / virtualHeight;
+    zoom.value = Math.max(0.3, Math.min(1.5, Math.min(fitW, fitH)));
 
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];

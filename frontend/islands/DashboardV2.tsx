@@ -428,7 +428,7 @@ export default function DashboardV2() {
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius)",
             padding: "20px",
-            minHeight: "280px",
+            minHeight: "450px",
             overflow: "hidden",
           }}
         >
@@ -468,7 +468,7 @@ export default function DashboardV2() {
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius)",
             padding: "20px",
-            minHeight: "280px",
+            minHeight: "450px",
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
