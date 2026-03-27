@@ -25,6 +25,8 @@ interface K8sPod {
   metadata: K8sMetadata;
   spec?: {
     nodeName?: string;
+    containers?: { name: string }[];
+    initContainers?: { name: string }[];
     volumes?: {
       name: string;
       persistentVolumeClaim?: { claimName: string };
@@ -39,16 +41,28 @@ interface K8sPVC {
   status?: { phase?: string };
 }
 
+interface K8sWorkload {
+  metadata: K8sMetadata;
+  kind: string; // "Deployment", "StatefulSet", "DaemonSet"
+  spec?: {
+    selector?: { matchLabels?: Record<string, string> };
+  };
+}
+
 interface TopoNode {
   id: string;
   label: string;
   abbr: string;
-  kind: "node" | "service" | "pod" | "pvc";
+  kind: "node" | "service" | "workload" | "pod" | "pvc";
   namespace?: string;
   x: number;
   y: number;
   size: number;
   health: "healthy" | "warning" | "error";
+  /** Number of containers (pods only) */
+  containerCount?: number;
+  /** Container names for tooltip (pods only) */
+  containerNames?: string[];
 }
 
 interface TopoEdge {
@@ -70,7 +84,7 @@ function matchesSelector(
 
 function getHealthStatus(
   kind: string,
-  resource: K8sNode | K8sPod | K8sPVC | K8sService,
+  resource: K8sNode | K8sPod | K8sPVC | K8sService | K8sWorkload,
 ): "healthy" | "warning" | "error" {
   if (kind === "pod") {
     const phase = resource.status?.phase;
@@ -91,12 +105,13 @@ function getHealthStatus(
     if (phase === "Pending") return "warning";
     return "error";
   }
-  return "healthy"; // services always healthy
+  return "healthy"; // services and workloads always healthy
 }
 
 interface RawData {
   k8sNodes: K8sNode[];
   k8sSvcs: K8sService[];
+  k8sWorkloads: K8sWorkload[];
   k8sPods: K8sPod[];
   k8sPVCs: K8sPVC[];
 }
@@ -117,6 +132,12 @@ const kindSvgColors: Record<
     fill: "rgba(124,92,252,0.1)",
     text: "var(--accent-secondary)",
     isRect: false,
+  },
+  workload: {
+    stroke: "rgba(97,175,239,0.5)",
+    fill: "rgba(97,175,239,0.12)",
+    text: "#61AFEF",
+    isRect: true,
   },
   pod: {
     stroke: "rgba(80,250,123,0.5)",
@@ -149,6 +170,22 @@ function getNodeSvgStyle(node: TopoNode) {
   };
 }
 
+function getWorkloadHref(label: string, namespace: string): string {
+  // Label format: "kind/name" e.g. "Deployment/nginx"
+  const slashIdx = label.indexOf("/");
+  if (slashIdx === -1) {
+    return `/workloads/deployments/${namespace}/${label}`;
+  }
+  const kind = label.substring(0, slashIdx).toLowerCase();
+  const name = label.substring(slashIdx + 1);
+  const kindPath: Record<string, string> = {
+    deployment: "deployments",
+    statefulset: "statefulsets",
+    daemonset: "daemonsets",
+  };
+  return `/workloads/${kindPath[kind] ?? "deployments"}/${namespace}/${name}`;
+}
+
 function getNodeHref(node: TopoNode): string {
   switch (node.kind) {
     case "node":
@@ -157,6 +194,8 @@ function getNodeHref(node: TopoNode): string {
       return `/networking/services/${
         node.namespace ?? "default"
       }/${node.label}`;
+    case "workload":
+      return getWorkloadHref(node.label, node.namespace ?? "default");
     case "pod":
       return `/workloads/pods/${node.namespace ?? "default"}/${node.label}`;
     case "pvc":
@@ -171,7 +210,14 @@ function getTooltip(node: TopoNode): string {
     : node.health === "warning"
     ? "Warning"
     : "Error";
-  return `${node.kind}: ${node.label}${ns} - ${status}`;
+  let tooltip = `${node.kind}: ${node.label}${ns} - ${status}`;
+  if (
+    node.kind === "pod" && node.containerNames &&
+    node.containerNames.length > 1
+  ) {
+    tooltip += `\nContainers: ${node.containerNames.join(", ")}`;
+  }
+  return tooltip;
 }
 
 export default function ClusterTopology() {
@@ -201,30 +247,45 @@ export default function ClusterTopology() {
     async function load() {
       loading.value = true;
 
-      const [nodesRes, svcsRes, podsRes, pvcsRes] = await Promise.allSettled([
-        apiGet<K8sNode[]>("/v1/resources/nodes?limit=500"),
-        apiGet<K8sService[]>("/v1/resources/services?limit=500"),
-        apiGet<K8sPod[]>("/v1/resources/pods?limit=500"),
-        apiGet<K8sPVC[]>("/v1/resources/pvcs?limit=500"),
-      ]);
+      const [nodesRes, svcsRes, podsRes, pvcsRes, depsRes, stsRes, dsRes] =
+        await Promise.allSettled([
+          apiGet<K8sNode[]>("/v1/resources/nodes?limit=500"),
+          apiGet<K8sService[]>("/v1/resources/services?limit=500"),
+          apiGet<K8sPod[]>("/v1/resources/pods?limit=500"),
+          apiGet<K8sPVC[]>("/v1/resources/pvcs?limit=500"),
+          apiGet<K8sWorkload[]>("/v1/resources/deployments?limit=500"),
+          apiGet<K8sWorkload[]>("/v1/resources/statefulsets?limit=500"),
+          apiGet<K8sWorkload[]>("/v1/resources/daemonsets?limit=500"),
+        ]);
+
+      const extractArr = <T,>(
+        res: PromiseSettledResult<{ data: T[] }>,
+      ): T[] =>
+        res.status === "fulfilled" && Array.isArray(res.data)
+          ? res.data
+          : res.status === "fulfilled" && Array.isArray(res.value?.data)
+          ? res.value.data
+          : [];
+
+      const deployments = extractArr<K8sWorkload>(depsRes).map((w) => ({
+        ...w,
+        kind: "Deployment",
+      }));
+      const statefulSets = extractArr<K8sWorkload>(stsRes).map((w) => ({
+        ...w,
+        kind: "StatefulSet",
+      }));
+      const daemonSets = extractArr<K8sWorkload>(dsRes).map((w) => ({
+        ...w,
+        kind: "DaemonSet",
+      }));
 
       rawData.value = {
-        k8sNodes:
-          nodesRes.status === "fulfilled" && Array.isArray(nodesRes.value.data)
-            ? nodesRes.value.data
-            : [],
-        k8sSvcs:
-          svcsRes.status === "fulfilled" && Array.isArray(svcsRes.value.data)
-            ? svcsRes.value.data
-            : [],
-        k8sPods:
-          podsRes.status === "fulfilled" && Array.isArray(podsRes.value.data)
-            ? podsRes.value.data
-            : [],
-        k8sPVCs:
-          pvcsRes.status === "fulfilled" && Array.isArray(pvcsRes.value.data)
-            ? pvcsRes.value.data
-            : [],
+        k8sNodes: extractArr<K8sNode>(nodesRes),
+        k8sSvcs: extractArr<K8sService>(svcsRes),
+        k8sWorkloads: [...deployments, ...statefulSets, ...daemonSets],
+        k8sPods: extractArr<K8sPod>(podsRes),
+        k8sPVCs: extractArr<K8sPVC>(pvcsRes),
       };
 
       loading.value = false;
@@ -237,11 +298,12 @@ export default function ClusterTopology() {
   useEffect(() => {
     if (!rawData.value) return;
 
-    const { k8sNodes, k8sSvcs, k8sPods, k8sPVCs } = rawData.value;
+    const { k8sNodes, k8sSvcs, k8sWorkloads, k8sPods, k8sPVCs } = rawData.value;
 
     // Dynamic node sizes based on item count
     const nodeSize = k8sNodes.length > 6 ? 40 : 52;
     const svcSize = k8sSvcs.length > 8 ? 32 : 44;
+    const wlSize = k8sWorkloads.length > 10 ? 28 : 36;
     const podSize = k8sPods.length > 10 ? 28 : 36;
     const pvcSize = k8sPVCs.length > 6 ? 28 : 36;
 
@@ -250,11 +312,12 @@ export default function ClusterTopology() {
     const maxItemsInRow = Math.max(
       k8sNodes.length,
       k8sSvcs.length,
+      k8sWorkloads.length,
       k8sPods.length,
       k8sPVCs.length,
     );
     const virtualWidth = Math.max(400, (maxItemsInRow + 1) * ITEM_SPACING_H);
-    const virtualHeight = Math.max(220, virtualWidth * 0.5);
+    const virtualHeight = Math.max(220, virtualWidth * 0.6);
     virtualDims.value = { w: virtualWidth, h: virtualHeight };
 
     const topoNodes: TopoNode[] = [];
@@ -277,6 +340,7 @@ export default function ClusterTopology() {
       const kindAbbr: Record<string, string> = {
         node: "N",
         service: "SVC",
+        workload: "WL",
         pod: "P",
         pvc: "PVC",
       };
@@ -294,6 +358,12 @@ export default function ClusterTopology() {
       });
     };
 
+    const workloadAbbrMap: Record<string, string> = {
+      Deployment: "DEP",
+      StatefulSet: "STS",
+      DaemonSet: "DS",
+    };
+
     placeRow(
       k8sNodes.map((n) => ({
         id: `node-${n.metadata.name}`,
@@ -301,7 +371,7 @@ export default function ClusterTopology() {
         kind: "node" as const,
         health: getHealthStatus("node", n),
       })),
-      0.10,
+      0.08,
       nodeSize,
     );
 
@@ -313,21 +383,55 @@ export default function ClusterTopology() {
         kind: "service" as const,
         health: getHealthStatus("service", s),
       })),
-      0.35,
+      0.25,
       svcSize,
     );
 
-    placeRow(
-      k8sPods.map((p) => ({
-        id: `pod-${p.metadata.namespace}-${p.metadata.name}`,
-        label: p.metadata.name,
-        namespace: p.metadata.namespace,
-        kind: "pod" as const,
-        health: getHealthStatus("pod", p),
-      })),
-      0.60,
-      podSize,
-    );
+    // Workloads row — use workload-specific abbreviations
+    const wlItems = k8sWorkloads.map((w) => ({
+      id: `wl-${w.kind}-${w.metadata.namespace}-${w.metadata.name}`,
+      label: `${w.kind}/${w.metadata.name}`,
+      namespace: w.metadata.namespace,
+      kind: "workload" as const,
+      health: getHealthStatus("workload", w),
+    }));
+    // Place workloads, then override abbr with kind-specific label
+    placeRow(wlItems, 0.45, wlSize);
+    for (let i = 0; i < k8sWorkloads.length; i++) {
+      const wl = k8sWorkloads[i];
+      const placed = topoNodes.find(
+        (n) =>
+          n.id ===
+            `wl-${wl.kind}-${wl.metadata.namespace}-${wl.metadata.name}`,
+      );
+      if (placed) {
+        placed.abbr = workloadAbbrMap[wl.kind] ?? wl.kind.substring(0, 3);
+      }
+    }
+
+    // Pods row — include container info
+    const podItems = k8sPods.map((p) => ({
+      id: `pod-${p.metadata.namespace}-${p.metadata.name}`,
+      label: p.metadata.name,
+      namespace: p.metadata.namespace,
+      kind: "pod" as const,
+      health: getHealthStatus("pod", p),
+      containerCount: p.spec?.containers?.length ?? 1,
+      containerNames: (p.spec?.containers ?? []).map((c) => c.name),
+    }));
+    const podCount = podItems.length;
+    if (podCount > 0) {
+      const spacing = virtualWidth / (podCount + 1);
+      podItems.forEach((item, i) => {
+        topoNodes.push({
+          ...item,
+          abbr: "P",
+          x: spacing * (i + 1),
+          y: virtualHeight * 0.65,
+          size: podSize,
+        });
+      });
+    }
 
     placeRow(
       k8sPVCs.map((pvc) => ({
@@ -363,20 +467,63 @@ export default function ClusterTopology() {
       }
     }
 
-    // Build service-to-pod edges based on selector matching
+    // Build a map of pod ID → workload IDs (via label selector matching)
+    const podToWorkloads = new Map<string, Set<string>>();
+    for (const wl of k8sWorkloads) {
+      const wlId = `wl-${wl.kind}-${wl.metadata.namespace}-${wl.metadata.name}`;
+      const sel = wl.spec?.selector?.matchLabels;
+      if (!sel) continue;
+      for (const pod of k8sPods) {
+        if (
+          wl.metadata.namespace === pod.metadata.namespace &&
+          matchesSelector(sel, pod.metadata.labels)
+        ) {
+          const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+          if (!podToWorkloads.has(podId)) {
+            podToWorkloads.set(podId, new Set());
+          }
+          podToWorkloads.get(podId)!.add(wlId);
+          // Workload → Pod edge
+          topoEdges.push({
+            from: wlId,
+            to: podId,
+            color: "#61AFEF",
+          });
+        }
+      }
+    }
+
+    // Build service-to-workload edges (service selects pods that belong to a workload)
     for (const svc of k8sSvcs) {
       const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
+      const connectedWorkloads = new Set<string>();
       for (const pod of k8sPods) {
         if (
           svc.metadata.namespace === pod.metadata.namespace &&
           matchesSelector(svc.spec?.selector, pod.metadata.labels)
         ) {
-          topoEdges.push({
-            from: svcId,
-            to: `pod-${pod.metadata.namespace}-${pod.metadata.name}`,
-            color: "var(--accent-secondary)",
-          });
+          const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+          const wlIds = podToWorkloads.get(podId);
+          if (wlIds) {
+            for (const wlId of wlIds) {
+              connectedWorkloads.add(wlId);
+            }
+          } else {
+            // No workload found — draw direct service→pod edge
+            topoEdges.push({
+              from: svcId,
+              to: podId,
+              color: "var(--accent-secondary)",
+            });
+          }
         }
+      }
+      for (const wlId of connectedWorkloads) {
+        topoEdges.push({
+          from: svcId,
+          to: wlId,
+          color: "var(--accent-secondary)",
+        });
       }
     }
 
@@ -594,7 +741,21 @@ export default function ClusterTopology() {
                 }}
               >
                 <title>{getTooltip(node)}</title>
-                {style.isRect
+                {node.kind === "workload"
+                  ? (
+                    <rect
+                      x={-r}
+                      y={-r}
+                      width={node.size}
+                      height={node.size}
+                      rx={8}
+                      ry={8}
+                      fill={style.fill}
+                      stroke={style.stroke}
+                      stroke-width="2"
+                    />
+                  )
+                  : style.isRect
                   ? (
                     <rect
                       x={-r}
@@ -635,6 +796,28 @@ export default function ClusterTopology() {
                 >
                   {truncated}
                 </text>
+                {node.containerCount && node.containerCount > 1 && (
+                  <>
+                    <circle
+                      cx={r - 4}
+                      cy={-r + 4}
+                      r="7"
+                      fill="var(--accent)"
+                    />
+                    <text
+                      x={r - 4}
+                      y={-r + 4}
+                      text-anchor="middle"
+                      dy="0.35em"
+                      font-size="8"
+                      fill="white"
+                      font-weight="700"
+                      style={{ pointerEvents: "none", userSelect: "none" }}
+                    >
+                      {node.containerCount}
+                    </text>
+                  </>
+                )}
               </g>
             </a>
           );
