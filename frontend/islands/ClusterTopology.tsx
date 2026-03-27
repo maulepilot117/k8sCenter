@@ -157,7 +157,7 @@ export default function ClusterTopology() {
         apiGet<K8sNode[]>("/v1/resources/nodes"),
         apiGet<K8sService[]>("/v1/resources/services"),
         apiGet<K8sPod[]>("/v1/resources/pods"),
-        apiGet<K8sPVC[]>("/v1/resources/persistentvolumeclaims"),
+        apiGet<K8sPVC[]>("/v1/resources/pvcs"),
       ]);
 
       rawData.value = {
@@ -199,19 +199,21 @@ export default function ClusterTopology() {
     const podSize = k8sPods.length > 10 ? 28 : 36;
     const pvcSize = k8sPVCs.length > 6 ? 28 : 36;
 
-    // Compute virtual canvas height based on largest column
-    const ITEM_SPACING = 65;
-    const maxItems = Math.max(
+    // Compute virtual canvas width based on largest row
+    const ITEM_SPACING_H = 70;
+    const maxItemsInRow = Math.max(
       k8sNodes.length,
       k8sSvcs.length,
       k8sPods.length,
       k8sPVCs.length,
     );
-    const virtualHeight = Math.max(h, (maxItems + 1) * ITEM_SPACING);
+    const virtualWidth = Math.max(w, (maxItemsInRow + 1) * ITEM_SPACING_H);
+    const virtualHeight = h;
 
     // Auto-zoom to fit virtual canvas in container
-    if (virtualHeight > h) {
-      zoom.value = Math.max(0.3, h / virtualHeight);
+    const autoZoom = Math.min(1, w / virtualWidth);
+    if (autoZoom < 1) {
+      zoom.value = Math.max(0.3, autoZoom);
     } else {
       zoom.value = 1;
     }
@@ -219,7 +221,7 @@ export default function ClusterTopology() {
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
 
-    const placeColumn = (
+    const placeRow = (
       items: {
         id: string;
         label: string;
@@ -227,12 +229,12 @@ export default function ClusterTopology() {
         namespace?: string;
         health: "healthy" | "warning" | "error";
       }[],
-      xPct: number,
+      yPct: number,
       size: number,
     ) => {
       const count = items.length;
       if (count === 0) return;
-      const spacing = virtualHeight / (count + 1);
+      const spacing = virtualWidth / (count + 1);
       const kindAbbr: Record<string, string> = {
         node: "N",
         service: "SVC",
@@ -246,25 +248,25 @@ export default function ClusterTopology() {
         topoNodes.push({
           ...item,
           abbr,
-          x: w * xPct,
-          y: spacing * (i + 1),
+          x: spacing * (i + 1),
+          y: virtualHeight * yPct,
           size,
         });
       });
     };
 
-    placeColumn(
+    placeRow(
       k8sNodes.map((n) => ({
         id: `node-${n.metadata.name}`,
         label: n.metadata.name,
         kind: "node" as const,
         health: getHealthStatus("node", n),
       })),
-      0.08,
+      0.10,
       nodeSize,
     );
 
-    placeColumn(
+    placeRow(
       k8sSvcs.map((s) => ({
         id: `svc-${s.metadata.namespace}-${s.metadata.name}`,
         label: s.metadata.name,
@@ -272,11 +274,11 @@ export default function ClusterTopology() {
         kind: "service" as const,
         health: getHealthStatus("service", s),
       })),
-      0.30,
+      0.35,
       svcSize,
     );
 
-    placeColumn(
+    placeRow(
       k8sPods.map((p) => ({
         id: `pod-${p.metadata.namespace}-${p.metadata.name}`,
         label: p.metadata.name,
@@ -284,11 +286,11 @@ export default function ClusterTopology() {
         kind: "pod" as const,
         health: getHealthStatus("pod", p),
       })),
-      0.58,
+      0.60,
       podSize,
     );
 
-    placeColumn(
+    placeRow(
       k8sPVCs.map((pvc) => ({
         id: `pvc-${pvc.metadata.namespace}-${pvc.metadata.name}`,
         label: pvc.metadata.name,
