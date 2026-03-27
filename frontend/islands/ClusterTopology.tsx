@@ -317,7 +317,11 @@ export default function ClusterTopology() {
       k8sPVCs.length,
     );
     const virtualWidth = Math.max(400, (maxItemsInRow + 1) * ITEM_SPACING_H);
-    const virtualHeight = Math.max(220, virtualWidth * 0.6);
+    // Virtual height matches the container's aspect ratio so the SVG
+    // fills the container without wasted space. The topology card is
+    // roughly 2.3:1 (wide). 5 rows need enough vertical space for
+    // nodes + labels (~80px between rows).
+    const virtualHeight = Math.max(400, virtualWidth / 2.3);
     virtualDims.value = { w: virtualWidth, h: virtualHeight };
 
     const topoNodes: TopoNode[] = [];
