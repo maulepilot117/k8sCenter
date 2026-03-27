@@ -13,6 +13,7 @@ interface K8sMetadata {
 
 interface K8sNode {
   metadata: K8sMetadata;
+  status?: { conditions?: { type: string; status: string }[] };
 }
 
 interface K8sService {
@@ -22,29 +23,32 @@ interface K8sService {
 
 interface K8sPod {
   metadata: K8sMetadata;
-  spec?: { nodeName?: string };
-}
-
-interface K8sIngress {
-  metadata: K8sMetadata;
   spec?: {
-    rules?: {
-      http?: {
-        paths?: { backend?: { service?: { name: string } } }[];
-      };
+    nodeName?: string;
+    volumes?: {
+      name: string;
+      persistentVolumeClaim?: { claimName: string };
     }[];
   };
+  status?: { phase?: string };
+}
+
+interface K8sPVC {
+  metadata: K8sMetadata;
+  spec?: { volumeName?: string };
+  status?: { phase?: string };
 }
 
 interface TopoNode {
   id: string;
   label: string;
   abbr: string;
-  kind: "node" | "service" | "pod" | "ingress";
+  kind: "node" | "service" | "pod" | "pvc";
   namespace?: string;
   x: number;
   y: number;
   size: number;
+  health: "healthy" | "warning" | "error";
 }
 
 interface TopoEdge {
@@ -53,10 +57,10 @@ interface TopoEdge {
   color: string;
 }
 
-const MAX_NODES = 5;
-const MAX_SERVICES = 6;
-const MAX_PODS = 8;
-const MAX_INGRESSES = 3;
+const MAX_NODES = 10;
+const MAX_SERVICES = 10;
+const MAX_PODS = 15;
+const MAX_PVCS = 10;
 
 function matchesSelector(
   selector: Record<string, string> | undefined,
@@ -66,11 +70,37 @@ function matchesSelector(
   return Object.entries(selector).every(([k, v]) => labels[k] === v);
 }
 
+function getHealthStatus(
+  kind: string,
+  resource: K8sNode | K8sPod | K8sPVC | K8sService,
+): "healthy" | "warning" | "error" {
+  if (kind === "pod") {
+    const phase = resource.status?.phase;
+    if (phase === "Running" || phase === "Succeeded") return "healthy";
+    if (phase === "Pending") return "warning";
+    return "error";
+  }
+  if (kind === "node") {
+    const nodeRes = resource as K8sNode;
+    const ready = nodeRes.status?.conditions?.find(
+      (c) => c.type === "Ready",
+    );
+    return ready?.status === "True" ? "healthy" : "error";
+  }
+  if (kind === "pvc") {
+    const phase = resource.status?.phase;
+    if (phase === "Bound") return "healthy";
+    if (phase === "Pending") return "warning";
+    return "error";
+  }
+  return "healthy"; // services always healthy
+}
+
 interface RawData {
   k8sNodes: K8sNode[];
   k8sSvcs: K8sService[];
   k8sPods: K8sPod[];
-  k8sIngresses: K8sIngress[];
+  k8sPVCs: K8sPVC[];
 }
 
 export default function ClusterTopology() {
@@ -79,7 +109,14 @@ export default function ClusterTopology() {
   const loading = useSignal(true);
   const rawData = useSignal<RawData | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const dimensions = useSignal({ width: 600, height: 240 });
+  const dimensions = useSignal({ width: 600, height: 220 });
+
+  // Zoom and pan state
+  const zoom = useSignal(1);
+  const pan = useSignal({ x: 0, y: 0 });
+  const dragging = useSignal(false);
+  const dragStart = useSignal({ x: 0, y: 0 });
+  const panStart = useSignal({ x: 0, y: 0 });
 
   // Measure container
   useEffect(() => {
@@ -116,11 +153,11 @@ export default function ClusterTopology() {
     async function load() {
       loading.value = true;
 
-      const [nodesRes, svcsRes, podsRes, ingRes] = await Promise.allSettled([
+      const [nodesRes, svcsRes, podsRes, pvcsRes] = await Promise.allSettled([
         apiGet<K8sNode[]>("/v1/resources/nodes"),
         apiGet<K8sService[]>("/v1/resources/services"),
         apiGet<K8sPod[]>("/v1/resources/pods"),
-        apiGet<K8sIngress[]>("/v1/resources/ingresses"),
+        apiGet<K8sPVC[]>("/v1/resources/persistentvolumeclaims"),
       ]);
 
       rawData.value = {
@@ -136,10 +173,10 @@ export default function ClusterTopology() {
           (podsRes.status === "fulfilled" && Array.isArray(podsRes.value.data)
             ? podsRes.value.data
             : []).slice(0, MAX_PODS),
-        k8sIngresses:
-          (ingRes.status === "fulfilled" && Array.isArray(ingRes.value.data)
-            ? ingRes.value.data
-            : []).slice(0, MAX_INGRESSES),
+        k8sPVCs:
+          (pvcsRes.status === "fulfilled" && Array.isArray(pvcsRes.value.data)
+            ? pvcsRes.value.data
+            : []).slice(0, MAX_PVCS),
       };
 
       loading.value = false;
@@ -152,20 +189,20 @@ export default function ClusterTopology() {
   useEffect(() => {
     if (!rawData.value) return;
 
-    const { k8sNodes, k8sSvcs, k8sPods, k8sIngresses } = rawData.value;
+    const { k8sNodes, k8sSvcs, k8sPods, k8sPVCs } = rawData.value;
     const w = dimensions.value.width;
     const h = dimensions.value.height;
 
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
 
-    // Position nodes in columns
     const placeColumn = (
       items: {
         id: string;
         label: string;
         kind: TopoNode["kind"];
         namespace?: string;
+        health: "healthy" | "warning" | "error";
       }[],
       xPct: number,
       size: number,
@@ -177,12 +214,11 @@ export default function ClusterTopology() {
         node: "N",
         service: "SVC",
         pod: "P",
-        ingress: "ING",
+        pvc: "PVC",
       };
       items.forEach((item, i) => {
         const base = kindAbbr[item.kind] ??
           item.kind.substring(0, 2).toUpperCase();
-        // Number nodes (N1, N2, N3); keep SVC/P/ING as-is for brevity
         const abbr = item.kind === "node" ? `${base}${i + 1}` : base;
         topoNodes.push({
           ...item,
@@ -199,8 +235,9 @@ export default function ClusterTopology() {
         id: `node-${n.metadata.name}`,
         label: n.metadata.name,
         kind: "node" as const,
+        health: getHealthStatus("node", n),
       })),
-      0.12,
+      0.10,
       52,
     );
 
@@ -210,8 +247,9 @@ export default function ClusterTopology() {
         label: s.metadata.name,
         namespace: s.metadata.namespace,
         kind: "service" as const,
+        health: getHealthStatus("service", s),
       })),
-      0.40,
+      0.30,
       44,
     );
 
@@ -221,40 +259,25 @@ export default function ClusterTopology() {
         label: p.metadata.name,
         namespace: p.metadata.namespace,
         kind: "pod" as const,
+        health: getHealthStatus("pod", p),
       })),
-      0.62,
+      0.55,
       36,
     );
 
     placeColumn(
-      k8sIngresses.map((ig) => ({
-        id: `ing-${ig.metadata.namespace}-${ig.metadata.name}`,
-        label: ig.metadata.name,
-        namespace: ig.metadata.namespace,
-        kind: "ingress" as const,
+      k8sPVCs.map((pvc) => ({
+        id: `pvc-${pvc.metadata.namespace}-${pvc.metadata.name}`,
+        label: pvc.metadata.name,
+        namespace: pvc.metadata.namespace,
+        kind: "pvc" as const,
+        health: getHealthStatus("pvc", pvc),
       })),
-      0.85,
-      40,
+      0.80,
+      36,
     );
 
-    // Build service-to-pod edges based on selector matching
-    for (const svc of k8sSvcs) {
-      const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
-      for (const pod of k8sPods) {
-        if (
-          svc.metadata.namespace === pod.metadata.namespace &&
-          matchesSelector(svc.spec?.selector, pod.metadata.labels)
-        ) {
-          topoEdges.push({
-            from: svcId,
-            to: `pod-${pod.metadata.namespace}-${pod.metadata.name}`,
-            color: "var(--accent-secondary)",
-          });
-        }
-      }
-    }
-
-    // Build node-to-service edges: if any pod on a node is selected by a service
+    // Build node-to-service edges
     for (const node of k8sNodes) {
       const nodeId = `node-${node.metadata.name}`;
       const connectedSvcs = new Set<string>();
@@ -276,24 +299,37 @@ export default function ClusterTopology() {
       }
     }
 
-    // Build ingress-to-service edges
-    for (const ig of k8sIngresses) {
-      const igId = `ing-${ig.metadata.namespace}-${ig.metadata.name}`;
-      const backendNames = new Set<string>();
-      for (const rule of ig.spec?.rules ?? []) {
-        for (const path of rule.http?.paths ?? []) {
-          const svcName = path.backend?.service?.name;
-          if (svcName) backendNames.add(svcName);
+    // Build service-to-pod edges based on selector matching
+    for (const svc of k8sSvcs) {
+      const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
+      for (const pod of k8sPods) {
+        if (
+          svc.metadata.namespace === pod.metadata.namespace &&
+          matchesSelector(svc.spec?.selector, pod.metadata.labels)
+        ) {
+          topoEdges.push({
+            from: svcId,
+            to: `pod-${pod.metadata.namespace}-${pod.metadata.name}`,
+            color: "var(--accent-secondary)",
+          });
         }
       }
-      for (const svcName of backendNames) {
-        const svcId = `svc-${ig.metadata.namespace}-${svcName}`;
-        if (topoNodes.some((n) => n.id === svcId)) {
-          topoEdges.push({
-            from: igId,
-            to: svcId,
-            color: "var(--warning)",
-          });
+    }
+
+    // Build pod-to-PVC edges based on volume mounts
+    for (const pod of k8sPods) {
+      for (const vol of pod.spec?.volumes ?? []) {
+        if (vol.persistentVolumeClaim?.claimName) {
+          const pvcId =
+            `pvc-${pod.metadata.namespace}-${vol.persistentVolumeClaim.claimName}`;
+          const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+          if (topoNodes.some((n) => n.id === pvcId)) {
+            topoEdges.push({
+              from: podId,
+              to: pvcId,
+              color: "var(--info)",
+            });
+          }
         }
       }
     }
@@ -303,7 +339,7 @@ export default function ClusterTopology() {
   }, [dimensions.value.width, dimensions.value.height, rawData.value]);
 
   if (!IS_BROWSER) {
-    return <div style={{ minHeight: "200px" }} />;
+    return <div style={{ minHeight: "220px" }} />;
   }
 
   if (loading.value) {
@@ -313,7 +349,8 @@ export default function ClusterTopology() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          height: "200px",
+          height: "100%",
+          minHeight: "220px",
           color: "var(--text-muted)",
           fontSize: "13px",
         }}
@@ -330,7 +367,8 @@ export default function ClusterTopology() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          height: "200px",
+          height: "100%",
+          minHeight: "220px",
           color: "var(--text-muted)",
           fontSize: "13px",
         }}
@@ -340,7 +378,7 @@ export default function ClusterTopology() {
     );
   }
 
-  const kindStyles: Record<
+  const kindColors: Record<
     TopoNode["kind"],
     { border: string; bg: string; borderRadius: string; color: string }
   > = {
@@ -364,7 +402,7 @@ export default function ClusterTopology() {
       borderRadius: "50%",
       color: "var(--success)",
     },
-    ingress: {
+    pvc: {
       border: "rgba(255,183,77,0.4)",
       bg:
         "linear-gradient(135deg, rgba(255,183,77,0.15), rgba(255,183,77,0.05))",
@@ -372,6 +410,24 @@ export default function ClusterTopology() {
       color: "var(--warning)",
     },
   };
+
+  function getNodeStyle(node: TopoNode) {
+    const base = kindColors[node.kind];
+    if (node.health === "healthy") return base;
+    if (node.health === "warning") {
+      return {
+        ...base,
+        border: "var(--warning)",
+        bg:
+          "linear-gradient(135deg, rgba(255,183,77,0.2), rgba(255,183,77,0.05))",
+      };
+    }
+    return {
+      ...base,
+      border: "var(--error)",
+      bg: "linear-gradient(135deg, rgba(239,68,68,0.2), rgba(239,68,68,0.05))",
+    };
+  }
 
   function getNodeHref(node: TopoNode): string {
     switch (node.kind) {
@@ -383,14 +439,47 @@ export default function ClusterTopology() {
         }/${node.label}`;
       case "pod":
         return `/workloads/pods/${node.namespace ?? "default"}/${node.label}`;
-      case "ingress":
-        return `/networking/ingresses/${
-          node.namespace ?? "default"
-        }/${node.label}`;
+      case "pvc":
+        return `/storage/pvcs/${node.namespace ?? "default"}/${node.label}`;
     }
   }
 
+  function getTooltip(node: TopoNode): string {
+    const ns = node.namespace ? ` (${node.namespace})` : "";
+    const status = node.health === "healthy"
+      ? "Healthy"
+      : node.health === "warning"
+      ? "Warning"
+      : "Error";
+    return `${node.kind}: ${node.label}${ns} - ${status}`;
+  }
+
   const nodeMap = new Map(nodes.value.map((n) => [n.id, n]));
+
+  const handleWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    const next = Math.min(3, Math.max(0.3, zoom.value + delta));
+    zoom.value = next;
+  };
+
+  const handleMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    dragging.value = true;
+    dragStart.value = { x: e.clientX, y: e.clientY };
+    panStart.value = { x: pan.value.x, y: pan.value.y };
+  };
+
+  const handleMouseMove = (e: MouseEvent) => {
+    if (!dragging.value) return;
+    const dx = (e.clientX - dragStart.value.x) / zoom.value;
+    const dy = (e.clientY - dragStart.value.y) / zoom.value;
+    pan.value = { x: panStart.value.x + dx, y: panStart.value.y + dy };
+  };
+
+  const handleMouseUp = () => {
+    dragging.value = false;
+  };
 
   return (
     <div
@@ -398,91 +487,160 @@ export default function ClusterTopology() {
       style={{
         position: "relative",
         width: "100%",
-        height: "200px",
+        height: "100%",
         overflow: "hidden",
+        cursor: dragging.value ? "grabbing" : "grab",
       }}
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
     >
-      {/* SVG connection lines */}
-      <svg
+      {/* Transformed inner container for zoom/pan */}
+      <div
         style={{
           position: "absolute",
           inset: 0,
-          width: "100%",
-          height: "100%",
-          pointerEvents: "none",
+          transform:
+            `scale(${zoom.value}) translate(${pan.value.x}px, ${pan.value.y}px)`,
+          transformOrigin: "center center",
         }}
       >
-        <defs>
-          <style>
-            {`
- @keyframes topoPulse {
- 0%, 100% { opacity: 0.25; }
- 50% { opacity: 0.5; }
- }
- `}
-          </style>
-        </defs>
-        {edges.value.map((edge, i) => {
-          const from = nodeMap.get(edge.from);
-          const to = nodeMap.get(edge.to);
-          if (!from || !to) return null;
+        {/* SVG connection lines */}
+        <svg
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+          }}
+        >
+          <defs>
+            <style>
+              {`
+@keyframes topoPulse {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.5; }
+}
+`}
+            </style>
+          </defs>
+          {edges.value.map((edge, i) => {
+            const from = nodeMap.get(edge.from);
+            const to = nodeMap.get(edge.to);
+            if (!from || !to) return null;
+            return (
+              <line
+                key={`edge-${i}`}
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+                stroke={edge.color}
+                stroke-width="1.5"
+                style={{ animation: "topoPulse 3s ease-in-out infinite" }}
+              />
+            );
+          })}
+        </svg>
+
+        {/* Resource nodes */}
+        {nodes.value.map((node) => {
+          const style = getNodeStyle(node);
+          const href = getNodeHref(node);
+          const truncated = node.label.length > 15
+            ? node.label.slice(0, 14) + "\u2026"
+            : node.label;
           return (
-            <line
-              key={`edge-${i}`}
-              x1={from.x}
-              y1={from.y}
-              x2={to.x}
-              y2={to.y}
-              stroke={edge.color}
-              stroke-width="1.5"
-              style={{ animation: "topoPulse 3s ease-in-out infinite" }}
-            />
+            <a
+              key={node.id}
+              title={getTooltip(node)}
+              href={href}
+              style={{
+                position: "absolute",
+                left: `${node.x - node.size / 2}px`,
+                top: `${node.y - node.size / 2}px`,
+                width: `${node.size}px`,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                textDecoration: "none",
+                zIndex: 1,
+              }}
+              onMouseEnter={(e) => {
+                const el = e.currentTarget as HTMLAnchorElement;
+                el.style.transform = "scale(1.15)";
+              }}
+              onMouseLeave={(e) => {
+                const el = e.currentTarget as HTMLAnchorElement;
+                el.style.transform = "scale(1)";
+              }}
+              onClick={(e) => {
+                // Prevent navigation if we just finished dragging
+                if (
+                  Math.abs(pan.value.x - panStart.value.x) > 3 ||
+                  Math.abs(pan.value.y - panStart.value.y) > 3
+                ) {
+                  e.preventDefault();
+                }
+              }}
+            >
+              <div
+                style={{
+                  width: `${node.size}px`,
+                  height: `${node.size}px`,
+                  borderRadius: style.borderRadius,
+                  border: `2px solid ${style.border}`,
+                  background: style.bg,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: `${Math.max(9, node.size * 0.22)}px`,
+                  fontWeight: 700,
+                  color: style.color,
+                  cursor: "pointer",
+                  transition: "transform 0.15s ease",
+                }}
+              >
+                {node.abbr}
+              </div>
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "var(--text-muted)",
+                  textAlign: "center",
+                  marginTop: "2px",
+                  maxWidth: `${node.size + 20}px`,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {truncated}
+              </div>
+            </a>
           );
         })}
-      </svg>
+      </div>
 
-      {/* Resource nodes */}
-      {nodes.value.map((node) => {
-        const style = kindStyles[node.kind];
-        const href = getNodeHref(node);
-        return (
-          <a
-            key={node.id}
-            title={node.label}
-            href={href}
-            style={{
-              position: "absolute",
-              left: `${node.x - node.size / 2}px`,
-              top: `${node.y - node.size / 2}px`,
-              width: `${node.size}px`,
-              height: `${node.size}px`,
-              borderRadius: style.borderRadius,
-              border: `2px solid ${style.border}`,
-              background: style.bg,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: `${Math.max(9, node.size * 0.22)}px`,
-              fontWeight: 700,
-              color: style.color,
-              cursor: "pointer",
-              transition: "transform 0.15s ease",
-              zIndex: 1,
-              textDecoration: "none",
-            }}
-            onMouseEnter={(e) => {
-              (e.currentTarget as HTMLAnchorElement).style.transform =
-                "scale(1.15)";
-            }}
-            onMouseLeave={(e) => {
-              (e.currentTarget as HTMLAnchorElement).style.transform =
-                "scale(1)";
-            }}
-          >
-            {node.abbr}
-          </a>
-        );
-      })}
+      {/* Zoom indicator */}
+      {zoom.value !== 1 && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "4px",
+            right: "8px",
+            fontSize: "10px",
+            color: "var(--text-muted)",
+            pointerEvents: "none",
+            userSelect: "none",
+          }}
+        >
+          {Math.round(zoom.value * 100)}%
+        </div>
+      )}
     </div>
   );
 }
