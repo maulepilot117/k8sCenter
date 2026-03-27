@@ -6,7 +6,6 @@ import { selectedNamespace } from "@/lib/namespace.ts";
 import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
-import StorageOverview from "@/islands/StorageOverview.tsx";
 import SnapshotList from "@/islands/SnapshotList.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
 
@@ -272,6 +271,35 @@ export default function StorageDashboard(
             </svg>
             New PVC
           </a>
+          <a
+            href="/tools/storageclass-wizard"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "7px 14px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-secondary)",
+              background: "transparent",
+              borderRadius: "6px",
+              textDecoration: "none",
+              border: "1px solid var(--border-primary)",
+              cursor: "pointer",
+            }}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M4 8h8M8 4v8" />
+            </svg>
+            New StorageClass
+          </a>
         </div>
       </div>
 
@@ -335,7 +363,14 @@ export default function StorageDashboard(
       {/* Content area */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {isOverview
-          ? <StorageOverview />
+          ? (
+            <ResourceTable
+              kind="pvcs"
+              title="Persistent Volume Claims"
+              createHref="/storage/pvcs/new"
+              hideHeader
+            />
+          )
           : isSnapshots
           ? <SnapshotList />
           : (
