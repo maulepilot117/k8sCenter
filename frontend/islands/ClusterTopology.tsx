@@ -57,10 +57,8 @@ interface TopoEdge {
   color: string;
 }
 
-const MAX_NODES = 10;
-const MAX_SERVICES = 10;
-const MAX_PODS = 15;
-const MAX_PVCS = 10;
+// No artificial limits — SVG viewBox handles scaling for any cluster size.
+// The backend API default limit is 100 per kind (configurable via ?limit=500).
 
 function matchesSelector(
   selector: Record<string, string> | undefined,
@@ -204,29 +202,29 @@ export default function ClusterTopology() {
       loading.value = true;
 
       const [nodesRes, svcsRes, podsRes, pvcsRes] = await Promise.allSettled([
-        apiGet<K8sNode[]>("/v1/resources/nodes"),
-        apiGet<K8sService[]>("/v1/resources/services"),
-        apiGet<K8sPod[]>("/v1/resources/pods"),
-        apiGet<K8sPVC[]>("/v1/resources/pvcs"),
+        apiGet<K8sNode[]>("/v1/resources/nodes?limit=500"),
+        apiGet<K8sService[]>("/v1/resources/services?limit=500"),
+        apiGet<K8sPod[]>("/v1/resources/pods?limit=500"),
+        apiGet<K8sPVC[]>("/v1/resources/pvcs?limit=500"),
       ]);
 
       rawData.value = {
         k8sNodes:
-          (nodesRes.status === "fulfilled" && Array.isArray(nodesRes.value.data)
+          nodesRes.status === "fulfilled" && Array.isArray(nodesRes.value.data)
             ? nodesRes.value.data
-            : []).slice(0, MAX_NODES),
+            : [],
         k8sSvcs:
-          (svcsRes.status === "fulfilled" && Array.isArray(svcsRes.value.data)
+          svcsRes.status === "fulfilled" && Array.isArray(svcsRes.value.data)
             ? svcsRes.value.data
-            : []).slice(0, MAX_SERVICES),
+            : [],
         k8sPods:
-          (podsRes.status === "fulfilled" && Array.isArray(podsRes.value.data)
+          podsRes.status === "fulfilled" && Array.isArray(podsRes.value.data)
             ? podsRes.value.data
-            : []).slice(0, MAX_PODS),
+            : [],
         k8sPVCs:
-          (pvcsRes.status === "fulfilled" && Array.isArray(pvcsRes.value.data)
+          pvcsRes.status === "fulfilled" && Array.isArray(pvcsRes.value.data)
             ? pvcsRes.value.data
-            : []).slice(0, MAX_PVCS),
+            : [],
       };
 
       loading.value = false;
