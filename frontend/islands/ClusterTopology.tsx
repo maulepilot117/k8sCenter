@@ -41,6 +41,7 @@ interface TopoNode {
   label: string;
   abbr: string;
   kind: "node" | "service" | "pod" | "ingress";
+  namespace?: string;
   x: number;
   y: number;
   size: number;
@@ -160,22 +161,29 @@ export default function ClusterTopology() {
 
     // Position nodes in columns
     const placeColumn = (
-      items: { id: string; label: string; kind: TopoNode["kind"] }[],
+      items: {
+        id: string;
+        label: string;
+        kind: TopoNode["kind"];
+        namespace?: string;
+      }[],
       xPct: number,
       size: number,
     ) => {
       const count = items.length;
       if (count === 0) return;
       const spacing = h / (count + 1);
+      const kindAbbr: Record<string, string> = {
+        node: "N",
+        service: "SVC",
+        pod: "P",
+        ingress: "ING",
+      };
       items.forEach((item, i) => {
-        const kindAbbr: Record<string, string> = {
-          node: "N",
-          service: "SVC",
-          pod: "P",
-          ingress: "ING",
-        };
-        const abbr = kindAbbr[item.kind] ??
+        const base = kindAbbr[item.kind] ??
           item.kind.substring(0, 2).toUpperCase();
+        // Number nodes (N1, N2, N3); keep SVC/P/ING as-is for brevity
+        const abbr = item.kind === "node" ? `${base}${i + 1}` : base;
         topoNodes.push({
           ...item,
           abbr,
@@ -200,6 +208,7 @@ export default function ClusterTopology() {
       k8sSvcs.map((s) => ({
         id: `svc-${s.metadata.namespace}-${s.metadata.name}`,
         label: s.metadata.name,
+        namespace: s.metadata.namespace,
         kind: "service" as const,
       })),
       0.40,
@@ -210,6 +219,7 @@ export default function ClusterTopology() {
       k8sPods.map((p) => ({
         id: `pod-${p.metadata.namespace}-${p.metadata.name}`,
         label: p.metadata.name,
+        namespace: p.metadata.namespace,
         kind: "pod" as const,
       })),
       0.62,
@@ -220,6 +230,7 @@ export default function ClusterTopology() {
       k8sIngresses.map((ig) => ({
         id: `ing-${ig.metadata.namespace}-${ig.metadata.name}`,
         label: ig.metadata.name,
+        namespace: ig.metadata.namespace,
         kind: "ingress" as const,
       })),
       0.85,
@@ -331,29 +342,53 @@ export default function ClusterTopology() {
 
   const kindStyles: Record<
     TopoNode["kind"],
-    { border: string; bg: string; borderRadius: string }
+    { border: string; bg: string; borderRadius: string; color: string }
   > = {
     node: {
-      border: "var(--accent)",
-      bg: "var(--accent-dim)",
+      border: "rgba(0,194,255,0.4)",
+      bg: "linear-gradient(135deg, rgba(0,194,255,0.15), rgba(0,194,255,0.05))",
       borderRadius: "50%",
+      color: "var(--accent)",
     },
     service: {
-      border: "var(--accent-secondary)",
-      bg: "rgba(124,92,252,0.08)",
+      border: "rgba(124,92,252,0.4)",
+      bg:
+        "linear-gradient(135deg, rgba(124,92,252,0.15), rgba(124,92,252,0.05))",
       borderRadius: "50%",
+      color: "var(--accent-secondary)",
     },
     pod: {
-      border: "var(--success)",
-      bg: "var(--success-dim)",
+      border: "rgba(80,250,123,0.4)",
+      bg:
+        "linear-gradient(135deg, rgba(80,250,123,0.15), rgba(80,250,123,0.05))",
       borderRadius: "50%",
+      color: "var(--success)",
     },
     ingress: {
-      border: "var(--warning)",
-      bg: "var(--warning-dim)",
+      border: "rgba(255,183,77,0.4)",
+      bg:
+        "linear-gradient(135deg, rgba(255,183,77,0.15), rgba(255,183,77,0.05))",
       borderRadius: "6px",
+      color: "var(--warning)",
     },
   };
+
+  function getNodeHref(node: TopoNode): string {
+    switch (node.kind) {
+      case "node":
+        return `/cluster/nodes/${node.label}`;
+      case "service":
+        return `/networking/services/${
+          node.namespace ?? "default"
+        }/${node.label}`;
+      case "pod":
+        return `/workloads/pods/${node.namespace ?? "default"}/${node.label}`;
+      case "ingress":
+        return `/networking/ingresses/${
+          node.namespace ?? "default"
+        }/${node.label}`;
+    }
+  }
 
   const nodeMap = new Map(nodes.value.map((n) => [n.id, n]));
 
@@ -409,10 +444,12 @@ export default function ClusterTopology() {
       {/* Resource nodes */}
       {nodes.value.map((node) => {
         const style = kindStyles[node.kind];
+        const href = getNodeHref(node);
         return (
-          <div
+          <a
             key={node.id}
             title={node.label}
+            href={href}
             style={{
               position: "absolute",
               left: `${node.x - node.size / 2}px`,
@@ -427,21 +464,23 @@ export default function ClusterTopology() {
               justifyContent: "center",
               fontSize: `${Math.max(9, node.size * 0.22)}px`,
               fontWeight: 700,
-              color: style.border,
-              cursor: "default",
+              color: style.color,
+              cursor: "pointer",
               transition: "transform 0.15s ease",
               zIndex: 1,
+              textDecoration: "none",
             }}
             onMouseEnter={(e) => {
-              (e.currentTarget as HTMLDivElement).style.transform =
+              (e.currentTarget as HTMLAnchorElement).style.transform =
                 "scale(1.15)";
             }}
             onMouseLeave={(e) => {
-              (e.currentTarget as HTMLDivElement).style.transform = "scale(1)";
+              (e.currentTarget as HTMLAnchorElement).style.transform =
+                "scale(1)";
             }}
           >
             {node.abbr}
-          </div>
+          </a>
         );
       })}
     </div>

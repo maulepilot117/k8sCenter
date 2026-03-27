@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 
 interface MetricCardProps {
@@ -8,6 +9,7 @@ interface MetricCardProps {
   sparklineData?: number[];
   sparklineColor?: string;
   href?: string;
+  icon?: ComponentChildren;
 }
 
 const STATUS_STYLES: Record<
@@ -41,7 +43,7 @@ const STATUS_STYLES: Record<
 };
 
 function MetricCardInner(
-  { value, label, status, statusText, sparklineData, sparklineColor }:
+  { value, label, status, statusText, sparklineData, sparklineColor, icon }:
     MetricCardProps,
 ) {
   const styles = STATUS_STYLES[status];
@@ -88,7 +90,7 @@ function MetricCardInner(
             stroke="currentColor"
             stroke-width="1.5"
           >
-            <circle cx="8" cy="8" r="5" />
+            {icon ?? <circle cx="8" cy="8" r="5" />}
           </svg>
         </div>
         {/* Status pill */}

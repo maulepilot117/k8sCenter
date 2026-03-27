@@ -317,6 +317,12 @@ export default function DashboardV2() {
             href="/cluster/nodes"
             sparklineData={[3, 3, 3, 3, 3, 3, 3, 3]}
             sparklineColor="var(--success)"
+            icon={
+              <>
+                <rect x="2" y="2" width="12" height="12" rx="2" />
+                <circle cx="8" cy="8" r="2" />
+              </>
+            }
           />
           <MetricCard
             value={s?.pods.total ?? 0}
@@ -326,6 +332,12 @@ export default function DashboardV2() {
             href="/workloads/pods"
             sparklineData={[30, 32, 31, 33, 35, 34, 36, 38, 40, 42, 44, 45]}
             sparklineColor="var(--success)"
+            icon={
+              <>
+                <circle cx="8" cy="8" r="6" />
+                <circle cx="8" cy="8" r="2" />
+              </>
+            }
           />
           <MetricCard
             value={s?.services.total ?? 0}
@@ -335,6 +347,12 @@ export default function DashboardV2() {
             href="/networking/services"
             sparklineData={[40, 41, 41, 42, 42, 43, 43, 44]}
             sparklineColor="var(--success)"
+            icon={
+              <>
+                <path d="M3 8h10M8 3v10" />
+                <circle cx="8" cy="8" r="6" />
+              </>
+            }
           />
           <MetricCard
             value={s?.alerts.active ?? 0}
@@ -350,6 +368,12 @@ export default function DashboardV2() {
             href="/alerting"
             sparklineData={[0, 0, 1, 0, 0, 0, 0, 0]}
             sparklineColor="var(--warning)"
+            icon={
+              <>
+                <path d="M8 2L2 13h12L8 2z" />
+                <path d="M8 7v3M8 11.5v.5" />
+              </>
+            }
           />
         </div>
 
@@ -360,6 +384,8 @@ export default function DashboardV2() {
             value={Math.round(s?.cpu?.percentage ?? 0)}
             used={s?.cpu ? `${s.cpu.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
+            requests="\u2014"
+            limits="\u2014"
             color="var(--accent)"
             secondaryColor="var(--success)"
           />
@@ -372,6 +398,8 @@ export default function DashboardV2() {
             value={Math.round(s?.memory?.percentage ?? 0)}
             used={s?.memory ? `${s.memory.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
+            requests="\u2014"
+            limits="\u2014"
             color="var(--accent-secondary)"
             secondaryColor="#FF79C6"
           />
