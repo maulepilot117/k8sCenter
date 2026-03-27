@@ -109,27 +109,163 @@ const podColumns: Column<K8sResource>[] = [
 ];
 
 const deploymentColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
   {
-    key: "ready",
-    label: "Ready",
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) =>
+      h("span", {
+        style: {
+          color: "var(--accent)",
+          fontFamily: "var(--font-mono, monospace)",
+          fontWeight: 500,
+          fontSize: "13px",
+        },
+      }, r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) =>
+      h("span", {
+        style: {
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "11px",
+          padding: "2px 6px",
+          background: "var(--bg-base)",
+          borderRadius: "4px",
+          color: "var(--text-secondary)",
+        },
+      }, r.metadata.namespace ?? "-"),
+  },
+  {
+    key: "status",
+    label: "Status",
+    sortable: true,
     render: (r) => {
-      const d = r as Deployment;
-      return `${d.status?.readyReplicas ?? 0}/${d.spec?.replicas ?? 0}`;
+      const dep = r as Deployment;
+      const available = dep.status?.availableReplicas ?? 0;
+      const replicas = dep.spec?.replicas ?? 0;
+      let status = "Running";
+      let dotColor = "var(--success)";
+      let bgColor = "var(--success-dim)";
+      let textColor = "var(--success)";
+
+      if (available === 0 && replicas > 0) {
+        status = "Failed";
+        dotColor = "var(--error)";
+        bgColor = "var(--error-dim)";
+        textColor = "var(--error)";
+      } else if (available < replicas) {
+        status = "Progressing";
+        dotColor = "var(--warning)";
+        bgColor = "var(--warning-dim)";
+        textColor = "var(--warning)";
+      }
+
+      return h("span", {
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "5px",
+          padding: "3px 10px",
+          borderRadius: "12px",
+          fontSize: "11px",
+          fontWeight: 500,
+          background: bgColor,
+          color: textColor,
+        },
+      }, [
+        h("span", {
+          style: {
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            background: dotColor,
+          },
+        }),
+        status,
+      ]);
     },
   },
   {
-    key: "upToDate",
-    label: "Up-to-date",
-    render: (r) => String((r as Deployment).status?.updatedReplicas ?? 0),
+    key: "replicas",
+    label: "Replicas",
+    sortable: false,
+    render: (r) => {
+      const dep = r as Deployment;
+      const desired = dep.spec?.replicas ?? 0;
+      const ready = dep.status?.readyReplicas ?? 0;
+
+      const dots = [];
+      for (let i = 0; i < desired; i++) {
+        const isReady = i < ready;
+        dots.push(h("div", {
+          key: i,
+          style: {
+            width: "8px",
+            height: "8px",
+            borderRadius: "2px",
+            background: isReady
+              ? "var(--success)"
+              : (i < (dep.status?.availableReplicas ?? 0)
+                ? "var(--warning)"
+                : "var(--error)"),
+          },
+        }));
+      }
+
+      return h(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: "6px" } },
+        [
+          h("div", { style: { display: "flex", gap: "3px" } }, dots),
+          h("span", {
+            style: {
+              fontSize: "12px",
+              fontFamily: "var(--font-mono, monospace)",
+              color: "var(--text-secondary)",
+            },
+          }, `${ready}/${desired}`),
+        ],
+      );
+    },
   },
   {
-    key: "available",
-    label: "Available",
-    render: (r) => String((r as Deployment).status?.availableReplicas ?? 0),
+    key: "image",
+    label: "Image",
+    sortable: false,
+    render: (r) => {
+      const dep = r as Deployment;
+      const image = dep.spec?.template?.spec?.containers?.[0]?.image ?? "-";
+      return h("span", {
+        style: {
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "11px",
+          color: "var(--text-muted)",
+          maxWidth: "200px",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          display: "block",
+        },
+      }, image);
+    },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) =>
+      h("span", {
+        style: {
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "12px",
+          color: "var(--text-secondary)",
+        },
+      }, age(r.metadata.creationTimestamp)),
+  },
 ];
 
 const statefulsetColumns: Column<K8sResource>[] = [
