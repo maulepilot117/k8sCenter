@@ -33,12 +33,14 @@ export default function SnapshotList() {
 
   const fetchSnapshots = () => {
     loading.value = true;
-    apiGet<SnapshotResponse>("/v1/storage/snapshots")
+    apiGet<SnapshotInfo[]>("/v1/storage/snapshots")
       .then((resp) => {
-        if (resp.data && Array.isArray(resp.data.data)) {
-          snapshots.value = resp.data.data;
-          available.value = resp.data.metadata?.available ?? true;
-        }
+        // resp = {data: [...], metadata: {available: bool, total: num}}
+        // resp.data is the snapshot array, resp.metadata has the available flag
+        snapshots.value = Array.isArray(resp.data) ? resp.data : [];
+        const meta = (resp as unknown as Record<string, unknown>)
+          .metadata as { available?: boolean } | undefined;
+        available.value = meta?.available ?? true;
       })
       .catch((err) => {
         error.value = err instanceof Error
