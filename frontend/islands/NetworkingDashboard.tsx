@@ -95,13 +95,12 @@ function resolveTab(currentPath: string): {
     };
   }
 
-  // Default (landing /networking or /networking/services): Services
+  // Default (landing /networking): show CNI overview as the landing page
   return {
-    kind: "services",
-    title: "Services",
-    createHref: "/networking/services/new",
+    kind: "",
+    title: "Overview",
     isFlows: false,
-    isCni: false,
+    isCni: true,
   };
 }
 

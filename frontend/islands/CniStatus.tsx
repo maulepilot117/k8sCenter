@@ -211,7 +211,9 @@ function CniStatusTab({ info }: { info: CNIInfo }) {
           {info.version && (
             <div class="flex justify-between">
               <span class="text-text-muted">Version</span>
-              <span class="font-mono text-sm">{info.version}</span>
+              <span class="font-mono text-sm">
+                {info.version.split("@")[0].replace(/^.*:/, "")}
+              </span>
             </div>
           )}
           <div class="flex justify-between">
