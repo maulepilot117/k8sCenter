@@ -99,15 +99,96 @@ export default function SnapshotList() {
 
   if (!available.value) {
     return (
-      <Card>
-        <div class="p-6 text-center text-text-muted">
-          <p class="text-lg font-medium">VolumeSnapshot CRDs Not Installed</p>
-          <p class="mt-2 text-sm">
-            Install the snapshot.storage.k8s.io CRDs to enable VolumeSnapshot
-            support.
+      <div
+        style={{
+          background: "var(--error-dim)",
+          border: "1px solid var(--error)",
+          borderRadius: "var(--radius)",
+          padding: "20px 24px",
+          display: "flex",
+          alignItems: "flex-start",
+          gap: "14px",
+        }}
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--error)"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          style={{ flexShrink: 0, marginTop: "2px" }}
+        >
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="8" x2="12" y2="12" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <div>
+          <div
+            style={{
+              fontSize: "15px",
+              fontWeight: 600,
+              color: "var(--error)",
+              marginBottom: "6px",
+            }}
+          >
+            VolumeSnapshot CRDs Not Installed
+          </div>
+          <p
+            style={{
+              fontSize: "13px",
+              color: "var(--text-secondary)",
+              margin: "0 0 12px 0",
+              lineHeight: 1.5,
+            }}
+          >
+            The{" "}
+            <code
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "12px",
+                padding: "1px 5px",
+                background: "var(--bg-elevated)",
+                borderRadius: "3px",
+              }}
+            >
+              snapshot.storage.k8s.io
+            </code>{" "}
+            CRDs are required for VolumeSnapshot support. These CRDs are not
+            included in Kubernetes by default and must be installed separately.
           </p>
+          <a
+            href="https://kubernetes-csi.github.io/docs/snapshot-controller.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--accent)",
+              textDecoration: "none",
+            }}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M6 3H3v10h10v-3" />
+              <path d="M9 2h5v5" />
+              <path d="M14 2L7 9" />
+            </svg>
+            View installation documentation
+          </a>
         </div>
-      </Card>
+      </div>
     );
   }
 
