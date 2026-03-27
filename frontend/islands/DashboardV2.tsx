@@ -6,7 +6,6 @@ import { api } from "@/lib/api.ts";
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
-import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import HealthScoreRing from "@/islands/HealthScoreRing.tsx";
 import MetricCard from "@/islands/MetricCard.tsx";
 import UtilizationGauge from "@/islands/UtilizationGauge.tsx";
@@ -89,7 +88,6 @@ export default function DashboardV2() {
 
     load();
 
-    // 60-second auto-refresh for summary data
     const interval = setInterval(async () => {
       if (document.hidden) return;
       try {
@@ -111,8 +109,8 @@ export default function DashboardV2() {
 
   if (loading.value) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-        <Skeleton class="h-10 w-64" />
+      <div>
+        <Skeleton class="h-8 w-48 mb-5" />
         <div
           style={{
             display: "grid",
@@ -120,32 +118,32 @@ export default function DashboardV2() {
             gap: "16px",
           }}
         >
-          <div style={{ gridColumn: "span 4" }}>
-            <Skeleton class="h-56 w-full rounded-lg" />
+          <Skeleton
+            class="rounded-lg"
+            style={{ gridColumn: "span 4", height: "280px" }}
+          />
+          <div
+            style={{
+              gridColumn: "span 8",
+              display: "grid",
+              gridTemplateColumns: "repeat(4, 1fr)",
+              gap: "16px",
+            }}
+          >
+            {[1, 2, 3, 4].map((i) => (
+              <Skeleton key={i} class="h-32 rounded-lg" />
+            ))}
           </div>
-          <div style={{ gridColumn: "span 8" }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "12px",
-              }}
-            >
-              {[1, 2, 3, 4].map((i) => (
-                <Skeleton key={i} class="h-28 w-full rounded-lg" />
-              ))}
-            </div>
-          </div>
-        </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: "16px",
-          }}
-        >
-          <Skeleton class="h-36 w-full rounded-lg" />
-          <Skeleton class="h-36 w-full rounded-lg" />
+          <Skeleton class="h-40 rounded-lg" style={{ gridColumn: "span 6" }} />
+          <Skeleton class="h-40 rounded-lg" style={{ gridColumn: "span 6" }} />
+          <Skeleton
+            class="rounded-lg"
+            style={{ gridColumn: "span 7", height: "280px" }}
+          />
+          <Skeleton
+            class="rounded-lg"
+            style={{ gridColumn: "span 5", height: "280px" }}
+          />
         </div>
       </div>
     );
@@ -155,83 +153,38 @@ export default function DashboardV2() {
   const s = summary.value;
   const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
 
-  const metricCards = [
-    {
-      value: s?.nodes.total ?? 0,
-      label: "Nodes",
-      status: (s?.nodes.total ?? 0) > 0 ? "success" : "warning",
-      statusText: s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "None",
-      href: "/cluster/nodes",
-      sparklineData: [3, 3, 3, 3, 3],
-      sparklineColor: "var(--success)",
-    },
-    {
-      value: s?.pods.total ?? 0,
-      label: "Pods",
-      status: (s?.pods.total ?? 0) > 0 ? "success" : "info",
-      statusText: s?.pods.total ? `${s.pods.running} Running` : "None",
-      href: "/workloads/pods",
-      sparklineData: [20, 22, 21, 23, 22],
-      sparklineColor: "var(--accent)",
-    },
-    {
-      value: s?.services.total ?? 0,
-      label: "Services",
-      status: "info" as const,
-      statusText: "Active",
-      href: "/networking/services",
-      sparklineData: [10, 10, 10, 10, 10],
-      sparklineColor: "var(--accent)",
-    },
-    {
-      value: s?.alerts.active ?? 0,
-      label: "Alerts",
-      status: (s?.alerts.critical ?? 0) > 0
-        ? "error"
-        : (s?.alerts.active ?? 0) > 0
-        ? "warning"
-        : "success",
-      statusText: (s?.alerts.active ?? 0) > 0
-        ? `${s?.alerts.critical ?? 0} Critical`
-        : "None",
-      href: "/alerts",
-      sparklineData: [0, 1, 0, 0, 0],
-      sparklineColor: "var(--warning)",
-    },
-  ] as const;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-      {/* Header row */}
+    <div>
+      {/* ===== PAGE HEADER — matches .page-header from mockup ===== */}
       <div
         style={{
           display: "flex",
+          alignItems: "center",
           justifyContent: "space-between",
-          alignItems: "flex-start",
+          marginBottom: "20px",
         }}
       >
         <div>
-          <h1
+          <div
             style={{
-              fontSize: "24px",
-              fontWeight: 700,
-              color: "var(--text-primary)",
-              margin: 0,
+              fontSize: "20px",
+              fontWeight: 600,
+              letterSpacing: "-0.02em",
             }}
           >
             Cluster Overview
-          </h1>
+          </div>
           {info && (
-            <p
+            <div
               style={{
                 fontSize: "13px",
                 color: "var(--text-muted)",
-                marginTop: "4px",
+                marginTop: "2px",
               }}
             >
               {info.platform} &middot; Kubernetes {info.kubernetesVersion}
               {` \u00B7 ${nodeCount} node${nodeCount !== 1 ? "s" : ""}`}
-            </p>
+            </div>
           )}
         </div>
         <div style={{ display: "flex", gap: "8px" }}>
@@ -241,10 +194,10 @@ export default function DashboardV2() {
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "8px 14px",
-              borderRadius: "var(--radius)",
+              padding: "7px 14px",
+              borderRadius: "var(--radius-sm)",
               background: "var(--accent)",
-              color: "#fff",
+              color: "var(--bg-base)",
               fontSize: "13px",
               fontWeight: 500,
               textDecoration: "none",
@@ -252,17 +205,14 @@ export default function DashboardV2() {
             }}
           >
             <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+              stroke-width="1.5"
             >
-              <circle cx="12" cy="12" r="10" />
-              <path d="M8 12h8M12 8v8" />
+              <path d="M4 8h8M8 4v8" />
             </svg>
             Deploy
           </a>
@@ -272,10 +222,10 @@ export default function DashboardV2() {
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "8px 14px",
-              borderRadius: "var(--radius)",
-              background: "var(--bg-elevated)",
-              color: "var(--text-primary)",
+              padding: "7px 14px",
+              borderRadius: "var(--radius-sm)",
+              background: "transparent",
+              color: "var(--text-secondary)",
               fontSize: "13px",
               fontWeight: 500,
               textDecoration: "none",
@@ -283,23 +233,22 @@ export default function DashboardV2() {
             }}
           >
             <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
+              stroke-width="1.5"
             >
-              <path d="M16 18l2-2-2-2M8 18l-2-2 2-2M12 10l-2 8" />
+              <rect x="2" y="3" width="12" height="10" rx="1.5" />
+              <path d="M5 8h6" />
             </svg>
             YAML
           </a>
         </div>
       </div>
 
-      {/* Health Score + Metric Cards row */}
+      {/* ===== SINGLE DASHBOARD GRID — matches .dashboard-grid from mockup ===== */}
       <div
         style={{
           display: "grid",
@@ -307,179 +256,200 @@ export default function DashboardV2() {
           gap: "16px",
         }}
       >
-        {/* Health Score */}
+        {/* ===== HEALTH SCORE CARD (span 4) — matches .health-card ===== */}
         <div
           style={{
             gridColumn: "span 4",
             background: "var(--bg-surface)",
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius)",
-            padding: "16px",
-            display: "flex",
-            flexDirection: "column",
+            padding: "20px",
+            overflow: "hidden",
           }}
         >
+          {/* Card title — matches .card-title */}
           <div
             style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--text-muted)",
+              marginBottom: "16px",
               display: "flex",
               alignItems: "center",
-              gap: "8px",
-              marginBottom: "12px",
+              gap: "6px",
             }}
           >
-            <StatusDot status="success" pulse size={8} />
             <span
               style={{
-                fontSize: "11px",
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.08em",
-                color: "var(--text-muted)",
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                background: "var(--success)",
+                display: "inline-block",
               }}
-            >
-              Cluster Health
-            </span>
+              class="animate-pulse-glow"
+            />
+            Cluster Health
           </div>
           <HealthScoreRing
             nodes={s?.nodes ?? { total: 0, ready: 0 }}
-            pods={s?.pods ?? {
-              total: 0,
-              running: 0,
-              pending: 0,
-              failed: 0,
-            }}
+            pods={s?.pods ?? { total: 0, running: 0, pending: 0, failed: 0 }}
             alerts={s?.alerts ?? { active: 0, critical: 0 }}
           />
         </div>
 
-        {/* Metric Cards */}
+        {/* ===== METRIC CARDS (span 8) — matches .metrics-grid ===== */}
         <div
           style={{
             gridColumn: "span 8",
             display: "grid",
             gridTemplateColumns: "repeat(4, 1fr)",
-            gap: "12px",
+            gap: "16px",
           }}
         >
-          {metricCards.map((card) => (
-            <MetricCard
-              key={card.label}
-              value={card.value}
-              label={card.label}
-              status={card.status as "success" | "warning" | "error" | "info"}
-              statusText={card.statusText}
-              href={card.href}
-              sparklineData={card.sparklineData as unknown as number[]}
-              sparklineColor={card.sparklineColor}
-            />
-          ))}
+          <MetricCard
+            value={s?.nodes.total ?? 0}
+            label="Nodes"
+            status={s?.nodes.ready === s?.nodes.total ? "success" : "warning"}
+            statusText={s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "—"}
+            href="/cluster/nodes"
+            sparklineData={[3, 3, 3, 3, 3, 3, 3, 3]}
+            sparklineColor="var(--success)"
+          />
+          <MetricCard
+            value={s?.pods.total ?? 0}
+            label="Pods"
+            status={(s?.pods.pending ?? 0) > 0 ? "warning" : "success"}
+            statusText={s?.pods.total ? `${s.pods.running} Running` : "—"}
+            href="/workloads/pods"
+            sparklineData={[30, 32, 31, 33, 35, 34, 36, 38, 40, 42, 44, 45]}
+            sparklineColor="var(--success)"
+          />
+          <MetricCard
+            value={s?.services.total ?? 0}
+            label="Services"
+            status="success"
+            statusText="Active"
+            href="/networking/services"
+            sparklineData={[40, 41, 41, 42, 42, 43, 43, 44]}
+            sparklineColor="var(--success)"
+          />
+          <MetricCard
+            value={s?.alerts.active ?? 0}
+            label="Alerts"
+            status={(s?.alerts.critical ?? 0) > 0
+              ? "error"
+              : (s?.alerts.active ?? 0) > 0
+              ? "warning"
+              : "success"}
+            statusText={(s?.alerts.active ?? 0) > 0
+              ? `${s?.alerts.critical ?? 0} Critical`
+              : "None"}
+            href="/alerting"
+            sparklineData={[0, 0, 1, 0, 0, 0, 0, 0]}
+            sparklineColor="var(--warning)"
+          />
         </div>
-      </div>
 
-      {/* CPU + Memory Utilization row */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(12, 1fr)",
-          gap: "16px",
-        }}
-      >
+        {/* ===== CPU UTILIZATION (span 6) — matches .util-card ===== */}
         <div style={{ gridColumn: "span 6" }}>
           <UtilizationGauge
             title="CPU Utilization"
-            value={Math.round(summary.value?.cpu?.percentage ?? 0)}
-            used={summary.value?.cpu
-              ? `${summary.value.cpu.percentage.toFixed(1)}%`
-              : "N/A"}
+            value={Math.round(s?.cpu?.percentage ?? 0)}
+            used={s?.cpu ? `${s.cpu.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
             color="var(--accent)"
-            secondaryColor="var(--accent-secondary)"
+            secondaryColor="var(--success)"
           />
         </div>
+
+        {/* ===== MEMORY UTILIZATION (span 6) — matches .util-card ===== */}
         <div style={{ gridColumn: "span 6" }}>
           <UtilizationGauge
             title="Memory Utilization"
-            value={Math.round(summary.value?.memory?.percentage ?? 0)}
-            used={summary.value?.memory
-              ? `${summary.value.memory.percentage.toFixed(1)}%`
-              : "N/A"}
+            value={Math.round(s?.memory?.percentage ?? 0)}
+            used={s?.memory ? `${s.memory.percentage.toFixed(1)}%` : "N/A"}
             total="100%"
             color="var(--accent-secondary)"
-            secondaryColor="var(--accent)"
+            secondaryColor="#FF79C6"
           />
         </div>
-      </div>
 
-      {/* Topology + Events row */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(12, 1fr)",
-          gap: "16px",
-        }}
-      >
-        {/* Cluster Topology placeholder */}
+        {/* ===== TOPOLOGY (span 7) — matches .topology-card ===== */}
         <div
           style={{
             gridColumn: "span 7",
             background: "var(--bg-surface)",
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius)",
-            padding: "16px",
+            padding: "20px",
             minHeight: "280px",
+            overflow: "hidden",
           }}
         >
           <div
             style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--text-muted)",
+              marginBottom: "16px",
               display: "flex",
               alignItems: "center",
-              gap: "8px",
-              marginBottom: "16px",
+              gap: "6px",
             }}
           >
-            <StatusDot status="info" pulse size={8} />
             <span
               style={{
-                fontSize: "13px",
-                fontWeight: 600,
-                color: "var(--text-primary)",
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                background: "var(--success)",
+                display: "inline-block",
               }}
-            >
-              Cluster Topology
-            </span>
+              class="animate-pulse-glow"
+            />
+            Cluster Topology
           </div>
           <ClusterTopology />
         </div>
 
-        {/* Recent Events */}
+        {/* ===== EVENTS (span 5) — matches .events-card ===== */}
         <div
           style={{
             gridColumn: "span 5",
             background: "var(--bg-surface)",
             border: "1px solid var(--border-primary)",
             borderRadius: "var(--radius)",
-            padding: "16px",
+            padding: "20px",
             minHeight: "280px",
             display: "flex",
             flexDirection: "column",
+            overflow: "hidden",
           }}
         >
           <div
             style={{
-              fontSize: "13px",
+              fontSize: "11px",
               fontWeight: 600,
-              color: "var(--text-primary)",
-              marginBottom: "12px",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--text-muted)",
+              marginBottom: "16px",
             }}
           >
             Recent Events
           </div>
+          {/* Event list — matches .event-list */}
           <div
             style={{
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              gap: "6px",
+              gap: "2px",
               overflow: "auto",
             }}
           >
@@ -498,81 +468,100 @@ export default function DashboardV2() {
               )
               : events.value.map((evt, idx) => {
                 const isWarning = evt.type === "Warning";
+                const kind = evt.involvedObject?.kind?.toLowerCase() ?? "";
+                // Short kind prefix for display: deploy, pod, svc, etc.
+                const kindAbbr: Record<string, string> = {
+                  deployment: "deploy",
+                  service: "svc",
+                  replicaset: "rs",
+                  statefulset: "sts",
+                  daemonset: "ds",
+                  persistentvolumeclaim: "pvc",
+                  horizontalpodautoscaler: "hpa",
+                  configmap: "cm",
+                  serviceaccount: "sa",
+                  networkpolicy: "netpol",
+                };
+                const prefix = kindAbbr[kind] ?? kind;
+                const resourceLabel = evt.involvedObject?.name
+                  ? `${prefix}/${evt.involvedObject.name}`
+                  : "";
+
                 return (
                   <div
                     key={`${evt.metadata?.uid ?? idx}`}
                     style={{
                       display: "flex",
                       alignItems: "flex-start",
-                      gap: "8px",
-                      padding: "6px 0",
-                      borderBottom: idx < events.value.length - 1
-                        ? "1px solid var(--border-subtle)"
-                        : "none",
+                      gap: "10px",
+                      padding: "8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      cursor: "pointer",
+                      transition: "background 0.15s ease",
                     }}
                   >
-                    <div style={{ paddingTop: "4px", flexShrink: 0 }}>
-                      <StatusDot
-                        status={isWarning ? "warning" : "info"}
-                        size={7}
-                      />
-                    </div>
-                    <div
+                    {/* Event dot — matches .event-dot */}
+                    <span
                       style={{
-                        flex: 1,
-                        minWidth: 0,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "2px",
+                        width: "7px",
+                        height: "7px",
+                        borderRadius: "50%",
+                        marginTop: "5px",
+                        flexShrink: 0,
+                        background: isWarning
+                          ? "var(--warning)"
+                          : "var(--accent)",
                       }}
-                    >
-                      {/* Line 1: resource name + message (truncated) */}
+                    />
+                    {/* Event content — matches .event-content */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {/* Message line — matches .event-msg */}
                       <div
                         style={{
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                          lineHeight: 1.4,
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
-                          fontSize: "12px",
-                          color: "var(--text-secondary)",
                         }}
                       >
-                        {evt.involvedObject && (
+                        {resourceLabel && (
                           <span
                             style={{
                               color: "var(--accent)",
                               fontFamily: "var(--font-mono, monospace)",
-                              fontWeight: 500,
+                              fontSize: "11px",
                             }}
                           >
-                            {evt.involvedObject.name}
+                            {resourceLabel}
                           </span>
-                        )} {evt.message}
+                        )}
+                        {resourceLabel ? " " : ""}
+                        {evt.message}
                       </div>
-                      {/* Line 2: source + namespace (meta) */}
+                      {/* Meta line — matches .event-meta */}
                       <div
                         style={{
                           fontSize: "10px",
                           color: "var(--text-muted)",
+                          marginTop: "2px",
                           fontFamily: "var(--font-mono, monospace)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
                         }}
                       >
-                        {[
-                          evt.source?.component,
-                          evt.involvedObject?.namespace,
-                        ]
+                        {[evt.source?.component, evt.involvedObject?.namespace]
                           .filter(Boolean)
                           .join(" \u00B7 ")}
                       </div>
                     </div>
+                    {/* Time — matches .event-time */}
                     <span
                       style={{
                         fontSize: "11px",
                         color: "var(--text-muted)",
-                        flexShrink: 0,
+                        fontFamily: "var(--font-mono, monospace)",
                         whiteSpace: "nowrap",
+                        marginTop: "1px",
                       }}
                     >
                       {evt.metadata?.creationTimestamp

@@ -33,10 +33,11 @@ export default function UtilizationGauge({
         background: "var(--bg-surface)",
         border: "1px solid var(--border-primary)",
         borderRadius: "var(--radius)",
-        padding: "16px",
+        padding: "20px",
+        transition: "border-color 0.2s ease",
       }}
     >
-      {/* Title */}
+      {/* Title — matches .card-title from mockup */}
       <div
         style={{
           fontSize: "11px",
@@ -44,19 +45,26 @@ export default function UtilizationGauge({
           textTransform: "uppercase",
           letterSpacing: "0.08em",
           color: "var(--text-muted)",
-          marginBottom: "12px",
+          marginBottom: "16px",
         }}
       >
         {title}
       </div>
 
-      {/* Gauge + stats row */}
-      <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
+      {/* Gauge + stats row — matches .util-content */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "24px",
+        }}
+      >
+        {/* Gauge — matches .gauge-container (100x100, flex-shrink: 0) */}
         <div style={{ flexShrink: 0 }}>
           <GaugeRing
             value={value}
             size={100}
-            strokeWidth={8}
+            strokeWidth={10}
             color={color}
             secondaryColor={secondaryColor}
             displayValue={`${Math.round(value)}%`}
@@ -64,33 +72,30 @@ export default function UtilizationGauge({
           />
         </div>
 
-        {/* Stats table */}
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "8px",
-            flex: 1,
-          }}
-        >
-          {statRows.map((row) => (
+        {/* Stats table — matches .util-details */}
+        <div style={{ flex: 1 }}>
+          {statRows.map((row, idx) => (
             <div
               key={row.label}
               style={{
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                padding: "6px 0",
+                fontSize: "13px",
+                borderBottom: idx < statRows.length - 1
+                  ? "1px solid var(--border-subtle)"
+                  : "none",
               }}
             >
-              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--text-secondary)" }}>
                 {row.label}
               </span>
               <span
                 style={{
-                  fontSize: "12px",
                   fontFamily: "var(--font-mono, monospace)",
-                  color: "var(--text-primary)",
                   fontWeight: 500,
+                  color: "var(--text-primary)",
                 }}
               >
                 {row.value}

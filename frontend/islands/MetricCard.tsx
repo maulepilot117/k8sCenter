@@ -1,5 +1,4 @@
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
-import { StatusDot } from "@/components/ui/StatusDot.tsx";
 
 interface MetricCardProps {
   value: number | string;
@@ -11,21 +10,41 @@ interface MetricCardProps {
   href?: string;
 }
 
-const STATUS_PILL_STYLES: Record<
+const STATUS_STYLES: Record<
   MetricCardProps["status"],
-  { bg: string; color: string }
+  { iconBg: string; iconColor: string; pillBg: string; pillColor: string }
 > = {
-  success: { bg: "var(--success-dim)", color: "var(--success)" },
-  warning: { bg: "var(--warning-dim)", color: "var(--warning)" },
-  error: { bg: "var(--error-dim)", color: "var(--error)" },
-  info: { bg: "var(--accent-dim)", color: "var(--accent)" },
+  success: {
+    iconBg: "var(--success-dim)",
+    iconColor: "var(--success)",
+    pillBg: "var(--success-dim)",
+    pillColor: "var(--success)",
+  },
+  warning: {
+    iconBg: "var(--warning-dim)",
+    iconColor: "var(--warning)",
+    pillBg: "var(--warning-dim)",
+    pillColor: "var(--warning)",
+  },
+  error: {
+    iconBg: "var(--error-dim)",
+    iconColor: "var(--error)",
+    pillBg: "var(--error-dim)",
+    pillColor: "var(--error)",
+  },
+  info: {
+    iconBg: "var(--accent-dim)",
+    iconColor: "var(--accent)",
+    pillBg: "var(--accent-dim)",
+    pillColor: "var(--accent)",
+  },
 };
 
 function MetricCardInner(
   { value, label, status, statusText, sparklineData, sparklineColor }:
     MetricCardProps,
 ) {
-  const pill = STATUS_PILL_STYLES[status];
+  const styles = STATUS_STYLES[status];
 
   return (
     <div
@@ -34,29 +53,55 @@ function MetricCardInner(
         border: "1px solid var(--border-primary)",
         borderRadius: "var(--radius)",
         padding: "16px",
-        display: "flex",
-        flexDirection: "column",
-        gap: "8px",
-        transition: "border-color 0.15s ease",
+        transition: "border-color 0.2s ease",
+        overflow: "hidden",
+        position: "relative",
       }}
     >
-      {/* Top row: status dot + badge pill */}
+      {/* Header: icon square + status pill */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          marginBottom: "8px",
         }}
       >
-        <StatusDot status={status} size={8} />
+        {/* 32x32 icon square */}
+        <div
+          style={{
+            width: "32px",
+            height: "32px",
+            borderRadius: "var(--radius-sm)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: styles.iconBg,
+            color: styles.iconColor,
+          }}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
+            <circle cx="8" cy="8" r="5" />
+          </svg>
+        </div>
+        {/* Status pill */}
         <span
           style={{
-            fontSize: "11px",
+            fontSize: "10px",
             fontWeight: 500,
-            padding: "2px 8px",
-            borderRadius: "9999px",
-            background: pill.bg,
-            color: pill.color,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            padding: "3px 8px",
+            borderRadius: "10px",
+            background: styles.pillBg,
+            color: styles.pillColor,
           }}
         >
           {statusText}
@@ -71,6 +116,7 @@ function MetricCardInner(
           fontWeight: 700,
           color: "var(--text-primary)",
           lineHeight: 1.1,
+          letterSpacing: "-0.02em",
         }}
       >
         {value}
@@ -81,6 +127,7 @@ function MetricCardInner(
         style={{
           fontSize: "12px",
           color: "var(--text-muted)",
+          marginTop: "2px",
         }}
       >
         {label}
@@ -88,12 +135,12 @@ function MetricCardInner(
 
       {/* Sparkline */}
       {sparklineData && sparklineData.length >= 2 && (
-        <div style={{ marginTop: "4px" }}>
+        <div style={{ marginTop: "12px" }}>
           <SparklineChart
             data={sparklineData}
             color={sparklineColor ?? "var(--accent)"}
             width={120}
-            height={28}
+            height={32}
           />
         </div>
       )}
