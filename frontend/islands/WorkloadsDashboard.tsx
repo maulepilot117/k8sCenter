@@ -375,6 +375,7 @@ export default function WorkloadsDashboard(
           kind={kind}
           title={title}
           createHref={createHref}
+          hideHeader
         />
       </div>
     </div>

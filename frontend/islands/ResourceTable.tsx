@@ -41,6 +41,8 @@ interface ResourceTableProps {
   enableWS?: boolean;
   /** URL for"Create" button (if provided, shows a Create button in header) */
   createHref?: string;
+  /** Hide the built-in title/create header (when wrapped by a parent dashboard) */
+  hideHeader?: boolean;
 }
 
 const PAGE_SIZE = 100;
@@ -50,6 +52,7 @@ export default function ResourceTable({
   title,
   clusterScoped = false,
   enableWS = true,
+  hideHeader = false,
   createHref,
 }: ResourceTableProps) {
   const items = useSignal<K8sResource[]>([]);
@@ -449,56 +452,58 @@ export default function ResourceTable({
 
   return (
     <div class="space-y-4">
-      {/* Header */}
-      <div class="flex items-center justify-between">
-        <h1 class="text-xl font-semibold text-text-primary">
-          {title}
-        </h1>
-        <div class="flex items-center gap-3">
-          <span class="text-sm text-text-muted">
-            {itemCountText.value}
-          </span>
-          {createHref &&
-            canPerformCheck(rbac.value, kind, "create", ns.value) && (
-            <a
-              href={createHref}
-              class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90 transition-colors"
+      {/* Header — hidden when inside a parent dashboard */}
+      {!hideHeader && (
+        <div class="flex items-center justify-between">
+          <h1 class="text-xl font-semibold text-text-primary">
+            {title}
+          </h1>
+          <div class="flex items-center gap-3">
+            <span class="text-sm text-text-muted">
+              {itemCountText.value}
+            </span>
+            {createHref &&
+              canPerformCheck(rbac.value, kind, "create", ns.value) && (
+              <a
+                href={createHref}
+                class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90 transition-colors"
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M12 4v16m8-8H4"
+                  />
+                </svg>
+                Create
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => fetchResources()}
+              class="rounded-md p-1.5 text-text-muted hover:bg-hover hover:text-text-primary"
+              title="Refresh"
             >
               <svg
-                class="w-4 h-4"
+                class={`h-4 w-4 ${loading.value ? "animate-spin" : ""}`}
+                viewBox="0 0 16 16"
                 fill="none"
-                viewBox="0 0 24 24"
                 stroke="currentColor"
-                stroke-width="2"
+                stroke-width="1.5"
               >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M12 4v16m8-8H4"
-                />
+                <path d="M14 8A6 6 0 1 1 8 2" />
+                <path d="M14 2v4h-4" />
               </svg>
-              Create
-            </a>
-          )}
-          <button
-            type="button"
-            onClick={() => fetchResources()}
-            class="rounded-md p-1.5 text-text-muted hover:bg-hover hover:text-text-primary"
-            title="Refresh"
-          >
-            <svg
-              class={`h-4 w-4 ${loading.value ? "animate-spin" : ""}`}
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path d="M14 8A6 6 0 1 1 8 2" />
-              <path d="M14 2v4h-4" />
-            </svg>
-          </button>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error state */}
       {error.value && (
