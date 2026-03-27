@@ -20,7 +20,7 @@ import { DataTable } from "@/components/ui/DataTable.tsx";
 import { ScaleDialog } from "@/components/ui/ScaleDialog.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
-import type { K8sResource } from "@/lib/k8s-types.ts";
+import type { Deployment, K8sResource, Pod } from "@/lib/k8s-types.ts";
 import type { ActionId } from "@/lib/action-handlers.ts";
 import {
   executeAction,
@@ -56,6 +56,7 @@ export default function ResourceTable({
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const search = useSignal("");
+  const statusFilter = useSignal("all");
   const sortKey = useSignal("name");
   const sortDir = useSignal<"asc" | "desc">("asc");
   const continueToken = useSignal<string | null>(null);
@@ -209,6 +210,40 @@ export default function ResourceTable({
     };
   }, [kind, ns.value, enableWS]);
 
+  // Compute status string for a resource (used by filter chips)
+  const getResourceStatus = useCallback((r: K8sResource): string => {
+    if (
+      kind === "deployments" || kind === "statefulsets" ||
+      kind === "daemonsets"
+    ) {
+      const dep = r as Deployment;
+      const available = dep.status?.availableReplicas ?? 0;
+      const replicas = dep.spec?.replicas ?? 0;
+      if (available === 0 && replicas > 0) return "failed";
+      if (available < replicas) return "progressing";
+      return "running";
+    }
+    if (kind === "pods") {
+      const phase = (r as Pod).status?.phase ?? "Unknown";
+      if (phase === "Running" || phase === "Succeeded") return "running";
+      if (phase === "Pending") return "pending";
+      return "failed";
+    }
+    return "running";
+  }, [kind]);
+
+  // Determine which filter chips to show
+  const filterChipKinds = new Set([
+    "deployments",
+    "statefulsets",
+    "daemonsets",
+  ]);
+  const podFilterKind = kind === "pods";
+  const showFilterChips = filterChipKinds.has(kind) || podFilterKind;
+  const filterChips = podFilterKind
+    ? ["All", "Running", "Pending", "Failed"]
+    : ["All", "Running", "Progressing", "Failed"];
+
   // Client-side filter + sort
   const displayed = useComputed(() => {
     let filtered = items.value;
@@ -221,6 +256,13 @@ export default function ResourceTable({
         const namespace = (r.metadata.namespace ?? "").toLowerCase();
         return name.includes(q) || namespace.includes(q);
       });
+    }
+
+    // Status filter
+    if (statusFilter.value !== "all" && showFilterChips) {
+      filtered = filtered.filter(
+        (r) => getResourceStatus(r) === statusFilter.value,
+      );
     }
 
     // Sort
@@ -458,17 +500,6 @@ export default function ResourceTable({
         </div>
       </div>
 
-      {/* Search */}
-      <div class="max-w-sm">
-        <SearchBar
-          value={search.value}
-          onInput={(v) => {
-            search.value = v;
-          }}
-          placeholder={`Search ${title.toLowerCase()}...`}
-        />
-      </div>
-
       {/* Error state */}
       {error.value && (
         <div class="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger">
@@ -476,21 +507,99 @@ export default function ResourceTable({
         </div>
       )}
 
-      {/* Table */}
-      <div class="rounded-lg border border-border-primary bg-surface">
-        <DataTable
-          columns={columns}
-          data={displayed.value}
-          sortKey={sortKey.value}
-          sortDir={sortDir.value}
-          onSort={handleSort}
-          rowKey={(r) => r.metadata.uid}
-          onRowClick={handleRowClick}
-          emptyMessage={loading.value
-            ? "Loading resources..."
-            : `No ${title.toLowerCase()} found`}
-          renderRowActions={renderActions}
-        />
+      {/* Toolbar + Table wrapper */}
+      <div
+        style={{
+          border: "1px solid var(--border-primary)",
+          borderRadius: "var(--radius, 8px)",
+          background: "var(--bg-surface)",
+          overflow: "hidden",
+        }}
+      >
+        {/* Toolbar */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            padding: "12px 16px",
+            borderBottom: "1px solid var(--border-primary)",
+          }}
+        >
+          <div class="max-w-sm">
+            <SearchBar
+              value={search.value}
+              onInput={(v) => {
+                search.value = v;
+              }}
+              placeholder={`Search ${title.toLowerCase()}...`}
+            />
+          </div>
+          {showFilterChips && (
+            <div
+              style={{ display: "flex", gap: "6px", alignItems: "center" }}
+            >
+              {filterChips.map((chip) => {
+                const val = chip.toLowerCase();
+                const isActive = statusFilter.value === val;
+                return (
+                  <button
+                    key={chip}
+                    type="button"
+                    onClick={() => {
+                      statusFilter.value = val;
+                    }}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: "12px",
+                      fontSize: "11px",
+                      fontWeight: 500,
+                      background: isActive
+                        ? "var(--accent-dim)"
+                        : "var(--bg-elevated)",
+                      border: `1px solid ${
+                        isActive ? "var(--accent)" : "var(--border-primary)"
+                      }`,
+                      color: isActive
+                        ? "var(--accent)"
+                        : "var(--text-secondary)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {chip}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono, monospace)",
+            }}
+          >
+            {displayed.value.length} {kind}
+          </span>
+        </div>
+
+        {/* Table */}
+        <div>
+          <DataTable
+            columns={columns}
+            data={displayed.value}
+            sortKey={sortKey.value}
+            sortDir={sortDir.value}
+            onSort={handleSort}
+            rowKey={(r) => r.metadata.uid}
+            onRowClick={handleRowClick}
+            emptyMessage={loading.value
+              ? "Loading resources..."
+              : `No ${title.toLowerCase()} found`}
+            renderRowActions={renderActions}
+          />
+        </div>
       </div>
 
       {/* Load More */}
