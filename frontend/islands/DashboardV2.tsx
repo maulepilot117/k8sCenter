@@ -177,15 +177,16 @@ export default function DashboardV2() {
         }}
       >
         <div>
-          <div
+          <h1
             style={{
               fontSize: "20px",
               fontWeight: 600,
               letterSpacing: "-0.02em",
+              margin: 0,
             }}
           >
             Cluster Overview
-          </div>
+          </h1>
           {info && (
             <div
               style={{
