@@ -806,8 +806,11 @@ export default function ResourceDetail({
       {/* Error state */}
       {error.value && !resource.value && <ErrorBanner message={error.value} />}
 
-      {/* Tab content */}
-      {isWorkload && namespace && podSelector
+      {
+        /* Tab content — SplitPane always rendered for workloads so Fresh includes
+          the island in the bundle. Right pane shows loading until selector is ready. */
+      }
+      {isWorkload && namespace
         ? (
           <div
             style={{
@@ -830,11 +833,26 @@ export default function ResourceDetail({
               }
               right={
                 <div style={{ padding: "16px" }}>
-                  <RelatedPods
-                    namespace={namespace}
-                    labelSelector={podSelector}
-                    parentName={name}
-                  />
+                  {podSelector
+                    ? (
+                      <RelatedPods
+                        namespace={namespace}
+                        labelSelector={podSelector}
+                        parentName={name}
+                      />
+                    )
+                    : (
+                      <div
+                        style={{
+                          color: "var(--text-muted)",
+                          fontSize: "13px",
+                          textAlign: "center",
+                          paddingTop: "40px",
+                        }}
+                      >
+                        Loading pods...
+                      </div>
+                    )}
                 </div>
               }
             />
