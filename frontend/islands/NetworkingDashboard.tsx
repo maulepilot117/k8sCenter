@@ -39,6 +39,16 @@ function resolveTab(currentPath: string): {
 } {
   const path = currentPath.replace(/\/$/, "");
 
+  if (path === "/networking/services") {
+    return {
+      kind: "services",
+      title: "Services",
+      createHref: "/networking/services/new",
+      isFlows: false,
+      isCni: false,
+    };
+  }
+
   if (path === "/networking/flows") {
     return { kind: "", title: "Flows", isFlows: true, isCni: false };
   }
