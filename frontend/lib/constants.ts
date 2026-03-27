@@ -403,6 +403,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     icon: "globe",
     href: "/networking",
     tabs: [
+      { label: "Overview", href: "/networking" },
       {
         label: "Services",
         href: "/networking/services",
@@ -428,7 +429,6 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         count: true,
       },
       { label: "Flows", href: "/networking/flows" },
-      { label: "CNI", href: "/networking/cni" },
       {
         label: "Endpoints",
         href: "/networking/endpoints",

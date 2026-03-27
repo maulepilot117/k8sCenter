@@ -43,10 +43,6 @@ function resolveTab(currentPath: string): {
     return { kind: "", title: "Flows", isFlows: true, isCni: false };
   }
 
-  if (path === "/networking/cni") {
-    return { kind: "", title: "CNI", isFlows: false, isCni: true };
-  }
-
   if (path === "/networking/ingresses") {
     return {
       kind: "ingresses",
