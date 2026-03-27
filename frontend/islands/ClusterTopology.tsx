@@ -110,6 +110,7 @@ export default function ClusterTopology() {
   const rawData = useSignal<RawData | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const dimensions = useSignal({ width: 600, height: 220 });
+  const virtualDims = useSignal({ w: 600, h: 220 });
 
   // Zoom and pan state
   const zoom = useSignal(1);
@@ -209,11 +210,11 @@ export default function ClusterTopology() {
     );
     const virtualWidth = Math.max(w, (maxItemsInRow + 1) * ITEM_SPACING_H);
     const virtualHeight = h;
+    virtualDims.value = { w: virtualWidth, h: virtualHeight };
 
-    // Set initial zoom so topology fills the container at a readable size.
-    // Scale to fit the widest row within the visible container width,
-    // but never below 0.5x (unreadable) or above 1.5x (too zoomed in for few items).
-    const fitZoom = (w * 0.95) / virtualWidth; // 95% of container to leave padding
+    // Set initial zoom so topology fills the container width.
+    // With transformOrigin "0 0", scale(fitZoom) makes virtualWidth * fitZoom = containerWidth.
+    const fitZoom = (w * 0.95) / virtualWidth;
     zoom.value = Math.max(0.5, Math.min(1.5, fitZoom));
 
     const topoNodes: TopoNode[] = [];
@@ -520,14 +521,19 @@ export default function ClusterTopology() {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Transformed inner container for zoom/pan */}
+      {
+        /* Transformed inner container for zoom/pan.
+          Sized to virtual canvas, scaled from top-left origin. */
+      }
       <div
         style={{
           position: "absolute",
-          inset: 0,
-          transform:
-            `scale(${zoom.value}) translate(${pan.value.x}px, ${pan.value.y}px)`,
-          transformOrigin: "center center",
+          left: `${pan.value.x * zoom.value}px`,
+          top: `${pan.value.y * zoom.value}px`,
+          width: `${virtualDims.value.w}px`,
+          height: `${virtualDims.value.h}px`,
+          transform: `scale(${zoom.value})`,
+          transformOrigin: "0 0",
         }}
       >
         {/* SVG connection lines */}
