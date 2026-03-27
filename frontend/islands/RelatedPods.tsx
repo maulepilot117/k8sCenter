@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import { age } from "@/lib/format.ts";
 
 interface RelatedPodsProps {
   namespace: string;
@@ -20,10 +20,17 @@ interface PodInfo {
   };
   spec: {
     nodeName: string;
-    containers: { name: string }[];
+    containers: {
+      name: string;
+      resources?: {
+        requests?: Record<string, string>;
+        limits?: Record<string, string>;
+      };
+    }[];
   };
   status: {
     phase: string;
+    podIP?: string;
     containerStatuses?: {
       name: string;
       ready: boolean;
@@ -32,16 +39,73 @@ interface PodInfo {
   };
 }
 
-function podStatus(pod: PodInfo): string {
+function podStatusInfo(
+  pod: PodInfo,
+): { text: string; color: string } {
   const phase = pod.status?.phase ?? "Unknown";
   if (phase === "Running") {
     const allReady = pod.status?.containerStatuses?.every((c) => c.ready);
-    return allReady ? "running" : "warning";
+    return allReady
+      ? { text: "Running", color: "var(--success)" }
+      : { text: "Not Ready", color: "var(--warning)" };
   }
-  if (phase === "Succeeded") return "completed";
-  if (phase === "Failed") return "failed";
-  if (phase === "Pending") return "warning";
-  return "unknown";
+  if (phase === "Succeeded") return { text: "Completed", color: "var(--info)" };
+  if (phase === "Failed") return { text: "Failed", color: "var(--error)" };
+  if (phase === "Pending") return { text: "Pending", color: "var(--warning)" };
+  return { text: phase, color: "var(--text-muted)" };
+}
+
+function aggregateResources(
+  containers: PodInfo["spec"]["containers"],
+): {
+  cpuRequest: string;
+  cpuLimit: string;
+  memRequest: string;
+  memLimit: string;
+  hasResources: boolean;
+} {
+  let cpuReq = "";
+  let cpuLim = "";
+  let memReq = "";
+  let memLim = "";
+  let hasResources = false;
+
+  for (const c of containers) {
+    if (c.resources) {
+      if (c.resources.requests?.cpu) {
+        cpuReq = cpuReq
+          ? cpuReq + " + " + c.resources.requests.cpu
+          : c.resources.requests.cpu;
+        hasResources = true;
+      }
+      if (c.resources.limits?.cpu) {
+        cpuLim = cpuLim
+          ? cpuLim + " + " + c.resources.limits.cpu
+          : c.resources.limits.cpu;
+        hasResources = true;
+      }
+      if (c.resources.requests?.memory) {
+        memReq = memReq
+          ? memReq + " + " + c.resources.requests.memory
+          : c.resources.requests.memory;
+        hasResources = true;
+      }
+      if (c.resources.limits?.memory) {
+        memLim = memLim
+          ? memLim + " + " + c.resources.limits.memory
+          : c.resources.limits.memory;
+        hasResources = true;
+      }
+    }
+  }
+
+  return {
+    cpuRequest: cpuReq || "-",
+    cpuLimit: cpuLim || "-",
+    memRequest: memReq || "-",
+    memLimit: memLim || "-",
+    hasResources,
+  };
 }
 
 export default function RelatedPods(
@@ -85,7 +149,7 @@ export default function RelatedPods(
 
   if (error.value) {
     return (
-      <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-red-700 bg-danger-dim text-danger">
+      <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
         {error.value}
       </div>
     );
@@ -100,77 +164,217 @@ export default function RelatedPods(
   }
 
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-primary">
-      <table class="w-full text-sm">
-        <thead class="bg-surface">
-          <tr>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Pod
-            </th>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Status
-            </th>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Restarts
-            </th>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Node
-            </th>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Containers
-            </th>
-            <th class="px-3 py-2 text-left font-medium text-text-secondary">
-              Actions
-            </th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-border-primary">
-          {pods.value.map((pod) => {
-            const restarts = pod.status?.containerStatuses?.reduce(
-              (sum, c) => sum + (c.restartCount || 0),
-              0,
-            ) ?? 0;
-            return (
-              <tr
-                key={pod.metadata.name}
-                class="hover:bg-hover/50"
+    <div>
+      {/* Header */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "16px",
+        }}
+      >
+        <div style={{ fontSize: "16px", fontWeight: 600 }}>Related Pods</div>
+        <span
+          style={{
+            fontSize: "12px",
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono)",
+            padding: "3px 8px",
+            background: "var(--bg-elevated)",
+            borderRadius: "10px",
+          }}
+        >
+          {pods.value.length} pods
+        </span>
+      </div>
+
+      {/* Pod cards */}
+      {pods.value.map((pod) => {
+        const restarts = pod.status?.containerStatuses?.reduce(
+          (sum, c) => sum + (c.restartCount || 0),
+          0,
+        ) ?? 0;
+        const { text: statusText, color: statusColor } = podStatusInfo(pod);
+        const { cpuRequest, cpuLimit, memRequest, memLimit, hasResources } =
+          aggregateResources(pod.spec?.containers ?? []);
+
+        return (
+          <a
+            key={pod.metadata.name}
+            href={`/workloads/pods/${pod.metadata.namespace}/${pod.metadata.name}`}
+            style={{
+              textDecoration: "none",
+              color: "inherit",
+              display: "block",
+            }}
+          >
+            <div
+              style={{
+                background: "var(--bg-surface)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius)",
+                padding: "14px",
+                marginBottom: "8px",
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+              }}
+              onMouseOver={(e) => {
+                (e.currentTarget as HTMLElement).style.borderColor =
+                  "var(--accent)";
+              }}
+              onMouseOut={(e) => {
+                (e.currentTarget as HTMLElement).style.borderColor =
+                  "var(--border-primary)";
+              }}
+            >
+              {/* Header: name + status */}
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "8px",
+                }}
               >
-                <td class="px-3 py-2">
-                  <a
-                    href={`/workloads/pods/${pod.metadata.namespace}/${pod.metadata.name}`}
-                    class="font-medium text-brand hover:underline"
-                  >
-                    {pod.metadata.name}
-                  </a>
-                </td>
-                <td class="px-3 py-2">
-                  <StatusBadge
-                    status={podStatus(pod)}
-                    label={pod.status?.phase ?? "Unknown"}
+                <span
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    color: "var(--accent)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    maxWidth: "70%",
+                  }}
+                >
+                  {pod.metadata.name}
+                </span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    color: statusColor,
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "6px",
+                      height: "6px",
+                      borderRadius: "50%",
+                      background: statusColor,
+                    }}
                   />
-                </td>
-                <td class="px-3 py-2 text-text-secondary">
-                  {restarts}
-                </td>
-                <td class="px-3 py-2 text-text-secondary">
-                  {pod.spec?.nodeName ?? "-"}
-                </td>
-                <td class="px-3 py-2 text-text-secondary">
-                  {pod.spec?.containers?.length ?? 0}
-                </td>
-                <td class="px-3 py-2">
-                  <a
-                    href={`/workloads/pods/${pod.metadata.namespace}/${pod.metadata.name}#logs`}
-                    class="text-xs text-brand hover:underline"
+                  {statusText}
+                </span>
+              </div>
+
+              {/* Meta row: Node, Age, Restarts */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: "16px",
+                  fontSize: "11px",
+                  color: "var(--text-muted)",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span>
+                  <span style={{ color: "var(--text-muted)" }}>Node:</span>{" "}
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-secondary)",
+                    }}
                   >
-                    Logs
-                  </a>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                    {pod.spec?.nodeName ?? "-"}
+                  </span>
+                </span>
+                <span>
+                  <span>Age:</span>{" "}
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    {age(pod.metadata.creationTimestamp)}
+                  </span>
+                </span>
+                <span>
+                  <span>Restarts:</span>{" "}
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    {restarts}
+                  </span>
+                </span>
+              </div>
+
+              {/* Resource requests/limits */}
+              {hasResources && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "8px",
+                    marginTop: "10px",
+                  }}
+                >
+                  <div>
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        color: "var(--text-muted)",
+                        marginBottom: "2px",
+                      }}
+                    >
+                      CPU
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "11px",
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      {cpuRequest} / {cpuLimit}
+                    </div>
+                  </div>
+                  <div>
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        color: "var(--text-muted)",
+                        marginBottom: "2px",
+                      }}
+                    >
+                      Memory
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "11px",
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      {memRequest} / {memLimit}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </a>
+        );
+      })}
     </div>
   );
 }
