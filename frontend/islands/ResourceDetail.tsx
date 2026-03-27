@@ -724,16 +724,17 @@ export default function ResourceDetail({
         </div>
         {/* Title section */}
         <div style={{ flex: 1 }}>
-          <div
+          <h1
             style={{
               fontSize: "18px",
               fontWeight: 600,
               fontFamily: "var(--font-mono)",
               letterSpacing: "-0.02em",
+              margin: 0,
             }}
           >
             {name}
-          </div>
+          </h1>
           <div
             style={{
               display: "flex",
