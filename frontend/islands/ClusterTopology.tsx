@@ -193,6 +193,29 @@ export default function ClusterTopology() {
     const w = dimensions.value.width;
     const h = dimensions.value.height;
 
+    // Dynamic node sizes based on item count
+    const nodeSize = k8sNodes.length > 6 ? 40 : 52;
+    const svcSize = k8sSvcs.length > 8 ? 32 : 44;
+    const podSize = k8sPods.length > 10 ? 28 : 36;
+    const pvcSize = k8sPVCs.length > 6 ? 28 : 36;
+
+    // Compute virtual canvas height based on largest column
+    const ITEM_SPACING = 65;
+    const maxItems = Math.max(
+      k8sNodes.length,
+      k8sSvcs.length,
+      k8sPods.length,
+      k8sPVCs.length,
+    );
+    const virtualHeight = Math.max(h, (maxItems + 1) * ITEM_SPACING);
+
+    // Auto-zoom to fit virtual canvas in container
+    if (virtualHeight > h) {
+      zoom.value = Math.max(0.3, h / virtualHeight);
+    } else {
+      zoom.value = 1;
+    }
+
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
 
@@ -209,7 +232,7 @@ export default function ClusterTopology() {
     ) => {
       const count = items.length;
       if (count === 0) return;
-      const spacing = h / (count + 1);
+      const spacing = virtualHeight / (count + 1);
       const kindAbbr: Record<string, string> = {
         node: "N",
         service: "SVC",
@@ -237,8 +260,8 @@ export default function ClusterTopology() {
         kind: "node" as const,
         health: getHealthStatus("node", n),
       })),
-      0.10,
-      52,
+      0.08,
+      nodeSize,
     );
 
     placeColumn(
@@ -250,7 +273,7 @@ export default function ClusterTopology() {
         health: getHealthStatus("service", s),
       })),
       0.30,
-      44,
+      svcSize,
     );
 
     placeColumn(
@@ -261,8 +284,8 @@ export default function ClusterTopology() {
         kind: "pod" as const,
         health: getHealthStatus("pod", p),
       })),
-      0.55,
-      36,
+      0.58,
+      podSize,
     );
 
     placeColumn(
@@ -273,8 +296,8 @@ export default function ClusterTopology() {
         kind: "pvc" as const,
         health: getHealthStatus("pvc", pvc),
       })),
-      0.80,
-      36,
+      0.85,
+      pvcSize,
     );
 
     // Build node-to-service edges
@@ -606,20 +629,22 @@ export default function ClusterTopology() {
               >
                 {node.abbr}
               </div>
-              <div
-                style={{
-                  fontSize: "10px",
-                  color: "var(--text-muted)",
-                  textAlign: "center",
-                  marginTop: "2px",
-                  maxWidth: `${node.size + 20}px`,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {truncated}
-              </div>
+              {zoom.value > 0.6 && (
+                <div
+                  style={{
+                    fontSize: "10px",
+                    color: "var(--text-muted)",
+                    textAlign: "center",
+                    marginTop: "2px",
+                    maxWidth: `${node.size + 20}px`,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {truncated}
+                </div>
+              )}
             </a>
           );
         })}
