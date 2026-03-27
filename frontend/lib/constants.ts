@@ -435,6 +435,12 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         kind: "endpoints",
         count: true,
       },
+      {
+        label: "EndpointSlices",
+        href: "/networking/endpointslices",
+        kind: "endpointslices",
+        count: true,
+      },
     ],
   },
   {

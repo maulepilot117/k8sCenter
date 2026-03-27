@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import NetworkingDashboard from "@/islands/NetworkingDashboard.tsx";
 
-export default define.page(function EndpointsPage() {
-  return <ResourceTable kind="endpoints" title="Endpoints" />;
+export default define.page(function EndpointsPage(ctx) {
+  return <NetworkingDashboard currentPath={ctx.url.pathname} />;
 });
