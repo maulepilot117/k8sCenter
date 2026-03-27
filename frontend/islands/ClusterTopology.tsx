@@ -210,13 +210,11 @@ export default function ClusterTopology() {
     const virtualWidth = Math.max(w, (maxItemsInRow + 1) * ITEM_SPACING_H);
     const virtualHeight = h;
 
-    // Auto-zoom to fit virtual canvas in container
-    const autoZoom = Math.min(1, w / virtualWidth);
-    if (autoZoom < 1) {
-      zoom.value = Math.max(0.3, autoZoom);
-    } else {
-      zoom.value = 1;
-    }
+    // Set initial zoom so topology fills the container at a readable size.
+    // Scale to fit the widest row within the visible container width,
+    // but never below 0.5x (unreadable) or above 1.5x (too zoomed in for few items).
+    const fitZoom = (w * 0.95) / virtualWidth; // 95% of container to leave padding
+    zoom.value = Math.max(0.5, Math.min(1.5, fitZoom));
 
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
