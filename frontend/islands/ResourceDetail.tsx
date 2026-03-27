@@ -32,6 +32,7 @@ import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
 import PodTerminal from "@/islands/PodTerminal.tsx";
 import RelatedPods from "@/islands/RelatedPods.tsx";
+import SplitPane from "@/islands/SplitPane.tsx";
 import RoleBindingsList from "@/islands/RoleBindingsList.tsx";
 import { CodeMirrorEditor } from "@/components/ui/CodeMirrorEditor.tsx";
 
@@ -610,35 +611,17 @@ export default function ResourceDetail({
     },
   ];
 
-  // Add Pods tab for workload types (deployments, statefulsets, daemonsets)
-  const workloadKinds = ["deployments", "statefulsets", "daemonsets"];
-  if (workloadKinds.includes(kind) && namespace && IS_BROWSER) {
-    tabDefs.push({
-      id: "pods",
-      label: "Pods",
-      content: () => {
-        // deno-lint-ignore no-explicit-any
-        const res = resource.value as any;
-        const matchLabels = res?.spec?.selector?.matchLabels ?? {};
-        const selector = Object.entries(matchLabels)
-          .map(([k, v]) => `${k}=${v}`)
-          .join(",");
-        return selector
-          ? (
-            <RelatedPods
-              namespace={namespace}
-              labelSelector={selector}
-              parentName={name}
-            />
-          )
-          : (
-            <div class="py-8 text-center text-sm text-text-muted">
-              Loading pod selector...
-            </div>
-          );
-      },
-    });
-  }
+  // Compute pod selector for workload kinds (used in split pane)
+  const isWorkload = ["deployments", "statefulsets", "daemonsets"].includes(
+    kind,
+  );
+  const podSelector = (() => {
+    if (!isWorkload || !resource.value || !namespace) return "";
+    // deno-lint-ignore no-explicit-any
+    const res = resource.value as any;
+    const matchLabels = res?.spec?.selector?.matchLabels ?? {};
+    return Object.entries(matchLabels).map(([k, v]) => `${k}=${v}`).join(",");
+  })();
 
   // Add Logs and Exec tabs for pods
   if (kind === "pods" && namespace && IS_BROWSER) {
@@ -824,13 +807,48 @@ export default function ResourceDetail({
       {error.value && !resource.value && <ErrorBanner message={error.value} />}
 
       {/* Tab content */}
-      <div class="rounded-lg border border-border-primary bg-surface">
-        <Tabs
-          tabs={tabDefs}
-          activeTab={activeTab.value}
-          onTabChange={handleTabChange}
-        />
-      </div>
+      {isWorkload && namespace && podSelector
+        ? (
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
+            <SplitPane
+              defaultRatio={0.6}
+              left={
+                <div class="rounded-lg border border-border-primary bg-surface">
+                  <Tabs
+                    tabs={tabDefs}
+                    activeTab={activeTab.value}
+                    onTabChange={handleTabChange}
+                  />
+                </div>
+              }
+              right={
+                <div style={{ padding: "16px" }}>
+                  <RelatedPods
+                    namespace={namespace}
+                    labelSelector={podSelector}
+                    parentName={name}
+                  />
+                </div>
+              }
+            />
+          </div>
+        )
+        : (
+          <div class="rounded-lg border border-border-primary bg-surface">
+            <Tabs
+              tabs={tabDefs}
+              activeTab={activeTab.value}
+              onTabChange={handleTabChange}
+            />
+          </div>
+        )}
 
       {/* Confirm dialog */}
       {confirmAction.value && resource.value && (() => {

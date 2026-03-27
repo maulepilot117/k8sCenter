@@ -19,7 +19,8 @@ export default function SplitPane(
       ref={containerRef}
       style={{
         display: "flex",
-        height: "100%",
+        flex: 1,
+        minHeight: "400px",
         overflow: "hidden",
       }}
     >
@@ -28,7 +29,6 @@ export default function SplitPane(
         style={{
           width: `${ratio.value * 100}%`,
           overflowY: "auto",
-          padding: "20px",
           flexShrink: 0,
         }}
       >
@@ -61,7 +61,6 @@ export default function SplitPane(
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "20px",
           background: "var(--bg-base)",
         }}
       >
