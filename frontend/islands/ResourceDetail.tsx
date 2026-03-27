@@ -10,7 +10,6 @@ import {
   getVisibleActions,
 } from "@/lib/action-handlers.ts";
 import { useAuth } from "@/lib/auth.ts";
-import { Breadcrumb } from "@/components/ui/Breadcrumb.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import {
@@ -353,7 +352,7 @@ export default function ResourceDetail({
   const listUrl = RESOURCE_DETAIL_PATHS[kind] ?? "/";
 
   // Force age() to use tick for reactivity (read tick.value so signal is tracked)
-  const _tick = tick.value;
+  void tick.value;
 
   const tabDefs = [
     {
@@ -367,7 +366,9 @@ export default function ResourceDetail({
         const OverviewComponent = getOverviewComponent(kind);
         return (
           <div class="space-y-6 p-6">
-            <MetadataSection resource={resource.value} />
+            {kind !== "deployments" && (
+              <MetadataSection resource={resource.value} />
+            )}
             <OverviewComponent resource={resource.value} />
             {(kind === "roles" || kind === "clusterroles") && (
               <RoleBindingsList
@@ -696,44 +697,120 @@ export default function ResourceDetail({
       )}
 
       {/* Header */}
-      <div class="flex items-center justify-between">
-        <div>
-          <Breadcrumb
-            items={[
-              { label: pluralize(title), href: listUrl },
-              ...(namespace ? [{ label: namespace }] : []),
-              { label: name },
-            ]}
-          />
-          <div class="flex items-center gap-3">
-            <ResourceIcon kind={kind} size={24} class="text-text-muted" />
-            <h1 class="text-xl font-semibold text-text-primary">
-              {name}
-            </h1>
-            {resource.value && (
-              <span class="text-sm text-text-muted">
-                {_tick >= 0 && age(resource.value.metadata.creationTimestamp)}
-              </span>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: "14px",
+        }}
+      >
+        {/* Icon */}
+        <div
+          style={{
+            width: "44px",
+            height: "44px",
+            borderRadius: "var(--radius)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+            background:
+              "linear-gradient(135deg, rgba(0, 194, 255, 0.15), rgba(0, 194, 255, 0.05))",
+            border: "1px solid rgba(0, 194, 255, 0.3)",
+            color: "var(--accent)",
+          }}
+        >
+          <ResourceIcon kind={kind} size={22} />
+        </div>
+        {/* Title section */}
+        <div style={{ flex: 1 }}>
+          <div
+            style={{
+              fontSize: "18px",
+              fontWeight: 600,
+              fontFamily: "var(--font-mono)",
+              letterSpacing: "-0.02em",
+            }}
+          >
+            {name}
+          </div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            <a
+              href={listUrl}
+              style={{
+                color: "var(--text-muted)",
+                textDecoration: "none",
+              }}
+              onMouseOver={(e) => {
+                (e.currentTarget as HTMLElement).style.color = "var(--accent)";
+              }}
+              onMouseOut={(e) => {
+                (e.currentTarget as HTMLElement).style.color =
+                  "var(--text-muted)";
+              }}
+            >
+              {pluralize(title)}
+            </a>
+            <span style={{ opacity: 0.5 }}>/</span>
+            {namespace && (
+              <>
+                <span style={{ color: "var(--text-secondary)" }}>
+                  {namespace}
+                </span>
+                <span style={{ opacity: 0.5 }}>/</span>
+              </>
             )}
+            <span style={{ color: "var(--text-secondary)" }}>{name}</span>
           </div>
         </div>
         {/* Action buttons */}
         {resource.value && actions.value.length > 0 && (
-          <div class="flex items-center gap-2">
+          <div style={{ display: "flex", gap: "6px" }}>
             {actions.value.map((actionId) => {
               const meta = getActionMeta(actionId, resource.value!);
+              const isDanger = !!meta.danger;
               return (
                 <button
                   key={actionId}
                   type="button"
                   onClick={() => handleAction(actionId)}
                   disabled={actionLoading.value}
-                  class={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                    meta.danger
-                      ? "border border-danger/30 text-danger hover:bg-danger-dim"
-                      : "border border-border-primary text-text-secondary hover:bg-hover"
-                  } disabled:opacity-50`}
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: "var(--radius-sm)",
+                    fontSize: "12px",
+                    fontWeight: 500,
+                    border: isDanger
+                      ? "1px solid rgba(255, 82, 82, 0.3)"
+                      : "1px solid var(--border-primary)",
+                    background: "transparent",
+                    color: isDanger ? "var(--error)" : "var(--text-secondary)",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    opacity: actionLoading.value ? 0.5 : 1,
+                  }}
+                  onMouseOver={(e) => {
+                    (e.currentTarget as HTMLElement).style.background = isDanger
+                      ? "var(--error-dim)"
+                      : "var(--bg-elevated)";
+                  }}
+                  onMouseOut={(e) => {
+                    (e.currentTarget as HTMLElement).style.background =
+                      "transparent";
+                  }}
                 >
+                  <ActionIcon actionId={actionId} />
                   {meta.label}
                 </button>
               );
@@ -811,6 +888,52 @@ export default function ResourceDetail({
       )}
     </div>
   );
+}
+
+function ActionIcon({ actionId }: { actionId: ActionId }) {
+  const svgProps = {
+    width: 13,
+    height: 13,
+    viewBox: "0 0 14 14",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "1.5",
+  };
+  switch (actionId) {
+    case "scale":
+      return (
+        <svg {...svgProps}>
+          <path d="M7 3v8M3 7h8" />
+        </svg>
+      );
+    case "restart":
+      return (
+        <svg {...svgProps}>
+          <path d="M2 7a5 5 0 019.5-1.5M12 7a5 5 0 01-9.5 1.5" />
+        </svg>
+      );
+    case "delete":
+      return (
+        <svg {...svgProps}>
+          <path d="M3 4h8M5 4V3h4v1M4 4v7a1 1 0 001 1h4a1 1 0 001-1V4" />
+        </svg>
+      );
+    case "suspend":
+      return (
+        <svg {...svgProps}>
+          <rect x="3" y="3" width="3" height="8" rx="0.5" />
+          <rect x="8" y="3" width="3" height="8" rx="0.5" />
+        </svg>
+      );
+    case "trigger":
+      return (
+        <svg {...svgProps}>
+          <path d="M5 3l6 4-6 4V3z" />
+        </svg>
+      );
+    default:
+      return null;
+  }
 }
 
 function EventsTable({ events }: { events: K8sEvent[] }) {
