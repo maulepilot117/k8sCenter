@@ -4,6 +4,20 @@ import { InfoGrid } from "./InfoGrid.tsx";
 import type { InfoGridItem } from "./InfoGrid.tsx";
 import { ConditionsGrid, SectionTitle } from "./ConditionsGrid.tsx";
 
+function parseCpuMillis(val: string | undefined): number {
+  if (!val || val === "-") return 0;
+  if (val.endsWith("m")) return parseInt(val);
+  return parseFloat(val) * 1000;
+}
+
+function parseMemMi(val: string | undefined): number {
+  if (!val || val === "-") return 0;
+  if (val.endsWith("Mi")) return parseInt(val);
+  if (val.endsWith("Gi")) return parseFloat(val) * 1024;
+  if (val.endsWith("Ki")) return parseFloat(val) / 1024;
+  return parseInt(val) / (1024 * 1024);
+}
+
 export function DeploymentOverview({ resource }: { resource: K8sResource }) {
   const dep = resource as Deployment;
   const containers = dep.spec?.template?.spec?.containers ?? [];
@@ -108,6 +122,24 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
             const memReq = c.resources?.requests?.memory ?? "-";
             const memLim = c.resources?.limits?.memory ?? "-";
 
+            const hasCpuBoth = c.resources?.requests?.cpu &&
+              c.resources?.limits?.cpu;
+            const hasMemBoth = c.resources?.requests?.memory &&
+              c.resources?.limits?.memory;
+            const showBars = hasCpuBoth || hasMemBoth;
+
+            const cpuReqMillis = parseCpuMillis(c.resources?.requests?.cpu);
+            const cpuLimMillis = parseCpuMillis(c.resources?.limits?.cpu);
+            const cpuPercent = cpuLimMillis > 0
+              ? Math.min(100, (cpuReqMillis / cpuLimMillis) * 100)
+              : 0;
+
+            const memReqMi = parseMemMi(c.resources?.requests?.memory);
+            const memLimMi = parseMemMi(c.resources?.limits?.memory);
+            const memPercent = memLimMi > 0
+              ? Math.min(100, (memReqMi / memLimMi) * 100)
+              : 0;
+
             return (
               <div
                 key={c.name}
@@ -172,6 +204,102 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
                     value={`${memReq} / ${memLim}`}
                   />
                 </div>
+                {/* Usage bars */}
+                {showBars && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: "12px",
+                      marginTop: "12px",
+                    }}
+                  >
+                    {hasCpuBoth && (
+                      <div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            fontSize: "11px",
+                            marginBottom: "4px",
+                          }}
+                        >
+                          <span style={{ color: "var(--text-muted)" }}>
+                            CPU
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--text-secondary)",
+                            }}
+                          >
+                            {cpuReq} / {cpuLim}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            height: "4px",
+                            background: "var(--border-primary)",
+                            borderRadius: "2px",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: "100%",
+                              borderRadius: "2px",
+                              width: `${cpuPercent}%`,
+                              background:
+                                "linear-gradient(90deg, var(--accent), var(--success))",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {hasMemBoth && (
+                      <div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            fontSize: "11px",
+                            marginBottom: "4px",
+                          }}
+                        >
+                          <span style={{ color: "var(--text-muted)" }}>
+                            Memory
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--text-secondary)",
+                            }}
+                          >
+                            {memReq} / {memLim}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            height: "4px",
+                            background: "var(--border-primary)",
+                            borderRadius: "2px",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: "100%",
+                              borderRadius: "2px",
+                              width: `${memPercent}%`,
+                              background:
+                                "linear-gradient(90deg, var(--accent-secondary), #FF79C6)",
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

@@ -55,6 +55,32 @@ function podStatusInfo(
   return { text: phase, color: "var(--text-muted)" };
 }
 
+function parseCpuMillis(val: string | undefined): number {
+  if (!val) return 0;
+  if (val.endsWith("m")) return parseInt(val);
+  return parseFloat(val) * 1000;
+}
+
+function parseMemMi(val: string | undefined): number {
+  if (!val) return 0;
+  if (val.endsWith("Mi")) return parseInt(val);
+  if (val.endsWith("Gi")) return parseFloat(val) * 1024;
+  if (val.endsWith("Ki")) return parseFloat(val) / 1024;
+  return parseInt(val) / (1024 * 1024);
+}
+
+function formatCpu(millis: number): string {
+  if (millis === 0) return "-";
+  if (millis >= 1000 && millis % 1000 === 0) return `${millis / 1000}`;
+  return `${Math.round(millis)}m`;
+}
+
+function formatMem(mi: number): string {
+  if (mi === 0) return "-";
+  if (mi >= 1024 && mi % 1024 === 0) return `${mi / 1024}Gi`;
+  return `${Math.round(mi)}Mi`;
+}
+
 function aggregateResources(
   containers: PodInfo["spec"]["containers"],
 ): {
@@ -62,48 +88,42 @@ function aggregateResources(
   cpuLimit: string;
   memRequest: string;
   memLimit: string;
+  cpuPercent: number;
+  memPercent: number;
   hasResources: boolean;
 } {
-  let cpuReq = "";
-  let cpuLim = "";
-  let memReq = "";
-  let memLim = "";
+  let totalCpuReq = 0,
+    totalCpuLim = 0,
+    totalMemReq = 0,
+    totalMemLim = 0;
   let hasResources = false;
 
   for (const c of containers) {
     if (c.resources) {
-      if (c.resources.requests?.cpu) {
-        cpuReq = cpuReq
-          ? cpuReq + " + " + c.resources.requests.cpu
-          : c.resources.requests.cpu;
-        hasResources = true;
-      }
-      if (c.resources.limits?.cpu) {
-        cpuLim = cpuLim
-          ? cpuLim + " + " + c.resources.limits.cpu
-          : c.resources.limits.cpu;
-        hasResources = true;
-      }
-      if (c.resources.requests?.memory) {
-        memReq = memReq
-          ? memReq + " + " + c.resources.requests.memory
-          : c.resources.requests.memory;
-        hasResources = true;
-      }
-      if (c.resources.limits?.memory) {
-        memLim = memLim
-          ? memLim + " + " + c.resources.limits.memory
-          : c.resources.limits.memory;
+      totalCpuReq += parseCpuMillis(c.resources.requests?.cpu);
+      totalCpuLim += parseCpuMillis(c.resources.limits?.cpu);
+      totalMemReq += parseMemMi(c.resources.requests?.memory);
+      totalMemLim += parseMemMi(c.resources.limits?.memory);
+      if (
+        c.resources.requests?.cpu || c.resources.limits?.cpu ||
+        c.resources.requests?.memory || c.resources.limits?.memory
+      ) {
         hasResources = true;
       }
     }
   }
 
   return {
-    cpuRequest: cpuReq || "-",
-    cpuLimit: cpuLim || "-",
-    memRequest: memReq || "-",
-    memLimit: memLim || "-",
+    cpuRequest: formatCpu(totalCpuReq),
+    cpuLimit: formatCpu(totalCpuLim),
+    memRequest: formatMem(totalMemReq),
+    memLimit: formatMem(totalMemLim),
+    cpuPercent: totalCpuLim > 0
+      ? Math.min(100, (totalCpuReq / totalCpuLim) * 100)
+      : 0,
+    memPercent: totalMemLim > 0
+      ? Math.min(100, (totalMemReq / totalMemLim) * 100)
+      : 0,
     hasResources,
   };
 }
@@ -196,8 +216,15 @@ export default function RelatedPods(
           0,
         ) ?? 0;
         const { text: statusText, color: statusColor } = podStatusInfo(pod);
-        const { cpuRequest, cpuLimit, memRequest, memLimit, hasResources } =
-          aggregateResources(pod.spec?.containers ?? []);
+        const {
+          cpuRequest,
+          cpuLimit,
+          memRequest,
+          memLimit,
+          cpuPercent,
+          memPercent,
+          hasResources,
+        } = aggregateResources(pod.spec?.containers ?? []);
 
         return (
           <a
@@ -332,42 +359,82 @@ export default function RelatedPods(
                   <div>
                     <div
                       style={{
+                        display: "flex",
+                        justifyContent: "space-between",
                         fontSize: "10px",
-                        color: "var(--text-muted)",
-                        marginBottom: "2px",
+                        marginBottom: "3px",
                       }}
                     >
-                      CPU
+                      <span style={{ color: "var(--text-muted)" }}>CPU</span>
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--text-secondary)",
+                          fontSize: "11px",
+                        }}
+                      >
+                        {cpuRequest} / {cpuLimit}
+                      </span>
                     </div>
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {cpuRequest} / {cpuLimit}
-                    </div>
+                    {cpuPercent > 0 && (
+                      <div
+                        style={{
+                          height: "3px",
+                          background: "var(--border-primary)",
+                          borderRadius: "2px",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            borderRadius: "2px",
+                            width: `${cpuPercent}%`,
+                            background: "var(--accent)",
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                   <div>
                     <div
                       style={{
+                        display: "flex",
+                        justifyContent: "space-between",
                         fontSize: "10px",
-                        color: "var(--text-muted)",
-                        marginBottom: "2px",
+                        marginBottom: "3px",
                       }}
                     >
-                      Memory
+                      <span style={{ color: "var(--text-muted)" }}>Memory</span>
+                      <span
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          color: "var(--text-secondary)",
+                          fontSize: "11px",
+                        }}
+                      >
+                        {memRequest} / {memLimit}
+                      </span>
                     </div>
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {memRequest} / {memLimit}
-                    </div>
+                    {memPercent > 0 && (
+                      <div
+                        style={{
+                          height: "3px",
+                          background: "var(--border-primary)",
+                          borderRadius: "2px",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            borderRadius: "2px",
+                            width: `${memPercent}%`,
+                            background: "var(--accent-secondary)",
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
