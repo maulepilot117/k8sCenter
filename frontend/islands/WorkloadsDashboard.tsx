@@ -11,19 +11,19 @@ import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
 interface SummaryData {
   totalDeployments: number;
   availableDeployments: number;
+  progressingDeployments: number;
+  failedDeployments: number;
   totalPods: number;
-  runningPods: number;
-  pendingPods: number;
-  failedPods: number;
+  readyPods: number;
 }
 
 const EMPTY_SUMMARY: SummaryData = {
   totalDeployments: 0,
   availableDeployments: 0,
+  progressingDeployments: 0,
+  failedDeployments: 0,
   totalPods: 0,
-  runningPods: 0,
-  pendingPods: 0,
-  failedPods: 0,
+  readyPods: 0,
 };
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
@@ -76,16 +76,22 @@ export default function WorkloadsDashboard(
           ? `?namespace=${encodeURIComponent(namespace)}`
           : "";
 
-        // Batch counts for totals + detailed fetches for status breakdowns
         const [countsRes, deploymentsRes, podsRes] = await Promise.all([
           apiGet<Record<string, number>>(
             `/v1/resources/counts${nsParam}`,
           ),
           apiGet<{
-            data: Array<{ status?: Record<string, unknown> }>;
+            data: Array<{
+              status?: Record<string, unknown>;
+            }>;
           }>(`/v1/resources/deployments${nsPath}?limit=500`),
           apiGet<{
-            data: Array<{ status?: { phase?: string } }>;
+            data: Array<{
+              status?: {
+                phase?: string;
+                conditions?: Array<{ type: string; status: string }>;
+              };
+            }>;
           }>(`/v1/resources/pods${nsPath}?limit=500`),
         ]);
 
@@ -94,31 +100,57 @@ export default function WorkloadsDashboard(
         const deps = deploymentsRes.data ?? [];
         const totalDeps = countsData["deployments"] ?? deps.length;
         let availableDeps = 0;
+        let progressingDeps = 0;
+        let failedDeps = 0;
+
         for (const d of deps) {
-          const available = (d.status as Record<string, unknown>)
-            ?.availableReplicas;
-          if (available && Number(available) > 0) availableDeps++;
+          const status = d.status as Record<string, unknown> | undefined;
+          const conditions = status?.conditions as
+            | Array<{ type: string; status: string }>
+            | undefined;
+
+          let isAvailable = false;
+          let isProgressing = false;
+          let isFailed = false;
+
+          if (conditions) {
+            for (const c of conditions) {
+              if (c.type === "Available" && c.status === "True") {
+                isAvailable = true;
+              }
+              if (c.type === "Progressing" && c.status === "True") {
+                isProgressing = true;
+              }
+              if (c.type === "Available" && c.status === "False") {
+                isFailed = true;
+              }
+            }
+          }
+
+          if (isAvailable) {
+            availableDeps++;
+          } else if (isFailed) {
+            failedDeps++;
+          } else if (isProgressing) {
+            progressingDeps++;
+          }
         }
 
         const pods = podsRes.data ?? [];
         const totalPods = countsData["pods"] ?? pods.length;
-        let running = 0;
-        let pending = 0;
-        let failed = 0;
+        let readyPods = 0;
         for (const p of pods) {
           const phase = p.status?.phase;
-          if (phase === "Running" || phase === "Succeeded") running++;
-          else if (phase === "Pending") pending++;
-          else if (phase === "Failed") failed++;
+          if (phase === "Running" || phase === "Succeeded") readyPods++;
         }
 
         summary.value = {
           totalDeployments: totalDeps,
           availableDeployments: availableDeps,
+          progressingDeployments: progressingDeps,
+          failedDeployments: failedDeps,
           totalPods: totalPods,
-          runningPods: running,
-          pendingPods: pending,
-          failedPods: failed,
+          readyPods: readyPods,
         };
       } catch {
         summary.value = EMPTY_SUMMARY;
@@ -135,40 +167,52 @@ export default function WorkloadsDashboard(
 
   const summaryCards = [
     {
-      label: "Deployments",
+      label: "Total",
       value: s.totalDeployments,
-      max: s.totalDeployments,
-      color: "var(--accent)",
+      displayValue: String(s.totalDeployments),
+      max: Math.max(s.totalDeployments, 1),
+      ringValue: s.totalDeployments,
+      color: "var(--success)",
     },
     {
       label: "Available",
       value: s.availableDeployments,
-      max: s.totalDeployments,
+      displayValue: String(s.availableDeployments),
+      max: Math.max(s.totalDeployments, 1),
+      ringValue: s.availableDeployments,
       color: "var(--success)",
     },
     {
-      label: "Pods Running",
-      value: s.runningPods,
-      max: s.totalPods,
-      color: "var(--success)",
-    },
-    {
-      label: "Pods Pending",
-      value: s.pendingPods,
-      max: s.totalPods,
+      label: "Progressing",
+      value: s.progressingDeployments,
+      displayValue: String(s.progressingDeployments),
+      max: Math.max(s.totalDeployments, 1),
+      ringValue: s.progressingDeployments,
       color: "var(--warning)",
     },
     {
-      label: "Pods Failed",
-      value: s.failedPods,
-      max: s.totalPods,
+      label: "Failed",
+      value: s.failedDeployments,
+      displayValue: String(s.failedDeployments),
+      max: Math.max(s.totalDeployments, 1),
+      ringValue: s.failedDeployments,
       color: "var(--error)",
     },
     {
-      label: "Total Pods",
-      value: s.totalPods,
-      max: s.totalPods,
+      label: "Pods Ready",
+      value: s.readyPods,
+      displayValue: `${s.readyPods}/${s.totalPods}`,
+      max: Math.max(s.totalPods, 1),
+      ringValue: s.readyPods,
       color: "var(--accent)",
+    },
+    {
+      label: "CPU Usage",
+      value: 0,
+      displayValue: "\u2014",
+      max: 100,
+      ringValue: 0,
+      color: "var(--accent-secondary)",
     },
   ];
 
@@ -177,10 +221,10 @@ export default function WorkloadsDashboard(
       {/* Page header */}
       <div
         style={{
-          padding: "16px 20px 12px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          marginBottom: "20px",
         }}
       >
         <div>
@@ -200,32 +244,72 @@ export default function WorkloadsDashboard(
               fontSize: "13px",
               color: "var(--text-muted)",
               marginTop: "2px",
-              margin: 0,
+              marginBottom: 0,
             }}
           >
-            Manage Deployments, StatefulSets, DaemonSets, Pods, Jobs, and
-            CronJobs
+            Manage deployments, pods, jobs, and other workload resources
           </p>
         </div>
-        <a
-          href={createHref ?? "/workloads/deployments/new"}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "7px 14px",
-            fontSize: "13px",
-            fontWeight: 500,
-            color: "white",
-            background: "var(--accent)",
-            borderRadius: "6px",
-            textDecoration: "none",
-            border: "none",
-            cursor: "pointer",
-          }}
-        >
-          + New Workload
-        </a>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            type="button"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "7px 14px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-secondary)",
+              background: "transparent",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path d="M2 4h12M5 8h6M8 12h0" />
+            </svg>
+            Filter
+          </button>
+          <a
+            href={createHref ?? "/workloads/deployments/new"}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              padding: "7px 14px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--bg-base)",
+              background: "var(--accent)",
+              borderRadius: "6px",
+              textDecoration: "none",
+              border: "none",
+              cursor: "pointer",
+            }}
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path d="M4 8h8M8 4v8" />
+            </svg>
+            New Workload
+          </a>
+        </div>
       </div>
 
       {/* Sub-navigation */}
@@ -237,8 +321,7 @@ export default function WorkloadsDashboard(
           display: "grid",
           gridTemplateColumns: "repeat(6, 1fr)",
           gap: "12px",
-          padding: "16px 20px",
-          borderBottom: "1px solid var(--border-subtle)",
+          marginBottom: "20px",
         }}
       >
         {summaryCards.map((card) => (
@@ -247,40 +330,39 @@ export default function WorkloadsDashboard(
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "10px",
-              padding: "10px 12px",
-              borderRadius: "8px",
+              gap: "12px",
+              padding: "14px 16px",
+              borderRadius: "10px",
               background: "var(--bg-surface)",
-              border: "1px solid var(--border-subtle)",
+              border: "1px solid var(--border-primary)",
+              cursor: "pointer",
+              transition: "border-color 0.2s ease",
             }}
           >
             <SummaryRing
-              value={loading.value ? 0 : card.value}
-              max={Math.max(card.max, 1)}
-              size={36}
+              value={loading.value ? 0 : card.ringValue}
+              max={card.max}
+              size={40}
               color={card.color}
             />
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div
                 style={{
-                  fontSize: "11px",
-                  fontWeight: 500,
-                  color: "var(--text-muted)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.04em",
+                  fontSize: "12px",
+                  color: "var(--text-secondary)",
                 }}
               >
                 {card.label}
               </div>
               <div
                 style={{
-                  fontSize: "18px",
+                  fontSize: "16px",
                   fontWeight: 600,
-                  color: "var(--text-primary)",
-                  lineHeight: 1.2,
+                  fontFamily: "var(--font-mono)",
+                  color: card.color,
                 }}
               >
-                {loading.value ? "-" : card.value}
+                {loading.value ? "\u2014" : card.displayValue}
               </div>
             </div>
           </div>
