@@ -119,32 +119,23 @@ export default function ClusterTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // Measure container
+  // Measure container using ResizeObserver — fires when CSS layout completes,
+  // not just on window resize. This fixes stale measurements from the initial
+  // render before the grid has computed column widths.
   useEffect(() => {
     if (!IS_BROWSER || !containerRef.current) return;
 
-    const measure = () => {
-      if (containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          dimensions.value = { width: rect.width, height: rect.height };
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          dimensions.value = { width, height };
         }
       }
-    };
+    });
 
-    measure();
-
-    let timeout: number;
-    const onResize = () => {
-      clearTimeout(timeout);
-      timeout = setTimeout(measure, 150) as unknown as number;
-    };
-
-    globalThis.addEventListener("resize", onResize);
-    return () => {
-      globalThis.removeEventListener("resize", onResize);
-      clearTimeout(timeout);
-    };
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
   }, []);
 
   // Fetch data once on mount
