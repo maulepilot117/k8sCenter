@@ -1,12 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import WorkloadsDashboard from "@/islands/WorkloadsDashboard.tsx";
 
-export default define.page(function DeploymentsPage() {
-  return (
-    <ResourceTable
-      kind="deployments"
-      title="Deployments"
-      createHref="/workloads/deployments/new"
-    />
-  );
+export default define.page(function WorkloadsSubPage(ctx) {
+  return <WorkloadsDashboard currentPath={ctx.url.pathname} />;
 });

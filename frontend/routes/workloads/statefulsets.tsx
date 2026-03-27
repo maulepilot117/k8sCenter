@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import WorkloadsDashboard from "@/islands/WorkloadsDashboard.tsx";
 
-export default define.page(function StatefulSetsPage() {
-  return <ResourceTable kind="statefulsets" title="StatefulSets" />;
+export default define.page(function WorkloadsSubPage(ctx) {
+  return <WorkloadsDashboard currentPath={ctx.url.pathname} />;
 });
