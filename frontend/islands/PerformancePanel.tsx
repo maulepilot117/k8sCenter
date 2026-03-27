@@ -755,7 +755,7 @@ export default function PerformancePanel(
         {charts.value.map((chart, i) => (
           <div
             key={i}
-            class="rounded-lg border border-border-primary p-4"
+            class="rounded-lg border border-border-primary bg-surface p-4"
           >
             <h3 class="mb-3 text-sm font-medium text-text-secondary">
               {chart.title}
@@ -827,22 +827,6 @@ function MiniChart(
         class="h-28 w-full"
         preserveAspectRatio="none"
       >
-        {/* Area fill */}
-        <polygon
-          points={`${points[0].split(",")[0]},${height} ${points.join("")} ${
-            points[points.length - 1].split(",")[0]
-          },${height}`}
-          fill={`url(#grad-${chartId ?? "default"})`}
-          opacity="0.3"
-        />
-        {/* Line */}
-        <polyline
-          points={points.join("")}
-          fill="none"
-          stroke="rgb(59, 130, 246)"
-          stroke-width="2"
-          vector-effect="non-scaling-stroke"
-        />
         <defs>
           <linearGradient
             id={`grad-${chartId ?? "default"}`}
@@ -851,10 +835,27 @@ function MiniChart(
             x2="0"
             y2="1"
           >
-            <stop offset="0%" stop-color="rgb(59, 130, 246)" />
-            <stop offset="100%" stop-color="transparent" />
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.3" />
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0" />
           </linearGradient>
         </defs>
+        {/* Area fill */}
+        <polygon
+          points={`${points[0].split(",")[0]},${height} ${points.join(" ")} ${
+            points[points.length - 1].split(",")[0]
+          },${height}`}
+          fill={`url(#grad-${chartId ?? "default"})`}
+        />
+        {/* Line */}
+        <polyline
+          points={points.join(" ")}
+          fill="none"
+          stroke="var(--accent)"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          vector-effect="non-scaling-stroke"
+        />
       </svg>
       <div class="mt-1 flex justify-between text-xs text-text-muted">
         <span>{values[0].time.toLocaleTimeString()}</span>
