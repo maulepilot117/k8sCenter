@@ -28,8 +28,20 @@ interface DashboardSummary {
   pods: { total: number; running: number; pending: number; failed: number };
   services: { total: number };
   alerts: { active: number; critical: number };
-  cpu: { percentage: number } | null;
-  memory: { percentage: number } | null;
+  cpu: {
+    percentage: number;
+    used: string;
+    total: string;
+    requests: string;
+    limits: string;
+  } | null;
+  memory: {
+    percentage: number;
+    used: string;
+    total: string;
+    requests: string;
+    limits: string;
+  } | null;
 }
 
 const REFRESH_INTERVAL = 60_000;
@@ -384,10 +396,10 @@ export default function DashboardV2() {
           <UtilizationGauge
             title="CPU Utilization"
             value={Math.round(s?.cpu?.percentage ?? 0)}
-            used={s?.cpu ? `${s.cpu.percentage.toFixed(1)}%` : "N/A"}
-            total="100%"
-            requests="—"
-            limits="—"
+            used={s?.cpu?.used ?? "N/A"}
+            total={s?.cpu?.total ?? "N/A"}
+            requests={s?.cpu?.requests ?? "—"}
+            limits={s?.cpu?.limits ?? "—"}
             color="var(--accent)"
             secondaryColor="var(--success)"
           />
@@ -398,10 +410,10 @@ export default function DashboardV2() {
           <UtilizationGauge
             title="Memory Utilization"
             value={Math.round(s?.memory?.percentage ?? 0)}
-            used={s?.memory ? `${s.memory.percentage.toFixed(1)}%` : "N/A"}
-            total="100%"
-            requests="—"
-            limits="—"
+            used={s?.memory?.used ?? "N/A"}
+            total={s?.memory?.total ?? "N/A"}
+            requests={s?.memory?.requests ?? "—"}
+            limits={s?.memory?.limits ?? "—"}
             color="var(--accent-secondary)"
             secondaryColor="#FF79C6"
           />

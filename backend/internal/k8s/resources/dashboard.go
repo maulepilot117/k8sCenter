@@ -2,6 +2,7 @@ package resources
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -47,9 +49,13 @@ type AlertSummary struct {
 	Critical int `json:"critical"`
 }
 
-// Utilization holds a percentage value for a resource metric.
+// Utilization holds resource utilization data including requests and limits.
 type Utilization struct {
 	Percentage float64 `json:"percentage"`
+	Used       string  `json:"used"`
+	Total      string  `json:"total"`
+	Requests   string  `json:"requests"`
+	Limits     string  `json:"limits"`
 }
 
 // HandleDashboardSummary returns aggregated cluster health data from the informer cache.
@@ -123,6 +129,74 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Aggregate resource requests/limits from all pod containers and node allocatable.
+	// This data comes directly from the Kubernetes API (informer cache), not Prometheus.
+	var cpuRequests, cpuLimits, memRequests, memLimits resource.Quantity
+	var cpuAllocatable, memAllocatable resource.Quantity
+
+	// Sum node allocatable
+	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", ""); allowed {
+		nodes, err := h.Informers.Nodes().List(labels.Everything())
+		if err == nil {
+			for _, n := range nodes {
+				if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
+					cpuAllocatable.Add(cpu)
+				}
+				if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
+					memAllocatable.Add(mem)
+				}
+			}
+		}
+	}
+
+	// Sum pod container requests/limits
+	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ""); allowed {
+		pods, err := h.Informers.Pods().List(labels.Everything())
+		if err == nil {
+			for _, p := range pods {
+				// Only count running/pending pods, not completed/failed
+				if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
+					continue
+				}
+				for _, c := range p.Spec.Containers {
+					if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+						cpuRequests.Add(req)
+					}
+					if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+						cpuLimits.Add(lim)
+					}
+					if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+						memRequests.Add(req)
+					}
+					if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+						memLimits.Add(lim)
+					}
+				}
+			}
+		}
+	}
+
+	// Format helpers
+	formatCPU := func(q resource.Quantity) string {
+		millis := q.MilliValue()
+		if millis >= 1000 {
+			return fmt.Sprintf("%.1f cores", float64(millis)/1000)
+		}
+		return fmt.Sprintf("%dm", millis)
+	}
+	formatMem := func(q resource.Quantity) string {
+		bytes := q.Value()
+		gi := float64(bytes) / (1024 * 1024 * 1024)
+		if gi >= 1 {
+			return fmt.Sprintf("%.1f Gi", gi)
+		}
+		mi := float64(bytes) / (1024 * 1024)
+		return fmt.Sprintf("%.0f Mi", mi)
+	}
+
+	cpuTotalStr := formatCPU(cpuAllocatable)
+	memTotalStr := formatMem(memAllocatable)
+
 	// Run CPU and memory queries concurrently with a 1-second timeout.
 	// We use sync.WaitGroup (not errgroup) because we want both queries to
 	// complete independently — a failure in one should not cancel the other.
@@ -147,10 +221,44 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		wg.Wait()
 
 		if cpuErr == nil {
-			summary.CPU = &Utilization{Percentage: cpuPct}
+			cpuUsedMillis := cpuPct / 100 * float64(cpuAllocatable.MilliValue())
+			summary.CPU = &Utilization{
+				Percentage: cpuPct,
+				Used:       formatCPU(*resource.NewMilliQuantity(int64(cpuUsedMillis), resource.DecimalSI)),
+				Total:      cpuTotalStr,
+				Requests:   formatCPU(cpuRequests),
+				Limits:     formatCPU(cpuLimits),
+			}
 		}
 		if memErr == nil {
-			summary.Memory = &Utilization{Percentage: memPct}
+			memUsedBytes := memPct / 100 * float64(memAllocatable.Value())
+			summary.Memory = &Utilization{
+				Percentage: memPct,
+				Used:       formatMem(*resource.NewQuantity(int64(memUsedBytes), resource.BinarySI)),
+				Total:      memTotalStr,
+				Requests:   formatMem(memRequests),
+				Limits:     formatMem(memLimits),
+			}
+		}
+	}
+
+	// If Prometheus was unavailable, still provide requests/limits/total from k8s API
+	if summary.CPU == nil && cpuAllocatable.MilliValue() > 0 {
+		summary.CPU = &Utilization{
+			Percentage: 0,
+			Used:       "N/A",
+			Total:      cpuTotalStr,
+			Requests:   formatCPU(cpuRequests),
+			Limits:     formatCPU(cpuLimits),
+		}
+	}
+	if summary.Memory == nil && memAllocatable.Value() > 0 {
+		summary.Memory = &Utilization{
+			Percentage: 0,
+			Used:       "N/A",
+			Total:      memTotalStr,
+			Requests:   formatMem(memRequests),
+			Limits:     formatMem(memLimits),
 		}
 	}
 
