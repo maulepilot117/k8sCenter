@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import StorageOverview from "@/islands/StorageOverview.tsx";
+import StorageDashboard from "@/islands/StorageDashboard.tsx";
 
-export default define.page(function StoragePage() {
-  return <StorageOverview />;
+export default define.page(function StoragePage(ctx) {
+  return <StorageDashboard currentPath={ctx.url.pathname} />;
 });
