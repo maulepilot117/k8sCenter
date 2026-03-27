@@ -26,9 +26,10 @@ test.describe("Resource detail page", () => {
     await expect(hasEvents.or(noEvents)).toBeVisible();
   });
 
-  test("Pods tab shows related pods", async ({ page }) => {
-    await page.getByRole("tab", { name: "Pods" }).click();
-    // Should show at least one coredns pod
-    await expect(page.getByRole("cell", { name: /coredns/i }).first()).toBeVisible();
+  test("Related pods panel shows pods", async ({ page }) => {
+    // Related pods are now shown in the always-visible right pane (not a tab)
+    await expect(page.getByText("Related Pods")).toBeVisible();
+    // Should show at least one coredns pod in the pod cards
+    await expect(page.getByText(/coredns/i).first()).toBeVisible();
   });
 });
