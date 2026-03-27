@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import StorageDashboard from "@/islands/StorageDashboard.tsx";
 
-export default define.page(function PersistentVolumesPage() {
-  return <ResourceTable kind="pvs" title="PersistentVolumes" clusterScoped />;
+export default define.page(function PVsPage(ctx) {
+  return <StorageDashboard currentPath={ctx.url.pathname} />;
 });

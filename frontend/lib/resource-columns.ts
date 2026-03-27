@@ -580,29 +580,51 @@ const nodeColumns: Column<K8sResource>[] = [
 ];
 
 const pvcColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "status",
     label: "Status",
     sortable: true,
-    render: (r) =>
-      badge((r as PersistentVolumeClaim).status?.phase ?? "Pending"),
+    render: (r) => {
+      const phase = (r as PersistentVolumeClaim).status?.phase ?? "Pending";
+      if (phase === "Bound") return styledBadge(phase, "success");
+      if (phase === "Pending") return styledBadge(phase, "warning");
+      return styledBadge(phase, "error");
+    },
   },
   {
     key: "capacity",
     label: "Capacity",
     render: (r) => {
       const cap = (r as PersistentVolumeClaim).status?.capacity;
-      return cap?.storage ?? "-";
+      return styledMono(cap?.storage ?? "-");
     },
   },
   {
     key: "storageClass",
     label: "Storage Class",
-    render: (r) => (r as PersistentVolumeClaim).spec?.storageClassName ?? "-",
+    render: (r) =>
+      styledMono(
+        (r as PersistentVolumeClaim).spec?.storageClassName ?? "-",
+      ),
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const jobColumns: Column<K8sResource>[] = [
@@ -963,63 +985,102 @@ const hpaColumns: Column<K8sResource>[] = [
 ];
 
 const pvColumns: Column<K8sResource>[] = [
-  nameCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
   {
     key: "capacity",
     label: "Capacity",
-    render: (r) => (r as PersistentVolume).spec?.capacity?.storage ?? "-",
+    render: (r) =>
+      styledMono((r as PersistentVolume).spec?.capacity?.storage ?? "-"),
   },
   {
     key: "accessModes",
     label: "Access Modes",
-    render: (r) => (r as PersistentVolume).spec?.accessModes?.join(", ") ?? "-",
+    render: (r) =>
+      styledMono(
+        (r as PersistentVolume).spec?.accessModes?.join(", ") ?? "-",
+      ),
   },
   {
     key: "reclaimPolicy",
     label: "Reclaim Policy",
     render: (r) =>
-      (r as PersistentVolume).spec?.persistentVolumeReclaimPolicy ?? "-",
+      styledMono(
+        (r as PersistentVolume).spec?.persistentVolumeReclaimPolicy ?? "-",
+      ),
   },
   {
     key: "status",
     label: "Status",
     sortable: true,
-    render: (r) => badge((r as PersistentVolume).status?.phase ?? "Available"),
+    render: (r) => {
+      const phase = (r as PersistentVolume).status?.phase ?? "Available";
+      if (phase === "Available" || phase === "Bound") {
+        return styledBadge(phase, "success");
+      }
+      if (phase === "Released") return styledBadge(phase, "warning");
+      return styledBadge(phase, "error");
+    },
   },
   {
     key: "storageClass",
     label: "Storage Class",
-    render: (r) => (r as PersistentVolume).spec?.storageClassName ?? "-",
+    render: (r) =>
+      styledMono((r as PersistentVolume).spec?.storageClassName ?? "-"),
   },
   {
     key: "claim",
     label: "Claim",
     render: (r) => {
       const ref = (r as PersistentVolume).spec?.claimRef;
-      return ref ? `${ref.namespace}/${ref.name}` : "-";
+      return styledMono(ref ? `${ref.namespace}/${ref.name}` : "-");
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const storageclassColumns: Column<K8sResource>[] = [
-  nameCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
   {
     key: "provisioner",
     label: "Provisioner",
-    render: (r) => (r as StorageClass).provisioner ?? "-",
+    render: (r) => styledMono((r as StorageClass).provisioner ?? "-"),
   },
   {
     key: "reclaimPolicy",
     label: "Reclaim Policy",
-    render: (r) => (r as StorageClass).reclaimPolicy ?? "-",
+    render: (r) => {
+      const policy = (r as StorageClass).reclaimPolicy ?? "-";
+      if (policy === "Delete") return styledBadge(policy, "warning");
+      if (policy === "Retain") return styledBadge(policy, "success");
+      return styledMono(policy);
+    },
   },
   {
     key: "volumeBindingMode",
     label: "Volume Binding Mode",
-    render: (r) => (r as StorageClass).volumeBindingMode ?? "-",
+    render: (r) => styledMono((r as StorageClass).volumeBindingMode ?? "-"),
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const resourcequotaColumns: Column<K8sResource>[] = [

@@ -1,8 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import StorageDashboard from "@/islands/StorageDashboard.tsx";
 
-export default define.page(function StorageClassesPage() {
-  return (
-    <ResourceTable kind="storageclasses" title="StorageClasses" clusterScoped />
-  );
+export default define.page(function StorageClassesPage(ctx) {
+  return <StorageDashboard currentPath={ctx.url.pathname} />;
 });
