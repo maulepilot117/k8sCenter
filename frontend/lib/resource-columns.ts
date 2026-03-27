@@ -68,16 +68,184 @@ const ageCol: Column<K8sResource> = {
   render: (r) => age(r.metadata.creationTimestamp),
 };
 
+// ---- Shared styled column helpers matching the mockup design ----
+
+function styledName(name: string): ComponentChildren {
+  return h("span", {
+    style: {
+      color: "var(--accent)",
+      fontFamily: "var(--font-mono, monospace)",
+      fontWeight: 500,
+      fontSize: "13px",
+    },
+  }, name);
+}
+
+function styledNamespace(ns: string): ComponentChildren {
+  return h("span", {
+    style: {
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "11px",
+      padding: "2px 6px",
+      background: "var(--bg-base)",
+      borderRadius: "4px",
+      color: "var(--text-secondary)",
+    },
+  }, ns);
+}
+
+function styledAge(timestamp: string): ComponentChildren {
+  return h("span", {
+    style: {
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "12px",
+      color: "var(--text-secondary)",
+    },
+  }, age(timestamp));
+}
+
+function styledBadge(
+  text: string,
+  status: "success" | "warning" | "error" | "info",
+): ComponentChildren {
+  const colors = {
+    success: {
+      dot: "var(--success)",
+      bg: "var(--success-dim)",
+      text: "var(--success)",
+    },
+    warning: {
+      dot: "var(--warning)",
+      bg: "var(--warning-dim)",
+      text: "var(--warning)",
+    },
+    error: {
+      dot: "var(--error)",
+      bg: "var(--error-dim)",
+      text: "var(--error)",
+    },
+    info: {
+      dot: "var(--accent)",
+      bg: "var(--accent-dim)",
+      text: "var(--accent)",
+    },
+  };
+  const c = colors[status];
+  return h("span", {
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "5px",
+      padding: "3px 10px",
+      borderRadius: "12px",
+      fontSize: "11px",
+      fontWeight: 500,
+      background: c.bg,
+      color: c.text,
+    },
+  }, [
+    h("span", {
+      style: {
+        width: "6px",
+        height: "6px",
+        borderRadius: "50%",
+        background: c.dot,
+      },
+    }),
+    text,
+  ]);
+}
+
+function styledReplicaDots(
+  ready: number,
+  desired: number,
+  available?: number,
+): ComponentChildren {
+  const dots = [];
+  for (let i = 0; i < desired; i++) {
+    const isReady = i < ready;
+    dots.push(h("div", {
+      key: i,
+      style: {
+        width: "8px",
+        height: "8px",
+        borderRadius: "2px",
+        background: isReady
+          ? "var(--success)"
+          : (available !== undefined && i < available
+            ? "var(--warning)"
+            : "var(--error)"),
+      },
+    }));
+  }
+  return h(
+    "div",
+    { style: { display: "flex", alignItems: "center", gap: "6px" } },
+    [
+      h("div", { style: { display: "flex", gap: "3px" } }, dots),
+      h("span", {
+        style: {
+          fontSize: "12px",
+          fontFamily: "var(--font-mono, monospace)",
+          color: "var(--text-secondary)",
+        },
+      }, `${ready}/${desired}`),
+    ],
+  );
+}
+
+function styledImage(image: string): ComponentChildren {
+  return h("span", {
+    style: {
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "11px",
+      color: "var(--text-muted)",
+      maxWidth: "200px",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      display: "block",
+    },
+  }, image);
+}
+
+function styledMono(text: string): ComponentChildren {
+  return h("span", {
+    style: {
+      fontFamily: "var(--font-mono, monospace)",
+      fontSize: "12px",
+      color: "var(--text-secondary)",
+    },
+  }, text);
+}
+
 // ---- Per-resource column sets ----
 
 const podColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "status",
     label: "Status",
     sortable: true,
-    render: (r) => badge((r as Pod).status?.phase ?? "Unknown"),
+    render: (r) => {
+      const phase = (r as Pod).status?.phase ?? "Unknown";
+      if (phase === "Running" || phase === "Succeeded") {
+        return styledBadge(phase, "success");
+      }
+      if (phase === "Pending") return styledBadge(phase, "warning");
+      return styledBadge(phase, "error");
+    },
   },
   {
     key: "ready",
@@ -86,9 +254,8 @@ const podColumns: Column<K8sResource>[] = [
       const p = r as Pod;
       const containers = p.status?.containerStatuses ?? [];
       const readyCount = containers.filter((c) => c.ready).length;
-      return `${readyCount}/${
-        containers.length || p.spec?.containers?.length || 0
-      }`;
+      const total = containers.length || p.spec?.containers?.length || 0;
+      return styledReplicaDots(readyCount, total);
     },
   },
   {
@@ -97,15 +264,21 @@ const podColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const containers = (r as Pod).status?.containerStatuses ?? [];
-      return String(containers.reduce((sum, c) => sum + c.restartCount, 0));
+      const count = containers.reduce((sum, c) => sum + c.restartCount, 0);
+      return styledMono(String(count));
     },
   },
   {
     key: "node",
     label: "Node",
-    render: (r) => (r as Pod).spec?.nodeName ?? "-",
+    render: (r) => styledMono((r as Pod).spec?.nodeName ?? "-"),
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const deploymentColumns: Column<K8sResource>[] = [
@@ -113,31 +286,13 @@ const deploymentColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) =>
-      h("span", {
-        style: {
-          color: "var(--accent)",
-          fontFamily: "var(--font-mono, monospace)",
-          fontWeight: 500,
-          fontSize: "13px",
-        },
-      }, r.metadata.name),
+    render: (r) => styledName(r.metadata.name),
   },
   {
     key: "namespace",
     label: "Namespace",
     sortable: true,
-    render: (r) =>
-      h("span", {
-        style: {
-          fontFamily: "var(--font-mono, monospace)",
-          fontSize: "11px",
-          padding: "2px 6px",
-          background: "var(--bg-base)",
-          borderRadius: "4px",
-          color: "var(--text-secondary)",
-        },
-      }, r.metadata.namespace ?? "-"),
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
   },
   {
     key: "status",
@@ -147,46 +302,11 @@ const deploymentColumns: Column<K8sResource>[] = [
       const dep = r as Deployment;
       const available = dep.status?.availableReplicas ?? 0;
       const replicas = dep.spec?.replicas ?? 0;
-      let status = "Running";
-      let dotColor = "var(--success)";
-      let bgColor = "var(--success-dim)";
-      let textColor = "var(--success)";
-
       if (available === 0 && replicas > 0) {
-        status = "Failed";
-        dotColor = "var(--error)";
-        bgColor = "var(--error-dim)";
-        textColor = "var(--error)";
-      } else if (available < replicas) {
-        status = "Progressing";
-        dotColor = "var(--warning)";
-        bgColor = "var(--warning-dim)";
-        textColor = "var(--warning)";
+        return styledBadge("Failed", "error");
       }
-
-      return h("span", {
-        style: {
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "5px",
-          padding: "3px 10px",
-          borderRadius: "12px",
-          fontSize: "11px",
-          fontWeight: 500,
-          background: bgColor,
-          color: textColor,
-        },
-      }, [
-        h("span", {
-          style: {
-            width: "6px",
-            height: "6px",
-            borderRadius: "50%",
-            background: dotColor,
-          },
-        }),
-        status,
-      ]);
+      if (available < replicas) return styledBadge("Progressing", "warning");
+      return styledBadge("Running", "success");
     },
   },
   {
@@ -195,40 +315,10 @@ const deploymentColumns: Column<K8sResource>[] = [
     sortable: false,
     render: (r) => {
       const dep = r as Deployment;
-      const desired = dep.spec?.replicas ?? 0;
-      const ready = dep.status?.readyReplicas ?? 0;
-
-      const dots = [];
-      for (let i = 0; i < desired; i++) {
-        const isReady = i < ready;
-        dots.push(h("div", {
-          key: i,
-          style: {
-            width: "8px",
-            height: "8px",
-            borderRadius: "2px",
-            background: isReady
-              ? "var(--success)"
-              : (i < (dep.status?.availableReplicas ?? 0)
-                ? "var(--warning)"
-                : "var(--error)"),
-          },
-        }));
-      }
-
-      return h(
-        "div",
-        { style: { display: "flex", alignItems: "center", gap: "6px" } },
-        [
-          h("div", { style: { display: "flex", gap: "3px" } }, dots),
-          h("span", {
-            style: {
-              fontSize: "12px",
-              fontFamily: "var(--font-mono, monospace)",
-              color: "var(--text-secondary)",
-            },
-          }, `${ready}/${desired}`),
-        ],
+      return styledReplicaDots(
+        dep.status?.readyReplicas ?? 0,
+        dep.spec?.replicas ?? 0,
+        dep.status?.availableReplicas ?? 0,
       );
     },
   },
@@ -238,69 +328,130 @@ const deploymentColumns: Column<K8sResource>[] = [
     sortable: false,
     render: (r) => {
       const dep = r as Deployment;
-      const image = dep.spec?.template?.spec?.containers?.[0]?.image ?? "-";
-      return h("span", {
-        style: {
-          fontFamily: "var(--font-mono, monospace)",
-          fontSize: "11px",
-          color: "var(--text-muted)",
-          maxWidth: "200px",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          display: "block",
-        },
-      }, image);
+      return styledImage(
+        dep.spec?.template?.spec?.containers?.[0]?.image ?? "-",
+      );
     },
   },
   {
     key: "age",
     label: "Age",
     sortable: true,
-    render: (r) =>
-      h("span", {
-        style: {
-          fontFamily: "var(--font-mono, monospace)",
-          fontSize: "12px",
-          color: "var(--text-secondary)",
-        },
-      }, age(r.metadata.creationTimestamp)),
+    render: (r) => styledAge(r.metadata.creationTimestamp),
   },
 ];
 
 const statefulsetColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
   {
-    key: "ready",
-    label: "Ready",
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
+  {
+    key: "status",
+    label: "Status",
+    sortable: true,
     render: (r) => {
       const s = r as StatefulSet;
-      return `${s.status?.readyReplicas ?? 0}/${s.spec?.replicas ?? 0}`;
+      const ready = s.status?.readyReplicas ?? 0;
+      const desired = s.spec?.replicas ?? 0;
+      if (ready === 0 && desired > 0) return styledBadge("Failed", "error");
+      if (ready < desired) return styledBadge("Progressing", "warning");
+      return styledBadge("Running", "success");
     },
   },
-  ageCol,
+  {
+    key: "replicas",
+    label: "Replicas",
+    render: (r) => {
+      const s = r as StatefulSet;
+      return styledReplicaDots(
+        s.status?.readyReplicas ?? 0,
+        s.spec?.replicas ?? 0,
+      );
+    },
+  },
+  {
+    key: "image",
+    label: "Image",
+    render: (r) => {
+      // deno-lint-ignore no-explicit-any
+      const s = r as any;
+      return styledImage(
+        s.spec?.template?.spec?.containers?.[0]?.image ?? "-",
+      );
+    },
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const daemonsetColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
   {
-    key: "desired",
-    label: "Desired",
-    render: (r) => String((r as DaemonSet).status?.desiredNumberScheduled ?? 0),
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
   },
   {
-    key: "ready",
-    label: "Ready",
-    render: (r) => String((r as DaemonSet).status?.numberReady ?? 0),
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
   },
   {
-    key: "available",
-    label: "Available",
-    render: (r) => String((r as DaemonSet).status?.numberAvailable ?? 0),
+    key: "status",
+    label: "Status",
+    sortable: true,
+    render: (r) => {
+      const ds = r as DaemonSet;
+      const ready = ds.status?.numberReady ?? 0;
+      const desired = ds.status?.desiredNumberScheduled ?? 0;
+      if (ready === 0 && desired > 0) return styledBadge("Failed", "error");
+      if (ready < desired) return styledBadge("Progressing", "warning");
+      return styledBadge("Running", "success");
+    },
   },
-  ageCol,
+  {
+    key: "replicas",
+    label: "Nodes Ready",
+    render: (r) => {
+      const ds = r as DaemonSet;
+      return styledReplicaDots(
+        ds.status?.numberReady ?? 0,
+        ds.status?.desiredNumberScheduled ?? 0,
+        ds.status?.numberAvailable ?? 0,
+      );
+    },
+  },
+  {
+    key: "image",
+    label: "Image",
+    render: (r) => {
+      // deno-lint-ignore no-explicit-any
+      const ds = r as any;
+      return styledImage(
+        ds.spec?.template?.spec?.containers?.[0]?.image ?? "-",
+      );
+    },
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const serviceColumns: Column<K8sResource>[] = [
@@ -455,52 +606,90 @@ const pvcColumns: Column<K8sResource>[] = [
 ];
 
 const jobColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
   {
-    key: "completions",
-    label: "Completions",
-    render: (r) => {
-      const j = r as Job;
-      return `${j.status?.succeeded ?? 0}/${j.spec?.completions ?? 1}`;
-    },
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
   },
   {
     key: "status",
     label: "Status",
     render: (r) => {
       const j = r as Job;
-      if (j.status?.completionTime) return badge("Complete");
-      if ((j.status?.failed ?? 0) > 0) return badge("Failed");
-      if ((j.status?.active ?? 0) > 0) return badge("Running");
-      return badge("Pending");
+      if (j.status?.completionTime) return styledBadge("Complete", "success");
+      if ((j.status?.failed ?? 0) > 0) return styledBadge("Failed", "error");
+      if ((j.status?.active ?? 0) > 0) return styledBadge("Running", "info");
+      return styledBadge("Pending", "warning");
     },
   },
-  ageCol,
+  {
+    key: "completions",
+    label: "Completions",
+    render: (r) => {
+      const j = r as Job;
+      return styledReplicaDots(
+        j.status?.succeeded ?? 0,
+        j.spec?.completions ?? 1,
+      );
+    },
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const cronjobColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "schedule",
     label: "Schedule",
-    render: (r) => (r as CronJob).spec?.schedule ?? "-",
+    render: (r) => styledMono((r as CronJob).spec?.schedule ?? "-"),
   },
   {
     key: "suspend",
     label: "Suspend",
-    render: (r) => (r as CronJob).spec?.suspend ? "True" : "False",
+    render: (r) => {
+      const suspended = (r as CronJob).spec?.suspend;
+      return suspended
+        ? styledBadge("Suspended", "warning")
+        : styledBadge("Active", "success");
+    },
   },
   {
     key: "lastSchedule",
     label: "Last Schedule",
     render: (r) => {
       const t = (r as CronJob).status?.lastScheduleTime;
-      return t ? age(t) : "-";
+      return t ? styledAge(t) : styledMono("-");
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const networkpolicyColumns: Column<K8sResource>[] = [
@@ -667,24 +856,47 @@ const mutatingWebhookColumns: Column<K8sResource>[] = [
 ];
 
 const replicasetColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
   {
-    key: "desired",
-    label: "Desired",
-    render: (r) => String((r as ReplicaSet).spec?.replicas ?? 0),
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
   },
   {
-    key: "current",
-    label: "Current",
-    render: (r) => String((r as ReplicaSet).status?.replicas ?? 0),
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
   },
   {
-    key: "ready",
-    label: "Ready",
-    render: (r) => String((r as ReplicaSet).status?.readyReplicas ?? 0),
+    key: "status",
+    label: "Status",
+    render: (r) => {
+      const rs = r as ReplicaSet;
+      const ready = rs.status?.readyReplicas ?? 0;
+      const desired = rs.spec?.replicas ?? 0;
+      if (ready === 0 && desired > 0) return styledBadge("Failed", "error");
+      if (ready < desired) return styledBadge("Progressing", "warning");
+      return styledBadge("Running", "success");
+    },
   },
-  ageCol,
+  {
+    key: "replicas",
+    label: "Replicas",
+    render: (r) => {
+      const rs = r as ReplicaSet;
+      return styledReplicaDots(
+        rs.status?.readyReplicas ?? 0,
+        rs.spec?.replicas ?? 0,
+      );
+    },
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const endpointColumns: Column<K8sResource>[] = [
