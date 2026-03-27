@@ -103,40 +103,98 @@ interface RawData {
   k8sPVCs: K8sPVC[];
 }
 
+// SVG color definitions per kind
+const kindSvgColors: Record<
+  TopoNode["kind"],
+  { stroke: string; fill: string; text: string; isRect: boolean }
+> = {
+  node: {
+    stroke: "rgba(0,194,255,0.5)",
+    fill: "rgba(0,194,255,0.1)",
+    text: "var(--accent)",
+    isRect: false,
+  },
+  service: {
+    stroke: "rgba(124,92,252,0.5)",
+    fill: "rgba(124,92,252,0.1)",
+    text: "var(--accent-secondary)",
+    isRect: false,
+  },
+  pod: {
+    stroke: "rgba(80,250,123,0.5)",
+    fill: "rgba(80,250,123,0.1)",
+    text: "var(--success)",
+    isRect: false,
+  },
+  pvc: {
+    stroke: "rgba(255,183,77,0.5)",
+    fill: "rgba(255,183,77,0.1)",
+    text: "var(--warning)",
+    isRect: true,
+  },
+};
+
+function getNodeSvgStyle(node: TopoNode) {
+  const base = kindSvgColors[node.kind];
+  if (node.health === "healthy") return base;
+  if (node.health === "warning") {
+    return {
+      ...base,
+      stroke: "rgba(255,179,0,0.5)",
+      fill: "rgba(255,179,0,0.1)",
+    };
+  }
+  return {
+    ...base,
+    stroke: "rgba(255,82,82,0.5)",
+    fill: "rgba(255,82,82,0.1)",
+  };
+}
+
+function getNodeHref(node: TopoNode): string {
+  switch (node.kind) {
+    case "node":
+      return `/cluster/nodes/${node.label}`;
+    case "service":
+      return `/networking/services/${
+        node.namespace ?? "default"
+      }/${node.label}`;
+    case "pod":
+      return `/workloads/pods/${node.namespace ?? "default"}/${node.label}`;
+    case "pvc":
+      return `/storage/pvcs/${node.namespace ?? "default"}/${node.label}`;
+  }
+}
+
+function getTooltip(node: TopoNode): string {
+  const ns = node.namespace ? ` (${node.namespace})` : "";
+  const status = node.health === "healthy"
+    ? "Healthy"
+    : node.health === "warning"
+    ? "Warning"
+    : "Error";
+  return `${node.kind}: ${node.label}${ns} - ${status}`;
+}
+
 export default function ClusterTopology() {
   const nodes = useSignal<TopoNode[]>([]);
   const edges = useSignal<TopoEdge[]>([]);
   const loading = useSignal(true);
   const rawData = useSignal<RawData | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dimensions = useSignal({ width: 600, height: 220 });
-  const virtualDims = useSignal({ w: 600, h: 220 });
+  const svgRef = useRef<SVGSVGElement>(null);
 
-  // Zoom and pan state
+  // Virtual canvas dimensions (viewBox space)
+  const virtualDims = useSignal({ w: 800, h: 400 });
+
+  // Zoom and pan state (viewBox manipulation)
   const zoom = useSignal(1);
   const pan = useSignal({ x: 0, y: 0 });
   const dragging = useSignal(false);
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // Measure container using ResizeObserver — fires when CSS layout completes,
-  // not just on window resize. This fixes stale measurements from the initial
-  // render before the grid has computed column widths.
-  useEffect(() => {
-    if (!IS_BROWSER || !containerRef.current) return;
-
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        if (width > 0 && height > 0) {
-          dimensions.value = { width, height };
-        }
-      }
-    });
-
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
+  // Hovered node for hover effect
+  const hoveredNode = useSignal<string | null>(null);
 
   // Fetch data once on mount
   useEffect(() => {
@@ -177,13 +235,11 @@ export default function ClusterTopology() {
     load();
   }, []);
 
-  // Compute layout from raw data + dimensions (re-runs on resize without re-fetching)
+  // Compute layout from raw data (no container measurement needed)
   useEffect(() => {
     if (!rawData.value) return;
 
     const { k8sNodes, k8sSvcs, k8sPods, k8sPVCs } = rawData.value;
-    const w = dimensions.value.width;
-    const h = dimensions.value.height;
 
     // Dynamic node sizes based on item count
     const nodeSize = k8sNodes.length > 6 ? 40 : 52;
@@ -191,7 +247,7 @@ export default function ClusterTopology() {
     const podSize = k8sPods.length > 10 ? 28 : 36;
     const pvcSize = k8sPVCs.length > 6 ? 28 : 36;
 
-    // Compute virtual canvas width based on largest row
+    // Compute virtual canvas based on largest row
     const ITEM_SPACING_H = 62;
     const maxItemsInRow = Math.max(
       k8sNodes.length,
@@ -199,14 +255,9 @@ export default function ClusterTopology() {
       k8sPods.length,
       k8sPVCs.length,
     );
-    const virtualWidth = (maxItemsInRow + 1) * ITEM_SPACING_H;
-    // Virtual height: enough vertical space for 4 rows with labels
-    const virtualHeight = Math.max(h, virtualWidth * 0.5);
+    const virtualWidth = Math.max(400, (maxItemsInRow + 1) * ITEM_SPACING_H);
+    const virtualHeight = Math.max(220, virtualWidth * 0.5);
     virtualDims.value = { w: virtualWidth, h: virtualHeight };
-
-    // Zoom to fill the container WIDTH. Content may extend below the
-    // visible area — user can pan down or zoom out to see PVCs.
-    zoom.value = Math.max(0.3, Math.min(2, w / virtualWidth));
 
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
@@ -351,7 +402,7 @@ export default function ClusterTopology() {
 
     nodes.value = topoNodes;
     edges.value = topoEdges;
-  }, [dimensions.value.width, dimensions.value.height, rawData.value]);
+  }, [rawData.value]);
 
   if (!IS_BROWSER) {
     return <div style={{ minHeight: "220px" }} />;
@@ -393,89 +444,38 @@ export default function ClusterTopology() {
     );
   }
 
-  const kindColors: Record<
-    TopoNode["kind"],
-    { border: string; bg: string; borderRadius: string; color: string }
-  > = {
-    node: {
-      border: "rgba(0,194,255,0.4)",
-      bg: "linear-gradient(135deg, rgba(0,194,255,0.15), rgba(0,194,255,0.05))",
-      borderRadius: "50%",
-      color: "var(--accent)",
-    },
-    service: {
-      border: "rgba(124,92,252,0.4)",
-      bg:
-        "linear-gradient(135deg, rgba(124,92,252,0.15), rgba(124,92,252,0.05))",
-      borderRadius: "50%",
-      color: "var(--accent-secondary)",
-    },
-    pod: {
-      border: "rgba(80,250,123,0.4)",
-      bg:
-        "linear-gradient(135deg, rgba(80,250,123,0.15), rgba(80,250,123,0.05))",
-      borderRadius: "50%",
-      color: "var(--success)",
-    },
-    pvc: {
-      border: "rgba(255,183,77,0.4)",
-      bg:
-        "linear-gradient(135deg, rgba(255,183,77,0.15), rgba(255,183,77,0.05))",
-      borderRadius: "6px",
-      color: "var(--warning)",
-    },
-  };
-
-  function getNodeStyle(node: TopoNode) {
-    const base = kindColors[node.kind];
-    if (node.health === "healthy") return base;
-    if (node.health === "warning") {
-      return {
-        ...base,
-        border: "var(--warning)",
-        bg:
-          "linear-gradient(135deg, rgba(255,183,77,0.2), rgba(255,183,77,0.05))",
-      };
-    }
-    return {
-      ...base,
-      border: "var(--error)",
-      bg: "linear-gradient(135deg, rgba(239,68,68,0.2), rgba(239,68,68,0.05))",
-    };
-  }
-
-  function getNodeHref(node: TopoNode): string {
-    switch (node.kind) {
-      case "node":
-        return `/cluster/nodes/${node.label}`;
-      case "service":
-        return `/networking/services/${
-          node.namespace ?? "default"
-        }/${node.label}`;
-      case "pod":
-        return `/workloads/pods/${node.namespace ?? "default"}/${node.label}`;
-      case "pvc":
-        return `/storage/pvcs/${node.namespace ?? "default"}/${node.label}`;
-    }
-  }
-
-  function getTooltip(node: TopoNode): string {
-    const ns = node.namespace ? ` (${node.namespace})` : "";
-    const status = node.health === "healthy"
-      ? "Healthy"
-      : node.health === "warning"
-      ? "Warning"
-      : "Error";
-    return `${node.kind}: ${node.label}${ns} - ${status}`;
-  }
-
   const nodeMap = new Map(nodes.value.map((n) => [n.id, n]));
+
+  // ViewBox computed from zoom and pan
+  const vbW = virtualDims.value.w / zoom.value;
+  const vbH = virtualDims.value.h / zoom.value;
+  const vbX = pan.value.x;
+  const vbY = pan.value.y;
 
   const handleWheel = (e: WheelEvent) => {
     e.preventDefault();
+    const svg = svgRef.current;
+    if (!svg) return;
+
     const delta = e.deltaY > 0 ? -0.1 : 0.1;
-    const next = Math.min(3, Math.max(0.3, zoom.value + delta));
-    zoom.value = next;
+    const nextZoom = Math.min(3, Math.max(0.5, zoom.value + delta));
+
+    // Zoom toward mouse position: compute mouse position in viewBox space
+    const rect = svg.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) / rect.width; // 0..1 fraction
+    const my = (e.clientY - rect.top) / rect.height;
+
+    const oldW = virtualDims.value.w / zoom.value;
+    const oldH = virtualDims.value.h / zoom.value;
+    const newW = virtualDims.value.w / nextZoom;
+    const newH = virtualDims.value.h / nextZoom;
+
+    // Adjust pan so the point under the mouse stays fixed
+    pan.value = {
+      x: pan.value.x + (oldW - newW) * mx,
+      y: pan.value.y + (oldH - newH) * my,
+    };
+    zoom.value = nextZoom;
   };
 
   const handleMouseDown = (e: MouseEvent) => {
@@ -487,9 +487,17 @@ export default function ClusterTopology() {
 
   const handleMouseMove = (e: MouseEvent) => {
     if (!dragging.value) return;
-    const dx = (e.clientX - dragStart.value.x) / zoom.value;
-    const dy = (e.clientY - dragStart.value.y) / zoom.value;
-    pan.value = { x: panStart.value.x + dx, y: panStart.value.y + dy };
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const rect = svg.getBoundingClientRect();
+    // Convert pixel drag distance to viewBox units
+    const scaleX = vbW / rect.width;
+    const scaleY = vbH / rect.height;
+
+    const dx = (e.clientX - dragStart.value.x) * scaleX;
+    const dy = (e.clientY - dragStart.value.y) * scaleY;
+    pan.value = { x: panStart.value.x - dx, y: panStart.value.y - dy };
   };
 
   const handleMouseUp = () => {
@@ -498,106 +506,74 @@ export default function ClusterTopology() {
 
   return (
     <div
-      ref={containerRef}
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
-        overflow: "hidden",
-        cursor: dragging.value ? "grabbing" : "grab",
+        minHeight: "220px",
       }}
-      onWheel={handleWheel}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
     >
-      {
-        /* Transformed inner container for zoom/pan.
-          Sized to virtual canvas, scaled from top-left origin. */
-      }
-      <div
-        style={{
-          position: "absolute",
-          left: `${pan.value.x * zoom.value}px`,
-          top: `${pan.value.y * zoom.value}px`,
-          width: `${virtualDims.value.w}px`,
-          height: `${virtualDims.value.h}px`,
-          transform: `scale(${zoom.value})`,
-          transformOrigin: "0 0",
-        }}
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        viewBox={`${vbX} ${vbY} ${vbW} ${vbH}`}
+        preserveAspectRatio="xMidYMid meet"
+        style={{ cursor: dragging.value ? "grabbing" : "grab" }}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       >
-        {/* SVG connection lines */}
-        <svg
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            pointerEvents: "none",
-          }}
-        >
-          <defs>
-            <style>
-              {`
+        <defs>
+          <style>
+            {`
 @keyframes topoPulse {
   0%, 100% { opacity: 0.25; }
   50% { opacity: 0.5; }
 }
+.topo-edge { animation: topoPulse 3s ease-in-out infinite; }
+.topo-node { transition: transform 0.15s ease; cursor: pointer; }
 `}
-            </style>
-          </defs>
-          {edges.value.map((edge, i) => {
-            const from = nodeMap.get(edge.from);
-            const to = nodeMap.get(edge.to);
-            if (!from || !to) return null;
-            return (
-              <line
-                key={`edge-${i}`}
-                x1={from.x}
-                y1={from.y}
-                x2={to.x}
-                y2={to.y}
-                stroke={edge.color}
-                stroke-width="1.5"
-                style={{ animation: "topoPulse 3s ease-in-out infinite" }}
-              />
-            );
-          })}
-        </svg>
+          </style>
+        </defs>
+
+        {/* Connection lines */}
+        {edges.value.map((edge, i) => {
+          const from = nodeMap.get(edge.from);
+          const to = nodeMap.get(edge.to);
+          if (!from || !to) return null;
+          return (
+            <line
+              key={`edge-${i}`}
+              class="topo-edge"
+              x1={from.x}
+              y1={from.y}
+              x2={to.x}
+              y2={to.y}
+              stroke={edge.color}
+              stroke-width="1.5"
+            />
+          );
+        })}
 
         {/* Resource nodes */}
         {nodes.value.map((node) => {
-          const style = getNodeStyle(node);
+          const style = getNodeSvgStyle(node);
           const href = getNodeHref(node);
           const truncated = node.label.length > 15
             ? node.label.slice(0, 14) + "\u2026"
             : node.label;
+          const isHovered = hoveredNode.value === node.id;
+          const r = node.size / 2;
+          const abbrFontSize = Math.max(9, node.size * 0.22);
+
           return (
             <a
               key={node.id}
-              title={getTooltip(node)}
               href={href}
-              style={{
-                position: "absolute",
-                left: `${node.x - node.size / 2}px`,
-                top: `${node.y - node.size / 2}px`,
-                width: `${node.size}px`,
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                textDecoration: "none",
-                zIndex: 1,
-              }}
-              onMouseEnter={(e) => {
-                const el = e.currentTarget as HTMLAnchorElement;
-                el.style.transform = "scale(1.15)";
-              }}
-              onMouseLeave={(e) => {
-                const el = e.currentTarget as HTMLAnchorElement;
-                el.style.transform = "scale(1)";
-              }}
-              onClick={(e) => {
+              onClick={(e: MouseEvent) => {
                 // Prevent navigation if we just finished dragging
                 if (
                   Math.abs(pan.value.x - panStart.value.x) > 3 ||
@@ -607,45 +583,65 @@ export default function ClusterTopology() {
                 }
               }}
             >
-              <div
-                style={{
-                  width: `${node.size}px`,
-                  height: `${node.size}px`,
-                  borderRadius: style.borderRadius,
-                  border: `2px solid ${style.border}`,
-                  background: style.bg,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: `${Math.max(9, node.size * 0.22)}px`,
-                  fontWeight: 700,
-                  color: style.color,
-                  cursor: "pointer",
-                  transition: "transform 0.15s ease",
+              <g
+                class="topo-node"
+                transform={`translate(${node.x}, ${node.y})${
+                  isHovered ? " scale(1.15)" : ""
+                }`}
+                onMouseEnter={() => {
+                  hoveredNode.value = node.id;
+                }}
+                onMouseLeave={() => {
+                  hoveredNode.value = null;
                 }}
               >
-                {node.abbr}
-              </div>
-              {zoom.value > 0.6 && (
-                <div
-                  style={{
-                    fontSize: "10px",
-                    color: "var(--text-muted)",
-                    textAlign: "center",
-                    marginTop: "2px",
-                    maxWidth: `${node.size + 20}px`,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
+                <title>{getTooltip(node)}</title>
+                {style.isRect
+                  ? (
+                    <rect
+                      x={-r}
+                      y={-r}
+                      width={node.size}
+                      height={node.size}
+                      rx={6}
+                      ry={6}
+                      fill={style.fill}
+                      stroke={style.stroke}
+                      stroke-width="2"
+                    />
+                  )
+                  : (
+                    <circle
+                      r={r}
+                      fill={style.fill}
+                      stroke={style.stroke}
+                      stroke-width="2"
+                    />
+                  )}
+                <text
+                  text-anchor="middle"
+                  dy="0.35em"
+                  fill={style.text}
+                  font-size={abbrFontSize}
+                  font-weight="700"
+                  style={{ pointerEvents: "none", userSelect: "none" }}
+                >
+                  {node.abbr}
+                </text>
+                <text
+                  text-anchor="middle"
+                  y={r + 14}
+                  fill="var(--text-muted)"
+                  font-size="9"
+                  style={{ pointerEvents: "none", userSelect: "none" }}
                 >
                   {truncated}
-                </div>
-              )}
+                </text>
+              </g>
             </a>
           );
         })}
-      </div>
+      </svg>
 
       {/* Zoom indicator */}
       {zoom.value !== 1 && (
