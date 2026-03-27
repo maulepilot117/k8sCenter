@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import FlowViewer from "@/islands/FlowViewer.tsx";
+import NetworkingDashboard from "@/islands/NetworkingDashboard.tsx";
 
-export default define.page(function NetworkFlowsPage() {
-  return <FlowViewer />;
+export default define.page(function NetworkFlowsPage(ctx) {
+  return <NetworkingDashboard currentPath={ctx.url.pathname} />;
 });

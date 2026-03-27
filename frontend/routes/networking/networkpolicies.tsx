@@ -1,12 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import NetworkingDashboard from "@/islands/NetworkingDashboard.tsx";
 
-export default define.page(function NetworkPoliciesPage() {
-  return (
-    <ResourceTable
-      kind="networkpolicies"
-      title="Network Policies"
-      createHref="/networking/networkpolicies/new"
-    />
-  );
+export default define.page(function NetworkPoliciesPage(ctx) {
+  return <NetworkingDashboard currentPath={ctx.url.pathname} />;
 });

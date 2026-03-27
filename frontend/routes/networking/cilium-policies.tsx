@@ -1,12 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import NetworkingDashboard from "@/islands/NetworkingDashboard.tsx";
 
-export default define.page(function CiliumPoliciesPage() {
-  return (
-    <ResourceTable
-      kind="ciliumnetworkpolicies"
-      title="Cilium Network Policies"
-      createHref="/networking/cilium-policies/new"
-    />
-  );
+export default define.page(function CiliumPoliciesPage(ctx) {
+  return <NetworkingDashboard currentPath={ctx.url.pathname} />;
 });

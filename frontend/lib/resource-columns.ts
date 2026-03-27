@@ -455,41 +455,74 @@ const daemonsetColumns: Column<K8sResource>[] = [
 ];
 
 const serviceColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "type",
     label: "Type",
     sortable: true,
-    render: (r) => (r as Service).spec?.type ?? "-",
+    render: (r) => {
+      const svcType = (r as Service).spec?.type ?? "ClusterIP";
+      if (svcType === "ClusterIP") return styledBadge(svcType, "info");
+      if (svcType === "NodePort") return styledBadge(svcType, "success");
+      if (svcType === "LoadBalancer") return styledBadge(svcType, "info");
+      return styledBadge(svcType, "warning");
+    },
   },
   {
     key: "clusterIP",
     label: "Cluster IP",
-    render: (r) => (r as Service).spec?.clusterIP ?? "-",
+    render: (r) => styledMono((r as Service).spec?.clusterIP ?? "-"),
   },
   {
     key: "ports",
     label: "Ports",
     render: (r) => {
       const ports = (r as Service).spec?.ports;
-      if (!ports?.length) return "-";
-      return ports.map((p) => `${p.port}/${p.protocol ?? "TCP"}`).join(", ");
+      if (!ports?.length) return styledMono("-");
+      return styledMono(
+        ports.map((p) => `${p.port}/${p.protocol ?? "TCP"}`).join(", "),
+      );
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const ingressColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "hosts",
     label: "Hosts",
     render: (r) => {
       const rules = (r as Ingress).spec?.rules;
-      if (!rules?.length) return "-";
-      return rules.map((rule) => rule.host ?? "*").join(", ");
+      if (!rules?.length) return styledMono("-");
+      return styledMono(rules.map((rule) => rule.host ?? "*").join(", "));
     },
   },
   {
@@ -497,11 +530,18 @@ const ingressColumns: Column<K8sResource>[] = [
     label: "Address",
     render: (r) => {
       const lb = (r as Ingress).status?.loadBalancer?.ingress;
-      if (!lb?.length) return "-";
-      return lb.map((i) => i.ip ?? i.hostname ?? "").join(", ");
+      if (!lb?.length) return styledMono("-");
+      return styledMono(
+        lb.map((i) => i.ip ?? i.hostname ?? "").join(", "),
+      );
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const configmapColumns: Column<K8sResource>[] = [
@@ -715,23 +755,56 @@ const cronjobColumns: Column<K8sResource>[] = [
 ];
 
 const networkpolicyColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "podSelector",
     label: "Applies To",
     render: (r) => {
       const labels = (r as NetworkPolicy).spec?.podSelector?.matchLabels;
-      if (!labels || Object.keys(labels).length === 0) return "All pods";
-      return Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(", ");
+      if (!labels || Object.keys(labels).length === 0) {
+        return styledMono("All pods");
+      }
+      const text = Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(
+        ", ",
+      );
+      return h("span", {
+        style: {
+          fontFamily: "var(--font-mono, monospace)",
+          fontSize: "12px",
+          color: "var(--text-secondary)",
+          maxWidth: "200px",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          display: "block",
+        },
+      }, text);
     },
-    class: "max-w-xs truncate",
   },
   {
     key: "policyTypes",
     label: "Policy Types",
-    render: (r) =>
-      (r as NetworkPolicy).spec?.policyTypes?.join(", ") ?? "Ingress",
+    render: (r) => {
+      const types = (r as NetworkPolicy).spec?.policyTypes ?? ["Ingress"];
+      return h(
+        "span",
+        { style: { display: "flex", gap: "4px" } },
+        types.map(
+          (t) => styledBadge(t, t === "Ingress" ? "info" : "warning"),
+        ),
+      );
+    },
   },
   {
     key: "rules",
@@ -740,13 +813,16 @@ const networkpolicyColumns: Column<K8sResource>[] = [
       const spec = (r as NetworkPolicy).spec;
       const ing = spec?.ingress?.length ?? 0;
       const egr = spec?.egress?.length ?? 0;
-      const parts: string[] = [];
-      if (ing > 0) parts.push(`${ing} ingress`);
-      if (egr > 0) parts.push(`${egr} egress`);
-      return parts.length > 0 ? parts.join(", ") : "0 rules";
+      const total = ing + egr;
+      return styledMono(String(total));
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const roleColumns: Column<K8sResource>[] = [
@@ -922,8 +998,18 @@ const replicasetColumns: Column<K8sResource>[] = [
 ];
 
 const endpointColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "addresses",
     label: "Addresses",
@@ -933,10 +1019,15 @@ const endpointColumns: Column<K8sResource>[] = [
         (sum, s) => sum + (s.addresses?.length ?? 0),
         0,
       ) ?? 0;
-      return String(count);
+      return styledMono(String(count));
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const hpaColumns: Column<K8sResource>[] = [
@@ -1141,30 +1232,50 @@ const pdbColumns: Column<K8sResource>[] = [
 ];
 
 const endpointsliceColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "addressType",
     label: "Address Type",
-    render: (r) => (r as EndpointSlice).addressType ?? "-",
+    render: (r) =>
+      styledBadge(
+        (r as EndpointSlice).addressType ?? "-",
+        "info",
+      ),
   },
   {
     key: "ports",
     label: "Ports",
     render: (r) => {
       const ports = (r as EndpointSlice).ports;
-      if (!ports?.length) return "-";
-      return ports.map((p) => `${p.port ?? ""}/${p.protocol ?? "TCP"}`).join(
-        ", ",
+      if (!ports?.length) return styledMono("-");
+      return styledMono(
+        ports.map((p) => `${p.port ?? ""}/${p.protocol ?? "TCP"}`).join(", "),
       );
     },
   },
   {
     key: "endpoints",
     label: "Endpoints",
-    render: (r) => String((r as EndpointSlice).endpoints?.length ?? 0),
+    render: (r) =>
+      styledMono(String((r as EndpointSlice).endpoints?.length ?? 0)),
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const ciliumnetworkpolicyColumns: Column<K8sResource>[] = [
