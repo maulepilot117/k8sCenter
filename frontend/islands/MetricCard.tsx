@@ -58,6 +58,9 @@ function MetricCardInner(
         transition: "border-color 0.2s ease",
         overflow: "hidden",
         position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
       }}
     >
       {/* Header: icon square + status pill */}
@@ -135,9 +138,9 @@ function MetricCardInner(
         {label}
       </div>
 
-      {/* Sparkline */}
+      {/* Sparkline — pushed to bottom of card */}
       {sparklineData && sparklineData.length >= 2 && (
-        <div style={{ marginTop: "12px" }}>
+        <div style={{ marginTop: "auto", paddingTop: "12px" }}>
           <SparklineChart
             data={sparklineData}
             color={sparklineColor ?? "var(--accent)"}
@@ -155,7 +158,12 @@ export default function MetricCard(props: MetricCardProps) {
     return (
       <a
         href={props.href}
-        style={{ textDecoration: "none", color: "inherit", display: "block" }}
+        style={{
+          textDecoration: "none",
+          color: "inherit",
+          display: "block",
+          height: "100%",
+        }}
       >
         <MetricCardInner {...props} />
       </a>

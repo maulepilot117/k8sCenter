@@ -306,7 +306,9 @@ export default function DashboardV2() {
             gridColumn: "span 8",
             display: "grid",
             gridTemplateColumns: "repeat(4, 1fr)",
+            gridTemplateRows: "1fr",
             gap: "16px",
+            alignItems: "stretch",
           }}
         >
           <MetricCard
