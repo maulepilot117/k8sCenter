@@ -201,23 +201,21 @@ export default function ClusterTopology() {
     const pvcSize = k8sPVCs.length > 6 ? 28 : 36;
 
     // Compute virtual canvas width based on largest row
-    const ITEM_SPACING_H = 70;
+    const ITEM_SPACING_H = 62;
     const maxItemsInRow = Math.max(
       k8sNodes.length,
       k8sSvcs.length,
       k8sPods.length,
       k8sPVCs.length,
     );
-    const virtualWidth = Math.max(w, (maxItemsInRow + 1) * ITEM_SPACING_H);
-    // Virtual height proportional to width to maintain a good aspect ratio.
-    // 4 rows need roughly 40% of the width to look balanced.
-    const virtualHeight = Math.max(h, virtualWidth * 0.45);
+    const virtualWidth = (maxItemsInRow + 1) * ITEM_SPACING_H;
+    // Virtual height: enough vertical space for 4 rows with labels
+    const virtualHeight = Math.max(h, virtualWidth * 0.5);
     virtualDims.value = { w: virtualWidth, h: virtualHeight };
 
-    // Zoom to fill the container: fit both width AND height.
-    const fitW = (w * 0.95) / virtualWidth;
-    const fitH = (h * 0.95) / virtualHeight;
-    zoom.value = Math.max(0.3, Math.min(1.5, Math.min(fitW, fitH)));
+    // Zoom to fill the container WIDTH. Content may extend below the
+    // visible area — user can pan down or zoom out to see PVCs.
+    zoom.value = Math.max(0.3, Math.min(2, w / virtualWidth));
 
     const topoNodes: TopoNode[] = [];
     const topoEdges: TopoEdge[] = [];
