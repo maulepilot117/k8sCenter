@@ -234,26 +234,20 @@ export default function IconRail({ currentPath }: IconRailProps) {
         {DOMAIN_SECTIONS.map((section) => renderIcon(section))}
       </div>
 
-      {
-        /* Settings at bottom — show for all authenticated users.
-          Backend enforces RBAC; hiding the nav link just confuses admins
-          whose user data loads after the initial render. */
-      }
-      {
-        <div
-          style={{
-            flexShrink: 0,
-            paddingBottom: "12px",
-            paddingTop: "8px",
-            borderTop: "1px solid var(--border-subtle)",
-            width: "100%",
-            display: "flex",
-            justifyContent: "center",
-          }}
-        >
-          {renderIcon(SETTINGS_SECTION)}
-        </div>
-      }
+      {/* Settings at bottom */}
+      <div
+        style={{
+          flexShrink: 0,
+          paddingBottom: "12px",
+          paddingTop: "8px",
+          borderTop: "1px solid var(--border-subtle)",
+          width: "100%",
+          display: "flex",
+          justifyContent: "center",
+        }}
+      >
+        {renderIcon(SETTINGS_SECTION)}
+      </div>
     </nav>
   );
 }
