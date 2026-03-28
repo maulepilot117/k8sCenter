@@ -26,12 +26,11 @@ export default function TopBarV2() {
     initAnimationPrefs();
   }, []);
 
-  // Load user info on mount if token exists
+  // Load user info on mount. Always attempt — fetchCurrentUser handles
+  // the token refresh flow internally (httpOnly cookie → new access token).
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (getAccessToken()) {
-      fetchCurrentUser();
-    }
+    fetchCurrentUser();
   }, []);
 
   // Load namespaces on mount

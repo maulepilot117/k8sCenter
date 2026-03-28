@@ -98,7 +98,8 @@ export async function logout(): Promise<void> {
 export async function fetchCurrentUser(
   namespace?: string,
 ): Promise<UserInfo | null> {
-  if (!getAccessToken()) return null;
+  // Don't bail on missing token — api() will attempt a refresh via
+  // the httpOnly cookie on 401, then retry the request.
   try {
     loadingSignal.value = true;
     const params = namespace
