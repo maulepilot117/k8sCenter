@@ -1,7 +1,7 @@
 // deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useAuth } from "@/lib/auth.ts";
+
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
 import type { DomainSection } from "@/lib/constants.ts";
 
@@ -66,9 +66,7 @@ interface IconRailProps {
 
 export default function IconRail({ currentPath }: IconRailProps) {
   const hoveredId = useSignal<string | null>(null);
-  const { user } = useAuth();
   const activeDomain = getActiveDomain(currentPath);
-  const isAdmin = user.value?.roles?.includes("admin") ?? false;
 
   if (!IS_BROWSER) {
     // SSR placeholder with correct dimensions

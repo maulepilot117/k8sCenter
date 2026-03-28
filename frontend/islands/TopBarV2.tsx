@@ -3,7 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { useAuth } from "@/lib/auth.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { apiGet, getAccessToken } from "@/lib/api.ts";
+import { apiGet } from "@/lib/api.ts";
 import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
