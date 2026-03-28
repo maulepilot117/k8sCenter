@@ -233,7 +233,7 @@ export default function ScheduledSnapshotWizard() {
           </p>
           <a
             href="/storage/snapshots"
-            class="mt-4 inline-block text-sm text-amber-600 hover:text-amber-800 text-warning"
+            class="mt-4 inline-block text-sm text-warning hover:text-warning"
           >
             Back to Snapshots
           </a>
@@ -270,7 +270,7 @@ export default function ScheduledSnapshotWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Schedule Name <span class="text-red-500">*</span>
+                Schedule Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -281,13 +281,13 @@ export default function ScheduledSnapshotWizard() {
                 placeholder="e.g. daily-db-backup"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -306,7 +306,7 @@ export default function ScheduledSnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Source PVC <span class="text-red-500">*</span>
+                Source PVC <span class="text-error">*</span>
               </label>
               {pvcs.value.length === 0
                 ? (
@@ -333,7 +333,7 @@ export default function ScheduledSnapshotWizard() {
                   </select>
                 )}
               {errors.value.sourcePVC && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.sourcePVC}
                 </p>
               )}
@@ -341,7 +341,7 @@ export default function ScheduledSnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                VolumeSnapshotClass <span class="text-red-500">*</span>
+                VolumeSnapshotClass <span class="text-error">*</span>
               </label>
               {snapshotClasses.value.length === 0
                 ? (
@@ -372,7 +372,7 @@ export default function ScheduledSnapshotWizard() {
                   </select>
                 )}
               {errors.value.volumeSnapshotClassName && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.volumeSnapshotClassName}
                 </p>
               )}
@@ -380,7 +380,7 @@ export default function ScheduledSnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Schedule <span class="text-red-500">*</span>
+                Schedule <span class="text-error">*</span>
               </label>
               <div class="mt-2 flex flex-wrap gap-2">
                 {SCHEDULE_PRESETS.map((preset) => (
@@ -426,7 +426,7 @@ export default function ScheduledSnapshotWizard() {
                 </p>
               )}
               {errors.value.schedule && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.schedule}
                 </p>
               )}
@@ -456,7 +456,7 @@ export default function ScheduledSnapshotWizard() {
                 class="mt-1 w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               />
               {errors.value.retentionCount && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.retentionCount}
                 </p>
               )}

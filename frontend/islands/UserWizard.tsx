@@ -237,7 +237,7 @@ export default function UserWizard() {
           <div class="space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Username <span class="text-red-500">*</span>
+                Username <span class="text-error">*</span>
               </label>
               <input
                 ref={usernameRef}
@@ -252,13 +252,13 @@ export default function UserWizard() {
                 placeholder="e.g. john.doe"
               />
               {errors.value.username && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.username}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.username}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Password <span class="text-red-500">*</span>
+                Password <span class="text-error">*</span>
               </label>
               <input
                 type="password"
@@ -272,13 +272,13 @@ export default function UserWizard() {
                 placeholder="Minimum 8 characters"
               />
               {errors.value.password && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.password}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.password}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Confirm Password <span class="text-red-500">*</span>
+                Confirm Password <span class="text-error">*</span>
               </label>
               <input
                 type="password"
@@ -292,7 +292,7 @@ export default function UserWizard() {
                 placeholder="Re-enter password"
               />
               {errors.value.confirmPassword && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.confirmPassword}
                 </p>
               )}
@@ -371,7 +371,7 @@ export default function UserWizard() {
                       Defaults to the local username.
                     </p>
                     {errors.value.k8sUsername && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.k8sUsername}
                       </p>
                     )}
@@ -397,7 +397,7 @@ export default function UserWizard() {
                       "system:authenticated".
                     </p>
                     {errors.value.k8sGroups && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.k8sGroups}
                       </p>
                     )}

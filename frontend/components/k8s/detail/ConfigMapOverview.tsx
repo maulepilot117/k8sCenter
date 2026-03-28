@@ -35,7 +35,7 @@ export function ConfigMapOverview({ resource }: { resource: K8sResource }) {
                 <tbody class="divide-y divide-border-subtle">
                   {entries.map(([key, value]) => (
                     <tr key={key}>
-                      <td class="px-3 py-1.5 font-mono text-xs text-cyan-700 text-accent whitespace-nowrap align-top">
+                      <td class="px-3 py-1.5 font-mono text-xs text-accent whitespace-nowrap align-top">
                         {key}
                       </td>
                       <td class="px-3 py-1.5 text-text-secondary break-all">

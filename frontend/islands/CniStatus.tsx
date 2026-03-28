@@ -265,7 +265,7 @@ function CniStatusTab({ info }: { info: CNIInfo }) {
             <div class="w-full bg-elevated rounded-full h-2">
               <div
                 class={`h-2 rounded-full ${
-                  info.status.healthy ? "bg-green-500" : "bg-amber-500"
+                  info.status.healthy ? "bg-success" : "bg-warning"
                 }`}
                 style={{
                   width: `${
@@ -439,7 +439,7 @@ function CniConfigTab(
                           type="button"
                           onClick={saveEdit}
                           disabled={saving.value}
-                          class="text-xs text-green-600 hover:text-green-700 font-medium"
+                          class="text-xs text-success hover:text-success font-medium"
                         >
                           {saving.value ? "..." : "Save"}
                         </button>

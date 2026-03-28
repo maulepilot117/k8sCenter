@@ -84,7 +84,7 @@ export default function AuthSettings() {
   if (loading.value) {
     return (
       <div class="flex items-center justify-center py-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-blue-600" />
+        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
       </div>
     );
   }
@@ -110,7 +110,7 @@ export default function AuthSettings() {
               }}
               class={`border-b-2 pb-3 text-sm font-medium ${
                 activeTab.value === key
-                  ? "border-blue-500 text-accent"
+                  ? "border-accent text-accent"
                   : "border-transparent text-text-muted hover:border-border-primary hover:text-text-secondary text-text-muted"
               }`}
             >

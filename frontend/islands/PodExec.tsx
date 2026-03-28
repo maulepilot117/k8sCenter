@@ -148,7 +148,7 @@ export default function PodExec(
         ref={termRef}
         tabIndex={0}
         onKeyDown={handleKeyDown}
-        class="bg-base text-green-400 font-mono text-sm p-4 rounded-md h-96 overflow-y-auto whitespace-pre-wrap focus:outline-none focus:ring-2 focus:ring-accent cursor-text"
+        class="bg-base text-success font-mono text-sm p-4 rounded-md h-96 overflow-y-auto whitespace-pre-wrap focus:outline-none focus:ring-2 focus:ring-accent cursor-text"
         style="min-height: 24rem;"
       >
         {!connected.value && (

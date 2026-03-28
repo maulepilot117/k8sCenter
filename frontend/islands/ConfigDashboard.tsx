@@ -168,39 +168,17 @@ export default function ConfigDashboard(
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Page header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "20px",
-        }}
-      >
+      <div class="flex items-center justify-between mb-5">
         <div>
-          <h1
-            style={{
-              fontSize: "20px",
-              fontWeight: 600,
-              letterSpacing: "-0.02em",
-              color: "var(--text-primary)",
-              margin: 0,
-            }}
-          >
+          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
             Configuration
           </h1>
-          <p
-            style={{
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              marginTop: "2px",
-              marginBottom: 0,
-            }}
-          >
+          <p class="text-xs text-text-muted mt-0.5">
             Manage ConfigMaps, Secrets, Service Accounts, and resource
             constraints
           </p>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div class="flex gap-2">
           <a
             href="/config/secrets/new"
             style={{

@@ -395,7 +395,7 @@ export default function PodTerminal(
                 {s.shell ? ` (${s.shell.split("/").pop()})` : ""}
                 <span
                   class={`ml-1.5 inline-block h-1.5 w-1.5 rounded-full ${
-                    s.connected ? "bg-green-500" : "bg-text-muted"
+                    s.connected ? "bg-success" : "bg-text-muted"
                   }`}
                 />
               </button>

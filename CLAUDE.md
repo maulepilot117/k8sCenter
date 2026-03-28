@@ -188,6 +188,10 @@ make check-dashboards                             # Verify Grafana JSON sync
   - RBAC-filtered: both endpoints check per-resource permissions, return partial responses
   - UtilizationProvider interface decouples resources from monitoring package
   - Async Prometheus with 1s timeout via sync.WaitGroup (never blocks informer data)
+- **Phase 6C (Design Normalization):** COMPLETE
+  - 100+ hardcoded Tailwind color classes replaced with CSS custom property tokens across 40+ files
+  - Dashboard heading styles unified from inline styles to Tailwind classes
+  - Zero non-theme color classes remain in frontend codebase
 
 ---
 

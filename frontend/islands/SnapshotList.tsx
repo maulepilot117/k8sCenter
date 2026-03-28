@@ -288,7 +288,7 @@ export default function SnapshotList() {
                             />
                           )}
                         {snap.errorMessage && (
-                          <p class="mt-1 text-xs text-red-500 max-w-xs truncate">
+                          <p class="mt-1 text-xs text-error max-w-xs truncate">
                             {snap.errorMessage}
                           </p>
                         )}
@@ -319,7 +319,7 @@ export default function SnapshotList() {
                             onClick={() => {
                               deleteTarget.value = snap;
                             }}
-                            class="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-danger-dim text-danger"
+                            class="rounded px-2 py-1 text-xs font-medium hover:bg-danger-dim text-danger"
                           >
                             Delete
                           </button>

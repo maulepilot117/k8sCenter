@@ -207,40 +207,18 @@ export default function NetworkingDashboard(
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div class="flex flex-col h-full">
       {/* Page header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "20px",
-        }}
-      >
+      <div class="flex items-center justify-between mb-5">
         <div>
-          <h1
-            style={{
-              fontSize: "20px",
-              fontWeight: 600,
-              letterSpacing: "-0.02em",
-              color: "var(--text-primary)",
-              margin: 0,
-            }}
-          >
+          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
             Network
           </h1>
-          <p
-            style={{
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              marginTop: "2px",
-              marginBottom: 0,
-            }}
-          >
+          <p class="text-xs text-text-muted mt-0.5">
             Manage services, ingresses, network policies, and endpoints
           </p>
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div class="flex gap-2">
           <a
             href="/networking/ingresses/new"
             style={{

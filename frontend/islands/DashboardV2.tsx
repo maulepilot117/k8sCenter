@@ -168,39 +168,19 @@ export default function DashboardV2() {
   return (
     <div>
       {/* ===== PAGE HEADER — matches .page-header from mockup ===== */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "20px",
-        }}
-      >
+      <div class="flex items-center justify-between mb-5">
         <div>
-          <h1
-            style={{
-              fontSize: "20px",
-              fontWeight: 600,
-              letterSpacing: "-0.02em",
-              margin: 0,
-            }}
-          >
+          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
             Cluster Overview
           </h1>
           {info && (
-            <div
-              style={{
-                fontSize: "13px",
-                color: "var(--text-muted)",
-                marginTop: "2px",
-              }}
-            >
+            <div class="text-xs text-text-muted mt-0.5">
               {info.platform} &middot; Kubernetes {info.kubernetesVersion}
               {` \u00B7 ${nodeCount} node${nodeCount !== 1 ? "s" : ""}`}
             </div>
           )}
         </div>
-        <div style={{ display: "flex", gap: "8px" }}>
+        <div class="flex gap-2">
           <a
             href="/workloads/deployments/new"
             style={{

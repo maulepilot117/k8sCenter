@@ -92,13 +92,13 @@ export default function AlertsPage() {
               }}
               class={`py-2 px-1 border-b-2 text-sm font-medium ${
                 activeTab.value === tab
-                  ? "border-blue-500 text-accent"
+                  ? "border-accent text-accent"
                   : "border-transparent text-text-muted hover:text-text-secondary text-text-muted"
               }`}
             >
               {tab === "active" ? "Active" : "History"}
               {tab === "active" && activeAlerts.value.length > 0 && (
-                <span class="ml-2 bg-red-100 text-red-700 bg-danger-dim text-danger text-xs px-2 py-0.5 rounded-full">
+                <span class="ml-2 bg-danger-dim text-danger text-xs px-2 py-0.5 rounded-full">
                   {activeAlerts.value.length}
                 </span>
               )}

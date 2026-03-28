@@ -195,7 +195,7 @@ export default function ConfigMapWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -206,13 +206,13 @@ export default function ConfigMapWizard() {
                 placeholder="e.g. my-config"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -250,7 +250,7 @@ export default function ConfigMapWizard() {
                         placeholder="Key"
                       />
                       {errors.value[`entry_${i}_key`] && (
-                        <p class="mt-1 text-xs text-red-500">
+                        <p class="mt-1 text-xs text-error">
                           {errors.value[`entry_${i}_key`]}
                         </p>
                       )}
@@ -273,7 +273,7 @@ export default function ConfigMapWizard() {
                       type="button"
                       onClick={() =>
                         removeEntry(i)}
-                      class="mt-1 rounded p-2 text-text-muted hover:bg-danger-dim hover:text-red-500"
+                      class="mt-1 rounded p-2 text-text-muted hover:bg-danger-dim hover:text-error"
                       title="Remove entry"
                     >
                       <svg
@@ -294,7 +294,7 @@ export default function ConfigMapWizard() {
                 ))}
               </div>
               {errors.value.data && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.data}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.data}</p>
               )}
               <button
                 type="button"

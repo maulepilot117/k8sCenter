@@ -165,7 +165,7 @@ export default function PVCWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -176,13 +176,13 @@ export default function PVCWizard() {
                 placeholder="e.g. my-data"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -201,7 +201,7 @@ export default function PVCWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Storage Class <span class="text-red-500">*</span>
+                Storage Class <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.storageClassName}
@@ -220,7 +220,7 @@ export default function PVCWizard() {
                 ))}
               </select>
               {errors.value.storageClassName && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.storageClassName}
                 </p>
               )}
@@ -228,7 +228,7 @@ export default function PVCWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Size <span class="text-red-500">*</span>
+                Size <span class="text-error">*</span>
               </label>
               <div class="mt-1 flex gap-2">
                 <input
@@ -257,7 +257,7 @@ export default function PVCWizard() {
                 </select>
               </div>
               {errors.value.sizeValue && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.sizeValue}
                 </p>
               )}

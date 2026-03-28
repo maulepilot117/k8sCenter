@@ -294,7 +294,7 @@ export default function CronJobWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -305,13 +305,13 @@ export default function CronJobWizard() {
                 placeholder="e.g. data-cleanup"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -331,7 +331,7 @@ export default function CronJobWizard() {
             {/* Schedule with presets */}
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Schedule <span class="text-red-500">*</span>
+                Schedule <span class="text-error">*</span>
               </label>
               <div class="mt-2 flex flex-wrap gap-2">
                 {SCHEDULE_PRESETS.map((preset) => (
@@ -377,7 +377,7 @@ export default function CronJobWizard() {
                 </p>
               )}
               {errors.value.schedule && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.schedule}
                 </p>
               )}

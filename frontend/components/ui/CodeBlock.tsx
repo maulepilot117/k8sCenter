@@ -81,7 +81,7 @@ function highlightYaml(line: string): preact.JSX.Element {
     return (
       <span>
         <span class="text-text-primary">{indent}</span>
-        <span class="text-cyan-700 text-accent">{key}</span>
+        <span class="text-accent">{key}</span>
         <span class="text-text-muted">{colon}</span>
         {highlightValue(rest)}
       </span>
@@ -95,7 +95,7 @@ function highlightYaml(line: string): preact.JSX.Element {
     return (
       <span>
         <span class="text-text-primary">{indent}</span>
-        <span class="text-orange-600 text-warning">{dash}</span>
+        <span class="text-warning">{dash}</span>
         {highlightValue("" + rest)}
       </span>
     );
@@ -124,7 +124,7 @@ function highlightValue(value: string): preact.JSX.Element {
     return (
       <span>
         <span>{leadingSpace}</span>
-        <span class="text-purple-700 text-accent-secondary">{trimmed}</span>
+        <span class="text-accent-secondary">{trimmed}</span>
       </span>
     );
   }

@@ -23,10 +23,10 @@ function formatPorts(ports?: NetworkPolicyPort[]): string {
 function PeerBadge({ peer }: { peer: NetworkPolicyPeer }) {
   if (peer.ipBlock) {
     return (
-      <span class="inline-flex items-center gap-1 rounded bg-purple-100 bg-accent-dim px-2 py-0.5 text-xs font-mono text-purple-800 text-accent-secondary">
+      <span class="inline-flex items-center gap-1 rounded bg-accent-dim px-2 py-0.5 text-xs font-mono text-accent-secondary">
         CIDR: {peer.ipBlock.cidr}
         {peer.ipBlock.except && peer.ipBlock.except.length > 0 && (
-          <span class="text-purple-500">
+          <span class="text-accent-secondary">
             {` (except ${peer.ipBlock.except.join(",")})`}
           </span>
         )}
@@ -62,7 +62,7 @@ function PeerBadge({ peer }: { peer: NetworkPolicyPeer }) {
   if (parts.length === 0) return <span class="text-xs text-text-muted">-</span>;
 
   return (
-    <span class="inline-flex items-center rounded bg-blue-100 bg-accent-dim px-2 py-0.5 text-xs text-accent">
+    <span class="inline-flex items-center rounded bg-accent-dim px-2 py-0.5 text-xs text-accent">
       {parts.join(" /")}
     </span>
   );
@@ -82,7 +82,7 @@ function RuleRow(
       <td class="py-2 px-3 text-xs text-text-secondary align-top">
         {hasNoPeers
           ? (
-            <span class="inline-flex items-center rounded bg-amber-100 bg-warning-dim px-2 py-0.5 text-xs text-amber-800 text-warning">
+            <span class="inline-flex items-center rounded bg-warning-dim px-2 py-0.5 text-xs text-warning">
               {direction === "ingress" ? "Any source" : "Any destination"}
             </span>
           )
@@ -107,9 +107,7 @@ function RulesSection(
 ) {
   const icon = direction === "ingress" ? "\u2192" : "\u2190";
   const label = direction === "ingress" ? "Ingress" : "Egress";
-  const color = direction === "ingress"
-    ? "text-success"
-    : "text-orange-600 text-warning";
+  const color = direction === "ingress" ? "text-success" : "text-warning";
 
   return (
     <div>

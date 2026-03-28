@@ -217,7 +217,7 @@ export default function RestoreSnapshotWizard() {
           </p>
           <a
             href="/storage/snapshots"
-            class="mt-4 inline-block text-sm text-amber-600 hover:text-amber-800 text-warning"
+            class="mt-4 inline-block text-sm text-warning hover:text-warning"
           >
             Back to Snapshots
           </a>
@@ -282,7 +282,7 @@ export default function RestoreSnapshotWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                PVC Name <span class="text-red-500">*</span>
+                PVC Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -293,13 +293,13 @@ export default function RestoreSnapshotWizard() {
                 placeholder="e.g. my-data-restore"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -318,7 +318,7 @@ export default function RestoreSnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Storage Class <span class="text-red-500">*</span>
+                Storage Class <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.storageClassName}
@@ -337,7 +337,7 @@ export default function RestoreSnapshotWizard() {
                 ))}
               </select>
               {errors.value.storageClassName && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.storageClassName}
                 </p>
               )}
@@ -345,7 +345,7 @@ export default function RestoreSnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Size <span class="text-red-500">*</span>
+                Size <span class="text-error">*</span>
               </label>
               <p class="text-xs text-text-muted mb-1">
                 Minimum: {minRestoreSizeValue}
@@ -377,7 +377,7 @@ export default function RestoreSnapshotWizard() {
                 </select>
               </div>
               {errors.value.sizeValue && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.sizeValue}
                 </p>
               )}

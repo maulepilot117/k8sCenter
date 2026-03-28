@@ -22,36 +22,14 @@ export default function SettingsDashboard(
   { currentPath }: { currentPath: string },
 ) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div class="flex flex-col h-full">
       {/* Page header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "20px",
-        }}
-      >
+      <div class="flex items-center justify-between mb-5">
         <div>
-          <h1
-            style={{
-              fontSize: "20px",
-              fontWeight: 600,
-              letterSpacing: "-0.02em",
-              color: "var(--text-primary)",
-              margin: 0,
-            }}
-          >
+          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
             Settings
           </h1>
-          <p
-            style={{
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              marginTop: "2px",
-              marginBottom: 0,
-            }}
-          >
+          <p class="text-xs text-text-muted mt-0.5">
             Configure application settings, clusters, users, and authentication
           </p>
         </div>
@@ -61,7 +39,7 @@ export default function SettingsDashboard(
       <SubNav tabs={SETTINGS_SECTION.tabs ?? []} currentPath={currentPath} />
 
       {/* Content area */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div class="flex-1 min-h-0 overflow-auto">
         {resolveContent(currentPath)}
       </div>
     </div>

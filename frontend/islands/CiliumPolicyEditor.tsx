@@ -366,7 +366,7 @@ export default function CiliumPolicyEditor() {
               type="button"
               onClick={() =>
                 removeSelectorLabel(idx)}
-              class="text-red-500 hover:text-red-700 text-sm px-2"
+              class="text-error hover:text-error text-sm px-2"
             >
               Remove
             </button>
@@ -431,7 +431,7 @@ export default function CiliumPolicyEditor() {
         </button>
         {showYaml.value && (
           <div class="px-4 pb-4">
-            <pre class="bg-base text-green-400 text-xs font-mono p-4 rounded-md overflow-x-auto whitespace-pre max-h-96 overflow-y-auto">
+            <pre class="bg-base text-success text-xs font-mono p-4 rounded-md overflow-x-auto whitespace-pre max-h-96 overflow-y-auto">
  {yamlPreview.value}
             </pre>
           </div>
@@ -553,7 +553,7 @@ function RuleRowEditor(
           <button
             type="button"
             onClick={onRemove}
-            class="text-red-500 hover:text-red-700 text-sm"
+            class="text-error hover:text-error text-sm"
             title="Remove rule"
           >
             X
@@ -612,7 +612,7 @@ function PeerInput(
                     labels: rule.labels.filter((_, i) => i !== idx),
                   });
                 }}
-                class="text-red-400 text-xs"
+                class="text-error text-xs"
               >
                 x
               </button>
@@ -623,7 +623,7 @@ function PeerInput(
           type="button"
           onClick={() =>
             onUpdate({ labels: [...rule.labels, { key: "", value: "" }] })}
-          class="text-xs text-blue-500 hover:text-blue-700"
+          class="text-xs text-accent hover:text-accent"
         >
           + label
         </button>
