@@ -89,12 +89,12 @@ function MetricCardInner(
 
   return (
     <div
+      class="card-lift"
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--border-primary)",
         borderRadius: "var(--radius)",
         padding: "16px",
-        transition: "border-color 0.2s ease",
         overflow: "hidden",
         position: "relative",
         display: "flex",
