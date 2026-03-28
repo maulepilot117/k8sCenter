@@ -30,7 +30,13 @@ export default define.page(function Layout({ Component, url }) {
       <div style={{ viewTransitionName: "icon-rail", gridRow: "1 / -1" }}>
         <IconRail currentPath={url.pathname} />
       </div>
-      <div style={{ viewTransitionName: "top-bar" }}>
+      <div
+        style={{
+          viewTransitionName: "top-bar",
+          zIndex: 50,
+          position: "relative",
+        }}
+      >
         <TopBarV2 />
       </div>
       <main
