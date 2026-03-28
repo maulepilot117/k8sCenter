@@ -1,4 +1,7 @@
 import type { ComponentChildren } from "preact";
+import { useEffect } from "preact/hooks";
+import { useSignal } from "@preact/signals";
+import { IS_BROWSER } from "fresh/runtime";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 
 interface MetricCardProps {
@@ -47,6 +50,42 @@ function MetricCardInner(
     MetricCardProps,
 ) {
   const styles = STATUS_STYLES[status];
+
+  // Animated value display
+  const animatedValue = useSignal(0);
+  const prevValue = useSignal(0);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const target = typeof value === "number"
+      ? value
+      : parseInt(String(value), 10);
+    if (isNaN(target)) return;
+
+    const start = prevValue.value;
+    const startTime = performance.now();
+    const duration = 800;
+
+    function easeOutExpo(t: number): number {
+      return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+    }
+
+    let frame: number;
+    function tick(now: number) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      animatedValue.value = Math.round(
+        start + (target - start) * easeOutExpo(progress),
+      );
+      if (progress < 1) {
+        frame = requestAnimationFrame(tick);
+      } else {
+        prevValue.value = target;
+      }
+    }
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
 
   return (
     <div
@@ -124,7 +163,7 @@ function MetricCardInner(
           letterSpacing: "-0.02em",
         }}
       >
-        {value}
+        {animatedValue.value}
       </div>
 
       {/* Label */}

@@ -243,6 +243,7 @@ export default function DashboardV2() {
 
       {/* ===== SINGLE DASHBOARD GRID — matches .dashboard-grid from mockup ===== */}
       <div
+        class="stagger-in"
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(12, 1fr)",
@@ -295,6 +296,7 @@ export default function DashboardV2() {
 
         {/* ===== METRIC CARDS (span 8) — matches .metrics-grid ===== */}
         <div
+          class="stagger-in"
           style={{
             gridColumn: "span 8",
             display: "grid",
