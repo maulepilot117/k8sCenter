@@ -217,7 +217,7 @@ Full Gitflow with environment-specific CI/CD. See `CONTRIBUTING.md` for the comp
 **Rules:**
 - NEVER commit directly to `main`, `testing`, `develop/ui`, or `develop/backend`
 - All changes go through PRs with required status checks
-- Feature branches: `develop/{ui,backend}/{feat,fix,refactor}/description`
+- Feature branches: `{feat,fix,refactor}/{ui,backend}-description` (flat — git can't nest under `develop/*`)
 - Hotfixes branch from `main`, back-merge after release
 - Version bumps happen on `release/vX.Y.Z` branches (Chart.yaml version + appVersion)
 
