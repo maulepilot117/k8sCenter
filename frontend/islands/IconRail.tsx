@@ -234,8 +234,12 @@ export default function IconRail({ currentPath }: IconRailProps) {
         {DOMAIN_SECTIONS.map((section) => renderIcon(section))}
       </div>
 
-      {/* Settings at bottom — admin only */}
-      {isAdmin && (
+      {
+        /* Settings at bottom — show for all authenticated users.
+          Backend enforces RBAC; hiding the nav link just confuses admins
+          whose user data loads after the initial render. */
+      }
+      {
         <div
           style={{
             flexShrink: 0,
@@ -249,7 +253,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
         >
           {renderIcon(SETTINGS_SECTION)}
         </div>
-      )}
+      }
     </nav>
   );
 }
