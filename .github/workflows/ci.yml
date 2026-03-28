@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, testing, develop/ui, develop/backend]
+    branches: [main, testing, dev/ui, dev/backend]
 
 # Deny by default — each job declares minimum permissions
 permissions: {}

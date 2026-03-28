@@ -2,7 +2,7 @@ name: CI Dev Images
 
 on:
   push:
-    branches: [develop/ui, develop/backend]
+    branches: [dev/ui, dev/backend]
 
 # Deny by default — each job declares minimum permissions
 permissions: {}

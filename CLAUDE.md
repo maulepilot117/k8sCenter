@@ -210,14 +210,14 @@ make check-dashboards                             # Verify Grafana JSON sync
 
 Full Gitflow with environment-specific CI/CD. See `CONTRIBUTING.md` for the complete workflow.
 
-**Branches:** `main` (production) ← `testing` (RC) ← `develop/ui` | `develop/backend` (dev) ← feature branches
+**Branches:** `main` (production) ← `testing` (RC) ← `dev/ui` | `dev/backend` (dev) ← feature branches
 
 **Image tags:** `dev-<sha>` (private) → `rc-X.Y.Z` (private) → `vX.Y.Z` + `latest` (public)
 
 **Rules:**
-- NEVER commit directly to `main`, `testing`, `develop/ui`, or `develop/backend`
+- NEVER commit directly to `main`, `testing`, `dev/ui`, or `dev/backend`
 - All changes go through PRs with required status checks
-- Feature branches: `develop/{ui,backend}/{feat,fix,refactor}/description`
+- Feature branches: `{feat,fix,refactor}/{ui,backend}/description`
 - Hotfixes branch from `main`, back-merge after release
 - Version bumps happen on `release/vX.Y.Z` branches (Chart.yaml version + appVersion)
 

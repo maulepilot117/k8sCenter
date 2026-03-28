@@ -5,28 +5,28 @@
 | Branch | Purpose | Merges from |
 |--------|---------|-------------|
 | `main` | Production releases | `release/*`, `hotfix/*` |
-| `testing` | Release candidates | `develop/ui`, `develop/backend` |
-| `develop/ui` | Frontend integration | `develop/ui/feat/*`, `develop/ui/fix/*` |
-| `develop/backend` | Backend integration | `develop/backend/feat/*`, `develop/backend/fix/*` |
+| `testing` | Release candidates | `dev/ui`, `dev/backend` |
+| `dev/ui` | Frontend integration | `feat/ui/*`, `fix/ui/*`, `refactor/ui/*` |
+| `dev/backend` | Backend integration | `feat/backend/*`, `fix/backend/*`, `refactor/backend/*` |
 
-**Never commit directly to `main`, `testing`, `develop/ui`, or `develop/backend`.** All changes go through pull requests.
+**Never commit directly to `main`, `testing`, `dev/ui`, or `dev/backend`.** All changes go through pull requests.
 
 ## Workflow
 
 ### Feature Development
 
-1. Check out the appropriate develop branch and create a feature branch:
+1. Check out the appropriate dev branch and create a feature branch:
    ```bash
-   git checkout develop/ui && git pull
-   git checkout -b develop/ui/feat/my-feature
+   git checkout dev/ui && git pull
+   git checkout -b feat/ui/my-feature
    ```
 2. Make changes, commit with conventional commit messages (`feat:`, `fix:`, `refactor:`)
-3. Push and open a PR to the parent develop branch
+3. Push and open a PR to the parent dev branch
 4. CI runs lint + unit tests. Merge when green.
 
 ### Promoting to Testing
 
-1. Open a PR from `develop/ui` or `develop/backend` to `testing`
+1. Open a PR from `dev/ui` or `dev/backend` to `testing`
 2. CI + E2E tests must pass
 3. RC images are built and tagged `rc-X.Y.Z`
 4. Deploy RC to staging environment for validation
@@ -42,13 +42,13 @@
 
 1. Branch from `main`: `git checkout main && git checkout -b hotfix/description`
 2. Fix, push, PR to `main`
-3. After merge, back-merge `main` into `testing` and `develop/*`
+3. After merge, back-merge `main` into `testing` and `dev/*`
 
 ## Naming Conventions
 
-- Feature branches: `develop/{ui,backend}/feat/short-description`
-- Bug fixes: `develop/{ui,backend}/fix/short-description`
-- Refactors: `develop/{ui,backend}/refactor/short-description`
+- Feature branches: `feat/{ui,backend}/short-description`
+- Bug fixes: `fix/{ui,backend}/short-description`
+- Refactors: `refactor/{ui,backend}/short-description`
 - Hotfixes: `hotfix/short-description`
 - Releases: `release/vX.Y.Z`
 
