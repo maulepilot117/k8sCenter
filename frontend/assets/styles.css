@@ -398,6 +398,32 @@ body {
   animation: none;
 }
 
+/* ── Card delight interactions ── */
+.card-lift {
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s cubic-bezier(0.25, 1, 0.5, 1),
+    box-shadow 0.2s ease;
+}
+.card-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.3);
+  border-color: var(--border-primary);
+}
+.card-lift:active {
+  transform: translateY(0px);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.2);
+}
+
+.event-row {
+  transition: background 0.15s ease, border-color 0.15s ease;
+  border-left: 2px solid transparent;
+}
+.event-row:hover {
+  background: var(--bg-hover);
+  border-left-color: var(--accent);
+}
+
 /* ── Reduced motion ── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -419,5 +445,10 @@ body {
 
   .page-enter {
     animation: none;
+  }
+
+  .card-lift:hover {
+    transform: none;
+    box-shadow: none;
   }
 }

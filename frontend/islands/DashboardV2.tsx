@@ -165,13 +165,21 @@ export default function DashboardV2() {
   const s = summary.value;
   const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
 
+  const greeting = (() => {
+    if (!IS_BROWSER) return "";
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning";
+    if (hour < 17) return "Good afternoon";
+    return "Good evening";
+  })();
+
   return (
     <div>
       {/* ===== PAGE HEADER — matches .page-header from mockup ===== */}
       <div class="flex items-center justify-between mb-5">
         <div>
           <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            Cluster Overview
+            {greeting ? `${greeting} — ` : ""}Cluster Overview
           </h1>
           {info && (
             <div class="text-xs text-text-muted mt-0.5">
@@ -361,7 +369,7 @@ export default function DashboardV2() {
               : "success"}
             statusText={(s?.alerts.active ?? 0) > 0
               ? `${s?.alerts.critical ?? 0} Critical`
-              : "None"}
+              : "\u2713 All Clear"}
             href="/alerting"
             sparklineData={[0, 0, 1, 0, 0, 0, 0, 0]}
             sparklineColor="var(--warning)"
@@ -486,9 +494,27 @@ export default function DashboardV2() {
                     fontSize: "12px",
                     textAlign: "center",
                     paddingTop: "40px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "8px",
                   }}
                 >
-                  No recent events
+                  <svg
+                    width="24"
+                    height="24"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    style={{ opacity: 0.4 }}
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                    <line x1="9" y1="9" x2="9.01" y2="9" />
+                    <line x1="15" y1="9" x2="15.01" y2="9" />
+                  </svg>
+                  <span>All quiet — no recent events</span>
                 </div>
               )
               : events.value.map((evt, idx) => {
@@ -515,6 +541,7 @@ export default function DashboardV2() {
                 return (
                   <div
                     key={`${evt.metadata?.uid ?? idx}`}
+                    class="event-row"
                     style={{
                       display: "flex",
                       alignItems: "flex-start",
@@ -522,7 +549,6 @@ export default function DashboardV2() {
                       padding: "8px 10px",
                       borderRadius: "var(--radius-sm)",
                       cursor: "pointer",
-                      transition: "background 0.15s ease",
                     }}
                   >
                     {/* Event dot — matches .event-dot */}
