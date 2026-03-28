@@ -1,6 +1,5 @@
 // deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
-import { useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
@@ -67,6 +66,10 @@ interface IconRailProps {
 
 export default function IconRail({ currentPath }: IconRailProps) {
   const hoveredId = useSignal<string | null>(null);
+  const tooltipPos = useSignal<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  });
   const activeDomain = getActiveDomain(currentPath);
 
   if (!IS_BROWSER) {
@@ -83,7 +86,6 @@ export default function IconRail({ currentPath }: IconRailProps) {
     );
   }
 
-  // Extracted as a component so hooks (useRef) are valid
   function RailIcon(
     { section, isActive, isHovered }: {
       section: DomainSection;
@@ -92,20 +94,16 @@ export default function IconRail({ currentPath }: IconRailProps) {
     },
   ) {
     const iconPaths = ICONS[section.icon] ?? "";
-    const iconRef = useRef<HTMLDivElement>(null);
-
-    const getTooltipPos = () => {
-      if (!iconRef.current) return { top: 0, left: 0 };
-      const rect = iconRef.current.getBoundingClientRect();
-      return { top: rect.top + rect.height / 2, left: rect.right + 10 };
-    };
-
-    const pos = isHovered ? getTooltipPos() : { top: 0, left: 0 };
 
     return (
       <div
-        ref={iconRef}
-        onMouseEnter={() => {
+        onMouseEnter={(e: MouseEvent) => {
+          const el = e.currentTarget as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          tooltipPos.value = {
+            top: rect.top + rect.height / 2,
+            left: rect.right + 10,
+          };
           hoveredId.value = section.id;
         }}
         onMouseLeave={() => {
@@ -168,8 +166,8 @@ export default function IconRail({ currentPath }: IconRailProps) {
             class="rail-tooltip"
             style={{
               position: "fixed",
-              top: `${pos.top}px`,
-              left: `${pos.left}px`,
+              top: `${tooltipPos.value.top}px`,
+              left: `${tooltipPos.value.left}px`,
               transform: "translateY(-50%)",
               background: "var(--bg-elevated)",
               color: "var(--text-primary)",
