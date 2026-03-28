@@ -4,6 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface RuleSummary {
   name: string;
@@ -175,11 +176,7 @@ export default function AlertRulesPage() {
             </div>
           )}
 
-          {error.value && (
-            <div class="bg-danger-dim border border-danger text-danger rounded p-3 text-sm">
-              {error.value}
-            </div>
-          )}
+          {error.value && <ErrorBanner message={error.value} />}
 
           <textarea
             value={editorContent.value}
@@ -208,11 +205,7 @@ export default function AlertRulesPage() {
         <Button onClick={handleNew}>Create Rule</Button>
       </div>
 
-      {error.value && (
-        <div class="bg-danger-dim border border-danger text-danger rounded-lg p-4 text-sm">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {loading.value
         ? (

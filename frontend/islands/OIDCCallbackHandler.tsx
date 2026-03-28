@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { handleOIDCCallback } from "@/lib/auth.ts";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 
 /**
  * Handles the post-OIDC-callback token exchange.
@@ -43,7 +44,7 @@ export default function OIDCCallbackHandler() {
 
   return (
     <div class="space-y-4">
-      <div class="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
+      <Spinner class="mx-auto text-accent" />
       <p class="text-sm text-text-muted">
         Completing sign in...
       </p>

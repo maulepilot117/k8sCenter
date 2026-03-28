@@ -5,6 +5,7 @@ import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 
 interface AuditEntry {
   timestamp: string;
@@ -133,7 +134,7 @@ export default function AuditLogViewer() {
       {loading.value
         ? (
           <div class="flex justify-center py-8">
-            <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
+            <Spinner class="text-accent" />
           </div>
         )
         : (

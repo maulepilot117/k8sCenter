@@ -4,6 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface UserFormState {
   username: string;
@@ -445,11 +446,7 @@ export default function UserWizard() {
               </dl>
             </div>
 
-            {submitError.value && (
-              <div class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger">
-                {submitError.value}
-              </div>
-            )}
+            {submitError.value && <ErrorBanner message={submitError.value} />}
           </div>
         )}
 

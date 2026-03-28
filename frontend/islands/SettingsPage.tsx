@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface Settings {
   monitoringPrometheusUrl?: string | null;
@@ -161,11 +162,7 @@ export default function SettingsPage() {
   }
 
   if (error.value) {
-    return (
-      <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
-        {error.value}
-      </div>
-    );
+    return <ErrorBanner message={error.value} />;
   }
 
   return (

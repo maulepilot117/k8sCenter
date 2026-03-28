@@ -7,6 +7,7 @@ import { apiPut, setAccessToken } from "@/lib/api.ts";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { settingsInputClass } from "@/components/settings/shared.ts";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 const STEPS = [
   { title: "Welcome" },
@@ -180,8 +181,8 @@ export default function SetupWizard() {
       />
 
       {error.value && (
-        <div class="mb-4 rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
-          {error.value}
+        <div class="mb-4">
+          <ErrorBanner message={error.value} />
         </div>
       )}
 

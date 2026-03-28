@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 
 interface PerformancePanelProps {
   kind: string;
@@ -693,7 +694,7 @@ export default function PerformancePanel(
   if (monAvailable.value === null) {
     return (
       <div class="flex justify-center p-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+        <Spinner class="text-brand" />
       </div>
     );
   }
@@ -763,7 +764,7 @@ export default function PerformancePanel(
             {chart.loading
               ? (
                 <div class="flex h-32 items-center justify-center">
-                  <div class="h-5 w-5 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+                  <Spinner size="sm" class="text-brand" />
                 </div>
               )
               : chart.error

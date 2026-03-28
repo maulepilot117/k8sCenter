@@ -5,6 +5,7 @@ import { apiGet, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface CNIFeatures {
   hubble: boolean;
@@ -109,9 +110,7 @@ export default function CniStatus() {
   if (error.value) {
     return (
       <div class="p-6">
-        <div class="bg-danger-dim border border-danger rounded-lg p-4 text-danger">
-          {error.value}
-        </div>
+        <ErrorBanner message={error.value} />
       </div>
     );
   }
@@ -381,8 +380,8 @@ function CniConfigTab(
       title={`Cilium Configuration (${config.configMapNamespace}/${config.configMapName})`}
     >
       {saveError.value && (
-        <div class="mb-4 bg-danger-dim border border-danger rounded p-3 text-sm text-danger">
-          {saveError.value}
+        <div class="mb-4">
+          <ErrorBanner message={saveError.value} />
         </div>
       )}
       <div class="overflow-x-auto">
