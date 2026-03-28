@@ -23,7 +23,8 @@ frontend:
       memory: 512Mi
 
 imagePullSecrets: []
-# Packages are public on GHCR — no pull secret needed
+# Release images are public on GHCR — no pull secret needed
+# For dev/test images, add: imagePullSecrets: [{name: ghcr-pull-secret}]
 
 auth:
   jwtSecret: "homelab-jwt-secret-for-k8scenter-minimum-32-bytes"

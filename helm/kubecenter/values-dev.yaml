@@ -1,0 +1,21 @@
+# Development environment values
+# Usage: helm upgrade k8scenter helm/kubecenter -f helm/kubecenter/values-dev.yaml
+# Replace <SHA> with the actual 7-char commit SHA from the dev build
+
+backend:
+  image:
+    repository: ghcr.io/maulepilot117/k8scenter-backend
+    tag: dev-<SHA>        # e.g., dev-a1b2c3d
+    pullPolicy: Always
+  config:
+    dev: true
+
+frontend:
+  image:
+    repository: ghcr.io/maulepilot117/k8scenter-frontend
+    tag: dev-<SHA>
+    pullPolicy: Always
+
+# Dev images are private — pull secret required
+imagePullSecrets:
+  - name: ghcr-pull-secret

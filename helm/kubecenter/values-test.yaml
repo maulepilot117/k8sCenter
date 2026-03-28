@@ -1,0 +1,21 @@
+# Testing / Release Candidate environment values
+# Usage: helm upgrade k8scenter helm/kubecenter -f helm/kubecenter/values-test.yaml
+# Replace <VERSION> with the RC version (e.g., 0.23.0)
+
+backend:
+  image:
+    repository: ghcr.io/maulepilot117/k8scenter-backend
+    tag: rc-<VERSION>     # e.g., rc-0.23.0
+    pullPolicy: Always
+  config:
+    dev: true
+
+frontend:
+  image:
+    repository: ghcr.io/maulepilot117/k8scenter-frontend
+    tag: rc-<VERSION>
+    pullPolicy: Always
+
+# RC images are private — pull secret required
+imagePullSecrets:
+  - name: ghcr-pull-secret
