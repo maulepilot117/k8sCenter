@@ -1,4 +1,5 @@
-import { useMemo } from "preact/hooks";
+import { useEffect, useMemo } from "preact/hooks";
+import { useSignal } from "@preact/signals";
 
 interface GaugeRingProps {
   value: number; // 0-100
@@ -39,6 +40,17 @@ export function GaugeRing({
   const offset = circumference - (clampedValue / 100) * circumference;
   const center = size / 2;
 
+  // Animate from fully hidden to target offset on mount / value change
+  const mountedOffset = useSignal(circumference);
+
+  useEffect(() => {
+    // Small delay to ensure the initial state renders first
+    const id = setTimeout(() => {
+      mountedOffset.value = offset;
+    }, 50);
+    return () => clearTimeout(id);
+  }, [offset]);
+
   return (
     <div
       class="relative inline-flex items-center justify-center"
@@ -72,9 +84,11 @@ export function GaugeRing({
           stroke-width={strokeWidth}
           stroke-linecap="round"
           stroke-dasharray={circumference}
-          stroke-dashoffset={offset}
+          stroke-dashoffset={mountedOffset.value}
           transform={`rotate(-90 ${center} ${center})`}
-          style={{ transition: "stroke-dashoffset 0.5s ease" }}
+          style={{
+            transition: "stroke-dashoffset 1s cubic-bezier(0.16, 1, 0.3, 1)",
+          }}
         />
       </svg>
       <div class="absolute inset-0 flex flex-col items-center justify-center">
