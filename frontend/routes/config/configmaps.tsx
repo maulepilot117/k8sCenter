@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import ConfigDashboard from "@/islands/ConfigDashboard.tsx";
 
-export default define.page(function ConfigMapsPage() {
-  return <ResourceTable kind="configmaps" title="ConfigMaps" />;
+export default define.page(function ConfigMapsPage(ctx) {
+  return <ConfigDashboard currentPath={ctx.url.pathname} />;
 });

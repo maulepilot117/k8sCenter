@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import ConfigDashboard from "@/islands/ConfigDashboard.tsx";
 
-export default define.page(function ResourceQuotasPage() {
-  return <ResourceTable kind="resourcequotas" title="ResourceQuotas" />;
+export default define.page(function ResourceQuotasPage(ctx) {
+  return <ConfigDashboard currentPath={ctx.url.pathname} />;
 });

@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import ConfigDashboard from "@/islands/ConfigDashboard.tsx";
 
-export default define.page(function LimitRangesPage() {
-  return <ResourceTable kind="limitranges" title="LimitRanges" />;
+export default define.page(function LimitRangesPage(ctx) {
+  return <ConfigDashboard currentPath={ctx.url.pathname} />;
 });
