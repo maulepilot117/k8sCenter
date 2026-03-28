@@ -191,7 +191,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
         flexDirection: "column",
         alignItems: "center",
         zIndex: 40,
-        overflow: "hidden",
+        overflow: "visible",
       }}
     >
       {/* Logo area — height matches topbar */}
