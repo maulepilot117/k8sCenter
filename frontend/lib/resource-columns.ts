@@ -545,37 +545,71 @@ const ingressColumns: Column<K8sResource>[] = [
 ];
 
 const configmapColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "keys",
     label: "Keys",
     render: (r) => {
       const data = (r as ConfigMap).data;
-      return String(data ? Object.keys(data).length : 0);
+      return styledMono(String(data ? Object.keys(data).length : 0));
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const secretColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "type",
     label: "Type",
     sortable: true,
-    render: (r) => (r as Secret).type ?? "Opaque",
+    render: (r) => {
+      const t = (r as Secret).type ?? "Opaque";
+      const status = t === "kubernetes.io/tls" ? "success" : "info";
+      return styledBadge(t, status);
+    },
   },
   {
     key: "keys",
     label: "Keys",
     render: (r) => {
       const data = (r as Secret).data;
-      return String(data ? Object.keys(data).length : 0);
+      return styledMono(String(data ? Object.keys(data).length : 0));
     },
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const namespaceColumns: Column<K8sResource>[] = [
@@ -1175,26 +1209,72 @@ const storageclassColumns: Column<K8sResource>[] = [
 ];
 
 const resourcequotaColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
-  ageCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const limitrangeColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
-  ageCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const serviceaccountColumns: Column<K8sResource>[] = [
-  nameCol,
-  namespaceCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name),
+  },
+  {
+    key: "namespace",
+    label: "Namespace",
+    sortable: true,
+    render: (r) => styledNamespace(r.metadata.namespace ?? "-"),
+  },
   {
     key: "secrets",
     label: "Secrets",
-    render: (r) => String((r as ServiceAccount).secrets?.length ?? 0),
+    render: (r) =>
+      styledMono(String((r as ServiceAccount).secrets?.length ?? 0)),
   },
-  ageCol,
+  {
+    key: "age",
+    label: "Age",
+    sortable: true,
+    render: (r) => styledAge(r.metadata.creationTimestamp),
+  },
 ];
 
 const pdbColumns: Column<K8sResource>[] = [

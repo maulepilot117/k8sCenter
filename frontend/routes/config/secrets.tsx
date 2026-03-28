@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import ConfigDashboard from "@/islands/ConfigDashboard.tsx";
 
-export default define.page(function SecretsPage() {
-  return <ResourceTable kind="secrets" title="Secrets" enableWS={false} />;
+export default define.page(function SecretsPage(ctx) {
+  return <ConfigDashboard currentPath={ctx.url.pathname} />;
 });
