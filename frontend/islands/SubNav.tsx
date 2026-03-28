@@ -18,9 +18,14 @@ interface SubNavProps {
 
 function isActive(tabHref: string, currentPath: string): boolean {
   if (tabHref === currentPath) return true;
+  // Section root paths (e.g., /networking, /workloads, /storage) should only
+  // match exactly — not prefix-match against sub-pages like /networking/services.
+  // A section root has exactly 1 path segment after the leading slash.
+  const segments = tabHref.replace(/^\//, "").split("/");
+  if (segments.length === 1) return false;
   // Prefix match: /workloads/deployments matches /workloads/deployments/ns/name
   if (
-    tabHref !== "/" && currentPath.startsWith(tabHref) &&
+    currentPath.startsWith(tabHref) &&
     (currentPath.length === tabHref.length ||
       currentPath[tabHref.length] === "/")
   ) {
