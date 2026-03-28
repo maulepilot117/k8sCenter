@@ -1,5 +1,6 @@
 // deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
@@ -64,12 +65,51 @@ interface IconRailProps {
   currentPath: string;
 }
 
+/** Tooltip rendered into document.body via a manual DOM portal */
+function RailTooltip(
+  { label, top, left }: { label: string; top: number; left: number },
+) {
+  const elRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = document.createElement("div");
+    el.className = "rail-tooltip";
+    Object.assign(el.style, {
+      position: "fixed",
+      top: `${top}px`,
+      left: `${left}px`,
+      transform: "translateY(-50%)",
+      background: "var(--bg-elevated)",
+      color: "var(--text-primary)",
+      padding: "5px 12px",
+      borderRadius: "6px",
+      fontSize: "12px",
+      fontWeight: "500",
+      whiteSpace: "nowrap",
+      zIndex: "9999",
+      border: "1px solid var(--border-subtle)",
+      pointerEvents: "none",
+      boxShadow:
+        "0 4px 12px -2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03)",
+    });
+    el.textContent = label;
+    document.body.appendChild(el);
+    elRef.current = el;
+    return () => {
+      el.remove();
+    };
+  }, [label, top, left]);
+
+  return null;
+}
+
 export default function IconRail({ currentPath }: IconRailProps) {
   const hoveredId = useSignal<string | null>(null);
   const tooltipPos = useSignal<{ top: number; left: number }>({
     top: 0,
     left: 0,
   });
+  const hoveredLabel = useSignal<string>("");
   const activeDomain = getActiveDomain(currentPath);
 
   if (!IS_BROWSER) {
@@ -104,6 +144,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
             top: rect.top + rect.height / 2,
             left: rect.right + 10,
           };
+          hoveredLabel.value = section.label;
           hoveredId.value = section.id;
         }}
         onMouseLeave={() => {
@@ -162,29 +203,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
           />
         </a>
         {isHovered && (
-          <div
-            class="rail-tooltip"
-            style={{
-              position: "fixed",
-              top: `${tooltipPos.value.top}px`,
-              left: `${tooltipPos.value.left}px`,
-              transform: "translateY(-50%)",
-              background: "var(--bg-elevated)",
-              color: "var(--text-primary)",
-              padding: "5px 12px",
-              borderRadius: "6px",
-              fontSize: "12px",
-              fontWeight: "500",
-              whiteSpace: "nowrap",
-              zIndex: 9999,
-              border: "1px solid var(--border-subtle)",
-              pointerEvents: "none",
-              boxShadow:
-                "0 4px 12px -2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03)",
-            }}
-          >
-            {section.label}
-          </div>
+          <RailTooltip
+            label={section.label}
+            top={tooltipPos.value.top}
+            left={tooltipPos.value.left}
+          />
         )}
       </div>
     );
