@@ -1,6 +1,6 @@
 // deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
@@ -65,12 +65,10 @@ interface IconRailProps {
   currentPath: string;
 }
 
-/** Tooltip rendered into document.body via a manual DOM portal */
+/** Tooltip rendered into document.body via DOM portal to escape stacking contexts */
 function RailTooltip(
   { label, top, left }: { label: string; top: number; left: number },
 ) {
-  const elRef = useRef<HTMLDivElement | null>(null);
-
   useEffect(() => {
     const el = document.createElement("div");
     el.className = "rail-tooltip";
@@ -94,10 +92,7 @@ function RailTooltip(
     });
     el.textContent = label;
     document.body.appendChild(el);
-    elRef.current = el;
-    return () => {
-      el.remove();
-    };
+    return () => el.remove();
   }, [label, top, left]);
 
   return null;
@@ -109,7 +104,6 @@ export default function IconRail({ currentPath }: IconRailProps) {
     top: 0,
     left: 0,
   });
-  const hoveredLabel = useSignal<string>("");
   const activeDomain = getActiveDomain(currentPath);
 
   if (!IS_BROWSER) {
@@ -144,7 +138,6 @@ export default function IconRail({ currentPath }: IconRailProps) {
             top: rect.top + rect.height / 2,
             left: rect.right + 10,
           };
-          hoveredLabel.value = section.label;
           hoveredId.value = section.id;
         }}
         onMouseLeave={() => {
@@ -224,7 +217,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
         flexDirection: "column",
         alignItems: "center",
         zIndex: 40,
-        overflow: "visible",
+        overflow: "hidden",
       }}
     >
       {/* Logo area — height matches topbar */}
