@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface QueryResult {
   resultType: string;
@@ -165,11 +166,7 @@ export default function PromQLQuery() {
       </div>
 
       {/* Error */}
-      {error.value && (
-        <div class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {/* Results */}
       {result.value && (

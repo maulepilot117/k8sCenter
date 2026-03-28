@@ -4,6 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface DriverCapability {
   volumeExpansion: boolean;
@@ -82,9 +83,7 @@ export default function StorageOverview() {
   if (error.value) {
     return (
       <div class="p-6">
-        <div class="bg-danger-dim border border-danger rounded-lg p-4 text-danger">
-          {error.value}
-        </div>
+        <ErrorBanner message={error.value} />
       </div>
     );
   }

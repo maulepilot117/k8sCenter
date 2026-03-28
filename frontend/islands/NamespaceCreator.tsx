@@ -90,7 +90,7 @@ export default function NamespaceCreator() {
         </h1>
         <a
           href="/cluster/namespaces"
-          class="text-sm text-text-muted hover:text-text-secondary text-text-muted"
+          class="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
         </a>
@@ -130,7 +130,7 @@ export default function NamespaceCreator() {
           </Button>
           <a
             href="/cluster/namespaces"
-            class="text-sm text-text-muted hover:text-text-secondary text-text-muted"
+            class="text-sm text-text-muted hover:text-text-secondary"
           >
             Cancel
           </a>

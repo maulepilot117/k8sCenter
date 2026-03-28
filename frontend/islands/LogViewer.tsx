@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface LogViewerProps {
   namespace: string;
@@ -564,11 +565,7 @@ export default function LogViewer(
       </div>
 
       {/* Error */}
-      {currentState.error && (
-        <div class="rounded-md bg-danger-dim px-3 py-2 text-sm text-danger">
-          {currentState.error}
-        </div>
-      )}
+      {currentState.error && <ErrorBanner message={currentState.error} />}
 
       {/* Log output */}
       {splitView.value

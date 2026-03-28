@@ -12,6 +12,7 @@ import {
 } from "@/lib/rbac-utils.ts";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 
 interface Binding {
   metadata: { name: string; namespace?: string };
@@ -159,7 +160,7 @@ export default function RBACOverview() {
 
       {loading.value && (
         <div class="flex justify-center py-12">
-          <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+          <Spinner class="text-brand" />
         </div>
       )}
 

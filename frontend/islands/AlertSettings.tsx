@@ -5,6 +5,7 @@ import { apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Card } from "@/components/ui/Card.tsx";
 import { Input } from "@/components/ui/Input.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface AlertingSettings {
   enabled: boolean;
@@ -135,11 +136,7 @@ export default function AlertSettings() {
         restart. Use environment variables for persistent configuration.
       </div>
 
-      {error.value && (
-        <div class="bg-danger-dim border border-danger text-danger rounded-lg p-4 text-sm">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {success.value && (
         <div class="bg-success-dim border border-success text-success rounded-lg p-4 text-sm">

@@ -5,6 +5,7 @@ import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Card } from "@/components/ui/Card.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { ProviderInfo } from "@/lib/k8s-types.ts";
 
 type TabType = "providers" | "oidc" | "ldap";
@@ -84,7 +85,7 @@ export default function AuthSettings() {
   if (loading.value) {
     return (
       <div class="flex items-center justify-center py-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
+        <Spinner class="text-accent" />
       </div>
     );
   }
