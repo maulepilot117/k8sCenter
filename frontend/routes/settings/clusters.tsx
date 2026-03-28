@@ -1,18 +1,6 @@
 import { define } from "@/utils.ts";
-import ClusterManager from "@/islands/ClusterManager.tsx";
+import SettingsDashboard from "@/islands/SettingsDashboard.tsx";
 
-export default define.page(function ClustersPage() {
-  return (
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold text-text-primary">
-          Clusters
-        </h1>
-        <p class="mt-1 text-sm text-text-secondary">
-          Manage registered Kubernetes clusters.
-        </p>
-      </div>
-      <ClusterManager />
-    </div>
-  );
+export default define.page(function SettingsClustersPage(ctx) {
+  return <SettingsDashboard currentPath={ctx.url.pathname} />;
 });

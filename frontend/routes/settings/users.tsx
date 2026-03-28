@@ -1,18 +1,6 @@
 import { define } from "@/utils.ts";
-import UserManager from "@/islands/UserManager.tsx";
+import SettingsDashboard from "@/islands/SettingsDashboard.tsx";
 
-export default define.page(function UsersPage() {
-  return (
-    <div class="space-y-6">
-      <div>
-        <h1 class="text-2xl font-bold text-text-primary">
-          User Management
-        </h1>
-        <p class="mt-1 text-sm text-text-secondary">
-          Manage local user accounts and credentials.
-        </p>
-      </div>
-      <UserManager />
-    </div>
-  );
+export default define.page(function SettingsUsersPage(ctx) {
+  return <SettingsDashboard currentPath={ctx.url.pathname} />;
 });
