@@ -206,9 +206,22 @@ make check-dashboards                             # Verify Grafana JSON sync
 
 ---
 
-## Pre-Merge Requirements
+## Branching Strategy
 
-**Every PR requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope. See `docs/homelab-deployment.md` and memory file `reference_homelab_deployment.md` for procedures.
+Full Gitflow with environment-specific CI/CD. See `CONTRIBUTING.md` for the complete workflow.
+
+**Branches:** `main` (production) ← `testing` (RC) ← `develop/ui` | `develop/backend` (dev) ← feature branches
+
+**Image tags:** `dev-<sha>` (private) → `rc-X.Y.Z` (private) → `vX.Y.Z` + `latest` (public)
+
+**Rules:**
+- NEVER commit directly to `main`, `testing`, `develop/ui`, or `develop/backend`
+- All changes go through PRs with required status checks
+- Feature branches: `develop/{ui,backend}/{feat,fix,refactor}/description`
+- Hotfixes branch from `main`, back-merge after release
+- Version bumps happen on `release/vX.Y.Z` branches (Chart.yaml version + appVersion)
+
+**Every PR to `testing` or `main` requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope.
 
 Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
 
