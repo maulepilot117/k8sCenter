@@ -288,3 +288,136 @@ body {
     opacity: 0.5;
   }
 }
+
+/* ── Spring easing (approximation of spring with damping 15, stiffness 100) ── */
+/* Use for gauge fills and value transitions — natural deceleration */
+
+/* ── Staggered entrance ── */
+.stagger-in > * {
+  opacity: 0;
+  transform: translateY(8px);
+  animation: fade-in-up 0.4s ease-out forwards;
+}
+.stagger-in > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger-in > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+.stagger-in > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+.stagger-in > *:nth-child(4) {
+  animation-delay: 180ms;
+}
+.stagger-in > *:nth-child(5) {
+  animation-delay: 240ms;
+}
+.stagger-in > *:nth-child(6) {
+  animation-delay: 300ms;
+}
+.stagger-in > *:nth-child(7) {
+  animation-delay: 360ms;
+}
+.stagger-in > *:nth-child(8) {
+  animation-delay: 420ms;
+}
+
+/* ── Page content entrance ── */
+.page-enter {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+/* ── Gauge draw animation ── */
+@keyframes gauge-draw {
+  from {
+    stroke-dashoffset: var(--gauge-circumference);
+  }
+  to {
+    stroke-dashoffset: var(--gauge-offset);
+  }
+}
+
+/* ── Number count-up (used with @property) ── */
+@property --num {
+  syntax: "<integer>";
+  initial-value: 0;
+  inherits: false;
+}
+
+.count-up {
+  transition: --num 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  counter-reset: num var(--num);
+}
+.count-up::after {
+  content: counter(num);
+}
+
+/* ── Sparkline draw ── */
+@keyframes sparkline-draw {
+  from {
+    stroke-dashoffset: var(--line-length);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ── Cross-document View Transitions ── */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(page-content) {
+  animation: 0.2s ease-out both fade-out;
+}
+::view-transition-new(page-content) {
+  animation: 0.3s ease-out 0.1s both fade-in-up;
+}
+
+@keyframes fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Icon rail persists across transitions */
+::view-transition-old(icon-rail),
+::view-transition-new(icon-rail) {
+  animation: none;
+}
+
+/* Top bar persists across transitions */
+::view-transition-old(top-bar),
+::view-transition-new(top-bar) {
+  animation: none;
+}
+
+/* ── Reduced motion ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  @view-transition {
+    navigation: none;
+  }
+
+  .stagger-in > * {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
+
+  .page-enter {
+    animation: none;
+  }
+}

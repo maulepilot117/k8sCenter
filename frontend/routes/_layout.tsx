@@ -27,12 +27,18 @@ export default define.page(function Layout({ Component, url }) {
         color: "var(--text-primary)",
       }}
     >
-      <IconRail currentPath={url.pathname} />
-      <TopBarV2 />
+      <div style={{ viewTransitionName: "icon-rail", gridRow: "1 / -1" }}>
+        <IconRail currentPath={url.pathname} />
+      </div>
+      <div style={{ viewTransitionName: "top-bar" }}>
+        <TopBarV2 />
+      </div>
       <main
+        class="page-enter"
         style={{
           overflowY: "auto",
           padding: "24px",
+          viewTransitionName: "page-content",
         }}
       >
         <AlertBanner />
