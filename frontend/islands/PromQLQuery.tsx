@@ -179,7 +179,7 @@ export default function PromQLQuery() {
             <span>|</span>
             <span>{result.value.result.length} result(s)</span>
             {result.value.warnings && result.value.warnings.length > 0 && (
-              <span class="text-amber-500">
+              <span class="text-warning">
                 | {result.value.warnings.length} warning(s)
               </span>
             )}

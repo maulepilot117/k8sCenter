@@ -274,14 +274,14 @@ export default function AlertRulesPage() {
                       <button
                         type="button"
                         onClick={() => handleEdit(rule.namespace, rule.name)}
-                        class="text-blue-600 hover:text-blue-800 text-accent hover:text-accent text-sm"
+                        class="text-accent hover:text-accent text-sm"
                       >
                         Edit
                       </button>
                       <button
                         type="button"
                         onClick={() => handleDelete(rule.namespace, rule.name)}
-                        class="text-red-600 hover:text-red-800 text-danger hover:text-danger text-sm"
+                        class="text-danger hover:text-danger text-sm"
                       >
                         Delete
                       </button>

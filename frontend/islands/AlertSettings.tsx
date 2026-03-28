@@ -130,7 +130,7 @@ export default function AlertSettings() {
   return (
     <div class="space-y-6">
       {/* Warning banner */}
-      <div class="bg-warning-dim border border-warning text-amber-800 text-warning rounded-lg p-4 text-sm">
+      <div class="bg-warning-dim border border-warning text-warning rounded-lg p-4 text-sm">
         Settings configured here are stored in memory and will be lost on pod
         restart. Use environment variables for persistent configuration.
       </div>
@@ -157,7 +157,7 @@ export default function AlertSettings() {
               checked={enabled.value}
               onChange={(e) =>
                 enabled.value = (e.target as HTMLInputElement).checked}
-              class="h-4 w-4 rounded border-border-primary text-blue-600"
+              class="h-4 w-4 rounded border-border-primary text-accent"
             />
             <label
               for="alerting-enabled"
@@ -239,7 +239,7 @@ export default function AlertSettings() {
               checked={smtpTLSInsecure.value}
               onChange={(e) =>
                 smtpTLSInsecure.value = (e.target as HTMLInputElement).checked}
-              class="h-4 w-4 rounded border-border-primary text-blue-600"
+              class="h-4 w-4 rounded border-border-primary text-accent"
             />
             <label
               for="tls-insecure"
@@ -271,7 +271,7 @@ export default function AlertSettings() {
             following receiver configuration:
           </p>
           <div class="bg-base rounded-lg p-4 overflow-x-auto">
-            <pre class="text-sm text-green-400 font-mono whitespace-pre">{`receivers:
+            <pre class="text-sm text-success font-mono whitespace-pre">{`receivers:
  - name: 'kubecenter'
  webhook_configs:
  - send_resolved: true

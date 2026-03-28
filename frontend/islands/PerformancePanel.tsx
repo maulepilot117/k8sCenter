@@ -768,7 +768,7 @@ export default function PerformancePanel(
               )
               : chart.error
               ? (
-                <div class="flex h-32 items-center justify-center text-sm text-red-400">
+                <div class="flex h-32 items-center justify-center text-sm text-error">
                   {chart.error}
                 </div>
               )

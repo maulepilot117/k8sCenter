@@ -102,7 +102,7 @@ export default function ClusterManager() {
   if (loading.value) {
     return (
       <div class="flex justify-center py-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-blue-600" />
+        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
       </div>
     );
   }
@@ -236,7 +236,7 @@ export default function ClusterManager() {
                 <p class="text-sm font-medium text-text-primary">
                   {c.displayName || c.name}
                   {c.isLocal && (
-                    <span class="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-700 bg-accent-dim text-accent">
+                    <span class="ml-2 rounded px-1.5 py-0.5 text-xs bg-accent-dim text-accent">
                       local
                     </span>
                   )}

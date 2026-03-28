@@ -133,7 +133,7 @@ export default function AuditLogViewer() {
       {loading.value
         ? (
           <div class="flex justify-center py-8">
-            <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-blue-600" />
+            <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
           </div>
         )
         : (

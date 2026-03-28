@@ -530,7 +530,7 @@ export default function LogViewer(
             <span
               class={`inline-block h-2 w-2 rounded-full ${
                 currentState.connected
-                  ? "bg-green-500 animate-pulse"
+                  ? "bg-success animate-pulse"
                   : "bg-text-muted"
               }`}
             />
@@ -565,7 +565,7 @@ export default function LogViewer(
 
       {/* Error */}
       {currentState.error && (
-        <div class="rounded-md bg-danger-dim px-3 py-2 text-sm text-red-700 bg-danger-dim text-danger">
+        <div class="rounded-md bg-danger-dim px-3 py-2 text-sm text-danger">
           {currentState.error}
         </div>
       )}

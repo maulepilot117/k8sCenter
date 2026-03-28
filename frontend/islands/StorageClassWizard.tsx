@@ -508,7 +508,7 @@ function ParametersStep(
                 <button
                   type="button"
                   onClick={() => removeParameter(i)}
-                  class="px-2 py-2 text-text-muted hover:text-red-500"
+                  class="px-2 py-2 text-text-muted hover:text-error"
                 >
                   x
                 </button>
@@ -552,7 +552,7 @@ function ParametersStep(
               <button
                 type="button"
                 onClick={() => removeMountOption(i)}
-                class="px-2 py-2 text-text-muted hover:text-red-500"
+                class="px-2 py-2 text-text-muted hover:text-error"
               >
                 x
               </button>

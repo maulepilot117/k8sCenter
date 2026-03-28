@@ -173,7 +173,7 @@ export default function MonitoringStatus() {
             <span class="font-medium">Count:</span> {s.dashboards.count}
           </p>
           {s.dashboards.error && (
-            <p class="mt-1 text-sm text-red-500">{s.dashboards.error}</p>
+            <p class="mt-1 text-sm text-error">{s.dashboards.error}</p>
           )}
         </div>
       </div>

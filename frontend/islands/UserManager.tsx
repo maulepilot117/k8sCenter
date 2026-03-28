@@ -148,7 +148,7 @@ export default function UserManager() {
                       <td class="px-4 py-3 text-text-secondary">
                         <span class="font-medium">{user.username}</span>
                         {isSelf && (
-                          <span class="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 bg-accent-dim text-accent">
+                          <span class="ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent-dim text-accent">
                             you
                           </span>
                         )}
@@ -196,7 +196,7 @@ export default function UserManager() {
                                 user,
                               };
                             }}
-                            class="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-danger-dim disabled:cursor-not-allowed disabled:opacity-40 text-danger"
+                            class="rounded px-2 py-1 text-xs font-medium hover:bg-danger-dim disabled:cursor-not-allowed disabled:opacity-40 text-danger"
                             title={isSelf
                               ? "Cannot delete your own account"
                               : `Delete ${user.username}`}
@@ -318,7 +318,7 @@ function PasswordDialog({
             placeholder="Minimum 8 characters"
           />
           {password.length > 0 && !isValid && (
-            <p class="mt-1 text-xs text-red-500">
+            <p class="mt-1 text-xs text-error">
               Password must be at least 8 characters
             </p>
           )}

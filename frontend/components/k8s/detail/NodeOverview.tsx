@@ -110,7 +110,7 @@ export function NodeOverview({ resource }: { resource: K8sResource }) {
               <tbody class="divide-y divide-border-subtle">
                 {spec.taints.map((t) => (
                   <tr key={`${t.key}-${t.effect}`}>
-                    <td class="px-3 py-1.5 font-mono text-xs text-cyan-700 text-accent">
+                    <td class="px-3 py-1.5 font-mono text-xs text-accent">
                       {t.key}
                     </td>
                     <td class="px-3 py-1.5 text-text-secondary">
@@ -130,7 +130,7 @@ export function NodeOverview({ resource }: { resource: K8sResource }) {
       {/* Unschedulable */}
       {spec?.unschedulable && (
         <div>
-          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset bg-warning-dim text-amber-700 ring-amber-600/20 bg-warning-dim text-warning ring-warning">
+          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset bg-warning-dim text-warning ring-warning">
             Cordoned (Unschedulable)
           </span>
         </div>

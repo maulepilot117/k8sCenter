@@ -295,7 +295,7 @@ export default function SecretWizard() {
             {/* Name */}
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -306,14 +306,14 @@ export default function SecretWizard() {
                 placeholder="e.g. my-secret"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             {/* Namespace */}
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={f.namespace}
@@ -401,7 +401,7 @@ export default function SecretWizard() {
                         type="button"
                         onClick={() =>
                           removeOpaqueEntry(i)}
-                        class="mt-1 p-2 text-text-muted hover:text-red-500"
+                        class="mt-1 p-2 text-text-muted hover:text-error"
                         title="Remove entry"
                       >
                         <svg
@@ -428,7 +428,7 @@ export default function SecretWizard() {
                     + Add Entry
                   </button>
                   {errors.value.opaqueEntries && (
-                    <p class="mt-1 text-xs text-red-500">
+                    <p class="mt-1 text-xs text-error">
                       {errors.value.opaqueEntries}
                     </p>
                   )}
@@ -440,7 +440,7 @@ export default function SecretWizard() {
                 <div class="space-y-3">
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Certificate (tls.crt) <span class="text-red-500">*</span>
+                      Certificate (tls.crt) <span class="text-error">*</span>
                     </label>
                     <textarea
                       value={f.tlsCrt}
@@ -454,14 +454,14 @@ export default function SecretWizard() {
                       placeholder="-----BEGIN CERTIFICATE-----&#10;..."
                     />
                     {errors.value.tlsCrt && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.tlsCrt}
                       </p>
                     )}
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Private Key (tls.key) <span class="text-red-500">*</span>
+                      Private Key (tls.key) <span class="text-error">*</span>
                     </label>
                     <textarea
                       value={f.tlsKey}
@@ -475,7 +475,7 @@ export default function SecretWizard() {
                       placeholder="-----BEGIN PRIVATE KEY-----&#10;..."
                     />
                     {errors.value.tlsKey && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.tlsKey}
                       </p>
                     )}
@@ -488,7 +488,7 @@ export default function SecretWizard() {
                 <div class="space-y-3">
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Username <span class="text-red-500">*</span>
+                      Username <span class="text-error">*</span>
                     </label>
                     <input
                       type="text"
@@ -502,7 +502,7 @@ export default function SecretWizard() {
                       placeholder="Username"
                     />
                     {errors.value.basicUsername && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.basicUsername}
                       </p>
                     )}
@@ -547,7 +547,7 @@ export default function SecretWizard() {
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Username <span class="text-red-500">*</span>
+                      Username <span class="text-error">*</span>
                     </label>
                     <input
                       type="text"
@@ -561,14 +561,14 @@ export default function SecretWizard() {
                       placeholder="Username"
                     />
                     {errors.value.dockerUsername && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.dockerUsername}
                       </p>
                     )}
                   </div>
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Password <span class="text-red-500">*</span>
+                      Password <span class="text-error">*</span>
                     </label>
                     <input
                       type="password"
@@ -582,7 +582,7 @@ export default function SecretWizard() {
                       placeholder="Password"
                     />
                     {errors.value.dockerPassword && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value.dockerPassword}
                       </p>
                     )}

@@ -235,7 +235,7 @@ export default function SnapshotWizard() {
           </p>
           <a
             href="/storage/snapshots"
-            class="mt-4 inline-block text-sm text-amber-600 hover:text-amber-800 text-warning"
+            class="mt-4 inline-block text-sm text-warning hover:text-warning"
           >
             Back to Snapshots
           </a>
@@ -271,7 +271,7 @@ export default function SnapshotWizard() {
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-red-500">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.namespace}
@@ -293,7 +293,7 @@ export default function SnapshotWizard() {
                 ))}
               </select>
               {errors.value.namespace && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.namespace}
                 </p>
               )}
@@ -301,7 +301,7 @@ export default function SnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Source PVC <span class="text-red-500">*</span>
+                Source PVC <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.sourcePVC}
@@ -338,7 +338,7 @@ export default function SnapshotWizard() {
                 </p>
               )}
               {errors.value.sourcePVC && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.sourcePVC}
                 </p>
               )}
@@ -367,7 +367,7 @@ export default function SnapshotWizard() {
               </select>
               {pvcProvisioner && filteredSnapshotClasses.length === 0 &&
                 snapshotClasses.value.length > 0 && (
-                <p class="mt-1 text-xs text-amber-500">
+                <p class="mt-1 text-xs text-warning">
                   No snapshot classes match the provisioner"{pvcProvisioner}"
                 </p>
               )}
@@ -375,7 +375,7 @@ export default function SnapshotWizard() {
 
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -386,7 +386,7 @@ export default function SnapshotWizard() {
                 placeholder="e.g. my-pvc-snap-20260323-120000"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
           </div>

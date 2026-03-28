@@ -33,7 +33,7 @@ export default function OIDCCallbackHandler() {
         </div>
         <a
           href="/login"
-          class="mt-4 inline-block text-sm text-blue-600 hover:text-blue-500 text-accent"
+          class="mt-4 inline-block text-sm text-accent hover:text-accent"
         >
           Back to login
         </a>
@@ -43,7 +43,7 @@ export default function OIDCCallbackHandler() {
 
   return (
     <div class="space-y-4">
-      <div class="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-border-primary border-t-blue-600" />
+      <div class="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
       <p class="text-sm text-text-muted">
         Completing sign in...
       </p>

@@ -479,7 +479,7 @@ export default function StatefulSetWizard() {
 
                   <div>
                     <label class="block text-sm font-medium text-text-secondary">
-                      Size <span class="text-red-500">*</span>
+                      Size <span class="text-error">*</span>
                     </label>
                     <div class="mt-1 flex gap-2">
                       <input
@@ -514,7 +514,7 @@ export default function StatefulSetWizard() {
                       </select>
                     </div>
                     {errors.value[`vct[${i}].size`] && (
-                      <p class="mt-1 text-xs text-red-500">
+                      <p class="mt-1 text-xs text-error">
                         {errors.value[`vct[${i}].size`]}
                       </p>
                     )}

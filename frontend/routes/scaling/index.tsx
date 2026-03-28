@@ -3,76 +3,30 @@ import ResourceTable from "@/islands/ResourceTable.tsx";
 
 export default define.page(function ScalingPage() {
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "16px 20px 12px" }}>
-        <h1
-          style={{
-            fontSize: "20px",
-            fontWeight: 600,
-            letterSpacing: "-0.02em",
-            color: "var(--text-primary)",
-            margin: 0,
-          }}
-        >
+    <div class="flex flex-col h-full">
+      <div class="px-5 pt-4 pb-3">
+        <h1 class="text-xl font-semibold tracking-tight text-text-primary">
           Scaling
         </h1>
-        <p
-          style={{
-            fontSize: "13px",
-            color: "var(--text-muted)",
-            marginTop: "2px",
-            margin: 0,
-          }}
-        >
+        <p class="text-xs text-text-muted mt-0.5">
           Manage HorizontalPodAutoscalers and PodDisruptionBudgets
         </p>
       </div>
-      <nav
-        style={{
-          display: "flex",
-          alignItems: "stretch",
-          gap: "0",
-          borderBottom: "1px solid var(--border-subtle)",
-          background: "var(--bg-surface)",
-          paddingLeft: "16px",
-          paddingRight: "16px",
-          flexShrink: 0,
-        }}
-      >
+      <nav class="flex items-stretch border-b border-border-subtle bg-bg-surface px-4 shrink-0">
         <a
           href="/scaling/hpas"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            padding: "8px 12px",
-            fontSize: "13px",
-            fontWeight: 500,
-            color: "var(--accent)",
-            textDecoration: "none",
-            borderBottom: "2px solid var(--accent)",
-            whiteSpace: "nowrap",
-          }}
+          class="flex items-center px-3 py-2 text-xs font-medium text-accent no-underline border-b-2 border-accent whitespace-nowrap"
         >
           HPAs
         </a>
         <a
           href="/scaling/pdbs"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            padding: "8px 12px",
-            fontSize: "13px",
-            fontWeight: 400,
-            color: "var(--text-muted)",
-            textDecoration: "none",
-            borderBottom: "2px solid transparent",
-            whiteSpace: "nowrap",
-          }}
+          class="flex items-center px-3 py-2 text-xs text-text-muted no-underline border-b-2 border-transparent whitespace-nowrap"
         >
           PDBs
         </a>
       </nav>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div class="flex-1 min-h-0 overflow-auto">
         <ResourceTable kind="horizontalpodautoscalers" title="HPAs" />
       </div>
     </div>

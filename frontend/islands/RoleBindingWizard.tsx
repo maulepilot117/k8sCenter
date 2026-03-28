@@ -278,7 +278,7 @@ export default function RoleBindingWizard(
           <div class="mx-auto max-w-lg space-y-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-red-500">*</span>
+                Name <span class="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -289,14 +289,14 @@ export default function RoleBindingWizard(
                 placeholder="e.g. my-binding"
               />
               {errors.value.name && (
-                <p class="mt-1 text-xs text-red-500">{errors.value.name}</p>
+                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
               )}
             </div>
 
             {!clusterScoped && (
               <div>
                 <label class="block text-sm font-medium text-text-secondary">
-                  Namespace <span class="text-red-500">*</span>
+                  Namespace <span class="text-error">*</span>
                 </label>
                 <select
                   value={form.value.namespace}
@@ -312,7 +312,7 @@ export default function RoleBindingWizard(
                   ))}
                 </select>
                 {errors.value.namespace && (
-                  <p class="mt-1 text-xs text-red-500">
+                  <p class="mt-1 text-xs text-error">
                     {errors.value.namespace}
                   </p>
                 )}
@@ -350,7 +350,7 @@ export default function RoleBindingWizard(
               <label class="block text-sm font-medium text-text-secondary">
                 {form.value.roleRefKind === "Role" ? "Role" : "ClusterRole"}
                 {""}
-                <span class="text-red-500">*</span>
+                <span class="text-error">*</span>
               </label>
               <select
                 value={form.value.roleRefName}
@@ -372,7 +372,7 @@ export default function RoleBindingWizard(
                   ))}
               </select>
               {errors.value.roleRefName && (
-                <p class="mt-1 text-xs text-red-500">
+                <p class="mt-1 text-xs text-error">
                   {errors.value.roleRefName}
                 </p>
               )}
@@ -384,7 +384,7 @@ export default function RoleBindingWizard(
         {currentStep.value === 2 && (
           <div class="space-y-4">
             {errors.value.subjects && (
-              <p class="text-sm text-red-500">{errors.value.subjects}</p>
+              <p class="text-sm text-error">{errors.value.subjects}</p>
             )}
 
             <div class="rounded-lg border border-border-primary bg-surface">
@@ -475,7 +475,7 @@ export default function RoleBindingWizard(
                           </div>
                         )}
                         {errors.value[`subjects[${idx}].name`] && (
-                          <p class="mt-1 text-xs text-red-500">
+                          <p class="mt-1 text-xs text-error">
                             {errors.value[`subjects[${idx}].name`]}
                           </p>
                         )}
@@ -496,7 +496,7 @@ export default function RoleBindingWizard(
                                 placeholder="Namespace"
                               />
                               {errors.value[`subjects[${idx}].namespace`] && (
-                                <p class="mt-1 text-xs text-red-500">
+                                <p class="mt-1 text-xs text-error">
                                   {errors.value[`subjects[${idx}].namespace`]}
                                 </p>
                               )}
@@ -514,7 +514,7 @@ export default function RoleBindingWizard(
                               );
                               updateField("subjects", subs);
                             }}
-                            class="rounded p-1 text-red-500 hover:bg-danger-dim"
+                            class="rounded p-1 text-error hover:bg-danger-dim"
                             title="Remove subject"
                           >
                             <svg

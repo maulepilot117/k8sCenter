@@ -64,11 +64,11 @@ const MAX_FLOWS = 1000;
 function verdictBadgeClass(verdict: string): string {
   switch (verdict) {
     case "FORWARDED":
-      return "bg-green-100 text-green-800 bg-success-dim text-success";
+      return "bg-success-dim text-success";
     case "DROPPED":
-      return "bg-red-100 text-red-800 bg-danger-dim text-danger";
+      return "bg-danger-dim text-danger";
     case "AUDIT":
-      return "bg-amber-100 text-amber-800 bg-warning-dim text-warning";
+      return "bg-warning-dim text-warning";
     case "ERROR":
       return "bg-danger-dim text-danger";
     default:
@@ -265,13 +265,13 @@ export default function FlowViewer() {
             Network Flows
           </h1>
           {wsState.value === "live" && (
-            <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 bg-success-dim text-success">
-              <span class="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-success-dim text-success">
+              <span class="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
               Live
             </span>
           )}
           {wsState.value === "connecting" && (
-            <span class="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700 bg-warning-dim text-warning">
+            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-warning-dim text-warning">
               Connecting...
             </span>
           )}
@@ -433,7 +433,7 @@ export default function FlowViewer() {
                     {f.verdict}
                   </span>
                   {f.dropReason && (
-                    <span class="ml-1 text-xs text-red-500">
+                    <span class="ml-1 text-xs text-error">
                       {f.dropReason}
                     </span>
                   )}

@@ -61,7 +61,7 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
             {status.active.map((ref) => (
               <span
                 key={ref.name}
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-mono font-medium ring-1 ring-inset bg-accent-dim text-blue-700 ring-blue-600/20 bg-accent-dim text-accent ring-accent"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-mono font-medium ring-1 ring-inset bg-accent-dim text-accent ring-accent"
               >
                 {ref.name}
               </span>
