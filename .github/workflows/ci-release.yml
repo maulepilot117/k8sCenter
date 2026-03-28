@@ -127,6 +127,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/k8scenter-backend:${{ needs.version-tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/k8scenter-backend:sha-${{ steps.meta.outputs.commit }}
             ghcr.io/${{ github.repository_owner }}/k8scenter-backend:latest
           build-args: |
             VERSION=${{ needs.version-tag.outputs.tag }}
@@ -166,6 +167,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set metadata
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "commit=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Build amd64 image for scanning
         uses: docker/build-push-action@v6
         with:
@@ -203,6 +210,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/k8scenter-frontend:${{ needs.version-tag.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/k8scenter-frontend:sha-${{ steps.meta.outputs.commit }}
             ghcr.io/${{ github.repository_owner }}/k8scenter-frontend:latest
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend

@@ -208,20 +208,19 @@ make check-dashboards                             # Verify Grafana JSON sync
 
 ## Branching Strategy
 
-Full Gitflow with environment-specific CI/CD. See `CONTRIBUTING.md` for the complete workflow.
+GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
 
-**Branches:** `main` (production) ← `testing` (RC) ← `dev/ui` | `dev/backend` (dev) ← feature branches
+**Branch:** `main` (protected, always deployable) ← short-lived feature branches
 
-**Image tags:** `dev-<sha>` (private) → `rc-X.Y.Z` (private) → `vX.Y.Z` + `latest` (public)
+**Image tags:** `vX.Y.Z` (release) + `sha-<hash>` (every merge) + `latest` (floating)
 
 **Rules:**
-- NEVER commit directly to `main`, `testing`, `dev/ui`, or `dev/backend`
-- All changes go through PRs with required status checks
-- Feature branches: `{feat,fix,refactor}/{ui,backend}/description`
-- Hotfixes branch from `main`, back-merge after release
-- Version bumps happen on `release/vX.Y.Z` branches (Chart.yaml version + appVersion)
+- NEVER commit directly to `main` — all changes via PR
+- Feature branches: `feat/description`, `fix/description`, `refactor/description`
+- CI + E2E must pass before merge
+- On merge to main: images built, tagged, pushed to GHCR (public), GitHub Release created
 
-**Every PR to `testing` or `main` requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope.
+**Every PR requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope.
 
 Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
 

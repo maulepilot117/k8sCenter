@@ -2,7 +2,7 @@ name: E2E Tests
 
 on:
   pull_request:
-    branches: [main, testing]
+    branches: [main]
   workflow_dispatch:
 
 # Deny by default — each job declares minimum permissions
