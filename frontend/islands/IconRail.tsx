@@ -153,14 +153,15 @@ export default function IconRail({ currentPath }: IconRailProps) {
         {/* Tooltip */}
         {isHovered && (
           <div
+            class="rail-tooltip"
             style={{
               position: "absolute",
-              left: "calc(100% + 8px)",
+              left: "calc(100% + 10px)",
               top: "50%",
               transform: "translateY(-50%)",
               background: "var(--bg-elevated)",
               color: "var(--text-primary)",
-              padding: "4px 10px",
+              padding: "5px 12px",
               borderRadius: "6px",
               fontSize: "12px",
               fontWeight: "500",
@@ -168,7 +169,8 @@ export default function IconRail({ currentPath }: IconRailProps) {
               zIndex: 100,
               border: "1px solid var(--border-subtle)",
               pointerEvents: "none",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+              boxShadow:
+                "0 4px 12px -2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03)",
             }}
           >
             {section.label}
