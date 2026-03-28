@@ -1,0 +1,9 @@
+# Default owner for all files
+*                   @maulepilot117
+
+# Domain-specific ownership (meaningful when contributors join)
+backend/            @maulepilot117
+frontend/           @maulepilot117
+helm/               @maulepilot117
+.github/workflows/  @maulepilot117
+e2e/                @maulepilot117
