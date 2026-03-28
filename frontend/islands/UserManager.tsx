@@ -5,6 +5,7 @@ import { apiDelete, apiGet, apiPut } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
 
 type DialogState =
@@ -89,11 +90,7 @@ export default function UserManager() {
       </div>
 
       {/* Error */}
-      {error.value && (
-        <div class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {/* Table */}
       <div class="rounded-lg border border-border-primary bg-surface">

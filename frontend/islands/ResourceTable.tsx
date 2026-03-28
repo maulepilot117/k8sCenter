@@ -28,6 +28,7 @@ import {
   getVisibleActions,
 } from "@/lib/action-handlers.ts";
 import { useAuth } from "@/lib/auth.ts";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { canPerform as canPerformCheck } from "@/lib/permissions.ts";
 
 interface ResourceTableProps {
@@ -506,11 +507,7 @@ export default function ResourceTable({
       )}
 
       {/* Error state */}
-      {error.value && (
-        <div class="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {/* Toolbar + Table wrapper */}
       <div

@@ -3,6 +3,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { age } from "@/lib/format.ts";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface RelatedPodsProps {
   namespace: string;
@@ -162,17 +164,13 @@ export default function RelatedPods(
   if (loading.value) {
     return (
       <div class="flex justify-center py-8">
-        <div class="h-5 w-5 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+        <Spinner size="sm" class="text-brand" />
       </div>
     );
   }
 
   if (error.value) {
-    return (
-      <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
-        {error.value}
-      </div>
-    );
+    return <ErrorBanner message={error.value} />;
   }
 
   if (pods.value.length === 0) {

@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface SnapshotInfo {
   name: string;
@@ -92,11 +93,7 @@ export default function SnapshotList() {
   }
 
   if (error.value) {
-    return (
-      <div class="bg-danger-dim border border-danger rounded-lg p-4 text-danger">
-        {error.value}
-      </div>
-    );
+    return <ErrorBanner message={error.value} />;
   }
 
   if (!available.value) {

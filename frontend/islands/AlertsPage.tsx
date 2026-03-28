@@ -4,6 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
 
 const severityColor: Record<string, string> = {
@@ -107,11 +108,7 @@ export default function AlertsPage() {
         </nav>
       </div>
 
-      {error.value && (
-        <div class="bg-danger-dim border border-danger text-danger rounded-lg p-4 text-sm">
-          {error.value}
-        </div>
-      )}
+      {error.value && <ErrorBanner message={error.value} />}
 
       {loading.value
         ? (

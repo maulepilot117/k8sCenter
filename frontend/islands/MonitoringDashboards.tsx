@@ -2,6 +2,8 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface GrafanaDashboard {
   uid: string;
@@ -36,17 +38,13 @@ export default function MonitoringDashboards() {
   if (loading.value) {
     return (
       <div class="flex items-center justify-center p-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+        <Spinner class="text-brand" />
       </div>
     );
   }
 
   if (error.value) {
-    return (
-      <div class="rounded-md border border-danger bg-danger-dim px-4 py-3 text-sm text-danger">
-        {error.value}
-      </div>
-    );
+    return <ErrorBanner message={error.value} />;
   }
 
   if (dashboards.value.length === 0) {

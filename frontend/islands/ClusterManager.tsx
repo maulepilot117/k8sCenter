@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface ClusterInfo {
   id: string;
@@ -102,7 +104,7 @@ export default function ClusterManager() {
   if (loading.value) {
     return (
       <div class="flex justify-center py-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-accent" />
+        <Spinner class="text-accent" />
       </div>
     );
   }
@@ -112,11 +114,7 @@ export default function ClusterManager() {
     return (
       <Card title="Add Cluster">
         <div class="space-y-4">
-          {error.value && (
-            <div class="rounded-md bg-danger-dim px-4 py-3 text-sm text-danger">
-              {error.value}
-            </div>
-          )}
+          {error.value && <ErrorBanner message={error.value} />}
 
           <Input
             label="Cluster Name"

@@ -4,6 +4,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 interface ComponentStatus {
   available: boolean;
@@ -71,17 +73,13 @@ export default function MonitoringStatus() {
   if (loading.value) {
     return (
       <div class="flex items-center justify-center p-12">
-        <div class="h-6 w-6 animate-spin rounded-full border-2 border-border-primary border-t-brand" />
+        <Spinner class="text-brand" />
       </div>
     );
   }
 
   if (error.value) {
-    return (
-      <div class="rounded-lg border border-danger bg-danger-dim p-4 text-sm text-danger">
-        {error.value}
-      </div>
-    );
+    return <ErrorBanner message={error.value} />;
   }
 
   const s = status.value;
