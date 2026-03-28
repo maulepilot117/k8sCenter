@@ -1,5 +1,6 @@
 // deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
+import { useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 
 import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
@@ -82,15 +83,28 @@ export default function IconRail({ currentPath }: IconRailProps) {
     );
   }
 
-  const renderIcon = (section: DomainSection) => {
-    const isActive = activeDomain === section.id;
-    const isHovered = hoveredId.value === section.id;
+  // Extracted as a component so hooks (useRef) are valid
+  function RailIcon(
+    { section, isActive, isHovered }: {
+      section: DomainSection;
+      isActive: boolean;
+      isHovered: boolean;
+    },
+  ) {
     const iconPaths = ICONS[section.icon] ?? "";
+    const iconRef = useRef<HTMLDivElement>(null);
+
+    const getTooltipPos = () => {
+      if (!iconRef.current) return { top: 0, left: 0 };
+      const rect = iconRef.current.getBoundingClientRect();
+      return { top: rect.top + rect.height / 2, left: rect.right + 10 };
+    };
+
+    const pos = isHovered ? getTooltipPos() : { top: 0, left: 0 };
 
     return (
       <div
-        key={section.id}
-        style={{ position: "relative" }}
+        ref={iconRef}
         onMouseEnter={() => {
           hoveredId.value = section.id;
         }}
@@ -124,7 +138,6 @@ export default function IconRail({ currentPath }: IconRailProps) {
             textDecoration: "none",
           }}
         >
-          {/* Active indicator bar */}
           {isActive && (
             <div
               style={{
@@ -150,14 +163,13 @@ export default function IconRail({ currentPath }: IconRailProps) {
             dangerouslySetInnerHTML={{ __html: iconPaths }}
           />
         </a>
-        {/* Tooltip */}
         {isHovered && (
           <div
             class="rail-tooltip"
             style={{
-              position: "absolute",
-              left: "calc(100% + 10px)",
-              top: "50%",
+              position: "fixed",
+              top: `${pos.top}px`,
+              left: `${pos.left}px`,
               transform: "translateY(-50%)",
               background: "var(--bg-elevated)",
               color: "var(--text-primary)",
@@ -166,7 +178,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
               fontSize: "12px",
               fontWeight: "500",
               whiteSpace: "nowrap",
-              zIndex: 100,
+              zIndex: 9999,
               border: "1px solid var(--border-subtle)",
               pointerEvents: "none",
               boxShadow:
@@ -178,7 +190,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
         )}
       </div>
     );
-  };
+  }
 
   return (
     <nav
@@ -231,7 +243,14 @@ export default function IconRail({ currentPath }: IconRailProps) {
           overflowY: "auto",
         }}
       >
-        {DOMAIN_SECTIONS.map((section) => renderIcon(section))}
+        {DOMAIN_SECTIONS.map((section) => (
+          <RailIcon
+            key={section.id}
+            section={section}
+            isActive={activeDomain === section.id}
+            isHovered={hoveredId.value === section.id}
+          />
+        ))}
       </div>
 
       {/* Settings at bottom */}
@@ -246,7 +265,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
           justifyContent: "center",
         }}
       >
-        {renderIcon(SETTINGS_SECTION)}
+        <RailIcon
+          section={SETTINGS_SECTION}
+          isActive={activeDomain === SETTINGS_SECTION.id}
+          isHovered={hoveredId.value === SETTINGS_SECTION.id}
+        />
       </div>
     </nav>
   );
