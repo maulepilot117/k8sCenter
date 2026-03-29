@@ -379,12 +379,21 @@ body {
   }
 }
 
-/* ── View Transitions (triggered by SmoothNav island via JS) ── */
+/* ── Cross-document View Transitions (CSS-only, Chrome/Edge/Safari) ── */
+@view-transition {
+  navigation: auto;
+}
+
+/* Dark background behind transitions so fading doesn't show white */
+::view-transition-group(*) {
+  background: var(--bg-base, #0b0e14);
+}
+
 ::view-transition-old(root) {
-  animation: 0.15s ease-out both vt-fade-out;
+  animation: 0.12s ease-out both vt-fade-out;
 }
 ::view-transition-new(root) {
-  animation: 0.2s ease-out both vt-fade-in;
+  animation: 0.18s ease-out both vt-fade-in;
 }
 @keyframes vt-fade-out {
   to {
@@ -446,6 +455,10 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  @view-transition {
+    navigation: none;
   }
 
   .stagger-in > * {
