@@ -3,7 +3,7 @@ import { define } from "@/utils.ts";
 
 export default define.page(function App({ Component }) {
   return (
-    <html lang="en" class="h-full">
+    <html lang="en" class="h-full" style="background:#0b0e14">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -28,7 +28,7 @@ export default define.page(function App({ Component }) {
           }}
         />
       </head>
-      <body class="h-full">
+      <body class="h-full" style="background:#0b0e14">
         <Component />
       </body>
     </html>

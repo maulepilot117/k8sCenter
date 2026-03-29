@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
+/* ── Prevent white flash between page navigations ── */
+html {
+  background-color: #0b0e14;
+  color-scheme: dark;
+}
+
 /* ── Layout & typography tokens ── */
 :root {
   --rail-width: 60px;
@@ -323,9 +329,19 @@ body {
   animation-delay: 420ms;
 }
 
-/* ── Page content entrance ── */
+/* ── Page content entrance (subtle — starts mostly visible to avoid flash) ── */
+@keyframes page-enter-in {
+  from {
+    opacity: 0.6;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 .page-enter {
-  animation: fade-in-up 0.3s ease-out;
+  animation: page-enter-in 0.25s ease-out;
 }
 
 /* ── Gauge draw animation ── */
@@ -368,11 +384,16 @@ body {
   navigation: auto;
 }
 
+/* Dark background behind transitions so fading out doesn't show white */
+::view-transition-group(*) {
+  background: #0b0e14;
+}
+
 ::view-transition-old(page-content) {
-  animation: 0.2s ease-out both fade-out;
+  animation: 0.15s ease-out both fade-out;
 }
 ::view-transition-new(page-content) {
-  animation: 0.3s ease-out 0.1s both fade-in-up;
+  animation: 0.25s ease-out both fade-in-up;
 }
 
 @keyframes fade-out {
