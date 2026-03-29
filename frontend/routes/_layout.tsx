@@ -6,6 +6,7 @@ import ToastProvider from "@/islands/ToastProvider.tsx";
 import KeyboardShortcuts from "@/islands/KeyboardShortcuts.tsx";
 import CommandPalette from "@/islands/CommandPalette.tsx";
 import QuickActionsFab from "@/islands/QuickActionsFab.tsx";
+import SmoothNav from "@/islands/SmoothNav.tsx";
 
 export default define.page(function Layout({ Component, url }) {
   // Login, setup, and OIDC callback use their own full-screen layout
@@ -27,25 +28,15 @@ export default define.page(function Layout({ Component, url }) {
         color: "var(--text-primary)",
       }}
     >
-      <div style={{ viewTransitionName: "icon-rail", gridRow: "1 / -1" }}>
+      <div style={{ gridRow: "1 / -1" }}>
         <IconRail currentPath={url.pathname} />
       </div>
-      <div
-        style={{
-          viewTransitionName: "top-bar",
-          zIndex: 50,
-          position: "relative",
-        }}
-      >
+      <div style={{ zIndex: 50, position: "relative" }}>
         <TopBarV2 />
       </div>
       <main
         class="page-enter"
-        style={{
-          overflowY: "auto",
-          padding: "24px",
-          viewTransitionName: "page-content",
-        }}
+        style={{ overflowY: "auto", padding: "24px" }}
       >
         <AlertBanner />
         <Component />
@@ -54,6 +45,7 @@ export default define.page(function Layout({ Component, url }) {
       <KeyboardShortcuts />
       <CommandPalette />
       <QuickActionsFab />
+      <SmoothNav />
     </div>
   );
 });
