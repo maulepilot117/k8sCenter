@@ -6,7 +6,6 @@ import ToastProvider from "@/islands/ToastProvider.tsx";
 import KeyboardShortcuts from "@/islands/KeyboardShortcuts.tsx";
 import CommandPalette from "@/islands/CommandPalette.tsx";
 import QuickActionsFab from "@/islands/QuickActionsFab.tsx";
-import SmoothNav from "@/islands/SmoothNav.tsx";
 
 export default define.page(function Layout({ Component, url }) {
   // Login, setup, and OIDC callback use their own full-screen layout
@@ -45,7 +44,6 @@ export default define.page(function Layout({ Component, url }) {
       <KeyboardShortcuts />
       <CommandPalette />
       <QuickActionsFab />
-      <SmoothNav />
     </div>
   );
 });
