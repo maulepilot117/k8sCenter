@@ -22,8 +22,7 @@ export default define.page(function Layout({ Component, url }) {
         display: "grid",
         gridTemplateColumns: "var(--rail-width, 56px) 1fr",
         gridTemplateRows: "var(--topbar-height, 48px) 1fr",
-        minHeight: "100dvh",
-        height: "100%",
+        height: "100dvh",
         background: "var(--bg-base)",
         color: "var(--text-primary)",
       }}
