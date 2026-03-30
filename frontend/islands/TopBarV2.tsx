@@ -69,7 +69,7 @@ export default function TopBarV2() {
     <header
       style={{
         height: "var(--topbar-height, 48px)",
-        background: "var(--bg-surface)",
+        background: "var(--bg-base)",
         borderBottom: "1px solid var(--border-subtle)",
         display: "flex",
         alignItems: "center",
