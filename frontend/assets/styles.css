@@ -2,9 +2,14 @@
 @import "@xterm/xterm/css/xterm.css";
 
 /* ── Prevent white flash between page navigations ── */
-html {
+/* Canvas color: the browser's own dark canvas (from color-scheme:dark) differs
+   from our --bg-base. Force our color on html AND body so no browser chrome
+   bleeds through, even on tall viewports where content is short. */
+html,
+body {
   background-color: #0b0e14;
   color-scheme: dark;
+  min-height: 100dvh;
 }
 
 /* ── Layout & typography tokens ── */
