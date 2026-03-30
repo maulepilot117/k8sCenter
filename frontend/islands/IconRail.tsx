@@ -111,7 +111,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
     return (
       <nav
         style={{
-          width: "var(--rail-width, 56px)",
+          width: "var(--rail-width, 60px)",
           gridRow: "1 / -1",
           background: "var(--bg-base)",
           borderRight: "1px solid var(--border-subtle)",
@@ -209,7 +209,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
   return (
     <nav
       style={{
-        width: "var(--rail-width, 56px)",
+        width: "var(--rail-width, 60px)",
         gridRow: "1 / -1",
         background: "var(--bg-base)",
         borderRight: "1px solid var(--border-subtle)",
@@ -223,7 +223,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
       {/* Logo area — height matches topbar */}
       <div
         style={{
-          height: "var(--topbar-height, 48px)",
+          height: "var(--topbar-height, 52px)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
