@@ -2,13 +2,17 @@
 @import "@xterm/xterm/css/xterm.css";
 
 /* ── Prevent white flash between page navigations ── */
-/* Canvas color: the browser's own dark canvas (from color-scheme:dark) differs
-   from our --bg-base. Force our color on html AND body so no browser chrome
-   bleeds through, even on tall viewports where content is short. */
-html,
-body {
-  background-color: #0b0e14;
+/* color-scheme:dark makes the browser set body { background: Canvas } which is
+   a lighter shade (~#1e1e1e) than our --bg-base (#0b0e14). The UA stylesheet
+   wins in specificity on some browsers. Force ours with !important. */
+html {
+  background-color: #0b0e14 !important;
   color-scheme: dark;
+  min-height: 100dvh;
+}
+
+body {
+  background-color: #0b0e14 !important;
   min-height: 100dvh;
 }
 
@@ -229,7 +233,7 @@ body {
 /* ── Base body styles ── */
 body {
   font-family: var(--font-sans);
-  background: var(--bg-base);
+  background-color: var(--bg-base) !important;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
