@@ -158,7 +158,7 @@ const kindSvgColors: Record<
   workload: {
     stroke: "rgba(97,175,239,0.5)",
     fill: "rgba(97,175,239,0.12)",
-    text: "#61AFEF",
+    text: "var(--info)",
     isRect: true,
   },
   pod: {
@@ -242,12 +242,12 @@ export default function ClusterTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // Hovered node for hover effect
-  const hoveredNode = useSignal<string | null>(null);
+  // Hovered node + tooltip position as a single atomic signal (prevents desync)
+  const tooltip = useSignal<
+    { nodeId: string; x: number; y: number } | null
+  >(null);
   // Rich tooltip data per node
   const tooltipData = useSignal<Map<string, TopoTooltipData>>(new Map());
-  // Tooltip mouse position (screen coords relative to container)
-  const tooltipPos = useSignal<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Fetch data once on mount
@@ -501,7 +501,7 @@ export default function ClusterTopology() {
           topoEdges.push({
             from: wlId,
             to: podId,
-            color: "#61AFEF",
+            color: "var(--info)",
           });
         }
       }
@@ -542,13 +542,14 @@ export default function ClusterTopology() {
     }
 
     // Build pod-to-PVC edges based on volume mounts
+    const topoNodeIds = new Set(topoNodes.map((n) => n.id));
     for (const pod of k8sPods) {
       for (const vol of pod.spec?.volumes ?? []) {
         if (vol.persistentVolumeClaim?.claimName) {
           const pvcId =
             `pvc-${pod.metadata.namespace}-${vol.persistentVolumeClaim.claimName}`;
           const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
-          if (topoNodes.some((n) => n.id === pvcId)) {
+          if (topoNodeIds.has(pvcId)) {
             topoEdges.push({
               from: podId,
               to: pvcId,
@@ -625,8 +626,8 @@ export default function ClusterTopology() {
         if (svc.metadata.namespace !== wl.metadata.namespace) continue;
         const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
         const svcPods = svcToPods.get(svcId) ?? [];
-        const wlPodNames = wlToPods.get(wlId) ?? [];
-        if (svcPods.some((p) => wlPodNames.includes(p))) {
+        const wlPodSet = new Set(wlToPods.get(wlId) ?? []);
+        if (svcPods.some((p) => wlPodSet.has(p))) {
           const sw = svcToWorkloads.get(svcId) ?? [];
           sw.push(`${wl.kind}/${wl.metadata.name}`);
           svcToWorkloads.set(svcId, sw);
@@ -644,7 +645,7 @@ export default function ClusterTopology() {
         if (vol.persistentVolumeClaim?.claimName) {
           const pvcName = vol.persistentVolumeClaim.claimName;
           const pvcId = `pvc-${pod.metadata.namespace}-${pvcName}`;
-          if (topoNodes.some((n) => n.id === pvcId)) {
+          if (topoNodeIds.has(pvcId)) {
             const pp = podToPVCs.get(podId) ?? [];
             pp.push(pvcName);
             podToPVCs.set(podId, pp);
@@ -683,7 +684,7 @@ export default function ClusterTopology() {
       if (wls.length > 0) {
         related.push({
           kind: "Workloads",
-          color: "#61AFEF",
+          color: "var(--info)",
           items: wls.slice(0, 4),
         });
       }
@@ -888,8 +889,7 @@ export default function ClusterTopology() {
     dragStart.value = { x: e.clientX, y: e.clientY };
     panStart.value = { x: pan.value.x, y: pan.value.y };
     // Hide tooltip while dragging
-    hoveredNode.value = null;
-    tooltipPos.value = null;
+    tooltip.value = null;
   };
 
   const handleMouseMove = (e: MouseEvent) => {
@@ -973,7 +973,7 @@ export default function ClusterTopology() {
           const truncated = node.label.length > 15
             ? node.label.slice(0, 14) + "\u2026"
             : node.label;
-          const isHovered = hoveredNode.value === node.id;
+          const isHovered = tooltip.value?.nodeId === node.id;
           const r = node.size / 2;
           const abbrFontSize = Math.max(9, node.size * 0.22);
 
@@ -997,10 +997,10 @@ export default function ClusterTopology() {
                   isHovered ? " scale(1.15)" : ""
                 }`}
                 onMouseEnter={(e: MouseEvent) => {
-                  hoveredNode.value = node.id;
                   const cr = containerRef.current?.getBoundingClientRect();
                   if (cr) {
-                    tooltipPos.value = {
+                    tooltip.value = {
+                      nodeId: node.id,
                       x: e.clientX - cr.left,
                       y: e.clientY - cr.top,
                     };
@@ -1009,15 +1009,15 @@ export default function ClusterTopology() {
                 onMouseMove={(e: MouseEvent) => {
                   const cr = containerRef.current?.getBoundingClientRect();
                   if (cr) {
-                    tooltipPos.value = {
+                    tooltip.value = {
+                      nodeId: node.id,
                       x: e.clientX - cr.left,
                       y: e.clientY - cr.top,
                     };
                   }
                 }}
                 onMouseLeave={() => {
-                  hoveredNode.value = null;
-                  tooltipPos.value = null;
+                  tooltip.value = null;
                 }}
               >
                 {node.kind === "workload"
@@ -1104,8 +1104,8 @@ export default function ClusterTopology() {
       </svg>
 
       {/* Rich tooltip overlay */}
-      {hoveredNode.value && tooltipPos.value && (() => {
-        const tt = tooltipData.value.get(hoveredNode.value);
+      {tooltip.value && (() => {
+        const tt = tooltipData.value.get(tooltip.value.nodeId);
         if (!tt) return null;
         const container = containerRef.current;
         const cw = container?.offsetWidth ?? 600;
@@ -1114,8 +1114,8 @@ export default function ClusterTopology() {
         const OFFSET = 14;
         const TT_W = 260;
         const TT_H_EST = 160;
-        const px = tooltipPos.value.x;
-        const py = tooltipPos.value.y;
+        const px = tooltip.value.x;
+        const py = tooltip.value.y;
         const flipX = px + TT_W + OFFSET > cw;
         const flipY = py + TT_H_EST + OFFSET > ch;
         const left = flipX ? px - TT_W - OFFSET : px + OFFSET;
@@ -1124,7 +1124,7 @@ export default function ClusterTopology() {
         const kindColors: Record<string, string> = {
           node: "var(--accent)",
           service: "var(--accent-secondary)",
-          workload: "#61AFEF",
+          workload: "var(--info)",
           pod: "var(--success)",
           pvc: "var(--warning)",
         };
