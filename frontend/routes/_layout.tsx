@@ -20,8 +20,8 @@ export default define.page(function Layout({ Component, url }) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "var(--rail-width, 56px) 1fr",
-        gridTemplateRows: "var(--topbar-height, 48px) 1fr",
+        gridTemplateColumns: "var(--rail-width, 60px) 1fr",
+        gridTemplateRows: "var(--topbar-height, 52px) 1fr",
         height: "100dvh",
         background: "var(--bg-base)",
         color: "var(--text-primary)",
@@ -35,7 +35,12 @@ export default define.page(function Layout({ Component, url }) {
       </div>
       <main
         class="page-enter"
-        style={{ overflowY: "auto", padding: "24px" }}
+        style={{
+          overflowY: "auto",
+          padding: "var(--content-padding, 24px)",
+          maxWidth: "var(--content-max-width, 2400px)",
+          marginInline: "auto",
+        }}
       >
         <AlertBanner />
         <Component />

@@ -14,7 +14,7 @@ export function InfoGrid({ items }: InfoGridProps) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "repeat(2, 1fr)",
+        gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
         gap: "1px",
         background: "var(--border-subtle)",
         border: "1px solid var(--border-primary)",
