@@ -71,6 +71,28 @@ interface TopoEdge {
   color: string;
 }
 
+/** Rich tooltip data computed from relationships */
+interface TopoTooltipData {
+  kind: TopoNode["kind"];
+  name: string;
+  namespace?: string;
+  health: "healthy" | "warning" | "error";
+  /** Workload kind for workloads (Deployment, StatefulSet, DaemonSet) */
+  workloadKind?: string;
+  /** Node name (for pods) */
+  nodeName?: string;
+  /** Pod phase (for pods) */
+  podPhase?: string;
+  /** PVC phase (for pvcs) */
+  pvcPhase?: string;
+  /** Volume name (for pvcs) */
+  volumeName?: string;
+  /** Container names (for pods) */
+  containers?: string[];
+  /** Related resources: { kind, names[] } */
+  related: { kind: string; color: string; items: string[] }[];
+}
+
 // No artificial limits — SVG viewBox handles scaling for any cluster size.
 // The backend API default limit is 100 per kind (configurable via ?limit=500).
 
@@ -136,7 +158,7 @@ const kindSvgColors: Record<
   workload: {
     stroke: "rgba(97,175,239,0.5)",
     fill: "rgba(97,175,239,0.12)",
-    text: "#61AFEF",
+    text: "var(--info)",
     isRect: true,
   },
   pod: {
@@ -203,23 +225,6 @@ function getNodeHref(node: TopoNode): string {
   }
 }
 
-function getTooltip(node: TopoNode): string {
-  const ns = node.namespace ? ` (${node.namespace})` : "";
-  const status = node.health === "healthy"
-    ? "Healthy"
-    : node.health === "warning"
-    ? "Warning"
-    : "Error";
-  let tooltip = `${node.kind}: ${node.label}${ns} - ${status}`;
-  if (
-    node.kind === "pod" && node.containerNames &&
-    node.containerNames.length > 1
-  ) {
-    tooltip += `\nContainers: ${node.containerNames.join(", ")}`;
-  }
-  return tooltip;
-}
-
 export default function ClusterTopology() {
   const nodes = useSignal<TopoNode[]>([]);
   const edges = useSignal<TopoEdge[]>([]);
@@ -237,8 +242,15 @@ export default function ClusterTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // Hovered node for hover effect
-  const hoveredNode = useSignal<string | null>(null);
+  // Hovered node + tooltip position as a single atomic signal (prevents desync)
+  const tooltip = useSignal<
+    { nodeId: string; x: number; y: number } | null
+  >(null);
+  // Rich tooltip data per node
+  const tooltipData = useSignal<Map<string, TopoTooltipData>>(new Map());
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Cached container rect to avoid getBoundingClientRect() on every mousemove
+  const cachedRect = useRef<DOMRect | null>(null);
 
   // Fetch data once on mount
   useEffect(() => {
@@ -491,7 +503,7 @@ export default function ClusterTopology() {
           topoEdges.push({
             from: wlId,
             to: podId,
-            color: "#61AFEF",
+            color: "var(--info)",
           });
         }
       }
@@ -532,13 +544,14 @@ export default function ClusterTopology() {
     }
 
     // Build pod-to-PVC edges based on volume mounts
+    const topoNodeIds = new Set(topoNodes.map((n) => n.id));
     for (const pod of k8sPods) {
       for (const vol of pod.spec?.volumes ?? []) {
         if (vol.persistentVolumeClaim?.claimName) {
           const pvcId =
             `pvc-${pod.metadata.namespace}-${vol.persistentVolumeClaim.claimName}`;
           const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
-          if (topoNodes.some((n) => n.id === pvcId)) {
+          if (topoNodeIds.has(pvcId)) {
             topoEdges.push({
               from: podId,
               to: pvcId,
@@ -549,6 +562,251 @@ export default function ClusterTopology() {
       }
     }
 
+    // ── Build rich tooltip data from relationships ──
+    const ttMap = new Map<string, TopoTooltipData>();
+
+    // Pre-compute lookup maps
+    const podsByNode = new Map<string, string[]>(); // nodeName → pod names
+    const podToNode = new Map<string, string>(); // podId → nodeName
+    const podToSvcs = new Map<string, string[]>(); // podId → service names
+    const svcToPods = new Map<string, string[]>(); // svcId → pod names
+    const svcToWorkloads = new Map<string, string[]>(); // svcId → workload labels
+    const wlToPods = new Map<string, string[]>(); // wlId → pod names
+    const podToPVCs = new Map<string, string[]>(); // podId → pvc names
+    const pvcToPods = new Map<string, string[]>(); // pvcId → pod names
+    const wlToSvcs = new Map<string, string[]>(); // wlId → service names
+
+    // Pod → Node
+    for (const pod of k8sPods) {
+      const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+      if (pod.spec?.nodeName) {
+        podToNode.set(podId, pod.spec.nodeName);
+        const list = podsByNode.get(pod.spec.nodeName) ?? [];
+        list.push(pod.metadata.name);
+        podsByNode.set(pod.spec.nodeName, list);
+      }
+    }
+
+    // Service → Pod relationships
+    for (const svc of k8sSvcs) {
+      const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
+      for (const pod of k8sPods) {
+        if (
+          svc.metadata.namespace === pod.metadata.namespace &&
+          matchesSelector(svc.spec?.selector, pod.metadata.labels)
+        ) {
+          const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+          // svc → pods
+          const sp = svcToPods.get(svcId) ?? [];
+          sp.push(pod.metadata.name);
+          svcToPods.set(svcId, sp);
+          // pod → svcs
+          const ps = podToSvcs.get(podId) ?? [];
+          ps.push(svc.metadata.name);
+          podToSvcs.set(podId, ps);
+        }
+      }
+    }
+
+    // Workload → Pod + Workload → Service relationships
+    for (const wl of k8sWorkloads) {
+      const wlId = `wl-${wl.kind}-${wl.metadata.namespace}-${wl.metadata.name}`;
+      const sel = wl.spec?.selector?.matchLabels;
+      if (!sel) continue;
+      for (const pod of k8sPods) {
+        if (
+          wl.metadata.namespace === pod.metadata.namespace &&
+          matchesSelector(sel, pod.metadata.labels)
+        ) {
+          const wp = wlToPods.get(wlId) ?? [];
+          wp.push(pod.metadata.name);
+          wlToPods.set(wlId, wp);
+        }
+      }
+      // Service → Workload
+      for (const svc of k8sSvcs) {
+        if (svc.metadata.namespace !== wl.metadata.namespace) continue;
+        const svcId = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
+        const svcPods = svcToPods.get(svcId) ?? [];
+        const wlPodSet = new Set(wlToPods.get(wlId) ?? []);
+        if (svcPods.some((p) => wlPodSet.has(p))) {
+          const sw = svcToWorkloads.get(svcId) ?? [];
+          sw.push(`${wl.kind}/${wl.metadata.name}`);
+          svcToWorkloads.set(svcId, sw);
+          const ws = wlToSvcs.get(wlId) ?? [];
+          ws.push(svc.metadata.name);
+          wlToSvcs.set(wlId, ws);
+        }
+      }
+    }
+
+    // Pod → PVC
+    for (const pod of k8sPods) {
+      const podId = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+      for (const vol of pod.spec?.volumes ?? []) {
+        if (vol.persistentVolumeClaim?.claimName) {
+          const pvcName = vol.persistentVolumeClaim.claimName;
+          const pvcId = `pvc-${pod.metadata.namespace}-${pvcName}`;
+          if (topoNodeIds.has(pvcId)) {
+            const pp = podToPVCs.get(podId) ?? [];
+            pp.push(pvcName);
+            podToPVCs.set(podId, pp);
+            const pcp = pvcToPods.get(pvcId) ?? [];
+            pcp.push(pod.metadata.name);
+            pvcToPods.set(pvcId, pcp);
+          }
+        }
+      }
+    }
+
+    // Build tooltip entries for each node
+    for (const n of k8sNodes) {
+      const id = `node-${n.metadata.name}`;
+      const pods = podsByNode.get(n.metadata.name) ?? [];
+      const related: TopoTooltipData["related"] = [];
+      if (pods.length > 0) {
+        related.push({
+          kind: "Pods",
+          color: "var(--success)",
+          items: pods.slice(0, 6),
+        });
+      }
+      ttMap.set(id, {
+        kind: "node",
+        name: n.metadata.name,
+        health: getHealthStatus("node", n),
+        related,
+      });
+    }
+
+    for (const svc of k8sSvcs) {
+      const id = `svc-${svc.metadata.namespace}-${svc.metadata.name}`;
+      const related: TopoTooltipData["related"] = [];
+      const wls = svcToWorkloads.get(id) ?? [];
+      if (wls.length > 0) {
+        related.push({
+          kind: "Workloads",
+          color: "var(--info)",
+          items: wls.slice(0, 4),
+        });
+      }
+      const pods = svcToPods.get(id) ?? [];
+      if (pods.length > 0) {
+        related.push({
+          kind: "Pods",
+          color: "var(--success)",
+          items: pods.slice(0, 6),
+        });
+      }
+      ttMap.set(id, {
+        kind: "service",
+        name: svc.metadata.name,
+        namespace: svc.metadata.namespace,
+        health: getHealthStatus("service", svc),
+        related,
+      });
+    }
+
+    for (const wl of k8sWorkloads) {
+      const id = `wl-${wl.kind}-${wl.metadata.namespace}-${wl.metadata.name}`;
+      const related: TopoTooltipData["related"] = [];
+      const svcs = wlToSvcs.get(id) ?? [];
+      if (svcs.length > 0) {
+        related.push({
+          kind: "Services",
+          color: "var(--accent-secondary)",
+          items: svcs.slice(0, 4),
+        });
+      }
+      const pods = wlToPods.get(id) ?? [];
+      if (pods.length > 0) {
+        related.push({
+          kind: "Pods",
+          color: "var(--success)",
+          items: pods.slice(0, 6),
+        });
+      }
+      // Find which nodes the pods run on
+      const nodeNames = new Set<string>();
+      for (const pod of k8sPods) {
+        if (
+          wl.metadata.namespace === pod.metadata.namespace &&
+          matchesSelector(
+            wl.spec?.selector?.matchLabels,
+            pod.metadata.labels,
+          ) &&
+          pod.spec?.nodeName
+        ) {
+          nodeNames.add(pod.spec.nodeName);
+        }
+      }
+      if (nodeNames.size > 0) {
+        related.push({
+          kind: "Nodes",
+          color: "var(--accent)",
+          items: [...nodeNames],
+        });
+      }
+      ttMap.set(id, {
+        kind: "workload",
+        name: wl.metadata.name,
+        namespace: wl.metadata.namespace,
+        health: getHealthStatus("workload", wl),
+        workloadKind: wl.kind,
+        related,
+      });
+    }
+
+    for (const pod of k8sPods) {
+      const id = `pod-${pod.metadata.namespace}-${pod.metadata.name}`;
+      const related: TopoTooltipData["related"] = [];
+      const svcs = podToSvcs.get(id) ?? [];
+      if (svcs.length > 0) {
+        related.push({
+          kind: "Services",
+          color: "var(--accent-secondary)",
+          items: svcs.slice(0, 4),
+        });
+      }
+      const pvcs = podToPVCs.get(id) ?? [];
+      if (pvcs.length > 0) {
+        related.push({ kind: "PVCs", color: "var(--warning)", items: pvcs });
+      }
+      ttMap.set(id, {
+        kind: "pod",
+        name: pod.metadata.name,
+        namespace: pod.metadata.namespace,
+        health: getHealthStatus("pod", pod),
+        nodeName: pod.spec?.nodeName,
+        podPhase: pod.status?.phase,
+        containers: (pod.spec?.containers ?? []).map((c) => c.name),
+        related,
+      });
+    }
+
+    for (const pvc of k8sPVCs) {
+      const id = `pvc-${pvc.metadata.namespace}-${pvc.metadata.name}`;
+      const related: TopoTooltipData["related"] = [];
+      const pods = pvcToPods.get(id) ?? [];
+      if (pods.length > 0) {
+        related.push({
+          kind: "Pods",
+          color: "var(--success)",
+          items: pods.slice(0, 6),
+        });
+      }
+      ttMap.set(id, {
+        kind: "pvc",
+        name: pvc.metadata.name,
+        namespace: pvc.metadata.namespace,
+        health: getHealthStatus("pvc", pvc),
+        pvcPhase: pvc.status?.phase,
+        volumeName: pvc.spec?.volumeName,
+        related,
+      });
+    }
+
+    tooltipData.value = ttMap;
     nodes.value = topoNodes;
     edges.value = topoEdges;
   }, [rawData.value]);
@@ -632,6 +890,8 @@ export default function ClusterTopology() {
     dragging.value = true;
     dragStart.value = { x: e.clientX, y: e.clientY };
     panStart.value = { x: pan.value.x, y: pan.value.y };
+    // Hide tooltip while dragging
+    tooltip.value = null;
   };
 
   const handleMouseMove = (e: MouseEvent) => {
@@ -655,6 +915,7 @@ export default function ClusterTopology() {
 
   return (
     <div
+      ref={containerRef}
       style={{
         position: "relative",
         width: "100%",
@@ -714,7 +975,7 @@ export default function ClusterTopology() {
           const truncated = node.label.length > 15
             ? node.label.slice(0, 14) + "\u2026"
             : node.label;
-          const isHovered = hoveredNode.value === node.id;
+          const isHovered = tooltip.value?.nodeId === node.id;
           const r = node.size / 2;
           const abbrFontSize = Math.max(9, node.size * 0.22);
 
@@ -737,14 +998,32 @@ export default function ClusterTopology() {
                 transform={`translate(${node.x}, ${node.y})${
                   isHovered ? " scale(1.15)" : ""
                 }`}
-                onMouseEnter={() => {
-                  hoveredNode.value = node.id;
+                onMouseEnter={(e: MouseEvent) => {
+                  cachedRect.current =
+                    containerRef.current?.getBoundingClientRect() ?? null;
+                  const cr = cachedRect.current;
+                  if (cr) {
+                    tooltip.value = {
+                      nodeId: node.id,
+                      x: e.clientX - cr.left,
+                      y: e.clientY - cr.top,
+                    };
+                  }
+                }}
+                onMouseMove={(e: MouseEvent) => {
+                  const cr = cachedRect.current;
+                  if (cr) {
+                    tooltip.value = {
+                      nodeId: node.id,
+                      x: e.clientX - cr.left,
+                      y: e.clientY - cr.top,
+                    };
+                  }
                 }}
                 onMouseLeave={() => {
-                  hoveredNode.value = null;
+                  tooltip.value = null;
                 }}
               >
-                <title>{getTooltip(node)}</title>
                 {node.kind === "workload"
                   ? (
                     <rect
@@ -827,6 +1106,283 @@ export default function ClusterTopology() {
           );
         })}
       </svg>
+
+      {/* Rich tooltip overlay */}
+      {tooltip.value && (() => {
+        const tt = tooltipData.value.get(tooltip.value.nodeId);
+        if (!tt) return null;
+        const container = containerRef.current;
+        const cw = container?.offsetWidth ?? 600;
+        const ch = container?.offsetHeight ?? 400;
+        // Position tooltip with offset, flip if near edges
+        const OFFSET = 14;
+        const TT_W = 260;
+        const TT_H_EST = 160;
+        const px = tooltip.value.x;
+        const py = tooltip.value.y;
+        const flipX = px + TT_W + OFFSET > cw;
+        const flipY = py + TT_H_EST + OFFSET > ch;
+        const left = flipX ? px - TT_W - OFFSET : px + OFFSET;
+        const top = flipY ? py - TT_H_EST - OFFSET : py + OFFSET;
+
+        const kindColors: Record<string, string> = {
+          node: "var(--accent)",
+          service: "var(--accent-secondary)",
+          workload: "var(--info)",
+          pod: "var(--success)",
+          pvc: "var(--warning)",
+        };
+        const kindLabels: Record<string, string> = {
+          node: "Node",
+          service: "Service",
+          workload: tt.workloadKind ?? "Workload",
+          pod: "Pod",
+          pvc: "PVC",
+        };
+        const healthColors: Record<string, string> = {
+          healthy: "var(--success)",
+          warning: "var(--warning)",
+          error: "var(--error)",
+        };
+        const healthLabels: Record<string, string> = {
+          healthy: "Healthy",
+          warning: "Warning",
+          error: "Error",
+        };
+        const accentColor = kindColors[tt.kind] ?? "var(--accent)";
+
+        return (
+          <div
+            style={{
+              position: "absolute",
+              left: `${Math.max(0, left)}px`,
+              top: `${Math.max(0, top)}px`,
+              width: `${TT_W}px`,
+              pointerEvents: "none",
+              zIndex: 50,
+              animation: "topo-tooltip-in 50ms ease-out",
+            }}
+          >
+            <div
+              style={{
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "var(--radius-sm)",
+                boxShadow:
+                  `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px ${accentColor}22`,
+                overflow: "hidden",
+                fontFamily: "var(--font-sans)",
+              }}
+            >
+              {/* Header */}
+              <div
+                style={{
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--border-subtle)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  background:
+                    `linear-gradient(135deg, ${accentColor}12, transparent)`,
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: "20px",
+                    height: "20px",
+                    borderRadius: "4px",
+                    background: `${accentColor}20`,
+                    color: accentColor,
+                    fontSize: "9px",
+                    fontWeight: 700,
+                    fontFamily: "var(--font-mono)",
+                    flexShrink: 0,
+                  }}
+                >
+                  {kindLabels[tt.kind]?.substring(0, 3).toUpperCase()}
+                </span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "var(--text-primary)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {tt.name}
+                  </div>
+                  {tt.namespace && (
+                    <div
+                      style={{
+                        fontSize: "10px",
+                        color: "var(--text-muted)",
+                        marginTop: "1px",
+                      }}
+                    >
+                      {tt.namespace}
+                    </div>
+                  )}
+                </div>
+                <span
+                  style={{
+                    width: "7px",
+                    height: "7px",
+                    borderRadius: "50%",
+                    background: healthColors[tt.health],
+                    boxShadow: `0 0 6px ${healthColors[tt.health]}`,
+                    flexShrink: 0,
+                  }}
+                />
+              </div>
+
+              {/* Details */}
+              <div style={{ padding: "6px 10px", fontSize: "11px" }}>
+                {/* Kind-specific details */}
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "4px 12px",
+                    color: "var(--text-secondary)",
+                    lineHeight: "18px",
+                  }}
+                >
+                  <span>
+                    <span style={{ color: "var(--text-muted)" }}>Status</span>
+                    <span style={{ color: healthColors[tt.health] }}>
+                      {tt.podPhase ?? tt.pvcPhase ?? healthLabels[tt.health]}
+                    </span>
+                  </span>
+                  {tt.nodeName && (
+                    <span>
+                      <span style={{ color: "var(--text-muted)" }}>Node</span>
+                      <span style={{ color: "var(--accent)" }}>
+                        {tt.nodeName}
+                      </span>
+                    </span>
+                  )}
+                  {tt.volumeName && (
+                    <span>
+                      <span style={{ color: "var(--text-muted)" }}>PV</span>
+                      {tt.volumeName}
+                    </span>
+                  )}
+                  {tt.containers && tt.containers.length > 0 && (
+                    <span>
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {tt.containers.length === 1
+                          ? "Container "
+                          : `${tt.containers.length} containers `}
+                      </span>
+                      {tt.containers.length === 1 ? tt.containers[0] : ""}
+                    </span>
+                  )}
+                  {tt.containers && tt.containers.length > 1 && (
+                    <div
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "3px",
+                        marginTop: "2px",
+                      }}
+                    >
+                      {tt.containers.map((c) => (
+                        <span
+                          key={c}
+                          style={{
+                            padding: "1px 5px",
+                            borderRadius: "3px",
+                            background: "var(--bg-hover)",
+                            fontSize: "10px",
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--text-secondary)",
+                          }}
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Related resources */}
+                {tt.related.length > 0 && (
+                  <div
+                    style={{
+                      marginTop: "6px",
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "6px",
+                    }}
+                  >
+                    {tt.related.map((rel) => (
+                      <div key={rel.kind} style={{ marginBottom: "4px" }}>
+                        <div
+                          style={{
+                            fontSize: "9px",
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.5px",
+                            color: rel.color,
+                            marginBottom: "3px",
+                          }}
+                        >
+                          {rel.kind}
+                          <span
+                            style={{
+                              color: "var(--text-muted)",
+                              fontWeight: 400,
+                              marginLeft: "4px",
+                            }}
+                          >
+                            {rel.items.length}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: "3px",
+                          }}
+                        >
+                          {rel.items.map((item) => (
+                            <span
+                              key={item}
+                              style={{
+                                padding: "1px 6px",
+                                borderRadius: "3px",
+                                background:
+                                  `color-mix(in srgb, ${rel.color} 10%, transparent)`,
+                                border:
+                                  `1px solid color-mix(in srgb, ${rel.color} 20%, transparent)`,
+                                fontSize: "10px",
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--text-secondary)",
+                                maxWidth: "140px",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Zoom indicator */}
       {zoom.value !== 1 && (
