@@ -35,10 +35,17 @@ export default define.page(function Layout({ Component, url }) {
       </div>
       <main
         class="page-enter"
-        style={{ overflowY: "auto", padding: "24px" }}
+        style={{ overflowY: "auto", padding: "var(--content-padding, 24px)" }}
       >
-        <AlertBanner />
-        <Component />
+        <div
+          style={{
+            maxWidth: "var(--content-max-width, 2400px)",
+            marginInline: "auto",
+          }}
+        >
+          <AlertBanner />
+          <Component />
+        </div>
       </main>
       <ToastProvider />
       <KeyboardShortcuts />

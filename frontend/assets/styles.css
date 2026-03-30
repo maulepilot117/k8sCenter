@@ -24,6 +24,11 @@ body {
   --radius-sm: 6px;
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Fluid spacing — scales from base to generous on large viewports */
+  --content-padding: clamp(16px, 1.5vw, 40px);
+  --grid-gap: clamp(12px, 1vw, 24px);
+  --content-max-width: 2400px;
 }
 
 /* ── Nexus defaults (prevent flash before JS hydration) ── */

@@ -297,8 +297,8 @@ export default function WorkloadsDashboard(
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(6, 1fr)",
-          gap: "12px",
+          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+          gap: "var(--grid-gap, 12px)",
           marginBottom: "20px",
         }}
       >

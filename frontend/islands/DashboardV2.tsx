@@ -127,7 +127,7 @@ export default function DashboardV2() {
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(12, 1fr)",
-            gap: "16px",
+            gap: "var(--grid-gap, 16px)",
           }}
         >
           <Skeleton
@@ -139,7 +139,7 @@ export default function DashboardV2() {
               gridColumn: "span 8",
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
-              gap: "16px",
+              gap: "var(--grid-gap, 16px)",
             }}
           >
             {[1, 2, 3, 4].map((i) => (
@@ -255,7 +255,7 @@ export default function DashboardV2() {
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(12, 1fr)",
-          gap: "16px",
+          gap: "var(--grid-gap, 16px)",
         }}
       >
         {/* ===== HEALTH SCORE CARD (span 4) — matches .health-card ===== */}
@@ -310,7 +310,7 @@ export default function DashboardV2() {
             display: "grid",
             gridTemplateColumns: "repeat(4, 1fr)",
             gridTemplateRows: "1fr",
-            gap: "16px",
+            gap: "var(--grid-gap, 16px)",
             alignItems: "stretch",
           }}
         >

@@ -11,7 +11,11 @@ export function useSplitPane(defaultRatio = 0.5) {
       if (!dragging.value || !containerRef.current) return;
       const rect = containerRef.current.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      const newRatio = Math.min(0.75, Math.max(0.25, x / rect.width));
+      // Wider range on large screens (15-85%) vs default (25-75%)
+      const isWide = rect.width >= 1400;
+      const min = isWide ? 0.15 : 0.25;
+      const max = isWide ? 0.85 : 0.75;
+      const newRatio = Math.min(max, Math.max(min, x / rect.width));
       ratio.value = newRatio;
     };
 
