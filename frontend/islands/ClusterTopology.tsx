@@ -249,6 +249,8 @@ export default function ClusterTopology() {
   // Rich tooltip data per node
   const tooltipData = useSignal<Map<string, TopoTooltipData>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
+  // Cached container rect to avoid getBoundingClientRect() on every mousemove
+  const cachedRect = useRef<DOMRect | null>(null);
 
   // Fetch data once on mount
   useEffect(() => {
@@ -997,7 +999,9 @@ export default function ClusterTopology() {
                   isHovered ? " scale(1.15)" : ""
                 }`}
                 onMouseEnter={(e: MouseEvent) => {
-                  const cr = containerRef.current?.getBoundingClientRect();
+                  cachedRect.current =
+                    containerRef.current?.getBoundingClientRect() ?? null;
+                  const cr = cachedRect.current;
                   if (cr) {
                     tooltip.value = {
                       nodeId: node.id,
@@ -1007,7 +1011,7 @@ export default function ClusterTopology() {
                   }
                 }}
                 onMouseMove={(e: MouseEvent) => {
-                  const cr = containerRef.current?.getBoundingClientRect();
+                  const cr = cachedRect.current;
                   if (cr) {
                     tooltip.value = {
                       nodeId: node.id,
@@ -1156,7 +1160,7 @@ export default function ClusterTopology() {
               width: `${TT_W}px`,
               pointerEvents: "none",
               zIndex: 50,
-              animation: "topoTooltipIn 0.15s ease-out",
+              animation: "topo-tooltip-in 50ms ease-out",
             }}
           >
             <div

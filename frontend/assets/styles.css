@@ -275,7 +275,7 @@ body {
   }
 }
 
-@keyframes topoTooltipIn {
+@keyframes topo-tooltip-in {
   from {
     opacity: 0;
     transform: translateY(4px) scale(0.97);
