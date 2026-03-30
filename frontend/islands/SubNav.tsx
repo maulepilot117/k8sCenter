@@ -95,7 +95,7 @@ export default function SubNav({ tabs, currentPath }: SubNavProps) {
         style={{
           height: "36px",
           borderBottom: "1px solid var(--border-subtle)",
-          background: "var(--bg-surface)",
+          background: "var(--bg-base)",
         }}
       />
     );
