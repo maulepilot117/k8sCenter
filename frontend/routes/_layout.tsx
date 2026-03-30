@@ -38,8 +38,6 @@ export default define.page(function Layout({ Component, url }) {
         style={{
           overflowY: "auto",
           padding: "var(--content-padding, 24px)",
-          maxWidth: "var(--content-max-width, 2400px)",
-          marginInline: "auto",
         }}
       >
         <AlertBanner />
