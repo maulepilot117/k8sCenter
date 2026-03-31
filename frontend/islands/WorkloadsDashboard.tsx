@@ -206,14 +206,6 @@ export default function WorkloadsDashboard(
       ringValue: s.readyPods,
       color: "var(--accent)",
     },
-    {
-      label: "CPU Usage",
-      value: 0,
-      displayValue: "\u2014",
-      max: 100,
-      ringValue: 0,
-      color: "var(--accent-secondary)",
-    },
   ];
 
   return (
