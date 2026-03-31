@@ -125,9 +125,8 @@ export default function ExtensionsHub() {
             marginTop: "2px",
           }}
         >
-          {totalCRDs} CRDs across {groupCount} API group{groupCount !== 1
-            ? "s"
-            : ""}
+          {totalCRDs} CRDs across {groupCount}{" "}
+          API group{groupCount !== 1 ? "s" : ""}
         </p>
       </div>
 
@@ -137,8 +136,7 @@ export default function ExtensionsHub() {
           type="text"
           placeholder="Search CRDs by kind or resource name..."
           value={search.value}
-          onInput={(e) =>
-            search.value = (e.target as HTMLInputElement).value}
+          onInput={(e) => search.value = (e.target as HTMLInputElement).value}
           style={{
             width: "100%",
             maxWidth: "400px",

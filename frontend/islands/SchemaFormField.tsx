@@ -1,8 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import type { SchemaProperty } from "@/lib/crd-types.ts";
-import { stringify, parse } from "yaml";
-import { inputStyle, selectStyle, labelStyle } from "@/lib/form-styles.ts";
+import { parse, stringify } from "yaml";
+import { inputStyle, labelStyle, selectStyle } from "@/lib/form-styles.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -94,7 +94,12 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
   // x-kubernetes-int-or-string: text input
   if (schema["x-kubernetes-int-or-string"]) {
     return (
-      <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+      <FieldWrapper
+        name={name}
+        path={path}
+        required={required}
+        description={schema.description}
+      >
         <input
           id={id}
           type="text"
@@ -104,7 +109,10 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
           onInput={(e) => {
             const v = (e.target as HTMLInputElement).value;
             const num = Number(v);
-            onChange(path, v !== "" && !isNaN(num) && String(num) === v ? num : v);
+            onChange(
+              path,
+              v !== "" && !isNaN(num) && String(num) === v ? num : v,
+            );
           }}
         />
       </FieldWrapper>
@@ -204,7 +212,12 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
   // Boolean
   if (schema.type === "boolean") {
     return (
-      <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+      <FieldWrapper
+        name={name}
+        path={path}
+        required={required}
+        description={schema.description}
+      >
         <select
           id={id}
           style={selectStyle}
@@ -225,7 +238,12 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
   // Integer / Number
   if (schema.type === "integer" || schema.type === "number") {
     return (
-      <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+      <FieldWrapper
+        name={name}
+        path={path}
+        required={required}
+        description={schema.description}
+      >
         <input
           id={id}
           type="number"
@@ -239,7 +257,10 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
             if (v === "") {
               onChange(path, undefined);
             } else {
-              onChange(path, schema.type === "integer" ? parseInt(v, 10) : parseFloat(v));
+              onChange(
+                path,
+                schema.type === "integer" ? parseInt(v, 10) : parseFloat(v),
+              );
             }
           }}
         />
@@ -253,14 +274,20 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
       // Large enum: text input with datalist
       const listId = `${id}-list`;
       return (
-        <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+        <FieldWrapper
+          name={name}
+          path={path}
+          required={required}
+          description={schema.description}
+        >
           <input
             id={id}
             type="text"
             list={listId}
             style={inputStyle}
             value={(value as string) ?? ""}
-            onInput={(e) => onChange(path, (e.target as HTMLInputElement).value || undefined)}
+            onInput={(e) =>
+              onChange(path, (e.target as HTMLInputElement).value || undefined)}
           />
           <datalist id={listId}>
             {schema.enum.map((opt) => <option key={opt} value={opt} />)}
@@ -269,15 +296,23 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
       );
     }
     return (
-      <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+      <FieldWrapper
+        name={name}
+        path={path}
+        required={required}
+        description={schema.description}
+      >
         <select
           id={id}
           style={selectStyle}
           value={(value as string) ?? ""}
-          onChange={(e) => onChange(path, (e.target as HTMLSelectElement).value || undefined)}
+          onChange={(e) =>
+            onChange(path, (e.target as HTMLSelectElement).value || undefined)}
         >
           <option value="">-- select --</option>
-          {schema.enum!.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+          {schema.enum!.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
         </select>
       </FieldWrapper>
     );
@@ -291,14 +326,20 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
     : "";
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={schema.description}
+    >
       <input
         id={id}
         type="text"
         style={inputStyle}
         value={(value as string) ?? ""}
         placeholder={placeholder}
-        onInput={(e) => onChange(path, (e.target as HTMLInputElement).value || undefined)}
+        onInput={(e) =>
+          onChange(path, (e.target as HTMLInputElement).value || undefined)}
       />
     </FieldWrapper>
   );
@@ -320,7 +361,9 @@ function FieldWrapper(
     <div style={{ marginBottom: "12px" }}>
       <label htmlFor={id} style={labelStyle}>
         {name}
-        {required && <span style={{ color: "var(--error)", marginLeft: "3px" }}>*</span>}
+        {required && (
+          <span style={{ color: "var(--error)", marginLeft: "3px" }}>*</span>
+        )}
       </label>
       {description && <p style={descStyle}>{description}</p>}
       {children}
@@ -376,7 +419,9 @@ function ObjectFieldset(
         >
           {badge}
         </span>
-        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>object</span>
+        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+          object
+        </span>
       </button>
       {schema.description && (
         <p style={{ ...descStyle, marginLeft: "14px" }}>{schema.description}</p>
@@ -452,15 +497,27 @@ function PrimitiveArrayField(
   );
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={schema.description}
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         {items.map((item, idx) => (
-          <div key={idx} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          <div
+            key={idx}
+            style={{ display: "flex", gap: "6px", alignItems: "center" }}
+          >
             <input
-              type={schema.items?.type === "integer" || schema.items?.type === "number" ? "number" : "text"}
+              type={schema.items?.type === "integer" ||
+                  schema.items?.type === "number"
+                ? "number"
+                : "text"}
               style={{ ...inputStyle, flex: 1 }}
               value={item != null ? String(item) : ""}
-              onInput={(e) => updateItem(idx, (e.target as HTMLInputElement).value)}
+              onInput={(e) =>
+                updateItem(idx, (e.target as HTMLInputElement).value)}
             />
             <button
               type="button"
@@ -513,7 +570,9 @@ function ObjectArrayField(
       // _fieldPath is the full dot path like "spec.rules.0.host"
       // We need to extract the relative key within this item
       const prefix = `${path}.${idx}.`;
-      const relKey = _fieldPath.startsWith(prefix) ? _fieldPath.slice(prefix.length) : _fieldPath;
+      const relKey = _fieldPath.startsWith(prefix)
+        ? _fieldPath.slice(prefix.length)
+        : _fieldPath;
 
       const next = [...items];
       const item = { ...next[idx] };
@@ -551,7 +610,12 @@ function ObjectArrayField(
   const itemSchema = schema.items!;
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={schema.description}
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
         {items.map((item, idx) => (
           <ArrayItemFieldset
@@ -560,7 +624,8 @@ function ObjectArrayField(
             path={`${path}.${idx}`}
             schema={itemSchema}
             value={item}
-            onChange={(fieldPath, fieldValue) => updateItem(idx, fieldPath, fieldValue)}
+            onChange={(fieldPath, fieldValue) =>
+              updateItem(idx, fieldPath, fieldValue)}
             onRemove={() => removeItem(idx)}
             depth={depth}
           />
@@ -610,7 +675,9 @@ function ArrayItemFieldset(
         <span style={{ fontSize: "10px", width: "14px" }}>
           {expanded.value ? "\u25BC" : "\u25B6"}
         </span>
-        <span style={{ flex: 1, fontSize: "12px", color: "var(--text-secondary)" }}>
+        <span
+          style={{ flex: 1, fontSize: "12px", color: "var(--text-secondary)" }}
+        >
           Item {index + 1}
         </span>
         <button
@@ -629,17 +696,17 @@ function ArrayItemFieldset(
           {/* If the schema defines properties, render them as fields */}
           {Object.keys(props).length > 0
             ? Object.entries(props).map(([key, propSchema]) => (
-                <SchemaFormField
-                  key={key}
-                  name={key}
-                  path={`${path}.${key}`}
-                  schema={propSchema}
-                  value={value[key]}
-                  onChange={onChange}
-                  required={requiredFields.includes(key)}
-                  depth={depth + 1}
-                />
-              ))
+              <SchemaFormField
+                key={key}
+                name={key}
+                path={`${path}.${key}`}
+                schema={propSchema}
+                value={value[key]}
+                onChange={onChange}
+                required={requiredFields.includes(key)}
+                depth={depth + 1}
+              />
+            ))
             : (
               // No properties schema — fall back to YAML textarea
               <YamlSubtreeField
@@ -705,23 +772,33 @@ function KeyValueEditor(
   );
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={description}
+    >
       <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
         {entries.map(([k, v], idx) => (
-          <div key={idx} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          <div
+            key={idx}
+            style={{ display: "flex", gap: "6px", alignItems: "center" }}
+          >
             <input
               type="text"
               placeholder="key"
               style={{ ...inputStyle, flex: 1 }}
               value={k}
-              onInput={(e) => updateKey(k, (e.target as HTMLInputElement).value, idx)}
+              onInput={(e) =>
+                updateKey(k, (e.target as HTMLInputElement).value, idx)}
             />
             <input
               type="text"
               placeholder="value"
               style={{ ...inputStyle, flex: 1 }}
               value={v}
-              onInput={(e) => updateValue(k, (e.target as HTMLInputElement).value)}
+              onInput={(e) =>
+                updateValue(k, (e.target as HTMLInputElement).value)}
             />
             <button
               type="button"
@@ -770,7 +847,12 @@ function VariantSelector(
   const selectedSchema = variants[selected.value];
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={schema.description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={schema.description}
+    >
       <select
         style={{ ...selectStyle, marginBottom: "8px" }}
         value={selected.value}
@@ -815,7 +897,11 @@ function YamlSubtreeField(
 ) {
   // Convert current value to YAML for display
   const yamlText = useSignal(
-    value != null && typeof value === "object" ? stringify(value) : value != null ? String(value) : "",
+    value != null && typeof value === "object"
+      ? stringify(value)
+      : value != null
+      ? String(value)
+      : "",
   );
 
   const handleChange = useCallback(
@@ -833,7 +919,12 @@ function YamlSubtreeField(
   );
 
   return (
-    <FieldWrapper name={name} path={path} required={required} description={description}>
+    <FieldWrapper
+      name={name}
+      path={path}
+      required={required}
+      description={description}
+    >
       <textarea
         id={fieldId(path)}
         style={{

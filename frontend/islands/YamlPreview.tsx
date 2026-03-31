@@ -23,7 +23,9 @@ function highlightLine(raw: string): string {
   if (arrayMatch) {
     const prefix = arrayMatch[1];
     const rest = arrayMatch[2];
-    return `<span style="color:var(--text-muted)">${prefix}</span>${highlightValue(rest)}`;
+    return `<span style="color:var(--text-muted)">${prefix}</span>${
+      highlightValue(rest)
+    }`;
   }
 
   // Key: value lines
@@ -35,7 +37,8 @@ function highlightLine(raw: string): string {
     const space = kvMatch[4];
     const value = kvMatch[5];
     const coloredKey = `<span style="color:var(--accent)">${key}</span>`;
-    const coloredColon = `<span style="color:var(--text-muted)">${colon}</span>`;
+    const coloredColon =
+      `<span style="color:var(--text-muted)">${colon}</span>`;
     if (value === "") {
       return indent + coloredKey + coloredColon;
     }
@@ -78,7 +81,8 @@ export default function YamlPreview({ yaml }: Props) {
     return lines
       .map((line, i) => {
         const num = String(i + 1).padStart(3, " ");
-        const numSpan = `<span style="color:var(--text-muted);user-select:none;padding-right:12px">${num}</span>`;
+        const numSpan =
+          `<span style="color:var(--text-muted);user-select:none;padding-right:12px">${num}</span>`;
         return numSpan + highlightLine(line);
       })
       .join("\n");

@@ -307,35 +307,60 @@ export default function CRDResourceList({ group, resource }: Props) {
       >
         <span>
           Group:{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {group}
           </span>
         </span>
         <span style={{ color: "var(--border-primary)" }}>|</span>
         <span>
           Version:{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {version}
           </span>
         </span>
         <span style={{ color: "var(--border-primary)" }}>|</span>
         <span>
           Kind:{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {kind}
           </span>
         </span>
         <span style={{ color: "var(--border-primary)" }}>|</span>
         <span>
           Scope:{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {meta?.scope ?? "Unknown"}
           </span>
         </span>
         <span style={{ color: "var(--border-primary)" }}>|</span>
         <span>
           Served:{" "}
-          <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-secondary)" }}>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              color: "var(--text-secondary)",
+            }}
+          >
             {meta?.served !== false ? "\u2713 Yes" : "\u2717 No"}
           </span>
         </span>
@@ -467,9 +492,8 @@ export default function CRDResourceList({ group, resource }: Props) {
               ? (
                 <tr>
                   <td
-                    colSpan={
-                      3 + (isNamespaced ? 1 : 0) + printerColumns.length + 1
-                    }
+                    colSpan={3 + (isNamespaced ? 1 : 0) +
+                      printerColumns.length + 1}
                     style={{
                       padding: "32px 14px",
                       textAlign: "center",

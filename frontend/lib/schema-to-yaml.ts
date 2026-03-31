@@ -4,7 +4,8 @@
  */
 
 /** Characters that require quoting in YAML string values. */
-const NEEDS_QUOTE = /[:#{}[\],&*?|>!%@`"'\n\r\t]|^(true|false|null|yes|no|on|off)$/i;
+const NEEDS_QUOTE =
+  /[:#{}[\],&*?|>!%@`"'\n\r\t]|^(true|false|null|yes|no|on|off)$/i;
 
 /** HTML-escape for safe rendering in highlighted preview. */
 export function escapeHtml(s: string): string {
@@ -26,7 +27,10 @@ function quoteString(val: string): string {
 function isEmptyValue(val: unknown): boolean {
   if (val === undefined || val === null || val === "") return true;
   if (Array.isArray(val) && val.length === 0) return true;
-  if (typeof val === "object" && !Array.isArray(val) && Object.keys(val as Record<string, unknown>).length === 0) return true;
+  if (
+    typeof val === "object" && !Array.isArray(val) &&
+    Object.keys(val as Record<string, unknown>).length === 0
+  ) return true;
   return false;
 }
 
@@ -43,7 +47,10 @@ function serializeValue(val: unknown, indent: number): string {
     const lines: string[] = [];
     for (const item of val) {
       if (typeof item === "object" && item !== null && !Array.isArray(item)) {
-        const objLines = serializeObject(item as Record<string, unknown>, indent + 1);
+        const objLines = serializeObject(
+          item as Record<string, unknown>,
+          indent + 1,
+        );
         if (objLines.length > 0) {
           // First key on same line as dash
           lines.push(pad + "- " + objLines[0].trimStart());
@@ -71,7 +78,10 @@ function serializeValue(val: unknown, indent: number): string {
   return String(val);
 }
 
-function serializeObject(obj: Record<string, unknown>, indent: number): string[] {
+function serializeObject(
+  obj: Record<string, unknown>,
+  indent: number,
+): string[] {
   const pad = "  ".repeat(indent);
   const lines: string[] = [];
   for (const [key, val] of Object.entries(obj)) {
@@ -92,7 +102,11 @@ function serializeObject(obj: Record<string, unknown>, indent: number): string[]
 export function formStateToYaml(
   apiVersion: string,
   kind: string,
-  metadata: { name: string; namespace?: string; labels?: Record<string, string> },
+  metadata: {
+    name: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+  },
   spec: Record<string, unknown>,
 ): string {
   const lines: string[] = [];

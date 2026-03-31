@@ -1,11 +1,11 @@
-import { useSignal, useComputed } from "@preact/signals";
-import { useEffect, useCallback } from "preact/hooks";
+import { useComputed, useSignal } from "@preact/signals";
+import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPost, apiPut, ApiError } from "@/lib/api.ts";
+import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import type { SchemaProperty } from "@/lib/crd-types.ts";
 import { formStateToYaml } from "@/lib/schema-to-yaml.ts";
-import { stringify as yamlStringify, parse as yamlParse } from "yaml";
+import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import SchemaFormField from "@/islands/SchemaFormField.tsx";
@@ -80,7 +80,9 @@ const btnSecondaryStyle: Record<string, string | number> = {
 
 // ── Component ───────────────────────────────────────────────────────────
 
-export default function SchemaForm({ group, resource, namespace, name, mode }: SchemaFormProps) {
+export default function SchemaForm(
+  { group, resource, namespace, name, mode }: SchemaFormProps,
+) {
   // State
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
@@ -92,11 +94,18 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
   const viewMode = useSignal<ViewMode>("form");
   const submitting = useSignal(false);
   const validating = useSignal(false);
-  const validationResult = useSignal<{ ok: boolean; message: string } | null>(null);
+  const validationResult = useSignal<{ ok: boolean; message: string } | null>(
+    null,
+  );
 
   // Form state
   const formName = useSignal(name ?? "");
-  const formNamespace = useSignal(namespace ?? (IS_BROWSER && selectedNamespace.value !== "all" ? selectedNamespace.value : "default"));
+  const formNamespace = useSignal(
+    namespace ??
+      (IS_BROWSER && selectedNamespace.value !== "all"
+        ? selectedNamespace.value
+        : "default"),
+  );
   const formLabels = useSignal<Array<{ key: string; value: string }>>([]);
   const formSpec = useSignal<Record<string, unknown>>({});
   const namespaces = useSignal<string[]>(["default"]);
@@ -119,7 +128,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           for (let i = 0; i < sessionStorage.length; i++) {
             const key = sessionStorage.key(i);
             if (key?.startsWith(`crd-schema:${cachePrefix}`)) {
-              crdData = JSON.parse(sessionStorage.getItem(key)!) as CRDFullObject;
+              crdData = JSON.parse(
+                sessionStorage.getItem(key)!,
+              ) as CRDFullObject;
               break;
             }
           }
@@ -128,12 +139,15 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
         }
 
         if (!crdData) {
-          const res = await apiGet<CRDFullObject>(`/v1/extensions/crds/${group}/${resource}`);
+          const res = await apiGet<CRDFullObject>(
+            `/v1/extensions/crds/${group}/${resource}`,
+          );
           crdData = res.data;
 
           // Cache it
           try {
-            const cacheKey = `crd-schema:${cachePrefix}${crdData.metadata.resourceVersion}`;
+            const cacheKey =
+              `crd-schema:${cachePrefix}${crdData.metadata.resourceVersion}`;
             sessionStorage.setItem(cacheKey, JSON.stringify(crdData));
           } catch {
             // quota exceeded or unavailable
@@ -166,7 +180,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
 
         // Fetch namespaces for namespace selector
         try {
-          const nsRes = await apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces");
+          const nsRes = await apiGet<Array<{ metadata: { name: string } }>>(
+            "/v1/resources/namespaces",
+          );
           if (nsRes.data) {
             namespaces.value = nsRes.data.map((ns) => ns.metadata.name);
           }
@@ -182,9 +198,13 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           );
           const instance = instanceRes.data;
           if (instance) {
-            const meta = instance.metadata as Record<string, unknown> | undefined;
+            const meta = instance.metadata as
+              | Record<string, unknown>
+              | undefined;
             if (meta?.labels && typeof meta.labels === "object") {
-              formLabels.value = Object.entries(meta.labels as Record<string, string>).map(([k, v]) => ({ key: k, value: v }));
+              formLabels.value = Object.entries(
+                meta.labels as Record<string, string>,
+              ).map(([k, v]) => ({ key: k, value: v }));
             }
             if (instance.spec && typeof instance.spec === "object") {
               formSpec.value = instance.spec as Record<string, unknown>;
@@ -192,7 +212,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           }
         }
       } catch (err) {
-        error.value = err instanceof ApiError ? err.detail ?? err.message : "Failed to load CRD schema";
+        error.value = err instanceof ApiError
+          ? err.detail ?? err.message
+          : "Failed to load CRD schema";
       } finally {
         loading.value = false;
       }
@@ -220,7 +242,10 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
       let current: Record<string, unknown> = next;
       for (let i = 0; i < parts.length - 1; i++) {
         const part = parts[i];
-        if (!(part in current) || typeof current[part] !== "object" || current[part] === null || Array.isArray(current[part])) {
+        if (
+          !(part in current) || typeof current[part] !== "object" ||
+          current[part] === null || Array.isArray(current[part])
+        ) {
           // If the next part is a number, this should be an array
           const nextPart = parts[i + 1];
           if (/^\d+$/.test(nextPart)) {
@@ -258,7 +283,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
       kind.value,
       {
         name: formName.value,
-        namespace: scope.value === "Namespaced" ? formNamespace.value : undefined,
+        namespace: scope.value === "Namespaced"
+          ? formNamespace.value
+          : undefined,
         labels: Object.keys(labels).length > 0 ? labels : undefined,
       },
       formSpec.value,
@@ -277,7 +304,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
       kind: kind.value,
       metadata: {
         name: formName.value,
-        ...(scope.value === "Namespaced" ? { namespace: formNamespace.value } : {}),
+        ...(scope.value === "Namespaced"
+          ? { namespace: formNamespace.value }
+          : {}),
         ...(Object.keys(labels).length > 0 ? { labels } : {}),
       },
     };
@@ -285,7 +314,16 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
       body.spec = formSpec.value;
     }
     return body;
-  }, [group, kind, storageVersion, formName, formNamespace, scope, formLabels, formSpec]);
+  }, [
+    group,
+    kind,
+    storageVersion,
+    formName,
+    formNamespace,
+    scope,
+    formLabels,
+    formSpec,
+  ]);
 
   // ── Actions ──────────────────────────────────────────────────────────
 
@@ -301,15 +339,23 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
       const ns = scope.value === "Namespaced" ? formNamespace.value : "_";
 
       if (mode === "create") {
-        await apiPost(`/v1/extensions/resources/${group}/${resource}/${ns}`, body);
+        await apiPost(
+          `/v1/extensions/resources/${group}/${resource}/${ns}`,
+          body,
+        );
         showToast(`Created ${formName.value}`, "success");
         globalThis.location.href = `/extensions/${group}/${resource}`;
       } else {
-        await apiPut(`/v1/extensions/resources/${group}/${resource}/${ns}/${name}`, body);
+        await apiPut(
+          `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
+          body,
+        );
         showToast(`Updated ${formName.value}`, "success");
       }
     } catch (err) {
-      const msg = err instanceof ApiError ? err.detail ?? err.message : "Operation failed";
+      const msg = err instanceof ApiError
+        ? err.detail ?? err.message
+        : "Operation failed";
       showToast(msg, "error");
     } finally {
       submitting.value = false;
@@ -321,10 +367,15 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
     validationResult.value = null;
     try {
       const body = buildBody();
-      await apiPost(`/v1/extensions/resources/${group}/${resource}/-/validate`, body);
+      await apiPost(
+        `/v1/extensions/resources/${group}/${resource}/-/validate`,
+        body,
+      );
       validationResult.value = { ok: true, message: "Validation passed" };
     } catch (err) {
-      const msg = err instanceof ApiError ? err.detail ?? err.message : "Validation failed";
+      const msg = err instanceof ApiError
+        ? err.detail ?? err.message
+        : "Validation failed";
       validationResult.value = { ok: false, message: msg };
     } finally {
       validating.value = false;
@@ -361,7 +412,13 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           color: "var(--text-muted)",
         }}
       >
-        <p style={{ fontSize: "14px", color: "var(--error)", marginBottom: "12px" }}>
+        <p
+          style={{
+            fontSize: "14px",
+            color: "var(--error)",
+            marginBottom: "12px",
+          }}
+        >
           {error.value}
         </p>
         <button
@@ -377,7 +434,8 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
 
   // ── Determine schema tier ────────────────────────────────────────────
 
-  const hasSpecSchema = specSchema.value !== null && specSchema.value.properties != null;
+  const hasSpecSchema = specSchema.value !== null &&
+    specSchema.value.properties != null;
   const specProperties = hasSpecSchema ? specSchema.value!.properties! : {};
   const specRequired = hasSpecSchema ? (specSchema.value!.required ?? []) : [];
 
@@ -396,11 +454,17 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           marginBottom: "12px",
         }}
       >
-        <a href="/extensions" style={{ color: "var(--accent)", textDecoration: "none" }}>
+        <a
+          href="/extensions"
+          style={{ color: "var(--accent)", textDecoration: "none" }}
+        >
           Extensions
         </a>
         <span>/</span>
-        <a href="/extensions" style={{ color: "var(--accent)", textDecoration: "none" }}>
+        <a
+          href="/extensions"
+          style={{ color: "var(--accent)", textDecoration: "none" }}
+        >
           {group}
         </a>
         <span>/</span>
@@ -471,8 +535,12 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
                 borderRadius: "4px",
                 border: "none",
                 cursor: "pointer",
-                background: viewMode.value === m ? "var(--accent)" : "transparent",
-                color: viewMode.value === m ? "var(--bg-base)" : "var(--text-muted)",
+                background: viewMode.value === m
+                  ? "var(--accent)"
+                  : "transparent",
+                color: viewMode.value === m
+                  ? "var(--bg-base)"
+                  : "var(--text-muted)",
               }}
             >
               {m === "form" ? "Form" : "YAML"}
@@ -490,7 +558,13 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           {/* ── Metadata Section ─────────────────────────────────────── */}
           <div style={sectionHeaderStyle}>
             <span>Metadata</span>
-            <div style={{ flex: 1, height: "1px", background: "var(--border-subtle)" }} />
+            <div
+              style={{
+                flex: 1,
+                height: "1px",
+                background: "var(--border-subtle)",
+              }}
+            />
           </div>
 
           <div style={{ marginBottom: "12px" }}>
@@ -512,7 +586,9 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
               style={inputStyle}
               value={formName.value}
               disabled={mode === "edit"}
-              onInput={(e) => (formName.value = (e.target as HTMLInputElement).value)}
+              onInput={(
+                e,
+              ) => (formName.value = (e.target as HTMLInputElement).value)}
               placeholder="my-resource"
             />
           </div>
@@ -536,7 +612,10 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
                 style={selectStyle}
                 value={formNamespace.value}
                 disabled={mode === "edit"}
-                onChange={(e) => (formNamespace.value = (e.target as HTMLSelectElement).value)}
+                onChange={(
+                  e,
+                ) => (formNamespace.value =
+                  (e.target as HTMLSelectElement).value)}
               >
                 {namespaces.value.map((ns) => (
                   <option key={ns} value={ns}>
@@ -550,12 +629,28 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           {/* ── Labels Section ───────────────────────────────────────── */}
           <div style={sectionHeaderStyle}>
             <span>Labels</span>
-            <div style={{ flex: 1, height: "1px", background: "var(--border-subtle)" }} />
+            <div
+              style={{
+                flex: 1,
+                height: "1px",
+                background: "var(--border-subtle)",
+              }}
+            />
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "16px" }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+              marginBottom: "16px",
+            }}
+          >
             {formLabels.value.map((label, idx) => (
-              <div key={idx} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+              <div
+                key={idx}
+                style={{ display: "flex", gap: "6px", alignItems: "center" }}
+              >
                 <input
                   type="text"
                   placeholder="key"
@@ -563,7 +658,10 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
                   value={label.key}
                   onInput={(e) => {
                     const next = [...formLabels.value];
-                    next[idx] = { ...next[idx], key: (e.target as HTMLInputElement).value };
+                    next[idx] = {
+                      ...next[idx],
+                      key: (e.target as HTMLInputElement).value,
+                    };
                     formLabels.value = next;
                   }}
                 />
@@ -574,14 +672,19 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
                   value={label.value}
                   onInput={(e) => {
                     const next = [...formLabels.value];
-                    next[idx] = { ...next[idx], value: (e.target as HTMLInputElement).value };
+                    next[idx] = {
+                      ...next[idx],
+                      value: (e.target as HTMLInputElement).value,
+                    };
                     formLabels.value = next;
                   }}
                 />
                 <button
                   type="button"
                   onClick={() => {
-                    formLabels.value = formLabels.value.filter((_, i) => i !== idx);
+                    formLabels.value = formLabels.value.filter((_, i) =>
+                      i !== idx
+                    );
                   }}
                   style={{
                     background: "none",
@@ -602,7 +705,10 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
             <button
               type="button"
               onClick={() => {
-                formLabels.value = [...formLabels.value, { key: "", value: "" }];
+                formLabels.value = [...formLabels.value, {
+                  key: "",
+                  value: "",
+                }];
               }}
               style={{
                 background: "none",
@@ -621,7 +727,13 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
           {/* ── Spec Section ─────────────────────────────────────────── */}
           <div style={sectionHeaderStyle}>
             <span>Spec</span>
-            <div style={{ flex: 1, height: "1px", background: "var(--border-subtle)" }} />
+            <div
+              style={{
+                flex: 1,
+                height: "1px",
+                background: "var(--border-subtle)",
+              }}
+            />
           </div>
 
           {hasSpecSchema
@@ -644,7 +756,13 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
             : (
               // Graceful degradation: YAML textarea
               <div style={{ marginBottom: "16px" }}>
-                <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                    marginBottom: "8px",
+                  }}
+                >
                   {specSchema.value === null && !error.value
                     ? "This CRD does not define a structured schema. Enter the spec as YAML."
                     : "Enter the spec as YAML."}
@@ -656,14 +774,20 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
                     resize: "vertical",
                     lineHeight: "1.5",
                   }}
-                  value={
-                    Object.keys(formSpec.value).length > 0
-                      ? (() => { try { return yamlStringify(formSpec.value); } catch { return ""; } })()
-                      : ""
-                  }
+                  value={Object.keys(formSpec.value).length > 0
+                    ? (() => {
+                      try {
+                        return yamlStringify(formSpec.value);
+                      } catch {
+                        return "";
+                      }
+                    })()
+                    : ""}
                   onInput={(e) => {
                     try {
-                      const parsed = yamlParse((e.target as HTMLTextAreaElement).value);
+                      const parsed = yamlParse(
+                        (e.target as HTMLTextAreaElement).value,
+                      );
                       if (parsed && typeof parsed === "object") {
                         formSpec.value = parsed as Record<string, unknown>;
                       }
@@ -687,9 +811,15 @@ export default function SchemaForm({ group, resource, namespace, name, mode }: S
             marginBottom: "16px",
             borderRadius: "6px",
             fontSize: "12px",
-            background: validationResult.value.ok ? "var(--success-dim)" : "var(--error-dim)",
-            color: validationResult.value.ok ? "var(--success)" : "var(--error)",
-            border: `1px solid ${validationResult.value.ok ? "var(--success)" : "var(--error)"}`,
+            background: validationResult.value.ok
+              ? "var(--success-dim)"
+              : "var(--error-dim)",
+            color: validationResult.value.ok
+              ? "var(--success)"
+              : "var(--error)",
+            border: `1px solid ${
+              validationResult.value.ok ? "var(--success)" : "var(--error)"
+            }`,
           }}
         >
           {validationResult.value.message}
