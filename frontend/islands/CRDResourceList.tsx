@@ -33,11 +33,6 @@ interface CRDItem {
   [key: string]: unknown;
 }
 
-interface ResourceListResponse {
-  items: CRDItem[];
-  continue?: string;
-}
-
 /** Extract a value from an object using a simple jsonPath-like string. */
 function extractJsonPath(obj: Record<string, unknown>, path: string): unknown {
   const parts = path.replace(/^\.*/, "").split(/\.|\[(\d+)\]/).filter(Boolean);
@@ -78,10 +73,10 @@ export default function CRDResourceList({ group, resource }: Props) {
 
     const fetchMeta = async () => {
       try {
-        const res = await apiGet<CRDInfo>(
+        const res = await apiGet<{ info: CRDInfo; schema: unknown }>(
           `/v1/extensions/crds/${group}/${resource}`,
         );
-        crdMeta.value = res.data ?? null;
+        crdMeta.value = res.data?.info ?? null;
       } catch {
         crdMeta.value = null;
       }
@@ -98,11 +93,12 @@ export default function CRDResourceList({ group, resource }: Props) {
       try {
         const ns = selectedNamespace.value;
         const nsPath = ns && ns !== "all" ? `/${ns}` : "";
-        const res = await apiGet<ResourceListResponse>(
+        const res = await apiGet<CRDItem[]>(
           `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100`,
         );
-        items.value = res.data?.items ?? [];
-        continueToken.value = res.data?.continue;
+        items.value = res.data ?? [];
+        continueToken.value = (res as { metadata?: { continue?: string } })
+          .metadata?.continue;
       } catch {
         items.value = [];
         continueToken.value = undefined;
@@ -120,13 +116,14 @@ export default function CRDResourceList({ group, resource }: Props) {
     try {
       const ns = selectedNamespace.value;
       const nsPath = ns && ns !== "all" ? `/${ns}` : "";
-      const res = await apiGet<ResourceListResponse>(
+      const res = await apiGet<CRDItem[]>(
         `/v1/extensions/resources/${group}/${resource}${nsPath}?limit=100&continue=${
           encodeURIComponent(continueToken.value)
         }`,
       );
-      items.value = [...items.value, ...(res.data?.items ?? [])];
-      continueToken.value = res.data?.continue;
+      items.value = [...items.value, ...(res.data ?? [])];
+      continueToken.value = (res as { metadata?: { continue?: string } })
+        .metadata?.continue;
     } catch {
       // keep existing items
     } finally {
