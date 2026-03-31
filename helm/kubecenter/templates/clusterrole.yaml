@@ -100,6 +100,11 @@ rules:
     resources:
       - customresourcedefinitions
     verbs: ["get", "list", "watch"]
+  # CRD instance counts — service account lists instances for cached counts
+  # displayed on the Extensions Hub. Actual CRUD uses impersonated client.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["list"]
   # SelfSubjectAccessReview for RBAC filtering
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
