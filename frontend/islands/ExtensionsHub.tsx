@@ -71,7 +71,7 @@ export default function ExtensionsHub() {
   const groupInstanceCount = (items: CRDInfo[]): number => {
     let total = 0;
     for (const item of items) {
-      const key = `${item.resource}.${item.group}`;
+      const key = `${item.group}/${item.resource}`;
       total += counts.value[key] ?? 0;
     }
     return total;
@@ -233,7 +233,8 @@ export default function ExtensionsHub() {
                   >
                     {items.map((info) => {
                       const fullName = `${info.resource}.${info.group}`;
-                      const instanceCount = counts.value[fullName] ?? 0;
+                      const countKey = `${info.group}/${info.resource}`;
+                      const instanceCount = counts.value[countKey] ?? 0;
 
                       return (
                         <a
