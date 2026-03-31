@@ -106,6 +106,11 @@ func (s *Server) registerRoutes() {
 				s.registerNetworkingRoutes(ar)
 			}
 
+			// Extension (CRD) routes
+			if s.CRDHandler != nil {
+				s.registerExtensionRoutes(ar)
+			}
+
 			// Monitoring routes — only registered if monitoring handler is available
 			if s.MonitoringHandler != nil {
 				s.registerMonitoringRoutes(ar)
@@ -298,6 +303,35 @@ func (s *Server) registerAlertingRoutes(ar chi.Router) {
 		alr.Get("/settings", h.HandleGetSettings)
 		alr.With(middleware.RequireAdmin).Put("/settings", h.HandleUpdateSettings)
 		alr.With(middleware.RequireAdmin).Post("/test", h.HandleTestEmail)
+	})
+}
+
+func (s *Server) registerExtensionRoutes(ar chi.Router) {
+	h := s.CRDHandler
+	yamlRL := s.YAMLRateLimiter
+	if yamlRL == nil {
+		yamlRL = s.RateLimiter
+	}
+
+	ar.Route("/extensions", func(er chi.Router) {
+		// CRD discovery endpoints (read-only)
+		er.Get("/crds", h.HandleListCRDs)
+		er.Get("/crds/counts", h.HandleCRDCounts)
+		er.Get("/crds/{group}/{resource}", h.HandleGetCRD)
+
+		// Admin-only: force rediscovery
+		er.With(middleware.RequireAdmin).Post("/crds/rediscover", h.HandleRediscover)
+
+		// CRD instance CRUD
+		er.Route("/resources/{group}/{resource}", func(cr chi.Router) {
+			cr.Get("/", h.HandleListCRDInstances)
+			cr.With(middleware.RateLimit(yamlRL)).Post("/-/validate", h.HandleValidateCRDInstance)
+			cr.Get("/{ns}", h.HandleListCRDInstances)
+			cr.Get("/{ns}/{name}", h.HandleGetCRDInstance)
+			cr.With(middleware.RateLimit(yamlRL)).Post("/{ns}", h.HandleCreateCRDInstance)
+			cr.With(middleware.RateLimit(yamlRL)).Put("/{ns}/{name}", h.HandleUpdateCRDInstance)
+			cr.With(middleware.RateLimit(yamlRL)).Delete("/{ns}/{name}", h.HandleDeleteCRDInstance)
+		})
 	})
 }
 

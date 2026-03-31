@@ -52,6 +52,7 @@ type Server struct {
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
+	CRDHandler         *resources.GenericCRDHandler
 	Hub                *websocket.Hub
 	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
@@ -82,6 +83,7 @@ type Deps struct {
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
+	CRDHandler         *resources.GenericCRDHandler
 	WebhookRateLimiter *middleware.RateLimiter
 	AccessChecker      *resources.AccessChecker
 	ReadyFn            func() bool
@@ -177,6 +179,11 @@ func New(deps Deps) *Server {
 	if deps.AlertingHandler != nil {
 		s.AlertingHandler = deps.AlertingHandler
 		s.WebhookRateLimiter = deps.WebhookRateLimiter
+	}
+
+	// CRD handler
+	if deps.CRDHandler != nil {
+		s.CRDHandler = deps.CRDHandler
 	}
 
 	// Global middleware chain — order matters.
