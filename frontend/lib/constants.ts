@@ -562,6 +562,12 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
       { label: "StorageClass Wizard", href: "/tools/storageclass-wizard" },
     ],
   },
+  {
+    id: "extensions",
+    label: "Extensions",
+    icon: "puzzle",
+    href: "/extensions",
+  },
 ];
 
 export const SETTINGS_SECTION: DomainSection = {

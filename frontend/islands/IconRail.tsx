@@ -23,6 +23,8 @@ const ICONS: Record<string, string> = {
   activity:
     '<polyline points="3,14 7,8 11,11 14,5 17,9"/><line x1="3" y1="17" x2="17" y2="17"/>',
   wrench: '<path d="M10 4v4l3 2"/><circle cx="10" cy="10" r="7"/>',
+  puzzle:
+    '<path d="M12.5 3.5a2.5 2.5 0 0 0-5 0V5H5a2.5 2.5 0 0 0-2.5 2.5V10H4a2.5 2.5 0 1 1 0 5H2.5V17.5A2.5 2.5 0 0 0 5 20h2.5v-1.5a2.5 2.5 0 1 1 5 0V20H15a2.5 2.5 0 0 0 2.5-2.5V15H16a2.5 2.5 0 1 1 0-5h1.5V7.5A2.5 2.5 0 0 0 15 5h-2.5V3.5z"/>',
   settings:
     '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4"/>',
 };
