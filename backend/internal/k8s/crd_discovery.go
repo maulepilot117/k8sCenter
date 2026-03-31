@@ -54,14 +54,14 @@ var coreAPIDenylist = map[string]bool{
 
 // CRDInfo holds metadata about a discovered Custom Resource Definition.
 type CRDInfo struct {
-	Group                    string
-	Version                  string
-	Resource                 string
-	Kind                     string
-	Scope                    string // "Namespaced" or "Cluster"
-	Served                   bool
-	StorageVersion           bool
-	AdditionalPrinterColumns []apiextensionsv1.CustomResourceColumnDefinition
+	Group                    string                                            `json:"group"`
+	Version                  string                                            `json:"version"`
+	Resource                 string                                            `json:"resource"`
+	Kind                     string                                            `json:"kind"`
+	Scope                    string                                            `json:"scope"` // "Namespaced" or "Cluster"
+	Served                   bool                                              `json:"served"`
+	StorageVersion           bool                                              `json:"storageVersion"`
+	AdditionalPrinterColumns []apiextensionsv1.CustomResourceColumnDefinition  `json:"additionalPrinterColumns,omitempty"`
 }
 
 // CRDDiscovery watches CRD resources via an apiextensions informer and maintains
