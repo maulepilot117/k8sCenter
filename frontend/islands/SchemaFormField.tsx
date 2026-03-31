@@ -579,6 +579,8 @@ function ObjectArrayField(
 
       // Handle nested paths within the item
       const parts = relKey.split(".");
+      const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+      if (parts.some((p) => DANGEROUS_KEYS.has(p))) return;
       if (parts.length === 1) {
         if (fieldValue === undefined) {
           delete item[parts[0]];

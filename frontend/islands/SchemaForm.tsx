@@ -187,6 +187,10 @@ export default function SchemaForm(
     const relPath = path.startsWith("spec.") ? path.slice(5) : path;
     const parts = relPath.split(".");
 
+    // Prevent prototype pollution
+    const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+    if (parts.some((p) => DANGEROUS_KEYS.has(p))) return;
+
     const next = { ...formSpec.value };
     if (parts.length === 1) {
       if (value === undefined) {
