@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsinformers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
@@ -74,9 +75,10 @@ type CRDDiscovery struct {
 	mu   sync.RWMutex
 	crds map[string]*CRDInfo // keyed by "group/resource"
 
-	countMu      sync.Mutex
+	countMu      sync.RWMutex
 	countCache   map[string]int
 	countUpdated time.Time
+	countGroup   singleflight.Group
 }
 
 // NewCRDDiscovery creates a CRDDiscovery that uses an apiextensions informer to
@@ -178,34 +180,50 @@ func (d *CRDDiscovery) IsNamespaced(group, resource string) bool {
 
 // GetCounts returns cached instance counts for all discovered CRDs. If the cache
 // is older than countCacheTTL, it refreshes counts using bounded concurrency.
+//
+// NOTE: This uses the service account's dynamic client (not user impersonation)
+// for performance — count data is shared across all users via a single cache.
+// Count data is not RBAC-filtered. This is an intentional exception to the
+// "all k8s API calls use impersonation" rule, since counts are non-sensitive
+// metadata and per-user counting would defeat caching.
 func (d *CRDDiscovery) GetCounts(ctx context.Context) map[string]int {
-	d.countMu.Lock()
-	defer d.countMu.Unlock()
-
+	d.countMu.RLock()
 	if time.Since(d.countUpdated) < countCacheTTL && len(d.countCache) > 0 {
 		result := make(map[string]int, len(d.countCache))
 		for k, v := range d.countCache {
 			result[k] = v
 		}
+		d.countMu.RUnlock()
 		return result
 	}
+	d.countMu.RUnlock()
 
-	// Snapshot current CRDs under read lock.
-	d.mu.RLock()
-	gvrs := make(map[string]schema.GroupVersionResource, len(d.crds))
-	for key, info := range d.crds {
-		gvrs[key] = schema.GroupVersionResource{
-			Group:    info.Group,
-			Version:  info.Version,
-			Resource: info.Resource,
+	// Use singleflight to coalesce concurrent callers — avoids holding a mutex
+	// for the entire duration of fetchCounts which fires N goroutines.
+	v, _, _ := d.countGroup.Do("counts", func() (interface{}, error) {
+		// Snapshot current CRDs under read lock.
+		d.mu.RLock()
+		gvrs := make(map[string]schema.GroupVersionResource, len(d.crds))
+		for key, info := range d.crds {
+			gvrs[key] = schema.GroupVersionResource{
+				Group:    info.Group,
+				Version:  info.Version,
+				Resource: info.Resource,
+			}
 		}
-	}
-	d.mu.RUnlock()
+		d.mu.RUnlock()
 
-	counts := d.fetchCounts(ctx, gvrs)
-	d.countCache = counts
-	d.countUpdated = time.Now()
+		counts := d.fetchCounts(ctx, gvrs)
 
+		d.countMu.Lock()
+		d.countCache = counts
+		d.countUpdated = time.Now()
+		d.countMu.Unlock()
+
+		return counts, nil
+	})
+
+	counts := v.(map[string]int)
 	result := make(map[string]int, len(counts))
 	for k, v := range counts {
 		result[k] = v
@@ -251,10 +269,14 @@ func (d *CRDDiscovery) fetchCounts(ctx context.Context, gvrs map[string]schema.G
 				if remaining := list.GetRemainingItemCount(); remaining != nil {
 					count = int(*remaining) + len(list.Items)
 				} else {
-					// Fall back to unlimited list to get the real count.
-					fullList, err := d.dynClient.Resource(g).List(ctx, metav1.ListOptions{})
+					// Fall back to a capped list to avoid OOM on CRDs with
+					// thousands of instances (e.g., CiliumEndpoints).
+					fullList, err := d.dynClient.Resource(g).List(ctx, metav1.ListOptions{Limit: 10000})
 					if err == nil {
 						count = len(fullList.Items)
+						if fullList.GetContinue() != "" {
+							count = 10000 // cap display at 10000+
+						}
 					}
 				}
 			}

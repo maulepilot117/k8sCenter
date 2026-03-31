@@ -10,6 +10,7 @@ import { showToast } from "@/islands/ToastProvider.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import SchemaFormField from "@/islands/SchemaFormField.tsx";
 import YamlPreview from "@/islands/YamlPreview.tsx";
+import { inputStyle, selectStyle } from "@/lib/form-styles.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -41,24 +42,6 @@ interface CRDFullObject {
 type ViewMode = "form" | "yaml";
 
 // ── Styles ──────────────────────────────────────────────────────────────
-
-const inputStyle: Record<string, string> = {
-  width: "100%",
-  background: "var(--bg-surface)",
-  border: "1px solid var(--border-primary)",
-  borderRadius: "6px",
-  padding: "8px 12px",
-  color: "var(--text-primary)",
-  fontSize: "13px",
-  fontFamily: "var(--font-mono)",
-  outline: "none",
-  boxSizing: "border-box",
-};
-
-const selectStyle: Record<string, string> = {
-  ...inputStyle,
-  appearance: "auto",
-};
 
 const sectionHeaderStyle: Record<string, string | number> = {
   display: "flex",

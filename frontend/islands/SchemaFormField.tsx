@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import type { SchemaProperty } from "@/lib/crd-types.ts";
 import { stringify, parse } from "yaml";
+import { inputStyle, selectStyle, labelStyle } from "@/lib/form-styles.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -14,34 +15,6 @@ export interface SchemaFormFieldProps {
   required?: boolean;
   depth: number;
 }
-
-// ── Shared Styles ───────────────────────────────────────────────────────
-
-const inputStyle: Record<string, string> = {
-  width: "100%",
-  background: "var(--bg-surface)",
-  border: "1px solid var(--border-primary)",
-  borderRadius: "6px",
-  padding: "8px 12px",
-  color: "var(--text-primary)",
-  fontSize: "13px",
-  fontFamily: "var(--font-mono)",
-  outline: "none",
-  boxSizing: "border-box",
-};
-
-const selectStyle: Record<string, string> = {
-  ...inputStyle,
-  appearance: "auto",
-};
-
-const labelStyle: Record<string, string | number> = {
-  display: "block",
-  fontSize: "12px",
-  fontWeight: 500,
-  color: "var(--text-secondary)",
-  marginBottom: "4px",
-};
 
 const descStyle: Record<string, string> = {
   fontSize: "11px",

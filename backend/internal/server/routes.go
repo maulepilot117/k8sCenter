@@ -319,9 +319,6 @@ func (s *Server) registerExtensionRoutes(ar chi.Router) {
 		er.Get("/crds/counts", h.HandleCRDCounts)
 		er.Get("/crds/{group}/{resource}", h.HandleGetCRD)
 
-		// Admin-only: force rediscovery
-		er.With(middleware.RequireAdmin).Post("/crds/rediscover", h.HandleRediscover)
-
 		// CRD instance CRUD
 		er.Route("/resources/{group}/{resource}", func(cr chi.Router) {
 			cr.Get("/", h.HandleListCRDInstances)

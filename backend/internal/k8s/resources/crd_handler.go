@@ -89,7 +89,7 @@ func (h *GenericCRDHandler) HandleListCRDInstances(w http.ResponseWriter, r *htt
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
 		return
 	}
@@ -110,7 +110,7 @@ func (h *GenericCRDHandler) HandleListCRDInstances(w http.ResponseWriter, r *htt
 	}
 
 	var list *unstructured.UnstructuredList
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		list, err = dynClient.Resource(gvr).Namespace(ns).List(r.Context(), opts)
 	} else {
 		list, err = dynClient.Resource(gvr).List(r.Context(), opts)
@@ -130,8 +130,15 @@ func (h *GenericCRDHandler) HandleGetCRDInstance(w http.ResponseWriter, r *http.
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "ns")
+	name := chi.URLParam(r, "name")
+
+	if !h.validateInstanceParams(w, ns, name) {
 		return
 	}
 
@@ -141,11 +148,8 @@ func (h *GenericCRDHandler) HandleGetCRDInstance(w http.ResponseWriter, r *http.
 		return
 	}
 
-	ns := chi.URLParam(r, "ns")
-	name := chi.URLParam(r, "name")
-
 	var obj *unstructured.Unstructured
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		obj, err = dynClient.Resource(gvr).Namespace(ns).Get(r.Context(), name, metav1.GetOptions{})
 	} else {
 		obj, err = dynClient.Resource(gvr).Get(r.Context(), name, metav1.GetOptions{})
@@ -165,8 +169,14 @@ func (h *GenericCRDHandler) HandleCreateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "ns")
+
+	if !h.validateInstanceParams(w, ns, "") {
 		return
 	}
 
@@ -183,10 +193,8 @@ func (h *GenericCRDHandler) HandleCreateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	ns := chi.URLParam(r, "ns")
-
 	var created *unstructured.Unstructured
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		created, err = dynClient.Resource(gvr).Namespace(ns).Create(r.Context(), &obj, metav1.CreateOptions{})
 	} else {
 		created, err = dynClient.Resource(gvr).Create(r.Context(), &obj, metav1.CreateOptions{})
@@ -208,8 +216,15 @@ func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "ns")
+	name := chi.URLParam(r, "name")
+
+	if !h.validateInstanceParams(w, ns, name) {
 		return
 	}
 
@@ -226,11 +241,8 @@ func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	ns := chi.URLParam(r, "ns")
-	name := chi.URLParam(r, "name")
-
 	var updated *unstructured.Unstructured
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		updated, err = dynClient.Resource(gvr).Namespace(ns).Update(r.Context(), &obj, metav1.UpdateOptions{})
 	} else {
 		updated, err = dynClient.Resource(gvr).Update(r.Context(), &obj, metav1.UpdateOptions{})
@@ -252,8 +264,15 @@ func (h *GenericCRDHandler) HandleDeleteCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "ns")
+	name := chi.URLParam(r, "name")
+
+	if !h.validateInstanceParams(w, ns, name) {
 		return
 	}
 
@@ -263,10 +282,7 @@ func (h *GenericCRDHandler) HandleDeleteCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	ns := chi.URLParam(r, "ns")
-	name := chi.URLParam(r, "name")
-
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		err = dynClient.Resource(gvr).Namespace(ns).Delete(r.Context(), name, metav1.DeleteOptions{})
 	} else {
 		err = dynClient.Resource(gvr).Delete(r.Context(), name, metav1.DeleteOptions{})
@@ -288,7 +304,7 @@ func (h *GenericCRDHandler) HandleValidateCRDInstance(w http.ResponseWriter, r *
 		return
 	}
 
-	gvr, _, ok := h.resolveGVR(w, r)
+	gvr, info, ok := h.resolveGVR(w, r)
 	if !ok {
 		return
 	}
@@ -312,7 +328,7 @@ func (h *GenericCRDHandler) HandleValidateCRDInstance(w http.ResponseWriter, r *
 	}
 
 	var result *unstructured.Unstructured
-	if ns != "" {
+	if info.Scope == "Namespaced" && ns != "" {
 		result, err = dynClient.Resource(gvr).Namespace(ns).Create(r.Context(), &obj, dryRunOpts)
 	} else {
 		result, err = dynClient.Resource(gvr).Create(r.Context(), &obj, dryRunOpts)
@@ -325,16 +341,19 @@ func (h *GenericCRDHandler) HandleValidateCRDInstance(w http.ResponseWriter, r *
 	writeData(w, result)
 }
 
-// HandleRediscover is a placeholder for admin-triggered CRD rediscovery.
-// Admin gate is enforced at the route level.
-func (h *GenericCRDHandler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
-	_, ok := requireUser(w, r)
-	if !ok {
-		return
+// validateInstanceParams validates {ns} and {name} URL params against RFC 1123 DNS label rules.
+// Empty strings are allowed (they indicate cluster-scoped or list operations).
+// The sentinel value "_" used by the frontend for cluster-scoped CRDs is also allowed.
+func (h *GenericCRDHandler) validateInstanceParams(w http.ResponseWriter, ns, name string) bool {
+	if ns != "" && ns != "_" && !k8sNameRegexp.MatchString(ns) {
+		writeError(w, http.StatusBadRequest, "invalid namespace", "namespace: "+ns)
+		return false
 	}
-	// Placeholder: force rediscovery will be implemented when CRDDiscovery
-	// exposes a Refresh() method. For now, return accepted.
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+	if name != "" && !k8sNameRegexp.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid resource name", "name: "+name)
+		return false
+	}
+	return true
 }
 
 // resolveGVR extracts {group} and {resource} URL params, validates them, and
