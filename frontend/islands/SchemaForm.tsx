@@ -3,7 +3,7 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import type { SchemaProperty } from "@/lib/crd-types.ts";
+import type { CRDInfo, SchemaProperty } from "@/lib/crd-types.ts";
 import { formStateToYaml } from "@/lib/schema-to-yaml.ts";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { showToast } from "@/islands/ToastProvider.tsx";
@@ -22,21 +22,9 @@ interface SchemaFormProps {
   mode: "create" | "edit";
 }
 
-interface CRDFullObject {
-  metadata: { name: string; resourceVersion: string };
-  spec: {
-    group: string;
-    names: { kind: string; singular: string; plural: string };
-    scope: "Namespaced" | "Cluster";
-    versions: Array<{
-      name: string;
-      served: boolean;
-      storage: boolean;
-      schema?: {
-        openAPIV3Schema?: SchemaProperty;
-      };
-    }>;
-  };
+interface CRDGetResponse {
+  info: CRDInfo;
+  schema: SchemaProperty | null;
 }
 
 type ViewMode = "form" | "yaml";
@@ -86,7 +74,7 @@ export default function SchemaForm(
   // State
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
-  const crd = useSignal<CRDFullObject | null>(null);
+  const crd = useSignal<CRDGetResponse | null>(null);
   const specSchema = useSignal<SchemaProperty | null>(null);
   const storageVersion = useSignal("");
   const kind = useSignal("");
@@ -120,61 +108,30 @@ export default function SchemaForm(
       error.value = null;
 
       try {
-        // Check sessionStorage cache
-        const cachePrefix = `${group}/${resource}/`;
-        let crdData: CRDFullObject | null = null;
-
-        try {
-          for (let i = 0; i < sessionStorage.length; i++) {
-            const key = sessionStorage.key(i);
-            if (key?.startsWith(`crd-schema:${cachePrefix}`)) {
-              crdData = JSON.parse(
-                sessionStorage.getItem(key)!,
-              ) as CRDFullObject;
-              break;
-            }
-          }
-        } catch {
-          // sessionStorage unavailable
-        }
-
-        if (!crdData) {
-          const res = await apiGet<CRDFullObject>(
-            `/v1/extensions/crds/${group}/${resource}`,
-          );
-          crdData = res.data;
-
-          // Cache it
-          try {
-            const cacheKey =
-              `crd-schema:${cachePrefix}${crdData.metadata.resourceVersion}`;
-            sessionStorage.setItem(cacheKey, JSON.stringify(crdData));
-          } catch {
-            // quota exceeded or unavailable
-          }
-        }
-
-        crd.value = crdData;
-        kind.value = crdData.spec.names.kind;
-        scope.value = crdData.spec.scope;
-
-        // Find storage version
-        const sv = crdData.spec.versions.find((v) => v.storage);
-        if (!sv) {
-          error.value = "No storage version found in CRD";
+        // Fetch CRD info + schema from backend
+        const res = await apiGet<CRDGetResponse>(
+          `/v1/extensions/crds/${group}/${resource}`,
+        );
+        const crdResp = res.data;
+        if (!crdResp?.info) {
+          error.value = "CRD not found";
           return;
         }
-        storageVersion.value = sv.name;
 
-        // Extract spec schema
-        const rootSchema = sv.schema?.openAPIV3Schema;
+        crd.value = crdResp;
+        kind.value = crdResp.info.kind;
+        scope.value = crdResp.info.scope;
+        storageVersion.value = crdResp.info.version;
+
+        // Extract spec schema from the root schema
+        const rootSchema = crdResp.schema as SchemaProperty | null;
         if (rootSchema?.properties?.spec) {
           specSchema.value = rootSchema.properties.spec;
-        } else if (rootSchema?.["x-kubernetes-preserve-unknown-fields"]) {
-          // Graceful degradation tier 2: entire schema is preserve-unknown
+        } else if (
+          rootSchema?.["x-kubernetes-preserve-unknown-fields"]
+        ) {
           specSchema.value = null;
         } else {
-          // Graceful degradation tier 3: no schema
           specSchema.value = null;
         }
 
