@@ -40,9 +40,9 @@
     "npm:@opentelemetry/api@^1.9.0": "1.9.0",
     "npm:@preact/signals@^2.2.1": "2.8.2_preact@10.29.0",
     "npm:@preact/signals@^2.7.1": "2.8.2_preact@10.29.0",
-    "npm:@prefresh/vite@^2.4.8": "2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2",
+    "npm:@prefresh/vite@^2.4.8": "2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3",
     "npm:@tailwindcss/postcss@^4.1.10": "4.2.1",
-    "npm:@tailwindcss/vite@^4.1.10": "4.2.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2",
+    "npm:@tailwindcss/vite@^4.1.10": "4.2.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3",
     "npm:@xterm/addon-fit@0.10": "0.10.0_@xterm+xterm@5.5.0",
     "npm:@xterm/addon-web-links@0.11": "0.11.0_@xterm+xterm@5.5.0",
     "npm:@xterm/xterm@^5.5.0": "5.5.0",
@@ -59,8 +59,8 @@
     "npm:preact@^10.28.3": "10.29.0",
     "npm:rollup@^4.50.0": "4.59.0",
     "npm:tailwindcss@^4.1.10": "4.2.1",
-    "npm:vite@^7.1.4": "7.3.1_yaml@2.8.2",
-    "npm:yaml@^2.7.1": "2.8.2"
+    "npm:vite@^7.1.4": "7.3.1_yaml@2.8.3",
+    "npm:yaml@^2.8.3": "2.8.3"
   },
   "jsr": {
     "@deno/esbuild-plugin@1.2.1": {
@@ -919,7 +919,7 @@
     "@prefresh/utils@1.2.1": {
       "integrity": "sha512-vq/sIuN5nYfYzvyayXI4C2QkprfNaHUQ9ZX+3xLD8nL3rWyzpxOm1+K7RtMbhd+66QcaISViK7amjnheQ/4WZw=="
     },
-    "@prefresh/vite@2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2": {
+    "@prefresh/vite@2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3": {
       "integrity": "sha512-FY1fzXpUjiuosznMV0YM7XAOPZjB5FIdWS0W24+XnlxYkt9hNAwwsiKYn+cuTEoMtD/ZVazS5QVssBr9YhpCQA==",
       "dependencies": [
         "@babel/core",
@@ -1249,7 +1249,7 @@
         "tailwindcss@4.2.1"
       ]
     },
-    "@tailwindcss/vite@4.2.0_vite@7.3.1__yaml@2.8.2_yaml@2.8.2": {
+    "@tailwindcss/vite@4.2.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3": {
       "integrity": "sha512-da9mFCaHpoOgtQiWtDGIikTrSpUFBtIZCG3jy/u2BGV+l/X1/pbxzmIUxNt6JWm19N3WtGi4KlJdSH/Si83WOA==",
       "dependencies": [
         "@tailwindcss/node@4.2.0",
@@ -1678,7 +1678,7 @@
       ],
       "bin": true
     },
-    "vite@7.3.1_yaml@2.8.2": {
+    "vite@7.3.1_yaml@2.8.3": {
       "integrity": "sha512-w+N7Hifpc3gRjZ63vYBXA56dvvRlNWRczTdmCBBa+CotUzAPf5b7YMdMR/8CQoeYE5LX3W4wj6RYTgonm1b9DA==",
       "dependencies": [
         "esbuild@0.27.3",
@@ -1703,8 +1703,8 @@
     "yallist@3.1.1": {
       "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="
     },
-    "yaml@2.8.2": {
-      "integrity": "sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==",
+    "yaml@2.8.3": {
+      "integrity": "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg==",
       "bin": true
     }
   },
@@ -1733,7 +1733,7 @@
       "npm:fuse.js@^7.1.0",
       "npm:preact@^10.28.3",
       "npm:tailwindcss@^4.1.10",
-      "npm:yaml@^2.7.1"
+      "npm:yaml@^2.8.3"
     ]
   }
 }
