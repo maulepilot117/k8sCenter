@@ -303,6 +303,21 @@ func main() {
 		go clusterProber.Run(ctx)
 	}
 
+	// CRD Discovery and Handler
+	var crdHandler *resources.GenericCRDHandler
+	crdDiscovery, err := k8s.NewCRDDiscovery(k8sClient.BaseConfig(), k8sClient.BaseDynamicClient(), logger)
+	if err != nil {
+		logger.Warn("CRD discovery unavailable", "error", err)
+	} else {
+		crdDiscovery.Start(ctx)
+		crdHandler = &resources.GenericCRDHandler{
+			Discovery:     crdDiscovery,
+			ClusterRouter: clusterRouter,
+			AuditLogger:   auditLogger,
+			Logger:        logger,
+		}
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -331,6 +346,7 @@ func main() {
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
 		AlertingHandler:    alertHandler,
+		CRDHandler:         crdHandler,
 		WebhookRateLimiter: webhookRateLimiter,
 		AccessChecker:      accessChecker,
 		ReadyFn:            ready.Load,
