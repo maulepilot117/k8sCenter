@@ -95,6 +95,11 @@ rules:
     resources:
       - ciliumnetworkpolicies
     verbs: ["get", "list", "watch"]
+  # CRD discovery — list/watch CustomResourceDefinitions for Extensions Hub
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources:
+      - customresourcedefinitions
+    verbs: ["get", "list", "watch"]
   # SelfSubjectAccessReview for RBAC filtering
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
