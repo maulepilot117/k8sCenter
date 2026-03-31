@@ -821,7 +821,7 @@ function VariantSelector(
           value={value}
           onChange={onChange}
           required={required}
-          depth={depth}
+          depth={depth + 1}
         />
       )}
     </FieldWrapper>
