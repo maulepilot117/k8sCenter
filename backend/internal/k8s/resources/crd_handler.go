@@ -37,8 +37,8 @@ func (h *GenericCRDHandler) HandleListCRDs(w http.ResponseWriter, r *http.Reques
 	writeData(w, h.Discovery.ListCRDs())
 }
 
-// HandleGetCRD returns CRD metadata and full schema for a specific CRD.
-// The CRD name is derived as {resource}.{group} (e.g., certificates.cert-manager.io).
+// HandleGetCRD returns CRD metadata and the OpenAPI schema for a specific CRD.
+// Returns a combined response with CRDInfo + the storage version's schema.
 func (h *GenericCRDHandler) HandleGetCRD(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -69,7 +69,24 @@ func (h *GenericCRDHandler) HandleGetCRD(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writeData(w, crdObj)
+	// Extract the storage version's schema
+	var schemaObj interface{}
+	versions, _, _ := unstructured.NestedSlice(crdObj.Object, "spec", "versions")
+	for _, v := range versions {
+		vMap, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if storage, _, _ := unstructured.NestedBool(vMap, "storage"); storage {
+			schemaObj, _, _ = unstructured.NestedMap(vMap, "schema", "openAPIV3Schema")
+			break
+		}
+	}
+
+	writeData(w, map[string]interface{}{
+		"info":   info,
+		"schema": schemaObj,
+	})
 }
 
 // HandleCRDCounts returns cached instance counts for all discovered CRDs.
