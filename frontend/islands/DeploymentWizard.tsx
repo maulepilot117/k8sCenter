@@ -1,8 +1,10 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import {
   DNS_LABEL_REGEX,
   ENV_VAR_NAME_REGEX,
@@ -48,9 +50,7 @@ const STEPS = [
 ];
 
 function initialState(): DeploymentFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,
@@ -72,7 +72,7 @@ function initialState(): DeploymentFormState {
 export default function DeploymentWizard() {
   const currentStep = useSignal(0);
   const form = useSignal<DeploymentFormState>(initialState());
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespaces = useNamespaces();
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
 
@@ -81,31 +81,7 @@ export default function DeploymentWizard() {
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
 
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {
-        // Keep default
-      });
-  }, []);
-
-  // beforeunload guard
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;

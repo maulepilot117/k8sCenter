@@ -5,9 +5,9 @@ import { apiGet, apiPost } from "@/lib/api.ts";
 import {
   ACCESS_MODES,
   DNS_LABEL_REGEX,
-  type StorageClassItem,
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
+import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";

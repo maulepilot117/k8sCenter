@@ -1,7 +1,8 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPut } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
@@ -52,17 +53,8 @@ export default function SettingsPage() {
     fetchSettings();
   }, []);
 
-  // Beforeunload guard
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const dirty = dirtyMonitoring.value || dirtyAlerting.value;
-    if (!dirty) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, [dirtyMonitoring.value, dirtyAlerting.value]);
+  const dirty = useComputed(() => dirtyMonitoring.value || dirtyAlerting.value);
+  useDirtyGuard(dirty);
 
   async function fetchSettings() {
     try {

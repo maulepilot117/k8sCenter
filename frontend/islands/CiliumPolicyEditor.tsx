@@ -1,20 +1,18 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface LabelPair {
-  key: string;
-  value: string;
-}
+import type { LabelEntry } from "@/lib/wizard-types.ts";
 
 interface RuleRow {
   id: number;
   direction: "Ingress" | "Egress";
   peerType: "endpoints" | "entities" | "cidr";
-  labels: LabelPair[];
+  labels: LabelEntry[];
   entities: string[];
   cidrs: string;
   ports: string;
@@ -57,12 +55,10 @@ function newRule(): RuleRow {
 
 export default function CiliumPolicyEditor() {
   const name = useSignal("");
-  const initNs = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const initNs = initialNamespace();
   const namespace = useSignal(initNs);
-  const namespaces = useSignal<string[]>(["default"]);
-  const endpointSelector = useSignal<LabelPair[]>([{ key: "", value: "" }]);
+  const namespaces = useNamespaces();
+  const endpointSelector = useSignal<LabelEntry[]>([{ key: "", value: "" }]);
   const rules = useSignal<RuleRow[]>([newRule()]);
   const yamlPreview = useSignal("");
   const showYaml = useSignal(false);
@@ -70,18 +66,6 @@ export default function CiliumPolicyEditor() {
   const submitError = useSignal<string | null>(null);
   const submitSuccess = useSignal(false);
   const warnings = useSignal<PolicyWarning[]>([]);
-
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // Generate YAML preview (debounced, skip when hidden)
   useEffect(() => {
@@ -103,17 +87,10 @@ export default function CiliumPolicyEditor() {
     showYaml.value,
   ]);
 
-  // Warn on unsaved changes
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (name.value || rules.value.length > 1) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  const dirty = useComputed(() =>
+    Boolean(name.value || rules.value.length > 1)
+  );
+  useDirtyGuard(dirty);
 
   if (!IS_BROWSER) {
     return (
@@ -673,7 +650,7 @@ function PeerInput(
 function buildPayload(
   name: string,
   namespace: string,
-  selectorLabels: LabelPair[],
+  selectorLabels: LabelEntry[],
   ruleRows: RuleRow[],
 ) {
   const endpointSelector: Record<string, string> = {};
@@ -746,7 +723,7 @@ function yamlEscape(s: string): string {
 function buildPolicyYaml(
   name: string,
   namespace: string,
-  selectorLabels: LabelPair[],
+  selectorLabels: LabelEntry[],
   ruleRows: RuleRow[],
 ): string {
   const lines: string[] = [

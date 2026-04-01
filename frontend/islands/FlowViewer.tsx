@@ -2,7 +2,8 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
 interface FlowRecord {
@@ -77,12 +78,8 @@ function verdictBadgeClass(verdict: string): string {
 }
 
 export default function FlowViewer() {
-  const namespace = useSignal(
-    IS_BROWSER && selectedNamespace.value !== "all"
-      ? selectedNamespace.value
-      : "default",
-  );
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespace = useSignal(initialNamespace());
+  const namespaces = useNamespaces();
   const verdict = useSignal("");
   const flows = useSignal<FlowRecord[]>([]);
   const loading = useSignal(false);
@@ -110,18 +107,6 @@ export default function FlowViewer() {
       ? merged.slice(0, MAX_FLOWS)
       : merged;
   };
-
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // HTTP fallback fetch
   const fetchFlows = () => {

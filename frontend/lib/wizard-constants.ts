@@ -12,15 +12,6 @@ export const MIN_NODE_PORT = 30000;
 /** Maximum NodePort value (k8s default range). */
 export const MAX_NODE_PORT = 32767;
 
-/** Maximum number of ports per service. */
-export const MAX_PORTS = 20;
-
-/** Maximum number of environment variables per container. */
-export const MAX_ENV_VARS = 50;
-
-/** Maximum file upload size in bytes (2 MB, matches backend MaxBodySize). */
-export const MAX_BODY_BYTES = 2 * 1024 * 1024;
-
 /** Maximum probe path length. */
 export const MAX_PROBE_PATH_LENGTH = 1024;
 
@@ -49,11 +40,11 @@ export const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export const PORT_NAME_REGEX = /^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$|^[a-z0-9]$/;
 
-/** StorageClass item shape returned by the API. */
-export interface StorageClassItem {
-  metadata: { name: string };
-  provisioner?: string;
-}
+/** Protocol options for port selectors. */
+export const PROTOCOL_OPTIONS = [
+  { value: "TCP", label: "TCP" },
+  { value: "UDP", label: "UDP" },
+];
 
 /** PVC access mode options for wizard radio groups. */
 export const ACCESS_MODES = [
@@ -79,12 +70,12 @@ export const ACCESS_MODES = [
   },
 ];
 
+/** Restart policy options for Job and CronJob wizards. */
+export const RESTART_POLICY_OPTIONS = [
+  { value: "Never", label: "Never" },
+  { value: "OnFailure", label: "OnFailure" },
+];
+
 /** Standard Tailwind input class for wizard form fields. */
 export const WIZARD_INPUT_CLASS =
   "mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand";
-
-/** Label key-value pair for wizard label editors. */
-export interface LabelEntry {
-  key: string;
-  value: string;
-}

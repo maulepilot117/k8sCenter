@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
-import type { StorageClassItem } from "@/lib/wizard-constants.ts";
+import type { StorageClassItem } from "@/lib/wizard-types.ts";
 
 /** Fetches StorageClasses for dropdowns. Returns a signal of storage class items. */
 export function useStorageClasses() {

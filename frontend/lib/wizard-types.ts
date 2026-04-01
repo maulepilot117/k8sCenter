@@ -9,11 +9,26 @@ export interface LabelEntry {
   value: string;
 }
 
-/**
- * A key-value pair used for Kubernetes selectors.
- * Structurally identical to LabelEntry but semantically distinct.
- */
-export type SelectorEntry = LabelEntry;
+/** A container port entry used in workload wizards. */
+export interface PortEntry {
+  containerPort: number;
+  protocol: string;
+}
+
+/** An environment variable entry used in workload wizards. */
+export interface EnvVarEntry {
+  name: string;
+  value: string;
+  configMapRef: string;
+  secretRef: string;
+  key: string;
+}
+
+/** StorageClass item shape returned by the API. */
+export interface StorageClassItem {
+  metadata: { name: string };
+  provisioner?: string;
+}
 
 /** Health probe configuration for a container. */
 export interface ProbeState {

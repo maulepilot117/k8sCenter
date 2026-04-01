@@ -3,6 +3,7 @@ package resources
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -42,50 +43,102 @@ func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namesp
 // and returns a map of kind -> count. Only includes resources the user has
 // RBAC "list" permission for.
 //
-// Scaling note: the cluster-wide path calls Lister.List(labels.Everything()),
-// which allocates a full []*T slice just to take len(). For very large clusters
-// (10K+ pods) this creates GC pressure. A lower-allocation alternative is
-// Informer().GetStore().ListKeys() which returns only string keys, e.g.:
-//
-//	store := h.Informers.Factory().Core().V1().Pods().Informer().GetStore()
-//	counts["pods"] = len(store.ListKeys())
-//
-// However, ListKeys() ignores namespace scoping and label selectors, so it
-// can only replace the cluster-wide (else) branch. The namespace-scoped branch
-// must continue using List() for filtering. Kept as-is for now since both
-// paths share the same structure and the current approach is correct.
+// RBAC checks are parallelized — all SelfSubjectAccessReview calls run
+// concurrently, then the fast informer cache reads happen sequentially.
 func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace string) map[string]int {
-	counts := make(map[string]int)
 	sel := labels.Everything()
 
-	// --- Cluster-scoped resources (namespace param ignored) ---
+	// Build the list of resources to check. Cluster-scoped resources always
+	// use namespace="" for RBAC; namespace-scoped use the provided namespace.
+	type resourceCheck struct {
+		kind string
+		ns   string // namespace for RBAC check
+	}
 
-	if h.canList(ctx, user, "nodes", "") {
+	clusterScoped := []resourceCheck{
+		{"nodes", ""},
+		{"namespaces", ""},
+		{"persistentvolumes", ""},
+		{"storageclasses", ""},
+		{"clusterroles", ""},
+		{"clusterrolebindings", ""},
+	}
+
+	nsScoped := []resourceCheck{
+		{"deployments", namespace},
+		{"statefulsets", namespace},
+		{"daemonsets", namespace},
+		{"pods", namespace},
+		{"jobs", namespace},
+		{"cronjobs", namespace},
+		{"replicasets", namespace},
+		{"services", namespace},
+		{"ingresses", namespace},
+		{"networkpolicies", namespace},
+		{"configmaps", namespace},
+		// Secrets intentionally skipped (not in informer cache).
+		{"serviceaccounts", namespace},
+		{"resourcequotas", namespace},
+		{"limitranges", namespace},
+		{"persistentvolumeclaims", namespace},
+		{"roles", namespace},
+		{"rolebindings", namespace},
+		{"horizontalpodautoscalers", namespace},
+		{"poddisruptionbudgets", namespace},
+		{"endpoints", namespace},
+		{"endpointslices", namespace},
+	}
+
+	allChecks := append(clusterScoped, nsScoped...)
+
+	// Run all RBAC checks concurrently.
+	allowed := make([]bool, len(allChecks))
+	var wg sync.WaitGroup
+	wg.Add(len(allChecks))
+	for i, rc := range allChecks {
+		go func(idx int, kind, ns string) {
+			defer wg.Done()
+			allowed[idx] = h.canList(ctx, user, kind, ns)
+		}(i, rc.kind, rc.ns)
+	}
+	wg.Wait()
+
+	// Build permission set from parallel results.
+	canListKind := make(map[string]bool, len(allChecks))
+	for i, rc := range allChecks {
+		canListKind[rc.kind] = allowed[i]
+	}
+
+	counts := make(map[string]int)
+
+	// --- Cluster-scoped resources ---
+
+	if canListKind["nodes"] {
 		if items, err := h.Informers.Nodes().List(sel); err == nil {
 			counts["nodes"] = len(items)
 		}
 	}
-	if h.canList(ctx, user, "namespaces", "") {
+	if canListKind["namespaces"] {
 		if items, err := h.Informers.Namespaces().List(sel); err == nil {
 			counts["namespaces"] = len(items)
 		}
 	}
-	if h.canList(ctx, user, "persistentvolumes", "") {
+	if canListKind["persistentvolumes"] {
 		if items, err := h.Informers.PersistentVolumes().List(sel); err == nil {
 			counts["persistentvolumes"] = len(items)
 		}
 	}
-	if h.canList(ctx, user, "storageclasses", "") {
+	if canListKind["storageclasses"] {
 		if items, err := h.Informers.StorageClasses().List(sel); err == nil {
 			counts["storageclasses"] = len(items)
 		}
 	}
-	if h.canList(ctx, user, "clusterroles", "") {
+	if canListKind["clusterroles"] {
 		if items, err := h.Informers.ClusterRoles().List(sel); err == nil {
 			counts["clusterroles"] = len(items)
 		}
 	}
-	if h.canList(ctx, user, "clusterrolebindings", "") {
+	if canListKind["clusterrolebindings"] {
 		if items, err := h.Informers.ClusterRoleBindings().List(sel); err == nil {
 			counts["clusterrolebindings"] = len(items)
 		}
@@ -94,218 +147,213 @@ func (h *Handler) countResources(ctx context.Context, user *auth.User, namespace
 	// --- Namespace-scoped resources ---
 
 	if namespace != "" {
-		// Scoped to a single namespace
-		if h.canList(ctx, user, "deployments", namespace) {
+		if canListKind["deployments"] {
 			if items, err := h.Informers.Deployments().Deployments(namespace).List(sel); err == nil {
 				counts["deployments"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "statefulsets", namespace) {
+		if canListKind["statefulsets"] {
 			if items, err := h.Informers.StatefulSets().StatefulSets(namespace).List(sel); err == nil {
 				counts["statefulsets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "daemonsets", namespace) {
+		if canListKind["daemonsets"] {
 			if items, err := h.Informers.DaemonSets().DaemonSets(namespace).List(sel); err == nil {
 				counts["daemonsets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "pods", namespace) {
+		if canListKind["pods"] {
 			if items, err := h.Informers.Pods().Pods(namespace).List(sel); err == nil {
 				counts["pods"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "jobs", namespace) {
+		if canListKind["jobs"] {
 			if items, err := h.Informers.Jobs().Jobs(namespace).List(sel); err == nil {
 				counts["jobs"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "cronjobs", namespace) {
+		if canListKind["cronjobs"] {
 			if items, err := h.Informers.CronJobs().CronJobs(namespace).List(sel); err == nil {
 				counts["cronjobs"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "replicasets", namespace) {
+		if canListKind["replicasets"] {
 			if items, err := h.Informers.ReplicaSets().ReplicaSets(namespace).List(sel); err == nil {
 				counts["replicasets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "services", namespace) {
+		if canListKind["services"] {
 			if items, err := h.Informers.Services().Services(namespace).List(sel); err == nil {
 				counts["services"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "ingresses", namespace) {
+		if canListKind["ingresses"] {
 			if items, err := h.Informers.Ingresses().Ingresses(namespace).List(sel); err == nil {
 				counts["ingresses"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "networkpolicies", namespace) {
+		if canListKind["networkpolicies"] {
 			if items, err := h.Informers.NetworkPolicies().NetworkPolicies(namespace).List(sel); err == nil {
 				counts["networkpolicies"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "configmaps", namespace) {
+		if canListKind["configmaps"] {
 			if items, err := h.Informers.ConfigMaps().ConfigMaps(namespace).List(sel); err == nil {
 				counts["configmaps"] = len(items)
 			}
 		}
-		// Secrets are intentionally NOT cached in the informer to avoid holding
-		// all cluster secrets in process memory. Skipped from counts.
-		if h.canList(ctx, user, "serviceaccounts", namespace) {
+		if canListKind["serviceaccounts"] {
 			if items, err := h.Informers.ServiceAccounts().ServiceAccounts(namespace).List(sel); err == nil {
 				counts["serviceaccounts"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "resourcequotas", namespace) {
+		if canListKind["resourcequotas"] {
 			if items, err := h.Informers.ResourceQuotas().ResourceQuotas(namespace).List(sel); err == nil {
 				counts["resourcequotas"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "limitranges", namespace) {
+		if canListKind["limitranges"] {
 			if items, err := h.Informers.LimitRanges().LimitRanges(namespace).List(sel); err == nil {
 				counts["limitranges"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "persistentvolumeclaims", namespace) {
+		if canListKind["persistentvolumeclaims"] {
 			if items, err := h.Informers.PersistentVolumeClaims().PersistentVolumeClaims(namespace).List(sel); err == nil {
 				counts["persistentvolumeclaims"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "roles", namespace) {
+		if canListKind["roles"] {
 			if items, err := h.Informers.Roles().Roles(namespace).List(sel); err == nil {
 				counts["roles"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "rolebindings", namespace) {
+		if canListKind["rolebindings"] {
 			if items, err := h.Informers.RoleBindings().RoleBindings(namespace).List(sel); err == nil {
 				counts["rolebindings"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "horizontalpodautoscalers", namespace) {
+		if canListKind["horizontalpodautoscalers"] {
 			if items, err := h.Informers.HorizontalPodAutoscalers().HorizontalPodAutoscalers(namespace).List(sel); err == nil {
 				counts["horizontalpodautoscalers"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "poddisruptionbudgets", namespace) {
+		if canListKind["poddisruptionbudgets"] {
 			if items, err := h.Informers.PodDisruptionBudgets().PodDisruptionBudgets(namespace).List(sel); err == nil {
 				counts["poddisruptionbudgets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "endpoints", namespace) {
+		if canListKind["endpoints"] {
 			if items, err := h.Informers.Endpoints().Endpoints(namespace).List(sel); err == nil {
 				counts["endpoints"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "endpointslices", namespace) {
+		if canListKind["endpointslices"] {
 			if items, err := h.Informers.EndpointSlices().EndpointSlices(namespace).List(sel); err == nil {
 				counts["endpointslices"] = len(items)
 			}
 		}
 	} else {
-		// Cluster-wide (all namespaces)
-		if h.canList(ctx, user, "deployments", "") {
+		if canListKind["deployments"] {
 			if items, err := h.Informers.Deployments().List(sel); err == nil {
 				counts["deployments"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "statefulsets", "") {
+		if canListKind["statefulsets"] {
 			if items, err := h.Informers.StatefulSets().List(sel); err == nil {
 				counts["statefulsets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "daemonsets", "") {
+		if canListKind["daemonsets"] {
 			if items, err := h.Informers.DaemonSets().List(sel); err == nil {
 				counts["daemonsets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "pods", "") {
+		if canListKind["pods"] {
 			if items, err := h.Informers.Pods().List(sel); err == nil {
 				counts["pods"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "jobs", "") {
+		if canListKind["jobs"] {
 			if items, err := h.Informers.Jobs().List(sel); err == nil {
 				counts["jobs"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "cronjobs", "") {
+		if canListKind["cronjobs"] {
 			if items, err := h.Informers.CronJobs().List(sel); err == nil {
 				counts["cronjobs"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "replicasets", "") {
+		if canListKind["replicasets"] {
 			if items, err := h.Informers.ReplicaSets().List(sel); err == nil {
 				counts["replicasets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "services", "") {
+		if canListKind["services"] {
 			if items, err := h.Informers.Services().List(sel); err == nil {
 				counts["services"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "ingresses", "") {
+		if canListKind["ingresses"] {
 			if items, err := h.Informers.Ingresses().List(sel); err == nil {
 				counts["ingresses"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "networkpolicies", "") {
+		if canListKind["networkpolicies"] {
 			if items, err := h.Informers.NetworkPolicies().List(sel); err == nil {
 				counts["networkpolicies"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "configmaps", "") {
+		if canListKind["configmaps"] {
 			if items, err := h.Informers.ConfigMaps().List(sel); err == nil {
 				counts["configmaps"] = len(items)
 			}
 		}
-		// Secrets intentionally skipped (not in informer cache).
-		if h.canList(ctx, user, "serviceaccounts", "") {
+		if canListKind["serviceaccounts"] {
 			if items, err := h.Informers.ServiceAccounts().List(sel); err == nil {
 				counts["serviceaccounts"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "resourcequotas", "") {
+		if canListKind["resourcequotas"] {
 			if items, err := h.Informers.ResourceQuotas().List(sel); err == nil {
 				counts["resourcequotas"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "limitranges", "") {
+		if canListKind["limitranges"] {
 			if items, err := h.Informers.LimitRanges().List(sel); err == nil {
 				counts["limitranges"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "persistentvolumeclaims", "") {
+		if canListKind["persistentvolumeclaims"] {
 			if items, err := h.Informers.PersistentVolumeClaims().List(sel); err == nil {
 				counts["persistentvolumeclaims"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "roles", "") {
+		if canListKind["roles"] {
 			if items, err := h.Informers.Roles().List(sel); err == nil {
 				counts["roles"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "rolebindings", "") {
+		if canListKind["rolebindings"] {
 			if items, err := h.Informers.RoleBindings().List(sel); err == nil {
 				counts["rolebindings"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "horizontalpodautoscalers", "") {
+		if canListKind["horizontalpodautoscalers"] {
 			if items, err := h.Informers.HorizontalPodAutoscalers().List(sel); err == nil {
 				counts["horizontalpodautoscalers"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "poddisruptionbudgets", "") {
+		if canListKind["poddisruptionbudgets"] {
 			if items, err := h.Informers.PodDisruptionBudgets().List(sel); err == nil {
 				counts["poddisruptionbudgets"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "endpoints", "") {
+		if canListKind["endpoints"] {
 			if items, err := h.Informers.Endpoints().List(sel); err == nil {
 				counts["endpoints"] = len(items)
 			}
 		}
-		if h.canList(ctx, user, "endpointslices", "") {
+		if canListKind["endpointslices"] {
 			if items, err := h.Informers.EndpointSlices().List(sel); err == nil {
 				counts["endpointslices"] = len(items)
 			}

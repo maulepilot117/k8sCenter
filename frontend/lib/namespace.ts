@@ -7,6 +7,14 @@
  * table islands (reads).
  */
 import { signal } from "@preact/signals";
+import { IS_BROWSER } from "fresh/runtime";
 
 /** Currently selected namespace. "all" = all namespaces. */
 export const selectedNamespace = signal<string>("all");
+
+/** Returns the currently selected namespace, or "default" during SSR / when "all" is selected. */
+export function initialNamespace(): string {
+  return IS_BROWSER && selectedNamespace.value !== "all"
+    ? selectedNamespace.value
+    : "default";
+}

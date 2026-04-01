@@ -2,7 +2,8 @@ import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-import type { SelectorEntry } from "@/lib/wizard-types.ts";
+import type { LabelEntry } from "@/lib/wizard-types.ts";
+import { PROTOCOL_OPTIONS } from "@/lib/wizard-constants.ts";
 
 interface PortEntry {
   name: string;
@@ -14,16 +15,11 @@ interface PortEntry {
 
 interface ServicePortsProps {
   ports: PortEntry[];
-  selector: SelectorEntry[];
+  selector: LabelEntry[];
   serviceType: string;
   errors: Record<string, string>;
   onChange: (field: string, value: unknown) => void;
 }
-
-const PROTOCOL_OPTIONS = [
-  { value: "TCP", label: "TCP" },
-  { value: "UDP", label: "UDP" },
-];
 
 export function ServicePortsStep({
   ports,

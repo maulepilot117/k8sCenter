@@ -2,7 +2,9 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
@@ -39,9 +41,7 @@ const STEPS = [
 ];
 
 function initialState(clusterScoped: boolean): BindingFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: clusterScoped ? "" : ns,
@@ -60,7 +60,7 @@ export default function RoleBindingWizard(
   const dirty = useSignal(false);
 
   // Data for dropdowns
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespaces = useNamespaces();
   const roles = useSignal<RoleItem[]>([]);
   const clusterRoles = useSignal<RoleItem[]>([]);
   const localUsers = useSignal<LocalUser[]>([]);
@@ -71,18 +71,6 @@ export default function RoleBindingWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
-
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // Fetch roles when namespace changes (for namespaced bindings)
   useEffect(() => {
@@ -115,17 +103,7 @@ export default function RoleBindingWizard(
       .catch(() => {});
   }, []);
 
-  // beforeunload guard
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;

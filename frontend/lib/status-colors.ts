@@ -11,7 +11,7 @@ export type StatusVariant =
   | "info"
   | "neutral";
 
-export const VARIANT_CLASSES: Record<StatusVariant, string> = {
+const VARIANT_CLASSES: Record<StatusVariant, string> = {
   success: "bg-success/10 text-success ring-success/20",
   warning: "bg-warning/10 text-warning ring-warning/20",
   danger: "bg-danger/10 text-danger ring-danger/20",
@@ -53,7 +53,7 @@ const DANGER_STATUSES = new Set([
 const NEUTRAL_STATUSES = new Set(["unknown", "not ready"]);
 
 /** Maps a k8s status string to a semantic variant. */
-export function statusVariant(status: string): StatusVariant {
+function statusVariant(status: string): StatusVariant {
   const s = status.toLowerCase();
   if (SUCCESS_STATUSES.has(s)) return "success";
   if (WARNING_STATUSES.has(s)) return "warning";

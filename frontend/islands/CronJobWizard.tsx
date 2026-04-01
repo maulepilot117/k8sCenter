@@ -2,8 +2,12 @@ import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
+import {
+  DNS_LABEL_REGEX,
+  RESTART_POLICY_OPTIONS,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
@@ -61,11 +65,6 @@ const CONCURRENCY_OPTIONS = [
   { value: "Replace", label: "Replace" },
 ];
 
-const RESTART_POLICY_OPTIONS = [
-  { value: "Never", label: "Never" },
-  { value: "OnFailure", label: "OnFailure" },
-];
-
 function cronToHuman(cron: string): string {
   const trimmed = cron.trim();
   if (trimmed === "0 * * * *") return "Every hour, at minute 0";
@@ -76,9 +75,7 @@ function cronToHuman(cron: string): string {
 }
 
 function initialState(): CronJobFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,
