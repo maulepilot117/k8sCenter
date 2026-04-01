@@ -95,7 +95,9 @@ export default function SchemaForm(
         : "default"),
   );
   const formLabels = useSignal<Array<{ key: string; value: string }>>([]);
+  const formAnnotations = useSignal<Array<{ key: string; value: string }>>([]);
   const formSpec = useSignal<Record<string, unknown>>({});
+  const resourceVersion = useSignal<string>("");
   const namespaces = useSignal<string[]>(["default"]);
 
   // ── Fetch CRD schema ─────────────────────────────────────────────────
@@ -162,6 +164,14 @@ export default function SchemaForm(
               formLabels.value = Object.entries(
                 meta.labels as Record<string, string>,
               ).map(([k, v]) => ({ key: k, value: v }));
+            }
+            if (meta?.annotations && typeof meta.annotations === "object") {
+              formAnnotations.value = Object.entries(
+                meta.annotations as Record<string, string>,
+              ).map(([k, v]) => ({ key: k, value: v }));
+            }
+            if (meta?.resourceVersion) {
+              resourceVersion.value = meta.resourceVersion as string;
             }
             if (instance.spec && typeof instance.spec === "object") {
               formSpec.value = instance.spec as Record<string, unknown>;
@@ -238,6 +248,10 @@ export default function SchemaForm(
     for (const { key, value } of formLabels.value) {
       if (key) labels[key] = value;
     }
+    const annotations: Record<string, string> = {};
+    for (const { key, value } of formAnnotations.value) {
+      if (key) annotations[key] = value;
+    }
     const apiVersion = `${group}/${storageVersion.value}`;
     return formStateToYaml(
       apiVersion,
@@ -248,6 +262,9 @@ export default function SchemaForm(
           ? formNamespace.value
           : undefined,
         labels: Object.keys(labels).length > 0 ? labels : undefined,
+        annotations: Object.keys(annotations).length > 0
+          ? annotations
+          : undefined,
       },
       formSpec.value,
     );
@@ -260,6 +277,10 @@ export default function SchemaForm(
     for (const { key, value } of formLabels.value) {
       if (key) labels[key] = value;
     }
+    const annotations: Record<string, string> = {};
+    for (const { key, value } of formAnnotations.value) {
+      if (key) annotations[key] = value;
+    }
     const body: Record<string, unknown> = {
       apiVersion: `${group}/${storageVersion.value}`,
       kind: kind.value,
@@ -269,6 +290,10 @@ export default function SchemaForm(
           ? { namespace: formNamespace.value }
           : {}),
         ...(Object.keys(labels).length > 0 ? { labels } : {}),
+        ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+        ...(mode === "edit" && resourceVersion.value
+          ? { resourceVersion: resourceVersion.value }
+          : {}),
       },
     };
     if (Object.keys(formSpec.value).length > 0) {
@@ -283,7 +308,10 @@ export default function SchemaForm(
     formNamespace,
     scope,
     formLabels,
+    formAnnotations,
     formSpec,
+    mode,
+    resourceVersion,
   ]);
 
   // ── Actions ──────────────────────────────────────────────────────────
@@ -307,10 +335,17 @@ export default function SchemaForm(
         showToast(`Created ${formName.value}`, "success");
         globalThis.location.href = `/extensions/${group}/${resource}`;
       } else {
-        await apiPut(
+        const res = await apiPut<Record<string, unknown>>(
           `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
           body,
         );
+        // Update resourceVersion so subsequent saves don't 409
+        const resMeta = res.data?.metadata as
+          | Record<string, unknown>
+          | undefined;
+        if (resMeta?.resourceVersion) {
+          resourceVersion.value = resMeta.resourceVersion as string;
+        }
         showToast(`Updated ${formName.value}`, "success");
       }
     } catch (err) {
@@ -682,6 +717,131 @@ export default function SchemaForm(
               }}
             >
               + Add Label
+            </button>
+          </div>
+
+          {/* ── Annotations Section ─────────────────────────────────── */}
+          <div style={sectionHeaderStyle}>
+            <span>Annotations</span>
+            <div
+              style={{
+                flex: 1,
+                height: "1px",
+                background: "var(--border-subtle)",
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              marginBottom: "16px",
+            }}
+          >
+            {formAnnotations.value.map((annotation, idx) => {
+              const isDuplicate = annotation.key !== "" &&
+                formAnnotations.value.some((a, i) =>
+                  i !== idx && a.key === annotation.key
+                );
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    gap: "6px",
+                    alignItems: "flex-start",
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="key"
+                    style={{
+                      ...inputStyle,
+                      flex: 1,
+                      ...(isDuplicate
+                        ? {
+                          borderColor: "var(--error)",
+                          boxShadow: "0 0 0 1px var(--error)",
+                        }
+                        : {}),
+                    }}
+                    value={annotation.key}
+                    title={isDuplicate ? "Duplicate key" : undefined}
+                    onInput={(e) => {
+                      const next = [...formAnnotations.value];
+                      next[idx] = {
+                        ...next[idx],
+                        key: (e.target as HTMLInputElement).value,
+                      };
+                      formAnnotations.value = next;
+                    }}
+                  />
+                  <textarea
+                    placeholder="value"
+                    rows={1}
+                    style={{
+                      ...inputStyle,
+                      flex: 1,
+                      resize: "vertical",
+                      minHeight: "32px",
+                      lineHeight: "1.4",
+                    }}
+                    value={annotation.value}
+                    onInput={(e) => {
+                      const next = [...formAnnotations.value];
+                      next[idx] = {
+                        ...next[idx],
+                        value: (e.target as HTMLTextAreaElement).value,
+                      };
+                      formAnnotations.value = next;
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      formAnnotations.value = formAnnotations.value.filter(
+                        (_, i) => i !== idx,
+                      );
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      padding: "4px 8px",
+                      fontSize: "14px",
+                      color: "var(--error)",
+                      cursor: "pointer",
+                      lineHeight: 1,
+                      flexShrink: 0,
+                      marginTop: "4px",
+                    }}
+                    title="Remove"
+                  >
+                    &times;
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => {
+                formAnnotations.value = [...formAnnotations.value, {
+                  key: "",
+                  value: "",
+                }];
+              }}
+              style={{
+                background: "none",
+                border: "1px dashed var(--border-primary)",
+                borderRadius: "6px",
+                padding: "6px 12px",
+                fontSize: "12px",
+                color: "var(--accent)",
+                cursor: "pointer",
+              }}
+            >
+              + Add Annotation
             </button>
           </div>
 
