@@ -3,19 +3,15 @@ import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { useAuth } from "@/lib/auth.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { apiGet } from "@/lib/api.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import ThemeSelector from "@/islands/ThemeSelector.tsx";
 
-interface NamespaceMeta {
-  metadata: { name: string };
-}
-
 export default function TopBarV2() {
   const { user, logout, fetchCurrentUser, refreshPermissions } = useAuth();
-  const namespaces = useSignal<string[]>([]);
+  const namespaces = useNamespaces();
   const showUserMenu = useSignal(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -31,20 +27,6 @@ export default function TopBarV2() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchCurrentUser();
-  }, []);
-
-  // Load namespaces on mount
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<NamespaceMeta[]>("/v1/resources/namespaces")
-      .then((res) => {
-        namespaces.value = Array.isArray(res.data)
-          ? res.data.map((ns) => ns.metadata.name)
-          : [];
-      })
-      .catch(() => {
-        // Silently fail -- namespace list is non-critical
-      });
   }, []);
 
   // Close user menu on outside click

@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import {
   ACCESS_MODES,
   DNS_LABEL_REGEX,
@@ -23,19 +23,7 @@ import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
-
-interface PortEntry {
-  containerPort: number;
-  protocol: string;
-}
-
-interface EnvVarEntry {
-  name: string;
-  value: string;
-  configMapRef: string;
-  secretRef: string;
-  key: string;
-}
+import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 interface VolumeClaimEntry {
   name: string;
@@ -77,9 +65,7 @@ const POD_MANAGEMENT_OPTIONS = [
 ];
 
 function initialState(): StatefulSetFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,

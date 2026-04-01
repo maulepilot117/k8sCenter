@@ -2,19 +2,7 @@ import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
-
-interface PortEntry {
-  containerPort: number;
-  protocol: string;
-}
-
-interface EnvVarEntry {
-  name: string;
-  value: string;
-  configMapRef: string;
-  secretRef: string;
-  key: string;
-}
+import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 export interface ContainerFormProps {
   image: string;

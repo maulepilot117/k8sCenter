@@ -1,7 +1,9 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPost } from "@/lib/api.ts";
+import { apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
@@ -61,7 +63,7 @@ export default function CiliumPolicyEditor() {
     ? selectedNamespace.value
     : "default";
   const namespace = useSignal(initNs);
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespaces = useNamespaces();
   const endpointSelector = useSignal<LabelPair[]>([{ key: "", value: "" }]);
   const rules = useSignal<RuleRow[]>([newRule()]);
   const yamlPreview = useSignal("");
@@ -70,18 +72,6 @@ export default function CiliumPolicyEditor() {
   const submitError = useSignal<string | null>(null);
   const submitSuccess = useSignal(false);
   const warnings = useSignal<PolicyWarning[]>([]);
-
-  // Fetch namespaces
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    apiGet<Array<{ metadata: { name: string } }>>("/v1/resources/namespaces")
-      .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          namespaces.value = resp.data.map((ns) => ns.metadata.name).sort();
-        }
-      })
-      .catch(() => {});
-  }, []);
 
   // Generate YAML preview (debounced, skip when hidden)
   useEffect(() => {
@@ -103,17 +93,10 @@ export default function CiliumPolicyEditor() {
     showYaml.value,
   ]);
 
-  // Warn on unsaved changes
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (name.value || rules.value.length > 1) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  const dirty = useComputed(() =>
+    Boolean(name.value || rules.value.length > 1)
+  );
+  useDirtyGuard(dirty);
 
   if (!IS_BROWSER) {
     return (

@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import {
   DNS_LABEL_REGEX,
   ENV_VAR_NAME_REGEX,
@@ -16,19 +16,8 @@ import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-
-interface PortEntry {
-  containerPort: number;
-  protocol: string;
-}
-
-interface EnvVarEntry {
-  name: string;
-  value: string;
-  configMapRef: string;
-  secretRef: string;
-  key: string;
-}
+import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
+import { RESTART_POLICY_OPTIONS } from "@/lib/wizard-constants.ts";
 
 interface JobFormState {
   name: string;
@@ -55,15 +44,8 @@ const STEPS = [
   { title: "Review" },
 ];
 
-const RESTART_POLICY_OPTIONS = [
-  { value: "Never", label: "Never" },
-  { value: "OnFailure", label: "OnFailure" },
-];
-
 function initialState(): JobFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,

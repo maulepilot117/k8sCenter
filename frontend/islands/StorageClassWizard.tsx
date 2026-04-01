@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -70,15 +71,7 @@ export default function StorageClassWizard() {
       .catch(() => {});
   }, []);
 
-  // beforeunload guard
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value) e.preventDefault();
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  useDirtyGuard(dirty);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;

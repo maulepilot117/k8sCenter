@@ -1,7 +1,8 @@
-import { useSignal } from "@preact/signals";
+import { useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -48,17 +49,8 @@ export default function UserWizard() {
     usernameRef.current?.focus();
   }, []);
 
-  // beforeunload guard
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (dirty.value && !created.value) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  const shouldGuard = useComputed(() => dirty.value && !created.value);
+  useDirtyGuard(shouldGuard);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;

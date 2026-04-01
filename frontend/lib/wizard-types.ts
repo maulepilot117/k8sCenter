@@ -15,6 +15,21 @@ export interface LabelEntry {
  */
 export type SelectorEntry = LabelEntry;
 
+/** A container port entry used in workload wizards. */
+export interface PortEntry {
+  containerPort: number;
+  protocol: string;
+}
+
+/** An environment variable entry used in workload wizards. */
+export interface EnvVarEntry {
+  name: string;
+  value: string;
+  configMapRef: string;
+  secretRef: string;
+  key: string;
+}
+
 /** Health probe configuration for a container. */
 export interface ProbeState {
   type: string;

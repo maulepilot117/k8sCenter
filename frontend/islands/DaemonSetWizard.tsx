@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import {
   DNS_LABEL_REGEX,
   ENV_VAR_NAME_REGEX,
@@ -17,19 +17,7 @@ import { Button } from "@/components/ui/Button.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
-
-interface PortEntry {
-  containerPort: number;
-  protocol: string;
-}
-
-interface EnvVarEntry {
-  name: string;
-  value: string;
-  configMapRef: string;
-  secretRef: string;
-  key: string;
-}
+import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 interface NodeSelectorEntry {
   key: string;
@@ -60,9 +48,7 @@ const STEPS = [
 ];
 
 function initialState(): DaemonSetFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,

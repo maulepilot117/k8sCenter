@@ -2,6 +2,7 @@ import { useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPostRaw } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { RESOURCE_API_KINDS, RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import {
   type ActionId,
@@ -151,22 +152,13 @@ export default function ResourceDetail({
   };
 
   // Dirty state navigation guard (D9)
-  // Uses a ref to track latest yamlContent so the handler always has current state,
-  // while only registering the event listener once.
+  // Uses a ref to track the original yamlContent so the computed dirty signal
+  // can compare against it.
   const yamlContentRef = useRef("");
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const handler = (e: BeforeUnloadEvent) => {
-      if (
-        yamlEditing.value &&
-        yamlEditContent.value !== yamlContentRef.current
-      ) {
-        e.preventDefault();
-      }
-    };
-    globalThis.addEventListener("beforeunload", handler);
-    return () => globalThis.removeEventListener("beforeunload", handler);
-  }, []);
+  const yamlDirty = useComputed(() =>
+    yamlEditing.value && yamlEditContent.value !== yamlContentRef.current
+  );
+  useDirtyGuard(yamlDirty);
 
   // Periodic tick to refresh age displays (every 30s)
   const tick = useSignal(0);
@@ -346,7 +338,7 @@ export default function ResourceDetail({
     }
   }, [resource.value, showManagedFields.value]);
 
-  // Keep ref in sync for the beforeunload handler
+  // Keep ref in sync for the dirty guard computed signal
   yamlContentRef.current = yamlContent;
 
   // Build back-to-list URL
@@ -698,8 +690,8 @@ export default function ResourceDetail({
             justifyContent: "center",
             flexShrink: 0,
             background:
-              "linear-gradient(135deg, rgba(0, 194, 255, 0.15), rgba(0, 194, 255, 0.05))",
-            border: "1px solid rgba(0, 194, 255, 0.3)",
+              "linear-gradient(135deg, var(--accent-glow), var(--accent-dim))",
+            border: "1px solid var(--accent-glow)",
             color: "var(--accent)",
           }}
         >
@@ -774,7 +766,7 @@ export default function ResourceDetail({
                     fontSize: "12px",
                     fontWeight: 500,
                     border: isDanger
-                      ? "1px solid rgba(255, 82, 82, 0.3)"
+                      ? "1px solid var(--error-dim)"
                       : "1px solid var(--border-primary)",
                     background: "transparent",
                     color: isDanger ? "var(--error)" : "var(--text-secondary)",

@@ -75,53 +75,58 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	summary := DashboardSummary{}
+	ctx := r.Context()
 
-	// Node counts from informer (cluster-scoped: namespace="")
-	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", ""); allowed {
-		nodes, err := h.Informers.Nodes().List(labels.Everything())
-		if err == nil {
-			summary.Nodes.Total = len(nodes)
-			for _, n := range nodes {
-				for _, c := range n.Status.Conditions {
-					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-						summary.Nodes.Ready++
-						break
-					}
-				}
+	// Fetch nodes and pods once from informer cache — reused for both counts and utilization.
+	var nodes []*corev1.Node
+	var pods []*corev1.Pod
+
+	if h.canList(ctx, user, "nodes", "") {
+		if n, err := h.Informers.Nodes().List(labels.Everything()); err == nil {
+			nodes = n
+		}
+	}
+	if h.canList(ctx, user, "pods", "") {
+		if p, err := h.Informers.Pods().List(labels.Everything()); err == nil {
+			pods = p
+		}
+	}
+
+	// Node counts
+	summary.Nodes.Total = len(nodes)
+	for _, n := range nodes {
+		for _, c := range n.Status.Conditions {
+			if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+				summary.Nodes.Ready++
+				break
 			}
 		}
 	}
 
-	// Pod counts from informer (cluster-wide)
-	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ""); allowed {
-		pods, err := h.Informers.Pods().List(labels.Everything())
-		if err == nil {
-			summary.Pods.Total = len(pods)
-			for _, p := range pods {
-				switch p.Status.Phase {
-				case corev1.PodRunning:
-					summary.Pods.Running++
-				case corev1.PodPending:
-					summary.Pods.Pending++
-				case corev1.PodFailed:
-					summary.Pods.Failed++
-				}
-			}
+	// Pod phase counts
+	summary.Pods.Total = len(pods)
+	for _, p := range pods {
+		switch p.Status.Phase {
+		case corev1.PodRunning:
+			summary.Pods.Running++
+		case corev1.PodPending:
+			summary.Pods.Pending++
+		case corev1.PodFailed:
+			summary.Pods.Failed++
 		}
 	}
 
-	// Service count from informer (cluster-wide)
-	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "services", ""); allowed {
-		services, err := h.Informers.Services().List(labels.Everything())
-		if err == nil {
+	// Service count
+	if h.canList(ctx, user, "services", "") {
+		if services, err := h.Informers.Services().List(labels.Everything()); err == nil {
 			summary.Services.Total = len(services)
 		}
 	}
 
-	// Alert counts from alerting store
+	// Alert counts
 	if h.Alerts != nil {
-		if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "alertmanagers", ""); allowed {
-			active, critical, err := h.Alerts.ActiveAlertCounts(r.Context())
+		if h.canList(ctx, user, "alertmanagers", "") {
+			active, critical, err := h.Alerts.ActiveAlertCounts(ctx)
 			if err == nil {
 				summary.Alerts.Active = active
 				summary.Alerts.Critical = critical
@@ -129,49 +134,35 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Aggregate resource requests/limits from all pod containers and node allocatable.
-	// This data comes directly from the Kubernetes API (informer cache), not Prometheus.
+	// Aggregate resource requests/limits from cached node and pod lists.
 	var cpuRequests, cpuLimits, memRequests, memLimits resource.Quantity
 	var cpuAllocatable, memAllocatable resource.Quantity
 
-	// Sum node allocatable
-	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "nodes", ""); allowed {
-		nodes, err := h.Informers.Nodes().List(labels.Everything())
-		if err == nil {
-			for _, n := range nodes {
-				if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
-					cpuAllocatable.Add(cpu)
-				}
-				if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
-					memAllocatable.Add(mem)
-				}
-			}
+	for _, n := range nodes {
+		if cpu, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
+			cpuAllocatable.Add(cpu)
+		}
+		if mem, ok := n.Status.Allocatable[corev1.ResourceMemory]; ok {
+			memAllocatable.Add(mem)
 		}
 	}
 
-	// Sum pod container requests/limits
-	if allowed, _ := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ""); allowed {
-		pods, err := h.Informers.Pods().List(labels.Everything())
-		if err == nil {
-			for _, p := range pods {
-				// Only count running/pending pods, not completed/failed
-				if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
-					continue
-				}
-				for _, c := range p.Spec.Containers {
-					if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
-						cpuRequests.Add(req)
-					}
-					if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
-						cpuLimits.Add(lim)
-					}
-					if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
-						memRequests.Add(req)
-					}
-					if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
-						memLimits.Add(lim)
-					}
-				}
+	for _, p := range pods {
+		if p.Status.Phase != corev1.PodRunning && p.Status.Phase != corev1.PodPending {
+			continue
+		}
+		for _, c := range p.Spec.Containers {
+			if req, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				cpuRequests.Add(req)
+			}
+			if lim, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+				cpuLimits.Add(lim)
+			}
+			if req, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				memRequests.Add(req)
+			}
+			if lim, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+				memLimits.Add(lim)
 			}
 		}
 	}

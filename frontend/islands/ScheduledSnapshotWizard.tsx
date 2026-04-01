@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -53,9 +53,7 @@ function cronToHuman(cron: string): string {
 }
 
 function initialState(): ScheduledSnapshotFormState {
-  const ns = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const ns = initialNamespace();
   return {
     name: "",
     namespace: ns,
