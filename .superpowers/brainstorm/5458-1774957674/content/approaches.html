@@ -1,0 +1,71 @@
+<h2>CRD Management: Three Approaches</h2>
+<p class="subtitle">How should custom resources fit into k8sCenter's navigation and UX?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Extensions Domain — Dedicated 9th Section</h3>
+      <p>Add a new <strong>"Extensions"</strong> icon rail section alongside Workloads, Networking, etc. Auto-discovers all CRDs at startup and groups them by API group (e.g., <code>cilium.io</code>, <code>cert-manager.io</code>, <code>argoproj.io</code>). Each API group becomes a collapsible section with its resource types as tabs.</p>
+      <p>Users can <strong>pin</strong> frequently-used CRDs to promote them into existing domain sections (e.g., pin Certificates into Security). Pinned resources appear as native tabs alongside built-in resources.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Clean separation — extensions don't clutter built-in sections</li>
+          <li>Natural home for discovery ("what CRDs exist?")</li>
+          <li>Pinning gives power users shortcuts without forcing organization</li>
+          <li>API group clustering gives immediate context</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>CRDs live "away" from related built-in resources by default</li>
+          <li>Extra click to reach extensions vs. built-in resources</li>
+          <li>Pinning adds UI complexity (pin management, sync state)</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Smart Routing — Auto-classify CRDs into Existing Domains</h3>
+      <p>No new section. Instead, k8sCenter <strong>intelligently classifies</strong> CRDs into existing domains based on API group heuristics. <code>cilium.io</code> → Networking, <code>cert-manager.io</code> → Security, <code>snapshot.storage.k8s.io</code> → Storage, etc. Unclassifiable CRDs go into an "Other" tab in a lightweight overflow section.</p>
+      <p>An <strong>"Extensions" overview page</strong> (accessible from the icon rail) shows ALL CRDs in one place for discovery, but the day-to-day tabs live within their natural domain.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>CRDs feel native — Certificates next to Secrets, Cilium policies next to NetworkPolicies</li>
+          <li>No context switching between "built-in" and "custom"</li>
+          <li>Discovery page still exists for exploration</li>
+          <li>Matches mental model ("this is a networking thing")</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Classification heuristics can be wrong — user override needed</li>
+          <li>Domain sections could get crowded with many CRDs</li>
+          <li>New operators might not map cleanly to existing domains</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Hybrid Hub — Extensions Section + Smart Suggestions</h3>
+      <p><strong>Recommended.</strong> Combines A and B. A dedicated <strong>"Extensions"</strong> section in the icon rail serves as the CRD hub — auto-discovers everything, groups by API group, shows CRD metadata (scope, versions, schema). From here, users can <strong>assign</strong> CRDs to existing domains with one click.</p>
+      <p>k8sCenter <strong>suggests</strong> domain assignments based on API group (e.g., "Assign <code>certificates.cert-manager.io</code> to Security?") but never forces it. Assigned CRDs appear as tabs in their domain. Unassigned CRDs remain accessible in Extensions.</p>
+      <p>The Extensions hub also shows a <strong>CRD health dashboard</strong> — which CRDs are installed, their versions, how many instances exist, and whether the backing operator is healthy.</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Best of both: dedicated discovery + contextual integration</li>
+          <li>User controls organization — suggestions, not assumptions</li>
+          <li>CRD health dashboard adds operational value beyond just browsing</li>
+          <li>Scales from 5 to 50 CRDs without getting overwhelming</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>Most complex to implement</li>
+          <li>Assignment state needs persistence (database or ConfigMap)</li>
+          <li>Suggestion engine needs heuristic tuning</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+</div>

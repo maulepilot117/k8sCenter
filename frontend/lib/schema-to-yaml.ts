@@ -173,6 +173,7 @@ export function formStateToYaml(
     name: string;
     namespace?: string;
     labels?: Record<string, string>;
+    annotations?: Record<string, string>;
   },
   spec: Record<string, unknown>,
 ): string {
@@ -187,6 +188,12 @@ export function formStateToYaml(
   if (metadata.labels && Object.keys(metadata.labels).length > 0) {
     lines.push("  labels:");
     for (const [k, v] of Object.entries(metadata.labels)) {
+      if (k) lines.push("    " + quoteString(k) + ": " + quoteString(v));
+    }
+  }
+  if (metadata.annotations && Object.keys(metadata.annotations).length > 0) {
+    lines.push("  annotations:");
+    for (const [k, v] of Object.entries(metadata.annotations)) {
       if (k) lines.push("    " + quoteString(k) + ": " + quoteString(v));
     }
   }

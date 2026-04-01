@@ -7,8 +7,9 @@ interface Props {
 
 /**
  * Regex-based YAML syntax highlighting.
- * The YAML content is generated from form state (not user input),
- * so dangerouslySetInnerHTML is safe here with proper HTML escaping.
+ * YAML content may include user-provided values (e.g. annotation keys/values).
+ * dangerouslySetInnerHTML is safe because escapeHtml() is applied to all raw
+ * content before HTML span construction.
  */
 function highlightLine(raw: string): string {
   const escaped = escapeHtml(raw);
