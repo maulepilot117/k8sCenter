@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import SchemaFormField from "@/islands/SchemaFormField.tsx";
 import YamlPreview from "@/islands/YamlPreview.tsx";
 import { inputStyle, selectStyle } from "@/lib/form-styles.ts";
+import type { Signal } from "@preact/signals";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -28,6 +29,54 @@ interface CRDGetResponse {
 }
 
 type ViewMode = "form" | "yaml";
+
+interface KVEntry {
+  id: number;
+  key: string;
+  value: string;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Convert key-value entries to a Record, skipping empty and dangerous keys. */
+function toRecord(
+  entries: Array<{ key: string; value: string }>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const { key, value } of entries) {
+    if (key && !DANGEROUS_KEYS.has(key)) out[key] = value;
+  }
+  return out;
+}
+
+/** Find duplicate keys in a key-value entry list. O(n). */
+function findDuplicateKeys(
+  entries: Array<{ key: string }>,
+): Set<string> {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const { key } of entries) {
+    if (key !== "") {
+      if (seen.has(key)) dupes.add(key);
+      seen.add(key);
+    }
+  }
+  return dupes;
+}
+
+let nextEntryId = 1;
+
+function entriesToKV(
+  record: Record<string, string>,
+): KVEntry[] {
+  return Object.entries(record).map(([k, v]) => ({
+    id: nextEntryId++,
+    key: k,
+    value: v,
+  }));
+}
 
 // ── Styles ──────────────────────────────────────────────────────────────
 
@@ -66,6 +115,175 @@ const btnSecondaryStyle: Record<string, string | number> = {
   cursor: "pointer",
 };
 
+const kvContainerStyle: Record<string, string | number> = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "6px",
+  marginBottom: "16px",
+};
+
+const kvRowStyle: Record<string, string | number> = {
+  display: "flex",
+  gap: "6px",
+  alignItems: "flex-start",
+};
+
+const kvKeyStyle: Record<string, string | number> = {
+  ...inputStyle,
+  flex: 1,
+};
+
+const kvKeyErrorStyle: Record<string, string | number> = {
+  ...inputStyle,
+  flex: 1,
+  borderColor: "var(--error)",
+  boxShadow: "0 0 0 1px var(--error)",
+};
+
+const kvValueInputStyle: Record<string, string | number> = {
+  ...inputStyle,
+  flex: 1,
+};
+
+const kvValueTextareaStyle: Record<string, string | number> = {
+  ...inputStyle,
+  flex: 1,
+  resize: "vertical",
+  minHeight: "32px",
+  lineHeight: "1.4",
+};
+
+const kvRemoveBtnStyle: Record<string, string | number> = {
+  background: "none",
+  border: "none",
+  padding: "4px 8px",
+  fontSize: "14px",
+  color: "var(--error)",
+  cursor: "pointer",
+  lineHeight: 1,
+  flexShrink: 0,
+};
+
+const kvAddBtnStyle: Record<string, string | number> = {
+  background: "none",
+  border: "1px dashed var(--border-primary)",
+  borderRadius: "6px",
+  padding: "6px 12px",
+  fontSize: "12px",
+  color: "var(--accent)",
+  cursor: "pointer",
+};
+
+// ── Shared Key-Value Section ────────────────────────────────────────────
+
+function KeyValueSection(
+  { title, signal, addLabel, useTextarea }: {
+    title: string;
+    signal: Signal<KVEntry[]>;
+    addLabel: string;
+    useTextarea?: boolean;
+  },
+) {
+  const entries = signal.value;
+  const duplicateKeys = findDuplicateKeys(entries);
+
+  return (
+    <>
+      <div style={sectionHeaderStyle}>
+        <span>{title}</span>
+        <div
+          style={{
+            flex: 1,
+            height: "1px",
+            background: "var(--border-subtle)",
+          }}
+        />
+      </div>
+
+      <div style={kvContainerStyle}>
+        {entries.map((entry, idx) => {
+          const isDuplicate = duplicateKeys.has(entry.key);
+          return (
+            <div key={entry.id} style={kvRowStyle}>
+              <input
+                type="text"
+                placeholder="key"
+                style={isDuplicate ? kvKeyErrorStyle : kvKeyStyle}
+                value={entry.key}
+                title={isDuplicate ? "Duplicate key" : undefined}
+                onInput={(e) => {
+                  const next = [...signal.value];
+                  next[idx] = {
+                    ...next[idx],
+                    key: (e.target as HTMLInputElement).value,
+                  };
+                  signal.value = next;
+                }}
+              />
+              {useTextarea
+                ? (
+                  <textarea
+                    placeholder="value"
+                    rows={1}
+                    style={kvValueTextareaStyle}
+                    value={entry.value}
+                    onInput={(e) => {
+                      const next = [...signal.value];
+                      next[idx] = {
+                        ...next[idx],
+                        value: (e.target as HTMLTextAreaElement).value,
+                      };
+                      signal.value = next;
+                    }}
+                  />
+                )
+                : (
+                  <input
+                    type="text"
+                    placeholder="value"
+                    style={kvValueInputStyle}
+                    value={entry.value}
+                    onInput={(e) => {
+                      const next = [...signal.value];
+                      next[idx] = {
+                        ...next[idx],
+                        value: (e.target as HTMLInputElement).value,
+                      };
+                      signal.value = next;
+                    }}
+                  />
+                )}
+              <button
+                type="button"
+                onClick={() => {
+                  signal.value = signal.value.filter((_, i) => i !== idx);
+                }}
+                style={kvRemoveBtnStyle}
+                title="Remove"
+              >
+                &times;
+              </button>
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => {
+            signal.value = [...signal.value, {
+              id: nextEntryId++,
+              key: "",
+              value: "",
+            }];
+          }}
+          style={kvAddBtnStyle}
+        >
+          {addLabel}
+        </button>
+      </div>
+    </>
+  );
+}
+
 // ── Component ───────────────────────────────────────────────────────────
 
 export default function SchemaForm(
@@ -94,8 +312,10 @@ export default function SchemaForm(
         ? selectedNamespace.value
         : "default"),
   );
-  const formLabels = useSignal<Array<{ key: string; value: string }>>([]);
+  const formLabels = useSignal<KVEntry[]>([]);
+  const formAnnotations = useSignal<KVEntry[]>([]);
   const formSpec = useSignal<Record<string, unknown>>({});
+  const resourceVersion = useSignal<string>("");
   const namespaces = useSignal<string[]>(["default"]);
 
   // ── Fetch CRD schema ─────────────────────────────────────────────────
@@ -149,9 +369,9 @@ export default function SchemaForm(
 
         // In edit mode, fetch the instance
         if (mode === "edit" && name) {
-          const nsPath = namespace ? `/${namespace}` : "";
+          const ns = namespace || "_";
           const instanceRes = await apiGet<Record<string, unknown>>(
-            `/v1/extensions/resources/${group}/${resource}${nsPath}/${name}`,
+            `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
           );
           const instance = instanceRes.data;
           if (instance) {
@@ -159,9 +379,17 @@ export default function SchemaForm(
               | Record<string, unknown>
               | undefined;
             if (meta?.labels && typeof meta.labels === "object") {
-              formLabels.value = Object.entries(
+              formLabels.value = entriesToKV(
                 meta.labels as Record<string, string>,
-              ).map(([k, v]) => ({ key: k, value: v }));
+              );
+            }
+            if (meta?.annotations && typeof meta.annotations === "object") {
+              formAnnotations.value = entriesToKV(
+                meta.annotations as Record<string, string>,
+              );
+            }
+            if (meta?.resourceVersion) {
+              resourceVersion.value = meta.resourceVersion as string;
             }
             if (instance.spec && typeof instance.spec === "object") {
               formSpec.value = instance.spec as Record<string, unknown>;
@@ -188,13 +416,12 @@ export default function SchemaForm(
     formSpec.value = safeDeepSet(formSpec.value, relPath, value);
   }, []);
 
-  // ── Build YAML preview ───────────────────────────────────────────────
+  // ── Build YAML preview (only when YAML tab is active) ────────────────
 
   const yamlPreview = useComputed(() => {
-    const labels: Record<string, string> = {};
-    for (const { key, value } of formLabels.value) {
-      if (key) labels[key] = value;
-    }
+    if (viewMode.value !== "yaml") return "";
+    const labels = toRecord(formLabels.value);
+    const annotations = toRecord(formAnnotations.value);
     const apiVersion = `${group}/${storageVersion.value}`;
     return formStateToYaml(
       apiVersion,
@@ -205,18 +432,20 @@ export default function SchemaForm(
           ? formNamespace.value
           : undefined,
         labels: Object.keys(labels).length > 0 ? labels : undefined,
+        annotations: Object.keys(annotations).length > 0
+          ? annotations
+          : undefined,
       },
       formSpec.value,
     );
   });
 
   // ── Build the JSON body for API calls ─────────────────────────────────
+  // Signal refs are stable (never change identity), so deps are effectively [].
 
   const buildBody = useCallback((): Record<string, unknown> => {
-    const labels: Record<string, string> = {};
-    for (const { key, value } of formLabels.value) {
-      if (key) labels[key] = value;
-    }
+    const labels = toRecord(formLabels.value);
+    const annotations = toRecord(formAnnotations.value);
     const body: Record<string, unknown> = {
       apiVersion: `${group}/${storageVersion.value}`,
       kind: kind.value,
@@ -226,22 +455,17 @@ export default function SchemaForm(
           ? { namespace: formNamespace.value }
           : {}),
         ...(Object.keys(labels).length > 0 ? { labels } : {}),
+        ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+        ...(mode === "edit" && resourceVersion.value
+          ? { resourceVersion: resourceVersion.value }
+          : {}),
       },
     };
     if (Object.keys(formSpec.value).length > 0) {
       body.spec = formSpec.value;
     }
     return body;
-  }, [
-    group,
-    kind,
-    storageVersion,
-    formName,
-    formNamespace,
-    scope,
-    formLabels,
-    formSpec,
-  ]);
+  }, []);
 
   // ── Actions ──────────────────────────────────────────────────────────
 
@@ -264,10 +488,17 @@ export default function SchemaForm(
         showToast(`Created ${formName.value}`, "success");
         globalThis.location.href = `/extensions/${group}/${resource}`;
       } else {
-        await apiPut(
+        const res = await apiPut<Record<string, unknown>>(
           `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
           body,
         );
+        // Update resourceVersion so subsequent saves don't 409
+        const resMeta = res.data?.metadata as
+          | Record<string, unknown>
+          | undefined;
+        if (resMeta?.resourceVersion) {
+          resourceVersion.value = resMeta.resourceVersion as string;
+        }
         showToast(`Updated ${formName.value}`, "success");
       }
     } catch (err) {
@@ -278,7 +509,7 @@ export default function SchemaForm(
     } finally {
       submitting.value = false;
     }
-  }, [mode, group, resource, name, formName, formNamespace, scope, buildBody]);
+  }, []);
 
   const handleValidate = useCallback(async () => {
     validating.value = true;
@@ -298,7 +529,7 @@ export default function SchemaForm(
     } finally {
       validating.value = false;
     }
-  }, [group, resource, buildBody]);
+  }, []);
 
   // ── SSR placeholder ──────────────────────────────────────────────────
 
@@ -545,102 +776,19 @@ export default function SchemaForm(
           )}
 
           {/* ── Labels Section ───────────────────────────────────────── */}
-          <div style={sectionHeaderStyle}>
-            <span>Labels</span>
-            <div
-              style={{
-                flex: 1,
-                height: "1px",
-                background: "var(--border-subtle)",
-              }}
-            />
-          </div>
+          <KeyValueSection
+            title="Labels"
+            signal={formLabels}
+            addLabel="+ Add Label"
+          />
 
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "6px",
-              marginBottom: "16px",
-            }}
-          >
-            {formLabels.value.map((label, idx) => (
-              <div
-                key={idx}
-                style={{ display: "flex", gap: "6px", alignItems: "center" }}
-              >
-                <input
-                  type="text"
-                  placeholder="key"
-                  style={{ ...inputStyle, flex: 1 }}
-                  value={label.key}
-                  onInput={(e) => {
-                    const next = [...formLabels.value];
-                    next[idx] = {
-                      ...next[idx],
-                      key: (e.target as HTMLInputElement).value,
-                    };
-                    formLabels.value = next;
-                  }}
-                />
-                <input
-                  type="text"
-                  placeholder="value"
-                  style={{ ...inputStyle, flex: 1 }}
-                  value={label.value}
-                  onInput={(e) => {
-                    const next = [...formLabels.value];
-                    next[idx] = {
-                      ...next[idx],
-                      value: (e.target as HTMLInputElement).value,
-                    };
-                    formLabels.value = next;
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    formLabels.value = formLabels.value.filter((_, i) =>
-                      i !== idx
-                    );
-                  }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "4px 8px",
-                    fontSize: "14px",
-                    color: "var(--error)",
-                    cursor: "pointer",
-                    lineHeight: 1,
-                    flexShrink: 0,
-                  }}
-                  title="Remove"
-                >
-                  &times;
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={() => {
-                formLabels.value = [...formLabels.value, {
-                  key: "",
-                  value: "",
-                }];
-              }}
-              style={{
-                background: "none",
-                border: "1px dashed var(--border-primary)",
-                borderRadius: "6px",
-                padding: "6px 12px",
-                fontSize: "12px",
-                color: "var(--accent)",
-                cursor: "pointer",
-              }}
-            >
-              + Add Label
-            </button>
-          </div>
+          {/* ── Annotations Section ─────────────────────────────────── */}
+          <KeyValueSection
+            title="Annotations"
+            signal={formAnnotations}
+            addLabel="+ Add Annotation"
+            useTextarea
+          />
 
           {/* ── Spec Section ─────────────────────────────────────────── */}
           <div style={sectionHeaderStyle}>
