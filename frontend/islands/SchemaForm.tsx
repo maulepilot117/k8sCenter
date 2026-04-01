@@ -369,9 +369,9 @@ export default function SchemaForm(
 
         // In edit mode, fetch the instance
         if (mode === "edit" && name) {
-          const nsPath = namespace ? `/${namespace}` : "";
+          const ns = namespace || "_";
           const instanceRes = await apiGet<Record<string, unknown>>(
-            `/v1/extensions/resources/${group}/${resource}${nsPath}/${name}`,
+            `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
           );
           const instance = instanceRes.data;
           if (instance) {
