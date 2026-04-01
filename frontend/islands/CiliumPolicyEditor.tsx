@@ -4,19 +4,15 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
-
-interface LabelPair {
-  key: string;
-  value: string;
-}
+import type { LabelEntry } from "@/lib/wizard-types.ts";
 
 interface RuleRow {
   id: number;
   direction: "Ingress" | "Egress";
   peerType: "endpoints" | "entities" | "cidr";
-  labels: LabelPair[];
+  labels: LabelEntry[];
   entities: string[];
   cidrs: string;
   ports: string;
@@ -59,12 +55,10 @@ function newRule(): RuleRow {
 
 export default function CiliumPolicyEditor() {
   const name = useSignal("");
-  const initNs = IS_BROWSER && selectedNamespace.value !== "all"
-    ? selectedNamespace.value
-    : "default";
+  const initNs = initialNamespace();
   const namespace = useSignal(initNs);
   const namespaces = useNamespaces();
-  const endpointSelector = useSignal<LabelPair[]>([{ key: "", value: "" }]);
+  const endpointSelector = useSignal<LabelEntry[]>([{ key: "", value: "" }]);
   const rules = useSignal<RuleRow[]>([newRule()]);
   const yamlPreview = useSignal("");
   const showYaml = useSignal(false);
@@ -656,7 +650,7 @@ function PeerInput(
 function buildPayload(
   name: string,
   namespace: string,
-  selectorLabels: LabelPair[],
+  selectorLabels: LabelEntry[],
   ruleRows: RuleRow[],
 ) {
   const endpointSelector: Record<string, string> = {};
@@ -729,7 +723,7 @@ function yamlEscape(s: string): string {
 function buildPolicyYaml(
   name: string,
   namespace: string,
-  selectorLabels: LabelPair[],
+  selectorLabels: LabelEntry[],
   ruleRows: RuleRow[],
 ): string {
   const lines: string[] = [

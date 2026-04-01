@@ -40,11 +40,11 @@ export const ENV_VAR_NAME_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 export const PORT_NAME_REGEX = /^[a-z]([a-z0-9-]{0,13}[a-z0-9])?$|^[a-z0-9]$/;
 
-/** StorageClass item shape returned by the API. */
-export interface StorageClassItem {
-  metadata: { name: string };
-  provisioner?: string;
-}
+/** Protocol options for port selectors. */
+export const PROTOCOL_OPTIONS = [
+  { value: "TCP", label: "TCP" },
+  { value: "UDP", label: "UDP" },
+];
 
 /** PVC access mode options for wizard radio groups. */
 export const ACCESS_MODES = [

@@ -3,7 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
 interface FlowRecord {
@@ -78,11 +78,7 @@ function verdictBadgeClass(verdict: string): string {
 }
 
 export default function FlowViewer() {
-  const namespace = useSignal(
-    IS_BROWSER && selectedNamespace.value !== "all"
-      ? selectedNamespace.value
-      : "default",
-  );
+  const namespace = useSignal(initialNamespace());
   const namespaces = useNamespaces();
   const verdict = useSignal("");
   const flows = useSignal<FlowRecord[]>([]);

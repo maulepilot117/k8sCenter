@@ -1,7 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
-import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { PROTOCOL_OPTIONS, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 export interface ContainerFormProps {
@@ -17,11 +17,6 @@ export interface ContainerFormProps {
   errors: Record<string, string>;
   onChange: (field: string, value: unknown) => void;
 }
-
-const PROTOCOL_OPTIONS = [
-  { value: "TCP", label: "TCP" },
-  { value: "UDP", label: "UDP" },
-];
 
 type EnvSourceType = "literal" | "configmap" | "secret";
 

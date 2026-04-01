@@ -9,9 +9,13 @@ import {
   ENV_VAR_NAME_REGEX,
   MAX_PORT,
   MAX_REPLICAS,
-  type StorageClassItem,
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
+import type {
+  EnvVarEntry,
+  PortEntry,
+  StorageClassItem,
+} from "@/lib/wizard-types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -23,7 +27,6 @@ import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
-import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 interface VolumeClaimEntry {
   name: string;

@@ -2,7 +2,8 @@ import { useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import type { CRDInfo, SchemaProperty } from "@/lib/crd-types.ts";
 import { formStateToYaml, safeDeepSet } from "@/lib/schema-to-yaml.ts";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
@@ -306,17 +307,12 @@ export default function SchemaForm(
 
   // Form state
   const formName = useSignal(name ?? "");
-  const formNamespace = useSignal(
-    namespace ??
-      (IS_BROWSER && selectedNamespace.value !== "all"
-        ? selectedNamespace.value
-        : "default"),
-  );
+  const formNamespace = useSignal(namespace ?? initialNamespace());
   const formLabels = useSignal<KVEntry[]>([]);
   const formAnnotations = useSignal<KVEntry[]>([]);
   const formSpec = useSignal<Record<string, unknown>>({});
   const resourceVersion = useSignal<string>("");
-  const namespaces = useSignal<string[]>(["default"]);
+  const namespaces = useNamespaces();
 
   // ── Fetch CRD schema ─────────────────────────────────────────────────
 
@@ -353,18 +349,6 @@ export default function SchemaForm(
           specSchema.value = null;
         } else {
           specSchema.value = null;
-        }
-
-        // Fetch namespaces for namespace selector
-        try {
-          const nsRes = await apiGet<Array<{ metadata: { name: string } }>>(
-            "/v1/resources/namespaces",
-          );
-          if (nsRes.data) {
-            namespaces.value = nsRes.data.map((ns) => ns.metadata.name);
-          }
-        } catch {
-          // keep default
         }
 
         // In edit mode, fetch the instance

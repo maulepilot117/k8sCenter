@@ -45,7 +45,7 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
               borderRadius: "50%",
               background: statusColor,
               boxShadow: availableCondition?.status === "True"
-                ? "0 0 6px rgba(0, 230, 118, 0.4)"
+                ? "0 0 6px var(--success-dim)"
                 : undefined,
             }}
           />

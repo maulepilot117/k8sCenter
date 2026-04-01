@@ -1,6 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
+import { PROTOCOL_OPTIONS } from "@/lib/wizard-constants.ts";
 
 interface PortEntry {
   name: string;
@@ -22,11 +23,6 @@ interface DeploymentNetworkProps {
   errors: Record<string, string>;
   onChange: (field: string, value: unknown) => void;
 }
-
-const PROTOCOL_OPTIONS = [
-  { value: "TCP", label: "TCP" },
-  { value: "UDP", label: "UDP" },
-];
 
 const ENV_TYPE_OPTIONS = [
   { value: "literal", label: "Value" },
