@@ -97,6 +97,73 @@ function serializeObject(
 }
 
 /**
+ * Safely set a nested property on an object without prototype pollution.
+ * Returns a shallow-copied object with the value set at the given dot-notation path.
+ */
+export function safeDeepSet(
+  obj: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): Record<string, unknown> {
+  const parts = path.split(".");
+  const result = { ...obj };
+
+  if (parts.length === 0) return result;
+
+  // Single-level set
+  if (parts.length === 1) {
+    const key = parts[0];
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      return result;
+    }
+    if (value === undefined) {
+      delete result[key];
+    } else {
+      result[key] = value;
+    }
+    return result;
+  }
+
+  // Multi-level deep set — build path, reject dangerous keys at each level
+  let current: Record<string, unknown> = result;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (
+      part === "__proto__" || part === "constructor" || part === "prototype"
+    ) {
+      return result; // abort without modifying
+    }
+    if (
+      !(part in current) || typeof current[part] !== "object" ||
+      current[part] === null
+    ) {
+      // Check if next segment is numeric — create array instead of object
+      const nextPart = parts[i + 1];
+      if (/^\d+$/.test(nextPart)) {
+        current[part] = [];
+      } else {
+        current[part] = {};
+      }
+    }
+    current = current[part] as Record<string, unknown>;
+  }
+
+  const lastKey = parts[parts.length - 1];
+  if (
+    lastKey === "__proto__" || lastKey === "constructor" ||
+    lastKey === "prototype"
+  ) {
+    return result;
+  }
+  if (value === undefined) {
+    delete current[lastKey];
+  } else {
+    current[lastKey] = value;
+  }
+  return result;
+}
+
+/**
  * Build a full Kubernetes resource YAML from form state.
  */
 export function formStateToYaml(

@@ -3,6 +3,7 @@ import { useCallback } from "preact/hooks";
 import type { SchemaProperty } from "@/lib/crd-types.ts";
 import { parse, stringify } from "yaml";
 import { inputStyle, labelStyle, selectStyle } from "@/lib/form-styles.ts";
+import { safeDeepSet } from "@/lib/schema-to-yaml.ts";
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -577,33 +578,8 @@ function ObjectArrayField(
       const next = [...items];
       const item = { ...next[idx] };
 
-      // Handle nested paths within the item
-      const parts = relKey.split(".");
-      const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-      if (parts.some((p) => DANGEROUS_KEYS.has(p))) return;
-      if (parts.length === 1) {
-        if (fieldValue === undefined) {
-          delete item[parts[0]];
-        } else {
-          item[parts[0]] = fieldValue;
-        }
-      } else {
-        // Deep set
-        let current: Record<string, unknown> = item;
-        for (let i = 0; i < parts.length - 1; i++) {
-          if (!(parts[i] in current) || typeof current[parts[i]] !== "object") {
-            current[parts[i]] = {};
-          }
-          current = current[parts[i]] as Record<string, unknown>;
-        }
-        if (fieldValue === undefined) {
-          delete current[parts[parts.length - 1]];
-        } else {
-          current[parts[parts.length - 1]] = fieldValue;
-        }
-      }
-
-      next[idx] = item;
+      // Safely set the nested value within this array item
+      next[idx] = safeDeepSet(item, relKey, fieldValue);
       onChange(path, next);
     },
     [path, items, onChange],
