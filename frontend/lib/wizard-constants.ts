@@ -79,4 +79,3 @@ export const RESTART_POLICY_OPTIONS = [
 /** Standard Tailwind input class for wizard form fields. */
 export const WIZARD_INPUT_CLASS =
   "mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand";
-

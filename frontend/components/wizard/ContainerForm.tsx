@@ -1,7 +1,10 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
-import { PROTOCOL_OPTIONS, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import {
+  PROTOCOL_OPTIONS,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
 
 export interface ContainerFormProps {
