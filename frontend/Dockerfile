@@ -5,7 +5,7 @@ FROM --platform=linux/amd64 denoland/deno:2.7.8 AS builder
 WORKDIR /app
 
 # Copy dependency files first for layer caching
-COPY deno.json deno.lock* ./
+COPY deno.json deno.lock* package.json* ./
 RUN deno install
 
 # Copy source and build
@@ -33,6 +33,7 @@ WORKDIR /app
 COPY --from=builder /app/_fresh ./_fresh
 COPY --from=builder /app/deno.json ./
 COPY --from=builder /app/deno.lock* ./
+COPY --from=builder /app/package.json* ./
 COPY --from=builder /app/static ./static
 COPY --from=builder /app/node_modules ./node_modules
 
