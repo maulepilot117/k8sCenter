@@ -4,7 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { ApiError, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import type { CRDInfo, SchemaProperty } from "@/lib/crd-types.ts";
-import { formStateToYaml } from "@/lib/schema-to-yaml.ts";
+import { formStateToYaml, safeDeepSet } from "@/lib/schema-to-yaml.ts";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
@@ -185,50 +185,7 @@ export default function SchemaForm(
   const handleSpecChange = useCallback((path: string, value: unknown) => {
     // path is like "spec.issuerRef.name" — strip the "spec." prefix
     const relPath = path.startsWith("spec.") ? path.slice(5) : path;
-    const parts = relPath.split(".");
-
-    // Prevent prototype pollution
-    const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-    if (parts.some((p) => DANGEROUS_KEYS.has(p))) return;
-
-    const next = { ...formSpec.value };
-    if (parts.length === 1) {
-      if (value === undefined) {
-        delete next[parts[0]];
-      } else {
-        next[parts[0]] = value;
-      }
-    } else {
-      // Deep set
-      let current: Record<string, unknown> = next;
-      for (let i = 0; i < parts.length - 1; i++) {
-        const part = parts[i];
-        if (
-          !(part in current) || typeof current[part] !== "object" ||
-          current[part] === null || Array.isArray(current[part])
-        ) {
-          // If the next part is a number, this should be an array
-          const nextPart = parts[i + 1];
-          if (/^\d+$/.test(nextPart)) {
-            if (!Array.isArray(current[part])) {
-              current[part] = [];
-            }
-            current = current[part] as unknown as Record<string, unknown>;
-            continue;
-          }
-          current[part] = {};
-        }
-        current = current[part] as Record<string, unknown>;
-      }
-      const lastKey = parts[parts.length - 1];
-      if (value === undefined) {
-        delete current[lastKey];
-      } else {
-        current[lastKey] = value;
-      }
-    }
-
-    formSpec.value = next;
+    formSpec.value = safeDeepSet(formSpec.value, relPath, value);
   }, []);
 
   // ── Build YAML preview ───────────────────────────────────────────────
