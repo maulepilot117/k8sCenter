@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
@@ -29,6 +30,21 @@ func (s *Server) handleTestOIDC(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IssuerURL == "" {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "issuerURL is required"},
+		})
+		return
+	}
+
+	// Validate scheme (OIDC discovery requires HTTP(S))
+	if u, err := url.Parse(req.IssuerURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "issuer URL must use https:// or http://"},
+		})
+		return
+	}
+	// Block private/loopback/CGNAT IPs to prevent SSRF
+	if err := k8s.ValidateRemoteURL(req.IssuerURL); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid issuer URL: " + err.Error()},
 		})
 		return
 	}
@@ -66,6 +82,21 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "url is required"},
+		})
+		return
+	}
+
+	// Validate scheme (LDAP connections only)
+	if u, err := url.Parse(req.URL); err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "LDAP URL must use ldap:// or ldaps://"},
+		})
+		return
+	}
+	// Block private/loopback/CGNAT IPs to prevent SSRF
+	if err := k8s.ValidateRemoteURL(req.URL); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "invalid LDAP URL: " + err.Error()},
 		})
 		return
 	}
