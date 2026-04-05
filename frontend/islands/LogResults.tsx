@@ -1,30 +1,29 @@
 import { type Signal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-
-interface LogLine {
-  timestamp: string;
-  line: string;
-  labels: Record<string, string>;
-}
+import type { LogLine } from "@/lib/types/logs.ts";
 
 interface LogResultsProps {
   lines: Signal<LogLine[]>;
   loading: Signal<boolean>;
 }
 
+const RE_ERROR = /\berror\b/i;
+const RE_WARN = /\bwarn(ing)?\b/i;
+const RE_DEBUG = /\bdebug\b/i;
+
 function parseSeverity(line: string): string {
   const lower = line.toLowerCase();
   if (
     lower.includes('"level":"error"') || lower.includes("level=error") ||
-    /\berror\b/i.test(line.slice(0, 100))
+    RE_ERROR.test(line.slice(0, 100))
   ) return "error";
   if (
     lower.includes('"level":"warn"') || lower.includes("level=warn") ||
-    /\bwarn(ing)?\b/i.test(line.slice(0, 100))
+    RE_WARN.test(line.slice(0, 100))
   ) return "warn";
   if (
     lower.includes('"level":"debug"') || lower.includes("level=debug") ||
-    /\bdebug\b/i.test(line.slice(0, 100))
+    RE_DEBUG.test(line.slice(0, 100))
   ) return "debug";
   return "info";
 }

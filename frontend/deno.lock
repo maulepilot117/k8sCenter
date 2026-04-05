@@ -43,11 +43,13 @@
     "npm:@prefresh/vite@^2.4.8": "2.4.12_preact@10.29.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3",
     "npm:@tailwindcss/postcss@^4.1.10": "4.2.1",
     "npm:@tailwindcss/vite@^4.1.10": "4.2.0_vite@7.3.1__yaml@2.8.3_yaml@2.8.3",
+    "npm:@types/dagre@~0.7.52": "0.7.54",
     "npm:@xterm/addon-fit@0.10": "0.10.0_@xterm+xterm@5.5.0",
     "npm:@xterm/addon-web-links@0.11": "0.11.0_@xterm+xterm@5.5.0",
     "npm:@xterm/xterm@^5.5.0": "5.5.0",
     "npm:ansi_up@^6.0.2": "6.0.6",
     "npm:d3-force@3": "3.0.0",
+    "npm:dagre@~0.8.5": "0.8.5",
     "npm:esbuild-wasm@~0.25.11": "0.25.12",
     "npm:esbuild@0.25.7": "0.25.7",
     "npm:esbuild@~0.25.5": "0.25.12",
@@ -1258,6 +1260,9 @@
         "vite"
       ]
     },
+    "@types/dagre@0.7.54": {
+      "integrity": "sha512-QjcRY+adGbYvBFS7cwv5txhVIwX1XXIUswWl+kSQTbI6NjgZydrZkEKX/etzVd7i+bCsCb40Z/xlBY5eoFuvWQ=="
+    },
     "@types/estree@1.0.8": {
       "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="
     },
@@ -1319,6 +1324,13 @@
     },
     "d3-timer@3.0.1": {
       "integrity": "sha512-ndfJ/JxxMd3nw31uyKoY2naivF+r29V+Lc0svZxe1JvvIRmi8hUsrMvdOwgS1o6uBHmiz91geQ0ylPP0aj1VUA=="
+    },
+    "dagre@0.8.5": {
+      "integrity": "sha512-/aTqmnRta7x7MCCpExk7HQL2O4owCT2h8NT//9I1OQ9vt29Pa0BzSAkR5lwFUcQ7491yVi/3CXU9jQ5o0Mn2Sw==",
+      "dependencies": [
+        "graphlib",
+        "lodash"
+      ]
     },
     "debug@4.4.3": {
       "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
@@ -1471,6 +1483,12 @@
     "graceful-fs@4.2.11": {
       "integrity": "sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ=="
     },
+    "graphlib@2.1.8": {
+      "integrity": "sha512-jcLLfkpoVGmH7/InMC/1hIvOPSUh38oJtGhvrOFGzioE1DZ+0YW16RgmOJhHiuWTvGiJQ9Z1Ik43JvkRPRvE+A==",
+      "dependencies": [
+        "lodash"
+      ]
+    },
     "jiti@2.6.1": {
       "integrity": "sha512-ekilCSN1jwRvIbgeg/57YFh8qQDNbwDb9xT/qu2DAHbFFZUicIl4ygVaAvzveMhMVr3LnpSKTNnwt8PoOfmKhQ==",
       "bin": true
@@ -1559,6 +1577,9 @@
         "lightningcss-win32-arm64-msvc",
         "lightningcss-win32-x64-msvc"
       ]
+    },
+    "lodash@4.18.1": {
+      "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="
     },
     "lru-cache@5.1.1": {
       "integrity": "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==",
@@ -1725,11 +1746,13 @@
       "npm:@codemirror/view@^6.40.0",
       "npm:@preact/signals@^2.7.1",
       "npm:@tailwindcss/vite@^4.1.10",
+      "npm:@types/dagre@~0.7.52",
       "npm:@xterm/addon-fit@0.10",
       "npm:@xterm/addon-web-links@0.11",
       "npm:@xterm/xterm@^5.5.0",
       "npm:ansi_up@^6.0.2",
       "npm:d3-force@3",
+      "npm:dagre@~0.8.5",
       "npm:fuse.js@^7.1.0",
       "npm:preact@^10.28.3",
       "npm:tailwindcss@^4.1.10",

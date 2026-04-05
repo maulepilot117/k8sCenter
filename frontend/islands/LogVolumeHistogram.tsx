@@ -1,14 +1,9 @@
 import { type Signal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-
-interface VolumeEntry {
-  metric: Record<string, string>;
-  values: [number, string][];
-}
+import type { VolumeEntry } from "@/lib/types/logs.ts";
 
 interface LogVolumeHistogramProps {
   data: Signal<VolumeEntry[] | null>;
-  onBucketClick?: (start: string, end: string) => void;
 }
 
 export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
@@ -17,20 +12,17 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
   const entries = props.data.value;
   if (!entries || entries.length === 0) return null;
 
-  // Aggregate all values across entries into time buckets
-  const buckets: { ts: number; count: number }[] = [];
+  // Aggregate all values across entries into time buckets (O(n) via Map)
+  const bucketMap = new Map<number, number>();
   for (const entry of entries) {
     for (const [ts, countStr] of entry.values) {
-      const existing = buckets.find((b) => b.ts === ts);
-      const count = parseInt(countStr) || 0;
-      if (existing) {
-        existing.count += count;
-      } else {
-        buckets.push({ ts, count });
-      }
+      const count = parseInt(String(countStr)) || 0;
+      bucketMap.set(ts, (bucketMap.get(ts) ?? 0) + count);
     }
   }
-  buckets.sort((a, b) => a.ts - b.ts);
+  const buckets = [...bucketMap.entries()]
+    .map(([ts, count]) => ({ ts, count }))
+    .sort((a, b) => a.ts - b.ts);
 
   if (buckets.length === 0) return null;
 
@@ -46,17 +38,9 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
           return (
             <div
               key={i}
-              class="flex-1 rounded-t cursor-pointer bg-accent-dim hover:bg-accent-primary/50 transition-colors"
+              class="flex-1 rounded-t bg-accent-dim hover:bg-accent-primary/50 transition-colors"
               style={{ height: `${height}%` }}
               title={`${bucket.count} entries`}
-              onClick={() => {
-                if (props.onBucketClick && i < buckets.length - 1) {
-                  props.onBucketClick(
-                    new Date(bucket.ts * 1000).toISOString(),
-                    new Date(buckets[i + 1].ts * 1000).toISOString(),
-                  );
-                }
-              }}
             />
           );
         })}

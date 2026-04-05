@@ -529,7 +529,7 @@ export default function ResourceDetail({
                         }}
                         disabled={yamlApplying.value ||
                           yamlEditContent.value === yamlContent}
-                        class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-base hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-accent-primary px-3 py-1.5 text-sm font-medium text-bg-base hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {yamlApplying.value ? "Applying..." : "Apply"}
                       </button>
@@ -685,7 +685,7 @@ export default function ResourceDetail({
             </p>
             <a
               href={logsUrl}
-              class="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-base hover:bg-accent/90"
+              class="inline-flex items-center gap-2 rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-bg-base hover:bg-accent-primary/90"
             >
               Open Log Explorer
             </a>

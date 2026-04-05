@@ -108,7 +108,18 @@ func (d *Discoverer) Discover(ctx context.Context) {
 
 	var client *Client
 	if lokiURL != "" {
-		c := NewClient(lokiURL, d.config.TenantID)
+		// Reuse existing client if the URL hasn't changed to avoid
+		// creating a new transport on every discovery cycle.
+		d.mu.RLock()
+		existingClient := d.client
+		d.mu.RUnlock()
+
+		var c *Client
+		if existingClient != nil && existingClient.BaseURL() == lokiURL {
+			c = existingClient
+		} else {
+			c = NewClient(lokiURL, d.config.TenantID)
+		}
 		// Verify Loki is actually ready before caching the client
 		if err := c.Ready(ctx); err != nil {
 			d.logger.Warn("loki endpoint not ready", "url", lokiURL, "error", err)
@@ -160,7 +171,7 @@ func (d *Discoverer) discoverLoki(ctx context.Context) (string, string) {
 	}
 
 	// 4. Fallback label selector: app=loki
-	if url, method := d.findServiceByLabelSimple(ctx, "", "app", "loki"); url != "" {
+	if url, method := d.findServiceByLabel(ctx, "", "app", "loki", ""); url != "" {
 		return url, method
 	}
 
@@ -193,23 +204,3 @@ func (d *Discoverer) findServiceByLabel(ctx context.Context, namespace, labelKey
 	return fmt.Sprintf("http://%s.%s:%d", svc.Name, svc.Namespace, port), "service-label"
 }
 
-// findServiceByLabelSimple searches for a service by a simple key=value label.
-func (d *Discoverer) findServiceByLabelSimple(ctx context.Context, namespace, labelKey, labelValue string) (string, string) {
-	cs := d.k8sClient.BaseClientset()
-	selector := fmt.Sprintf("%s=%s", labelKey, labelValue)
-
-	svcs, err := cs.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: selector,
-		Limit:         1,
-	})
-	if err != nil || len(svcs.Items) == 0 {
-		return "", ""
-	}
-
-	svc := svcs.Items[0]
-	port := int32(3100)
-	if len(svc.Spec.Ports) > 0 {
-		port = svc.Spec.Ports[0].Port
-	}
-	return fmt.Sprintf("http://%s.%s:%d", svc.Name, svc.Namespace, port), "service-label"
-}

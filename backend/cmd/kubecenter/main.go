@@ -233,8 +233,9 @@ func main() {
 	go lokiDiscoverer.RunDiscoveryLoop(ctx)
 
 	lokiHandler := &loki.Handler{
-		Discoverer: lokiDiscoverer,
-		Logger:     logger,
+		Discoverer:    lokiDiscoverer,
+		AccessChecker: accessChecker,
+		Logger:        logger,
 	}
 
 	logQueryLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)

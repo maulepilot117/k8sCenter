@@ -7,22 +7,12 @@ import LogFilterBar from "@/islands/LogFilterBar.tsx";
 import LogResults from "@/islands/LogResults.tsx";
 import LogLiveTail from "@/islands/LogLiveTail.tsx";
 import LogVolumeHistogram from "@/islands/LogVolumeHistogram.tsx";
+import type { LogLine, VolumeEntry } from "@/lib/types/logs.ts";
 
 interface LokiStatus {
   detected: boolean;
   url?: string;
   detectedVia?: string;
-}
-
-interface LogLine {
-  timestamp: string;
-  line: string;
-  labels: Record<string, string>;
-}
-
-interface VolumeEntry {
-  metric: Record<string, string>;
-  values: [number, string][];
 }
 
 interface QueryResponseData {

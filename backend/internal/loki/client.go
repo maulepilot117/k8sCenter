@@ -23,15 +23,23 @@ type Client struct {
 func NewClient(baseURL, tenantID string) *Client {
 	return &Client{
 		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConns:          10,
+				MaxIdleConnsPerHost:   10,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 15 * time.Second,
 			},
 		},
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		tenantID: tenantID,
 	}
+}
+
+// BaseURL returns the base URL this client is configured for.
+func (c *Client) BaseURL() string {
+	return c.baseURL
 }
 
 // QueryRange executes a LogQL range query.
@@ -188,20 +196,19 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, result
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
-	if err != nil {
-		return fmt.Errorf("reading response: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB for errors
+		if err != nil {
+			return fmt.Errorf("reading error response: %w", err)
+		}
 		var lokiErr LokiError
 		if json.Unmarshal(body, &lokiErr) == nil && lokiErr.Error != "" {
 			return fmt.Errorf("loki error (%d): %s", resp.StatusCode, lokiErr.Error)
 		}
-		return fmt.Errorf("loki returned status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("loki returned status %d", resp.StatusCode)
 	}
 
-	if err := json.Unmarshal(body, result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(result); err != nil {
 		return fmt.Errorf("decoding response: %w", err)
 	}
 	return nil

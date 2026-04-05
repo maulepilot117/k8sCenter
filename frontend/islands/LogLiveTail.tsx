@@ -1,12 +1,7 @@
 import { type Signal, useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-
-interface LogLine {
-  timestamp: string;
-  line: string;
-  labels: Record<string, string>;
-}
+import type { LogLine } from "@/lib/types/logs.ts";
 
 interface LogLiveTailProps {
   active: Signal<boolean>;

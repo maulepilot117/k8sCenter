@@ -69,6 +69,23 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 			conn.WriteJSON(map[string]any{"type": "error", "message": "namespace required for non-admin users"})
 			return
 		}
+
+		// P1-4 fix: validate namespace against Kubernetes RBAC (same pattern as handleWSFlows)
+		if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
+			allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
+				r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+				"list", "pods", sub.Namespace,
+			)
+			if err != nil {
+				conn.WriteJSON(map[string]any{"type": "error", "message": "permission check failed"})
+				return
+			}
+			if !allowed {
+				conn.WriteJSON(map[string]any{"type": "error", "message": "no permission to view logs in this namespace"})
+				return
+			}
+		}
+
 		allowedNamespaces = []string{sub.Namespace}
 	}
 

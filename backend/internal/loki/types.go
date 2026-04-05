@@ -4,7 +4,6 @@ package loki
 type LokiStatus struct {
 	Detected    bool   `json:"detected"`
 	URL         string `json:"url,omitempty"`
-	Version     string `json:"version,omitempty"`
 	DetectedVia string `json:"detectedVia,omitempty"`
 	LastChecked string `json:"lastChecked"`
 }
