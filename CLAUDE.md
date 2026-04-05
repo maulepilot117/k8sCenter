@@ -78,6 +78,7 @@ k8scenter/
 │       ├── auth/             # JWT, local/OIDC/LDAP providers, RBAC checker, sessions
 │       ├── k8s/              # ClientFactory, ClusterRouter, InformerManager, resources/ (33 handler files)
 │       ├── store/            # PostgreSQL persistence (users, settings, clusters, audit, encrypt)
+│       ├── loki/             # Loki discovery, LogQL proxy, namespace enforcement, WebSocket tail
 │       ├── monitoring/       # Prometheus/Grafana discovery, PromQL proxy, dashboard provisioning
 │       ├── networking/       # CNI detection, Cilium, Hubble gRPC client
 │       ├── alerting/         # Alertmanager webhook, SMTP notifier, rules
@@ -136,10 +137,11 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Wizard previews: `POST /wizards/:type/preview` (17 wizard types)
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
+- Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
-- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows}`
+- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows,logs-search}`
 
 **Auth flow:** `POST /auth/login` → JWT access token + httpOnly refresh cookie → `POST /auth/refresh` on 401.
 
@@ -238,6 +240,17 @@ make check-dashboards                             # Verify Grafana JSON sync
   - 100+ hardcoded Tailwind color classes replaced with CSS custom property tokens across 40+ files
   - Dashboard heading styles unified from inline styles to Tailwind classes
   - Zero non-theme color classes remain in frontend codebase
+- **Phase 7 (Advanced Observability):** IN PROGRESS
+  - **Phase 7A (Loki Integration):** COMPLETE
+    - New `internal/loki/` package: service discovery, HTTP client, LogQL namespace enforcement tokenizer
+    - 5 HTTP endpoints: `/logs/status`, `/logs/query`, `/logs/labels`, `/logs/labels/{name}/values`, `/logs/volume`
+    - WebSocket `/ws/logs-search` for Loki tail streaming (Pattern B direct pipe)
+    - 5 frontend islands: LogFilterBar, LogResults, LogLiveTail, LogVolumeHistogram, LogExplorer
+    - Route: `/observability/logs` with Loki availability check and graceful degradation
+    - 19 security tests for LogQL namespace enforcement
+    - Observability nav section updated with new tabs (Log Explorer, Topology, Investigate)
+  - **Phase 7B (Topology Graph):** PLANNED — resource dependency DAG with health propagation
+  - **Phase 7C (Diagnostics):** PLANNED — automated diagnostic checklist with blast radius
 
 ---
 

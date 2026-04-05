@@ -545,11 +545,13 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     href: "/monitoring",
     tabs: [
       { label: "Overview", href: "/monitoring" },
+      { label: "Log Explorer", href: "/observability/logs" },
+      { label: "Topology", href: "/observability/topology" },
+      { label: "Investigate", href: "/observability/investigate" },
       { label: "Dashboards", href: "/monitoring/dashboards" },
       { label: "Prometheus", href: "/monitoring/prometheus" },
-      { label: "Active Alerts", href: "/alerting" },
+      { label: "Alerts", href: "/alerting" },
       { label: "Alert Rules", href: "/alerting/rules" },
-      { label: "Alert Settings", href: "/alerting/settings" },
     ],
   },
   {

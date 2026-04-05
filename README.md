@@ -9,6 +9,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Real-time cluster view** with WebSocket-powered live updates
 - **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)
 - **Integrated monitoring** via Prometheus and Grafana with auto-discovery, PromQL proxy, and Grafana dashboard embedding
+- **Log Explorer** with Loki integration — search, filter, live tail (WebSocket), LogQL support, log volume histogram, and RBAC-scoped namespace enforcement
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts with PostgreSQL persistence)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Cilium Network Policy editor** with NSX-T-style rule table, YAML preview, and dangerous policy warnings
@@ -284,7 +285,7 @@ kubecenter/
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI, Alerting, AuthSettings)
+│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI, Alerting, AuthSettings, LogExplorer)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Production Helm chart (v0.2.0)

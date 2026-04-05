@@ -529,7 +529,7 @@ export default function ResourceDetail({
                         }}
                         disabled={yamlApplying.value ||
                           yamlEditContent.value === yamlContent}
-                        class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-base hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        class="inline-flex items-center gap-1.5 rounded-md bg-accent-primary px-3 py-1.5 text-sm font-medium text-bg-base hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {yamlApplying.value ? "Applying..." : "Apply"}
                       </button>
@@ -654,6 +654,42 @@ export default function ResourceDetail({
             name={name}
             containers={containers.length > 0 ? containers : ["default"]}
           />
+        );
+      },
+    });
+  }
+
+  // Add "Loki Logs" tab for workloads and services — links to Log Explorer pre-filtered
+  if (
+    namespace &&
+    [
+      "deployments",
+      "statefulsets",
+      "daemonsets",
+      "services",
+      "jobs",
+      "cronjobs",
+    ].includes(kind)
+  ) {
+    tabDefs.push({
+      id: "loki-logs",
+      label: "Loki Logs",
+      content: () => {
+        const logsUrl = `/observability/logs?namespace=${
+          encodeURIComponent(namespace)
+        }&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
+        return (
+          <div class="p-6 text-center">
+            <p class="text-sm text-text-secondary mb-4">
+              View aggregated logs for this resource in the Log Explorer.
+            </p>
+            <a
+              href={logsUrl}
+              class="inline-flex items-center gap-2 rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-bg-base hover:bg-accent-primary/90"
+            >
+              Open Log Explorer
+            </a>
+          </div>
         );
       },
     });

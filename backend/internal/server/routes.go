@@ -24,6 +24,11 @@ func (s *Server) registerRoutes() {
 		s.Router.Get("/api/v1/ws/flows", s.handleWSFlows)
 	}
 
+	// Loki log search WebSocket — auth in-band, no timeout
+	if s.LokiHandler != nil {
+		s.Router.Get("/api/v1/ws/logs-search", s.handleWSLogsSearch)
+	}
+
 	// Pod log streaming WebSocket — auth in-band (same as resource WS), no timeout
 	if s.ResourceHandler != nil {
 		s.Router.Get("/api/v1/ws/logs/{namespace}/{pod}/{container}", s.handleWSLogs)
@@ -114,6 +119,11 @@ func (s *Server) registerRoutes() {
 			// Monitoring routes — only registered if monitoring handler is available
 			if s.MonitoringHandler != nil {
 				s.registerMonitoringRoutes(ar)
+			}
+
+			// Log routes (Loki) — only registered if loki handler is available
+			if s.LokiHandler != nil {
+				s.registerLogRoutes(ar)
 			}
 
 			// Alerting routes (authenticated) — only registered if alerting handler is available
@@ -329,6 +339,24 @@ func (s *Server) registerExtensionRoutes(ar chi.Router) {
 			cr.With(middleware.RateLimit(yamlRL)).Put("/{ns}/{name}", h.HandleUpdateCRDInstance)
 			cr.With(middleware.RateLimit(yamlRL)).Delete("/{ns}/{name}", h.HandleDeleteCRDInstance)
 		})
+	})
+}
+
+func (s *Server) registerLogRoutes(ar chi.Router) {
+	h := s.LokiHandler
+	ar.Route("/logs", func(lr chi.Router) {
+		// Dedicated rate limiter for log queries (30 req/min, separate from write limiter)
+		logRL := s.LogQueryLimiter
+		if logRL == nil {
+			logRL = s.RateLimiter
+		}
+		lr.Use(middleware.RateLimit(logRL))
+
+		lr.Get("/status", h.HandleStatus)
+		lr.Get("/query", h.HandleQuery)
+		lr.Get("/labels", h.HandleLabels)
+		lr.Get("/labels/{name}/values", h.HandleLabelValues)
+		lr.Get("/volume", h.HandleVolume)
 	})
 }
 
