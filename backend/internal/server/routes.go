@@ -24,6 +24,11 @@ func (s *Server) registerRoutes() {
 		s.Router.Get("/api/v1/ws/flows", s.handleWSFlows)
 	}
 
+	// Loki log search WebSocket — auth in-band, no timeout
+	if s.LokiHandler != nil {
+		s.Router.Get("/api/v1/ws/logs-search", s.handleWSLogsSearch)
+	}
+
 	// Pod log streaming WebSocket — auth in-band (same as resource WS), no timeout
 	if s.ResourceHandler != nil {
 		s.Router.Get("/api/v1/ws/logs/{namespace}/{pod}/{container}", s.handleWSLogs)

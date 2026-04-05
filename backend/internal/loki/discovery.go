@@ -53,6 +53,11 @@ func (d *Discoverer) Client() *Client {
 	return d.client
 }
 
+// TenantID returns the configured multi-tenant ID (X-Scope-OrgID), or empty.
+func (d *Discoverer) TenantID() string {
+	return d.config.TenantID
+}
+
 // RunDiscoveryLoop runs the discovery sequence immediately and then every
 // recheckInterval until ctx is cancelled.
 func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
