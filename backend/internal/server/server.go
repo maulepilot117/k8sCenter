@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/alerting"
@@ -49,11 +50,13 @@ type Server struct {
 	YAMLHandler     *yamlpkg.Handler
 	WizardHandler     *wizard.Handler
 	MonitoringHandler  *monitoring.Handler
+	LokiHandler        *loki.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	Hub                *websocket.Hub
+	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
 	dbPing             func(context.Context) error // PostgreSQL health check (nil if no DB)
@@ -80,10 +83,12 @@ type Deps struct {
 	YAMLRateLimiter *middleware.RateLimiter
 	Hub               *websocket.Hub
 	MonitoringHandler  *monitoring.Handler
+	LokiHandler        *loki.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
 	CRDHandler         *resources.GenericCRDHandler
+	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	AccessChecker      *resources.AccessChecker
 	ReadyFn            func() bool
@@ -163,6 +168,12 @@ func New(deps Deps) *Server {
 	// informers (it uses its own discovery goroutine)
 	if deps.MonitoringHandler != nil {
 		s.MonitoringHandler = deps.MonitoringHandler
+	}
+
+	// Loki handler
+	if deps.LokiHandler != nil {
+		s.LokiHandler = deps.LokiHandler
+		s.LogQueryLimiter = deps.LogQueryLimiter
 	}
 
 	// Storage handler

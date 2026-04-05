@@ -17,6 +17,7 @@ type Config struct {
 	Log        LogConfig        `koanf:"log"`
 	Auth       AuthConfig       `koanf:"auth"`
 	Monitoring MonitoringConfig `koanf:"monitoring"`
+	Loki       LokiConfig       `koanf:"loki"`
 	Alerting   AlertingConfig   `koanf:"alerting"`
 	Audit      AuditConfig      `koanf:"audit"`
 	Database   DatabaseConfig   `koanf:"database"`
@@ -104,6 +105,12 @@ type LogConfig struct {
 
 type CORSConfig struct {
 	AllowedOrigins []string `koanf:"allowedorigins"`
+}
+
+// LokiConfig holds configuration for Loki log aggregation integration.
+type LokiConfig struct {
+	URL      string `koanf:"url"`      // Override auto-discovery: KUBECENTER_LOKI_URL
+	TenantID string `koanf:"tenantid"` // Multi-tenant X-Scope-OrgID: KUBECENTER_LOKI_TENANTID
 }
 
 type AlertingConfig struct {

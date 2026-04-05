@@ -116,6 +116,11 @@ func (s *Server) registerRoutes() {
 				s.registerMonitoringRoutes(ar)
 			}
 
+			// Log routes (Loki) — only registered if loki handler is available
+			if s.LokiHandler != nil {
+				s.registerLogRoutes(ar)
+			}
+
 			// Alerting routes (authenticated) — only registered if alerting handler is available
 			if s.AlertingHandler != nil {
 				s.registerAlertingRoutes(ar)
@@ -329,6 +334,24 @@ func (s *Server) registerExtensionRoutes(ar chi.Router) {
 			cr.With(middleware.RateLimit(yamlRL)).Put("/{ns}/{name}", h.HandleUpdateCRDInstance)
 			cr.With(middleware.RateLimit(yamlRL)).Delete("/{ns}/{name}", h.HandleDeleteCRDInstance)
 		})
+	})
+}
+
+func (s *Server) registerLogRoutes(ar chi.Router) {
+	h := s.LokiHandler
+	ar.Route("/logs", func(lr chi.Router) {
+		// Dedicated rate limiter for log queries (30 req/min, separate from write limiter)
+		logRL := s.LogQueryLimiter
+		if logRL == nil {
+			logRL = s.RateLimiter
+		}
+		lr.Use(middleware.RateLimit(logRL))
+
+		lr.Get("/status", h.HandleStatus)
+		lr.Get("/query", h.HandleQuery)
+		lr.Get("/labels", h.HandleLabels)
+		lr.Get("/labels/{name}/values", h.HandleLabelValues)
+		lr.Get("/volume", h.HandleVolume)
 	})
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server"
@@ -227,6 +228,18 @@ func main() {
 		Logger:     logger,
 	}
 
+	// Initialize Loki discoverer and start background discovery
+	lokiDiscoverer := loki.NewDiscoverer(k8sClient, cfg.Loki, logger)
+	go lokiDiscoverer.RunDiscoveryLoop(ctx)
+
+	lokiHandler := &loki.Handler{
+		Discoverer: lokiDiscoverer,
+		Logger:     logger,
+	}
+
+	logQueryLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
+	logQueryLimiter.StartCleanup(ctx)
+
 	// Initialize CNI detector and run initial detection
 	cniDetector := networking.NewDetector(k8sClient, informerMgr, logger)
 	cniDetector.Detect(ctx)
@@ -343,10 +356,12 @@ func main() {
 		YAMLRateLimiter: yamlRateLimiter,
 		Hub:               hub,
 		MonitoringHandler:  monHandler,
+		LokiHandler:        lokiHandler,
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
 		AlertingHandler:    alertHandler,
 		CRDHandler:         crdHandler,
+		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
 		AccessChecker:      accessChecker,
 		ReadyFn:            ready.Load,
