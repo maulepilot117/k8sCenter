@@ -660,12 +660,24 @@ export default function ResourceDetail({
   }
 
   // Add "Loki Logs" tab for workloads and services — links to Log Explorer pre-filtered
-  if (namespace && ["deployments", "statefulsets", "daemonsets", "services", "jobs", "cronjobs"].includes(kind)) {
+  if (
+    namespace &&
+    [
+      "deployments",
+      "statefulsets",
+      "daemonsets",
+      "services",
+      "jobs",
+      "cronjobs",
+    ].includes(kind)
+  ) {
     tabDefs.push({
       id: "loki-logs",
       label: "Loki Logs",
       content: () => {
-        const logsUrl = `/observability/logs?namespace=${encodeURIComponent(namespace)}&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
+        const logsUrl = `/observability/logs?namespace=${
+          encodeURIComponent(namespace)
+        }&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
         return (
           <div class="p-6 text-center">
             <p class="text-sm text-text-secondary mb-4">
