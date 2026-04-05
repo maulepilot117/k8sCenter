@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -241,6 +242,15 @@ func main() {
 	logQueryLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
 	logQueryLimiter.StartCleanup(ctx)
 
+	// Initialize topology graph builder
+	topoLister := topology.NewInformerLister(informerMgr)
+	topoBuilder := topology.NewBuilder(topoLister, logger)
+	topoHandler := &topology.Handler{
+		Builder:       topoBuilder,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+	}
+
 	// Initialize CNI detector and run initial detection
 	cniDetector := networking.NewDetector(k8sClient, informerMgr, logger)
 	cniDetector.Detect(ctx)
@@ -358,6 +368,7 @@ func main() {
 		Hub:               hub,
 		MonitoringHandler:  monHandler,
 		LokiHandler:        lokiHandler,
+		TopologyHandler:    topoHandler,
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
 		AlertingHandler:    alertHandler,
