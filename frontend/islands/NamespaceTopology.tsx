@@ -5,8 +5,6 @@ import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
-import dagre from "dagre";
-
 // ── Backend topology API types ──
 
 interface TopoGraph {
@@ -141,7 +139,7 @@ export default function NamespaceTopology() {
     fetchGraph();
   }, [selectedNamespace.value]);
 
-  // ── Layout with dagre ──
+  // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
 
   useEffect(() => {
     if (!graph.value || graph.value.nodes.length === 0) {
@@ -149,23 +147,63 @@ export default function NamespaceTopology() {
       return;
     }
 
-    const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: "LR", ranksep: 120, nodesep: 60 });
-    g.setDefaultEdgeLabel(() => ({}));
+    const nodes = graph.value.nodes;
+    const edges = graph.value.edges;
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
-    for (const node of graph.value.nodes) {
-      g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    // Build adjacency: children[parentId] = [childIds], parents[childId] = [parentIds]
+    const children = new Map<string, string[]>();
+    const parents = new Map<string, string[]>();
+    for (const n of nodes) {
+      children.set(n.id, []);
+      parents.set(n.id, []);
     }
-    for (const edge of graph.value.edges) {
-      g.setEdge(edge.source, edge.target);
+    for (const e of edges) {
+      if (nodeMap.has(e.source) && nodeMap.has(e.target)) {
+        children.get(e.source)!.push(e.target);
+        parents.get(e.target)!.push(e.source);
+      }
     }
 
-    dagre.layout(g);
+    // Assign layers via longest-path from roots (nodes with no parents)
+    const layer = new Map<string, number>();
+    const visited = new Set<string>();
+    function assignLayer(id: string): number {
+      if (layer.has(id)) return layer.get(id)!;
+      if (visited.has(id)) return 0; // cycle protection
+      visited.add(id);
+      const parentLayers = (parents.get(id) ?? []).map((pid) =>
+        assignLayer(pid)
+      );
+      const l = parentLayers.length > 0 ? Math.max(...parentLayers) + 1 : 0;
+      layer.set(id, l);
+      return l;
+    }
+    for (const n of nodes) assignLayer(n.id);
 
-    const positioned: LayoutNode[] = graph.value.nodes.map((node) => {
-      const pos = g.node(node.id);
-      return { ...node, x: pos.x, y: pos.y };
-    });
+    // Group nodes by layer
+    const layers = new Map<number, string[]>();
+    for (const [id, l] of layer) {
+      if (!layers.has(l)) layers.set(l, []);
+      layers.get(l)!.push(id);
+    }
+
+    // Position: x by layer, y by index within layer
+    const LAYER_GAP = 220;
+    const NODE_GAP = 80;
+    const positioned: LayoutNode[] = [];
+    for (const [l, ids] of layers) {
+      const totalHeight = ids.length * (NODE_HEIGHT + NODE_GAP) - NODE_GAP;
+      const startY = -totalHeight / 2;
+      ids.forEach((id, i) => {
+        const node = nodeMap.get(id)!;
+        positioned.push({
+          ...node,
+          x: l * LAYER_GAP + NODE_WIDTH / 2 + 40,
+          y: startY + i * (NODE_HEIGHT + NODE_GAP) + NODE_HEIGHT / 2,
+        });
+      });
+    }
 
     layoutNodes.value = positioned;
   }, [graph.value]);
