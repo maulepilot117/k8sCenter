@@ -17,6 +17,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -51,6 +52,7 @@ type Server struct {
 	WizardHandler     *wizard.Handler
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
+	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
@@ -84,6 +86,7 @@ type Deps struct {
 	Hub               *websocket.Hub
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
+	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
 	AlertingHandler    *alerting.Handler
@@ -174,6 +177,11 @@ func New(deps Deps) *Server {
 	if deps.LokiHandler != nil {
 		s.LokiHandler = deps.LokiHandler
 		s.LogQueryLimiter = deps.LogQueryLimiter
+	}
+
+	// Topology handler
+	if deps.TopologyHandler != nil {
+		s.TopologyHandler = deps.TopologyHandler
 	}
 
 	// Storage handler

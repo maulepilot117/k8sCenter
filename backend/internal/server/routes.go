@@ -126,6 +126,11 @@ func (s *Server) registerRoutes() {
 				s.registerLogRoutes(ar)
 			}
 
+			// Topology routes — only registered if topology handler is available
+			if s.TopologyHandler != nil {
+				s.registerTopologyRoutes(ar)
+			}
+
 			// Alerting routes (authenticated) — only registered if alerting handler is available
 			if s.AlertingHandler != nil {
 				s.registerAlertingRoutes(ar)
@@ -339,6 +344,15 @@ func (s *Server) registerExtensionRoutes(ar chi.Router) {
 			cr.With(middleware.RateLimit(yamlRL)).Put("/{ns}/{name}", h.HandleUpdateCRDInstance)
 			cr.With(middleware.RateLimit(yamlRL)).Delete("/{ns}/{name}", h.HandleDeleteCRDInstance)
 		})
+	})
+}
+
+func (s *Server) registerTopologyRoutes(ar chi.Router) {
+	h := s.TopologyHandler
+	ar.Route("/topology", func(tr chi.Router) {
+		tr.Get("/{namespace}", h.HandleNamespaceGraph)
+		tr.Get("/{namespace}/summary", h.HandleHealthSummary)
+		tr.Get("/{namespace}/{kind}/{name}", h.HandleFocusedGraph)
 	})
 }
 
