@@ -53,7 +53,7 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
                 if (props.onBucketClick && i < buckets.length - 1) {
                   props.onBucketClick(
                     new Date(bucket.ts * 1000).toISOString(),
-                    new Date(buckets[i + 1].ts * 1000).toISOString()
+                    new Date(buckets[i + 1].ts * 1000).toISOString(),
                   );
                 }
               }}
@@ -61,7 +61,9 @@ export default function LogVolumeHistogram(props: LogVolumeHistogramProps) {
           );
         })}
       </div>
-      <span class="text-xs text-text-muted">{total.toLocaleString()} lines</span>
+      <span class="text-xs text-text-muted">
+        {total.toLocaleString()} lines
+      </span>
     </div>
   );
 }

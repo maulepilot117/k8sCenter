@@ -55,15 +55,31 @@ export default function LogExplorer() {
   useEffect(() => {
     if (!IS_BROWSER) return;
     apiGet<LokiStatus>("/v1/logs/status")
-      .then((res) => { lokiAvailable.value = res.data?.detected ?? false; })
-      .catch(() => { lokiAvailable.value = false; });
+      .then((res) => {
+        lokiAvailable.value = res.data?.detected ?? false;
+      })
+      .catch(() => {
+        lokiAvailable.value = false;
+      });
   }, []);
 
-  function handleSearch(query: string, start: string, end: string, limit: number, direction: string) {
+  function handleSearch(
+    query: string,
+    start: string,
+    end: string,
+    limit: number,
+    direction: string,
+  ) {
     loading.value = true;
     error.value = null;
 
-    const params = new URLSearchParams({ query, start, end, limit: String(limit), direction });
+    const params = new URLSearchParams({
+      query,
+      start,
+      end,
+      limit: String(limit),
+      direction,
+    });
     apiGet<QueryResponseData>(`/v1/logs/query?${params}`)
       .then((res) => {
         const lines: LogLine[] = [];
@@ -74,13 +90,19 @@ export default function LogExplorer() {
         }
         searchResults.value = lines;
       })
-      .catch((err) => { error.value = err.message ?? "Query failed"; })
-      .finally(() => { loading.value = false; });
+      .catch((err) => {
+        error.value = err.message ?? "Query failed";
+      })
+      .finally(() => {
+        loading.value = false;
+      });
 
     // Also fetch volume data
     const volParams = new URLSearchParams({ query, start, end, step: "1m" });
     apiGet<VolumeResponseData>(`/v1/logs/volume?${volParams}`)
-      .then((res) => { volumeData.value = res.data?.data?.result ?? null; })
+      .then((res) => {
+        volumeData.value = res.data?.data?.result ?? null;
+      })
       .catch(() => {}); // non-critical
   }
 
@@ -98,15 +120,23 @@ export default function LogExplorer() {
   if (!IS_BROWSER) return null;
 
   if (lokiAvailable.value === null) {
-    return <div class="flex items-center justify-center p-12 text-sm text-text-muted">Checking Loki availability...</div>;
+    return (
+      <div class="flex items-center justify-center p-12 text-sm text-text-muted">
+        Checking Loki availability...
+      </div>
+    );
   }
 
   if (!lokiAvailable.value) {
     return (
       <div class="rounded-lg border border-border-primary bg-bg-surface p-8 text-center">
-        <h3 class="text-lg font-semibold text-text-primary">Loki Not Detected</h3>
+        <h3 class="text-lg font-semibold text-text-primary">
+          Loki Not Detected
+        </h3>
         <p class="mt-2 text-sm text-text-secondary">
-          Log aggregation requires Loki. Deploy Loki to your cluster or set <code class="text-accent-primary">KUBECENTER_LOKI_URL</code> to connect to an external instance.
+          Log aggregation requires Loki. Deploy Loki to your cluster or set{" "}
+          <code class="text-accent-primary">KUBECENTER_LOKI_URL</code>{" "}
+          to connect to an external instance.
         </p>
       </div>
     );
@@ -123,16 +153,16 @@ export default function LogExplorer() {
       />
       <LogVolumeHistogram data={volumeData} />
       {error.value && <ErrorBanner message={error.value} />}
-      {isTailing.value ? (
-        <LogLiveTail
-          active={isTailing}
-          query={tailQuery}
-          namespace={tailNamespace}
-          lines={tailLines}
-        />
-      ) : (
-        <LogResults lines={searchResults} loading={loading} />
-      )}
+      {isTailing.value
+        ? (
+          <LogLiveTail
+            active={isTailing}
+            query={tailQuery}
+            namespace={tailNamespace}
+            lines={tailLines}
+          />
+        )
+        : <LogResults lines={searchResults} loading={loading} />}
     </div>
   );
 }

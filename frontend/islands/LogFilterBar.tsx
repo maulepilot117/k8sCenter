@@ -1,4 +1,4 @@
-import { useSignal, type Signal } from "@preact/signals";
+import { type Signal, useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
@@ -6,7 +6,13 @@ import { selectedNamespace } from "@/lib/namespace.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
 interface LogFilterBarProps {
-  onSearch: (query: string, start: string, end: string, limit: number, direction: string) => void;
+  onSearch: (
+    query: string,
+    start: string,
+    end: string,
+    limit: number,
+    direction: string,
+  ) => void;
   onLiveTail: (query: string, namespace: string) => void;
   onStopTail: () => void;
   isTailing: Signal<boolean>;
@@ -37,7 +43,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   useEffect(() => {
     if (!IS_BROWSER) return;
     apiGet<string[]>("/v1/logs/labels/namespace/values")
-      .then((res) => { namespaces.value = res.data ?? []; })
+      .then((res) => {
+        namespaces.value = res.data ?? [];
+      })
       .catch(() => {}); // graceful — dropdowns just stay empty
   }, []);
 
@@ -45,8 +53,14 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   useEffect(() => {
     if (!IS_BROWSER || !namespace.value) return;
     const query = `{namespace="${namespace.value}"}`;
-    apiGet<string[]>(`/v1/logs/labels/pod/values?query=${encodeURIComponent(query)}&namespace=${encodeURIComponent(namespace.value)}`)
-      .then((res) => { pods.value = res.data ?? []; })
+    apiGet<string[]>(
+      `/v1/logs/labels/pod/values?query=${
+        encodeURIComponent(query)
+      }&namespace=${encodeURIComponent(namespace.value)}`,
+    )
+      .then((res) => {
+        pods.value = res.data ?? [];
+      })
       .catch(() => {});
   }, [namespace.value]);
 
@@ -54,8 +68,14 @@ export default function LogFilterBar(props: LogFilterBarProps) {
   useEffect(() => {
     if (!IS_BROWSER || !namespace.value || !pod.value) return;
     const query = `{namespace="${namespace.value}",pod="${pod.value}"}`;
-    apiGet<string[]>(`/v1/logs/labels/container/values?query=${encodeURIComponent(query)}&namespace=${encodeURIComponent(namespace.value)}`)
-      .then((res) => { containers.value = res.data ?? []; })
+    apiGet<string[]>(
+      `/v1/logs/labels/container/values?query=${
+        encodeURIComponent(query)
+      }&namespace=${encodeURIComponent(namespace.value)}`,
+    )
+      .then((res) => {
+        containers.value = res.data ?? [];
+      })
       .catch(() => {});
   }, [pod.value]);
 
@@ -69,7 +89,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
 
     let q = `{${matchers.join(",")}}`;
     if (severity.value) q += ` | level=~"(?i)${severity.value}"`;
-    if (searchText.value && mode.value === "search") q += ` |= "${searchText.value}"`;
+    if (searchText.value && mode.value === "search") {
+      q += ` |= "${searchText.value}"`;
+    }
     return q;
   }
 
@@ -109,16 +131,24 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       <select
         class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={namespace.value}
-        onChange={(e) => { namespace.value = (e.target as HTMLSelectElement).value; pod.value = ""; container.value = ""; }}
+        onChange={(e) => {
+          namespace.value = (e.target as HTMLSelectElement).value;
+          pod.value = "";
+          container.value = "";
+        }}
       >
         <option value="">All Namespaces</option>
-        {namespaces.value.map((ns) => <option key={ns} value={ns}>{ns}</option>)}
+        {namespaces.value.map((ns) => <option key={ns} value={ns}>{ns}
+        </option>)}
       </select>
 
       <select
         class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={pod.value}
-        onChange={(e) => { pod.value = (e.target as HTMLSelectElement).value; container.value = ""; }}
+        onChange={(e) => {
+          pod.value = (e.target as HTMLSelectElement).value;
+          container.value = "";
+        }}
       >
         <option value="">All Pods</option>
         {pods.value.map((p) => <option key={p} value={p}>{p}</option>)}
@@ -127,7 +157,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       <select
         class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={container.value}
-        onChange={(e) => { container.value = (e.target as HTMLSelectElement).value; }}
+        onChange={(e) => {
+          container.value = (e.target as HTMLSelectElement).value;
+        }}
       >
         <option value="">All Containers</option>
         {containers.value.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -136,7 +168,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       <select
         class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={severity.value}
-        onChange={(e) => { severity.value = (e.target as HTMLSelectElement).value; }}
+        onChange={(e) => {
+          severity.value = (e.target as HTMLSelectElement).value;
+        }}
       >
         <option value="">All Levels</option>
         <option value="error">Error</option>
@@ -149,16 +183,26 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         <input
           type="text"
           class="flex-1 rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-primary placeholder-text-muted"
-          placeholder={mode.value === "logql" ? 'LogQL query...' : 'Search text...'}
+          placeholder={mode.value === "logql"
+            ? "LogQL query..."
+            : "Search text..."}
           value={searchText.value}
-          onInput={(e) => { searchText.value = (e.target as HTMLInputElement).value; }}
-          onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
+          onInput={(e) => {
+            searchText.value = (e.target as HTMLInputElement).value;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSearch();
+          }}
         />
         <button
           type="button"
           class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-xs text-text-muted hover:text-text-secondary"
-          onClick={() => { mode.value = mode.value === "search" ? "logql" : "search"; }}
-          title={mode.value === "search" ? "Switch to LogQL mode" : "Switch to search mode"}
+          onClick={() => {
+            mode.value = mode.value === "search" ? "logql" : "search";
+          }}
+          title={mode.value === "search"
+            ? "Switch to LogQL mode"
+            : "Switch to search mode"}
         >
           {mode.value === "search" ? "LogQL" : "Search"}
         </button>
@@ -167,7 +211,9 @@ export default function LogFilterBar(props: LogFilterBarProps) {
       <select
         class="rounded border border-border-primary bg-bg-elevated px-2 py-1.5 text-sm text-text-secondary"
         value={timePreset.value}
-        onChange={(e) => { timePreset.value = (e.target as HTMLSelectElement).value; }}
+        onChange={(e) => {
+          timePreset.value = (e.target as HTMLSelectElement).value;
+        }}
       >
         <option value="15m">Last 15m</option>
         <option value="1h">Last 1h</option>
