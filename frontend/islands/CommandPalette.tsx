@@ -75,6 +75,7 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Create Ingress", href: "/networking/ingresses?action=create" },
     { label: "Create HPA", href: "/scaling/hpas?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },
+    { label: "Investigate Resource", href: "/observability/investigate" },
   ];
   for (const a of actions) {
     items.push({

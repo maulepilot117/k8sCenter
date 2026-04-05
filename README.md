@@ -10,6 +10,8 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **GUI-driven wizards** for deployments, services, storage (CSI), and networking (CNI)
 - **Integrated monitoring** via Prometheus and Grafana with auto-discovery, PromQL proxy, and Grafana dashboard embedding
 - **Log Explorer** with Loki integration — search, filter, live tail (WebSocket), LogQL support, log volume histogram, and RBAC-scoped namespace enforcement
+- **Resource topology graph** — interactive SVG dependency DAG with health propagation, zoom/pan, and slide-out detail panels
+- **Diagnostic workspace** — automated health checks (CrashLoopBackOff, ImagePull, Pending, ReplicaMismatch, ZeroEndpoints, PendingPVC) with blast radius analysis via topology BFS
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts with PostgreSQL persistence)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Cilium Network Policy editor** with NSX-T-style rule table, YAML preview, and dangerous policy warnings
@@ -281,11 +283,13 @@ kubecenter/
 │   │   ├── storage/      # CSI drivers, StorageClasses, VolumeSnapshots
 │   │   ├── networking/   # CNI detection (Cilium/Calico/Flannel), config management
 │   │   ├── alerting/     # Alertmanager webhook, alert store, SMTP notifier, PrometheusRule CRUD
+│   │   ├── diagnostics/  # Diagnostic rules engine, blast radius BFS, resolver
+│   │   ├── topology/     # Resource dependency graph builder, health propagation
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
 ├── frontend/             # Deno 2.x + Fresh 2.x frontend
 │   ├── routes/           # Pages, layout, middleware, BFF proxy
-│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI, Alerting, AuthSettings, LogExplorer)
+│   ├── islands/          # Interactive components (Dashboard, Login, ResourceTable, ResourceDetail, YamlEditor, Monitoring, Storage, CNI, Alerting, AuthSettings, LogExplorer, Topology, Diagnostics)
 │   ├── components/       # Server-rendered UI components
 │   └── lib/              # API client, auth state, types, constants
 ├── helm/kubecenter/      # Production Helm chart (v0.2.0)

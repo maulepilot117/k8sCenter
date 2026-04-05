@@ -19,6 +19,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/alerting"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/storage"
@@ -55,9 +56,10 @@ type Server struct {
 	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
-	AlertingHandler    *alerting.Handler
-	CRDHandler         *resources.GenericCRDHandler
-	Hub                *websocket.Hub
+	AlertingHandler      *alerting.Handler
+	DiagnosticsHandler   *diagnostics.Handler
+	CRDHandler           *resources.GenericCRDHandler
+	Hub                  *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
@@ -89,9 +91,10 @@ type Deps struct {
 	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
-	AlertingHandler    *alerting.Handler
-	CRDHandler         *resources.GenericCRDHandler
-	LogQueryLimiter    *middleware.RateLimiter
+	AlertingHandler      *alerting.Handler
+	DiagnosticsHandler   *diagnostics.Handler
+	CRDHandler           *resources.GenericCRDHandler
+	LogQueryLimiter      *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	AccessChecker      *resources.AccessChecker
 	ReadyFn            func() bool
@@ -198,6 +201,11 @@ func New(deps Deps) *Server {
 	if deps.AlertingHandler != nil {
 		s.AlertingHandler = deps.AlertingHandler
 		s.WebhookRateLimiter = deps.WebhookRateLimiter
+	}
+
+	// Diagnostics handler
+	if deps.DiagnosticsHandler != nil {
+		s.DiagnosticsHandler = deps.DiagnosticsHandler
 	}
 
 	// CRD handler
