@@ -62,6 +62,23 @@ const EDGE_STYLES: Record<
   ingress: { dasharray: "6,3", opacity: 0.7 },
 };
 
+// ── Kind abbreviations ──
+
+const KIND_ABBREVIATIONS: Record<string, string> = {
+  "HorizontalPodAutoscaler": "HPA",
+  "PodDisruptionBudget": "PDB",
+  "PersistentVolumeClaim": "PVC",
+  "ReplicaSet": "RS",
+  "DaemonSet": "DS",
+  "StatefulSet": "STS",
+  "ConfigMap": "CM",
+  "NetworkPolicy": "NetPol",
+};
+
+function displayKind(kind: string): string {
+  return KIND_ABBREVIATIONS[kind] ?? kind;
+}
+
 // ── Helpers ──
 
 function timeAgo(iso: string): string {
@@ -75,21 +92,26 @@ function timeAgo(iso: string): string {
 }
 
 function getResourceHref(kind: string, ns: string, name: string): string {
+  const eNs = encodeURIComponent(ns);
+  const eName = encodeURIComponent(name);
   const kindRoutes: Record<string, string> = {
-    Deployment: `/workloads/deployments/${ns}/${name}`,
-    StatefulSet: `/workloads/statefulsets/${ns}/${name}`,
-    DaemonSet: `/workloads/daemonsets/${ns}/${name}`,
-    Pod: `/workloads/pods/${ns}/${name}`,
-    Service: `/networking/services/${ns}/${name}`,
-    Ingress: `/networking/ingresses/${ns}/${name}`,
-    ConfigMap: `/config/configmaps/${ns}/${name}`,
-    Secret: `/config/secrets/${ns}/${name}`,
-    PersistentVolumeClaim: `/storage/pvcs/${ns}/${name}`,
-    Job: `/workloads/jobs/${ns}/${name}`,
-    CronJob: `/workloads/cronjobs/${ns}/${name}`,
-    ReplicaSet: `/workloads/replicasets/${ns}/${name}`,
+    Deployment: `/workloads/deployments/${eNs}/${eName}`,
+    StatefulSet: `/workloads/statefulsets/${eNs}/${eName}`,
+    DaemonSet: `/workloads/daemonsets/${eNs}/${eName}`,
+    Pod: `/workloads/pods/${eNs}/${eName}`,
+    Service: `/networking/services/${eNs}/${eName}`,
+    Ingress: `/networking/ingresses/${eNs}/${eName}`,
+    ConfigMap: `/config/configmaps/${eNs}/${eName}`,
+    Secret: `/config/secrets/${eNs}/${eName}`,
+    PersistentVolumeClaim: `/storage/pvcs/${eNs}/${eName}`,
+    Job: `/workloads/jobs/${eNs}/${eName}`,
+    CronJob: `/workloads/cronjobs/${eNs}/${eName}`,
+    ReplicaSet: `/workloads/replicasets/${eNs}/${eName}`,
   };
-  return kindRoutes[kind] ?? `/workloads/pods/${ns}/${name}`;
+  return kindRoutes[kind] ??
+    `/resources/${encodeURIComponent(kind)}/${encodeURIComponent(ns)}/${
+      encodeURIComponent(name)
+    }`;
 }
 
 // ── Component ──
@@ -109,6 +131,7 @@ export default function NamespaceTopology() {
 
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
+  const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
 
   // ── Data fetching ──
 
@@ -170,7 +193,10 @@ export default function NamespaceTopology() {
     const visited = new Set<string>();
     function assignLayer(id: string): number {
       if (layer.has(id)) return layer.get(id)!;
-      if (visited.has(id)) return 0; // cycle protection
+      // Cycle protection: if we re-enter a node during traversal, assign layer 0
+      // to break the cycle. This may cause visual overlap in the rare case of cyclic
+      // ownership (e.g. mutually owning resources), but prevents infinite recursion.
+      if (visited.has(id)) return 0;
       visited.add(id);
       const parentLayers = (parents.get(id) ?? []).map((pid) =>
         assignLayer(pid)
@@ -206,6 +232,7 @@ export default function NamespaceTopology() {
     }
 
     layoutNodes.value = positioned;
+    layoutNodeMap.value = new Map(positioned.map((n) => [n.id, n]));
   }, [graph.value]);
 
   // ── Connectivity sets for hover highlight ──
@@ -396,6 +423,7 @@ export default function NamespaceTopology() {
           height="100%"
           viewBox={`${panX.value} ${panY.value} ${vbW} ${vbH}`}
           preserveAspectRatio="xMidYMid meet"
+          aria-label="Namespace resource topology graph"
           style={{
             cursor: dragging.value ? "grabbing" : "grab",
             minHeight: "460px",
@@ -416,20 +444,9 @@ export default function NamespaceTopology() {
 .ns-topo-failing rect { animation: nsTopoPulse 1.5s ease-in-out infinite; }
 `}
             </style>
-            {/* Arrowhead markers */}
+            {/* Arrowhead markers: default for owner/selector/ingress, separate for mount */}
             <marker
-              id="arrow-owner"
-              viewBox="0 0 10 6"
-              refX="10"
-              refY="3"
-              markerWidth="8"
-              markerHeight="6"
-              orient="auto"
-            >
-              <path d="M0,0 L10,3 L0,6 Z" fill="var(--border-primary)" />
-            </marker>
-            <marker
-              id="arrow-selector"
+              id="arrow-default"
               viewBox="0 0 10 6"
               refX="10"
               refY="3"
@@ -454,23 +471,12 @@ export default function NamespaceTopology() {
                 opacity="0.5"
               />
             </marker>
-            <marker
-              id="arrow-ingress"
-              viewBox="0 0 10 6"
-              refX="10"
-              refY="3"
-              markerWidth="8"
-              markerHeight="6"
-              orient="auto"
-            >
-              <path d="M0,0 L10,3 L0,6 Z" fill="var(--border-primary)" />
-            </marker>
           </defs>
 
           {/* Edges */}
           {graph.value.edges.map((edge, i) => {
-            const src = layoutNodes.value.find((n) => n.id === edge.source);
-            const tgt = layoutNodes.value.find((n) => n.id === edge.target);
+            const src = layoutNodeMap.value.get(edge.source);
+            const tgt = layoutNodeMap.value.get(edge.target);
             if (!src || !tgt) return null;
             const style = EDGE_STYLES[edge.type];
             const op = edgeOpacity(edge.source, edge.target, style.opacity);
@@ -485,7 +491,9 @@ export default function NamespaceTopology() {
                 stroke-width={1.5}
                 stroke-dasharray={style.dasharray}
                 opacity={op}
-                marker-end={`url(#arrow-${edge.type})`}
+                marker-end={`url(#arrow-${
+                  edge.type === "mount" ? "mount" : "default"
+                })`}
               />
             );
           })}
@@ -532,7 +540,7 @@ export default function NamespaceTopology() {
                   fill="var(--text-muted)"
                   font-family="var(--font-mono, monospace)"
                 >
-                  {node.kind}
+                  {displayKind(node.kind)}
                 </text>
                 {/* Resource name */}
                 <text
@@ -645,14 +653,18 @@ export default function NamespaceTopology() {
               </a>
               {selected.kind === "Pod" && (
                 <a
-                  href={`/observability/logs?namespace=${selected.namespace}&pod=${selected.name}`}
+                  href={`/observability/logs?namespace=${
+                    encodeURIComponent(selected.namespace)
+                  }&pod=${encodeURIComponent(selected.name)}`}
                   class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
                 >
                   View Logs
                 </a>
               )}
               <a
-                href={`/observability/logs?namespace=${selected.namespace}`}
+                href={`/observability/logs?namespace=${
+                  encodeURIComponent(selected.namespace)
+                }`}
                 class="block rounded border border-border-primary px-3 py-2 text-sm text-text-primary hover:bg-bg-elevated"
               >
                 Investigate

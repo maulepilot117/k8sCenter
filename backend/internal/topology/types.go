@@ -6,6 +6,7 @@ import "time"
 type Graph struct {
 	Nodes      []Node `json:"nodes"`
 	Edges      []Edge `json:"edges"`
+	Truncated  bool   `json:"truncated,omitempty"`
 	ComputedAt string `json:"computedAt"`
 }
 
@@ -45,14 +46,6 @@ const (
 	EdgeMount    EdgeType = "mount"
 	EdgeIngress  EdgeType = "ingress"
 )
-
-// HealthSummary is a lightweight count of health states.
-type HealthSummary struct {
-	Healthy  int `json:"healthy"`
-	Degraded int `json:"degraded"`
-	Failing  int `json:"failing"`
-	Total    int `json:"total"`
-}
 
 // NewGraph creates a new empty graph with the current timestamp.
 func NewGraph() *Graph {

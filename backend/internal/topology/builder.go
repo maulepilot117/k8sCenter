@@ -4,15 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	networkingv1 "k8s.io/api/networking/v1"
+
+	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
+
+// maxNodes caps the total number of nodes in a graph to prevent
+// oversized responses for very large namespaces.
+const maxNodes = 2000
 
 // ResourceLister abstracts resource listing for the graph builder.
 // Implemented by InformerLister (wraps InformerManager) and test fakes.
@@ -27,7 +34,6 @@ type ResourceLister interface {
 	ListCronJobs(ctx context.Context, namespace string) ([]*batchv1.CronJob, error)
 	ListIngresses(ctx context.Context, namespace string) ([]*networkingv1.Ingress, error)
 	ListConfigMaps(ctx context.Context, namespace string) ([]*corev1.ConfigMap, error)
-	ListSecrets(ctx context.Context, namespace string) ([]*corev1.Secret, error)
 	ListPVCs(ctx context.Context, namespace string) ([]*corev1.PersistentVolumeClaim, error)
 	ListHPAs(ctx context.Context, namespace string) ([]*autoscalingv2.HorizontalPodAutoscaler, error)
 }
@@ -43,528 +49,274 @@ func NewBuilder(lister ResourceLister, logger *slog.Logger) *Builder {
 	return &Builder{lister: lister, logger: logger}
 }
 
-// fetchedResources holds all resources fetched from the lister.
-type fetchedResources struct {
-	mu          sync.Mutex
-	pods        []*corev1.Pod
-	services    []*corev1.Service
-	deployments []*appsv1.Deployment
-	replicaSets []*appsv1.ReplicaSet
-	statefulSets []*appsv1.StatefulSet
-	daemonSets  []*appsv1.DaemonSet
-	jobs        []*batchv1.Job
-	cronJobs    []*batchv1.CronJob
-	ingresses   []*networkingv1.Ingress
-	configMaps  []*corev1.ConfigMap
-	secrets     []*corev1.Secret
-	pvcs        []*corev1.PersistentVolumeClaim
-	hpas        []*autoscalingv2.HorizontalPodAutoscaler
+// resourceMeta is a normalized representation of a k8s resource for generic node building.
+type resourceMeta struct {
+	uid       string
+	name      string
+	namespace string
+	ownerRefs []metav1.OwnerReference
+	obj       any
+}
+
+// healthFn computes health and summary for a resource.
+type healthFn func(resourceMeta) (Health, string)
+
+// canAccess checks if the user has "list" permission for the given resource.
+func canAccess(ctx context.Context, user *auth.User, checker *resources.AccessChecker, resource, namespace string) bool {
+	allowed, _ := checker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	return allowed
 }
 
 // BuildNamespaceGraph builds a full resource dependency graph for a namespace.
-func (b *Builder) BuildNamespaceGraph(ctx context.Context, namespace string) (*Graph, error) {
-	res := b.fetchAll(ctx, namespace)
+func (b *Builder) BuildNamespaceGraph(ctx context.Context, namespace string, user *auth.User, checker *resources.AccessChecker) (*Graph, error) {
 	graph := NewGraph()
-	nodeMap := make(map[string]*Node)   // UID -> Node
-	nameIndex := make(map[string]string) // "Kind/Name" -> UID (for name-based lookups)
+	nameIndex := make(map[string]string) // "Kind/Name" -> UID
 
-	// Step 1: Build nodes
-	b.addPodNodes(res.pods, nodeMap, nameIndex)
-	b.addServiceNodes(res.services, nodeMap, nameIndex)
-	b.addDeploymentNodes(res.deployments, nodeMap, nameIndex)
-	b.addReplicaSetNodes(res.replicaSets, nodeMap, nameIndex)
-	b.addStatefulSetNodes(res.statefulSets, nodeMap, nameIndex)
-	b.addDaemonSetNodes(res.daemonSets, nodeMap, nameIndex)
-	b.addJobNodes(res.jobs, nodeMap, nameIndex)
-	b.addCronJobNodes(res.cronJobs, nodeMap, nameIndex)
-	b.addIngressNodes(res.ingresses, nodeMap, nameIndex)
-	b.addConfigMapNodes(res.configMaps, nodeMap, nameIndex)
-	b.addSecretNodes(res.secrets, nodeMap, nameIndex)
-	b.addPVCNodes(res.pvcs, nodeMap, nameIndex)
-	b.addHPANodes(res.hpas, nodeMap, nameIndex)
-
-	// Step 2: Build edges
-	var edges []Edge
-	edges = append(edges, b.buildOwnerEdges(res, nodeMap)...)
-	edges = append(edges, b.buildServiceSelectorEdges(res.services, res.pods, nodeMap)...)
-	edges = append(edges, b.buildIngressEdges(res.ingresses, nameIndex)...)
-	edges = append(edges, b.buildMountEdges(res.pods, nameIndex)...)
-	edges = append(edges, b.buildHPAEdges(res.hpas, nameIndex)...)
-
-	// Step 3: Propagate health
-	b.propagateHealth(nodeMap, edges)
-
-	// Assemble graph
-	for _, n := range nodeMap {
-		graph.Nodes = append(graph.Nodes, *n)
+	// Pods
+	var pods []*corev1.Pod
+	if canAccess(ctx, user, checker, "pods", namespace) {
+		r, err := b.lister.ListPods(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list pods", "namespace", namespace, "error", err)
+		} else {
+			pods = r
+			addResourceNodes(graph, "Pod", nameIndex, toMetas(pods, func(p *corev1.Pod) resourceMeta {
+				return resourceMeta{uid: string(p.UID), name: p.Name, namespace: p.Namespace, ownerRefs: p.OwnerReferences, obj: p}
+			}), func(m resourceMeta) (Health, string) {
+				return podHealth(m.obj.(*corev1.Pod))
+			})
+		}
 	}
-	graph.Edges = edges
+
+	// Services
+	var services []*corev1.Service
+	if canAccess(ctx, user, checker, "services", namespace) {
+		r, err := b.lister.ListServices(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list services", "namespace", namespace, "error", err)
+		} else {
+			services = r
+			addResourceNodes(graph, "Service", nameIndex, toMetas(services, func(s *corev1.Service) resourceMeta {
+				return resourceMeta{uid: string(s.UID), name: s.Name, namespace: s.Namespace, obj: s}
+			}), func(m resourceMeta) (Health, string) {
+				svc := m.obj.(*corev1.Service)
+				return HealthHealthy, fmt.Sprintf("type=%s", svc.Spec.Type)
+			})
+		}
+	}
+
+	// Deployments
+	var deployments []*appsv1.Deployment
+	if canAccess(ctx, user, checker, "deployments", namespace) {
+		r, err := b.lister.ListDeployments(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list deployments", "namespace", namespace, "error", err)
+		} else {
+			deployments = r
+			addResourceNodes(graph, "Deployment", nameIndex, toMetas(deployments, func(d *appsv1.Deployment) resourceMeta {
+				return resourceMeta{uid: string(d.UID), name: d.Name, namespace: d.Namespace, ownerRefs: d.OwnerReferences, obj: d}
+			}), func(m resourceMeta) (Health, string) {
+				return deploymentHealth(m.obj.(*appsv1.Deployment))
+			})
+		}
+	}
+
+	// ReplicaSets
+	var replicaSets []*appsv1.ReplicaSet
+	if canAccess(ctx, user, checker, "replicasets", namespace) {
+		r, err := b.lister.ListReplicaSets(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list replicasets", "namespace", namespace, "error", err)
+		} else {
+			replicaSets = r
+			addResourceNodes(graph, "ReplicaSet", nameIndex, toMetas(replicaSets, func(rs *appsv1.ReplicaSet) resourceMeta {
+				return resourceMeta{uid: string(rs.UID), name: rs.Name, namespace: rs.Namespace, ownerRefs: rs.OwnerReferences, obj: rs}
+			}), func(m resourceMeta) (Health, string) {
+				return replicaSetHealth(m.obj.(*appsv1.ReplicaSet))
+			})
+		}
+	}
+
+	// StatefulSets
+	if canAccess(ctx, user, checker, "statefulsets", namespace) {
+		r, err := b.lister.ListStatefulSets(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list statefulsets", "namespace", namespace, "error", err)
+		} else {
+			addResourceNodes(graph, "StatefulSet", nameIndex, toMetas(r, func(s *appsv1.StatefulSet) resourceMeta {
+				return resourceMeta{uid: string(s.UID), name: s.Name, namespace: s.Namespace, ownerRefs: s.OwnerReferences, obj: s}
+			}), func(m resourceMeta) (Health, string) {
+				return statefulSetHealth(m.obj.(*appsv1.StatefulSet))
+			})
+		}
+	}
+
+	// DaemonSets
+	if canAccess(ctx, user, checker, "daemonsets", namespace) {
+		r, err := b.lister.ListDaemonSets(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list daemonsets", "namespace", namespace, "error", err)
+		} else {
+			addResourceNodes(graph, "DaemonSet", nameIndex, toMetas(r, func(d *appsv1.DaemonSet) resourceMeta {
+				return resourceMeta{uid: string(d.UID), name: d.Name, namespace: d.Namespace, ownerRefs: d.OwnerReferences, obj: d}
+			}), func(m resourceMeta) (Health, string) {
+				return daemonSetHealth(m.obj.(*appsv1.DaemonSet))
+			})
+		}
+	}
+
+	// Jobs
+	var jobs []*batchv1.Job
+	if canAccess(ctx, user, checker, "jobs", namespace) {
+		r, err := b.lister.ListJobs(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list jobs", "namespace", namespace, "error", err)
+		} else {
+			jobs = r
+			addResourceNodes(graph, "Job", nameIndex, toMetas(jobs, func(j *batchv1.Job) resourceMeta {
+				return resourceMeta{uid: string(j.UID), name: j.Name, namespace: j.Namespace, ownerRefs: j.OwnerReferences, obj: j}
+			}), func(m resourceMeta) (Health, string) {
+				return jobHealth(m.obj.(*batchv1.Job))
+			})
+		}
+	}
+
+	// CronJobs
+	if canAccess(ctx, user, checker, "cronjobs", namespace) {
+		r, err := b.lister.ListCronJobs(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list cronjobs", "namespace", namespace, "error", err)
+		} else {
+			addResourceNodes(graph, "CronJob", nameIndex, toMetas(r, func(c *batchv1.CronJob) resourceMeta {
+				return resourceMeta{uid: string(c.UID), name: c.Name, namespace: c.Namespace, obj: c}
+			}), func(m resourceMeta) (Health, string) {
+				cj := m.obj.(*batchv1.CronJob)
+				return HealthHealthy, fmt.Sprintf("schedule=%s", cj.Spec.Schedule)
+			})
+		}
+	}
+
+	// Ingresses
+	var ingresses []*networkingv1.Ingress
+	if canAccess(ctx, user, checker, "ingresses", namespace) {
+		r, err := b.lister.ListIngresses(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list ingresses", "namespace", namespace, "error", err)
+		} else {
+			ingresses = r
+			addResourceNodes(graph, "Ingress", nameIndex, toMetas(ingresses, func(i *networkingv1.Ingress) resourceMeta {
+				return resourceMeta{uid: string(i.UID), name: i.Name, namespace: i.Namespace, obj: i}
+			}), func(m resourceMeta) (Health, string) {
+				ing := m.obj.(*networkingv1.Ingress)
+				ruleCount := 0
+				for _, rule := range ing.Spec.Rules {
+					if rule.HTTP != nil {
+						ruleCount += len(rule.HTTP.Paths)
+					}
+				}
+				return HealthHealthy, fmt.Sprintf("%d rules", ruleCount)
+			})
+		}
+	}
+
+	// ConfigMaps
+	if canAccess(ctx, user, checker, "configmaps", namespace) {
+		r, err := b.lister.ListConfigMaps(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list configmaps", "namespace", namespace, "error", err)
+		} else {
+			addResourceNodes(graph, "ConfigMap", nameIndex, toMetas(r, func(c *corev1.ConfigMap) resourceMeta {
+				return resourceMeta{uid: string(c.UID), name: c.Name, namespace: c.Namespace, obj: c}
+			}), func(m resourceMeta) (Health, string) {
+				cm := m.obj.(*corev1.ConfigMap)
+				return HealthHealthy, fmt.Sprintf("%d keys", len(cm.Data))
+			})
+		}
+	}
+
+	// PVCs
+	if canAccess(ctx, user, checker, "persistentvolumeclaims", namespace) {
+		r, err := b.lister.ListPVCs(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list pvcs", "namespace", namespace, "error", err)
+		} else {
+			addResourceNodes(graph, "PersistentVolumeClaim", nameIndex, toMetas(r, func(p *corev1.PersistentVolumeClaim) resourceMeta {
+				return resourceMeta{uid: string(p.UID), name: p.Name, namespace: p.Namespace, obj: p}
+			}), func(m resourceMeta) (Health, string) {
+				pvc := m.obj.(*corev1.PersistentVolumeClaim)
+				return HealthHealthy, fmt.Sprintf("phase=%s", pvc.Status.Phase)
+			})
+		}
+	}
+
+	// HPAs
+	var hpas []*autoscalingv2.HorizontalPodAutoscaler
+	if canAccess(ctx, user, checker, "horizontalpodautoscalers", namespace) {
+		r, err := b.lister.ListHPAs(ctx, namespace)
+		if err != nil {
+			b.logger.Warn("failed to list hpas", "namespace", namespace, "error", err)
+		} else {
+			hpas = r
+			addResourceNodes(graph, "HorizontalPodAutoscaler", nameIndex, toMetas(hpas, func(h *autoscalingv2.HorizontalPodAutoscaler) resourceMeta {
+				return resourceMeta{uid: string(h.UID), name: h.Name, namespace: h.Namespace, obj: h}
+			}), func(m resourceMeta) (Health, string) {
+				hpa := m.obj.(*autoscalingv2.HorizontalPodAutoscaler)
+				return HealthHealthy, fmt.Sprintf("%d/%d replicas", hpa.Status.CurrentReplicas, hpa.Status.DesiredReplicas)
+			})
+		}
+	}
+
+	// Check truncation
+	if len(graph.Nodes) >= maxNodes {
+		graph.Truncated = true
+	}
+
+	// Build node lookup map for edge building
+	nodeMap := make(map[string]*Node, len(graph.Nodes))
+	for i := range graph.Nodes {
+		nodeMap[graph.Nodes[i].ID] = &graph.Nodes[i]
+	}
+
+	// Build edges
+	graph.Edges = append(graph.Edges, buildOwnerEdges(pods, replicaSets, jobs, nodeMap)...)
+	graph.Edges = append(graph.Edges, buildServiceSelectorEdges(services, pods, nodeMap)...)
+	graph.Edges = append(graph.Edges, buildIngressEdges(ingresses, nameIndex)...)
+	graph.Edges = append(graph.Edges, buildMountEdges(pods, nameIndex)...)
+	graph.Edges = append(graph.Edges, buildHPAEdges(hpas, nameIndex)...)
+
+	// Propagate health
+	propagateHealth(nodeMap, graph.Edges)
 
 	return graph, nil
 }
 
-// BuildFocusedGraph builds a subgraph centered on a specific resource,
-// including all resources reachable by traversing edges in either direction.
-func (b *Builder) BuildFocusedGraph(ctx context.Context, namespace, kind, name string) (*Graph, error) {
-	full, err := b.BuildNamespaceGraph(ctx, namespace)
-	if err != nil {
-		return nil, err
-	}
-
-	// Find target node
-	var targetID string
-	for i := range full.Nodes {
-		if full.Nodes[i].Kind == kind && full.Nodes[i].Name == name {
-			targetID = full.Nodes[i].ID
-			break
+// addResourceNodes adds nodes for a list of resources, respecting the node cap.
+func addResourceNodes(graph *Graph, kind string, nameIndex map[string]string, items []resourceMeta, hfn healthFn) {
+	for _, item := range items {
+		if len(graph.Nodes) >= maxNodes {
+			graph.Truncated = true
+			return
 		}
-	}
-	if targetID == "" {
-		return nil, fmt.Errorf("resource %s/%s not found in namespace %s", kind, name, namespace)
-	}
-
-	// Build adjacency list (bidirectional)
-	adj := make(map[string][]string)
-	for _, e := range full.Edges {
-		adj[e.Source] = append(adj[e.Source], e.Target)
-		adj[e.Target] = append(adj[e.Target], e.Source)
-	}
-
-	// BFS from target
-	visited := make(map[string]bool)
-	queue := []string{targetID}
-	visited[targetID] = true
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, neighbor := range adj[current] {
-			if !visited[neighbor] {
-				visited[neighbor] = true
-				queue = append(queue, neighbor)
-			}
-		}
-	}
-
-	// Build subgraph
-	graph := NewGraph()
-	for i := range full.Nodes {
-		if visited[full.Nodes[i].ID] {
-			graph.Nodes = append(graph.Nodes, full.Nodes[i])
-		}
-	}
-	for _, e := range full.Edges {
-		if visited[e.Source] && visited[e.Target] {
-			graph.Edges = append(graph.Edges, e)
-		}
-	}
-
-	return graph, nil
-}
-
-// SummarizeHealth counts nodes by health state.
-func SummarizeHealth(g *Graph) HealthSummary {
-	var s HealthSummary
-	for i := range g.Nodes {
-		s.Total++
-		switch g.Nodes[i].Health {
-		case HealthHealthy:
-			s.Healthy++
-		case HealthDegraded:
-			s.Degraded++
-		case HealthFailing:
-			s.Failing++
-		}
-	}
-	return s
-}
-
-// fetchAll retrieves all resources in parallel.
-func (b *Builder) fetchAll(ctx context.Context, namespace string) *fetchedResources {
-	res := &fetchedResources{}
-	var wg sync.WaitGroup
-
-	type fetcher struct {
-		name string
-		fn   func()
-	}
-
-	fetchers := []fetcher{
-		{"pods", func() {
-			r, err := b.lister.ListPods(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list pods", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.pods = r
-			res.mu.Unlock()
-		}},
-		{"services", func() {
-			r, err := b.lister.ListServices(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list services", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.services = r
-			res.mu.Unlock()
-		}},
-		{"deployments", func() {
-			r, err := b.lister.ListDeployments(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list deployments", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.deployments = r
-			res.mu.Unlock()
-		}},
-		{"replicasets", func() {
-			r, err := b.lister.ListReplicaSets(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list replicasets", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.replicaSets = r
-			res.mu.Unlock()
-		}},
-		{"statefulsets", func() {
-			r, err := b.lister.ListStatefulSets(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list statefulsets", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.statefulSets = r
-			res.mu.Unlock()
-		}},
-		{"daemonsets", func() {
-			r, err := b.lister.ListDaemonSets(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list daemonsets", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.daemonSets = r
-			res.mu.Unlock()
-		}},
-		{"jobs", func() {
-			r, err := b.lister.ListJobs(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list jobs", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.jobs = r
-			res.mu.Unlock()
-		}},
-		{"cronjobs", func() {
-			r, err := b.lister.ListCronJobs(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list cronjobs", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.cronJobs = r
-			res.mu.Unlock()
-		}},
-		{"ingresses", func() {
-			r, err := b.lister.ListIngresses(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list ingresses", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.ingresses = r
-			res.mu.Unlock()
-		}},
-		{"configmaps", func() {
-			r, err := b.lister.ListConfigMaps(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list configmaps", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.configMaps = r
-			res.mu.Unlock()
-		}},
-		{"secrets", func() {
-			r, err := b.lister.ListSecrets(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list secrets", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.secrets = r
-			res.mu.Unlock()
-		}},
-		{"pvcs", func() {
-			r, err := b.lister.ListPVCs(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list pvcs", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.pvcs = r
-			res.mu.Unlock()
-		}},
-		{"hpas", func() {
-			r, err := b.lister.ListHPAs(ctx, namespace)
-			if err != nil {
-				b.logger.Warn("failed to list hpas", "namespace", namespace, "error", err)
-				return
-			}
-			res.mu.Lock()
-			res.hpas = r
-			res.mu.Unlock()
-		}},
-	}
-
-	wg.Add(len(fetchers))
-	for _, f := range fetchers {
-		go func(fn func()) {
-			defer wg.Done()
-			fn()
-		}(f.fn)
-	}
-	wg.Wait()
-
-	return res
-}
-
-// --- Node builders ---
-
-func (b *Builder) addPodNodes(pods []*corev1.Pod, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, pod := range pods {
-		uid := string(pod.UID)
-		health, summary := podHealth(pod)
-		node := &Node{
-			ID:        uid,
-			Kind:      "Pod",
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
+		health, summary := hfn(item)
+		graph.Nodes = append(graph.Nodes, Node{
+			ID:        item.uid,
+			Kind:      kind,
+			Name:      item.name,
+			Namespace: item.namespace,
 			Health:    health,
 			Summary:   summary,
-		}
-		nodeMap[uid] = node
-		nameIndex["Pod/"+pod.Name] = uid
+		})
+		nameIndex[kind+"/"+item.name] = item.uid
 	}
 }
 
-func (b *Builder) addServiceNodes(services []*corev1.Service, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, svc := range services {
-		uid := string(svc.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "Service",
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("type=%s", svc.Spec.Type),
-		}
-		nodeMap[uid] = node
-		nameIndex["Service/"+svc.Name] = uid
+// toMetas converts a typed slice to []resourceMeta using a mapper function.
+func toMetas[T any](items []T, fn func(T) resourceMeta) []resourceMeta {
+	out := make([]resourceMeta, len(items))
+	for i, item := range items {
+		out[i] = fn(item)
 	}
-}
-
-func (b *Builder) addDeploymentNodes(deployments []*appsv1.Deployment, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, dep := range deployments {
-		uid := string(dep.UID)
-		health, summary := deploymentHealth(dep)
-		node := &Node{
-			ID:        uid,
-			Kind:      "Deployment",
-			Name:      dep.Name,
-			Namespace: dep.Namespace,
-			Health:    health,
-			Summary:   summary,
-		}
-		nodeMap[uid] = node
-		nameIndex["Deployment/"+dep.Name] = uid
-	}
-}
-
-func (b *Builder) addReplicaSetNodes(replicaSets []*appsv1.ReplicaSet, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, rs := range replicaSets {
-		uid := string(rs.UID)
-		desired := int32(0)
-		if rs.Spec.Replicas != nil {
-			desired = *rs.Spec.Replicas
-		}
-		ready := rs.Status.ReadyReplicas
-		health := HealthHealthy
-		if desired > 0 {
-			if ready == 0 {
-				health = HealthFailing
-			} else if ready < desired {
-				health = HealthDegraded
-			}
-		}
-		node := &Node{
-			ID:        uid,
-			Kind:      "ReplicaSet",
-			Name:      rs.Name,
-			Namespace: rs.Namespace,
-			Health:    health,
-			Summary:   fmt.Sprintf("%d/%d ready", ready, desired),
-		}
-		nodeMap[uid] = node
-		nameIndex["ReplicaSet/"+rs.Name] = uid
-	}
-}
-
-func (b *Builder) addStatefulSetNodes(statefulSets []*appsv1.StatefulSet, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, sts := range statefulSets {
-		uid := string(sts.UID)
-		health, summary := statefulSetHealth(sts)
-		node := &Node{
-			ID:        uid,
-			Kind:      "StatefulSet",
-			Name:      sts.Name,
-			Namespace: sts.Namespace,
-			Health:    health,
-			Summary:   summary,
-		}
-		nodeMap[uid] = node
-		nameIndex["StatefulSet/"+sts.Name] = uid
-	}
-}
-
-func (b *Builder) addDaemonSetNodes(daemonSets []*appsv1.DaemonSet, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, ds := range daemonSets {
-		uid := string(ds.UID)
-		health, summary := daemonSetHealth(ds)
-		node := &Node{
-			ID:        uid,
-			Kind:      "DaemonSet",
-			Name:      ds.Name,
-			Namespace: ds.Namespace,
-			Health:    health,
-			Summary:   summary,
-		}
-		nodeMap[uid] = node
-		nameIndex["DaemonSet/"+ds.Name] = uid
-	}
-}
-
-func (b *Builder) addJobNodes(jobs []*batchv1.Job, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, job := range jobs {
-		uid := string(job.UID)
-		health, summary := jobHealth(job)
-		node := &Node{
-			ID:        uid,
-			Kind:      "Job",
-			Name:      job.Name,
-			Namespace: job.Namespace,
-			Health:    health,
-			Summary:   summary,
-		}
-		nodeMap[uid] = node
-		nameIndex["Job/"+job.Name] = uid
-	}
-}
-
-func (b *Builder) addCronJobNodes(cronJobs []*batchv1.CronJob, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, cj := range cronJobs {
-		uid := string(cj.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "CronJob",
-			Name:      cj.Name,
-			Namespace: cj.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("schedule=%s", cj.Spec.Schedule),
-		}
-		nodeMap[uid] = node
-		nameIndex["CronJob/"+cj.Name] = uid
-	}
-}
-
-func (b *Builder) addIngressNodes(ingresses []*networkingv1.Ingress, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, ing := range ingresses {
-		uid := string(ing.UID)
-		ruleCount := 0
-		for _, r := range ing.Spec.Rules {
-			if r.HTTP != nil {
-				ruleCount += len(r.HTTP.Paths)
-			}
-		}
-		node := &Node{
-			ID:        uid,
-			Kind:      "Ingress",
-			Name:      ing.Name,
-			Namespace: ing.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("%d rules", ruleCount),
-		}
-		nodeMap[uid] = node
-		nameIndex["Ingress/"+ing.Name] = uid
-	}
-}
-
-func (b *Builder) addConfigMapNodes(configMaps []*corev1.ConfigMap, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, cm := range configMaps {
-		uid := string(cm.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "ConfigMap",
-			Name:      cm.Name,
-			Namespace: cm.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("%d keys", len(cm.Data)),
-		}
-		nodeMap[uid] = node
-		nameIndex["ConfigMap/"+cm.Name] = uid
-	}
-}
-
-func (b *Builder) addSecretNodes(secrets []*corev1.Secret, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, sec := range secrets {
-		uid := string(sec.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "Secret",
-			Name:      sec.Name,
-			Namespace: sec.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("type=%s", sec.Type),
-		}
-		nodeMap[uid] = node
-		nameIndex["Secret/"+sec.Name] = uid
-	}
-}
-
-func (b *Builder) addPVCNodes(pvcs []*corev1.PersistentVolumeClaim, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, pvc := range pvcs {
-		uid := string(pvc.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "PersistentVolumeClaim",
-			Name:      pvc.Name,
-			Namespace: pvc.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("phase=%s", pvc.Status.Phase),
-		}
-		nodeMap[uid] = node
-		nameIndex["PersistentVolumeClaim/"+pvc.Name] = uid
-	}
-}
-
-func (b *Builder) addHPANodes(hpas []*autoscalingv2.HorizontalPodAutoscaler, nodeMap map[string]*Node, nameIndex map[string]string) {
-	for _, hpa := range hpas {
-		uid := string(hpa.UID)
-		node := &Node{
-			ID:        uid,
-			Kind:      "HorizontalPodAutoscaler",
-			Name:      hpa.Name,
-			Namespace: hpa.Namespace,
-			Health:    HealthHealthy,
-			Summary:   fmt.Sprintf("%d/%d replicas", hpa.Status.CurrentReplicas, hpa.Status.DesiredReplicas),
-		}
-		nodeMap[uid] = node
-		nameIndex["HorizontalPodAutoscaler/"+hpa.Name] = uid
-	}
+	return out
 }
 
 // --- Health computation ---
@@ -579,7 +331,6 @@ func podHealth(pod *corev1.Pod) (Health, string) {
 		return HealthDegraded, "Pending"
 	}
 
-	// Check container statuses for CrashLoopBackOff / ImagePullBackOff
 	allReady := true
 	readyCount := 0
 	total := len(pod.Spec.Containers)
@@ -620,6 +371,23 @@ func deploymentHealth(dep *appsv1.Deployment) (Health, string) {
 	return HealthFailing, summary
 }
 
+func replicaSetHealth(rs *appsv1.ReplicaSet) (Health, string) {
+	desired := int32(0)
+	if rs.Spec.Replicas != nil {
+		desired = *rs.Spec.Replicas
+	}
+	ready := rs.Status.ReadyReplicas
+	health := HealthHealthy
+	if desired > 0 {
+		if ready == 0 {
+			health = HealthFailing
+		} else if ready < desired {
+			health = HealthDegraded
+		}
+	}
+	return health, fmt.Sprintf("%d/%d ready", ready, desired)
+}
+
 func statefulSetHealth(sts *appsv1.StatefulSet) (Health, string) {
 	desired := int32(1)
 	if sts.Spec.Replicas != nil {
@@ -658,50 +426,39 @@ func jobHealth(job *batchv1.Job) (Health, string) {
 	if job.Status.Failed > 0 {
 		return HealthFailing, fmt.Sprintf("%d failed", job.Status.Failed)
 	}
-	active := job.Status.Active
-	return HealthUnknown, fmt.Sprintf("%d active", active)
+	return HealthUnknown, fmt.Sprintf("%d active", job.Status.Active)
 }
 
 // --- Edge builders ---
 
-func (b *Builder) buildOwnerEdges(res *fetchedResources, nodeMap map[string]*Node) []Edge {
+func buildOwnerEdges(pods []*corev1.Pod, replicaSets []*appsv1.ReplicaSet, jobs []*batchv1.Job, nodeMap map[string]*Node) []Edge {
 	var edges []Edge
 
-	// ownerEdge creates an EdgeOwner if both parent and child exist in nodeMap.
-	ownerEdge := func(childUID, ownerUID string) {
-		if _, ok := nodeMap[ownerUID]; ok {
-			if _, ok2 := nodeMap[childUID]; ok2 {
-				edges = append(edges, Edge{Source: ownerUID, Target: childUID, Type: EdgeOwner})
+	ownerEdge := func(childUID string, refs []metav1.OwnerReference) {
+		for _, ref := range refs {
+			ownerUID := string(ref.UID)
+			if _, ok := nodeMap[ownerUID]; ok {
+				if _, ok2 := nodeMap[childUID]; ok2 {
+					edges = append(edges, Edge{Source: ownerUID, Target: childUID, Type: EdgeOwner})
+				}
 			}
 		}
 	}
 
-	// Pods
-	for _, pod := range res.pods {
-		uid := string(pod.UID)
-		for _, ref := range pod.OwnerReferences {
-			ownerEdge(uid, string(ref.UID))
-		}
+	for _, pod := range pods {
+		ownerEdge(string(pod.UID), pod.OwnerReferences)
 	}
-	// ReplicaSets
-	for _, rs := range res.replicaSets {
-		uid := string(rs.UID)
-		for _, ref := range rs.OwnerReferences {
-			ownerEdge(uid, string(ref.UID))
-		}
+	for _, rs := range replicaSets {
+		ownerEdge(string(rs.UID), rs.OwnerReferences)
 	}
-	// Jobs
-	for _, job := range res.jobs {
-		uid := string(job.UID)
-		for _, ref := range job.OwnerReferences {
-			ownerEdge(uid, string(ref.UID))
-		}
+	for _, job := range jobs {
+		ownerEdge(string(job.UID), job.OwnerReferences)
 	}
 
 	return edges
 }
 
-func (b *Builder) buildServiceSelectorEdges(services []*corev1.Service, pods []*corev1.Pod, nodeMap map[string]*Node) []Edge {
+func buildServiceSelectorEdges(services []*corev1.Service, pods []*corev1.Pod, nodeMap map[string]*Node) []Edge {
 	var edges []Edge
 
 	for _, svc := range services {
@@ -732,38 +489,36 @@ func (b *Builder) buildServiceSelectorEdges(services []*corev1.Service, pods []*
 	return edges
 }
 
-func (b *Builder) buildIngressEdges(ingresses []*networkingv1.Ingress, nameIndex map[string]string) []Edge {
+func buildIngressEdges(ingresses []*networkingv1.Ingress, nameIndex map[string]string) []Edge {
 	var edges []Edge
+	seen := make(map[string]bool) // dedup "source->target" keys
+
+	addEdge := func(ingUID, svcUID string) {
+		key := ingUID + "->" + svcUID
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		edges = append(edges, Edge{Source: ingUID, Target: svcUID, Type: EdgeIngress})
+	}
 
 	for _, ing := range ingresses {
 		ingUID := string(ing.UID)
 
-		// Default backend
 		if ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil {
-			svcName := ing.Spec.DefaultBackend.Service.Name
-			if svcUID, ok := nameIndex["Service/"+svcName]; ok {
-				edges = append(edges, Edge{
-					Source: ingUID,
-					Target: svcUID,
-					Type:   EdgeIngress,
-				})
+			if svcUID, ok := nameIndex["Service/"+ing.Spec.DefaultBackend.Service.Name]; ok {
+				addEdge(ingUID, svcUID)
 			}
 		}
 
-		// Rules
 		for _, rule := range ing.Spec.Rules {
 			if rule.HTTP == nil {
 				continue
 			}
 			for _, path := range rule.HTTP.Paths {
 				if path.Backend.Service != nil {
-					svcName := path.Backend.Service.Name
-					if svcUID, ok := nameIndex["Service/"+svcName]; ok {
-						edges = append(edges, Edge{
-							Source: ingUID,
-							Target: svcUID,
-							Type:   EdgeIngress,
-						})
+					if svcUID, ok := nameIndex["Service/"+path.Backend.Service.Name]; ok {
+						addEdge(ingUID, svcUID)
 					}
 				}
 			}
@@ -773,7 +528,7 @@ func (b *Builder) buildIngressEdges(ingresses []*networkingv1.Ingress, nameIndex
 	return edges
 }
 
-func (b *Builder) buildMountEdges(pods []*corev1.Pod, nameIndex map[string]string) []Edge {
+func buildMountEdges(pods []*corev1.Pod, nameIndex map[string]string) []Edge {
 	var edges []Edge
 
 	for _, pod := range pods {
@@ -782,29 +537,17 @@ func (b *Builder) buildMountEdges(pods []*corev1.Pod, nameIndex map[string]strin
 		for _, vol := range pod.Spec.Volumes {
 			if vol.ConfigMap != nil {
 				if cmUID, ok := nameIndex["ConfigMap/"+vol.ConfigMap.Name]; ok {
-					edges = append(edges, Edge{
-						Source: podUID,
-						Target: cmUID,
-						Type:   EdgeMount,
-					})
+					edges = append(edges, Edge{Source: podUID, Target: cmUID, Type: EdgeMount})
 				}
 			}
 			if vol.Secret != nil {
 				if secUID, ok := nameIndex["Secret/"+vol.Secret.SecretName]; ok {
-					edges = append(edges, Edge{
-						Source: podUID,
-						Target: secUID,
-						Type:   EdgeMount,
-					})
+					edges = append(edges, Edge{Source: podUID, Target: secUID, Type: EdgeMount})
 				}
 			}
 			if vol.PersistentVolumeClaim != nil {
 				if pvcUID, ok := nameIndex["PersistentVolumeClaim/"+vol.PersistentVolumeClaim.ClaimName]; ok {
-					edges = append(edges, Edge{
-						Source: podUID,
-						Target: pvcUID,
-						Type:   EdgeMount,
-					})
+					edges = append(edges, Edge{Source: podUID, Target: pvcUID, Type: EdgeMount})
 				}
 			}
 		}
@@ -813,7 +556,7 @@ func (b *Builder) buildMountEdges(pods []*corev1.Pod, nameIndex map[string]strin
 	return edges
 }
 
-func (b *Builder) buildHPAEdges(hpas []*autoscalingv2.HorizontalPodAutoscaler, nameIndex map[string]string) []Edge {
+func buildHPAEdges(hpas []*autoscalingv2.HorizontalPodAutoscaler, nameIndex map[string]string) []Edge {
 	var edges []Edge
 
 	for _, hpa := range hpas {
@@ -821,11 +564,7 @@ func (b *Builder) buildHPAEdges(hpas []*autoscalingv2.HorizontalPodAutoscaler, n
 		ref := hpa.Spec.ScaleTargetRef
 		key := ref.Kind + "/" + ref.Name
 		if targetUID, ok := nameIndex[key]; ok {
-			edges = append(edges, Edge{
-				Source: hpaUID,
-				Target: targetUID,
-				Type:   EdgeSelector,
-			})
+			edges = append(edges, Edge{Source: hpaUID, Target: targetUID, Type: EdgeSelector})
 		}
 	}
 
@@ -837,7 +576,8 @@ func (b *Builder) buildHPAEdges(hpas []*autoscalingv2.HorizontalPodAutoscaler, n
 // propagateHealth walks edges and propagates child health to parents.
 // If any child is failing, parent becomes at least degraded.
 // If ALL children are failing, parent becomes failing.
-func (b *Builder) propagateHealth(nodeMap map[string]*Node, edges []Edge) {
+// Degraded children also propagate to parent.
+func propagateHealth(nodeMap map[string]*Node, edges []Edge) {
 	// Build parent->children map (only owner and selector edges propagate health)
 	children := make(map[string][]string)
 	for _, e := range edges {
@@ -857,28 +597,32 @@ func (b *Builder) propagateHealth(nodeMap map[string]*Node, edges []Edge) {
 				continue
 			}
 
+			if len(childIDs) == 0 {
+				continue
+			}
+
 			allFailing := true
 			anyFailing := false
+			anyDegraded := false
 			for _, childID := range childIDs {
 				child, ok := nodeMap[childID]
 				if !ok {
 					continue
 				}
-				if child.Health == HealthFailing {
+				switch child.Health {
+				case HealthFailing:
 					anyFailing = true
-				} else {
+				case HealthDegraded:
+					anyDegraded = true
+				default:
 					allFailing = false
 				}
 			}
 
-			if len(childIDs) == 0 {
-				continue
-			}
-
 			var newHealth Health
-			if allFailing {
+			if allFailing && anyFailing {
 				newHealth = HealthFailing
-			} else if anyFailing {
+			} else if anyFailing || anyDegraded {
 				newHealth = HealthDegraded
 			} else {
 				continue

@@ -64,14 +64,6 @@ func (l *InformerLister) ListConfigMaps(_ context.Context, namespace string) ([]
 	return l.im.ConfigMaps().ConfigMaps(namespace).List(labels.Everything())
 }
 
-// ListSecrets returns nil because the InformerManager intentionally does not
-// cache Secrets (they are fetched on-demand via impersonated clients to avoid
-// holding all cluster secrets in process memory). Mount edges that would
-// reference secrets will simply be absent from the graph.
-func (l *InformerLister) ListSecrets(_ context.Context, _ string) ([]*corev1.Secret, error) {
-	return nil, nil
-}
-
 func (l *InformerLister) ListPVCs(_ context.Context, namespace string) ([]*corev1.PersistentVolumeClaim, error) {
 	return l.im.PersistentVolumeClaims().PersistentVolumeClaims(namespace).List(labels.Everything())
 }

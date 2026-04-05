@@ -246,8 +246,9 @@ func main() {
 	topoLister := topology.NewInformerLister(informerMgr)
 	topoBuilder := topology.NewBuilder(topoLister, logger)
 	topoHandler := &topology.Handler{
-		Builder: topoBuilder,
-		Logger:  logger,
+		Builder:       topoBuilder,
+		AccessChecker: accessChecker,
+		Logger:        logger,
 	}
 
 	// Initialize CNI detector and run initial detection

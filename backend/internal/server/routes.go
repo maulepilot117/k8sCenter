@@ -350,9 +350,13 @@ func (s *Server) registerExtensionRoutes(ar chi.Router) {
 func (s *Server) registerTopologyRoutes(ar chi.Router) {
 	h := s.TopologyHandler
 	ar.Route("/topology", func(tr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		tr.Use(middleware.RateLimit(yamlRL))
+		tr.Use(resources.ValidateURLParams)
 		tr.Get("/{namespace}", h.HandleNamespaceGraph)
-		tr.Get("/{namespace}/summary", h.HandleHealthSummary)
-		tr.Get("/{namespace}/{kind}/{name}", h.HandleFocusedGraph)
 	})
 }
 
