@@ -16,6 +16,7 @@ import (
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS from cgroup CPU quota
 
 	"github.com/kubecenter/kubecenter/internal/alerting"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
@@ -251,6 +252,14 @@ func main() {
 		Logger:        logger,
 	}
 
+	// Initialize diagnostics handler
+	diagHandler := &diagnostics.Handler{
+		Lister:        topoLister,
+		TopoBuilder:   topoBuilder,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+	}
+
 	// Initialize CNI detector and run initial detection
 	cniDetector := networking.NewDetector(k8sClient, informerMgr, logger)
 	cniDetector.Detect(ctx)
@@ -371,8 +380,9 @@ func main() {
 		TopologyHandler:    topoHandler,
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
-		AlertingHandler:    alertHandler,
-		CRDHandler:         crdHandler,
+		AlertingHandler:      alertHandler,
+		DiagnosticsHandler:   diagHandler,
+		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
 		AccessChecker:      accessChecker,

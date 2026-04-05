@@ -782,6 +782,21 @@ export default function ResourceDetail({
               </>
             )}
             <span style={{ color: "var(--text-secondary)" }}>{name}</span>
+            {namespace && (
+              <a
+                href={`/observability/investigate?namespace=${namespace}&kind=${
+                  RESOURCE_API_KINDS[kind] ?? kind
+                }&name=${name}`}
+                style={{
+                  marginLeft: "8px",
+                  fontSize: "12px",
+                  color: "var(--accent)",
+                  textDecoration: "none",
+                }}
+              >
+                Investigate
+              </a>
+            )}
           </div>
         </div>
         {/* Action buttons */}

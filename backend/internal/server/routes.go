@@ -131,6 +131,11 @@ func (s *Server) registerRoutes() {
 				s.registerTopologyRoutes(ar)
 			}
 
+			// Diagnostics routes — only registered if diagnostics handler is available
+			if s.DiagnosticsHandler != nil {
+				s.registerDiagnosticsRoutes(ar)
+			}
+
 			// Alerting routes (authenticated) — only registered if alerting handler is available
 			if s.AlertingHandler != nil {
 				s.registerAlertingRoutes(ar)
@@ -375,6 +380,20 @@ func (s *Server) registerLogRoutes(ar chi.Router) {
 		lr.Get("/labels", h.HandleLabels)
 		lr.Get("/labels/{name}/values", h.HandleLabelValues)
 		lr.Get("/volume", h.HandleVolume)
+	})
+}
+
+func (s *Server) registerDiagnosticsRoutes(ar chi.Router) {
+	h := s.DiagnosticsHandler
+	ar.Route("/diagnostics", func(dr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		dr.Use(middleware.RateLimit(yamlRL))
+		dr.Use(resources.ValidateURLParams)
+		dr.Get("/{namespace}/summary", h.HandleNamespaceSummary)
+		dr.Get("/{namespace}/{kind}/{name}", h.HandleDiagnostics)
 	})
 }
 
