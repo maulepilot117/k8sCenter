@@ -78,8 +78,10 @@ k8scenter/
 │       ├── auth/             # JWT, local/OIDC/LDAP providers, RBAC checker, sessions
 │       ├── k8s/              # ClientFactory, ClusterRouter, InformerManager, resources/ (33 handler files)
 │       ├── store/            # PostgreSQL persistence (users, settings, clusters, audit, encrypt)
+│       ├── diagnostics/      # Diagnostic rules engine, blast radius BFS, resolver
 │       ├── loki/             # Loki discovery, LogQL proxy, namespace enforcement, WebSocket tail
 │       ├── monitoring/       # Prometheus/Grafana discovery, PromQL proxy, dashboard provisioning
+│       ├── topology/         # Resource dependency graph builder, health propagation, RBAC
 │       ├── networking/       # CNI detection, Cilium, Hubble gRPC client
 │       ├── alerting/         # Alertmanager webhook, SMTP notifier, rules
 │       ├── storage/          # CSI/StorageClass handler, snapshots
@@ -138,6 +140,8 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
+- Topology: `GET /topology/{namespace}` (RBAC-gated resource dependency graph with health)
+- Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
@@ -240,7 +244,7 @@ make check-dashboards                             # Verify Grafana JSON sync
   - 100+ hardcoded Tailwind color classes replaced with CSS custom property tokens across 40+ files
   - Dashboard heading styles unified from inline styles to Tailwind classes
   - Zero non-theme color classes remain in frontend codebase
-- **Phase 7 (Advanced Observability):** IN PROGRESS
+- **Phase 7 (Advanced Observability):** COMPLETE — 3 sub-phases (7A-7C)
   - **Phase 7A (Loki Integration):** COMPLETE
     - New `internal/loki/` package: service discovery, HTTP client, LogQL namespace enforcement tokenizer
     - 5 HTTP endpoints: `/logs/status`, `/logs/query`, `/logs/labels`, `/logs/labels/{name}/values`, `/logs/volume`
@@ -249,8 +253,18 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Route: `/observability/logs` with Loki availability check and graceful degradation
     - 19 security tests for LogQL namespace enforcement
     - Observability nav section updated with new tabs (Log Explorer, Topology, Investigate)
-  - **Phase 7B (Topology Graph):** PLANNED — resource dependency DAG with health propagation
-  - **Phase 7C (Diagnostics):** PLANNED — automated diagnostic checklist with blast radius
+  - **Phase 7B (Topology Graph):** COMPLETE
+    - New `internal/topology/` package: ResourceLister interface, graph builder with RBAC, health propagation
+    - 1 HTTP endpoint: `GET /topology/{namespace}` (RBAC-gated, rate-limited, 2000-node cap)
+    - NamespaceTopology island: custom LR layout, SVG viewBox zoom/pan, health coloring, slide-out panel
+    - Route: `/observability/topology`
+  - **Phase 7C (Diagnostics):** COMPLETE
+    - New `internal/diagnostics/` package: 6 diagnostic rules, blast radius BFS, resolver
+    - 2 HTTP endpoints: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary`
+    - 3 frontend islands: DiagnosticChecklist, BlastRadiusPanel, DiagnosticWorkspace
+    - Route: `/observability/investigate` with URL-driven resource picker
+    - "Investigate" entry points: resource detail pages, command palette
+    - 8 unit tests covering all 6 rules
 
 ---
 
