@@ -1,9 +1,11 @@
 package diagnostics
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
@@ -58,11 +60,15 @@ var kindToResource = map[string]string{
 // HandleDiagnostics runs diagnostic checks and blast radius analysis for a resource.
 // GET /api/v1/diagnostics/{namespace}/{kind}/{name}
 func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	// Request-scoped timeout for the entire diagnostics + topology build
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
 	namespace := chi.URLParam(r, "namespace")
 	kind := chi.URLParam(r, "kind")
 	name := chi.URLParam(r, "name")
 
-	user, ok := auth.UserFromContext(r.Context())
+	user, ok := auth.UserFromContext(ctx)
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
 		return
@@ -71,11 +77,11 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// RBAC check: user must be able to list the target resource kind
 	resource, known := kindToResource[kind]
 	if !known {
-		httputil.WriteError(w, http.StatusBadRequest, "unsupported resource kind: "+kind, "")
+		httputil.WriteError(w, http.StatusBadRequest, "unsupported resource kind", "")
 		return
 	}
 
-	allowed, err := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	allowed, err := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
 		h.Logger.Error("RBAC check failed", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
@@ -87,7 +93,7 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve the target resource and its related pods
-	target, err := Resolve(r.Context(), h.Lister, namespace, kind, name)
+	target, err := Resolve(ctx, h.Lister, namespace, kind, name)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
@@ -99,12 +105,12 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Run diagnostic checks
-	results := RunDiagnostics(r.Context(), target)
+	results := RunDiagnostics(ctx, target)
 
 	// Build topology graph for blast radius analysis
 	var blast *BlastResult
 	if h.TopoBuilder != nil {
-		graph, err := h.TopoBuilder.BuildNamespaceGraph(r.Context(), namespace, user, h.AccessChecker)
+		graph, err := h.TopoBuilder.BuildNamespaceGraph(ctx, namespace, user, h.AccessChecker)
 		if err != nil {
 			h.Logger.Warn("failed to build topology graph for blast radius", "error", err)
 		} else {
@@ -200,8 +206,17 @@ func podFailureReason(pod *corev1.Pod) string {
 		return "Pending"
 	}
 
-	allStatuses := append(pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses...)
-	for _, cs := range allStatuses {
+	// Check both regular and init container statuses (do NOT use append on
+	// the pod's slice — it could mutate the informer cache).
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			switch cs.State.Waiting.Reason {
+			case "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull":
+				return cs.State.Waiting.Reason
+			}
+		}
+	}
+	for _, cs := range pod.Status.InitContainerStatuses {
 		if cs.State.Waiting != nil {
 			switch cs.State.Waiting.Reason {
 			case "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull":

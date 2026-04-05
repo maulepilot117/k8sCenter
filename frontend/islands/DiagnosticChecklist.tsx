@@ -1,4 +1,5 @@
 import type { Signal } from "@preact/signals";
+import { KIND_ROUTE_MAP } from "@/lib/types/diagnostics.ts";
 
 export interface DiagnosticResult {
   ruleName: string;
@@ -44,18 +45,7 @@ function linkHref(
   if (link.label === "View Logs") {
     return `/observability/logs?namespace=${namespace}&pod=${link.name}`;
   }
-  const kindRouteMap: Record<string, string> = {
-    Pod: "pods",
-    Deployment: "deployments",
-    StatefulSet: "statefulsets",
-    DaemonSet: "daemonsets",
-    Service: "services",
-    Job: "jobs",
-    CronJob: "cronjobs",
-    PersistentVolumeClaim: "pvcs",
-    ReplicaSet: "replicasets",
-  };
-  const route = kindRouteMap[link.kind] ?? link.kind.toLowerCase() + "s";
+  const route = KIND_ROUTE_MAP[link.kind] ?? link.kind.toLowerCase() + "s";
   return `/workloads/${route}/${namespace}/${link.name}`;
 }
 

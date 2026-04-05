@@ -1,4 +1,5 @@
 import type { Signal } from "@preact/signals";
+import { KIND_ROUTE_MAP } from "@/lib/types/diagnostics.ts";
 
 export interface AffectedResource {
   kind: string;
@@ -12,22 +13,6 @@ interface BlastRadiusPanelProps {
   potentiallyAffected: Signal<AffectedResource[]>;
   namespace: string;
 }
-
-const KIND_ROUTE_MAP: Record<string, string> = {
-  Pod: "pods",
-  Deployment: "deployments",
-  StatefulSet: "statefulsets",
-  DaemonSet: "daemonsets",
-  Service: "services",
-  Job: "jobs",
-  CronJob: "cronjobs",
-  PersistentVolumeClaim: "pvcs",
-  ReplicaSet: "replicasets",
-  Ingress: "ingresses",
-  ConfigMap: "configmaps",
-  Secret: "secrets",
-  Endpoints: "endpoints",
-};
 
 function healthColor(health: string): string {
   switch (health) {

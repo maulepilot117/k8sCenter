@@ -22,8 +22,6 @@ const KIND_OPTIONS = [
   "DaemonSet",
   "Pod",
   "Service",
-  "Job",
-  "CronJob",
   "PersistentVolumeClaim",
 ];
 

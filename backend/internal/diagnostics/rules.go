@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,7 +35,7 @@ func checkCrashLoop(_ context.Context, target *DiagnosticTarget) Result {
 		// Also check init container statuses
 		for _, cs := range pod.Status.InitContainerStatuses {
 			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
-				if !containsString(affectedPods, pod.Name) {
+				if !slices.Contains(affectedPods, pod.Name) {
 					affectedPods = append(affectedPods, pod.Name)
 				}
 				totalRestarts += cs.RestartCount
@@ -296,12 +297,3 @@ func checkPendingPVC(_ context.Context, target *DiagnosticTarget) Result {
 	}
 }
 
-// containsString checks if a string slice contains a value.
-func containsString(slice []string, val string) bool {
-	for _, s := range slice {
-		if s == val {
-			return true
-		}
-	}
-	return false
-}

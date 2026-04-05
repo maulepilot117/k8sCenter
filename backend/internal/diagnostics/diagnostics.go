@@ -109,11 +109,7 @@ func ruleAppliesTo(rule ruleEntry, kind string) bool {
 
 // runSafeCheck runs a single rule with panic recovery and a 5-second timeout.
 func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget) Result {
-	type resultMsg struct {
-		result Result
-	}
-
-	ch := make(chan resultMsg, 1)
+	ch := make(chan Result, 1)
 	ruleCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -121,23 +117,23 @@ func runSafeCheck(ctx context.Context, rule ruleEntry, target *DiagnosticTarget)
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Warn("diagnostic rule panicked", "rule", rule.name, "panic", fmt.Sprintf("%v", r))
-				ch <- resultMsg{result: Result{
+				ch <- Result{
 					RuleName: rule.name,
 					Status:   "fail",
 					Severity: rule.severity,
-					Message:  fmt.Sprintf("Rule %q panicked: %v", rule.name, r),
-				}}
+					Message:  fmt.Sprintf("Rule %q encountered an internal error", rule.name),
+				}
 			}
 		}()
 		result := rule.check(ruleCtx, target)
 		result.RuleName = rule.name
 		result.Severity = rule.severity
-		ch <- resultMsg{result: result}
+		ch <- result
 	}()
 
 	select {
-	case msg := <-ch:
-		return msg.result
+	case result := <-ch:
+		return result
 	case <-ruleCtx.Done():
 		return Result{
 			RuleName: rule.name,
