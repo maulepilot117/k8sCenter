@@ -1,8 +1,8 @@
-# Phase 8: Policy & Governance — Implementation Plan (v2)
+# Phase 8: Policy & Governance — Implementation Plan (v2) — COMPLETE
 
 ## Overview
 
-Phase 8 adds policy engine integration (Kyverno + OPA/Gatekeeper), compliance dashboards, and violation browsing. Auto-detects which engine(s) are deployed, normalizes data across both, and provides a unified governance experience. Two sub-phases: 8A (backend) + 8B (frontend).
+Phase 8 adds policy engine integration (Kyverno + OPA/Gatekeeper), compliance dashboards, and violation browsing. Auto-detects which engine(s) are deployed, normalizes data across both, and provides a unified governance experience. Two sub-phases: 8A (backend, PR #137) + 8B (frontend, PR #138). Both complete.
 
 **Changes from v1 (reviewer feedback):**
 - **Merged Phase 8B (compliance) into 8A** — scoring is ~50 LOC, not a separate phase
@@ -285,83 +285,42 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 
 ---
 
-## Phase 8B: Frontend — Policy Dashboard, Violations, Compliance
+## Phase 8B: Frontend — Policy Dashboard, Violations, Compliance — COMPLETE
 
-**Branch:** `feat/phase8b-policy-frontend`
+**Branch:** `feat/phase8b-policy-frontend` → PR #138
 
-### Step 8B.1 — Navigation Update
+### Step 8B.1 — Navigation Update ✅
 
-**`frontend/lib/constants.ts`**
+Added 3 tabs (Policies, Violations, Compliance) to Security section in `frontend/lib/constants.ts`.
 
-Add policy tabs to the Security section. Use `/security/` prefix for new routes (existing RBAC stays at `/rbac/` — documented inconsistency, acceptable since both are under the same nav section):
+### Step 8B.2 — Policy List Page ✅
 
-```ts
-{
-  id: "security",
-  tabs: [
-    // ... existing RBAC tabs ...
-    { label: "Policies", href: "/security/policies" },
-    { label: "Violations", href: "/security/violations" },
-    { label: "Compliance", href: "/security/compliance" },
-  ],
-}
-```
+`frontend/islands/PolicyDashboard.tsx` — engine status banner, policy table with search + filter by engine/severity/blocking, pagination (PAGE_SIZE=100), refresh button.
 
-### Step 8B.2 — Policy List Page
+### Step 8B.3 — Violations Page ✅
 
-**`frontend/islands/PolicyDashboard.tsx`** (~250 LOC)
+`frontend/islands/ViolationBrowser.tsx` — violation table with namespace/severity/engine filters, `?policy=` and `?namespace=` URL param support, resource detail links with proper pluralization, pagination, refresh button.
 
-Follow ExtensionsHub + RBACOverview patterns:
+### Step 8B.4 — Compliance Dashboard ✅
 
-- Fetch `apiGet("/v1/policy/status")` + `apiGet("/v1/policy/policies")`
-- Engine status banner: which engine(s) detected, or "No policy engine" with setup guidance
-- Policy table: name, engine badge (Kyverno green / Gatekeeper blue), blocking badge (shield=enforce, eye=audit), severity badge, violation count, target kinds, ready status
-- Search/filter by name, engine, severity, blocking/non-blocking
-- If no engine detected: show install instructions for Kyverno and Gatekeeper
+`frontend/islands/ComplianceDashboard.tsx` — GaugeRing cluster score, severity breakdown bars, per-namespace table sorted by worst score, refresh button.
 
-**`frontend/routes/security/policies.tsx`**
+### Step 8B.5 — Entry Points ✅
 
-### Step 8B.3 — Violations Page
+Command palette: "View Policies" and "View Violations" quick actions added.
 
-**`frontend/islands/ViolationBrowser.tsx`** (~200 LOC)
+### Additional work (from code review)
 
-- Fetch `apiGet("/v1/policy/violations?namespace=X")`
-- Violation table: policy, severity badge, resource (kind/name → link to detail), namespace, message (truncated), action (denied/warned/audited), blocking badge
-- Filters: namespace, severity, engine, policy name
-- Click resource → navigate to resource detail page
-- Empty state: "No violations found" (with distinction between "no violations" vs "no engine detected")
+- Shared `lib/policy-types.ts` — TypeScript interfaces matching backend Go types
+- Shared `components/ui/PolicyBadges.tsx` — ColorBadge, SeverityBadge, EngineBadge, BlockingBadge, ActionBadge
+- `routes/security/index.tsx` — redirect to `/security/policies`
+- Theme-compliant engine colors: `var(--success)` / `var(--accent)` instead of hardcoded hex
+- `bg-bg-elevated` Tailwind class instead of inline styles
+- Proper `resourceHref` pluralization for irregular kinds (Ingress, etc.)
+- `encodeURIComponent` on all path segments
 
-**`frontend/routes/security/violations.tsx`**
-
-### Step 8B.4 — Compliance Dashboard
-
-**`frontend/islands/ComplianceDashboard.tsx`** (~250 LOC)
-
-- Fetch `apiGet("/v1/policy/compliance")`
-- Cluster compliance score ring (reuse existing GaugeRing component): green >80, yellow 50-80, red <50
-- Raw counts alongside score: "45/50 passing" (not just "90%")
-- Severity breakdown: 4 horizontal bars (critical/high/medium/low) showing pass/fail per severity
-- Per-namespace table: namespace, score (color-coded), pass/fail counts, worst violation
-- Click namespace → navigate to violations page filtered to that namespace
-
-**`frontend/routes/security/compliance.tsx`**
-
-### Step 8B.5 — Entry Points
-
-- **Dashboard health score:** No change needed — the existing health score is cluster-level, not policy-level
-- **Command palette:** Add "View Policies" and "View Violations" quick actions
-
-**Files to create:**
-- `frontend/islands/PolicyDashboard.tsx`
-- `frontend/islands/ViolationBrowser.tsx`
-- `frontend/islands/ComplianceDashboard.tsx`
-- `frontend/routes/security/policies.tsx`
-- `frontend/routes/security/violations.tsx`
-- `frontend/routes/security/compliance.tsx`
-
-**Files to modify:**
-- `frontend/lib/constants.ts` (add Policy tabs to Security section)
-- `frontend/islands/CommandPalette.tsx` (add policy quick actions)
+**Files created:** 9 (3 islands, 4 routes, 1 shared types, 1 shared badges)
+**Files modified:** 3 (constants.ts, CommandPalette.tsx, CLAUDE.md)
 
 ---
 
@@ -370,10 +329,8 @@ Follow ExtensionsHub + RBACOverview patterns:
 | Phase | New Files | Modified Files |
 |-------|-----------|---------------|
 | 8A (Full Backend) | 6 + 1 test | 4 |
-| 8B (Frontend) | 6 | 2 |
-| **Total** | **13** | **6** |
-
-Down from 19+5 in v1 (31% reduction in file count).
+| 8B (Frontend) | 9 | 3 |
+| **Total** | **16** | **7** |
 
 ## New API Surface
 
