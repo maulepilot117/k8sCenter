@@ -80,6 +80,7 @@ k8scenter/
 │       ├── store/            # PostgreSQL persistence (users, settings, clusters, audit, encrypt)
 │       ├── diagnostics/      # Diagnostic rules engine, blast radius BFS, resolver
 │       ├── loki/             # Loki discovery, LogQL proxy, namespace enforcement, WebSocket tail
+│       ├── policy/           # Kyverno + Gatekeeper discovery, adapters, compliance scoring
 │       ├── monitoring/       # Prometheus/Grafana discovery, PromQL proxy, dashboard provisioning
 │       ├── topology/         # Resource dependency graph builder, health propagation, RBAC
 │       ├── networking/       # CNI detection, Cilium, Hubble gRPC client
@@ -142,6 +143,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
 - Topology: `GET /topology/{namespace}` (RBAC-gated resource dependency graph with health)
 - Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
+- Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
@@ -265,6 +267,16 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Route: `/observability/investigate` with URL-driven resource picker
     - "Investigate" entry points: resource detail pages, command palette
     - 8 unit tests covering all 6 rules
+- **Phase 8 (Policy & Governance):** IN PROGRESS — 2 sub-phases (8A-8B)
+  - **Phase 8A (Policy Backend):** COMPLETE
+    - New `internal/policy/` package: PolicyDiscoverer (CRD-based auto-detection of Kyverno + Gatekeeper)
+    - Kyverno adapter: ClusterPolicy, Policy, PolicyReport reading via dynamic client
+    - Gatekeeper adapter: ConstraintTemplate + dynamic constraint enumeration (semaphore(5), 5s timeout, 100 cap)
+    - Unified types: NormalizedPolicy, NormalizedViolation with Blocking field, composite IDs
+    - Handler: singleflight + 30s cache (service account fetch, per-user RBAC filtering), inline compliance scoring
+    - 4 HTTP endpoints: `GET /policy/{status,policies,violations,compliance}`
+    - Extended `AccessChecker.CanAccessGroupResource` for CRD RBAC checks
+  - **Phase 8B (Policy Frontend):** PLANNED — PolicyDashboard, ViolationBrowser, ComplianceDashboard
 
 ---
 

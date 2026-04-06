@@ -12,6 +12,7 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - **Log Explorer** with Loki integration — search, filter, live tail (WebSocket), LogQL support, log volume histogram, and RBAC-scoped namespace enforcement
 - **Resource topology graph** — interactive SVG dependency DAG with health propagation, zoom/pan, and slide-out detail panels
 - **Diagnostic workspace** — automated health checks (CrashLoopBackOff, ImagePull, Pending, ReplicaMismatch, ZeroEndpoints, PendingPVC) with blast radius analysis via topology BFS
+- **Policy engine integration** — auto-detects Kyverno and/or OPA/Gatekeeper, unified policy list, violation browser, weighted compliance scoring, RBAC-filtered
 - **RBAC-aware multi-tenancy** with user impersonation (OIDC, LDAP, local accounts with PostgreSQL persistence)
 - **Full YAML escape hatch** with Monaco editor, validation, diff, and server-side apply
 - **Cilium Network Policy editor** with NSX-T-style rule table, YAML preview, and dangerous policy warnings
@@ -284,6 +285,7 @@ kubecenter/
 │   │   ├── networking/   # CNI detection (Cilium/Calico/Flannel), config management
 │   │   ├── alerting/     # Alertmanager webhook, alert store, SMTP notifier, PrometheusRule CRUD
 │   │   ├── diagnostics/  # Diagnostic rules engine, blast radius BFS, resolver
+│   │   ├── policy/       # Kyverno + Gatekeeper auto-detection, adapters, compliance
 │   │   ├── topology/     # Resource dependency graph builder, health propagation
 │   │   └── config/       # App configuration
 │   └── pkg/              # Public packages (api types, version)
