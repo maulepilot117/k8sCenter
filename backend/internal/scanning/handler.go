@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
+	"regexp"
 	"sync"
 	"time"
 
@@ -26,7 +26,7 @@ type Handler struct {
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
-	nsCache    map[string]*cachedNSData
+	nsCache    map[string]*cachedNSData // initialized eagerly, never nil
 }
 
 type cachedNSData struct {
@@ -34,20 +34,22 @@ type cachedNSData struct {
 	fetchedAt time.Time
 }
 
-const cacheTTL = 30 * time.Second
+const (
+	cacheTTL        = 30 * time.Second
+	cacheMaxEntries = 200 // evict oldest entries beyond this
+)
 
-// ensureCache initializes the namespace cache map on first access.
-func (h *Handler) ensureCache() {
-	if h.nsCache == nil {
-		h.nsCache = make(map[string]*cachedNSData)
-	}
+var validNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// InitCache must be called after construction to initialize the cache map.
+// This avoids lazy init under locks.
+func (h *Handler) InitCache() {
+	h.nsCache = make(map[string]*cachedNSData)
 }
 
 // fetchVulns returns cached vulnerability data for a namespace, refreshing if stale.
-// Cache is populated using the service account; callers must RBAC-check before calling.
 func (h *Handler) fetchVulns(ctx context.Context, namespace string) ([]WorkloadVulnSummary, error) {
 	h.cacheMu.RLock()
-	h.ensureCache()
 	if entry := h.nsCache[namespace]; entry != nil && time.Since(entry.fetchedAt) < cacheTTL {
 		vulns := entry.vulns
 		h.cacheMu.RUnlock()
@@ -129,11 +131,29 @@ func (h *Handler) doFetchNS(ctx context.Context, namespace string) (*cachedNSDat
 	}
 
 	h.cacheMu.Lock()
-	h.ensureCache()
 	h.nsCache[namespace] = data
+	// Evict oldest entries if cache exceeds max size
+	if len(h.nsCache) > cacheMaxEntries {
+		h.evictOldestLocked()
+	}
 	h.cacheMu.Unlock()
 
 	return data, nil
+}
+
+// evictOldestLocked removes the oldest cache entry. Must be called under write lock.
+func (h *Handler) evictOldestLocked() {
+	var oldestKey string
+	var oldestTime time.Time
+	for k, v := range h.nsCache {
+		if oldestKey == "" || v.fetchedAt.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = v.fetchedAt
+		}
+	}
+	if oldestKey != "" {
+		delete(h.nsCache, oldestKey)
+	}
 }
 
 // HandleStatus returns the security scanner detection status.
@@ -175,8 +195,17 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// RBAC: verify user can access scanning CRDs in this namespace
-	if !h.canAccessScanning(r.Context(), user, namespace) {
+	// Validate namespace format
+	if !validNamespace.MatchString(namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace", "")
+		return
+	}
+
+	// RBAC: check per-scanner access and filter results accordingly
+	canTrivy := h.canAccessTrivy(r.Context(), user, namespace)
+	canKubescape := h.canAccessKubescape(r.Context(), user, namespace)
+
+	if !canTrivy && !canKubescape {
 		httputil.WriteError(w, http.StatusForbidden,
 			fmt.Sprintf("access denied to scanning data in namespace %q", namespace), "")
 		return
@@ -189,12 +218,10 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Sort by critical+high count descending (worst first)
-	sort.Slice(vulns, func(i, j int) bool {
-		si := vulns[i].Total.Critical + vulns[i].Total.High
-		sj := vulns[j].Total.Critical + vulns[j].Total.High
-		return si > sj
-	})
+	// Filter by per-scanner RBAC — only return data from scanners the user can access
+	if !canTrivy || !canKubescape {
+		vulns = filterByScannerAccess(vulns, canTrivy, canKubescape)
+	}
 
 	httputil.WriteData(w, struct {
 		Vulnerabilities []WorkloadVulnSummary `json:"vulnerabilities"`
@@ -205,25 +232,35 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// canAccessScanning checks whether the user can list vulnerability reports
-// from either Trivy (aquasecurity.github.io) or Kubescape (spdx.softwarecomposition.org).
-// Access to either scanner grants access.
-func (h *Handler) canAccessScanning(ctx context.Context, user *auth.User, namespace string) bool {
-	// Trivy CRD RBAC check
+// canAccessTrivy checks if the user can list Trivy VulnerabilityReports in the namespace.
+func (h *Handler) canAccessTrivy(ctx context.Context, user *auth.User, namespace string) bool {
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "aquasecurity.github.io", "vulnerabilityreports", namespace,
 	)
-	if err == nil && can {
-		return true
-	}
+	return err == nil && can
+}
 
-	// Kubescape CRD RBAC check
-	can, err = h.AccessChecker.CanAccessGroupResource(
+// canAccessKubescape checks if the user can list Kubescape VulnerabilitySummaries in the namespace.
+func (h *Handler) canAccessKubescape(ctx context.Context, user *auth.User, namespace string) bool {
+	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "spdx.softwarecomposition.org", "vulnerabilitysummaries", namespace,
 	)
 	return err == nil && can
+}
+
+// filterByScannerAccess removes results from scanners the user cannot access.
+func filterByScannerAccess(vulns []WorkloadVulnSummary, canTrivy, canKubescape bool) []WorkloadVulnSummary {
+	var filtered []WorkloadVulnSummary
+	for _, v := range vulns {
+		if v.Scanner == ScannerTrivy && canTrivy {
+			filtered = append(filtered, v)
+		} else if v.Scanner == ScannerKubescape && canKubescape {
+			filtered = append(filtered, v)
+		}
+	}
+	return filtered
 }
 
 // computeMetadata builds summary counts for the vulnerability list response.

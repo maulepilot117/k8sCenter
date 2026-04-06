@@ -32,11 +32,6 @@ type SeveritySummary struct {
 	Low      int `json:"low"`
 }
 
-// Total returns the sum of all severity counts.
-func (s SeveritySummary) Total() int {
-	return s.Critical + s.High + s.Medium + s.Low
-}
-
 // WorkloadVulnSummary is the scanner-agnostic vulnerability summary per workload.
 type WorkloadVulnSummary struct {
 	Namespace   string          `json:"namespace"`

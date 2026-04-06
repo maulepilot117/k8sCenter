@@ -391,6 +391,7 @@ func main() {
 		AccessChecker: accessChecker,
 		Logger:        logger,
 	}
+	scanHandler.InitCache()
 
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
