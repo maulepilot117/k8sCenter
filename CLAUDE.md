@@ -267,7 +267,7 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Route: `/observability/investigate` with URL-driven resource picker
     - "Investigate" entry points: resource detail pages, command palette
     - 8 unit tests covering all 6 rules
-- **Phase 8 (Policy & Governance):** IN PROGRESS — 2 sub-phases (8A-8B)
+- **Phase 8 (Policy & Governance):** COMPLETE — 2 sub-phases (8A-8B)
   - **Phase 8A (Policy Backend):** COMPLETE
     - New `internal/policy/` package: PolicyDiscoverer (CRD-based auto-detection of Kyverno + Gatekeeper)
     - Kyverno adapter: ClusterPolicy, Policy, PolicyReport reading via dynamic client
@@ -276,7 +276,12 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Handler: singleflight + 30s cache (service account fetch, per-user RBAC filtering), inline compliance scoring
     - 4 HTTP endpoints: `GET /policy/{status,policies,violations,compliance}`
     - Extended `AccessChecker.CanAccessGroupResource` for CRD RBAC checks
-  - **Phase 8B (Policy Frontend):** PLANNED — PolicyDashboard, ViolationBrowser, ComplianceDashboard
+  - **Phase 8B (Policy Frontend):** COMPLETE
+    - 3 islands: PolicyDashboard (engine status, policy table), ViolationBrowser (violation table, resource links), ComplianceDashboard (GaugeRing score, severity bars, per-namespace table)
+    - 4 routes: `/security/{index,policies,violations,compliance}` (index redirects to policies)
+    - Shared modules: `lib/policy-types.ts` (TS interfaces), `components/ui/PolicyBadges.tsx` (ColorBadge, SeverityBadge, EngineBadge, BlockingBadge, ActionBadge)
+    - Nav: 3 tabs in Security section, 2 command palette quick actions
+    - Theme-compliant: CSS custom properties for all colors (var(--success), var(--accent))
 
 ---
 
