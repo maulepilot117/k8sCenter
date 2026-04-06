@@ -151,6 +151,11 @@ func (s *Server) registerRoutes() {
 				s.registerGitOpsRoutes(ar)
 			}
 
+			// Security scanning routes — only registered if scanning handler is available
+			if s.ScanningHandler != nil {
+				s.registerScanningRoutes(ar)
+			}
+
 			// User management — admin only
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
@@ -434,6 +439,19 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Get("/status", h.HandleStatus)
 		gr.Get("/applications", h.HandleListApplications)
 		gr.Get("/applications/{id}", h.HandleGetApplication)
+	})
+}
+
+func (s *Server) registerScanningRoutes(ar chi.Router) {
+	h := s.ScanningHandler
+	ar.Route("/scanning", func(sr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		sr.Use(middleware.RateLimit(yamlRL))
+		sr.Get("/status", h.HandleStatus)
+		sr.Get("/vulnerabilities", h.HandleVulnerabilities)
 	})
 }
 

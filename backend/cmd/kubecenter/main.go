@@ -27,6 +27,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -380,6 +381,17 @@ func main() {
 		Logger:        logger,
 	}
 
+	// Security scanning discovery and handler
+	scanDiscoverer := scanning.NewDiscoverer(k8sClient, logger)
+	go scanDiscoverer.RunDiscoveryLoop(ctx)
+
+	scanHandler := &scanning.Handler{
+		K8sClient:     k8sClient,
+		Discoverer:    scanDiscoverer,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -413,6 +425,7 @@ func main() {
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
 		GitOpsHandler:        gitopsHandler,
+		ScanningHandler:      scanHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
