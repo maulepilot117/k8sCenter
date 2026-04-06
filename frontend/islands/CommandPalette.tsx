@@ -76,6 +76,8 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Create HPA", href: "/scaling/hpas?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },
     { label: "Investigate Resource", href: "/observability/investigate" },
+    { label: "View Policies", href: "/security/policies" },
+    { label: "View Violations", href: "/security/violations" },
   ];
   for (const a of actions) {
     items.push({

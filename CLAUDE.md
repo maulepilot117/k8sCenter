@@ -305,7 +305,9 @@ GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
 - CI + E2E must pass before merge
 - On merge to main: images built, tagged, pushed to GHCR (public), GitHub Release created
 
-**Every PR requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope.
+**After every push:** Watch CI (`gh run list --limit 1` / `gh run view`), review any failures, and fix before moving on. Do not assume CI passes — verify it.
+
+**Before any merge:** Run `/compounding-engineering:workflows:review` first. No exceptions. Smoke test against homelab when backend/frontend changes are in scope.
 
 Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
 
