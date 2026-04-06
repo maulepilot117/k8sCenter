@@ -4,31 +4,11 @@ import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-
-interface SeverityCounts {
-  pass: number;
-  fail: number;
-  total: number;
-}
-
-interface ComplianceScore {
-  scope: string;
-  score: number;
-  pass: number;
-  fail: number;
-  warn: number;
-  total: number;
-  bySeverity?: Record<string, SeverityCounts>;
-}
-
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
-
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
-  high: "var(--warning)",
-  medium: "var(--accent)",
-  low: "var(--text-muted)",
-};
+import {
+  SEVERITY_COLORS,
+  SEVERITY_ORDER,
+} from "@/components/ui/PolicyBadges.tsx";
+import type { ComplianceScore, SeverityCounts } from "@/lib/policy-types.ts";
 
 function scoreColor(score: number): string {
   if (score >= 80) return "var(--success)";
@@ -47,16 +27,10 @@ function SeverityBar({
   const color = SEVERITY_COLORS[label] ?? "var(--text-muted)";
   return (
     <div class="flex items-center gap-3">
-      <span
-        class="text-xs font-medium w-16 text-right"
-        style={{ color }}
-      >
+      <span class="text-xs font-medium w-16 text-right" style={{ color }}>
         {label}
       </span>
-      <div
-        class="flex-1 h-3 rounded-full overflow-hidden"
-        style={{ backgroundColor: "var(--bg-elevated)" }}
-      >
+      <div class="flex-1 h-3 rounded-full overflow-hidden bg-bg-elevated">
         <div
           class="h-full rounded-full"
           style={{
@@ -118,10 +92,7 @@ export default function ComplianceDashboard() {
       {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
 
       {!loading.value && !error.value && !clusterScore && (
-        <div
-          class="text-center py-12 rounded-lg border border-border-primary"
-          style={{ backgroundColor: "var(--bg-elevated)" }}
-        >
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted">
             No compliance data available. Install a policy engine and define
             policies to see scores.
@@ -134,10 +105,7 @@ export default function ComplianceDashboard() {
           {/* Cluster overview */}
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
             {/* Score ring */}
-            <div
-              class="rounded-lg border border-border-primary p-6 flex flex-col items-center justify-center"
-              style={{ backgroundColor: "var(--bg-elevated)" }}
-            >
+            <div class="rounded-lg border border-border-primary p-6 flex flex-col items-center justify-center bg-bg-elevated">
               <GaugeRing
                 value={clusterScore.score}
                 size={140}
@@ -157,10 +125,7 @@ export default function ComplianceDashboard() {
             </div>
 
             {/* Severity breakdown */}
-            <div
-              class="rounded-lg border border-border-primary p-6"
-              style={{ backgroundColor: "var(--bg-elevated)" }}
-            >
+            <div class="rounded-lg border border-border-primary p-6 bg-bg-elevated">
               <h2 class="text-sm font-medium text-text-primary mb-4">
                 Severity Breakdown
               </h2>

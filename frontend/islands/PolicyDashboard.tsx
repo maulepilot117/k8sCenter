@@ -4,112 +4,12 @@ import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-
-type Engine = "" | "kyverno" | "gatekeeper" | "both";
-
-interface EngineDetail {
-  available: boolean;
-  namespace?: string;
-  webhooks: number;
-}
-
-interface EngineStatus {
-  detected: Engine;
-  kyverno?: EngineDetail;
-  gatekeeper?: EngineDetail;
-  lastChecked: string;
-}
-
-interface NormalizedPolicy {
-  id: string;
-  name: string;
-  namespace?: string;
-  kind: string;
-  action: string;
-  category?: string;
-  severity: string;
-  description?: string;
-  nativeAction: string;
-  engine: string;
-  blocking: boolean;
-  ready: boolean;
-  ruleCount: number;
-  violationCount: number;
-  targetKinds?: string[];
-}
-
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
-  high: "var(--warning)",
-  medium: "var(--accent)",
-  low: "var(--text-muted)",
-};
-
-const ENGINE_COLORS: Record<string, string> = {
-  kyverno: "#00C853",
-  gatekeeper: "#448AFF",
-};
-
-function SeverityBadge({ severity }: { severity: string }) {
-  return (
-    <span
-      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-      style={{
-        color: SEVERITY_COLORS[severity] ?? "var(--text-muted)",
-        backgroundColor: `color-mix(in srgb, ${
-          SEVERITY_COLORS[severity] ?? "var(--text-muted)"
-        } 15%, transparent)`,
-      }}
-    >
-      {severity}
-    </span>
-  );
-}
-
-function EngineBadge({ engine }: { engine: string }) {
-  const color = ENGINE_COLORS[engine] ?? "var(--text-muted)";
-  return (
-    <span
-      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-      style={{
-        color,
-        backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
-      }}
-    >
-      {engine}
-    </span>
-  );
-}
-
-function BlockingBadge({ blocking }: { blocking: boolean }) {
-  if (blocking) {
-    return (
-      <span
-        class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
-        style={{
-          color: "var(--danger)",
-          backgroundColor: "color-mix(in srgb, var(--danger) 15%, transparent)",
-        }}
-        title="Blocks admission"
-      >
-        &#x1F6E1; Enforce
-      </span>
-    );
-  }
-  return (
-    <span
-      class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
-      style={{
-        color: "var(--text-muted)",
-        backgroundColor:
-          "color-mix(in srgb, var(--text-muted) 15%, transparent)",
-      }}
-      title="Audit only"
-    >
-      &#x1F441; Audit
-    </span>
-  );
-}
+import {
+  BlockingBadge,
+  EngineBadge,
+  SeverityBadge,
+} from "@/components/ui/PolicyBadges.tsx";
+import type { EngineStatus, NormalizedPolicy } from "@/lib/policy-types.ts";
 
 export default function PolicyDashboard() {
   const status = useSignal<EngineStatus | null>(null);
@@ -179,10 +79,7 @@ export default function PolicyDashboard() {
 
       {/* Engine status banner */}
       {status.value && !noEngine && (
-        <div
-          class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4"
-          style={{ backgroundColor: "var(--bg-elevated)" }}
-        >
+        <div class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-bg-elevated">
           <div class="flex items-center gap-2">
             <span class="text-sm font-medium text-text-primary">
               Engines detected:
@@ -204,10 +101,7 @@ export default function PolicyDashboard() {
 
       {/* No engine state */}
       {noEngine && !loading.value && (
-        <div
-          class="mb-6 rounded-lg border border-border-primary p-6 text-center"
-          style={{ backgroundColor: "var(--bg-elevated)" }}
-        >
+        <div class="mb-6 rounded-lg border border-border-primary p-6 text-center bg-bg-elevated">
           <p class="text-lg font-medium text-text-primary mb-2">
             No policy engine detected
           </p>
@@ -384,10 +278,7 @@ export default function PolicyDashboard() {
 
       {!loading.value && !error.value && filtered.length === 0 &&
         !noEngine && (
-        <div
-          class="text-center py-12 rounded-lg border border-border-primary"
-          style={{ backgroundColor: "var(--bg-elevated)" }}
-        >
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted">
             {policies.value.length === 0
               ? "No policies found. Policies will appear here once defined in your cluster."

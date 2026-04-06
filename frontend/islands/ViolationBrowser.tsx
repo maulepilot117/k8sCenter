@@ -5,37 +5,18 @@ import { apiGet } from "@/lib/api.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
+import {
+  ActionBadge,
+  EngineBadge,
+  SeverityBadge,
+} from "@/components/ui/PolicyBadges.tsx";
+import type { NormalizedViolation } from "@/lib/policy-types.ts";
 
-interface NormalizedViolation {
-  policy: string;
-  rule?: string;
-  severity: string;
-  action: string;
-  message: string;
-  namespace?: string;
-  kind: string;
-  name: string;
-  timestamp?: string;
-  engine: string;
-  blocking: boolean;
-}
-
-const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
-  high: "var(--warning)",
-  medium: "var(--accent)",
-  low: "var(--text-muted)",
-};
-
-const ENGINE_COLORS: Record<string, string> = {
-  kyverno: "#00C853",
-  gatekeeper: "#448AFF",
-};
-
-const ACTION_LABELS: Record<string, { label: string; color: string }> = {
-  denied: { label: "Denied", color: "var(--danger)" },
-  warned: { label: "Warned", color: "var(--warning)" },
-  audited: { label: "Audited", color: "var(--text-muted)" },
+// Irregular plurals for resource kind -> RESOURCE_DETAIL_PATHS lookup
+const KIND_PLURALS: Record<string, string> = {
+  ingress: "ingresses",
+  endpointslice: "endpointslices",
+  networkpolicy: "networkpolicies",
 };
 
 function resourceHref(
@@ -43,26 +24,30 @@ function resourceHref(
   namespace?: string,
   name?: string,
 ): string | null {
-  const kindLower = kind.toLowerCase() + "s";
-  const basePath = RESOURCE_DETAIL_PATHS[kindLower];
+  const lower = kind.toLowerCase();
+  const plural = KIND_PLURALS[lower] ?? lower + "s";
+  const basePath = RESOURCE_DETAIL_PATHS[plural];
   if (!basePath || !name) return null;
-  return namespace ? `${basePath}/${namespace}/${name}` : `${basePath}/${name}`;
+  return namespace
+    ? `${basePath}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
+    : `${basePath}/${encodeURIComponent(name)}`;
+}
+
+function getUrlParam(name: string): string {
+  if (!IS_BROWSER) return "all";
+  return new URLSearchParams(globalThis.location.search).get(name) ?? "all";
 }
 
 export default function ViolationBrowser() {
   const violations = useSignal<NormalizedViolation[]>([]);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
-  const search = useSignal("");
-  const filterNamespace = useSignal<string>("all");
+  const search = useSignal(
+    getUrlParam("policy") !== "all" ? getUrlParam("policy") : "",
+  );
+  const filterNamespace = useSignal<string>(getUrlParam("namespace"));
   const filterSeverity = useSignal<string>("all");
   const filterEngine = useSignal<string>("all");
-
-  // Read initial namespace filter from URL
-  const initialNs = IS_BROWSER
-    ? new URLSearchParams(globalThis.location.search).get("namespace") ?? "all"
-    : "all";
-  filterNamespace.value = initialNs;
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -217,10 +202,6 @@ export default function ViolationBrowser() {
             <tbody class="divide-y divide-border-subtle">
               {filtered.map((v, i) => {
                 const href = resourceHref(v.kind, v.namespace, v.name);
-                const actionInfo = ACTION_LABELS[v.action] ?? {
-                  label: v.action,
-                  color: "var(--text-muted)",
-                };
                 return (
                   <tr
                     key={`${v.policy}-${v.name}-${i}`}
@@ -235,18 +216,7 @@ export default function ViolationBrowser() {
                       )}
                     </td>
                     <td class="px-3 py-2">
-                      <span
-                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                        style={{
-                          color: SEVERITY_COLORS[v.severity] ??
-                            "var(--text-muted)",
-                          backgroundColor: `color-mix(in srgb, ${
-                            SEVERITY_COLORS[v.severity] ?? "var(--text-muted)"
-                          } 15%, transparent)`,
-                        }}
-                      >
-                        {v.severity}
-                      </span>
+                      <SeverityBadge severity={v.severity} />
                     </td>
                     <td class="px-3 py-2">
                       {href
@@ -268,29 +238,10 @@ export default function ViolationBrowser() {
                       {v.message}
                     </td>
                     <td class="px-3 py-2">
-                      <span
-                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                        style={{
-                          color: actionInfo.color,
-                          backgroundColor:
-                            `color-mix(in srgb, ${actionInfo.color} 15%, transparent)`,
-                        }}
-                      >
-                        {actionInfo.label}
-                      </span>
+                      <ActionBadge action={v.action} />
                     </td>
                     <td class="px-3 py-2">
-                      <span
-                        class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-                        style={{
-                          color: ENGINE_COLORS[v.engine] ?? "var(--text-muted)",
-                          backgroundColor: `color-mix(in srgb, ${
-                            ENGINE_COLORS[v.engine] ?? "var(--text-muted)"
-                          } 15%, transparent)`,
-                        }}
-                      >
-                        {v.engine}
-                      </span>
+                      <EngineBadge engine={v.engine} />
                     </td>
                   </tr>
                 );
@@ -301,10 +252,7 @@ export default function ViolationBrowser() {
       )}
 
       {!loading.value && !error.value && filtered.length === 0 && (
-        <div
-          class="text-center py-12 rounded-lg border border-border-primary"
-          style={{ backgroundColor: "var(--bg-elevated)" }}
-        >
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted">
             {violations.value.length === 0
               ? "No violations found. Your cluster is compliant!"
