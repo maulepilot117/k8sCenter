@@ -85,7 +85,7 @@ func normalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 	// Annotations
 	severity := annotations["policies.kyverno.io/severity"]
 	if severity == "" {
-		severity = DefaultSeverity
+		severity = defaultSeverity
 	}
 	category := annotations["policies.kyverno.io/category"]
 	description := annotations["policies.kyverno.io/description"]
@@ -168,13 +168,19 @@ func extractKyvernoViolations(report *unstructured.Unstructured) []NormalizedVio
 		severity, _, _ := unstructured.NestedString(resultMap, "severity")
 		timestamp, _, _ := unstructured.NestedString(resultMap, "timestamp")
 		if severity == "" {
-			severity = DefaultSeverity
+			severity = defaultSeverity
 		}
 
-		// Resource reference
-		resKind, _, _ := unstructured.NestedString(resultMap, "resources", "kind")
-		resName, _, _ := unstructured.NestedString(resultMap, "resources", "name")
-		resNamespace, _, _ := unstructured.NestedString(resultMap, "resources", "namespace")
+		// Resource reference — resources is a slice of ObjectReference
+		var resKind, resName, resNamespace string
+		resourcesList, _, _ := unstructured.NestedSlice(resultMap, "resources")
+		if len(resourcesList) > 0 {
+			if resMap, ok := resourcesList[0].(map[string]interface{}); ok {
+				resKind, _, _ = unstructured.NestedString(resMap, "kind")
+				resName, _, _ = unstructured.NestedString(resMap, "name")
+				resNamespace, _, _ = unstructured.NestedString(resMap, "namespace")
+			}
+		}
 
 		// Fallback: some reports use a flat resource structure
 		if resKind == "" {

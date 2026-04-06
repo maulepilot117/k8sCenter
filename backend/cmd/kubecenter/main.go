@@ -359,6 +359,7 @@ func main() {
 		go policyDiscoverer.RunDiscoveryLoop(ctx)
 
 		policyHandler = &policy.Handler{
+			K8sClient:     k8sClient,
 			Discoverer:    policyDiscoverer,
 			ClusterRouter: clusterRouter,
 			CRDDiscovery:  crdDiscovery,

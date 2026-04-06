@@ -14,12 +14,11 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
-	"github.com/kubecenter/kubecenter/internal/server/middleware"
-	"k8s.io/client-go/dynamic"
 )
 
 // Handler serves policy HTTP endpoints.
 type Handler struct {
+	K8sClient     *k8s.ClientFactory
 	Discoverer    *PolicyDiscoverer
 	ClusterRouter *k8s.ClusterRouter
 	CRDDiscovery  *k8s.CRDDiscovery
@@ -39,16 +38,11 @@ type cachedPolicyData struct {
 
 const policyCacheTTL = 30 * time.Second
 
-// impersonatingDynamic returns a dynamic client that impersonates the given user,
-// routed to the correct cluster based on the request context.
-func (h *Handler) impersonatingDynamic(ctx context.Context, user *auth.User) (dynamic.Interface, error) {
-	clusterID := middleware.ClusterIDFromContext(ctx)
-	return h.ClusterRouter.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
-}
-
 // fetchPoliciesAndViolations returns cached policy/violation data, refreshing
 // if the cache is stale. Concurrent callers are coalesced via singleflight.
-func (h *Handler) fetchPoliciesAndViolations(ctx context.Context, user *auth.User) ([]NormalizedPolicy, []NormalizedViolation, error) {
+// The cache is populated using the service account (full visibility); callers
+// must filter results by RBAC before returning to users.
+func (h *Handler) fetchPoliciesAndViolations(ctx context.Context) ([]NormalizedPolicy, []NormalizedViolation, error) {
 	h.cacheMu.RLock()
 	if h.cachedData != nil && time.Since(h.cachedData.fetchedAt) < policyCacheTTL {
 		p, v := h.cachedData.policies, h.cachedData.violations
@@ -58,7 +52,7 @@ func (h *Handler) fetchPoliciesAndViolations(ctx context.Context, user *auth.Use
 	h.cacheMu.RUnlock()
 
 	result, err, _ := h.fetchGroup.Do("fetch", func() (any, error) {
-		return h.doFetch(ctx, user)
+		return h.doFetch(ctx)
 	})
 	if err != nil {
 		return nil, nil, err
@@ -68,11 +62,9 @@ func (h *Handler) fetchPoliciesAndViolations(ctx context.Context, user *auth.Use
 }
 
 // doFetch queries both engines based on discovery status and merges results.
-func (h *Handler) doFetch(ctx context.Context, user *auth.User) (*cachedPolicyData, error) {
-	dynClient, err := h.impersonatingDynamic(ctx, user)
-	if err != nil {
-		return nil, err
-	}
+// It uses the service account's dynamic client for full cluster visibility.
+func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
+	dynClient := h.K8sClient.BaseDynamicClient()
 
 	status := h.Discoverer.Status()
 
@@ -112,10 +104,7 @@ func (h *Handler) doFetch(ctx context.Context, user *auth.User) (*cachedPolicyDa
 			defer wg.Done()
 			constraintCRDs := h.Discoverer.GatekeeperConstraintCRDs()
 			var r fetchResult
-			r.policies, r.err = listGatekeeperPolicies(ctx, dynClient, constraintCRDs)
-			if r.err == nil {
-				r.violations, r.err = listGatekeeperViolations(ctx, dynClient, constraintCRDs)
-			}
+			r.policies, r.violations, r.err = listGatekeeperPoliciesAndViolations(ctx, dynClient, constraintCRDs)
 			gatekeeperCh <- r
 		}()
 	} else {
@@ -189,19 +178,22 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, _, err := h.fetchPoliciesAndViolations(r.Context(), user)
+	policies, _, err := h.fetchPoliciesAndViolations(r.Context())
 	if err != nil {
 		h.Logger.Error("failed to fetch policies", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch policies", "")
 		return
 	}
 
+	// Filter policies by RBAC
+	policies = h.filterPoliciesByRBAC(r.Context(), user, policies)
+
 	// Sort by severity weight descending
 	sorted := make([]NormalizedPolicy, len(policies))
 	copy(sorted, policies)
 	sort.Slice(sorted, func(i, j int) bool {
-		wi := SeverityWeights[sorted[i].Severity]
-		wj := SeverityWeights[sorted[j].Severity]
+		wi := severityWeights[sorted[i].Severity]
+		wj := severityWeights[sorted[j].Severity]
 		if wi != wj {
 			return wi > wj
 		}
@@ -219,7 +211,7 @@ func (h *Handler) HandleListViolations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, violations, err := h.fetchPoliciesAndViolations(r.Context(), user)
+	_, violations, err := h.fetchPoliciesAndViolations(r.Context())
 	if err != nil {
 		h.Logger.Error("failed to fetch violations", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch violations", "")
@@ -231,8 +223,8 @@ func (h *Handler) HandleListViolations(w http.ResponseWriter, r *http.Request) {
 
 	// Sort by severity weight descending
 	sort.Slice(filtered, func(i, j int) bool {
-		wi := SeverityWeights[filtered[i].Severity]
-		wj := SeverityWeights[filtered[j].Severity]
+		wi := severityWeights[filtered[i].Severity]
+		wj := severityWeights[filtered[j].Severity]
 		if wi != wj {
 			return wi > wj
 		}
@@ -250,14 +242,15 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, violations, err := h.fetchPoliciesAndViolations(r.Context(), user)
+	policies, violations, err := h.fetchPoliciesAndViolations(r.Context())
 	if err != nil {
 		h.Logger.Error("failed to fetch policy data", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to compute compliance", "")
 		return
 	}
 
-	// Filter violations by RBAC
+	// Filter by RBAC
+	policies = h.filterPoliciesByRBAC(r.Context(), user, policies)
 	filtered := h.filterViolationsByRBAC(r.Context(), user, violations)
 
 	scope := r.URL.Query().Get("namespace")
@@ -302,6 +295,38 @@ func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, v
 	return filtered
 }
 
+// filterPoliciesByRBAC removes policies the user cannot see based on namespace access.
+// Cluster-scoped policies are visible to all authenticated users (they apply globally).
+func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, policies []NormalizedPolicy) []NormalizedPolicy {
+	nsAccess := make(map[string]bool)
+	var filtered []NormalizedPolicy
+
+	for _, p := range policies {
+		if p.Namespace == "" {
+			// Cluster-scoped policies visible to all (they apply globally)
+			filtered = append(filtered, p)
+			continue
+		}
+
+		allowed, checked := nsAccess[p.Namespace]
+		if !checked {
+			can, err := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", p.Namespace)
+			if err != nil {
+				allowed = false
+			} else {
+				allowed = can
+			}
+			nsAccess[p.Namespace] = allowed
+		}
+
+		if allowed {
+			filtered = append(filtered, p)
+		}
+	}
+
+	return filtered
+}
+
 // computeCompliance calculates a weighted compliance score from policies and violations.
 func computeCompliance(policies []NormalizedPolicy, violations []NormalizedViolation, scope string) ComplianceScore {
 	// Filter violations to scope
@@ -328,9 +353,9 @@ func computeCompliance(policies []NormalizedPolicy, violations []NormalizedViola
 	}
 
 	for _, p := range policies {
-		weight := float64(SeverityWeights[p.Severity])
+		weight := float64(severityWeights[p.Severity])
 		if weight == 0 {
-			weight = float64(SeverityWeights[DefaultSeverity])
+			weight = float64(severityWeights[defaultSeverity])
 		}
 
 		vCount := violationsByPolicy[p.Name]

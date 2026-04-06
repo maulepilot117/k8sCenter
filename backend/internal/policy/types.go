@@ -10,11 +10,11 @@ const (
 	EngineBoth       Engine = "both"
 )
 
-// DefaultSeverity is used when a policy does not declare severity.
-const DefaultSeverity = "medium"
+// defaultSeverity is used when a policy does not declare severity.
+const defaultSeverity = "medium"
 
-// SeverityWeights maps severity labels to relative weights for compliance scoring.
-var SeverityWeights = map[string]int{
+// severityWeights maps severity labels to relative weights for compliance scoring.
+var severityWeights = map[string]int{
 	"critical": 10,
 	"high":     5,
 	"medium":   2,

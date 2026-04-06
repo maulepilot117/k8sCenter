@@ -20,28 +20,25 @@ const (
 	constraintTimeout   = 5 * time.Second
 )
 
-var constraintTemplateGVR = schema.GroupVersionResource{
-	Group: "templates.gatekeeper.sh", Version: "v1", Resource: "constrainttemplates",
+// constraintCRDResult holds both policies and violations extracted from a single
+// constraint CRD type, allowing a single API call per CRD instead of two.
+type constraintCRDResult struct {
+	policies   []NormalizedPolicy
+	violations []NormalizedViolation
+	err        error
 }
 
-// listGatekeeperPolicies fetches constraint templates and their instances,
-// returning normalized policy objects.
-func listGatekeeperPolicies(ctx context.Context, dynClient dynamic.Interface, constraintCRDs []*k8s.CRDInfo) ([]NormalizedPolicy, error) {
-	var policies []NormalizedPolicy
-
-	// Cap the number of constraint CRDs to prevent unbounded work
+// listGatekeeperPoliciesAndViolations fetches all constraint instances in a single
+// pass per CRD, extracting both normalized policies and violations from each object.
+// This avoids listing the same resources twice.
+func listGatekeeperPoliciesAndViolations(ctx context.Context, dynClient dynamic.Interface, constraintCRDs []*k8s.CRDInfo) ([]NormalizedPolicy, []NormalizedViolation, error) {
 	crds := constraintCRDs
 	if len(crds) > maxConstraintCRDs {
 		crds = crds[:maxConstraintCRDs]
 	}
 
-	type result struct {
-		policies []NormalizedPolicy
-		err      error
-	}
-
 	sem := make(chan struct{}, constraintSemaphore)
-	results := make(chan result, len(crds))
+	results := make(chan constraintCRDResult, len(crds))
 
 	var wg sync.WaitGroup
 	for _, crd := range crds {
@@ -67,15 +64,16 @@ func listGatekeeperPolicies(ctx context.Context, dynClient dynamic.Interface, co
 
 			list, err := dynClient.Resource(gvr).List(timeoutCtx, metav1.ListOptions{})
 			if err != nil {
-				results <- result{err: fmt.Errorf("listing %s: %w", c.Resource, err)}
+				results <- constraintCRDResult{err: fmt.Errorf("listing %s: %w", c.Resource, err)}
 				return
 			}
 
-			var pols []NormalizedPolicy
+			var r constraintCRDResult
 			for i := range list.Items {
-				pols = append(pols, normalizeGatekeeperConstraint(&list.Items[i], c.Kind))
+				r.policies = append(r.policies, normalizeGatekeeperConstraint(&list.Items[i], c.Kind))
+				r.violations = append(r.violations, extractGatekeeperViolations(&list.Items[i], c.Kind)...)
 			}
-			results <- result{policies: pols}
+			results <- r
 		}(crd)
 	}
 
@@ -84,15 +82,18 @@ func listGatekeeperPolicies(ctx context.Context, dynClient dynamic.Interface, co
 		close(results)
 	}()
 
+	var allPolicies []NormalizedPolicy
+	var allViolations []NormalizedViolation
 	for r := range results {
 		if r.err != nil {
 			// Log but don't fail the entire operation for one CRD type
 			continue
 		}
-		policies = append(policies, r.policies...)
+		allPolicies = append(allPolicies, r.policies...)
+		allViolations = append(allViolations, r.violations...)
 	}
 
-	return policies, nil
+	return allPolicies, allViolations, nil
 }
 
 func normalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKind string) NormalizedPolicy {
@@ -133,7 +134,7 @@ func normalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKin
 	description := annotations["description"]
 	severity := annotations["metadata.gatekeeper.sh/severity"]
 	if severity == "" {
-		severity = DefaultSeverity
+		severity = defaultSeverity
 	}
 	category := annotations["metadata.gatekeeper.sh/category"]
 
@@ -154,74 +155,6 @@ func normalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKin
 	}
 }
 
-// listGatekeeperViolations fetches violations from constraint status fields.
-func listGatekeeperViolations(ctx context.Context, dynClient dynamic.Interface, constraintCRDs []*k8s.CRDInfo) ([]NormalizedViolation, error) {
-	var violations []NormalizedViolation
-
-	crds := constraintCRDs
-	if len(crds) > maxConstraintCRDs {
-		crds = crds[:maxConstraintCRDs]
-	}
-
-	type result struct {
-		violations []NormalizedViolation
-		err        error
-	}
-
-	sem := make(chan struct{}, constraintSemaphore)
-	results := make(chan result, len(crds))
-
-	var wg sync.WaitGroup
-	for _, crd := range crds {
-		wg.Add(1)
-		go func(c *k8s.CRDInfo) {
-			defer wg.Done()
-
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			timeoutCtx, cancel := context.WithTimeout(ctx, constraintTimeout)
-			defer cancel()
-
-			gvr := schema.GroupVersionResource{
-				Group:    "constraints.gatekeeper.sh",
-				Version:  c.Version,
-				Resource: c.Resource,
-			}
-
-			list, err := dynClient.Resource(gvr).List(timeoutCtx, metav1.ListOptions{})
-			if err != nil {
-				results <- result{err: err}
-				return
-			}
-
-			var viols []NormalizedViolation
-			for i := range list.Items {
-				viols = append(viols, extractGatekeeperViolations(&list.Items[i], c.Kind)...)
-			}
-			results <- result{violations: viols}
-		}(crd)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	for r := range results {
-		if r.err != nil {
-			continue
-		}
-		violations = append(violations, r.violations...)
-	}
-
-	return violations, nil
-}
-
 func extractGatekeeperViolations(obj *unstructured.Unstructured, constraintKind string) []NormalizedViolation {
 	var violations []NormalizedViolation
 
@@ -234,7 +167,7 @@ func extractGatekeeperViolations(obj *unstructured.Unstructured, constraintKind 
 
 	severity := obj.GetAnnotations()["metadata.gatekeeper.sh/severity"]
 	if severity == "" {
-		severity = DefaultSeverity
+		severity = defaultSeverity
 	}
 
 	statusViolations, found, _ := unstructured.NestedSlice(obj.Object, "status", "violations")
