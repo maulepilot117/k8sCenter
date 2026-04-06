@@ -17,6 +17,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
@@ -58,6 +59,7 @@ type Server struct {
 	NetworkingHandler  *networking.Handler
 	AlertingHandler      *alerting.Handler
 	DiagnosticsHandler   *diagnostics.Handler
+	PolicyHandler        *policy.Handler
 	CRDHandler           *resources.GenericCRDHandler
 	Hub                  *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
@@ -93,6 +95,7 @@ type Deps struct {
 	NetworkingHandler  *networking.Handler
 	AlertingHandler      *alerting.Handler
 	DiagnosticsHandler   *diagnostics.Handler
+	PolicyHandler        *policy.Handler
 	CRDHandler           *resources.GenericCRDHandler
 	LogQueryLimiter      *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
@@ -206,6 +209,11 @@ func New(deps Deps) *Server {
 	// Diagnostics handler
 	if deps.DiagnosticsHandler != nil {
 		s.DiagnosticsHandler = deps.DiagnosticsHandler
+	}
+
+	// Policy handler
+	if deps.PolicyHandler != nil {
+		s.PolicyHandler = deps.PolicyHandler
 	}
 
 	// CRD handler

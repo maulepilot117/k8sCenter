@@ -141,6 +141,11 @@ func (s *Server) registerRoutes() {
 				s.registerAlertingRoutes(ar)
 			}
 
+			// Policy routes — only registered if policy handler is available
+			if s.PolicyHandler != nil {
+				s.registerPolicyRoutes(ar)
+			}
+
 			// User management — admin only
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
@@ -394,6 +399,22 @@ func (s *Server) registerDiagnosticsRoutes(ar chi.Router) {
 		dr.Use(resources.ValidateURLParams)
 		dr.Get("/{namespace}/summary", h.HandleNamespaceSummary)
 		dr.Get("/{namespace}/{kind}/{name}", h.HandleDiagnostics)
+	})
+}
+
+func (s *Server) registerPolicyRoutes(ar chi.Router) {
+	h := s.PolicyHandler
+	ar.Route("/policies", func(pr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		pr.Use(middleware.RateLimit(yamlRL))
+		pr.Use(resources.ValidateURLParams)
+		pr.Get("/status", h.HandleStatus)
+		pr.Get("/", h.HandleListPolicies)
+		pr.Get("/violations", h.HandleListViolations)
+		pr.Get("/compliance", h.HandleCompliance)
 	})
 }
 

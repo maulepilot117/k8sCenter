@@ -55,6 +55,8 @@ func NewAccessChecker(clientFactory interface {
 // CanAccess checks if a user has a specific verb permission on a resource in a namespace.
 // Empty namespace means cluster-scoped check.
 // The resource can include a subresource separated by "/" (e.g., "pods/log", "pods/exec").
+// The API group is inferred from the resource name via apiGroupForResource.
+// For CRD resources with custom API groups, use CanAccessGroupResource instead.
 func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error) {
 	if ac.alwaysAllow {
 		return true, nil
@@ -117,6 +119,73 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 	ac.logger.Debug("access check",
 		"user", username,
 		"verb", verb,
+		"resource", resource,
+		"namespace", namespace,
+		"allowed", allowed,
+	)
+
+	return allowed, nil
+}
+
+// CanAccessGroupResource checks if a user has a specific verb permission on a
+// resource in a given API group and namespace. Use this for CRD resources where
+// the API group is not in the hardcoded apiGroupForResource map.
+// For core API resources, pass apiGroup="".
+func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error) {
+	if ac.alwaysAllow {
+		return true, nil
+	}
+	if ac.alwaysDeny {
+		return false, nil
+	}
+
+	key := accessCacheKey{
+		username:  username,
+		groups:    sortedGroups(groups),
+		resource:  apiGroup + "/" + resource,
+		namespace: namespace,
+		verb:      verb,
+	}
+
+	if val, ok := ac.cache.Load(key); ok {
+		entry := val.(accessCacheEntry)
+		if time.Now().Before(entry.expiresAt) {
+			return entry.allowed, nil
+		}
+		ac.cache.Delete(key)
+	}
+
+	cs, err := ac.clientFactory.ClientForUser(username, groups)
+	if err != nil {
+		return false, fmt.Errorf("creating client for access check: %w", err)
+	}
+
+	review := &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Namespace: namespace,
+				Verb:      verb,
+				Resource:  resource,
+				Group:     apiGroup,
+			},
+		},
+	}
+
+	result, err := cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
+	if err != nil {
+		return false, fmt.Errorf("SelfSubjectAccessReview for %s %s/%s in %q: %w", verb, apiGroup, resource, namespace, err)
+	}
+
+	allowed := result.Status.Allowed
+	ac.cache.Store(key, accessCacheEntry{
+		allowed:   allowed,
+		expiresAt: time.Now().Add(accessCacheTTL),
+	})
+
+	ac.logger.Debug("access check (group resource)",
+		"user", username,
+		"verb", verb,
+		"group", apiGroup,
 		"resource", resource,
 		"namespace", namespace,
 		"allowed", allowed,

@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/storage"
@@ -351,6 +352,22 @@ func main() {
 		}
 	}
 
+	// Policy engine discovery and handler
+	var policyHandler *policy.Handler
+	if crdDiscovery != nil {
+		policyDiscoverer := policy.NewDiscoverer(k8sClient, crdDiscovery, logger)
+		go policyDiscoverer.RunDiscoveryLoop(ctx)
+
+		policyHandler = &policy.Handler{
+			K8sClient:     k8sClient,
+			Discoverer:    policyDiscoverer,
+			ClusterRouter: clusterRouter,
+			CRDDiscovery:  crdDiscovery,
+			AccessChecker: accessChecker,
+			Logger:        logger,
+		}
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -382,6 +399,7 @@ func main() {
 		NetworkingHandler:  networkingHandler,
 		AlertingHandler:      alertHandler,
 		DiagnosticsHandler:   diagHandler,
+		PolicyHandler:        policyHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
