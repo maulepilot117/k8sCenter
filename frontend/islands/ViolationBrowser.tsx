@@ -5,36 +5,15 @@ import { apiGet } from "@/lib/api.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import {
   ActionBadge,
   EngineBadge,
   SeverityBadge,
 } from "@/components/ui/PolicyBadges.tsx";
+import { resourceHref } from "@/lib/k8s-links.ts";
 import type { NormalizedViolation } from "@/lib/policy-types.ts";
 
 const PAGE_SIZE = 100;
-
-// Irregular plurals for resource kind -> RESOURCE_DETAIL_PATHS lookup
-const KIND_PLURALS: Record<string, string> = {
-  ingress: "ingresses",
-  endpointslice: "endpointslices",
-  networkpolicy: "networkpolicies",
-};
-
-function resourceHref(
-  kind: string,
-  namespace?: string,
-  name?: string,
-): string | null {
-  const lower = kind.toLowerCase();
-  const plural = KIND_PLURALS[lower] ?? lower + "s";
-  const basePath = RESOURCE_DETAIL_PATHS[plural];
-  if (!basePath || !name) return null;
-  return namespace
-    ? `${basePath}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
-    : `${basePath}/${encodeURIComponent(name)}`;
-}
 
 function getUrlParam(name: string): string {
   if (!IS_BROWSER) return "all";

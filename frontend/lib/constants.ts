@@ -558,6 +558,15 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     ],
   },
   {
+    id: "gitops",
+    label: "GitOps",
+    icon: "git-branch",
+    href: "/gitops",
+    tabs: [
+      { label: "Applications", href: "/gitops/applications" },
+    ],
+  },
+  {
     id: "tools",
     label: "Tools",
     icon: "wrench",
