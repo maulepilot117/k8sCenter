@@ -79,6 +79,7 @@ function buildSearchIndex(): SearchItem[] {
     { label: "View Policies", href: "/security/policies" },
     { label: "View Violations", href: "/security/violations" },
     { label: "View GitOps Applications", href: "/gitops/applications" },
+    { label: "View Vulnerabilities", href: "/security/vulnerabilities" },
   ];
   for (const a of actions) {
     items.push({

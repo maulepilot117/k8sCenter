@@ -282,6 +282,32 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Shared modules: `lib/policy-types.ts` (TS interfaces), `components/ui/PolicyBadges.tsx` (ColorBadge, SeverityBadge, EngineBadge, BlockingBadge, ActionBadge)
     - Nav: 3 tabs in Security section, 2 command palette quick actions
     - Theme-compliant: CSS custom properties for all colors (var(--success), var(--accent))
+- **Phase 9 (GitOps):** COMPLETE — 2 sub-phases (9A-9B)
+  - **Phase 9A (GitOps Backend):** COMPLETE
+    - New `internal/gitops/` package: CRD-based auto-detection of Argo CD + Flux CD
+    - Argo CD adapter: Application listing, sync/health status normalization, managed resources, revision history
+    - Flux CD adapter: Kustomization + HelmRelease listing, condition-to-status mapping, inventory parsing
+    - Handler: singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`, user impersonation for detail endpoint
+    - 3 HTTP endpoints: `GET /gitops/{status,applications,applications/:id}`
+    - Composite ID scheme: colon-delimited `tool:namespace:name`
+    - 35 unit tests (status normalization + composite ID parsing)
+  - **Phase 9B (GitOps Frontend):** COMPLETE
+    - 2 islands: GitOpsApplications (tool status, inline summary counts, filterable table), GitOpsAppDetail (managed resources, revision history, source panel)
+    - 3 routes: `/gitops/{index,applications,applications/[id]}` with SubNav
+    - Shared modules: `lib/gitops-types.ts`, `components/ui/GitOpsBadges.tsx`, `lib/k8s-links.ts` (extracted shared resourceHref)
+    - Nav: GitOps section with Applications tab, command palette quick action
+
+## Future Features (Roadmap)
+
+- **Security scanning** — Trivy Operator + Kubescape integration (vulnerability reports, config audits, compliance frameworks)
+- **GitOps actions** — POST endpoints to trigger Argo CD sync or Flux reconciliation/rollback
+- **Policy creation wizards** — 17 common Kyverno/Gatekeeper policy templates
+- **Real-time WebSocket updates** — watch GitOps/Policy CRDs for live sync status
+- **Compliance trend storage** — PostgreSQL daily snapshots for historical compliance scoring
+- **ApplicationSet support** — Argo CD ApplicationSet generators and outputs
+- **Flux notifications** — webhook receiver integration for Flux alerts
+- **Git commit display** — Git provider API integration for commit messages in revision history
+- **Diff view** — show what changed between revisions in GitOps deployments
 
 ---
 
