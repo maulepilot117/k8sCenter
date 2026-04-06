@@ -78,6 +78,7 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Investigate Resource", href: "/observability/investigate" },
     { label: "View Policies", href: "/security/policies" },
     { label: "View Violations", href: "/security/violations" },
+    { label: "View GitOps Applications", href: "/gitops/applications" },
   ];
   for (const a of actions) {
     items.push({
