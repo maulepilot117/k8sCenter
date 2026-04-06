@@ -29,6 +29,10 @@ frontend/node_modules/
 frontend/_fresh/
 frontend/.vite/
 frontend/dist/
+frontend/npm/
+frontend/remote/
+frontend/dep_analysis_cache_v2
+frontend/node_analysis_cache_v2
 
 # Helm
 helm/kubecenter/charts/*.tgz

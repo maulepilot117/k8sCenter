@@ -6,13 +6,13 @@
    a lighter shade (~#1e1e1e) than our --bg-base (#0b0e14). The UA stylesheet
    wins in specificity on some browsers. Force ours with !important. */
 html {
-  background-color: #0b0e14 !important;
+  background-color: var(--bg-base, #0b0e14) !important;
   color-scheme: dark;
   min-height: 100dvh;
 }
 
 body {
-  background-color: #0b0e14 !important;
+  background-color: var(--bg-base, #0b0e14) !important;
   min-height: 100dvh;
 }
 
@@ -353,11 +353,11 @@ body {
   animation-delay: 420ms;
 }
 
-/* ── Page content entrance (subtle — starts mostly visible to avoid flash) ── */
+/* ── Page content entrance (subtle — starts nearly visible to minimize flash) ── */
 @keyframes page-enter-in {
   from {
-    opacity: 0.6;
-    transform: translateY(4px);
+    opacity: 0.85;
+    transform: translateY(2px);
   }
   to {
     opacity: 1;
@@ -365,7 +365,7 @@ body {
   }
 }
 .page-enter {
-  animation: page-enter-in 0.25s ease-out;
+  animation: page-enter-in 0.15s ease-out;
 }
 
 /* ── Gauge draw animation ── */
@@ -413,11 +413,12 @@ body {
   background: var(--bg-base, #0b0e14);
 }
 
+/* Cross-fade: overlap old/new so background never shows through */
 ::view-transition-old(root) {
   animation: 0.12s ease-out both vt-fade-out;
 }
 ::view-transition-new(root) {
-  animation: 0.18s ease-out both vt-fade-in;
+  animation: 0.15s 0.05s ease-out both vt-fade-in;
 }
 @keyframes vt-fade-out {
   to {
@@ -427,6 +428,13 @@ body {
 @keyframes vt-fade-in {
   from {
     opacity: 0;
+  }
+}
+
+/* Suppress page-enter when view-transitions are active (they handle the entrance) */
+@supports (view-transition-name: root) {
+  .page-enter {
+    animation: none;
   }
 }
 

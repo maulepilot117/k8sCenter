@@ -24,7 +24,7 @@ export default define.page(function App({ Component }) {
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){var themes=["nexus","dracula","tokyo-night","catppuccin","nord","one-dark","gruvbox"];var t=localStorage.getItem("k8scenter-theme");if(t&&themes.indexOf(t)!==-1)document.documentElement.dataset.theme=t;var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
+              `(function(){var b={"nexus":"#0b0e14","dracula":"#282a36","tokyo-night":"#1a1b26","catppuccin":"#1e1e2e","nord":"#2e3440","one-dark":"#282c34","gruvbox":"#1d2021"};var t=localStorage.getItem("k8scenter-theme");var bg=b[t]||"#0b0e14";if(t&&b[t])document.documentElement.dataset.theme=t;document.documentElement.style.setProperty("--bg-base",bg);document.documentElement.style.backgroundColor=bg;document.body&&(document.body.style.backgroundColor=bg);var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
           }}
         />
       </head>
