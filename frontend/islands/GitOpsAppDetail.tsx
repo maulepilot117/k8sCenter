@@ -11,33 +11,8 @@ import {
   SyncStatusBadge,
   ToolBadge,
 } from "@/components/ui/GitOpsBadges.tsx";
-import type {
-  AppDetail,
-  ManagedResource,
-  RevisionEntry,
-} from "@/lib/gitops-types.ts";
-import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
-
-/** Irregular plurals for kind → RESOURCE_DETAIL_PATHS lookup. */
-const KIND_PLURALS: Record<string, string> = {
-  ingress: "ingresses",
-  endpointslice: "endpointslices",
-  networkpolicy: "networkpolicies",
-};
-
-function resourceHref(
-  kind: string,
-  namespace?: string,
-  name?: string,
-): string | null {
-  const lower = kind.toLowerCase();
-  const plural = KIND_PLURALS[lower] ?? lower + "s";
-  const basePath = RESOURCE_DETAIL_PATHS[plural];
-  if (!basePath || !name) return null;
-  return namespace
-    ? `${basePath}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`
-    : `${basePath}/${encodeURIComponent(name)}`;
-}
+import type { AppDetail } from "@/lib/gitops-types.ts";
+import { resourceHref } from "@/lib/k8s-links.ts";
 
 export default function GitOpsAppDetail({ id }: { id: string }) {
   const detail = useSignal<AppDetail | null>(null);
@@ -146,14 +121,18 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
             <div>
               <dt class="text-text-muted">Repository</dt>
               <dd class="text-text-primary">
-                <a
-                  href={app.source.repoURL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-brand hover:underline break-all"
-                >
-                  {app.source.repoURL}
-                </a>
+                {/^https?:\/\//i.test(app.source.repoURL)
+                  ? (
+                    <a
+                      href={app.source.repoURL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-brand hover:underline break-all"
+                    >
+                      {app.source.repoURL}
+                    </a>
+                  )
+                  : <span class="break-all">{app.source.repoURL}</span>}
               </dd>
             </div>
           )}
