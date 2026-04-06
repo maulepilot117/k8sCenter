@@ -98,15 +98,6 @@ export default function GitOpsApplications() {
     page.value * PAGE_SIZE,
   );
 
-  function truncateURL(url: string, max = 40): string {
-    if (url.length <= max) return url;
-    // Strip protocol prefix for display
-    const stripped = url.replace(/^https?:\/\//, "");
-    return stripped.length <= max
-      ? stripped
-      : stripped.slice(0, max - 1) + "\u2026";
-  }
-
   return (
     <div class="p-6">
       <div class="flex items-center justify-between mb-1">
@@ -326,12 +317,10 @@ export default function GitOpsApplications() {
                   <td class="px-3 py-2">
                     <HealthStatusBadge status={app.healthStatus} />
                   </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs">
+                  <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[200px]">
                     {app.source.chartName
                       ? app.source.chartName
-                      : app.source.repoURL
-                      ? truncateURL(app.source.repoURL)
-                      : "-"}
+                      : app.source.repoURL ?? "-"}
                   </td>
                   <td class="px-3 py-2 font-mono text-xs text-text-secondary">
                     {app.currentRevision
@@ -406,7 +395,7 @@ function SummaryBadge(
       class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
       style={{
         color,
-        backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
+        backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
       }}
     >
       <span class="font-bold">{count}</span>

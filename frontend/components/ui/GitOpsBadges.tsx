@@ -28,6 +28,8 @@ export function ToolBadge({ tool }: { tool: string }) {
   const labels: Record<string, string> = {
     argocd: "Argo CD",
     fluxcd: "Flux",
+    both: "Multi-tool",
+    "": "Unknown",
   };
   return (
     <ColorBadge

@@ -16,16 +16,8 @@ export type HealthStatus =
   | "suspended"
   | "unknown";
 
-export interface ToolDetail {
-  available: boolean;
-  namespace?: string;
-  controllers?: string[];
-}
-
 export interface GitOpsStatus {
   detected: Tool;
-  argocd?: ToolDetail;
-  fluxcd?: ToolDetail;
   lastChecked: string;
 }
 
