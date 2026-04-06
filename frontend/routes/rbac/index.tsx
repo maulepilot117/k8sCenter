@@ -1,6 +1,10 @@
 import { define } from "@/utils.ts";
-import RBACOverview from "@/islands/RBACOverview.tsx";
 
-export default define.page(function RBACPage() {
-  return <RBACOverview />;
+export const handler = define.handlers({
+  GET(_ctx) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/rbac/overview" },
+    });
+  },
 });
