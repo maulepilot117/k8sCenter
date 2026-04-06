@@ -4,12 +4,15 @@ import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { Button } from "@/components/ui/Button.tsx";
 import {
   BlockingBadge,
   EngineBadge,
   SeverityBadge,
 } from "@/components/ui/PolicyBadges.tsx";
 import type { EngineStatus, NormalizedPolicy } from "@/lib/policy-types.ts";
+
+const PAGE_SIZE = 100;
 
 export default function PolicyDashboard() {
   const status = useSignal<EngineStatus | null>(null);
@@ -20,28 +23,35 @@ export default function PolicyDashboard() {
   const filterEngine = useSignal<string>("all");
   const filterSeverity = useSignal<string>("all");
   const filterBlocking = useSignal<string>("all");
+  const page = useSignal(1);
+  const refreshing = useSignal(false);
+
+  async function fetchData() {
+    try {
+      const [statusRes, policiesRes] = await Promise.all([
+        apiGet<EngineStatus>("/v1/policy/status"),
+        apiGet<NormalizedPolicy[]>("/v1/policy/policies"),
+      ]);
+      status.value = statusRes.data;
+      policies.value = Array.isArray(policiesRes.data) ? policiesRes.data : [];
+      error.value = null;
+    } catch {
+      error.value = "Failed to load policy data";
+    }
+  }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-
-    async function fetchData() {
-      try {
-        const [statusRes, policiesRes] = await Promise.all([
-          apiGet<EngineStatus>("/v1/policy/status"),
-          apiGet<NormalizedPolicy[]>("/v1/policy/policies"),
-        ]);
-        status.value = statusRes.data;
-        policies.value = Array.isArray(policiesRes.data)
-          ? policiesRes.data
-          : [];
-      } catch {
-        error.value = "Failed to load policy data";
-      }
+    fetchData().then(() => {
       loading.value = false;
-    }
-
-    fetchData();
+    });
   }, []);
+
+  async function handleRefresh() {
+    refreshing.value = true;
+    await fetchData();
+    refreshing.value = false;
+  }
 
   if (!IS_BROWSER) return null;
 
@@ -70,9 +80,28 @@ export default function PolicyDashboard() {
     return true;
   });
 
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
+  if (page.value > totalPages) page.value = totalPages;
+  const displayed = filtered.slice(
+    (page.value - 1) * PAGE_SIZE,
+    page.value * PAGE_SIZE,
+  );
+
   return (
     <div class="p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-1">Policies</h1>
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-2xl font-bold text-text-primary">Policies</h1>
+        {!loading.value && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={handleRefresh}
+            disabled={refreshing.value}
+          >
+            {refreshing.value ? "Refreshing..." : "Refresh"}
+          </Button>
+        )}
+      </div>
       <p class="text-sm text-text-muted mb-6">
         Policy engine integration — Kyverno &amp; OPA Gatekeeper.
       </p>
@@ -136,6 +165,7 @@ export default function PolicyDashboard() {
             value={search.value}
             onInput={(v) => {
               search.value = v;
+              page.value = 1;
             }}
             placeholder="Filter by name, kind, category..."
           />
@@ -145,6 +175,7 @@ export default function PolicyDashboard() {
           value={filterEngine.value}
           onChange={(e) => {
             filterEngine.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Engines</option>
@@ -156,6 +187,7 @@ export default function PolicyDashboard() {
           value={filterSeverity.value}
           onChange={(e) => {
             filterSeverity.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Severities</option>
@@ -169,6 +201,7 @@ export default function PolicyDashboard() {
           value={filterBlocking.value}
           onChange={(e) => {
             filterBlocking.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Modes</option>
@@ -217,7 +250,7 @@ export default function PolicyDashboard() {
               </tr>
             </thead>
             <tbody class="divide-y divide-border-subtle">
-              {filtered.map((p) => (
+              {displayed.map((p) => (
                 <tr key={p.id} class="hover:bg-hover/30">
                   <td class="px-3 py-2">
                     <div class="font-medium text-text-primary">{p.name}</div>
@@ -273,6 +306,38 @@ export default function PolicyDashboard() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+        <div class="mt-4 flex items-center justify-between">
+          <p class="text-sm text-text-muted">
+            {filtered.length} policies &middot; Page {page.value} of{" "}
+            {totalPages}
+          </p>
+          <div class="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value--;
+              }}
+              disabled={page.value <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value++;
+              }}
+              disabled={page.value >= totalPages}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       )}
 

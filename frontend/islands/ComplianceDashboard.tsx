@@ -4,6 +4,7 @@ import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { Button } from "@/components/ui/Button.tsx";
 import {
   SEVERITY_COLORS,
   SEVERITY_ORDER,
@@ -52,22 +53,30 @@ export default function ComplianceDashboard() {
   const scores = useSignal<ComplianceScore[]>([]);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  const refreshing = useSignal(false);
+
+  async function fetchData() {
+    try {
+      const res = await apiGet<ComplianceScore[]>("/v1/policy/compliance");
+      scores.value = Array.isArray(res.data) ? res.data : [];
+      error.value = null;
+    } catch {
+      error.value = "Failed to load compliance data";
+    }
+  }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-
-    async function fetchData() {
-      try {
-        const res = await apiGet<ComplianceScore[]>("/v1/policy/compliance");
-        scores.value = Array.isArray(res.data) ? res.data : [];
-      } catch {
-        error.value = "Failed to load compliance data";
-      }
+    fetchData().then(() => {
       loading.value = false;
-    }
-
-    fetchData();
+    });
   }, []);
+
+  async function handleRefresh() {
+    refreshing.value = true;
+    await fetchData();
+    refreshing.value = false;
+  }
 
   if (!IS_BROWSER) return null;
 
@@ -78,7 +87,19 @@ export default function ComplianceDashboard() {
 
   return (
     <div class="p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-1">Compliance</h1>
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-2xl font-bold text-text-primary">Compliance</h1>
+        {!loading.value && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={handleRefresh}
+            disabled={refreshing.value}
+          >
+            {refreshing.value ? "Refreshing..." : "Refresh"}
+          </Button>
+        )}
+      </div>
       <p class="text-sm text-text-muted mb-6">
         Weighted compliance scores based on policy pass/fail rates.
       </p>

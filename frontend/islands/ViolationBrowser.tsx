@@ -4,6 +4,7 @@ import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { Button } from "@/components/ui/Button.tsx";
 import { RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
 import {
   ActionBadge,
@@ -11,6 +12,8 @@ import {
   SeverityBadge,
 } from "@/components/ui/PolicyBadges.tsx";
 import type { NormalizedViolation } from "@/lib/policy-types.ts";
+
+const PAGE_SIZE = 100;
 
 // Irregular plurals for resource kind -> RESOURCE_DETAIL_PATHS lookup
 const KIND_PLURALS: Record<string, string> = {
@@ -48,24 +51,33 @@ export default function ViolationBrowser() {
   const filterNamespace = useSignal<string>(getUrlParam("namespace"));
   const filterSeverity = useSignal<string>("all");
   const filterEngine = useSignal<string>("all");
+  const page = useSignal(1);
+  const refreshing = useSignal(false);
+
+  async function fetchData() {
+    try {
+      const res = await apiGet<NormalizedViolation[]>(
+        "/v1/policy/violations",
+      );
+      violations.value = Array.isArray(res.data) ? res.data : [];
+      error.value = null;
+    } catch {
+      error.value = "Failed to load violations";
+    }
+  }
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-
-    async function fetchData() {
-      try {
-        const res = await apiGet<NormalizedViolation[]>(
-          "/v1/policy/violations",
-        );
-        violations.value = Array.isArray(res.data) ? res.data : [];
-      } catch {
-        error.value = "Failed to load violations";
-      }
+    fetchData().then(() => {
       loading.value = false;
-    }
-
-    fetchData();
+    });
   }, []);
+
+  async function handleRefresh() {
+    refreshing.value = true;
+    await fetchData();
+    refreshing.value = false;
+  }
 
   if (!IS_BROWSER) return null;
 
@@ -101,9 +113,28 @@ export default function ViolationBrowser() {
     return true;
   });
 
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
+  if (page.value > totalPages) page.value = totalPages;
+  const displayed = filtered.slice(
+    (page.value - 1) * PAGE_SIZE,
+    page.value * PAGE_SIZE,
+  );
+
   return (
     <div class="p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-1">Violations</h1>
+      <div class="flex items-center justify-between mb-1">
+        <h1 class="text-2xl font-bold text-text-primary">Violations</h1>
+        {!loading.value && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={handleRefresh}
+            disabled={refreshing.value}
+          >
+            {refreshing.value ? "Refreshing..." : "Refresh"}
+          </Button>
+        )}
+      </div>
       <p class="text-sm text-text-muted mb-6">
         Policy violations across the cluster — denied, warned, and audited
         resources.
@@ -116,6 +147,7 @@ export default function ViolationBrowser() {
             value={search.value}
             onInput={(v) => {
               search.value = v;
+              page.value = 1;
             }}
             placeholder="Filter by policy, resource, message..."
           />
@@ -125,6 +157,7 @@ export default function ViolationBrowser() {
           value={filterNamespace.value}
           onChange={(e) => {
             filterNamespace.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Namespaces</option>
@@ -139,6 +172,7 @@ export default function ViolationBrowser() {
           value={filterSeverity.value}
           onChange={(e) => {
             filterSeverity.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Severities</option>
@@ -152,6 +186,7 @@ export default function ViolationBrowser() {
           value={filterEngine.value}
           onChange={(e) => {
             filterEngine.value = (e.target as HTMLSelectElement).value;
+            page.value = 1;
           }}
         >
           <option value="all">All Engines</option>
@@ -200,7 +235,7 @@ export default function ViolationBrowser() {
               </tr>
             </thead>
             <tbody class="divide-y divide-border-subtle">
-              {filtered.map((v, i) => {
+              {displayed.map((v, i) => {
                 const href = resourceHref(v.kind, v.namespace, v.name);
                 return (
                   <tr
@@ -248,6 +283,38 @@ export default function ViolationBrowser() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+        <div class="mt-4 flex items-center justify-between">
+          <p class="text-sm text-text-muted">
+            {filtered.length} violations &middot; Page {page.value} of{" "}
+            {totalPages}
+          </p>
+          <div class="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value--;
+              }}
+              disabled={page.value <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value++;
+              }}
+              disabled={page.value >= totalPages}
+            >
+              Next
+            </Button>
+          </div>
         </div>
       )}
 
