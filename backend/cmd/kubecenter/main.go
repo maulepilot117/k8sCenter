@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -368,6 +369,18 @@ func main() {
 		}
 	}
 
+	// GitOps discovery and handler
+	gitopsDiscoverer := gitops.NewDiscoverer(k8sClient, logger)
+	go gitopsDiscoverer.RunDiscoveryLoop(ctx)
+
+	gitopsHandler := &gitops.Handler{
+		K8sClient:     k8sClient,
+		Discoverer:    gitopsDiscoverer,
+		ClusterRouter: clusterRouter,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -400,6 +413,7 @@ func main() {
 		AlertingHandler:      alertHandler,
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
+		GitOpsHandler:        gitopsHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,

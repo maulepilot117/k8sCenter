@@ -146,6 +146,11 @@ func (s *Server) registerRoutes() {
 				s.registerPolicyRoutes(ar)
 			}
 
+			// GitOps routes — only registered if gitops handler is available
+			if s.GitOpsHandler != nil {
+				s.registerGitOpsRoutes(ar)
+			}
+
 			// User management — admin only
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
@@ -415,6 +420,20 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 		pr.Get("/", h.HandleListPolicies)
 		pr.Get("/violations", h.HandleListViolations)
 		pr.Get("/compliance", h.HandleCompliance)
+	})
+}
+
+func (s *Server) registerGitOpsRoutes(ar chi.Router) {
+	h := s.GitOpsHandler
+	ar.Route("/gitops", func(gr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		gr.Use(middleware.RateLimit(yamlRL))
+		gr.Get("/status", h.HandleStatus)
+		gr.Get("/applications", h.HandleListApplications)
+		gr.Get("/applications/{id}", h.HandleGetApplication)
 	})
 }
 
