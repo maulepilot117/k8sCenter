@@ -23,7 +23,6 @@ import (
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *GitOpsDiscoverer
-	ClusterRouter *k8s.ClusterRouter
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
 
@@ -38,6 +37,32 @@ type cachedApps struct {
 }
 
 const cacheTTL = 30 * time.Second
+
+// toolGVR resolves a tool prefix to its Kubernetes API group and resource.
+func toolGVR(toolPrefix string) (apiGroup, resource string, ok bool) {
+	switch toolPrefix {
+	case "argo":
+		return "argoproj.io", "applications", true
+	case "flux-ks":
+		return "kustomize.toolkit.fluxcd.io", "kustomizations", true
+	case "flux-hr":
+		return "helm.toolkit.fluxcd.io", "helmreleases", true
+	default:
+		return "", "", false
+	}
+}
+
+// toolPrefixForApp returns the composite ID prefix for a NormalizedApp.
+func toolPrefixForApp(app NormalizedApp) string {
+	switch {
+	case app.Tool == ToolArgoCD:
+		return "argo"
+	case app.Kind == "HelmRelease":
+		return "flux-hr"
+	default:
+		return "flux-ks"
+	}
+}
 
 // fetchApps returns cached application data, refreshing if stale.
 // Cache is populated using the service account; callers must RBAC-filter.
@@ -89,23 +114,30 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		argoCh <- fetchResult{}
 	}
 
-	// Fetch Flux Kustomizations + HelmReleases
+	// Fetch Flux Kustomizations + HelmReleases in parallel
 	if status.FluxCD != nil && status.FluxCD.Available {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			var ks, hr []NormalizedApp
+			var ksErr, hrErr error
+			var inner sync.WaitGroup
+			inner.Add(2)
+			go func() {
+				defer inner.Done()
+				ks, ksErr = ListFluxKustomizations(ctx, dynClient)
+			}()
+			go func() {
+				defer inner.Done()
+				hr, hrErr = ListFluxHelmReleases(ctx, dynClient)
+			}()
+			inner.Wait()
+
 			var r fetchResult
-			ks, ksErr := ListFluxKustomizations(ctx, dynClient)
 			if ksErr != nil {
 				r.err = ksErr
-				fluxCh <- r
-				return
-			}
-			hr, hrErr := ListFluxHelmReleases(ctx, dynClient)
-			if hrErr != nil {
+			} else if hrErr != nil {
 				r.err = hrErr
-				fluxCh <- r
-				return
 			}
 			r.apps = append(ks, hr...)
 			fluxCh <- r
@@ -191,16 +223,18 @@ func (h *Handler) HandleListApplications(w http.ResponseWriter, r *http.Request)
 	// Apply query param filters
 	q := r.URL.Query()
 	if tool := q.Get("tool"); tool != "" {
-		apps = filterByTool(apps, Tool(tool))
+		apps = filterApps(apps, func(a NormalizedApp) bool { return a.Tool == Tool(tool) })
 	}
 	if ns := q.Get("namespace"); ns != "" {
-		apps = filterByNamespace(apps, ns)
+		apps = filterApps(apps, func(a NormalizedApp) bool {
+			return a.Namespace == ns || a.DestinationNamespace == ns
+		})
 	}
 	if ss := q.Get("syncStatus"); ss != "" {
-		apps = filterBySyncStatus(apps, SyncStatus(ss))
+		apps = filterApps(apps, func(a NormalizedApp) bool { return a.SyncStatus == SyncStatus(ss) })
 	}
 	if hs := q.Get("healthStatus"); hs != "" {
-		apps = filterByHealthStatus(apps, HealthStatus(hs))
+		apps = filterApps(apps, func(a NormalizedApp) bool { return a.HealthStatus == HealthStatus(hs) })
 	}
 
 	// Sort: out-of-sync/failed first, then by name
@@ -224,6 +258,7 @@ func (h *Handler) HandleListApplications(w http.ResponseWriter, r *http.Request)
 }
 
 // HandleGetApplication returns a single application's full detail.
+// Uses user impersonation for the API call (not service account).
 func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -231,30 +266,30 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
-	tool, namespace, name, err := parseCompositeID(id)
+	toolPrefix, namespace, name, err := parseCompositeID(id)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid application ID", err.Error())
 		return
 	}
 
-	// RBAC check for the specific namespace
-	if !h.canAccessApp(r.Context(), user, tool, namespace) {
-		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+	// Build impersonating dynamic client for this user
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return
 	}
 
-	dynClient := h.K8sClient.BaseDynamicClient()
-
 	var detail *AppDetail
-	switch {
-	case tool == "argo":
+	switch toolPrefix {
+	case "argo":
 		detail, err = GetArgoAppDetail(r.Context(), dynClient, namespace, name)
-	case tool == "flux-ks":
+	case "flux-ks":
 		detail, err = GetFluxAppDetail(r.Context(), dynClient, "Kustomization", namespace, name)
-	case tool == "flux-hr":
+	case "flux-hr":
 		detail, err = GetFluxAppDetail(r.Context(), dynClient, "HelmRelease", namespace, name)
 	default:
-		httputil.WriteError(w, http.StatusBadRequest, "unknown tool prefix", tool)
+		httputil.WriteError(w, http.StatusBadRequest, "unknown tool prefix", toolPrefix)
 		return
 	}
 
@@ -269,7 +304,12 @@ func (h *Handler) HandleGetApplication(w http.ResponseWriter, r *http.Request) {
 
 // filterAppsByRBAC removes apps the user cannot access.
 func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []NormalizedApp) []NormalizedApp {
-	nsAccess := make(map[string]bool)
+	// Cache RBAC decisions keyed by tool prefix + namespace
+	type accessKey struct {
+		prefix    string
+		namespace string
+	}
+	access := make(map[accessKey]bool)
 	var filtered []NormalizedApp
 
 	for _, app := range apps {
@@ -281,10 +321,17 @@ func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []
 			continue
 		}
 
-		allowed, checked := nsAccess[ns]
+		prefix := toolPrefixForApp(app)
+		key := accessKey{prefix, ns}
+		allowed, checked := access[key]
 		if !checked {
-			allowed = h.checkAppAccess(ctx, user, app.Tool, ns)
-			nsAccess[ns] = allowed
+			apiGroup, resource, ok := toolGVR(prefix)
+			if !ok {
+				continue
+			}
+			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
+			allowed = err == nil && can
+			access[key] = allowed
 		}
 
 		if allowed {
@@ -295,48 +342,8 @@ func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []
 	return filtered
 }
 
-// checkAppAccess checks if the user can list the relevant CRD in the namespace.
-func (h *Handler) checkAppAccess(ctx context.Context, user *auth.User, tool Tool, namespace string) bool {
-	var apiGroup, resource string
-	switch tool {
-	case ToolArgoCD:
-		apiGroup = "argoproj.io"
-		resource = "applications"
-	case ToolFluxCD:
-		// For simplicity, check kustomizations access as a proxy
-		apiGroup = "kustomize.toolkit.fluxcd.io"
-		resource = "kustomizations"
-	default:
-		return false
-	}
-
-	can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, namespace)
-	if err != nil {
-		return false
-	}
-	return can
-}
-
-// canAccessApp checks RBAC for a single app by its tool prefix and namespace.
-func (h *Handler) canAccessApp(ctx context.Context, user *auth.User, toolPrefix, namespace string) bool {
-	switch toolPrefix {
-	case "argo":
-		can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "get", "argoproj.io", "applications", namespace)
-		return err == nil && can
-	case "flux-ks":
-		can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "get", "kustomize.toolkit.fluxcd.io", "kustomizations", namespace)
-		return err == nil && can
-	case "flux-hr":
-		can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "get", "helm.toolkit.fluxcd.io", "helmreleases", namespace)
-		return err == nil && can
-	default:
-		return false
-	}
-}
-
 // parseCompositeID splits "argo:namespace:name" into (tool, namespace, name).
 func parseCompositeID(id string) (tool, namespace, name string, err error) {
-	// Format: "tool:namespace:name" — e.g. "argo:argocd:my-app" or "flux-ks:flux-system:my-ks"
 	parts := strings.SplitN(id, ":", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return "", "", "", fmt.Errorf("invalid composite ID: %q (expected tool:namespace:name)", id)
@@ -344,42 +351,11 @@ func parseCompositeID(id string) (tool, namespace, name string, err error) {
 	return parts[0], parts[1], parts[2], nil
 }
 
-// Filter helpers
-
-func filterByTool(apps []NormalizedApp, tool Tool) []NormalizedApp {
+// filterApps returns apps matching the predicate.
+func filterApps(apps []NormalizedApp, pred func(NormalizedApp) bool) []NormalizedApp {
 	var out []NormalizedApp
 	for _, a := range apps {
-		if a.Tool == tool {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func filterByNamespace(apps []NormalizedApp, ns string) []NormalizedApp {
-	var out []NormalizedApp
-	for _, a := range apps {
-		if a.Namespace == ns || a.DestinationNamespace == ns {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func filterBySyncStatus(apps []NormalizedApp, ss SyncStatus) []NormalizedApp {
-	var out []NormalizedApp
-	for _, a := range apps {
-		if a.SyncStatus == ss {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-func filterByHealthStatus(apps []NormalizedApp, hs HealthStatus) []NormalizedApp {
-	var out []NormalizedApp
-	for _, a := range apps {
-		if a.HealthStatus == hs {
+		if pred(a) {
 			out = append(out, a)
 		}
 	}

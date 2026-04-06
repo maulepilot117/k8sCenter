@@ -376,7 +376,6 @@ func main() {
 	gitopsHandler := &gitops.Handler{
 		K8sClient:     k8sClient,
 		Discoverer:    gitopsDiscoverer,
-		ClusterRouter: clusterRouter,
 		AccessChecker: accessChecker,
 		Logger:        logger,
 	}
