@@ -536,6 +536,9 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         count: true,
       },
       { label: "Webhooks", href: "/admin/validatingwebhooks" },
+      { label: "Policies", href: "/security/policies" },
+      { label: "Violations", href: "/security/violations" },
+      { label: "Compliance", href: "/security/compliance" },
     ],
   },
   {
