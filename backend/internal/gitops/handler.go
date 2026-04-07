@@ -34,6 +34,7 @@ type Handler struct {
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedApps
+	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 }
 
 type cachedApps struct {
@@ -92,6 +93,11 @@ func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
 
 // doFetch queries both engines based on discovery and merges results.
 func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
+	// Capture current generation to detect concurrent invalidations.
+	h.cacheMu.RLock()
+	gen := h.cacheGen
+	h.cacheMu.RUnlock()
+
 	dynClient := h.K8sClient.BaseDynamicClient()
 	status := h.Discoverer.Status()
 
@@ -173,8 +179,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		fetchedAt: time.Now(),
 	}
 
+	// Only write cache if no invalidation occurred during fetch.
 	h.cacheMu.Lock()
-	h.cachedData = data
+	if h.cacheGen == gen {
+		h.cachedData = data
+	}
 	h.cacheMu.Unlock()
 
 	return data, nil
@@ -417,6 +426,7 @@ func computeMetadata(apps []NormalizedApp) AppListMetadata {
 func (h *Handler) invalidateCache() {
 	h.cacheMu.Lock()
 	h.cachedData = nil
+	h.cacheGen++
 	h.cacheMu.Unlock()
 }
 

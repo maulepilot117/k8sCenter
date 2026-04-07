@@ -107,6 +107,9 @@ func (h *Hub) Register(client *Client) {
 }
 
 // rbacRevalidateInterval is how often the hub rechecks RBAC for active subscriptions.
+// A 5-minute interval balances security (revoked access continues for up to 5 min)
+// against API server load (one SelfSubjectAccessReview per active subscription per tick).
+// For higher-security deployments, this can be reduced to 1-2 minutes.
 const rbacRevalidateInterval = 5 * time.Minute
 
 // alwaysAllowKinds are subscription kinds that bypass RBAC revalidation.

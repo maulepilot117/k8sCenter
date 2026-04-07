@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/informers"
@@ -50,10 +49,9 @@ type crdWatch struct {
 
 // InformerManager wraps typed and dynamic informer factories and manages their lifecycle.
 type InformerManager struct {
-	factory    informers.SharedInformerFactory
-	dynFactory dynamicinformer.DynamicSharedInformerFactory // nil if no CRDs detected
-	dynClient  dynamic.Interface
-	logger     *slog.Logger
+	factory   informers.SharedInformerFactory
+	dynClient dynamic.Interface
+	logger    *slog.Logger
 
 	crdMu      sync.RWMutex
 	crdWatches map[schema.GroupVersionResource]*crdWatch
@@ -62,7 +60,7 @@ type InformerManager struct {
 // NewInformerManager creates a new InformerManager with informers for all
 // resource types KubeCenter needs to watch. The dynClient parameter may be nil
 // if the dynamic client failed to initialize.
-func NewInformerManager(clientset kubernetes.Interface, dynClient dynamic.Interface, disco discovery.DiscoveryInterface, logger *slog.Logger) *InformerManager {
+func NewInformerManager(clientset kubernetes.Interface, dynClient dynamic.Interface, logger *slog.Logger) *InformerManager {
 	factory := informers.NewSharedInformerFactory(clientset, defaultResyncPeriod)
 
 	// Pre-register informers so the factory knows what to start.
@@ -127,47 +125,17 @@ func NewInformerManager(clientset kubernetes.Interface, dynClient dynamic.Interf
 		crdWatches: make(map[schema.GroupVersionResource]*crdWatch),
 	}
 
-	// Dynamic informer for CRDs — probe discovery first to avoid reflector
-	// spin on clusters where the CRD is not installed.
-	if dynClient != nil {
-		mgr.dynFactory = probeCRDsAndCreateFactory(dynClient, disco, defaultResyncPeriod, logger)
-	}
-
-	typedCount := 31
-	dynCount := 0
-	if mgr.dynFactory != nil {
-		dynCount = 1
-	}
 	logger.Info("informer manager created",
-		"typedResources", typedCount,
-		"dynamicResources", dynCount,
+		"typedResources", 31,
 		"resyncPeriod", defaultResyncPeriod,
 	)
 
 	return mgr
 }
 
-// probeCRDsAndCreateFactory checks if known CRDs exist via discovery and creates
-// a dynamic informer factory for those that are present. Returns nil if no CRDs found.
-func probeCRDsAndCreateFactory(dynClient dynamic.Interface, disco discovery.DiscoveryInterface, resync time.Duration, logger *slog.Logger) dynamicinformer.DynamicSharedInformerFactory {
-	_, err := disco.ServerResourcesForGroupVersion("cilium.io/v2")
-	if err != nil {
-		logger.Info("cilium.io/v2 CRD not found — skipping dynamic informer", "error", err)
-		return nil
-	}
-
-	logger.Info("cilium.io/v2 CRD detected — registering dynamic informer")
-	dynFactory := dynamicinformer.NewDynamicSharedInformerFactory(dynClient, resync)
-	dynFactory.ForResource(CiliumPolicyGVR)
-	return dynFactory
-}
-
 // Start begins all registered informers. Call this once after creating the manager.
 func (m *InformerManager) Start(ctx context.Context) {
 	m.factory.Start(ctx.Done())
-	if m.dynFactory != nil {
-		m.dynFactory.Start(ctx.Done())
-	}
 	m.logger.Info("informers started")
 }
 
@@ -182,17 +150,6 @@ func (m *InformerManager) WaitForSync(ctx context.Context) error {
 		}
 	}
 
-	if m.dynFactory != nil {
-		dynSynced := m.dynFactory.WaitForCacheSync(ctx.Done())
-		for gvr, ok := range dynSynced {
-			if !ok {
-				m.logger.Warn("dynamic informer sync failed", "gvr", gvr.String())
-				// Don't fail startup — the CRD may have been removed after discovery probe.
-				// Handlers will get errors from the lister and return appropriate HTTP responses.
-			}
-		}
-	}
-
 	m.logger.Info("all informer caches synced")
 	return nil
 }
@@ -203,12 +160,21 @@ func (m *InformerManager) Factory() informers.SharedInformerFactory {
 }
 
 // CiliumNetworkPolicies returns the dynamic lister for CiliumNetworkPolicy CRDs.
-// Returns nil if the Cilium CRD was not detected at startup.
+// Returns nil if the Cilium CRD watch has not been started via WatchCRD.
 func (m *InformerManager) CiliumNetworkPolicies() cache.GenericLister {
-	if m.dynFactory == nil {
+	return m.CRDLister(CiliumPolicyGVR)
+}
+
+// CRDLister returns the GenericLister for a dynamically-watched CRD.
+// Returns nil if no watch exists for the given GVR.
+func (m *InformerManager) CRDLister(gvr schema.GroupVersionResource) cache.GenericLister {
+	m.crdMu.RLock()
+	w, exists := m.crdWatches[gvr]
+	m.crdMu.RUnlock()
+	if !exists {
 		return nil
 	}
-	return m.dynFactory.ForResource(CiliumPolicyGVR).Lister()
+	return w.factory.ForResource(gvr).Lister()
 }
 
 // Typed lister accessors — Core
@@ -401,13 +367,6 @@ func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 		{"mutatingwebhookconfigurations", m.factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()},
 	}
 
-	// Dynamic CRD informers
-	if m.dynFactory != nil {
-		specs = append(specs, informerSpec{
-			"ciliumnetworkpolicies", m.dynFactory.ForResource(CiliumPolicyGVR).Informer(),
-		})
-	}
-
 	for _, spec := range specs {
 		kind := spec.kind
 		handler := cache.ResourceEventHandlerDetailedFuncs{
@@ -462,6 +421,9 @@ func (m *InformerManager) emitEvent(cb EventCallback, eventType, kind string, ob
 // Each GVR gets its own DynamicSharedInformerFactory for independent lifecycle.
 // Safe to call at runtime when CRDs are discovered.
 func (m *InformerManager) WatchCRD(ctx context.Context, gvr schema.GroupVersionResource, kind string, normalizer CRDNormalizer, cb EventCallback) {
+	if ctx.Err() != nil {
+		return
+	}
 	if m.dynClient == nil {
 		m.logger.Warn("cannot watch CRD: dynamic client not available", "gvr", gvr.String())
 		return

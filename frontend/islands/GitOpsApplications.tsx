@@ -1,8 +1,9 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-import { subscribe, wsStatus } from "@/lib/ws.ts";
+import { wsStatus } from "@/lib/ws.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -50,36 +51,18 @@ export default function GitOpsApplications() {
     }
   }
 
-  // Debounce timer for WS-triggered re-fetches
-  const refetchTimer = useRef<number | null>(null);
-
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
-
-    // Subscribe to GitOps CRD events for real-time updates.
-    // On any event, debounce a REST re-fetch (1s) to get fresh server-side data.
-    const onEvent = () => {
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-      refetchTimer.current = globalThis.setTimeout(() => {
-        refetchTimer.current = null;
-        fetchData();
-      }, 1000) as unknown as number;
-    };
-
-    const unsubs = [
-      subscribe("gitops-apps", "applications", "", onEvent),
-      subscribe("gitops-kustomizations", "kustomizations", "", onEvent),
-      subscribe("gitops-helmreleases", "helmreleases", "", onEvent),
-    ];
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-    };
   }, []);
+
+  useWsRefetch(fetchData, [
+    ["gitops-applications", "applications", ""],
+    ["gitops-kustomizations", "kustomizations", ""],
+    ["gitops-helmreleases", "helmreleases", ""],
+  ], 1000);
 
   async function handleRefresh() {
     refreshing.value = true;

@@ -1,8 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-import { subscribe } from "@/lib/ws.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -66,34 +66,17 @@ export default function ComplianceDashboard() {
     }
   }
 
-  const refetchTimer = useRef<number | null>(null);
-
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
-
-    // Subscribe to policy report events — compliance score requires full recalculation
-    // on the server, so we re-fetch via REST (debounced 5s to avoid storms).
-    const onEvent = () => {
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-      refetchTimer.current = globalThis.setTimeout(() => {
-        refetchTimer.current = null;
-        fetchData();
-      }, 5000) as unknown as number;
-    };
-
-    const unsubs = [
-      subscribe("compliance-policyreports", "policyreports", "", onEvent),
-      subscribe("compliance-clusterpolicyreports", "clusterpolicyreports", "", onEvent),
-    ];
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-    };
   }, []);
+
+  useWsRefetch(fetchData, [
+    ["compliance-policyreports", "policyreports", ""],
+    ["compliance-clusterpolicyreports", "clusterpolicyreports", ""],
+  ], 5000);
 
   async function handleRefresh() {
     refreshing.value = true;

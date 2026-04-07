@@ -1,8 +1,9 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
-import { subscribe, wsStatus } from "@/lib/ws.ts";
+import { wsStatus } from "@/lib/ws.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -41,32 +42,17 @@ export default function PolicyDashboard() {
     }
   }
 
-  const refetchTimer = useRef<number | null>(null);
-
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
-
-    const onEvent = () => {
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-      refetchTimer.current = globalThis.setTimeout(() => {
-        refetchTimer.current = null;
-        fetchData();
-      }, 2000) as unknown as number;
-    };
-
-    const unsubs = [
-      subscribe("policy-clusterpolicies", "clusterpolicies", "", onEvent),
-      subscribe("policy-policies", "policies", "", onEvent),
-    ];
-
-    return () => {
-      unsubs.forEach((fn) => fn());
-      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
-    };
   }, []);
+
+  useWsRefetch(fetchData, [
+    ["policy-clusterpolicies", "clusterpolicies", ""],
+    ["policy-policies", "policies", ""],
+  ], 2000);
 
   async function handleRefresh() {
     refreshing.value = true;

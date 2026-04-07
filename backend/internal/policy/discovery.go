@@ -27,6 +27,7 @@ type PolicyDiscoverer struct {
 	status         *EngineStatus
 	gatekeeperCRDs []*k8s.CRDInfo
 	onChange       PolicyChangeCallback
+	hasDiscovered  bool // true after first Discover completes
 }
 
 // NewDiscoverer creates a new policy engine discoverer.
@@ -153,7 +154,14 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 		LastChecked: now,
 	}
 
+	newKyverno := kyvernoDetail != nil
+	newGatekeeper := gatekeeperDetail != nil
+
 	d.mu.Lock()
+	prevKyverno := d.status.Kyverno != nil && d.status.Kyverno.Available
+	prevGatekeeper := d.status.Gatekeeper != nil && d.status.Gatekeeper.Available
+	firstRun := !d.hasDiscovered
+	d.hasDiscovered = true
 	d.status = status
 	d.gatekeeperCRDs = constraintCRDs
 	cb := d.onChange
@@ -161,13 +169,14 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 
 	d.logger.Info("policy engine discovery complete",
 		"detected", detected,
-		"kyvernoAvailable", kyvernoDetail != nil,
-		"gatekeeperAvailable", gatekeeperDetail != nil,
+		"kyvernoAvailable", newKyverno,
+		"gatekeeperAvailable", newGatekeeper,
 		"constraintCRDs", len(constraintCRDs),
 	)
 
-	if cb != nil {
-		cb(kyvernoDetail != nil, gatekeeperDetail != nil)
+	// Fire callback only on state transitions or the first discovery run.
+	if cb != nil && (firstRun || prevKyverno != newKyverno || prevGatekeeper != newGatekeeper) {
+		cb(newKyverno, newGatekeeper)
 	}
 }
 

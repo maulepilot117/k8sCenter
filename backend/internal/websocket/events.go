@@ -102,6 +102,9 @@ var (
 func RegisterAllowedKind(kind, apiGroup string) {
 	allowedKindsMu.Lock()
 	defer allowedKindsMu.Unlock()
+	if allowedKinds[kind] {
+		return // already registered
+	}
 	allowedKinds[kind] = true
 	if apiGroup != "" {
 		crdKindGroups[kind] = apiGroup

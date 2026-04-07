@@ -23,9 +23,10 @@ type GitOpsDiscoverer struct {
 	k8sClient *k8s.ClientFactory
 	logger    *slog.Logger
 
-	mu       sync.RWMutex
-	status   *GitOpsStatus
-	onChange DiscoveryChangeCallback
+	mu            sync.RWMutex
+	status        *GitOpsStatus
+	onChange      DiscoveryChangeCallback
+	hasDiscovered bool // true after first Discover completes
 }
 
 // NewDiscoverer creates a new GitOps tool discoverer.
@@ -155,18 +156,26 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 		LastChecked: now,
 	}
 
+	newArgo := argoDetail != nil
+	newFlux := fluxDetail != nil
+
 	d.mu.Lock()
+	prevArgo := d.status.ArgoCD != nil && d.status.ArgoCD.Available
+	prevFlux := d.status.FluxCD != nil && d.status.FluxCD.Available
+	firstRun := !d.hasDiscovered
+	d.hasDiscovered = true
 	d.status = status
 	cb := d.onChange
 	d.mu.Unlock()
 
 	d.logger.Info("gitops tool discovery complete",
 		"detected", detected,
-		"argoCDAvailable", argoDetail != nil,
-		"fluxCDAvailable", fluxDetail != nil,
+		"argoCDAvailable", newArgo,
+		"fluxCDAvailable", newFlux,
 	)
 
-	if cb != nil {
-		cb(argoDetail != nil, fluxDetail != nil)
+	// Fire callback only on state transitions or the first discovery run.
+	if cb != nil && (firstRun || prevArgo != newArgo || prevFlux != newFlux) {
+		cb(newArgo, newFlux)
 	}
 }
