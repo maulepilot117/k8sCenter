@@ -30,7 +30,8 @@ body {
   --grid-gap: clamp(12px, 1vw, 24px);
 }
 
-/* ── Nexus defaults (prevent flash before JS hydration) ── */
+/* ── Nexus defaults (prevent flash before JS hydration) ──
+   SYNC: --bg-base values are duplicated in routes/_app.tsx (inline script) and lib/themes.ts */
 :root {
   --bg-base: #0b0e14;
   --bg-surface: #131720;

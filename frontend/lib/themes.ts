@@ -32,6 +32,7 @@ export interface Theme {
   colors: ThemeColors;
 }
 
+// SYNC: bgBase values are duplicated in routes/_app.tsx (inline script) and assets/styles.css
 const nexus: Theme = {
   id: "nexus",
   name: "Nexus",

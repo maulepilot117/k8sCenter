@@ -20,11 +20,12 @@ export default define.page(function App({ Component }) {
           href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
-        {/* Apply saved theme + animation prefs before render to prevent flash */}
+        {/* Apply saved theme + animation prefs before render to prevent flash.
+            SYNC: bgBase values must match styles.css [data-theme] selectors and lib/themes.ts */}
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){var b={"nexus":"#0b0e14","dracula":"#282a36","tokyo-night":"#1a1b26","catppuccin":"#1e1e2e","nord":"#2e3440","one-dark":"#282c34","gruvbox":"#1d2021"};var t=localStorage.getItem("k8scenter-theme");var bg=b[t]||"#0b0e14";if(t&&b[t])document.documentElement.dataset.theme=t;document.documentElement.style.setProperty("--bg-base",bg);document.documentElement.style.backgroundColor=bg;document.body&&(document.body.style.backgroundColor=bg);var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")})()`,
+              `(function(){try{var b={"nexus":"#0b0e14","dracula":"#282a36","tokyo-night":"#1a1b26","catppuccin":"#1e1e2e","nord":"#2e3440","one-dark":"#282c34","gruvbox":"#1d2021"};var t=localStorage.getItem("k8scenter-theme");if(t&&b[t]){document.documentElement.dataset.theme=t;document.documentElement.style.backgroundColor=b[t]}var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
           }}
         />
       </head>
