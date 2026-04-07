@@ -13,14 +13,19 @@ import (
 
 const recheckInterval = 5 * time.Minute
 
+// DiscoveryChangeCallback is called when tool availability changes.
+// argoAvailable and fluxAvailable reflect the current state.
+type DiscoveryChangeCallback func(argoAvailable, fluxAvailable bool)
+
 // GitOpsDiscoverer probes the cluster for ArgoCD and FluxCD GitOps tools
 // and maintains cached discovery state.
 type GitOpsDiscoverer struct {
 	k8sClient *k8s.ClientFactory
 	logger    *slog.Logger
 
-	mu     sync.RWMutex
-	status *GitOpsStatus
+	mu       sync.RWMutex
+	status   *GitOpsStatus
+	onChange DiscoveryChangeCallback
 }
 
 // NewDiscoverer creates a new GitOps tool discoverer.
@@ -32,6 +37,13 @@ func NewDiscoverer(k8sClient *k8s.ClientFactory, logger *slog.Logger) *GitOpsDis
 			LastChecked: time.Now().UTC().Format(time.RFC3339),
 		},
 	}
+}
+
+// SetOnChange registers a callback invoked when tool availability changes.
+func (d *GitOpsDiscoverer) SetOnChange(cb DiscoveryChangeCallback) {
+	d.mu.Lock()
+	d.onChange = cb
+	d.mu.Unlock()
 }
 
 // Status returns a copy of the cached GitOps status.
@@ -145,6 +157,7 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 
 	d.mu.Lock()
 	d.status = status
+	cb := d.onChange
 	d.mu.Unlock()
 
 	d.logger.Info("gitops tool discovery complete",
@@ -152,4 +165,8 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 		"argoCDAvailable", argoDetail != nil,
 		"fluxCDAvailable", fluxDetail != nil,
 	)
+
+	if cb != nil {
+		cb(argoDetail != nil, fluxDetail != nil)
+	}
 }

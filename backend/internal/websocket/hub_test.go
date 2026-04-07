@@ -19,6 +19,10 @@ func (a *alwaysAllowChecker) CanAccess(_ context.Context, _ string, _ []string, 
 	return true, nil
 }
 
+func (a *alwaysAllowChecker) CanAccessGroupResource(_ context.Context, _ string, _ []string, _, _, _, _ string) (bool, error) {
+	return true, nil
+}
+
 func TestHub_ClientRegistration(t *testing.T) {
 	hub := testHub()
 	ctx, cancel := context.WithCancel(context.Background())

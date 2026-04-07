@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
+import { subscribe } from "@/lib/ws.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -50,11 +51,37 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     }
   }
 
+  // Debounce timer for WS-triggered re-fetches
+  const refetchTimer = useRef<number | null>(null);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
+
+    // Determine the CRD kind from the composite ID (e.g., "argo:ns:name" → "applications")
+    const toolPrefix = id.split(":")[0];
+    const kind = toolPrefix === "argo"
+      ? "applications"
+      : toolPrefix === "flux-hr"
+      ? "helmreleases"
+      : "kustomizations";
+
+    // Subscribe to the specific CRD kind for real-time updates.
+    // On any event, debounce a full REST re-fetch (3s) to get managed resources + history.
+    const unsub = subscribe(`gitops-detail-${id}`, kind, "", () => {
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+      refetchTimer.current = globalThis.setTimeout(() => {
+        refetchTimer.current = null;
+        fetchData();
+      }, 3000) as unknown as number;
+    });
+
+    return () => {
+      unsub();
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+    };
   }, []);
 
   async function handleRefresh() {

@@ -186,7 +186,7 @@ func TestSuspendArgoApp_StashesPolicy(t *testing.T) {
 	}
 
 	// Fetch the patched object
-	patched, err := client.Resource(argoApplicationGVR).Namespace("argocd").Get(context.Background(), "test-app", metav1.GetOptions{})
+	patched, err := client.Resource(ArgoApplicationGVR).Namespace("argocd").Get(context.Background(), "test-app", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("failed to get patched object: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestResumeArgoApp_RestoresPolicy(t *testing.T) {
 	}
 
 	// Fetch the patched object
-	patched, err := client.Resource(argoApplicationGVR).Namespace("argocd").Get(context.Background(), "test-app", metav1.GetOptions{})
+	patched, err := client.Resource(ArgoApplicationGVR).Namespace("argocd").Get(context.Background(), "test-app", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("failed to get patched object: %v", err)
 	}

@@ -70,7 +70,7 @@ func listGatekeeperPoliciesAndViolations(ctx context.Context, dynClient dynamic.
 
 			var r constraintCRDResult
 			for i := range list.Items {
-				r.policies = append(r.policies, normalizeGatekeeperConstraint(&list.Items[i], c.Kind))
+				r.policies = append(r.policies, NormalizeGatekeeperConstraint(&list.Items[i], c.Kind))
 				r.violations = append(r.violations, extractGatekeeperViolations(&list.Items[i], c.Kind)...)
 			}
 			results <- r
@@ -96,7 +96,7 @@ func listGatekeeperPoliciesAndViolations(ctx context.Context, dynClient dynamic.
 	return allPolicies, allViolations, nil
 }
 
-func normalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKind string) NormalizedPolicy {
+func NormalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKind string) NormalizedPolicy {
 	name := obj.GetName()
 	annotations := obj.GetAnnotations()
 

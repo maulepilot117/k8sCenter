@@ -17,7 +17,7 @@ const (
 	pingPeriod       = (pongWait * 9) / 10
 	maxMessageSize   = 64 * 1024
 	authTimeout      = 5 * time.Second
-	maxSubscriptions = 20
+	maxSubscriptions = 25
 	sendBufferSize   = 256
 )
 
@@ -196,14 +196,28 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 	if !alwaysAllowKinds[normalizedKind] {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		allowed, err := c.hub.accessChecker.CanAccess(
-			ctx,
-			c.user.KubernetesUsername,
-			c.user.KubernetesGroups,
-			"list",
-			normalizedKind,
-			msg.Namespace,
-		)
+		var allowed bool
+		var err error
+		if apiGroup := crdAPIGroup(normalizedKind); apiGroup != "" {
+			allowed, err = c.hub.accessChecker.CanAccessGroupResource(
+				ctx,
+				c.user.KubernetesUsername,
+				c.user.KubernetesGroups,
+				"list",
+				apiGroup,
+				normalizedKind,
+				msg.Namespace,
+			)
+		} else {
+			allowed, err = c.hub.accessChecker.CanAccess(
+				ctx,
+				c.user.KubernetesUsername,
+				c.user.KubernetesGroups,
+				"list",
+				normalizedKind,
+				msg.Namespace,
+			)
+		}
 		if err != nil {
 			c.logger.Error("RBAC check failed",
 				"error", err, "user", c.user.Username,

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -37,11 +39,24 @@ var CiliumPolicyGVR = schema.GroupVersionResource{
 	Resource: "ciliumnetworkpolicies",
 }
 
+// CRDNormalizer converts an unstructured CRD object into a domain type for WebSocket broadcast.
+type CRDNormalizer func(obj *unstructured.Unstructured) (any, error)
+
+// crdWatch tracks a single CRD dynamic informer with its own lifecycle.
+type crdWatch struct {
+	factory dynamicinformer.DynamicSharedInformerFactory
+	cancel  context.CancelFunc
+}
+
 // InformerManager wraps typed and dynamic informer factories and manages their lifecycle.
 type InformerManager struct {
 	factory    informers.SharedInformerFactory
 	dynFactory dynamicinformer.DynamicSharedInformerFactory // nil if no CRDs detected
+	dynClient  dynamic.Interface
 	logger     *slog.Logger
+
+	crdMu      sync.RWMutex
+	crdWatches map[schema.GroupVersionResource]*crdWatch
 }
 
 // NewInformerManager creates a new InformerManager with informers for all
@@ -106,8 +121,10 @@ func NewInformerManager(clientset kubernetes.Interface, dynClient dynamic.Interf
 	factory.Admissionregistration().V1().MutatingWebhookConfigurations().Informer()
 
 	mgr := &InformerManager{
-		factory: factory,
-		logger:  logger,
+		factory:    factory,
+		dynClient:  dynClient,
+		logger:     logger,
+		crdWatches: make(map[schema.GroupVersionResource]*crdWatch),
 	}
 
 	// Dynamic informer for CRDs — probe discovery first to avoid reflector
@@ -438,4 +455,108 @@ func (m *InformerManager) emitEvent(cb EventCallback, eventType, kind string, ob
 		return
 	}
 	cb(eventType, kind, meta.GetNamespace(), meta.GetName(), obj)
+}
+
+// WatchCRD starts a dynamic informer for a CRD resource. Events are deep-copied,
+// normalized via the provided normalizer, and emitted through the callback.
+// Each GVR gets its own DynamicSharedInformerFactory for independent lifecycle.
+// Safe to call at runtime when CRDs are discovered.
+func (m *InformerManager) WatchCRD(ctx context.Context, gvr schema.GroupVersionResource, kind string, normalizer CRDNormalizer, cb EventCallback) {
+	if m.dynClient == nil {
+		m.logger.Warn("cannot watch CRD: dynamic client not available", "gvr", gvr.String())
+		return
+	}
+
+	m.crdMu.Lock()
+	if _, exists := m.crdWatches[gvr]; exists {
+		m.crdMu.Unlock()
+		m.logger.Debug("CRD already being watched", "gvr", gvr.String())
+		return
+	}
+
+	crdCtx, cancel := context.WithCancel(ctx)
+	factory := dynamicinformer.NewDynamicSharedInformerFactory(m.dynClient, defaultResyncPeriod)
+	informer := factory.ForResource(gvr).Informer()
+
+	handler := cache.ResourceEventHandlerDetailedFuncs{
+		AddFunc: func(obj interface{}, isInInitialList bool) {
+			if isInInitialList {
+				return
+			}
+			m.emitCRDEvent(cb, "ADDED", kind, normalizer, obj)
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldMeta, ok1 := oldObj.(metav1.Object)
+			newMeta, ok2 := newObj.(metav1.Object)
+			if ok1 && ok2 && oldMeta.GetResourceVersion() == newMeta.GetResourceVersion() {
+				return
+			}
+			m.emitCRDEvent(cb, "MODIFIED", kind, normalizer, newObj)
+		},
+		DeleteFunc: func(obj interface{}) {
+			if d, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = d.Obj
+			}
+			m.emitCRDEvent(cb, "DELETED", kind, normalizer, obj)
+		},
+	}
+
+	if _, err := informer.AddEventHandler(handler); err != nil {
+		cancel()
+		m.crdMu.Unlock()
+		m.logger.Error("failed to add CRD event handler", "gvr", gvr.String(), "error", err)
+		return
+	}
+
+	m.crdWatches[gvr] = &crdWatch{factory: factory, cancel: cancel}
+	m.crdMu.Unlock()
+
+	factory.Start(crdCtx.Done())
+
+	// Wait for sync in background — don't block the caller
+	go func() {
+		synced := factory.WaitForCacheSync(crdCtx.Done())
+		for r, ok := range synced {
+			if !ok {
+				m.logger.Warn("CRD informer sync failed", "gvr", r.String())
+			}
+		}
+	}()
+
+	m.logger.Info("CRD watch started", "gvr", gvr.String(), "kind", kind)
+}
+
+// StopCRD stops watching a CRD resource and cleans up the informer.
+func (m *InformerManager) StopCRD(gvr schema.GroupVersionResource) {
+	m.crdMu.Lock()
+	w, exists := m.crdWatches[gvr]
+	if !exists {
+		m.crdMu.Unlock()
+		return
+	}
+	delete(m.crdWatches, gvr)
+	m.crdMu.Unlock()
+
+	w.cancel()
+	m.logger.Info("CRD watch stopped", "gvr", gvr.String())
+}
+
+// emitCRDEvent deep-copies an unstructured object, normalizes it, and emits it.
+func (m *InformerManager) emitCRDEvent(cb EventCallback, eventType, kind string, normalizer CRDNormalizer, obj interface{}) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		m.logger.Warn("CRD event object is not *unstructured.Unstructured", "kind", kind)
+		return
+	}
+
+	// Deep copy to avoid data races with informer cache
+	copied := u.DeepCopy()
+
+	normalized, err := normalizer(copied)
+	if err != nil {
+		m.logger.Warn("CRD normalization failed", "kind", kind, "name", copied.GetName(), "error", err)
+		return
+	}
+
+	cb(eventType, kind, copied.GetNamespace(), copied.GetName(), normalized)
 }

@@ -12,10 +12,14 @@ import (
 )
 
 var (
-	kyvernoClusterPolicyGVR = schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "clusterpolicies"}
-	kyvernoPolicyGVR        = schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "policies"}
-	policyReportGVR         = schema.GroupVersionResource{Group: "wgpolicyk8s.io", Version: "v1alpha2", Resource: "policyreports"}
-	clusterPolicyReportGVR  = schema.GroupVersionResource{Group: "wgpolicyk8s.io", Version: "v1alpha2", Resource: "clusterpolicyreports"}
+	// KyvernoClusterPolicyGVR is the GVR for Kyverno ClusterPolicy resources.
+	KyvernoClusterPolicyGVR = schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "clusterpolicies"}
+	// KyvernoPolicyGVR is the GVR for Kyverno Policy resources.
+	KyvernoPolicyGVR = schema.GroupVersionResource{Group: "kyverno.io", Version: "v1", Resource: "policies"}
+	// PolicyReportGVR is the GVR for PolicyReport resources.
+	PolicyReportGVR = schema.GroupVersionResource{Group: "wgpolicyk8s.io", Version: "v1alpha2", Resource: "policyreports"}
+	// ClusterPolicyReportGVR is the GVR for ClusterPolicyReport resources.
+	ClusterPolicyReportGVR = schema.GroupVersionResource{Group: "wgpolicyk8s.io", Version: "v1alpha2", Resource: "clusterpolicyreports"}
 )
 
 // listKyvernoPolicies fetches Kyverno ClusterPolicies and namespaced Policies,
@@ -24,27 +28,27 @@ func listKyvernoPolicies(ctx context.Context, dynClient dynamic.Interface) ([]No
 	var policies []NormalizedPolicy
 
 	// Cluster-scoped policies
-	clusterList, err := dynClient.Resource(kyvernoClusterPolicyGVR).List(ctx, metav1.ListOptions{})
+	clusterList, err := dynClient.Resource(KyvernoClusterPolicyGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing kyverno cluster policies: %w", err)
 	}
 	for i := range clusterList.Items {
-		policies = append(policies, normalizeKyvernoPolicy(&clusterList.Items[i], true))
+		policies = append(policies, NormalizeKyvernoPolicy(&clusterList.Items[i], true))
 	}
 
 	// Namespace-scoped policies
-	nsList, err := dynClient.Resource(kyvernoPolicyGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	nsList, err := dynClient.Resource(KyvernoPolicyGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing kyverno policies: %w", err)
 	}
 	for i := range nsList.Items {
-		policies = append(policies, normalizeKyvernoPolicy(&nsList.Items[i], false))
+		policies = append(policies, NormalizeKyvernoPolicy(&nsList.Items[i], false))
 	}
 
 	return policies, nil
 }
 
-func normalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) NormalizedPolicy {
+func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) NormalizedPolicy {
 	name := obj.GetName()
 	ns := obj.GetNamespace()
 	annotations := obj.GetAnnotations()
@@ -125,7 +129,7 @@ func listKyvernoViolations(ctx context.Context, dynClient dynamic.Interface) ([]
 	var violations []NormalizedViolation
 
 	// Namespace-scoped policy reports
-	nsList, err := dynClient.Resource(policyReportGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	nsList, err := dynClient.Resource(PolicyReportGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for i := range nsList.Items {
 			violations = append(violations, extractKyvernoViolations(&nsList.Items[i])...)
@@ -133,7 +137,7 @@ func listKyvernoViolations(ctx context.Context, dynClient dynamic.Interface) ([]
 	}
 
 	// Cluster-scoped policy reports
-	clusterList, err := dynClient.Resource(clusterPolicyReportGVR).List(ctx, metav1.ListOptions{})
+	clusterList, err := dynClient.Resource(ClusterPolicyReportGVR).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for i := range clusterList.Items {
 			violations = append(violations, extractKyvernoViolations(&clusterList.Items[i])...)

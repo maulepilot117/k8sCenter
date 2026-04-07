@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { subscribe } from "@/lib/ws.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -45,11 +46,33 @@ export default function ViolationBrowser() {
     }
   }
 
+  const refetchTimer = useRef<number | null>(null);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
+
+    // Subscribe to policy report events — violations are nested in reports,
+    // so any report change triggers a full violation re-fetch (debounced 2s).
+    const onEvent = () => {
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+      refetchTimer.current = globalThis.setTimeout(() => {
+        refetchTimer.current = null;
+        fetchData();
+      }, 2000) as unknown as number;
+    };
+
+    const unsubs = [
+      subscribe("violations-policyreports", "policyreports", "", onEvent),
+      subscribe("violations-clusterpolicyreports", "clusterpolicyreports", "", onEvent),
+    ];
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+    };
   }, []);
 
   async function handleRefresh() {

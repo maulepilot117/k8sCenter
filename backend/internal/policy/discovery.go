@@ -13,6 +13,9 @@ import (
 
 const recheckInterval = 5 * time.Minute
 
+// PolicyChangeCallback is called when engine availability changes.
+type PolicyChangeCallback func(kyvernoAvailable, gatekeeperAvailable bool)
+
 // PolicyDiscoverer probes the cluster for Kyverno and OPA/Gatekeeper policy
 // engines and maintains cached discovery state.
 type PolicyDiscoverer struct {
@@ -20,9 +23,10 @@ type PolicyDiscoverer struct {
 	crdDiscovery *k8s.CRDDiscovery
 	logger       *slog.Logger
 
-	mu               sync.RWMutex
-	status           *EngineStatus
-	gatekeeperCRDs   []*k8s.CRDInfo
+	mu             sync.RWMutex
+	status         *EngineStatus
+	gatekeeperCRDs []*k8s.CRDInfo
+	onChange       PolicyChangeCallback
 }
 
 // NewDiscoverer creates a new policy engine discoverer.
@@ -35,6 +39,13 @@ func NewDiscoverer(k8sClient *k8s.ClientFactory, crdDiscovery *k8s.CRDDiscovery,
 			LastChecked: time.Now().UTC().Format(time.RFC3339),
 		},
 	}
+}
+
+// SetOnChange registers a callback invoked when engine availability changes.
+func (d *PolicyDiscoverer) SetOnChange(cb PolicyChangeCallback) {
+	d.mu.Lock()
+	d.onChange = cb
+	d.mu.Unlock()
 }
 
 // Status returns a copy of the cached engine status.
@@ -145,6 +156,7 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 	d.mu.Lock()
 	d.status = status
 	d.gatekeeperCRDs = constraintCRDs
+	cb := d.onChange
 	d.mu.Unlock()
 
 	d.logger.Info("policy engine discovery complete",
@@ -153,6 +165,10 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 		"gatekeeperAvailable", gatekeeperDetail != nil,
 		"constraintCRDs", len(constraintCRDs),
 	)
+
+	if cb != nil {
+		cb(kyvernoDetail != nil, gatekeeperDetail != nil)
+	}
 }
 
 // detectWebhooks counts validating/mutating webhooks containing the engine name

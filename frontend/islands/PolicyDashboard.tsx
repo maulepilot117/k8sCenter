@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { subscribe, wsStatus } from "@/lib/ws.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -40,11 +41,31 @@ export default function PolicyDashboard() {
     }
   }
 
+  const refetchTimer = useRef<number | null>(null);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
+
+    const onEvent = () => {
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+      refetchTimer.current = globalThis.setTimeout(() => {
+        refetchTimer.current = null;
+        fetchData();
+      }, 2000) as unknown as number;
+    };
+
+    const unsubs = [
+      subscribe("policy-clusterpolicies", "clusterpolicies", "", onEvent),
+      subscribe("policy-policies", "policies", "", onEvent),
+    ];
+
+    return () => {
+      unsubs.forEach((fn) => fn());
+      if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
+    };
   }, []);
 
   async function handleRefresh() {
@@ -90,7 +111,15 @@ export default function PolicyDashboard() {
   return (
     <div class="p-6">
       <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Policies</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-bold text-text-primary">Policies</h1>
+          {wsStatus.value === "connected" && (
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
+              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
         {!loading.value && (
           <Button
             type="button"

@@ -61,6 +61,13 @@ func (h *Handler) fetchPoliciesAndViolations(ctx context.Context) ([]NormalizedP
 	return data.policies, data.violations, nil
 }
 
+// InvalidateCache clears the cached policy/violation data so the next REST call re-fetches.
+func (h *Handler) InvalidateCache() {
+	h.cacheMu.Lock()
+	h.cachedData = nil
+	h.cacheMu.Unlock()
+}
+
 // doFetch queries both engines based on discovery status and merges results.
 // It uses the service account's dynamic client for full cluster visibility.
 func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
