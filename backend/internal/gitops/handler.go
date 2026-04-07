@@ -508,7 +508,7 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "is suspended") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to trigger sync", err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to trigger sync", "")
 		}
 		return
 	}
@@ -528,8 +528,9 @@ func (h *Handler) HandleSuspend(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Suspend bool `json:"suspend"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -561,7 +562,7 @@ func (h *Handler) HandleSuspend(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		h.auditLog(r, user, action, kind, ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", "")
 		return
 	}
 
@@ -591,6 +592,7 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Revision string `json:"revision"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Revision == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "revision is required", "")
 		return
@@ -602,7 +604,7 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(err.Error(), "auto-sync") || strings.Contains(err.Error(), "not found in history") {
 			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
 		} else {
-			httputil.WriteError(w, http.StatusInternalServerError, "failed to rollback", err.Error())
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to rollback", "")
 		}
 		return
 	}
