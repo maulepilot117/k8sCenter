@@ -379,6 +379,7 @@ func main() {
 		Discoverer:    gitopsDiscoverer,
 		AccessChecker: accessChecker,
 		Logger:        logger,
+		AuditLogger:   auditLogger,
 	}
 
 	// Security scanning discovery and handler

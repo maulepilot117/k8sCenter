@@ -1,9 +1,11 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
-import { apiGet } from "@/lib/api.ts";
+import { apiGet, apiPost } from "@/lib/api.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
 import {
   HEALTH_COLORS,
   HealthStatusBadge,
@@ -11,7 +13,11 @@ import {
   SyncStatusBadge,
   ToolBadge,
 } from "@/components/ui/GitOpsBadges.tsx";
-import type { AppDetail } from "@/lib/gitops-types.ts";
+import type {
+  AppDetail,
+  ManagedResource,
+  RevisionEntry,
+} from "@/lib/gitops-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 
 export default function GitOpsAppDetail({ id }: { id: string }) {
@@ -19,6 +25,18 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const refreshing = useSignal(false);
+  const actionInFlight = useSignal(false);
+
+  // Confirmation dialog state
+  const confirmAction = useSignal<
+    {
+      title: string;
+      message: string;
+      label: string;
+      danger: boolean;
+      onConfirm: () => void;
+    } | null
+  >(null);
 
   async function fetchData() {
     try {
@@ -43,6 +61,90 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     refreshing.value = true;
     await fetchData();
     refreshing.value = false;
+  }
+
+  async function performAction(
+    action: string,
+    body?: unknown,
+  ) {
+    actionInFlight.value = true;
+    try {
+      const res = await apiPost<{ message: string }>(
+        `/v1/gitops/applications/${encodeURIComponent(id)}/${action}`,
+        body,
+      );
+      showToast(res.data.message, "success");
+      await fetchData();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Action failed";
+      showToast(msg, "error");
+    } finally {
+      actionInFlight.value = false;
+    }
+  }
+
+  function requestConfirm(
+    title: string,
+    message: string,
+    label: string,
+    danger: boolean,
+    onConfirm: () => void,
+  ) {
+    confirmAction.value = { title, message, label, danger, onConfirm };
+  }
+
+  function handleSync() {
+    const app = detail.value?.app;
+    if (!app) return;
+    const verb = app.tool === "argocd" ? "Sync" : "Reconcile";
+    requestConfirm(
+      `${verb} ${app.name}?`,
+      `This will trigger a ${verb.toLowerCase()} for ${app.name}.`,
+      verb,
+      false,
+      () => {
+        confirmAction.value = null;
+        performAction("sync");
+      },
+    );
+  }
+
+  function handleSuspend(suspend: boolean) {
+    const app = detail.value?.app;
+    if (!app) return;
+    if (suspend) {
+      requestConfirm(
+        `Suspend ${app.name}?`,
+        "This will pause all reconciliation. Drift from git will not be corrected until resumed.",
+        "Suspend",
+        true,
+        () => {
+          confirmAction.value = null;
+          performAction("suspend", { suspend: true });
+        },
+      );
+    } else {
+      performAction("suspend", { suspend: false });
+    }
+  }
+
+  function handleRollback(revision: string, deployedAt: string) {
+    const app = detail.value?.app;
+    if (!app) return;
+    const shortRev = revision.length > 7 ? revision.slice(0, 7) : revision;
+    const dateStr = deployedAt
+      ? new Date(deployedAt).toLocaleString()
+      : "unknown date";
+    requestConfirm(
+      `Roll back ${app.name}?`,
+      `Roll back to revision ${shortRev} deployed at ${dateStr}. This cannot be undone automatically.`,
+      "Rollback",
+      true,
+      () => {
+        confirmAction.value = null;
+        performAction("rollback", { revision });
+      },
+    );
   }
 
   if (!IS_BROWSER) return null;
@@ -79,6 +181,8 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   }
 
   const { app, resources, history } = detail.value;
+  const isArgo = app.tool === "argocd";
+  const isSyncing = app.syncStatus === "progressing";
 
   return (
     <div class="p-6">
@@ -103,14 +207,55 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
             </span>
           )}
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          onClick={handleRefresh}
-          disabled={refreshing.value}
-        >
-          {refreshing.value ? "Refreshing..." : "Refresh"}
-        </Button>
+
+        {/* Action buttons */}
+        <div class="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="primary"
+            onClick={handleSync}
+            disabled={actionInFlight.value || isSyncing ||
+              (app.suspended && !isArgo)}
+            title={app.suspended && !isArgo
+              ? "Resume before reconciling"
+              : isSyncing
+              ? "Sync in progress"
+              : undefined}
+          >
+            {isArgo ? "Sync" : "Reconcile"}
+          </Button>
+
+          {app.suspended
+            ? (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => handleSuspend(false)}
+                disabled={actionInFlight.value}
+              >
+                Resume
+              </Button>
+            )
+            : (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => handleSuspend(true)}
+                disabled={actionInFlight.value}
+              >
+                Suspend
+              </Button>
+            )}
+
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={handleRefresh}
+            disabled={refreshing.value || actionInFlight.value}
+          >
+            {refreshing.value ? "Refreshing..." : "Refresh"}
+          </Button>
+        </div>
       </div>
 
       {/* Source panel */}
@@ -286,6 +431,11 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                     <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
                       Deployed At
                     </th>
+                    {isArgo && (
+                      <th class="px-3 py-2 text-right text-xs font-medium text-text-muted">
+                        Action
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-border-subtle">
@@ -310,6 +460,19 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                             ? new Date(h.deployedAt).toLocaleString()
                             : "-"}
                         </td>
+                        {isArgo && (
+                          <td class="px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleRollback(h.revision, h.deployedAt)}
+                              disabled={actionInFlight.value || isSyncing}
+                              class="text-xs text-brand hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Rollback
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -325,6 +488,21 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
             </div>
           )}
       </div>
+
+      {/* Confirmation dialog */}
+      {confirmAction.value && (
+        <ConfirmDialog
+          title={confirmAction.value.title}
+          message={confirmAction.value.message}
+          confirmLabel={confirmAction.value.label}
+          danger={confirmAction.value.danger}
+          loading={actionInFlight.value}
+          onConfirm={confirmAction.value.onConfirm}
+          onCancel={() => {
+            confirmAction.value = null;
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -2,12 +2,16 @@ package gitops
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -364,4 +368,63 @@ func extractFluxHelmHistory(obj *unstructured.Unstructured) []RevisionEntry {
 		})
 	}
 	return entries
+}
+
+// ReconcileFluxResource triggers an immediate reconciliation of a Flux resource
+// by setting the reconcile.fluxcd.io/requestedAt annotation to the current timestamp.
+// Returns an error if the resource is suspended.
+func ReconcileFluxResource(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns, name string) (*unstructured.Unstructured, error) {
+	// Check if the resource is suspended
+	obj, err := dynClient.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting flux resource %s/%s: %w", ns, name, err)
+	}
+
+	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
+	if suspended {
+		return nil, fmt.Errorf("cannot reconcile: %s/%s is suspended, resume first", ns, name)
+	}
+
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"reconcile.fluxcd.io/requestedAt": strconv.FormatInt(time.Now().Unix(), 10),
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling reconcile patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(gvr).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{
+		FieldManager: "flux-client-side-apply",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("patching flux resource %s/%s for reconciliation: %w", ns, name, err)
+	}
+
+	return result, nil
+}
+
+// SuspendFluxResource suspends or resumes a Flux resource by patching spec.suspend.
+func SuspendFluxResource(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, suspend bool) (*unstructured.Unstructured, error) {
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"suspend": suspend,
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling suspend patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(gvr).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("patching flux resource %s/%s suspend=%v: %w", ns, name, suspend, err)
+	}
+
+	return result, nil
 }
