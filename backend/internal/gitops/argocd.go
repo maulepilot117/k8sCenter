@@ -2,11 +2,13 @@ package gitops
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -207,4 +209,194 @@ func extractArgoHistory(obj *unstructured.Unstructured) []RevisionEntry {
 	}
 
 	return history
+}
+
+// SyncArgoApp triggers a sync operation on an Argo CD Application.
+func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, username string) (*unstructured.Unstructured, error) {
+	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
+	}
+
+	phase, _, _ := unstructured.NestedString(obj.Object, "status", "operationState", "phase")
+	if phase == "Running" {
+		return nil, fmt.Errorf("sync already in progress for %s/%s", ns, name)
+	}
+
+	patch := map[string]interface{}{
+		"operation": map[string]interface{}{
+			"initiatedBy": map[string]interface{}{
+				"username":  username,
+				"automated": false,
+			},
+			"sync": map[string]interface{}{
+				"syncStrategy": map[string]interface{}{
+					"hook": map[string]interface{}{},
+				},
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling sync patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("patching argo cd application %s/%s for sync: %w", ns, name, err)
+	}
+
+	return result, nil
+}
+
+// SuspendArgoApp disables automated sync on an Argo CD Application,
+// preserving the previous sync policy in an annotation for later restore.
+func SuspendArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name string) (*unstructured.Unstructured, error) {
+	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
+	}
+
+	automated, found, _ := unstructured.NestedMap(obj.Object, "spec", "syncPolicy", "automated")
+	if !found || automated == nil {
+		// Already has no auto-sync, nothing to suspend.
+		return obj, nil
+	}
+
+	policyJSON, err := json.Marshal(automated)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling automated sync policy: %w", err)
+	}
+
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"kubecenter.io/pre-suspend-sync-policy": string(policyJSON),
+			},
+		},
+		"spec": map[string]interface{}{
+			"syncPolicy": map[string]interface{}{
+				"automated": nil,
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling suspend patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("patching argo cd application %s/%s for suspend: %w", ns, name, err)
+	}
+
+	return result, nil
+}
+
+// ResumeArgoApp re-enables automated sync on an Argo CD Application,
+// restoring the policy saved by SuspendArgoApp or using sensible defaults.
+func ResumeArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name string) (*unstructured.Unstructured, error) {
+	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
+	}
+
+	annotations := obj.GetAnnotations()
+	var automatedPolicy map[string]interface{}
+
+	if saved, ok := annotations["kubecenter.io/pre-suspend-sync-policy"]; ok {
+		if err := json.Unmarshal([]byte(saved), &automatedPolicy); err != nil {
+			return nil, fmt.Errorf("unmarshaling saved sync policy: %w", err)
+		}
+	} else {
+		automatedPolicy = map[string]interface{}{
+			"prune":    true,
+			"selfHeal": true,
+		}
+	}
+
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"kubecenter.io/pre-suspend-sync-policy": nil,
+			},
+		},
+		"spec": map[string]interface{}{
+			"syncPolicy": map[string]interface{}{
+				"automated": automatedPolicy,
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling resume patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("patching argo cd application %s/%s for resume: %w", ns, name, err)
+	}
+
+	return result, nil
+}
+
+// RollbackArgoApp triggers a sync to a specific historical revision.
+// Auto-sync must be disabled first, and the revision must exist in history.
+func RollbackArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, revision, username string) (*unstructured.Unstructured, error) {
+	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
+	}
+
+	automated, found, _ := unstructured.NestedMap(obj.Object, "spec", "syncPolicy", "automated")
+	if found && automated != nil {
+		return nil, fmt.Errorf("cannot rollback: auto-sync is enabled for %s/%s, suspend first", ns, name)
+	}
+
+	rawHistory, _, _ := unstructured.NestedSlice(obj.Object, "status", "history")
+	revisionFound := false
+	for _, entry := range rawHistory {
+		entryMap, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rev, _, _ := unstructured.NestedString(entryMap, "revision")
+		if rev == revision {
+			revisionFound = true
+			break
+		}
+	}
+	if !revisionFound {
+		return nil, fmt.Errorf("revision %q not found in history for %s/%s", revision, ns, name)
+	}
+
+	patch := map[string]interface{}{
+		"operation": map[string]interface{}{
+			"initiatedBy": map[string]interface{}{
+				"username":  username,
+				"automated": false,
+			},
+			"sync": map[string]interface{}{
+				"revision": revision,
+				"syncStrategy": map[string]interface{}{
+					"hook": map[string]interface{}{},
+				},
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling rollback patch: %w", err)
+	}
+
+	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("patching argo cd application %s/%s for rollback: %w", ns, name, err)
+	}
+
+	return result, nil
 }

@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -12,11 +13,14 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
+	"k8s.io/client-go/dynamic"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // Handler serves GitOps HTTP endpoints.
@@ -25,6 +29,7 @@ type Handler struct {
 	Discoverer    *GitOpsDiscoverer
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
+	AuditLogger   audit.Logger
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -402,4 +407,207 @@ func computeMetadata(apps []NormalizedApp) AppListMetadata {
 		}
 	}
 	return m
+}
+
+// invalidateCache clears the cached application list and cancels any in-flight singleflight fetch.
+func (h *Handler) invalidateCache() {
+	h.cacheMu.Lock()
+	h.cachedData = nil
+	h.cacheMu.Unlock()
+	h.fetchGroup.Forget("fetch")
+}
+
+// prepareAction extracts the common preamble for action handlers:
+// authenticate user, parse composite ID, RBAC check, build impersonating client.
+func (h *Handler) prepareAction(w http.ResponseWriter, r *http.Request) (toolPrefix, ns, name string, dynClient dynamic.Interface, user *auth.User, ok bool) {
+	user, ok = httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	var err error
+	toolPrefix, ns, name, err = parseCompositeID(id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid application ID", err.Error())
+		ok = false
+		return
+	}
+
+	apiGroup, resource, valid := toolGVR(toolPrefix)
+	if !valid {
+		httputil.WriteError(w, http.StatusBadRequest, "unknown tool prefix", toolPrefix)
+		ok = false
+		return
+	}
+
+	// RBAC pre-check
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", apiGroup, resource, ns)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this application", "")
+		ok = false
+		return
+	}
+
+	dynClient, err = h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		ok = false
+		return
+	}
+
+	ok = true
+	return
+}
+
+// auditLog writes an audit entry for a GitOps action.
+func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action, kind, ns, name string, result audit.Result, detail string) {
+	if h.AuditLogger == nil {
+		return
+	}
+	h.AuditLogger.Log(r.Context(), audit.Entry{
+		Timestamp:         time.Now(),
+		ClusterID:         middleware.ClusterIDFromContext(r.Context()),
+		User:              user.Username,
+		SourceIP:          r.RemoteAddr,
+		Action:            action,
+		ResourceKind:      kind,
+		ResourceNamespace: ns,
+		ResourceName:      name,
+		Result:            result,
+		Detail:            detail,
+	})
+}
+
+// HandleSync triggers a sync (Argo CD) or reconcile (Flux CD).
+func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
+	toolPrefix, ns, name, dynClient, user, ok := h.prepareAction(w, r)
+	if !ok {
+		return
+	}
+
+	var err error
+	var kind string
+
+	switch toolPrefix {
+	case "argo":
+		kind = "Application"
+		_, err = SyncArgoApp(r.Context(), dynClient, ns, name, user.KubernetesUsername)
+	case "flux-ks":
+		kind = "Kustomization"
+		_, err = ReconcileFluxResource(r.Context(), dynClient, fluxKustomizationGVR, ns, name)
+	case "flux-hr":
+		kind = "HelmRelease"
+		_, err = ReconcileFluxResource(r.Context(), dynClient, fluxHelmReleaseGVR, ns, name)
+	}
+
+	if err != nil {
+		h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, audit.ResultFailure, err.Error())
+		// Map specific errors to appropriate HTTP status codes
+		if strings.Contains(err.Error(), "already in progress") || strings.Contains(err.Error(), "is suspended") {
+			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to trigger sync", err.Error())
+		}
+		return
+	}
+
+	h.auditLog(r, user, audit.ActionGitOpsSync, kind, ns, name, audit.ResultSuccess, "tool="+toolPrefix)
+	h.invalidateCache()
+	httputil.WriteData(w, map[string]string{"message": "Sync triggered for " + name})
+}
+
+// HandleSuspend suspends or resumes a GitOps application.
+func (h *Handler) HandleSuspend(w http.ResponseWriter, r *http.Request) {
+	toolPrefix, ns, name, dynClient, user, ok := h.prepareAction(w, r)
+	if !ok {
+		return
+	}
+
+	var req struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+		return
+	}
+
+	var err error
+	var kind string
+	var action audit.Action
+
+	if req.Suspend {
+		action = audit.ActionGitOpsSuspend
+	} else {
+		action = audit.ActionGitOpsResume
+	}
+
+	switch toolPrefix {
+	case "argo":
+		kind = "Application"
+		if req.Suspend {
+			_, err = SuspendArgoApp(r.Context(), dynClient, ns, name)
+		} else {
+			_, err = ResumeArgoApp(r.Context(), dynClient, ns, name)
+		}
+	case "flux-ks":
+		kind = "Kustomization"
+		_, err = SuspendFluxResource(r.Context(), dynClient, fluxKustomizationGVR, ns, name, req.Suspend)
+	case "flux-hr":
+		kind = "HelmRelease"
+		_, err = SuspendFluxResource(r.Context(), dynClient, fluxHelmReleaseGVR, ns, name, req.Suspend)
+	}
+
+	if err != nil {
+		h.auditLog(r, user, action, kind, ns, name, audit.ResultFailure, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", err.Error())
+		return
+	}
+
+	h.auditLog(r, user, action, kind, ns, name, audit.ResultSuccess, "tool="+toolPrefix)
+	h.invalidateCache()
+
+	msg := "Suspended " + name
+	if !req.Suspend {
+		msg = "Resumed " + name
+	}
+	httputil.WriteData(w, map[string]string{"message": msg})
+}
+
+// HandleRollback triggers a rollback to a specific revision (Argo CD only).
+func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
+	toolPrefix, ns, name, dynClient, user, ok := h.prepareAction(w, r)
+	if !ok {
+		return
+	}
+
+	// Rollback is Argo CD only
+	if toolPrefix != "argo" {
+		httputil.WriteError(w, http.StatusMethodNotAllowed, "rollback is only supported for Argo CD applications", "")
+		return
+	}
+
+	var req struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Revision == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "revision is required", "")
+		return
+	}
+
+	_, err := RollbackArgoApp(r.Context(), dynClient, ns, name, req.Revision, user.KubernetesUsername)
+	if err != nil {
+		h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, audit.ResultFailure, err.Error())
+		if strings.Contains(err.Error(), "auto-sync") || strings.Contains(err.Error(), "not found in history") {
+			httputil.WriteError(w, http.StatusConflict, err.Error(), "")
+		} else {
+			httputil.WriteError(w, http.StatusInternalServerError, "failed to rollback", err.Error())
+		}
+		return
+	}
+
+	h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, audit.ResultSuccess, "revision="+req.Revision)
+	h.invalidateCache()
+	httputil.WriteData(w, map[string]string{"message": "Rollback triggered for " + name + " to revision " + req.Revision})
 }

@@ -25,6 +25,10 @@ const (
 	ActionAlertSettingsUpdate Action = "alert_settings_update"
 	ActionAlertTest          Action = "alert_test"
 	ActionReadLogs           Action = "read_logs"
+	ActionGitOpsSync         Action = "gitops_sync"
+	ActionGitOpsSuspend      Action = "gitops_suspend"
+	ActionGitOpsResume       Action = "gitops_resume"
+	ActionGitOpsRollback     Action = "gitops_rollback"
 )
 
 // Result represents the outcome of an auditable operation.
