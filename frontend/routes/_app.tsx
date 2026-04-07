@@ -20,8 +20,10 @@ export default define.page(function App({ Component }) {
           href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
-        {/* Apply saved theme + animation prefs before render to prevent flash.
-            SYNC: bgBase values must match styles.css [data-theme] selectors and lib/themes.ts */}
+        {
+          /* Apply saved theme + animation prefs before render to prevent flash.
+            SYNC: bgBase values must match styles.css [data-theme] selectors and lib/themes.ts */
+        }
         <script
           dangerouslySetInnerHTML={{
             __html:
