@@ -12,7 +12,8 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-var argoApplicationGVR = schema.GroupVersionResource{
+// ArgoApplicationGVR is the GVR for Argo CD Application resources.
+var ArgoApplicationGVR = schema.GroupVersionResource{
 	Group:    "argoproj.io",
 	Version:  "v1alpha1",
 	Resource: "applications",
@@ -21,14 +22,14 @@ var argoApplicationGVR = schema.GroupVersionResource{
 // ListArgoApplications fetches all Argo CD Applications across namespaces
 // and returns them as normalized app objects.
 func ListArgoApplications(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedApp, error) {
-	list, err := dynClient.Resource(argoApplicationGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing argo cd applications: %w", err)
 	}
 
 	apps := make([]NormalizedApp, 0, len(list.Items))
 	for i := range list.Items {
-		apps = append(apps, normalizeArgoApp(&list.Items[i]))
+		apps = append(apps, NormalizeArgoApp(&list.Items[i]))
 	}
 
 	return apps, nil
@@ -37,12 +38,12 @@ func ListArgoApplications(ctx context.Context, dynClient dynamic.Interface) ([]N
 // GetArgoAppDetail fetches a single Argo CD Application and returns its
 // full detail including managed resources and revision history.
 func GetArgoAppDetail(ctx context.Context, dynClient dynamic.Interface, namespace, name string) (*AppDetail, error) {
-	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(ArgoApplicationGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", namespace, name, err)
 	}
 
-	app := normalizeArgoApp(obj)
+	app := NormalizeArgoApp(obj)
 	resources := extractArgoResources(obj)
 	history := extractArgoHistory(obj)
 
@@ -53,7 +54,7 @@ func GetArgoAppDetail(ctx context.Context, dynClient dynamic.Interface, namespac
 	}, nil
 }
 
-func normalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
+func NormalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
 	name := obj.GetName()
 	ns := obj.GetNamespace()
 
@@ -213,7 +214,7 @@ func extractArgoHistory(obj *unstructured.Unstructured) []RevisionEntry {
 
 // SyncArgoApp triggers a sync operation on an Argo CD Application.
 func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, username string) (*unstructured.Unstructured, error) {
-	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
 	}
@@ -242,7 +243,7 @@ func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, use
 		return nil, fmt.Errorf("marshaling sync patch: %w", err)
 	}
 
-	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	result, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("patching argo cd application %s/%s for sync: %w", ns, name, err)
 	}
@@ -253,7 +254,7 @@ func SyncArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, use
 // SuspendArgoApp disables automated sync on an Argo CD Application,
 // preserving the previous sync policy in an annotation for later restore.
 func SuspendArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name string) (*unstructured.Unstructured, error) {
-	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
 	}
@@ -287,7 +288,7 @@ func SuspendArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name s
 		return nil, fmt.Errorf("marshaling suspend patch: %w", err)
 	}
 
-	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	result, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("patching argo cd application %s/%s for suspend: %w", ns, name, err)
 	}
@@ -298,7 +299,7 @@ func SuspendArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name s
 // ResumeArgoApp re-enables automated sync on an Argo CD Application,
 // restoring the policy saved by SuspendArgoApp or using sensible defaults.
 func ResumeArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name string) (*unstructured.Unstructured, error) {
-	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
 	}
@@ -335,7 +336,7 @@ func ResumeArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name st
 		return nil, fmt.Errorf("marshaling resume patch: %w", err)
 	}
 
-	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	result, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("patching argo cd application %s/%s for resume: %w", ns, name, err)
 	}
@@ -346,7 +347,7 @@ func ResumeArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name st
 // RollbackArgoApp triggers a sync to a specific historical revision.
 // Auto-sync must be disabled first, and the revision must exist in history.
 func RollbackArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name, revision, username string) (*unstructured.Unstructured, error) {
-	obj, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	obj, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting argo cd application %s/%s: %w", ns, name, err)
 	}
@@ -393,7 +394,7 @@ func RollbackArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name,
 		return nil, fmt.Errorf("marshaling rollback patch: %w", err)
 	}
 
-	result, err := dynClient.Resource(argoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	result, err := dynClient.Resource(ArgoApplicationGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("patching argo cd application %s/%s for rollback: %w", ns, name, err)
 	}

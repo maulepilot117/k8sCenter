@@ -16,12 +16,14 @@ import (
 )
 
 var (
-	fluxKustomizationGVR = schema.GroupVersionResource{
+	// FluxKustomizationGVR is the GVR for Flux Kustomization resources.
+	FluxKustomizationGVR = schema.GroupVersionResource{
 		Group:    "kustomize.toolkit.fluxcd.io",
 		Version:  "v1",
 		Resource: "kustomizations",
 	}
-	fluxHelmReleaseGVR = schema.GroupVersionResource{
+	// FluxHelmReleaseGVR is the GVR for Flux HelmRelease resources.
+	FluxHelmReleaseGVR = schema.GroupVersionResource{
 		Group:    "helm.toolkit.fluxcd.io",
 		Version:  "v2",
 		Resource: "helmreleases",
@@ -31,14 +33,14 @@ var (
 // ListFluxKustomizations lists all Flux Kustomization resources across namespaces
 // and returns them as normalized GitOps applications.
 func ListFluxKustomizations(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedApp, error) {
-	list, err := dynClient.Resource(fluxKustomizationGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	list, err := dynClient.Resource(FluxKustomizationGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing flux kustomizations: %w", err)
 	}
 
 	apps := make([]NormalizedApp, 0, len(list.Items))
 	for i := range list.Items {
-		apps = append(apps, normalizeFluxKustomization(&list.Items[i]))
+		apps = append(apps, NormalizeFluxKustomization(&list.Items[i]))
 	}
 	return apps, nil
 }
@@ -46,14 +48,14 @@ func ListFluxKustomizations(ctx context.Context, dynClient dynamic.Interface) ([
 // ListFluxHelmReleases lists all Flux HelmRelease resources across namespaces
 // and returns them as normalized GitOps applications.
 func ListFluxHelmReleases(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedApp, error) {
-	list, err := dynClient.Resource(fluxHelmReleaseGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	list, err := dynClient.Resource(FluxHelmReleaseGVR).Namespace("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing flux helmreleases: %w", err)
 	}
 
 	apps := make([]NormalizedApp, 0, len(list.Items))
 	for i := range list.Items {
-		apps = append(apps, normalizeFluxHelmRelease(&list.Items[i]))
+		apps = append(apps, NormalizeFluxHelmRelease(&list.Items[i]))
 	}
 	return apps, nil
 }
@@ -64,9 +66,9 @@ func GetFluxAppDetail(ctx context.Context, dynClient dynamic.Interface, kind, na
 	var gvr schema.GroupVersionResource
 	switch kind {
 	case "Kustomization":
-		gvr = fluxKustomizationGVR
+		gvr = FluxKustomizationGVR
 	case "HelmRelease":
-		gvr = fluxHelmReleaseGVR
+		gvr = FluxHelmReleaseGVR
 	default:
 		return nil, fmt.Errorf("unsupported flux kind: %s", kind)
 	}
@@ -80,18 +82,18 @@ func GetFluxAppDetail(ctx context.Context, dynClient dynamic.Interface, kind, na
 
 	switch kind {
 	case "Kustomization":
-		detail.App = normalizeFluxKustomization(obj)
+		detail.App = NormalizeFluxKustomization(obj)
 		detail.Resources = extractFluxInventory(obj)
 		// Flux Kustomizations have no CRD-native revision history.
 	case "HelmRelease":
-		detail.App = normalizeFluxHelmRelease(obj)
+		detail.App = NormalizeFluxHelmRelease(obj)
 		detail.History = extractFluxHelmHistory(obj)
 	}
 
 	return detail, nil
 }
 
-func normalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
+func NormalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 	name := obj.GetName()
 	namespace := obj.GetNamespace()
 
@@ -149,7 +151,7 @@ func normalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 	}
 }
 
-func normalizeFluxHelmRelease(obj *unstructured.Unstructured) NormalizedApp {
+func NormalizeFluxHelmRelease(obj *unstructured.Unstructured) NormalizedApp {
 	name := obj.GetName()
 	namespace := obj.GetNamespace()
 

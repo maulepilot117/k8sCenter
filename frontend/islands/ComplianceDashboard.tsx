@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -71,6 +72,11 @@ export default function ComplianceDashboard() {
       loading.value = false;
     });
   }, []);
+
+  useWsRefetch(fetchData, [
+    ["compliance-policyreports", "policyreports", ""],
+    ["compliance-clusterpolicyreports", "clusterpolicyreports", ""],
+  ], 5000);
 
   async function handleRefresh() {
     refreshing.value = true;

@@ -13,6 +13,9 @@ import (
 
 const recheckInterval = 5 * time.Minute
 
+// PolicyChangeCallback is called when engine availability changes.
+type PolicyChangeCallback func(kyvernoAvailable, gatekeeperAvailable bool)
+
 // PolicyDiscoverer probes the cluster for Kyverno and OPA/Gatekeeper policy
 // engines and maintains cached discovery state.
 type PolicyDiscoverer struct {
@@ -20,9 +23,11 @@ type PolicyDiscoverer struct {
 	crdDiscovery *k8s.CRDDiscovery
 	logger       *slog.Logger
 
-	mu               sync.RWMutex
-	status           *EngineStatus
-	gatekeeperCRDs   []*k8s.CRDInfo
+	mu             sync.RWMutex
+	status         *EngineStatus
+	gatekeeperCRDs []*k8s.CRDInfo
+	onChange       PolicyChangeCallback
+	hasDiscovered  bool // true after first Discover completes
 }
 
 // NewDiscoverer creates a new policy engine discoverer.
@@ -35,6 +40,13 @@ func NewDiscoverer(k8sClient *k8s.ClientFactory, crdDiscovery *k8s.CRDDiscovery,
 			LastChecked: time.Now().UTC().Format(time.RFC3339),
 		},
 	}
+}
+
+// SetOnChange registers a callback invoked when engine availability changes.
+func (d *PolicyDiscoverer) SetOnChange(cb PolicyChangeCallback) {
+	d.mu.Lock()
+	d.onChange = cb
+	d.mu.Unlock()
 }
 
 // Status returns a copy of the cached engine status.
@@ -142,17 +154,30 @@ func (d *PolicyDiscoverer) Discover(ctx context.Context) {
 		LastChecked: now,
 	}
 
+	newKyverno := kyvernoDetail != nil
+	newGatekeeper := gatekeeperDetail != nil
+
 	d.mu.Lock()
+	prevKyverno := d.status.Kyverno != nil && d.status.Kyverno.Available
+	prevGatekeeper := d.status.Gatekeeper != nil && d.status.Gatekeeper.Available
+	firstRun := !d.hasDiscovered
+	d.hasDiscovered = true
 	d.status = status
 	d.gatekeeperCRDs = constraintCRDs
+	cb := d.onChange
 	d.mu.Unlock()
 
 	d.logger.Info("policy engine discovery complete",
 		"detected", detected,
-		"kyvernoAvailable", kyvernoDetail != nil,
-		"gatekeeperAvailable", gatekeeperDetail != nil,
+		"kyvernoAvailable", newKyverno,
+		"gatekeeperAvailable", newGatekeeper,
 		"constraintCRDs", len(constraintCRDs),
 	)
+
+	// Fire callback only on state transitions or the first discovery run.
+	if cb != nil && (firstRun || prevKyverno != newKyverno || prevGatekeeper != newGatekeeper) {
+		cb(newKyverno, newGatekeeper)
+	}
 }
 
 // detectWebhooks counts validating/mutating webhooks containing the engine name

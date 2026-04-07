@@ -2,6 +2,8 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { wsStatus } from "@/lib/ws.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -56,6 +58,12 @@ export default function GitOpsApplications() {
     });
   }, []);
 
+  useWsRefetch(fetchData, [
+    ["gitops-applications", "applications", ""],
+    ["gitops-kustomizations", "kustomizations", ""],
+    ["gitops-helmreleases", "helmreleases", ""],
+  ], 1000);
+
   async function handleRefresh() {
     refreshing.value = true;
     await fetchData();
@@ -101,7 +109,15 @@ export default function GitOpsApplications() {
   return (
     <div class="p-6">
       <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Applications</h1>
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-bold text-text-primary">Applications</h1>
+          {wsStatus.value === "connected" && (
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
+              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
         {!loading.value && (
           <Button
             type="button"

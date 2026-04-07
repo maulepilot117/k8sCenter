@@ -34,6 +34,7 @@ type Handler struct {
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedApps
+	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 }
 
 type cachedApps struct {
@@ -92,6 +93,11 @@ func (h *Handler) fetchApps(ctx context.Context) ([]NormalizedApp, error) {
 
 // doFetch queries both engines based on discovery and merges results.
 func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
+	// Capture current generation to detect concurrent invalidations.
+	h.cacheMu.RLock()
+	gen := h.cacheGen
+	h.cacheMu.RUnlock()
+
 	dynClient := h.K8sClient.BaseDynamicClient()
 	status := h.Discoverer.Status()
 
@@ -173,8 +179,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		fetchedAt: time.Now(),
 	}
 
+	// Only write cache if no invalidation occurred during fetch.
 	h.cacheMu.Lock()
-	h.cachedData = data
+	if h.cacheGen == gen {
+		h.cachedData = data
+	}
 	h.cacheMu.Unlock()
 
 	return data, nil
@@ -409,12 +418,21 @@ func computeMetadata(apps []NormalizedApp) AppListMetadata {
 	return m
 }
 
-// invalidateCache clears the cached application list and cancels any in-flight singleflight fetch.
+// invalidateCache clears the cached application list so the next REST call re-fetches.
+// We intentionally do NOT call fetchGroup.Forget — an in-flight singleflight fetch
+// could repopulate the cache with pre-event data if we start a competing fetch.
+// Setting cachedData to nil is sufficient: the in-flight fetch will complete and
+// cache its result, but the next call after that will see the stale timestamp and re-fetch.
 func (h *Handler) invalidateCache() {
 	h.cacheMu.Lock()
 	h.cachedData = nil
+	h.cacheGen++
 	h.cacheMu.Unlock()
-	h.fetchGroup.Forget("fetch")
+}
+
+// InvalidateCache is the exported version for use by CRD event handlers.
+func (h *Handler) InvalidateCache() {
+	h.invalidateCache()
 }
 
 // prepareAction extracts the common preamble for action handlers:
@@ -496,10 +514,10 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		_, err = SyncArgoApp(r.Context(), dynClient, ns, name, user.KubernetesUsername)
 	case "flux-ks":
 		kind = "Kustomization"
-		_, err = ReconcileFluxResource(r.Context(), dynClient, fluxKustomizationGVR, ns, name)
+		_, err = ReconcileFluxResource(r.Context(), dynClient, FluxKustomizationGVR, ns, name)
 	case "flux-hr":
 		kind = "HelmRelease"
-		_, err = ReconcileFluxResource(r.Context(), dynClient, fluxHelmReleaseGVR, ns, name)
+		_, err = ReconcileFluxResource(r.Context(), dynClient, FluxHelmReleaseGVR, ns, name)
 	}
 
 	if err != nil {
@@ -554,10 +572,10 @@ func (h *Handler) HandleSuspend(w http.ResponseWriter, r *http.Request) {
 		}
 	case "flux-ks":
 		kind = "Kustomization"
-		_, err = SuspendFluxResource(r.Context(), dynClient, fluxKustomizationGVR, ns, name, req.Suspend)
+		_, err = SuspendFluxResource(r.Context(), dynClient, FluxKustomizationGVR, ns, name, req.Suspend)
 	case "flux-hr":
 		kind = "HelmRelease"
-		_, err = SuspendFluxResource(r.Context(), dynClient, fluxHelmReleaseGVR, ns, name, req.Suspend)
+		_, err = SuspendFluxResource(r.Context(), dynClient, FluxHelmReleaseGVR, ns, name, req.Suspend)
 	}
 
 	if err != nil {

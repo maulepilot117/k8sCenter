@@ -15,6 +15,9 @@ import (
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS from cgroup CPU quota
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -81,14 +84,17 @@ func main() {
 
 	// Create informer manager and WebSocket hub
 	baseCS := k8sClient.BaseClientset()
-	informerMgr := k8s.NewInformerManager(baseCS, k8sClient.BaseDynamicClient(), k8sClient.DiscoveryClient(), logger)
+	informerMgr := k8s.NewInformerManager(baseCS, k8sClient.BaseDynamicClient(), logger)
 	accessChecker := resources.NewAccessChecker(k8sClient, logger)
 	accessChecker.StartCacheSweeper(ctx)
 	hub := websocket.NewHub(logger, accessChecker)
 
-	// Register dynamic CRD kinds for WebSocket subscriptions (only if CRD detected)
-	if informerMgr.CiliumNetworkPolicies() != nil {
-		websocket.RegisterAllowedKind("ciliumnetworkpolicies")
+	// Cilium CRD watch — probe once at startup via discovery, use WatchCRD for lifecycle
+	if _, err := k8sClient.DiscoveryClient().ServerResourcesForGroupVersion("cilium.io/v2"); err == nil {
+		websocket.RegisterAllowedKind("ciliumnetworkpolicies", "cilium.io")
+		informerMgr.WatchCRD(ctx, k8s.CiliumPolicyGVR, "ciliumnetworkpolicies", func(obj *unstructured.Unstructured) (any, error) {
+			return obj.Object, nil // Cilium policies don't need normalization for the existing ResourceTable consumer
+		}, hub.HandleEvent)
 	}
 
 	// Register informer event handlers BEFORE starting informers
@@ -358,7 +364,6 @@ func main() {
 	var policyHandler *policy.Handler
 	if crdDiscovery != nil {
 		policyDiscoverer := policy.NewDiscoverer(k8sClient, crdDiscovery, logger)
-		go policyDiscoverer.RunDiscoveryLoop(ctx)
 
 		policyHandler = &policy.Handler{
 			K8sClient:     k8sClient,
@@ -368,11 +373,77 @@ func main() {
 			AccessChecker: accessChecker,
 			Logger:        logger,
 		}
+
+		// Wire Policy CRD watches — Kyverno policies and reports, Gatekeeper constraint templates
+		policyDiscoverer.SetOnChange(func(kyvernoAvailable, gatekeeperAvailable bool) {
+			if kyvernoAvailable {
+				websocket.RegisterAllowedKind("clusterpolicies", "kyverno.io")
+				informerMgr.WatchCRD(ctx, policy.KyvernoClusterPolicyGVR, "clusterpolicies", func(obj *unstructured.Unstructured) (any, error) {
+					return policy.NormalizeKyvernoPolicy(obj, true), nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					policyHandler.InvalidateCache()
+				})
+
+				websocket.RegisterAllowedKind("policies", "kyverno.io")
+				informerMgr.WatchCRD(ctx, policy.KyvernoPolicyGVR, "policies", func(obj *unstructured.Unstructured) (any, error) {
+					return policy.NormalizeKyvernoPolicy(obj, false), nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					policyHandler.InvalidateCache()
+				})
+
+				websocket.RegisterAllowedKind("policyreports", "wgpolicyk8s.io")
+				// PolicyReports are watched but not normalized individually — the frontend
+				// re-fetches the full violation list on any report change.
+				// Send a minimal sentinel (name+namespace) instead of the full CRD object
+				// to avoid broadcasting managedFields and cross-namespace refs over WebSocket.
+				informerMgr.WatchCRD(ctx, policy.PolicyReportGVR, "policyreports", func(obj *unstructured.Unstructured) (any, error) {
+					return map[string]string{"name": obj.GetName(), "namespace": obj.GetNamespace()}, nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					policyHandler.InvalidateCache()
+				})
+
+				websocket.RegisterAllowedKind("clusterpolicyreports", "wgpolicyk8s.io")
+				informerMgr.WatchCRD(ctx, policy.ClusterPolicyReportGVR, "clusterpolicyreports", func(obj *unstructured.Unstructured) (any, error) {
+					return map[string]string{"name": obj.GetName(), "namespace": obj.GetNamespace()}, nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					policyHandler.InvalidateCache()
+				})
+			} else {
+				informerMgr.StopCRD(policy.KyvernoClusterPolicyGVR)
+				websocket.UnregisterAllowedKind("clusterpolicies")
+				informerMgr.StopCRD(policy.KyvernoPolicyGVR)
+				websocket.UnregisterAllowedKind("policies")
+				informerMgr.StopCRD(policy.PolicyReportGVR)
+				websocket.UnregisterAllowedKind("policyreports")
+				informerMgr.StopCRD(policy.ClusterPolicyReportGVR)
+				websocket.UnregisterAllowedKind("clusterpolicyreports")
+			}
+			if gatekeeperAvailable {
+				websocket.RegisterAllowedKind("constrainttemplates", "templates.gatekeeper.sh")
+				gkTemplateGVR := schema.GroupVersionResource{
+					Group: "templates.gatekeeper.sh", Version: "v1", Resource: "constrainttemplates",
+				}
+				informerMgr.WatchCRD(ctx, gkTemplateGVR, "constrainttemplates", func(obj *unstructured.Unstructured) (any, error) {
+					return map[string]string{"name": obj.GetName(), "namespace": obj.GetNamespace()}, nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					policyHandler.InvalidateCache()
+				})
+			} else {
+				gkTemplateGVR := schema.GroupVersionResource{Group: "templates.gatekeeper.sh", Version: "v1", Resource: "constrainttemplates"}
+				informerMgr.StopCRD(gkTemplateGVR)
+				websocket.UnregisterAllowedKind("constrainttemplates")
+			}
+		})
+		go policyDiscoverer.RunDiscoveryLoop(ctx)
 	}
 
 	// GitOps discovery and handler
 	gitopsDiscoverer := gitops.NewDiscoverer(k8sClient, logger)
-	go gitopsDiscoverer.RunDiscoveryLoop(ctx)
 
 	gitopsHandler := &gitops.Handler{
 		K8sClient:     k8sClient,
@@ -381,6 +452,46 @@ func main() {
 		Logger:        logger,
 		AuditLogger:   auditLogger,
 	}
+
+	// Wire GitOps CRD watches — when tools are discovered, start dynamic informers
+	// and register kinds for WebSocket subscriptions. Events invalidate the REST cache.
+	gitopsDiscoverer.SetOnChange(func(argoAvailable, fluxAvailable bool) {
+		if argoAvailable {
+			websocket.RegisterAllowedKind("applications", "argoproj.io")
+			informerMgr.WatchCRD(ctx, gitops.ArgoApplicationGVR, "applications", func(obj *unstructured.Unstructured) (any, error) {
+				return gitops.NormalizeArgoApp(obj), nil
+			}, func(eventType, kind, ns, name string, obj any) {
+				hub.HandleEvent(eventType, kind, ns, name, obj)
+				gitopsHandler.InvalidateCache()
+			})
+		} else {
+			informerMgr.StopCRD(gitops.ArgoApplicationGVR)
+			websocket.UnregisterAllowedKind("applications")
+		}
+		if fluxAvailable {
+			websocket.RegisterAllowedKind("kustomizations", "kustomize.toolkit.fluxcd.io")
+			informerMgr.WatchCRD(ctx, gitops.FluxKustomizationGVR, "kustomizations", func(obj *unstructured.Unstructured) (any, error) {
+				return gitops.NormalizeFluxKustomization(obj), nil
+			}, func(eventType, kind, ns, name string, obj any) {
+				hub.HandleEvent(eventType, kind, ns, name, obj)
+				gitopsHandler.InvalidateCache()
+			})
+
+			websocket.RegisterAllowedKind("helmreleases", "helm.toolkit.fluxcd.io")
+			informerMgr.WatchCRD(ctx, gitops.FluxHelmReleaseGVR, "helmreleases", func(obj *unstructured.Unstructured) (any, error) {
+				return gitops.NormalizeFluxHelmRelease(obj), nil
+			}, func(eventType, kind, ns, name string, obj any) {
+				hub.HandleEvent(eventType, kind, ns, name, obj)
+				gitopsHandler.InvalidateCache()
+			})
+		} else {
+			informerMgr.StopCRD(gitops.FluxKustomizationGVR)
+			websocket.UnregisterAllowedKind("kustomizations")
+			informerMgr.StopCRD(gitops.FluxHelmReleaseGVR)
+			websocket.UnregisterAllowedKind("helmreleases")
+		}
+	})
+	go gitopsDiscoverer.RunDiscoveryLoop(ctx)
 
 	// Security scanning discovery and handler
 	scanDiscoverer := scanning.NewDiscoverer(k8sClient, logger)

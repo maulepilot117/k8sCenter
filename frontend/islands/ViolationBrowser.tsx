@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -51,6 +52,11 @@ export default function ViolationBrowser() {
       loading.value = false;
     });
   }, []);
+
+  useWsRefetch(fetchData, [
+    ["violations-policyreports", "policyreports", ""],
+    ["violations-clusterpolicyreports", "clusterpolicyreports", ""],
+  ], 2000);
 
   async function handleRefresh() {
     refreshing.value = true;

@@ -11,6 +11,7 @@ import (
 // AccessChecker verifies RBAC permissions for WebSocket subscriptions.
 type AccessChecker interface {
 	CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error)
+	CanAccessGroupResource(ctx context.Context, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error)
 }
 
 // subChange represents a subscription addition.
@@ -106,6 +107,9 @@ func (h *Hub) Register(client *Client) {
 }
 
 // rbacRevalidateInterval is how often the hub rechecks RBAC for active subscriptions.
+// A 5-minute interval balances security (revoked access continues for up to 5 min)
+// against API server load (one SelfSubjectAccessReview per active subscription per tick).
+// For higher-security deployments, this can be reduced to 1-2 minutes.
 const rbacRevalidateInterval = 5 * time.Minute
 
 // alwaysAllowKinds are subscription kinds that bypass RBAC revalidation.
@@ -262,14 +266,28 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 				continue
 			}
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			allowed, err := h.accessChecker.CanAccess(
-				checkCtx,
-				client.user.KubernetesUsername,
-				client.user.KubernetesGroups,
-				"list",
-				key.Kind,
-				key.Namespace,
-			)
+			var allowed bool
+			var err error
+			if apiGroup := crdAPIGroup(key.Kind); apiGroup != "" {
+				allowed, err = h.accessChecker.CanAccessGroupResource(
+					checkCtx,
+					client.user.KubernetesUsername,
+					client.user.KubernetesGroups,
+					"list",
+					apiGroup,
+					key.Kind,
+					key.Namespace,
+				)
+			} else {
+				allowed, err = h.accessChecker.CanAccess(
+					checkCtx,
+					client.user.KubernetesUsername,
+					client.user.KubernetesGroups,
+					"list",
+					key.Kind,
+					key.Namespace,
+				)
+			}
 			cancel()
 			if err != nil {
 				h.logger.Warn("RBAC revalidation failed, keeping subscription",

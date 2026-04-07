@@ -170,7 +170,7 @@ func TestReconcileFluxResource_Suspended(t *testing.T) {
 	}
 
 	client := newFluxFakeDynClient(ks)
-	_, err := ReconcileFluxResource(context.Background(), client, fluxKustomizationGVR, "flux-system", "test-ks")
+	_, err := ReconcileFluxResource(context.Background(), client, FluxKustomizationGVR, "flux-system", "test-ks")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -195,13 +195,13 @@ func TestReconcileFluxResource_SetsAnnotation(t *testing.T) {
 	}
 
 	client := newFluxFakeDynClient(ks)
-	_, err := ReconcileFluxResource(context.Background(), client, fluxKustomizationGVR, "flux-system", "test-ks")
+	_, err := ReconcileFluxResource(context.Background(), client, FluxKustomizationGVR, "flux-system", "test-ks")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Fetch the patched object
-	patched, err := client.Resource(fluxKustomizationGVR).Namespace("flux-system").Get(context.Background(), "test-ks", metav1.GetOptions{})
+	patched, err := client.Resource(FluxKustomizationGVR).Namespace("flux-system").Get(context.Background(), "test-ks", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("failed to get patched object: %v", err)
 	}
@@ -234,13 +234,13 @@ func TestSuspendFluxResource(t *testing.T) {
 	}
 
 	client := newFluxFakeDynClient(ks)
-	_, err := SuspendFluxResource(context.Background(), client, fluxKustomizationGVR, "flux-system", "test-ks", true)
+	_, err := SuspendFluxResource(context.Background(), client, FluxKustomizationGVR, "flux-system", "test-ks", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Fetch the patched object
-	patched, err := client.Resource(fluxKustomizationGVR).Namespace("flux-system").Get(context.Background(), "test-ks", metav1.GetOptions{})
+	patched, err := client.Resource(FluxKustomizationGVR).Namespace("flux-system").Get(context.Background(), "test-ks", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("failed to get patched object: %v", err)
 	}

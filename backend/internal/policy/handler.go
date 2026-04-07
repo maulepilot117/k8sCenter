@@ -28,6 +28,7 @@ type Handler struct {
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cachedData *cachedPolicyData
+	cacheGen   uint64 // incremented on invalidation; prevents stale writes
 }
 
 type cachedPolicyData struct {
@@ -61,9 +62,22 @@ func (h *Handler) fetchPoliciesAndViolations(ctx context.Context) ([]NormalizedP
 	return data.policies, data.violations, nil
 }
 
+// InvalidateCache clears the cached policy/violation data so the next REST call re-fetches.
+func (h *Handler) InvalidateCache() {
+	h.cacheMu.Lock()
+	h.cachedData = nil
+	h.cacheGen++
+	h.cacheMu.Unlock()
+}
+
 // doFetch queries both engines based on discovery status and merges results.
 // It uses the service account's dynamic client for full cluster visibility.
 func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
+	// Capture current generation to detect concurrent invalidations.
+	h.cacheMu.RLock()
+	gen := h.cacheGen
+	h.cacheMu.RUnlock()
+
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	status := h.Discoverer.Status()
@@ -136,8 +150,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 		fetchedAt:  time.Now(),
 	}
 
+	// Only write cache if no invalidation occurred during fetch.
 	h.cacheMu.Lock()
-	h.cachedData = data
+	if h.cacheGen == gen {
+		h.cachedData = data
+	}
 	h.cacheMu.Unlock()
 
 	return data, nil

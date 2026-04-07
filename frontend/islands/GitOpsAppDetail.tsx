@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
@@ -56,6 +57,18 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       loading.value = false;
     });
   }, []);
+
+  // Determine the CRD kind from the composite ID
+  const toolPrefix = id.split(":")[0];
+  const kind = toolPrefix === "argo"
+    ? "applications"
+    : toolPrefix === "flux-hr"
+    ? "helmreleases"
+    : "kustomizations";
+
+  useWsRefetch(fetchData, [
+    [`gitops-detail-${id}`, kind, ""],
+  ], 3000);
 
   async function handleRefresh() {
     refreshing.value = true;
