@@ -128,6 +128,7 @@ func main() {
 	var clusterStore *appstore.ClusterStore
 	var settingsService *appstore.SettingsService
 	var userStore *appstore.UserStore
+	var complianceStore *appstore.ComplianceStore
 	var dbPing func(context.Context) error
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
@@ -149,6 +150,7 @@ func main() {
 				encKey = cfg.Auth.JWTSecret // fall back to JWT secret as encryption key
 			}
 			clusterStore = appstore.NewClusterStore(db.Pool, encKey)
+			complianceStore = appstore.NewComplianceStore(db.Pool)
 
 			// Register local cluster
 			apiServerHost := "in-cluster"
@@ -440,6 +442,19 @@ func main() {
 			}
 		})
 		go policyDiscoverer.RunDiscoveryLoop(ctx)
+
+		// Compliance trend snapshotter — records daily scores to PostgreSQL
+		if complianceStore != nil {
+			complianceRecorder := &policy.ComplianceRecorder{
+				Store:     complianceStore,
+				Fetcher:   policyHandler,
+				ClusterID: cfg.ClusterID,
+				Logger:    logger,
+			}
+			go complianceRecorder.Run(ctx)
+
+			policyHandler.ComplianceStore = complianceStore
+		}
 	}
 
 	// GitOps discovery and handler
