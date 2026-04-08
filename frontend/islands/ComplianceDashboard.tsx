@@ -11,12 +11,8 @@ import {
   SEVERITY_ORDER,
 } from "@/components/ui/PolicyBadges.tsx";
 import type { ComplianceScore, SeverityCounts } from "@/lib/policy-types.ts";
-
-function scoreColor(score: number): string {
-  if (score >= 80) return "var(--success)";
-  if (score >= 50) return "var(--warning)";
-  return "var(--danger)";
-}
+import { scoreColor } from "@/lib/health-score.ts";
+import ComplianceTrendChart from "@/islands/ComplianceTrendChart.tsx";
 
 function SeverityBar({
   label,
@@ -174,6 +170,9 @@ export default function ComplianceDashboard() {
               </div>
             </div>
           </div>
+
+          {/* Compliance trend chart */}
+          <ComplianceTrendChart />
 
           {/* Per-namespace table */}
           {nsScores.length > 0 && (

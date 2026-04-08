@@ -426,6 +426,7 @@ func (s *Server) registerPolicyRoutes(ar chi.Router) {
 		pr.Get("/", h.HandleListPolicies)
 		pr.Get("/violations", h.HandleListViolations)
 		pr.Get("/compliance", h.HandleCompliance)
+		pr.With(middleware.RequireAdmin).Get("/compliance/history", h.HandleComplianceHistory)
 	})
 }
 

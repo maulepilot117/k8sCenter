@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,16 +15,18 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // Handler serves policy HTTP endpoints.
 type Handler struct {
-	K8sClient     *k8s.ClientFactory
-	Discoverer    *PolicyDiscoverer
-	ClusterRouter *k8s.ClusterRouter
-	CRDDiscovery  *k8s.CRDDiscovery
-	AccessChecker *resources.AccessChecker
-	Logger        *slog.Logger
+	K8sClient       *k8s.ClientFactory
+	Discoverer      *PolicyDiscoverer
+	ClusterRouter   *k8s.ClusterRouter
+	CRDDiscovery    *k8s.CRDDiscovery
+	AccessChecker   *resources.AccessChecker
+	ComplianceStore *store.ComplianceStore
+	Logger          *slog.Logger
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -160,6 +163,12 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 	return data, nil
 }
 
+// FetchUnfiltered returns all policies and violations using the service account.
+// This implements the PolicyFetcher interface for the ComplianceRecorder.
+func (h *Handler) FetchUnfiltered(ctx context.Context) ([]NormalizedPolicy, []NormalizedViolation, error) {
+	return h.fetchPoliciesAndViolations(ctx)
+}
+
 // HandleStatus returns the policy engine discovery status.
 // GET /api/v1/policies/status
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +283,65 @@ func (h *Handler) HandleCompliance(w http.ResponseWriter, r *http.Request) {
 	score := computeCompliance(policies, filtered, scope)
 
 	httputil.WriteData(w, score)
+}
+
+// HandleComplianceHistory returns historical compliance score snapshots.
+// GET /api/v1/policies/compliance/history?days=30
+func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	if h.ComplianceStore == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable, "compliance history requires a database", "")
+		return
+	}
+
+	days := 30
+	if d := r.URL.Query().Get("days"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil {
+			days = n
+		}
+	}
+	if days < 1 {
+		days = 1
+	}
+	if days > 90 {
+		days = 90
+	}
+
+	clusterID := "local" // v1: local cluster only
+
+	snapshots, err := h.ComplianceStore.QueryHistory(r.Context(), clusterID, days)
+	if err != nil {
+		h.Logger.Error("failed to query compliance history", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to query compliance history", "")
+		return
+	}
+
+	// Convert to API response format
+	type historyPoint struct {
+		Date  string  `json:"date"`
+		Score float64 `json:"score"`
+		Pass  int     `json:"pass"`
+		Fail  int     `json:"fail"`
+		Warn  int     `json:"warn"`
+		Total int     `json:"total"`
+	}
+
+	points := make([]historyPoint, len(snapshots))
+	for i, s := range snapshots {
+		points[i] = historyPoint{
+			Date:  s.Date.Format("2006-01-02"),
+			Score: s.OverallScore,
+			Pass:  s.Pass,
+			Fail:  s.Fail,
+			Warn:  s.Warn,
+			Total: s.Total,
+		}
+	}
+
+	httputil.WriteData(w, points)
 }
 
 // filterViolationsByRBAC removes violations the user cannot see. Uses "list pods"
