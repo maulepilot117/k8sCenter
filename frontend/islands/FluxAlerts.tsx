@@ -131,7 +131,10 @@ export default function FluxAlerts() {
 
   function openCreate() {
     editingAlert.value = null;
-    form.value = { ...EMPTY_FORM, eventSources: [{ kind: "Kustomization", name: "*" }] };
+    form.value = {
+      ...EMPTY_FORM,
+      eventSources: [{ kind: "Kustomization", name: "*" }],
+    };
     formError.value = null;
     showForm.value = true;
   }
@@ -312,7 +315,10 @@ export default function FluxAlerts() {
 
       {/* Unavailable banner */}
       {notAvailable && !loading.value && (
-        <div class="mb-6 rounded-lg border p-4 bg-bg-elevated" style={{ borderColor: "var(--warning)" }}>
+        <div
+          class="mb-6 rounded-lg border p-4 bg-bg-elevated"
+          style={{ borderColor: "var(--warning)" }}
+        >
           <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
             Flux notification-controller not detected
           </p>
@@ -395,7 +401,10 @@ export default function FluxAlerts() {
                     <td class="px-3 py-2">
                       <div class="font-medium text-text-primary">{a.name}</div>
                       {a.suspend && (
-                        <span class="text-xs" style={{ color: "var(--warning)" }}>
+                        <span
+                          class="text-xs"
+                          style={{ color: "var(--warning)" }}
+                        >
                           suspended
                         </span>
                       )}
@@ -427,8 +436,9 @@ export default function FluxAlerts() {
                           class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
                           onClick={(e) => {
                             e.stopPropagation();
-                            openDropdown.value =
-                              openDropdown.value === key ? null : key;
+                            openDropdown.value = openDropdown.value === key
+                              ? null
+                              : key;
                           }}
                         >
                           &hellip;
@@ -485,8 +495,7 @@ export default function FluxAlerts() {
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
         <div class="mt-4 flex items-center justify-between">
           <p class="text-sm text-text-muted">
-            {filtered.length} alerts &middot; Page {page.value} of{" "}
-            {totalPages}
+            {filtered.length} alerts &middot; Page {page.value} of {totalPages}
           </p>
           <div class="flex gap-2">
             <Button
@@ -628,7 +637,10 @@ function AlertFormModal({
   function addSource() {
     onInput({
       ...form,
-      eventSources: [...form.eventSources, { kind: "Kustomization", name: "*" }],
+      eventSources: [...form.eventSources, {
+        kind: "Kustomization",
+        name: "*",
+      }],
     });
   }
 
@@ -652,13 +664,14 @@ function AlertFormModal({
         class="w-full max-w-lg rounded-lg bg-surface p-6 shadow-xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id="alert-form-title" class="text-lg font-semibold text-text-primary mb-4">
+        <h3
+          id="alert-form-title"
+          class="text-lg font-semibold text-text-primary mb-4"
+        >
           {isEdit ? "Edit Alert" : "Create Alert"}
         </h3>
 
-        {error && (
-          <p class="text-sm text-danger mb-3">{error}</p>
-        )}
+        {error && <p class="text-sm text-danger mb-3">{error}</p>}
 
         <div class="space-y-3">
           <div>
@@ -739,7 +752,11 @@ function AlertFormModal({
                   <select
                     value={src.kind}
                     onChange={(e) =>
-                      updateSource(i, "kind", (e.target as HTMLSelectElement).value)}
+                      updateSource(
+                        i,
+                        "kind",
+                        (e.target as HTMLSelectElement).value,
+                      )}
                     class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                   >
                     {EVENT_SOURCE_KINDS.map((k) => (
@@ -750,13 +767,18 @@ function AlertFormModal({
                     type="text"
                     value={src.name}
                     onInput={(e) =>
-                      updateSource(i, "name", (e.target as HTMLInputElement).value)}
+                      updateSource(
+                        i,
+                        "name",
+                        (e.target as HTMLInputElement).value,
+                      )}
                     class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     placeholder="* (wildcard)"
                   />
                   <button
                     type="button"
-                    onClick={() => removeSource(i)}
+                    onClick={() =>
+                      removeSource(i)}
                     disabled={form.eventSources.length <= 1}
                     class="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
                     style={{ color: "var(--error)" }}
@@ -824,11 +846,7 @@ function AlertFormModal({
             onClick={onSubmit}
             class="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 bg-brand hover:bg-brand/90"
           >
-            {submitting
-              ? "..."
-              : isEdit
-              ? "Update"
-              : "Create"}
+            {submitting ? "..." : isEdit ? "Update" : "Create"}
           </button>
         </div>
       </div>

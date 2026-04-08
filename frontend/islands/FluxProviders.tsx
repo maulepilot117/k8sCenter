@@ -200,9 +200,9 @@ export default function FluxProviders() {
   async function handleSuspendToggle(p: NormalizedProvider) {
     try {
       await apiPost(
-        `/v1/gitops/notifications/providers/${encodeURIComponent(p.namespace)}/${
-          encodeURIComponent(p.name)
-        }/suspend`,
+        `/v1/gitops/notifications/providers/${
+          encodeURIComponent(p.namespace)
+        }/${encodeURIComponent(p.name)}/suspend`,
         { suspend: !p.suspend },
       );
       showToast(
@@ -223,9 +223,9 @@ export default function FluxProviders() {
     deleteLoading.value = true;
     try {
       await apiDelete(
-        `/v1/gitops/notifications/providers/${encodeURIComponent(p.namespace)}/${
-          encodeURIComponent(p.name)
-        }`,
+        `/v1/gitops/notifications/providers/${
+          encodeURIComponent(p.namespace)
+        }/${encodeURIComponent(p.name)}`,
       );
       showToast(`Deleted ${p.name}`, "success");
       deleteTarget.value = null;
@@ -304,7 +304,10 @@ export default function FluxProviders() {
 
       {/* Unavailable banner */}
       {notAvailable && !loading.value && (
-        <div class="mb-6 rounded-lg border p-4 bg-bg-elevated" style={{ borderColor: "var(--warning)" }}>
+        <div
+          class="mb-6 rounded-lg border p-4 bg-bg-elevated"
+          style={{ borderColor: "var(--warning)" }}
+        >
           <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
             Flux notification-controller not detected
           </p>
@@ -384,7 +387,10 @@ export default function FluxProviders() {
                     <td class="px-3 py-2">
                       <div class="font-medium text-text-primary">{p.name}</div>
                       {p.suspend && (
-                        <span class="text-xs" style={{ color: "var(--warning)" }}>
+                        <span
+                          class="text-xs"
+                          style={{ color: "var(--warning)" }}
+                        >
                           suspended
                         </span>
                       )}
@@ -413,8 +419,9 @@ export default function FluxProviders() {
                           class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
                           onClick={(e) => {
                             e.stopPropagation();
-                            openDropdown.value =
-                              openDropdown.value === key ? null : key;
+                            openDropdown.value = openDropdown.value === key
+                              ? null
+                              : key;
                           }}
                         >
                           &hellip;
@@ -597,13 +604,14 @@ function ProviderFormModal({
         class="w-full max-w-md rounded-lg bg-surface p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id="provider-form-title" class="text-lg font-semibold text-text-primary mb-4">
+        <h3
+          id="provider-form-title"
+          class="text-lg font-semibold text-text-primary mb-4"
+        >
           {isEdit ? "Edit Provider" : "Create Provider"}
         </h3>
 
-        {error && (
-          <p class="text-sm text-danger mb-3">{error}</p>
-        )}
+        {error && <p class="text-sm text-danger mb-3">{error}</p>}
 
         <div class="space-y-3">
           <div>
@@ -721,11 +729,7 @@ function ProviderFormModal({
             onClick={onSubmit}
             class="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 bg-brand hover:bg-brand/90"
           >
-            {submitting
-              ? "..."
-              : isEdit
-              ? "Update"
-              : "Create"}
+            {submitting ? "..." : isEdit ? "Update" : "Create"}
           </button>
         </div>
       </div>

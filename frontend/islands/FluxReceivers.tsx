@@ -140,7 +140,10 @@ export default function FluxReceivers() {
 
   function openCreate() {
     editingReceiver.value = null;
-    form.value = { ...EMPTY_FORM, resources: [{ kind: "GitRepository", name: "*" }] };
+    form.value = {
+      ...EMPTY_FORM,
+      resources: [{ kind: "GitRepository", name: "*" }],
+    };
     formError.value = null;
     showForm.value = true;
   }
@@ -211,9 +214,9 @@ export default function FluxReceivers() {
     deleteLoading.value = true;
     try {
       await apiDelete(
-        `/v1/gitops/notifications/receivers/${encodeURIComponent(r.namespace)}/${
-          encodeURIComponent(r.name)
-        }`,
+        `/v1/gitops/notifications/receivers/${
+          encodeURIComponent(r.namespace)
+        }/${encodeURIComponent(r.name)}`,
       );
       showToast(`Deleted ${r.name}`, "success");
       deleteTarget.value = null;
@@ -231,9 +234,9 @@ export default function FluxReceivers() {
   async function handleSuspendToggle(r: NormalizedReceiver) {
     try {
       await apiPost(
-        `/v1/gitops/notifications/receivers/${encodeURIComponent(r.namespace)}/${
-          encodeURIComponent(r.name)
-        }/suspend`,
+        `/v1/gitops/notifications/receivers/${
+          encodeURIComponent(r.namespace)
+        }/${encodeURIComponent(r.name)}/suspend`,
         { suspend: !r.suspend },
       );
       showToast(
@@ -321,7 +324,10 @@ export default function FluxReceivers() {
 
       {/* Unavailable banner */}
       {notAvailable && !loading.value && (
-        <div class="mb-6 rounded-lg border p-4 bg-bg-elevated" style={{ borderColor: "var(--warning)" }}>
+        <div
+          class="mb-6 rounded-lg border p-4 bg-bg-elevated"
+          style={{ borderColor: "var(--warning)" }}
+        >
           <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
             Flux notification-controller not detected
           </p>
@@ -404,7 +410,10 @@ export default function FluxReceivers() {
                     <td class="px-3 py-2">
                       <div class="font-medium text-text-primary">{r.name}</div>
                       {r.suspend && (
-                        <span class="text-xs" style={{ color: "var(--warning)" }}>
+                        <span
+                          class="text-xs"
+                          style={{ color: "var(--warning)" }}
+                        >
                           suspended
                         </span>
                       )}
@@ -443,7 +452,14 @@ export default function FluxReceivers() {
                                 stroke-linecap="round"
                                 stroke-linejoin="round"
                               >
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                <rect
+                                  x="9"
+                                  y="9"
+                                  width="13"
+                                  height="13"
+                                  rx="2"
+                                  ry="2"
+                                />
                                 <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
                               </svg>
                             </button>
@@ -456,7 +472,9 @@ export default function FluxReceivers() {
                         )}
                     </td>
                     <td class="px-3 py-2">
-                      <StatusBadge status={r.suspend ? "suspended" : r.status} />
+                      <StatusBadge
+                        status={r.suspend ? "suspended" : r.status}
+                      />
                     </td>
                     <td class="px-3 py-2 text-text-muted text-xs">
                       {r.createdAt ? timeAgo(r.createdAt) : "-"}
@@ -468,8 +486,9 @@ export default function FluxReceivers() {
                           class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
                           onClick={(e) => {
                             e.stopPropagation();
-                            openDropdown.value =
-                              openDropdown.value === key ? null : key;
+                            openDropdown.value = openDropdown.value === key
+                              ? null
+                              : key;
                           }}
                         >
                           &hellip;
@@ -659,7 +678,11 @@ function ReceiverFormModal({
   const inputClass =
     "w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand";
 
-  function updateResource(index: number, field: "kind" | "name", value: string) {
+  function updateResource(
+    index: number,
+    field: "kind" | "name",
+    value: string,
+  ) {
     const updated = form.resources.map((r, i) =>
       i === index ? { ...r, [field]: value } : r
     );
@@ -693,13 +716,14 @@ function ReceiverFormModal({
         class="w-full max-w-lg rounded-lg bg-surface p-6 shadow-xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id="receiver-form-title" class="text-lg font-semibold text-text-primary mb-4">
+        <h3
+          id="receiver-form-title"
+          class="text-lg font-semibold text-text-primary mb-4"
+        >
           {isEdit ? "Edit Receiver" : "Create Receiver"}
         </h3>
 
-        {error && (
-          <p class="text-sm text-danger mb-3">{error}</p>
-        )}
+        {error && <p class="text-sm text-danger mb-3">{error}</p>}
 
         <div class="space-y-3">
           <div>
@@ -765,7 +789,11 @@ function ReceiverFormModal({
                   <select
                     value={res.kind}
                     onChange={(e) =>
-                      updateResource(i, "kind", (e.target as HTMLSelectElement).value)}
+                      updateResource(
+                        i,
+                        "kind",
+                        (e.target as HTMLSelectElement).value,
+                      )}
                     class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                   >
                     {RESOURCE_KINDS.map((k) => (
@@ -776,13 +804,18 @@ function ReceiverFormModal({
                     type="text"
                     value={res.name}
                     onInput={(e) =>
-                      updateResource(i, "name", (e.target as HTMLInputElement).value)}
+                      updateResource(
+                        i,
+                        "name",
+                        (e.target as HTMLInputElement).value,
+                      )}
                     class="flex-1 rounded-md border border-border-primary bg-surface px-2 py-1.5 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     placeholder="* (wildcard)"
                   />
                   <button
                     type="button"
-                    onClick={() => removeResource(i)}
+                    onClick={() =>
+                      removeResource(i)}
                     disabled={form.resources.length <= 1}
                     class="rounded px-2 py-1 text-xs font-medium hover:bg-hover disabled:opacity-30"
                     style={{ color: "var(--error)" }}
@@ -834,11 +867,7 @@ function ReceiverFormModal({
             onClick={onSubmit}
             class="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 bg-brand hover:bg-brand/90"
           >
-            {submitting
-              ? "..."
-              : isEdit
-              ? "Update"
-              : "Create"}
+            {submitting ? "..." : isEdit ? "Update" : "Create"}
           </button>
         </div>
       </div>
