@@ -430,6 +430,55 @@ func TestValidateProviderInput(t *testing.T) {
 		err := ValidateProviderInput(input)
 		assertErrorContains(t, err, "unsupported provider type")
 	})
+
+	t.Run("invalid address not http", func(t *testing.T) {
+		input := ProviderInput{
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "slack",
+			Address:   "ftp://example.com",
+		}
+		err := ValidateProviderInput(input)
+		assertErrorContains(t, err, "invalid address")
+	})
+
+	t.Run("valid https address", func(t *testing.T) {
+		input := ProviderInput{
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "slack",
+			Address:   "https://hooks.slack.com/services/T00/B00/xxx",
+		}
+		if err := ValidateProviderInput(input); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("channel too long", func(t *testing.T) {
+		input := ProviderInput{
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "slack",
+		}
+		longChannel := make([]byte, 513)
+		for i := range longChannel {
+			longChannel[i] = 'a'
+		}
+		input.Channel = string(longChannel)
+		err := ValidateProviderInput(input)
+		assertErrorContains(t, err, "channel too long")
+	})
+
+	t.Run("invalid secretRef", func(t *testing.T) {
+		input := ProviderInput{
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "slack",
+			SecretRef: "INVALID_REF",
+		}
+		err := ValidateProviderInput(input)
+		assertErrorContains(t, err, "invalid secretRef")
+	})
 }
 
 // --- TestValidateAlertInput ---
@@ -471,6 +520,90 @@ func TestValidateAlertInput(t *testing.T) {
 		}
 		err := ValidateAlertInput(input)
 		assertErrorContains(t, err, "at least one event source")
+	})
+
+	t.Run("invalid providerRef", func(t *testing.T) {
+		input := AlertInput{
+			Name:        "my-alert",
+			Namespace:   "flux-system",
+			ProviderRef: "INVALID_REF",
+			EventSources: []EventSourceRef{
+				{Kind: "Kustomization", Name: "*"},
+			},
+		}
+		err := ValidateAlertInput(input)
+		assertErrorContains(t, err, "invalid providerRef")
+	})
+
+	t.Run("unsupported event source kind", func(t *testing.T) {
+		input := AlertInput{
+			Name:        "my-alert",
+			Namespace:   "flux-system",
+			ProviderRef: "slack-provider",
+			EventSources: []EventSourceRef{
+				{Kind: "Deployment", Name: "my-app"},
+			},
+		}
+		err := ValidateAlertInput(input)
+		assertErrorContains(t, err, "unsupported kind")
+	})
+
+	t.Run("invalid event source name", func(t *testing.T) {
+		input := AlertInput{
+			Name:        "my-alert",
+			Namespace:   "flux-system",
+			ProviderRef: "slack-provider",
+			EventSources: []EventSourceRef{
+				{Kind: "Kustomization", Name: "INVALID_NAME"},
+			},
+		}
+		err := ValidateAlertInput(input)
+		assertErrorContains(t, err, "invalid name")
+	})
+
+	t.Run("wildcard event source name allowed", func(t *testing.T) {
+		input := AlertInput{
+			Name:        "my-alert",
+			Namespace:   "flux-system",
+			ProviderRef: "slack-provider",
+			EventSources: []EventSourceRef{
+				{Kind: "Kustomization", Name: "*"},
+			},
+		}
+		if err := ValidateAlertInput(input); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("too many event sources", func(t *testing.T) {
+		sources := make([]EventSourceRef, 51)
+		for i := range sources {
+			sources[i] = EventSourceRef{Kind: "Kustomization", Name: "*"}
+		}
+		input := AlertInput{
+			Name:         "my-alert",
+			Namespace:    "flux-system",
+			ProviderRef:  "slack-provider",
+			EventSources: sources,
+		}
+		err := ValidateAlertInput(input)
+		assertErrorContains(t, err, "too many entries")
+	})
+
+	t.Run("too many inclusionList entries", func(t *testing.T) {
+		inclusions := make([]string, 51)
+		for i := range inclusions {
+			inclusions[i] = ".*pattern.*"
+		}
+		input := AlertInput{
+			Name:          "my-alert",
+			Namespace:     "flux-system",
+			ProviderRef:   "slack-provider",
+			EventSources:  []EventSourceRef{{Kind: "Kustomization", Name: "*"}},
+			InclusionList: inclusions,
+		}
+		err := ValidateAlertInput(input)
+		assertErrorContains(t, err, "inclusionList: too many entries")
 	})
 }
 
@@ -530,6 +663,115 @@ func TestValidateReceiverInput(t *testing.T) {
 		}
 		err := ValidateReceiverInput(input)
 		assertErrorContains(t, err, "at least one resource")
+	})
+
+	t.Run("invalid secretRef name", func(t *testing.T) {
+		input := ReceiverInput{
+			Name:      "my-receiver",
+			Namespace: "flux-system",
+			Type:      "github",
+			SecretRef: "INVALID_SECRET",
+			Resources: []EventSourceRef{
+				{Kind: "GitRepository", Name: "my-repo"},
+			},
+		}
+		err := ValidateReceiverInput(input)
+		assertErrorContains(t, err, "invalid secretRef")
+	})
+
+	t.Run("unsupported resource kind", func(t *testing.T) {
+		input := ReceiverInput{
+			Name:      "my-receiver",
+			Namespace: "flux-system",
+			Type:      "github",
+			SecretRef: "webhook-secret",
+			Resources: []EventSourceRef{
+				{Kind: "Deployment", Name: "my-app"},
+			},
+		}
+		err := ValidateReceiverInput(input)
+		assertErrorContains(t, err, "unsupported kind")
+	})
+
+	t.Run("too many resources", func(t *testing.T) {
+		resources := make([]EventSourceRef, 51)
+		for i := range resources {
+			resources[i] = EventSourceRef{Kind: "GitRepository", Name: "my-repo"}
+		}
+		input := ReceiverInput{
+			Name:      "my-receiver",
+			Namespace: "flux-system",
+			Type:      "github",
+			SecretRef: "webhook-secret",
+			Resources: resources,
+		}
+		err := ValidateReceiverInput(input)
+		assertErrorContains(t, err, "too many entries")
+	})
+}
+
+// --- TestValidateNameAndNamespace ---
+
+func TestValidateNameAndNamespace(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		if err := validateNameAndNamespace("my-resource", "flux-system"); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("empty name", func(t *testing.T) {
+		err := validateNameAndNamespace("", "flux-system")
+		assertErrorContains(t, err, "name is required")
+	})
+
+	t.Run("invalid name", func(t *testing.T) {
+		err := validateNameAndNamespace("UPPERCASE", "flux-system")
+		assertErrorContains(t, err, "invalid resource name")
+	})
+
+	t.Run("empty namespace", func(t *testing.T) {
+		err := validateNameAndNamespace("my-resource", "")
+		assertErrorContains(t, err, "namespace is required")
+	})
+
+	t.Run("invalid namespace", func(t *testing.T) {
+		err := validateNameAndNamespace("my-resource", "INVALID")
+		assertErrorContains(t, err, "invalid namespace")
+	})
+}
+
+// --- TestValidateEventSourceRefs ---
+
+func TestValidateEventSourceRefs(t *testing.T) {
+	t.Run("valid refs", func(t *testing.T) {
+		refs := []EventSourceRef{
+			{Kind: "Kustomization", Name: "my-app"},
+			{Kind: "HelmRelease", Name: "*"},
+		}
+		if err := validateEventSourceRefs(refs, "eventSources"); err != nil {
+			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("unsupported kind", func(t *testing.T) {
+		refs := []EventSourceRef{{Kind: "Service", Name: "svc"}}
+		err := validateEventSourceRefs(refs, "resources")
+		assertErrorContains(t, err, "unsupported kind")
+	})
+
+	t.Run("invalid name", func(t *testing.T) {
+		refs := []EventSourceRef{{Kind: "GitRepository", Name: "HAS_UPPERCASE"}}
+		err := validateEventSourceRefs(refs, "resources")
+		assertErrorContains(t, err, "invalid name")
+	})
+
+	t.Run("exceeds max count", func(t *testing.T) {
+		refs := make([]EventSourceRef, 51)
+		for i := range refs {
+			refs[i] = EventSourceRef{Kind: "Kustomization", Name: "*"}
+		}
+		err := validateEventSourceRefs(refs, "eventSources")
+		assertErrorContains(t, err, "too many entries")
 	})
 }
 

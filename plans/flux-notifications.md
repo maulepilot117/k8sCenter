@@ -20,7 +20,7 @@ k8sCenter manages Flux CD Kustomizations and HelmReleases but has no visibility 
 | WS kind names | `"flux-providers"`, `"flux-alerts"`, `"flux-receivers"` | Avoids collision with existing `"alerts"` kind in `alwaysAllowKinds` (Alertmanager). Critical for RBAC correctness. |
 | Caching | Separate singleflight + 30s TTL cache from gitops handler | Independent data, independent lifecycle. |
 | CRUD | Full CRUD for Provider, Alert, Receiver | Users need to create notification routing through the UI. |
-| Suspend | Provider and Alert only (not Receiver) | Receiver CRD v1 does not have `spec.suspend` field. |
+| Suspend | Provider, Alert, and Receiver | All three CRDs support `spec.suspend`. |
 | Multi-cluster | `ClusterRouter` field on handler, same as policy handler | Notification resources must respect X-Cluster-ID context. |
 | Provider create | Flat form: name, namespace, type (dropdown), address, channel, secretRef — all fields visible | Flux controller validates required fields per type. No frontend type-mapping needed. Enhance to dynamic form later if users struggle. |
 | Secret handling | Free-text secretRef name input (not a picker) | Avoids requiring `list secrets` RBAC. Show validation warning if secret doesn't exist after creation. |
@@ -255,7 +255,7 @@ Create the `notification` package with:
 - `NormalizeAlert(obj *unstructured.Unstructured)` → `NormalizedAlert`
 - `NormalizeReceiver(obj *unstructured.Unstructured)` → `NormalizedReceiver`
 - Reuse `mapFluxConditions()` pattern from `gitops/flux.go` for status extraction
-- CRUD: `CreateProvider`, `UpdateProvider`, `DeleteProvider`, `SuspendProvider` (same for Alert, Receiver minus suspend)
+- CRUD: `CreateProvider`, `UpdateProvider`, `DeleteProvider`, `SuspendProvider` (same for Alert and Receiver)
 - All writes use `DynamicClientForUser()` for impersonation
 - All CRUD-created resources get `app.kubernetes.io/managed-by: kubecenter` label
 - Input validation: `MaxBytesReader` (1KB for actions, 8KB for create/update), K8s name regex, required field checks
@@ -265,7 +265,7 @@ Handler:
 - `InvalidateCache()` exported for CRD watch callbacks
 - `HandleStatus`, `HandleListProviders`, `HandleListAlerts`, `HandleListReceivers` (all support `?namespace=` query param)
 - `HandleCreateProvider`, `HandleUpdateProvider`, `HandleDeleteProvider`, `HandleSuspendProvider`
-- Same pattern for alerts and receivers (minus suspend for receivers)
+- Same pattern for alerts and receivers
 - RBAC filtering via `AccessChecker.CanAccessGroupResource()` per namespace
 - Audit logging on all writes using generic `ActionCreate`/`ActionUpdate`/`ActionDelete` with `ResourceKind`; `ActionNotificationSuspend` for suspend toggle
 
@@ -310,7 +310,7 @@ go build ./cmd/kubecenter/
 - `TestCreateProvider_Validation` — invalid name, missing type, body size limits
 - `TestCreateProvider_ManagedByLabel` — verifies label is set on created resources
 - `TestSuspendProvider` — toggle suspend on/off
-- `TestSuspendReceiver_Rejected` — receivers don't support suspend
+- `TestSuspendReceiver` — toggle suspend on/off for receivers
 - `TestDiscovery_NotificationAvailable` — notification CRD probing sets ToolDetail field
 
 **Verification:**

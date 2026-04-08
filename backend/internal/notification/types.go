@@ -61,6 +61,20 @@ var validEventSeverities = map[string]bool{
 	"info": true, "error": true,
 }
 
+// validEventSourceKinds lists the Flux CRD kinds that can appear as event sources.
+var validEventSourceKinds = map[string]bool{
+	"Kustomization":         true,
+	"HelmRelease":           true,
+	"GitRepository":         true,
+	"OCIRepository":         true,
+	"Bucket":                true,
+	"HelmRepository":        true,
+	"HelmChart":             true,
+	"ImageRepository":       true,
+	"ImagePolicy":           true,
+	"ImageUpdateAutomation": true,
+}
+
 // NormalizedProvider is the normalized representation of a Flux Notification Provider.
 type NormalizedProvider struct {
 	Name      string `json:"name"`

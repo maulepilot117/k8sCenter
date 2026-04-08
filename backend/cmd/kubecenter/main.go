@@ -526,7 +526,7 @@ func main() {
 					return notification.NormalizeProvider(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateCache()
+					notificationHandler.InvalidateProviders()
 				})
 
 				websocket.RegisterAllowedKind("flux-alerts", "notification.toolkit.fluxcd.io")
@@ -534,7 +534,7 @@ func main() {
 					return notification.NormalizeAlert(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateCache()
+					notificationHandler.InvalidateAlerts()
 				})
 
 				websocket.RegisterAllowedKind("flux-receivers", "notification.toolkit.fluxcd.io")
@@ -542,7 +542,7 @@ func main() {
 					return notification.NormalizeReceiver(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateCache()
+					notificationHandler.InvalidateReceivers()
 				})
 			} else {
 				informerMgr.StopCRD(notification.FluxProviderGVR)

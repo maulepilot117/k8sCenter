@@ -33,129 +33,182 @@ type Handler struct {
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
 
-	fetchGroup singleflight.Group
-	cacheMu    sync.RWMutex
-	cached     *cachedNotifications
-	cacheGen   uint64 // incremented on invalidation; prevents stale writes
+	providerCache resourceCache[NormalizedProvider]
+	alertCache    resourceCache[NormalizedAlert]
+	receiverCache resourceCache[NormalizedReceiver]
+
+	providerGroup singleflight.Group
+	alertGroup    singleflight.Group
+	receiverGroup singleflight.Group
 }
 
-type cachedNotifications struct {
-	providers []NormalizedProvider
-	alerts    []NormalizedAlert
-	receivers []NormalizedReceiver
+// resourceCache holds a per-resource-type cache with its own mutex, TTL, and generation counter.
+type resourceCache[T any] struct {
+	mu        sync.RWMutex
+	items     []T
 	fetchedAt time.Time
+	gen       uint64
 }
 
 // ---------- cache layer ----------
 
-// fetchAll returns cached notification data, refreshing if stale.
-// Cache is populated using the service account; callers must RBAC-filter.
-func (h *Handler) fetchAll(ctx context.Context) (*cachedNotifications, error) {
-	h.cacheMu.RLock()
-	if h.cached != nil && time.Since(h.cached.fetchedAt) < cacheTTL {
-		c := h.cached
-		h.cacheMu.RUnlock()
-		return c, nil
+// fetchProviders returns cached providers, refreshing if stale.
+func (h *Handler) fetchProviders() ([]NormalizedProvider, error) {
+	h.providerCache.mu.RLock()
+	if h.providerCache.items != nil && time.Since(h.providerCache.fetchedAt) < cacheTTL {
+		items := h.providerCache.items
+		h.providerCache.mu.RUnlock()
+		return items, nil
 	}
-	h.cacheMu.RUnlock()
+	h.providerCache.mu.RUnlock()
 
-	result, err, _ := h.fetchGroup.Do("fetch", func() (any, error) {
-		return h.doFetch(ctx)
+	result, err, _ := h.providerGroup.Do("providers", func() (any, error) {
+		return h.doFetchProviders()
 	})
 	if err != nil {
 		return nil, err
 	}
-	return result.(*cachedNotifications), nil
+	return result.([]NormalizedProvider), nil
 }
 
-// doFetch queries providers, alerts, and receivers in parallel, then caches the result.
-func (h *Handler) doFetch(ctx context.Context) (*cachedNotifications, error) {
-	// Capture current generation to detect concurrent invalidations.
-	h.cacheMu.RLock()
-	gen := h.cacheGen
-	h.cacheMu.RUnlock()
+func (h *Handler) doFetchProviders() ([]NormalizedProvider, error) {
+	h.providerCache.mu.RLock()
+	gen := h.providerCache.gen
+	h.providerCache.mu.RUnlock()
 
-	dynClient := h.K8sClient.BaseDynamicClient()
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	type fetchResult[T any] struct {
-		items []T
-		err   error
+	items, err := ListProviders(fetchCtx, h.K8sClient.BaseDynamicClient())
+	if err != nil {
+		return nil, err
 	}
 
-	var wg sync.WaitGroup
-	providerCh := make(chan fetchResult[NormalizedProvider], 1)
-	alertCh := make(chan fetchResult[NormalizedAlert], 1)
-	receiverCh := make(chan fetchResult[NormalizedReceiver], 1)
-
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		var r fetchResult[NormalizedProvider]
-		r.items, r.err = ListProviders(ctx, dynClient)
-		providerCh <- r
-	}()
-	go func() {
-		defer wg.Done()
-		var r fetchResult[NormalizedAlert]
-		r.items, r.err = ListAlerts(ctx, dynClient)
-		alertCh <- r
-	}()
-	go func() {
-		defer wg.Done()
-		var r fetchResult[NormalizedReceiver]
-		r.items, r.err = ListReceivers(ctx, dynClient)
-		receiverCh <- r
-	}()
-	wg.Wait()
-
-	pr := <-providerCh
-	ar := <-alertCh
-	rr := <-receiverCh
-
-	// Log errors but don't fail the whole fetch — partial data is acceptable.
-	if pr.err != nil {
-		h.Logger.Warn("notification provider fetch error", "error", pr.err)
+	h.providerCache.mu.Lock()
+	if h.providerCache.gen == gen {
+		h.providerCache.items = items
+		h.providerCache.fetchedAt = time.Now()
 	}
-	if ar.err != nil {
-		h.Logger.Warn("notification alert fetch error", "error", ar.err)
-	}
-	if rr.err != nil {
-		h.Logger.Warn("notification receiver fetch error", "error", rr.err)
-	}
-
-	// If ALL three failed, return the first error.
-	if pr.err != nil && ar.err != nil && rr.err != nil {
-		return nil, fmt.Errorf("all notification fetches failed: providers: %w", pr.err)
-	}
-
-	data := &cachedNotifications{
-		providers: pr.items,
-		alerts:    ar.items,
-		receivers: rr.items,
-		fetchedAt: time.Now(),
-	}
-
-	// Only write cache if no invalidation occurred during fetch.
-	h.cacheMu.Lock()
-	if h.cacheGen == gen {
-		h.cached = data
-	}
-	h.cacheMu.Unlock()
-
-	return data, nil
+	h.providerCache.mu.Unlock()
+	return items, nil
 }
 
-// invalidateCache clears the cached data so the next request re-fetches.
-func (h *Handler) invalidateCache() {
-	h.cacheMu.Lock()
-	h.cached = nil
-	h.cacheGen++
-	h.cacheMu.Unlock()
+// fetchAlerts returns cached alerts, refreshing if stale.
+func (h *Handler) fetchAlerts() ([]NormalizedAlert, error) {
+	h.alertCache.mu.RLock()
+	if h.alertCache.items != nil && time.Since(h.alertCache.fetchedAt) < cacheTTL {
+		items := h.alertCache.items
+		h.alertCache.mu.RUnlock()
+		return items, nil
+	}
+	h.alertCache.mu.RUnlock()
+
+	result, err, _ := h.alertGroup.Do("alerts", func() (any, error) {
+		return h.doFetchAlerts()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]NormalizedAlert), nil
 }
 
-// InvalidateCache is the exported version for use by CRD event handlers.
+func (h *Handler) doFetchAlerts() ([]NormalizedAlert, error) {
+	h.alertCache.mu.RLock()
+	gen := h.alertCache.gen
+	h.alertCache.mu.RUnlock()
+
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	items, err := ListAlerts(fetchCtx, h.K8sClient.BaseDynamicClient())
+	if err != nil {
+		return nil, err
+	}
+
+	h.alertCache.mu.Lock()
+	if h.alertCache.gen == gen {
+		h.alertCache.items = items
+		h.alertCache.fetchedAt = time.Now()
+	}
+	h.alertCache.mu.Unlock()
+	return items, nil
+}
+
+// fetchReceivers returns cached receivers, refreshing if stale.
+func (h *Handler) fetchReceivers() ([]NormalizedReceiver, error) {
+	h.receiverCache.mu.RLock()
+	if h.receiverCache.items != nil && time.Since(h.receiverCache.fetchedAt) < cacheTTL {
+		items := h.receiverCache.items
+		h.receiverCache.mu.RUnlock()
+		return items, nil
+	}
+	h.receiverCache.mu.RUnlock()
+
+	result, err, _ := h.receiverGroup.Do("receivers", func() (any, error) {
+		return h.doFetchReceivers()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]NormalizedReceiver), nil
+}
+
+func (h *Handler) doFetchReceivers() ([]NormalizedReceiver, error) {
+	h.receiverCache.mu.RLock()
+	gen := h.receiverCache.gen
+	h.receiverCache.mu.RUnlock()
+
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	items, err := ListReceivers(fetchCtx, h.K8sClient.BaseDynamicClient())
+	if err != nil {
+		return nil, err
+	}
+
+	h.receiverCache.mu.Lock()
+	if h.receiverCache.gen == gen {
+		h.receiverCache.items = items
+		h.receiverCache.fetchedAt = time.Now()
+	}
+	h.receiverCache.mu.Unlock()
+	return items, nil
+}
+
+// InvalidateProviders clears only the providers cache.
+func (h *Handler) InvalidateProviders() {
+	h.providerCache.mu.Lock()
+	h.providerCache.items = nil
+	h.providerCache.gen++
+	h.providerCache.mu.Unlock()
+}
+
+// InvalidateAlerts clears only the alerts cache.
+func (h *Handler) InvalidateAlerts() {
+	h.alertCache.mu.Lock()
+	h.alertCache.items = nil
+	h.alertCache.gen++
+	h.alertCache.mu.Unlock()
+}
+
+// InvalidateReceivers clears only the receivers cache.
+func (h *Handler) InvalidateReceivers() {
+	h.receiverCache.mu.Lock()
+	h.receiverCache.items = nil
+	h.receiverCache.gen++
+	h.receiverCache.mu.Unlock()
+}
+
+// InvalidateAll clears all three caches.
+func (h *Handler) InvalidateAll() {
+	h.InvalidateProviders()
+	h.InvalidateAlerts()
+	h.InvalidateReceivers()
+}
+
+// InvalidateCache is kept for backward compatibility with CRD event handlers.
 func (h *Handler) InvalidateCache() {
-	h.invalidateCache()
+	h.InvalidateAll()
 }
 
 // ---------- RBAC filtering ----------
@@ -244,16 +297,27 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.fetchAll(r.Context())
-	available := err == nil
+	// Fetch all three independently — partial success is acceptable.
+	providers, provErr := h.fetchProviders()
+	alerts, alertErr := h.fetchAlerts()
+	receivers, recErr := h.fetchReceivers()
+
+	// Available if at least one resource type was fetchable.
+	available := provErr == nil || alertErr == nil || recErr == nil
 
 	ns := NotificationStatus{
 		Available: available,
 	}
 	if available {
-		ns.ProviderCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.providers, "providers"))
-		ns.AlertCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.alerts, "alerts"))
-		ns.ReceiverCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.receivers, "receivers"))
+		if provErr == nil {
+			ns.ProviderCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, providers, "providers"))
+		}
+		if alertErr == nil {
+			ns.AlertCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, alerts, "alerts"))
+		}
+		if recErr == nil {
+			ns.ReceiverCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, receivers, "receivers"))
+		}
 	}
 
 	httputil.WriteData(w, ns)
@@ -268,14 +332,14 @@ func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.fetchAll(r.Context())
+	allProviders, err := h.fetchProviders()
 	if err != nil {
 		h.Logger.Error("failed to fetch notification providers", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch providers", "")
 		return
 	}
 
-	providers := filterByRBAC(r.Context(), h.AccessChecker, user, data.providers, "providers")
+	providers := filterByRBAC(r.Context(), h.AccessChecker, user, allProviders, "providers")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedProvider
@@ -315,6 +379,12 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "providers", input.Namespace)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create providers in this namespace", "")
+		return
+	}
+
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		h.Logger.Error("failed to create impersonating client", "error", err)
@@ -330,7 +400,7 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Provider", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateProviders()
 	httputil.WriteData(w, provider)
 }
 
@@ -379,7 +449,7 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateProviders()
 	httputil.WriteData(w, provider)
 }
 
@@ -413,7 +483,7 @@ func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionDelete, "Provider", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateProviders()
 	httputil.WriteData(w, map[string]string{"message": "Deleted provider " + name})
 }
 
@@ -456,7 +526,7 @@ func (h *Handler) HandleSuspendProvider(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.auditLog(r, user, ActionNotificationSuspend, "Provider", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.invalidateCache()
+	h.InvalidateProviders()
 
 	msg := "Suspended provider " + name
 	if !req.Suspend {
@@ -474,14 +544,14 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.fetchAll(r.Context())
+	allAlerts, err := h.fetchAlerts()
 	if err != nil {
 		h.Logger.Error("failed to fetch notification alerts", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch alerts", "")
 		return
 	}
 
-	alerts := filterByRBAC(r.Context(), h.AccessChecker, user, data.alerts, "alerts")
+	alerts := filterByRBAC(r.Context(), h.AccessChecker, user, allAlerts, "alerts")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedAlert
@@ -521,6 +591,12 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "alerts", input.Namespace)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create alerts in this namespace", "")
+		return
+	}
+
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		h.Logger.Error("failed to create impersonating client", "error", err)
@@ -536,7 +612,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Alert", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateAlerts()
 	httputil.WriteData(w, alert)
 }
 
@@ -585,7 +661,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Alert", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateAlerts()
 	httputil.WriteData(w, alert)
 }
 
@@ -619,7 +695,7 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionDelete, "Alert", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateAlerts()
 	httputil.WriteData(w, map[string]string{"message": "Deleted alert " + name})
 }
 
@@ -662,7 +738,7 @@ func (h *Handler) HandleSuspendAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, ActionNotificationSuspend, "Alert", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.invalidateCache()
+	h.InvalidateAlerts()
 
 	msg := "Suspended alert " + name
 	if !req.Suspend {
@@ -680,14 +756,14 @@ func (h *Handler) HandleListReceivers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := h.fetchAll(r.Context())
+	allReceivers, err := h.fetchReceivers()
 	if err != nil {
 		h.Logger.Error("failed to fetch notification receivers", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch receivers", "")
 		return
 	}
 
-	receivers := filterByRBAC(r.Context(), h.AccessChecker, user, data.receivers, "receivers")
+	receivers := filterByRBAC(r.Context(), h.AccessChecker, user, allReceivers, "receivers")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedReceiver
@@ -727,6 +803,12 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "receivers", input.Namespace)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create receivers in this namespace", "")
+		return
+	}
+
 	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		h.Logger.Error("failed to create impersonating client", "error", err)
@@ -742,7 +824,7 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionCreate, "Receiver", input.Namespace, input.Name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateReceivers()
 	httputil.WriteData(w, receiver)
 }
 
@@ -791,7 +873,7 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionUpdate, "Receiver", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateReceivers()
 	httputil.WriteData(w, receiver)
 }
 
@@ -825,7 +907,7 @@ func (h *Handler) HandleDeleteReceiver(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.auditLog(r, user, audit.ActionDelete, "Receiver", ns, name, audit.ResultSuccess, "")
-	h.invalidateCache()
+	h.InvalidateReceivers()
 	httputil.WriteData(w, map[string]string{"message": "Deleted receiver " + name})
 }
 
@@ -868,7 +950,7 @@ func (h *Handler) HandleSuspendReceiver(w http.ResponseWriter, r *http.Request) 
 	}
 
 	h.auditLog(r, user, ActionNotificationSuspend, "Receiver", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
-	h.invalidateCache()
+	h.InvalidateReceivers()
 
 	msg := "Suspended receiver " + name
 	if !req.Suspend {

@@ -51,3 +51,24 @@ export interface NotificationStatus {
   alertCount: number;
   receiverCount: number;
 }
+
+/** Shared page size for all notification list views. */
+export const PAGE_SIZE = 100;
+
+/** Shared Tailwind class string for form inputs in notification modals. */
+export const INPUT_CLASS =
+  "w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand";
+
+/** Flux CRD resource kinds used in alert event sources and receiver resource subscriptions. */
+export const FLUX_RESOURCE_KINDS = [
+  "Kustomization",
+  "HelmRelease",
+  "GitRepository",
+  "HelmRepository",
+  "HelmChart",
+  "Bucket",
+  "OCIRepository",
+  "ImageRepository",
+  "ImagePolicy",
+  "ImageUpdateAutomation",
+] as const;
