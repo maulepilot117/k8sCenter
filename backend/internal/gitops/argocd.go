@@ -391,7 +391,10 @@ func NormalizeArgoAppSet(obj *unstructured.Unstructured) NormalizedAppSet {
 	// Template destination
 	destServer, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "destination", "server")
 	destNS, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "destination", "namespace")
-	templateDest := destServer + "/" + destNS
+	var templateDest string
+	if destServer != "" || destNS != "" {
+		templateDest = destServer + "/" + destNS
+	}
 
 	// Status from conditions
 	status := "Healthy"

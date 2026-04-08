@@ -59,7 +59,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   const fetchData = useCallback(async () => {
     try {
       const res = await apiGet<AppSetDetail>(
-        `/v1/gitops/appsets/${encodeURIComponent(id)}`,
+        `/v1/gitops/applicationsets/${encodeURIComponent(id)}`,
       );
       detail.value = res.data;
       error.value = null;
@@ -89,7 +89,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
     actionInFlight.value = true;
     try {
       const res = await apiPost<{ message: string }>(
-        `/v1/gitops/appsets/${encodeURIComponent(id)}/refresh`,
+        `/v1/gitops/applicationsets/${encodeURIComponent(id)}/refresh`,
       );
       showToast(res.data.message, "success");
       await fetchData();
@@ -104,7 +104,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   const handleDelete = useCallback(async () => {
     actionInFlight.value = true;
     try {
-      await apiDelete(`/v1/gitops/appsets/${encodeURIComponent(id)}`);
+      await apiDelete(`/v1/gitops/applicationsets/${encodeURIComponent(id)}`);
       showToast("ApplicationSet deleted", "success");
       globalThis.location.href = "/gitops/applicationsets";
     } catch (e: unknown) {

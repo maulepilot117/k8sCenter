@@ -44,7 +44,9 @@ export default function GitOpsAppSets() {
 
   async function fetchData() {
     try {
-      const res = await apiGet<AppSetListResponse>("/v1/gitops/appsets");
+      const res = await apiGet<AppSetListResponse>(
+        "/v1/gitops/applicationsets",
+      );
       appSets.value = Array.isArray(res.data.applicationSets)
         ? res.data.applicationSets
         : [];

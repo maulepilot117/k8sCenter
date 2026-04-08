@@ -732,8 +732,12 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fetch child apps per appset using label selector for accurate matching
-	dynClient := h.K8sClient.BaseDynamicClient()
+	// Fetch child apps per appset using label selector with user impersonation
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client for child apps", "error", err)
+		dynClient = h.K8sClient.BaseDynamicClient() // fallback to service account
+	}
 	for i := range filtered {
 		as := &filtered[i]
 		labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", as.Name)
@@ -759,11 +763,11 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 	})
 
 	httputil.WriteData(w, struct {
-		AppSets []NormalizedAppSet `json:"appSets"`
-		Total   int                `json:"total"`
+		ApplicationSets []NormalizedAppSet `json:"applicationSets"`
+		Total           int               `json:"total"`
 	}{
-		AppSets: filtered,
-		Total:   len(filtered),
+		ApplicationSets: filtered,
+		Total:           len(filtered),
 	})
 }
 
@@ -855,7 +859,6 @@ func (h *Handler) HandleDeleteAppSet(w http.ResponseWriter, r *http.Request) {
 	toolPrefix, ns, name, err := parseCompositeID(id)
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid applicationset ID", err.Error())
-		ok = false
 		return
 	}
 
