@@ -43,9 +43,10 @@ type GitOpsStatus struct {
 
 // ToolDetail describes a single GitOps tool's availability.
 type ToolDetail struct {
-	Available   bool     `json:"available"`
-	Namespace   string   `json:"namespace,omitempty"`
-	Controllers []string `json:"controllers,omitempty"` // Flux: ["source","kustomize","helm"]
+	Available        bool     `json:"available"`
+	Namespace        string   `json:"namespace,omitempty"`
+	Controllers      []string `json:"controllers,omitempty"` // Flux: ["source","kustomize","helm"]
+	AppSetsAvailable bool     `json:"appSetsAvailable,omitempty"`
 }
 
 // NormalizedApp is the tool-agnostic representation of a GitOps application.
@@ -109,4 +110,37 @@ type AppListMetadata struct {
 	Degraded    int `json:"degraded"`
 	Progressing int `json:"progressing"`
 	Suspended   int `json:"suspended"`
+}
+
+// NormalizedAppSet is the normalized representation of an Argo CD ApplicationSet.
+type NormalizedAppSet struct {
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Namespace           string          `json:"namespace"`
+	Tool                Tool            `json:"tool"`
+	GeneratorTypes      []string        `json:"generatorTypes"`
+	TemplateSource      AppSource       `json:"templateSource"`
+	TemplateDestination string          `json:"templateDestination"`
+	Status              string          `json:"status"`
+	StatusMessage       string          `json:"statusMessage,omitempty"`
+	GeneratedAppCount   int             `json:"generatedAppCount"`
+	Summary             AppListMetadata `json:"summary"`
+	PreserveOnDeletion  bool            `json:"preserveOnDeletion"`
+	CreatedAt           string          `json:"createdAt"`
+}
+
+// AppSetCondition represents a condition on an ApplicationSet.
+type AppSetCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// AppSetDetail is the full detail response for a single ApplicationSet.
+type AppSetDetail struct {
+	AppSet       NormalizedAppSet  `json:"appSet"`
+	Generators   []map[string]any  `json:"generators"`
+	Conditions   []AppSetCondition `json:"conditions"`
+	Applications []NormalizedApp   `json:"applications"`
 }

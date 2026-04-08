@@ -446,6 +446,12 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Post("/applications/{id}/sync", h.HandleSync)
 		gr.Post("/applications/{id}/suspend", h.HandleSuspend)
 		gr.Post("/applications/{id}/rollback", h.HandleRollback)
+
+		// ApplicationSet endpoints
+		gr.Get("/applicationsets", h.HandleListAppSets)
+		gr.Get("/applicationsets/{id}", h.HandleGetAppSet)
+		gr.Post("/applicationsets/{id}/refresh", h.HandleRefreshAppSet)
+		gr.Delete("/applicationsets/{id}", h.HandleDeleteAppSet)
 	})
 }
 

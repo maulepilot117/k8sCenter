@@ -19,6 +19,13 @@ var ArgoApplicationGVR = schema.GroupVersionResource{
 	Resource: "applications",
 }
 
+// ArgoApplicationSetGVR is the GVR for Argo CD ApplicationSet resources.
+var ArgoApplicationSetGVR = schema.GroupVersionResource{
+	Group:    "argoproj.io",
+	Version:  "v1alpha1",
+	Resource: "applicationsets",
+}
+
 // ListArgoApplications fetches all Argo CD Applications across namespaces
 // and returns them as normalized app objects.
 func ListArgoApplications(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedApp, error) {
@@ -342,6 +349,189 @@ func ResumeArgoApp(ctx context.Context, dynClient dynamic.Interface, ns, name st
 	}
 
 	return result, nil
+}
+
+// ListArgoAppSets fetches all Argo CD ApplicationSets across namespaces
+// and returns them as normalized objects.
+func ListArgoAppSets(ctx context.Context, dynClient dynamic.Interface) ([]NormalizedAppSet, error) {
+	list, err := dynClient.Resource(ArgoApplicationSetGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing argo cd applicationsets: %w", err)
+	}
+
+	appSets := make([]NormalizedAppSet, 0, len(list.Items))
+	for i := range list.Items {
+		appSets = append(appSets, NormalizeArgoAppSet(&list.Items[i]))
+	}
+
+	return appSets, nil
+}
+
+// NormalizeArgoAppSet extracts a NormalizedAppSet from an unstructured ApplicationSet.
+func NormalizeArgoAppSet(obj *unstructured.Unstructured) NormalizedAppSet {
+	name := obj.GetName()
+	ns := obj.GetNamespace()
+
+	// Generators
+	rawGenerators, _, _ := unstructured.NestedSlice(obj.Object, "spec", "generators")
+	generatorTypes := make([]string, 0, len(rawGenerators))
+	for _, raw := range rawGenerators {
+		genMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		generatorTypes = append(generatorTypes, detectGeneratorType(genMap))
+	}
+
+	// Template source
+	repoURL, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "source", "repoURL")
+	path, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "source", "path")
+	targetRevision, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "source", "targetRevision")
+
+	// Template destination
+	destServer, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "destination", "server")
+	destNS, _, _ := unstructured.NestedString(obj.Object, "spec", "template", "spec", "destination", "namespace")
+	var templateDest string
+	if destServer != "" || destNS != "" {
+		templateDest = destServer + "/" + destNS
+	}
+
+	// Status from conditions
+	status := "Healthy"
+	statusMessage := ""
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if found {
+		for _, raw := range conditions {
+			condMap, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			condType, _, _ := unstructured.NestedString(condMap, "type")
+			condStatus, _, _ := unstructured.NestedString(condMap, "status")
+
+			if condType == "ErrorOccurred" && condStatus == "True" {
+				status = "Error"
+				statusMessage, _, _ = unstructured.NestedString(condMap, "message")
+				break
+			}
+			if condType == "ResourcesUpToDate" && condStatus == "False" {
+				status = "Progressing"
+			}
+		}
+	}
+
+	// PreserveOnDeletion
+	preserveOnDeletion, _, _ := unstructured.NestedBool(obj.Object, "spec", "syncPolicy", "preserveResourcesOnDeletion")
+
+	// CreatedAt
+	createdAt := obj.GetCreationTimestamp().Format("2006-01-02T15:04:05Z")
+
+	return NormalizedAppSet{
+		ID:        fmt.Sprintf("argo-as:%s:%s", ns, name),
+		Name:      name,
+		Namespace: ns,
+		Tool:      ToolArgoCD,
+		GeneratorTypes: generatorTypes,
+		TemplateSource: AppSource{
+			RepoURL:        repoURL,
+			Path:           path,
+			TargetRevision: targetRevision,
+		},
+		TemplateDestination: templateDest,
+		Status:              status,
+		StatusMessage:       statusMessage,
+		PreserveOnDeletion:  preserveOnDeletion,
+		CreatedAt:           createdAt,
+	}
+}
+
+// GetArgoAppSetDetail fetches a single Argo CD ApplicationSet and returns its full detail.
+func GetArgoAppSetDetail(ctx context.Context, dynClient dynamic.Interface, namespace, name string) (*AppSetDetail, error) {
+	obj, err := dynClient.Resource(ArgoApplicationSetGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("getting argo cd applicationset %s/%s: %w", namespace, name, err)
+	}
+
+	appSet := NormalizeArgoAppSet(obj)
+
+	// Extract raw generators
+	rawGenerators, _, _ := unstructured.NestedSlice(obj.Object, "spec", "generators")
+	generators := make([]map[string]any, 0, len(rawGenerators))
+	for _, raw := range rawGenerators {
+		genMap, ok := raw.(map[string]interface{})
+		if ok {
+			generators = append(generators, genMap)
+		}
+	}
+
+	// Extract conditions
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := make([]AppSetCondition, 0, len(rawConditions))
+	for _, raw := range rawConditions {
+		condMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(condMap, "type")
+		condStatus, _, _ := unstructured.NestedString(condMap, "status")
+		condMessage, _, _ := unstructured.NestedString(condMap, "message")
+		condReason, _, _ := unstructured.NestedString(condMap, "reason")
+		conditions = append(conditions, AppSetCondition{
+			Type:    condType,
+			Status:  condStatus,
+			Message: condMessage,
+			Reason:  condReason,
+		})
+	}
+
+	return &AppSetDetail{
+		AppSet:     appSet,
+		Generators: generators,
+		Conditions: conditions,
+	}, nil
+}
+
+// RefreshArgoAppSet patches an annotation to trigger an ApplicationSet refresh.
+func RefreshArgoAppSet(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]interface{}{
+				"argocd.argoproj.io/application-set-refresh": "true",
+			},
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshaling appset refresh patch: %w", err)
+	}
+
+	_, err = dynClient.Resource(ArgoApplicationSetGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("patching argo cd applicationset %s/%s for refresh: %w", ns, name, err)
+	}
+
+	return nil
+}
+
+// DeleteArgoAppSet deletes an Argo CD ApplicationSet.
+func DeleteArgoAppSet(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
+	err := dynClient.Resource(ArgoApplicationSetGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("deleting argo cd applicationset %s/%s: %w", ns, name, err)
+	}
+	return nil
+}
+
+// detectGeneratorType identifies the generator type from an ApplicationSet generator map.
+func detectGeneratorType(gen map[string]interface{}) string {
+	knownTypes := []string{"list", "git", "clusters", "matrix", "merge", "pullRequest", "scmProvider", "clusterDecisionResource", "plugin"}
+	for _, t := range knownTypes {
+		if _, ok := gen[t]; ok {
+			return t
+		}
+	}
+	return "unknown"
 }
 
 // RollbackArgoApp triggers a sync to a specific historical revision.
