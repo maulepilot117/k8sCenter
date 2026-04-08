@@ -15,6 +15,7 @@ import type {
   NormalizedReceiver,
   NotificationStatus,
 } from "@/lib/notification-types.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 
 const PAGE_SIZE = 100;
 
@@ -47,19 +48,6 @@ const RESOURCE_KINDS = [
   "ImagePolicy",
   "ImageUpdateAutomation",
 ];
-
-/** Compute a human-friendly relative time string. */
-function timeAgo(dateStr: string): string {
-  const ms = Date.now() - new Date(dateStr).getTime();
-  if (ms < 0) return "just now";
-  const days = Math.floor(ms / 86400000);
-  if (days > 0) return `${days}d ago`;
-  const hours = Math.floor(ms / 3600000);
-  if (hours > 0) return `${hours}h ago`;
-  const mins = Math.floor(ms / 60000);
-  if (mins > 0) return `${mins}m ago`;
-  return "just now";
-}
 
 interface ReceiverFormResource {
   kind: string;
@@ -240,6 +228,27 @@ export default function FluxReceivers() {
     }
   }
 
+  async function handleSuspendToggle(r: NormalizedReceiver) {
+    try {
+      await apiPost(
+        `/v1/gitops/notifications/receivers/${encodeURIComponent(r.namespace)}/${
+          encodeURIComponent(r.name)
+        }/suspend`,
+        { suspend: !r.suspend },
+      );
+      showToast(
+        r.suspend ? `Resumed ${r.name}` : `Suspended ${r.name}`,
+        "success",
+      );
+      await fetchReceivers();
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : "Action failed",
+        "error",
+      );
+    }
+  }
+
   /** Copy text to clipboard with toast feedback. */
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).then(
@@ -394,6 +403,11 @@ export default function FluxReceivers() {
                   <tr key={key} class="hover:bg-hover/30">
                     <td class="px-3 py-2">
                       <div class="font-medium text-text-primary">{r.name}</div>
+                      {r.suspend && (
+                        <span class="text-xs" style={{ color: "var(--warning)" }}>
+                          suspended
+                        </span>
+                      )}
                     </td>
                     <td class="px-3 py-2 text-text-secondary text-xs">
                       {r.namespace}
@@ -442,7 +456,7 @@ export default function FluxReceivers() {
                         )}
                     </td>
                     <td class="px-3 py-2">
-                      <StatusBadge status={r.status} />
+                      <StatusBadge status={r.suspend ? "suspended" : r.status} />
                     </td>
                     <td class="px-3 py-2 text-text-muted text-xs">
                       {r.createdAt ? timeAgo(r.createdAt) : "-"}
@@ -474,6 +488,16 @@ export default function FluxReceivers() {
                               }}
                             >
                               Edit
+                            </button>
+                            <button
+                              type="button"
+                              class="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
+                              onClick={() => {
+                                openDropdown.value = null;
+                                handleSuspendToggle(r);
+                              }}
+                            >
+                              {r.suspend ? "Resume" : "Suspend"}
                             </button>
                             <button
                               type="button"

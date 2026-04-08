@@ -37,8 +37,9 @@ export interface NormalizedReceiver {
   namespace: string;
   type: string;
   resources: EventSourceRef[];
-  webhookPath: string;
   secretRef: string;
+  suspend: boolean;
+  webhookPath: string;
   status: string;
   message: string;
   createdAt: string;

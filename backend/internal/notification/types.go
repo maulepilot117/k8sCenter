@@ -30,7 +30,7 @@ var (
 const managedByLabel = "app.kubernetes.io/managed-by"
 const managedByValue = "kubecenter"
 
-var k8sNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
+var k8sNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$`)
 
 // validProviderTypes lists all supported Flux Notification Provider types.
 var validProviderTypes = map[string]bool{
@@ -54,6 +54,11 @@ var validReceiverTypes = map[string]bool{
 	"github": true, "gitlab": true, "bitbucket": true,
 	"harbor": true, "dockerhub": true, "quay": true,
 	"gcr": true, "nexus": true, "acr": true, "cdevents": true,
+}
+
+// validEventSeverities lists the Flux-supported event severity values.
+var validEventSeverities = map[string]bool{
+	"info": true, "error": true,
 }
 
 // NormalizedProvider is the normalized representation of a Flux Notification Provider.
@@ -99,8 +104,9 @@ type NormalizedReceiver struct {
 	Namespace   string           `json:"namespace"`
 	Type        string           `json:"type"`      // "github", "gitlab", "generic", etc.
 	Resources   []EventSourceRef `json:"resources"` // resources to reconcile
-	WebhookPath string           `json:"webhookPath"` // from status
 	SecretRef   string           `json:"secretRef"`
+	Suspend     bool             `json:"suspend"`
+	WebhookPath string           `json:"webhookPath"` // from status
 	Status      string           `json:"status"`
 	Message     string           `json:"message"`
 	CreatedAt   string           `json:"createdAt"`

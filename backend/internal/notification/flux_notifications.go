@@ -262,6 +262,7 @@ func NormalizeReceiver(obj *unstructured.Unstructured) NormalizedReceiver {
 	receiverType, _, _ := unstructured.NestedString(obj.Object, "spec", "type")
 	secretRef, _, _ := unstructured.NestedString(obj.Object, "spec", "secretRef", "name")
 	webhookPath, _, _ := unstructured.NestedString(obj.Object, "status", "webhookPath")
+	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
 
 	// Extract resources
 	resources := extractEventSources(obj, "spec", "resources")
@@ -269,12 +270,17 @@ func NormalizeReceiver(obj *unstructured.Unstructured) NormalizedReceiver {
 	conditions := extractConditions(obj)
 	status, message := mapReadyCondition(conditions)
 
+	if suspended {
+		status = "Suspended"
+	}
+
 	return NormalizedReceiver{
 		Name:        name,
 		Namespace:   namespace,
 		Type:        receiverType,
 		Resources:   resources,
 		SecretRef:   secretRef,
+		Suspend:     suspended,
 		WebhookPath: webhookPath,
 		Status:      status,
 		Message:     message,
@@ -336,6 +342,12 @@ func ValidateProviderInput(input ProviderInput) error {
 	if !k8sNameRegex.MatchString(input.Name) {
 		return fmt.Errorf("invalid resource name: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
 	}
+	if input.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if !k8sNameRegex.MatchString(input.Namespace) {
+		return fmt.Errorf("invalid namespace: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
+	}
 	if input.Type == "" {
 		return fmt.Errorf("type is required")
 	}
@@ -353,6 +365,15 @@ func ValidateAlertInput(input AlertInput) error {
 	if !k8sNameRegex.MatchString(input.Name) {
 		return fmt.Errorf("invalid resource name: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
 	}
+	if input.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if !k8sNameRegex.MatchString(input.Namespace) {
+		return fmt.Errorf("invalid namespace: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
+	}
+	if input.EventSeverity != "" && !validEventSeverities[input.EventSeverity] {
+		return fmt.Errorf("eventSeverity must be 'info' or 'error'")
+	}
 	if input.ProviderRef == "" {
 		return fmt.Errorf("providerRef is required")
 	}
@@ -369,6 +390,12 @@ func ValidateReceiverInput(input ReceiverInput) error {
 	}
 	if !k8sNameRegex.MatchString(input.Name) {
 		return fmt.Errorf("invalid resource name: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
+	}
+	if input.Namespace == "" {
+		return fmt.Errorf("namespace is required")
+	}
+	if !k8sNameRegex.MatchString(input.Namespace) {
+		return fmt.Errorf("invalid namespace: must match [a-z0-9]([a-z0-9-]*[a-z0-9])?")
 	}
 	if input.Type == "" {
 		return fmt.Errorf("type is required")
@@ -389,10 +416,6 @@ func ValidateReceiverInput(input ReceiverInput) error {
 
 // CreateProvider creates a new Flux Provider resource.
 func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string, input ProviderInput) (*NormalizedProvider, error) {
-	if err := ValidateProviderInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	spec := map[string]interface{}{
 		"type": input.Type,
 	}
@@ -434,31 +457,28 @@ func CreateProvider(ctx context.Context, dynClient dynamic.Interface, ns string,
 
 // UpdateProvider updates an existing Flux Provider resource.
 func UpdateProvider(ctx context.Context, dynClient dynamic.Interface, ns, name string, input ProviderInput) (*NormalizedProvider, error) {
-	if err := ValidateProviderInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	existing, err := dynClient.Resource(FluxProviderGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux provider %s/%s: %w", ns, name, err)
 	}
 
-	spec := map[string]interface{}{
-		"type": input.Type,
+	// Merge into existing spec to preserve fields not modeled by ProviderInput
+	// (e.g., suspend, proxy, certSecretRef, timeout, username).
+	existingSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
+	if existingSpec == nil {
+		existingSpec = make(map[string]interface{})
 	}
-	if input.Channel != "" {
-		spec["channel"] = input.Channel
-	}
-	if input.Address != "" {
-		spec["address"] = input.Address
-	}
+
+	existingSpec["type"] = input.Type
+	existingSpec["channel"] = input.Channel
+	existingSpec["address"] = input.Address
 	if input.SecretRef != "" {
-		spec["secretRef"] = map[string]interface{}{
+		existingSpec["secretRef"] = map[string]interface{}{
 			"name": input.SecretRef,
 		}
 	}
 
-	if err := unstructured.SetNestedField(existing.Object, spec, "spec"); err != nil {
+	if err := unstructured.SetNestedField(existing.Object, existingSpec, "spec"); err != nil {
 		return nil, fmt.Errorf("setting spec on provider: %w", err)
 	}
 
@@ -501,10 +521,6 @@ func SuspendProvider(ctx context.Context, dynClient dynamic.Interface, ns, name 
 
 // CreateAlert creates a new Flux Alert resource.
 func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, input AlertInput) (*NormalizedAlert, error) {
-	if err := ValidateAlertInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	eventSeverity := input.EventSeverity
 	if eventSeverity == "" {
 		eventSeverity = "info"
@@ -551,10 +567,6 @@ func CreateAlert(ctx context.Context, dynClient dynamic.Interface, ns string, in
 
 // UpdateAlert updates an existing Flux Alert resource.
 func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, ns, name string, input AlertInput) (*NormalizedAlert, error) {
-	if err := ValidateAlertInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	existing, err := dynClient.Resource(FluxAlertGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux alert %s/%s: %w", ns, name, err)
@@ -565,22 +577,31 @@ func UpdateAlert(ctx context.Context, dynClient dynamic.Interface, ns, name stri
 		eventSeverity = "info"
 	}
 
-	spec := map[string]interface{}{
-		"providerRef": map[string]interface{}{
-			"name": input.ProviderRef,
-		},
-		"eventSeverity": eventSeverity,
-		"eventSources":  buildEventSourcesSpec(input.EventSources),
+	// Merge into existing spec to preserve fields not modeled by AlertInput
+	// (e.g., suspend, summary).
+	existingSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
+	if existingSpec == nil {
+		existingSpec = make(map[string]interface{})
 	}
+
+	existingSpec["providerRef"] = map[string]interface{}{
+		"name": input.ProviderRef,
+	}
+	existingSpec["eventSeverity"] = eventSeverity
+	existingSpec["eventSources"] = buildEventSourcesSpec(input.EventSources)
 
 	if len(input.InclusionList) > 0 {
-		spec["inclusionList"] = buildStringSliceSpec(input.InclusionList)
+		existingSpec["inclusionList"] = buildStringSliceSpec(input.InclusionList)
+	} else {
+		delete(existingSpec, "inclusionList")
 	}
 	if len(input.ExclusionList) > 0 {
-		spec["exclusionList"] = buildStringSliceSpec(input.ExclusionList)
+		existingSpec["exclusionList"] = buildStringSliceSpec(input.ExclusionList)
+	} else {
+		delete(existingSpec, "exclusionList")
 	}
 
-	if err := unstructured.SetNestedField(existing.Object, spec, "spec"); err != nil {
+	if err := unstructured.SetNestedField(existing.Object, existingSpec, "spec"); err != nil {
 		return nil, fmt.Errorf("setting spec on alert: %w", err)
 	}
 
@@ -623,10 +644,6 @@ func SuspendAlert(ctx context.Context, dynClient dynamic.Interface, ns, name str
 
 // CreateReceiver creates a new Flux Receiver resource.
 func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, ns string, input ReceiverInput) (*NormalizedReceiver, error) {
-	if err := ValidateReceiverInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "notification.toolkit.fluxcd.io/v1",
@@ -659,24 +676,25 @@ func CreateReceiver(ctx context.Context, dynClient dynamic.Interface, ns string,
 
 // UpdateReceiver updates an existing Flux Receiver resource.
 func UpdateReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string, input ReceiverInput) (*NormalizedReceiver, error) {
-	if err := ValidateReceiverInput(input); err != nil {
-		return nil, fmt.Errorf("validation failed: %w", err)
-	}
-
 	existing, err := dynClient.Resource(FluxReceiverGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("getting flux receiver %s/%s: %w", ns, name, err)
 	}
 
-	spec := map[string]interface{}{
-		"type": input.Type,
-		"secretRef": map[string]interface{}{
-			"name": input.SecretRef,
-		},
-		"resources": buildEventSourcesSpec(input.Resources),
+	// Merge into existing spec to preserve fields not modeled by ReceiverInput
+	// (e.g., suspend, interval).
+	existingSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
+	if existingSpec == nil {
+		existingSpec = make(map[string]interface{})
 	}
 
-	if err := unstructured.SetNestedField(existing.Object, spec, "spec"); err != nil {
+	existingSpec["type"] = input.Type
+	existingSpec["secretRef"] = map[string]interface{}{
+		"name": input.SecretRef,
+	}
+	existingSpec["resources"] = buildEventSourcesSpec(input.Resources)
+
+	if err := unstructured.SetNestedField(existing.Object, existingSpec, "spec"); err != nil {
 		return nil, fmt.Errorf("setting spec on receiver: %w", err)
 	}
 
@@ -692,4 +710,25 @@ func UpdateReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name s
 // DeleteReceiver deletes a Flux Receiver resource.
 func DeleteReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string) error {
 	return dynClient.Resource(FluxReceiverGVR).Namespace(ns).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// SuspendReceiver suspends or resumes a Flux Receiver by patching spec.suspend.
+func SuspendReceiver(ctx context.Context, dynClient dynamic.Interface, ns, name string, suspend bool) error {
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"suspend": suspend,
+		},
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshaling suspend patch: %w", err)
+	}
+
+	_, err = dynClient.Resource(FluxReceiverGVR).Namespace(ns).Patch(ctx, name, types.MergePatchType, patchBytes, metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("patching flux receiver %s/%s suspend=%v: %w", ns, name, suspend, err)
+	}
+
+	return nil
 }

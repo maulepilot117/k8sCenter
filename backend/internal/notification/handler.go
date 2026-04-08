@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -159,58 +160,30 @@ func (h *Handler) InvalidateCache() {
 
 // ---------- RBAC filtering ----------
 
-func (h *Handler) filterProvidersByRBAC(ctx context.Context, user *auth.User, providers []NormalizedProvider) []NormalizedProvider {
-	type accessKey struct{ namespace string }
-	access := make(map[accessKey]bool)
-	var filtered []NormalizedProvider
-	for _, p := range providers {
-		key := accessKey{p.Namespace}
-		allowed, checked := access[key]
-		if !checked {
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", "providers", p.Namespace)
-			allowed = err == nil && can
-			access[key] = allowed
-		}
-		if allowed {
-			filtered = append(filtered, p)
-		}
-	}
-	return filtered
+// namespacedItem is implemented by normalized types that carry a Namespace field.
+type namespacedItem interface {
+	getNamespace() string
 }
 
-func (h *Handler) filterAlertsByRBAC(ctx context.Context, user *auth.User, alerts []NormalizedAlert) []NormalizedAlert {
-	type accessKey struct{ namespace string }
-	access := make(map[accessKey]bool)
-	var filtered []NormalizedAlert
-	for _, a := range alerts {
-		key := accessKey{a.Namespace}
-		allowed, checked := access[key]
-		if !checked {
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", "alerts", a.Namespace)
-			allowed = err == nil && can
-			access[key] = allowed
-		}
-		if allowed {
-			filtered = append(filtered, a)
-		}
-	}
-	return filtered
-}
+func (p NormalizedProvider) getNamespace() string { return p.Namespace }
+func (a NormalizedAlert) getNamespace() string    { return a.Namespace }
+func (r NormalizedReceiver) getNamespace() string { return r.Namespace }
 
-func (h *Handler) filterReceiversByRBAC(ctx context.Context, user *auth.User, receivers []NormalizedReceiver) []NormalizedReceiver {
+// filterByRBAC returns only items the user has permission to list in the given resource.
+func filterByRBAC[T namespacedItem](ctx context.Context, checker *resources.AccessChecker, user *auth.User, items []T, resource string) []T {
 	type accessKey struct{ namespace string }
 	access := make(map[accessKey]bool)
-	var filtered []NormalizedReceiver
-	for _, r := range receivers {
-		key := accessKey{r.Namespace}
+	var filtered []T
+	for _, item := range items {
+		key := accessKey{item.getNamespace()}
 		allowed, checked := access[key]
 		if !checked {
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", "receivers", r.Namespace)
+			can, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", resource, item.getNamespace())
 			allowed = err == nil && can
 			access[key] = allowed
 		}
 		if allowed {
-			filtered = append(filtered, r)
+			filtered = append(filtered, item)
 		}
 	}
 	return filtered
@@ -236,11 +209,37 @@ func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action
 	})
 }
 
+// writeK8sError maps a Kubernetes API error to an appropriate HTTP status code
+// and writes a user-friendly error response.
+func (h *Handler) writeK8sError(w http.ResponseWriter, err error, verb, kind, ns, name string) {
+	if apierrors.IsNotFound(err) {
+		httputil.WriteError(w, http.StatusNotFound, kind+" '"+name+"' not found in namespace '"+ns+"'", "")
+		return
+	}
+	if apierrors.IsForbidden(err) {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to "+verb+" "+kind+" '"+name+"'", "")
+		return
+	}
+	if apierrors.IsAlreadyExists(err) {
+		httputil.WriteError(w, http.StatusConflict, kind+" '"+name+"' already exists in namespace '"+ns+"'", "")
+		return
+	}
+	if apierrors.IsConflict(err) {
+		httputil.WriteError(w, http.StatusConflict, "conflict updating "+kind+" '"+name+"' — resource was modified", "")
+		return
+	}
+	if apierrors.IsInvalid(err) {
+		httputil.WriteError(w, http.StatusUnprocessableEntity, "invalid "+kind+" specification", "")
+		return
+	}
+	httputil.WriteError(w, http.StatusInternalServerError, "failed to "+verb+" "+kind, "")
+}
+
 // ---------- status ----------
 
 // HandleStatus returns the Flux Notification Controller availability status.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
-	_, ok := httputil.RequireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -248,16 +247,16 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	data, err := h.fetchAll(r.Context())
 	available := err == nil
 
-	status := NotificationStatus{
+	ns := NotificationStatus{
 		Available: available,
 	}
 	if available {
-		status.ProviderCount = len(data.providers)
-		status.AlertCount = len(data.alerts)
-		status.ReceiverCount = len(data.receivers)
+		ns.ProviderCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.providers, "providers"))
+		ns.AlertCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.alerts, "alerts"))
+		ns.ReceiverCount = len(filterByRBAC(r.Context(), h.AccessChecker, user, data.receivers, "receivers"))
 	}
 
-	httputil.WriteData(w, status)
+	httputil.WriteData(w, ns)
 }
 
 // ---------- providers ----------
@@ -276,7 +275,7 @@ func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	providers := h.filterProvidersByRBAC(r.Context(), user, data.providers)
+	providers := filterByRBAC(r.Context(), h.AccessChecker, user, data.providers, "providers")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedProvider
@@ -326,7 +325,7 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	provider, err := CreateProvider(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionCreate, "Provider", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create provider", "")
+		h.writeK8sError(w, err, "create", "Provider", input.Namespace, input.Name)
 		return
 	}
 
@@ -375,7 +374,7 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	provider, err := UpdateProvider(r.Context(), dynClient, ns, name, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionUpdate, "Provider", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update provider", "")
+		h.writeK8sError(w, err, "update", "Provider", ns, name)
 		return
 	}
 
@@ -409,7 +408,7 @@ func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 
 	if err := DeleteProvider(r.Context(), dynClient, ns, name); err != nil {
 		h.auditLog(r, user, audit.ActionDelete, "Provider", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete provider", "")
+		h.writeK8sError(w, err, "delete", "Provider", ns, name)
 		return
 	}
 
@@ -452,7 +451,7 @@ func (h *Handler) HandleSuspendProvider(w http.ResponseWriter, r *http.Request) 
 
 	if err := SuspendProvider(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
 		h.auditLog(r, user, ActionNotificationSuspend, "Provider", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", "")
+		h.writeK8sError(w, err, "patch", "Provider", ns, name)
 		return
 	}
 
@@ -482,7 +481,7 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	alerts := h.filterAlertsByRBAC(r.Context(), user, data.alerts)
+	alerts := filterByRBAC(r.Context(), h.AccessChecker, user, data.alerts, "alerts")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedAlert
@@ -532,7 +531,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 	alert, err := CreateAlert(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionCreate, "Alert", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create alert", "")
+		h.writeK8sError(w, err, "create", "Alert", input.Namespace, input.Name)
 		return
 	}
 
@@ -581,7 +580,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	alert, err := UpdateAlert(r.Context(), dynClient, ns, name, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionUpdate, "Alert", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update alert", "")
+		h.writeK8sError(w, err, "update", "Alert", ns, name)
 		return
 	}
 
@@ -615,7 +614,7 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 
 	if err := DeleteAlert(r.Context(), dynClient, ns, name); err != nil {
 		h.auditLog(r, user, audit.ActionDelete, "Alert", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete alert", "")
+		h.writeK8sError(w, err, "delete", "Alert", ns, name)
 		return
 	}
 
@@ -658,7 +657,7 @@ func (h *Handler) HandleSuspendAlert(w http.ResponseWriter, r *http.Request) {
 
 	if err := SuspendAlert(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
 		h.auditLog(r, user, ActionNotificationSuspend, "Alert", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update suspend state", "")
+		h.writeK8sError(w, err, "patch", "Alert", ns, name)
 		return
 	}
 
@@ -688,7 +687,7 @@ func (h *Handler) HandleListReceivers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	receivers := h.filterReceiversByRBAC(r.Context(), user, data.receivers)
+	receivers := filterByRBAC(r.Context(), h.AccessChecker, user, data.receivers, "receivers")
 
 	if ns := r.URL.Query().Get("namespace"); ns != "" {
 		var filtered []NormalizedReceiver
@@ -738,7 +737,7 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 	receiver, err := CreateReceiver(r.Context(), dynClient, input.Namespace, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionCreate, "Receiver", input.Namespace, input.Name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to create receiver", "")
+		h.writeK8sError(w, err, "create", "Receiver", input.Namespace, input.Name)
 		return
 	}
 
@@ -787,7 +786,7 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 	receiver, err := UpdateReceiver(r.Context(), dynClient, ns, name, input)
 	if err != nil {
 		h.auditLog(r, user, audit.ActionUpdate, "Receiver", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to update receiver", "")
+		h.writeK8sError(w, err, "update", "Receiver", ns, name)
 		return
 	}
 
@@ -821,11 +820,59 @@ func (h *Handler) HandleDeleteReceiver(w http.ResponseWriter, r *http.Request) {
 
 	if err := DeleteReceiver(r.Context(), dynClient, ns, name); err != nil {
 		h.auditLog(r, user, audit.ActionDelete, "Receiver", ns, name, audit.ResultFailure, err.Error())
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete receiver", "")
+		h.writeK8sError(w, err, "delete", "Receiver", ns, name)
 		return
 	}
 
 	h.auditLog(r, user, audit.ActionDelete, "Receiver", ns, name, audit.ResultSuccess, "")
 	h.invalidateCache()
 	httputil.WriteData(w, map[string]string{"message": "Deleted receiver " + name})
+}
+
+// HandleSuspendReceiver suspends or resumes a Flux notification Receiver.
+func (h *Handler) HandleSuspendReceiver(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	ns := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "receivers", ns)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this receiver", "")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var req struct {
+		Suspend bool `json:"suspend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	if err := SuspendReceiver(r.Context(), dynClient, ns, name, req.Suspend); err != nil {
+		h.auditLog(r, user, ActionNotificationSuspend, "Receiver", ns, name, audit.ResultFailure, err.Error())
+		h.writeK8sError(w, err, "patch", "Receiver", ns, name)
+		return
+	}
+
+	h.auditLog(r, user, ActionNotificationSuspend, "Receiver", ns, name, audit.ResultSuccess, fmt.Sprintf("suspend=%v", req.Suspend))
+	h.invalidateCache()
+
+	msg := "Suspended receiver " + name
+	if !req.Suspend {
+		msg = "Resumed receiver " + name
+	}
+	httputil.WriteData(w, map[string]string{"message": msg})
 }

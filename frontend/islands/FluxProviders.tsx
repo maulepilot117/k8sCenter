@@ -17,6 +17,7 @@ import type {
   NormalizedProvider,
   NotificationStatus,
 } from "@/lib/notification-types.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 
 const PAGE_SIZE = 100;
 
@@ -32,9 +33,12 @@ const PROVIDER_TYPES = [
   "generic",
   "generic-hmac",
   "gitea",
+  "giteapullrequestcomment",
   "github",
   "githubdispatch",
+  "githubpullrequestcomment",
   "gitlab",
+  "gitlabmergerequestcomment",
   "googlechat",
   "googlepubsub",
   "grafana",
@@ -43,28 +47,15 @@ const PROVIDER_TYPES = [
   "msteams",
   "nats",
   "opsgenie",
+  "otel",
   "pagerduty",
-  "prometheus",
-  "rocketchat",
+  "rocket",
   "sentry",
   "slack",
   "telegram",
   "webex",
-  "wecom",
+  "zulip",
 ];
-
-/** Compute a human-friendly relative time string. */
-function timeAgo(dateStr: string): string {
-  const ms = Date.now() - new Date(dateStr).getTime();
-  if (ms < 0) return "just now";
-  const days = Math.floor(ms / 86400000);
-  if (days > 0) return `${days}d ago`;
-  const hours = Math.floor(ms / 3600000);
-  if (hours > 0) return `${hours}h ago`;
-  const mins = Math.floor(ms / 60000);
-  if (mins > 0) return `${mins}m ago`;
-  return "just now";
-}
 
 interface ProviderForm {
   name: string;

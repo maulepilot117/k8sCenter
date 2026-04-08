@@ -413,8 +413,9 @@ func TestValidateProviderInput(t *testing.T) {
 
 	t.Run("empty type", func(t *testing.T) {
 		input := ProviderInput{
-			Name: "my-provider",
-			Type: "",
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "",
 		}
 		err := ValidateProviderInput(input)
 		assertErrorContains(t, err, "type is required")
@@ -422,8 +423,9 @@ func TestValidateProviderInput(t *testing.T) {
 
 	t.Run("invalid type", func(t *testing.T) {
 		input := ProviderInput{
-			Name: "my-provider",
-			Type: "foobar",
+			Name:      "my-provider",
+			Namespace: "flux-system",
+			Type:      "foobar",
 		}
 		err := ValidateProviderInput(input)
 		assertErrorContains(t, err, "unsupported provider type")
@@ -450,6 +452,7 @@ func TestValidateAlertInput(t *testing.T) {
 	t.Run("empty providerRef", func(t *testing.T) {
 		input := AlertInput{
 			Name:        "my-alert",
+			Namespace:   "flux-system",
 			ProviderRef: "",
 			EventSources: []EventSourceRef{
 				{Kind: "Kustomization", Name: "*"},
@@ -462,6 +465,7 @@ func TestValidateAlertInput(t *testing.T) {
 	t.Run("empty event sources", func(t *testing.T) {
 		input := AlertInput{
 			Name:         "my-alert",
+			Namespace:    "flux-system",
 			ProviderRef:  "slack-provider",
 			EventSources: []EventSourceRef{},
 		}
@@ -491,6 +495,7 @@ func TestValidateReceiverInput(t *testing.T) {
 	t.Run("invalid type", func(t *testing.T) {
 		input := ReceiverInput{
 			Name:      "my-receiver",
+			Namespace: "flux-system",
 			Type:      "foobar",
 			SecretRef: "webhook-secret",
 			Resources: []EventSourceRef{
@@ -504,6 +509,7 @@ func TestValidateReceiverInput(t *testing.T) {
 	t.Run("empty secretRef", func(t *testing.T) {
 		input := ReceiverInput{
 			Name:      "my-receiver",
+			Namespace: "flux-system",
 			Type:      "github",
 			SecretRef: "",
 			Resources: []EventSourceRef{
@@ -517,6 +523,7 @@ func TestValidateReceiverInput(t *testing.T) {
 	t.Run("empty resources", func(t *testing.T) {
 		input := ReceiverInput{
 			Name:      "my-receiver",
+			Namespace: "flux-system",
 			Type:      "github",
 			SecretRef: "webhook-secret",
 			Resources: []EventSourceRef{},
