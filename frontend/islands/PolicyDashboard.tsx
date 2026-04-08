@@ -107,14 +107,21 @@ export default function PolicyDashboard() {
           )}
         </div>
         {!loading.value && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
-          </Button>
+          <div class="flex items-center gap-2">
+            {!noEngine && (
+              <a href="/security/create-policy">
+                <Button type="button" variant="primary">Create Policy</Button>
+              </a>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleRefresh}
+              disabled={refreshing.value}
+            >
+              {refreshing.value ? "Refreshing..." : "Refresh"}
+            </Button>
+          </div>
         )}
       </div>
       <p class="text-sm text-text-muted mb-6">

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -93,13 +94,30 @@ func applyOne(
 		Namespace: obj.GetNamespace(),
 	}
 
-	// Resolve GVK → GVR
+	// Resolve GVK → GVR, with retry for newly-registered CRDs (e.g. Gatekeeper
+	// ConstraintTemplates that create CRDs on apply). The DeferredDiscoveryRESTMapper
+	// invalidates its cache on miss, so subsequent attempts will re-discover.
 	gvk := obj.GroupVersionKind()
-	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
-	if err != nil {
-		result.Action = "failed"
-		result.Error = fmt.Sprintf("unknown resource type %s: %v", gvk.String(), err)
-		return result
+	var mapping *meta.RESTMapping
+	for attempt := range 3 {
+		var mapErr error
+		mapping, mapErr = mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if mapErr == nil {
+			break
+		}
+		if attempt == 2 {
+			result.Action = "failed"
+			result.Error = fmt.Sprintf("unknown resource type %s: %v", gvk.String(), mapErr)
+			return result
+		}
+		logger.Info("waiting for CRD discovery", "gvk", gvk.String(), "attempt", attempt+1)
+		select {
+		case <-ctx.Done():
+			result.Action = "failed"
+			result.Error = fmt.Sprintf("context cancelled waiting for CRD %s", gvk.String())
+			return result
+		case <-time.After(2 * time.Second):
+		}
 	}
 
 	// Get the appropriate resource interface (namespaced or cluster-scoped)

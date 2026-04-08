@@ -296,13 +296,16 @@ make check-dashboards                             # Verify Grafana JSON sync
     - 3 routes: `/gitops/{index,applications,applications/[id]}` with SubNav
     - Shared modules: `lib/gitops-types.ts`, `components/ui/GitOpsBadges.tsx`, `lib/k8s-links.ts` (extracted shared resourceHref)
     - Nav: GitOps section with Applications tab, command palette quick action
+- **Phase 10 (Security Scanning):** COMPLETE
+  - Trivy Operator + Kubescape integration (vulnerability reports, config audits, compliance frameworks)
+- **Post-Phase Enhancements:** COMPLETE — 3 items
+  - GitOps actions: sync, suspend/resume, rollback for Argo CD + Flux CD (#147)
+  - Real-time WebSocket updates: watch GitOps & Policy CRDs for live sync status (#148)
+  - White flash fix: eliminated FOUC on page navigation (#146)
 
 ## Future Features (Roadmap)
 
-- **Security scanning** — Trivy Operator + Kubescape integration (vulnerability reports, config audits, compliance frameworks)
-- **GitOps actions** — POST endpoints to trigger Argo CD sync or Flux reconciliation/rollback
 - **Policy creation wizards** — 17 common Kyverno/Gatekeeper policy templates
-- **Real-time WebSocket updates** — watch GitOps/Policy CRDs for live sync status
 - **Compliance trend storage** — PostgreSQL daily snapshots for historical compliance scoring
 - **ApplicationSet support** — Argo CD ApplicationSet generators and outputs
 - **Flux notifications** — webhook receiver integration for Flux alerts
