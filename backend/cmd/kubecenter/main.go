@@ -30,6 +30,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
@@ -468,6 +469,13 @@ func main() {
 		AuditLogger:   auditLogger,
 	}
 
+	notificationHandler := &notification.Handler{
+		K8sClient:     k8sClient,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+		AuditLogger:   auditLogger,
+	}
+
 	// Wire GitOps CRD watches — when tools are discovered, start dynamic informers
 	// and register kinds for WebSocket subscriptions. Events invalidate the REST cache.
 	gitopsDiscoverer.SetOnChange(func(argoAvailable, fluxAvailable bool) {
@@ -509,6 +517,41 @@ func main() {
 				hub.HandleEvent(eventType, kind, ns, name, obj)
 				gitopsHandler.InvalidateCache()
 			})
+
+			// Notification CRD watches — check status directly since callback doesn't carry notification flag
+			status := gitopsDiscoverer.Status()
+			if status.FluxCD != nil && status.FluxCD.NotificationAvailable {
+				websocket.RegisterAllowedKind("flux-providers", "notification.toolkit.fluxcd.io")
+				informerMgr.WatchCRD(ctx, notification.FluxProviderGVR, "flux-providers", func(obj *unstructured.Unstructured) (any, error) {
+					return notification.NormalizeProvider(obj), nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					notificationHandler.InvalidateCache()
+				})
+
+				websocket.RegisterAllowedKind("flux-alerts", "notification.toolkit.fluxcd.io")
+				informerMgr.WatchCRD(ctx, notification.FluxAlertGVR, "flux-alerts", func(obj *unstructured.Unstructured) (any, error) {
+					return notification.NormalizeAlert(obj), nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					notificationHandler.InvalidateCache()
+				})
+
+				websocket.RegisterAllowedKind("flux-receivers", "notification.toolkit.fluxcd.io")
+				informerMgr.WatchCRD(ctx, notification.FluxReceiverGVR, "flux-receivers", func(obj *unstructured.Unstructured) (any, error) {
+					return notification.NormalizeReceiver(obj), nil
+				}, func(eventType, kind, ns, name string, obj any) {
+					hub.HandleEvent(eventType, kind, ns, name, obj)
+					notificationHandler.InvalidateCache()
+				})
+			} else {
+				informerMgr.StopCRD(notification.FluxProviderGVR)
+				websocket.UnregisterAllowedKind("flux-providers")
+				informerMgr.StopCRD(notification.FluxAlertGVR)
+				websocket.UnregisterAllowedKind("flux-alerts")
+				informerMgr.StopCRD(notification.FluxReceiverGVR)
+				websocket.UnregisterAllowedKind("flux-receivers")
+			}
 		} else {
 			informerMgr.StopCRD(gitops.FluxKustomizationGVR)
 			websocket.UnregisterAllowedKind("kustomizations")
@@ -563,6 +606,7 @@ func main() {
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
 		GitOpsHandler:        gitopsHandler,
+		NotificationHandler:    notificationHandler,
 		ScanningHandler:      scanHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,

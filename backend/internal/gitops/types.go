@@ -43,10 +43,11 @@ type GitOpsStatus struct {
 
 // ToolDetail describes a single GitOps tool's availability.
 type ToolDetail struct {
-	Available        bool     `json:"available"`
-	Namespace        string   `json:"namespace,omitempty"`
-	Controllers      []string `json:"controllers,omitempty"` // Flux: ["source","kustomize","helm"]
-	AppSetsAvailable bool     `json:"appSetsAvailable,omitempty"`
+	Available             bool     `json:"available"`
+	Namespace             string   `json:"namespace,omitempty"`
+	Controllers           []string `json:"controllers,omitempty"` // Flux: ["source","kustomize","helm","notification"]
+	AppSetsAvailable      bool     `json:"appSetsAvailable,omitempty"`
+	NotificationAvailable bool     `json:"notificationAvailable,omitempty"`
 }
 
 // NormalizedApp is the tool-agnostic representation of a GitOps application.

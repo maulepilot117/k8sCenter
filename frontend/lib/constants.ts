@@ -566,6 +566,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     tabs: [
       { label: "Applications", href: "/gitops/applications" },
       { label: "ApplicationSets", href: "/gitops/applicationsets" },
+      { label: "Notifications", href: "/gitops/notifications" },
     ],
   },
   {

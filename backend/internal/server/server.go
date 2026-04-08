@@ -22,6 +22,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -63,6 +64,7 @@ type Server struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
+	NotificationHandler  *notification.Handler
 	ScanningHandler      *scanning.Handler
 	CRDHandler           *resources.GenericCRDHandler
 	Hub                  *websocket.Hub
@@ -101,6 +103,7 @@ type Deps struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
+	NotificationHandler  *notification.Handler
 	ScanningHandler      *scanning.Handler
 	CRDHandler           *resources.GenericCRDHandler
 	LogQueryLimiter      *middleware.RateLimiter
@@ -225,6 +228,11 @@ func New(deps Deps) *Server {
 	// GitOps handler
 	if deps.GitOpsHandler != nil {
 		s.GitOpsHandler = deps.GitOpsHandler
+	}
+
+	// Notification handler
+	if deps.NotificationHandler != nil {
+		s.NotificationHandler = deps.NotificationHandler
 	}
 
 	// Scanning handler

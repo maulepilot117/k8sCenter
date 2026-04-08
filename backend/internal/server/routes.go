@@ -452,6 +452,28 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Get("/applicationsets/{id}", h.HandleGetAppSet)
 		gr.Post("/applicationsets/{id}/refresh", h.HandleRefreshAppSet)
 		gr.Delete("/applicationsets/{id}", h.HandleDeleteAppSet)
+
+		// Notification routes — only if handler is available
+		if s.NotificationHandler != nil {
+			nh := s.NotificationHandler
+			gr.Route("/notifications", func(nr chi.Router) {
+				nr.Get("/status", nh.HandleStatus)
+				nr.Get("/providers", nh.HandleListProviders)
+				nr.Get("/alerts", nh.HandleListAlerts)
+				nr.Get("/receivers", nh.HandleListReceivers)
+				nr.Post("/providers", nh.HandleCreateProvider)
+				nr.Put("/providers/{namespace}/{name}", nh.HandleUpdateProvider)
+				nr.Delete("/providers/{namespace}/{name}", nh.HandleDeleteProvider)
+				nr.Post("/providers/{namespace}/{name}/suspend", nh.HandleSuspendProvider)
+				nr.Post("/alerts", nh.HandleCreateAlert)
+				nr.Put("/alerts/{namespace}/{name}", nh.HandleUpdateAlert)
+				nr.Delete("/alerts/{namespace}/{name}", nh.HandleDeleteAlert)
+				nr.Post("/alerts/{namespace}/{name}/suspend", nh.HandleSuspendAlert)
+				nr.Post("/receivers", nh.HandleCreateReceiver)
+				nr.Put("/receivers/{namespace}/{name}", nh.HandleUpdateReceiver)
+				nr.Delete("/receivers/{namespace}/{name}", nh.HandleDeleteReceiver)
+			})
+		}
 	})
 }
 

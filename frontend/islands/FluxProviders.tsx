@@ -1,0 +1,743 @@
+import { useSignal } from "@preact/signals";
+import { IS_BROWSER } from "fresh/runtime";
+import { useEffect, useRef } from "preact/hooks";
+import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
+import { wsStatus } from "@/lib/ws.ts";
+import { useWsRefetch } from "@/lib/useWsRefetch.ts";
+import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { Button } from "@/components/ui/Button.tsx";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { showToast } from "@/islands/ToastProvider.tsx";
+import {
+  ProviderTypeBadge,
+  StatusBadge,
+} from "@/components/ui/NotificationBadges.tsx";
+import type {
+  NormalizedProvider,
+  NotificationStatus,
+} from "@/lib/notification-types.ts";
+
+const PAGE_SIZE = 100;
+
+/** All Flux notification provider types (alphabetical). */
+const PROVIDER_TYPES = [
+  "alertmanager",
+  "azuredevops",
+  "azureeventhub",
+  "bitbucket",
+  "bitbucketserver",
+  "datadog",
+  "discord",
+  "generic",
+  "generic-hmac",
+  "gitea",
+  "github",
+  "githubdispatch",
+  "gitlab",
+  "googlechat",
+  "googlepubsub",
+  "grafana",
+  "lark",
+  "matrix",
+  "msteams",
+  "nats",
+  "opsgenie",
+  "pagerduty",
+  "prometheus",
+  "rocketchat",
+  "sentry",
+  "slack",
+  "telegram",
+  "webex",
+  "wecom",
+];
+
+/** Compute a human-friendly relative time string. */
+function timeAgo(dateStr: string): string {
+  const ms = Date.now() - new Date(dateStr).getTime();
+  if (ms < 0) return "just now";
+  const days = Math.floor(ms / 86400000);
+  if (days > 0) return `${days}d ago`;
+  const hours = Math.floor(ms / 3600000);
+  if (hours > 0) return `${hours}h ago`;
+  const mins = Math.floor(ms / 60000);
+  if (mins > 0) return `${mins}m ago`;
+  return "just now";
+}
+
+interface ProviderForm {
+  name: string;
+  namespace: string;
+  type: string;
+  address: string;
+  channel: string;
+  secretRef: string;
+}
+
+const EMPTY_FORM: ProviderForm = {
+  name: "",
+  namespace: "default",
+  type: "slack",
+  address: "",
+  channel: "",
+  secretRef: "",
+};
+
+export default function FluxProviders() {
+  const status = useSignal<NotificationStatus | null>(null);
+  const providers = useSignal<NormalizedProvider[]>([]);
+  const loading = useSignal(true);
+  const error = useSignal<string | null>(null);
+  const search = useSignal("");
+  const page = useSignal(1);
+  const refreshing = useSignal(false);
+
+  // Modal state
+  const showForm = useSignal(false);
+  const editingProvider = useSignal<NormalizedProvider | null>(null);
+  const form = useSignal<ProviderForm>({ ...EMPTY_FORM });
+  const formSubmitting = useSignal(false);
+  const formError = useSignal<string | null>(null);
+
+  // Delete confirmation
+  const deleteTarget = useSignal<NormalizedProvider | null>(null);
+  const deleteLoading = useSignal(false);
+
+  // Actions dropdown
+  const openDropdown = useSignal<string | null>(null);
+
+  async function fetchProviders() {
+    try {
+      const [statusRes, providersRes] = await Promise.all([
+        apiGet<NotificationStatus>("/v1/gitops/notifications/status"),
+        apiGet<{ providers: NormalizedProvider[] }>(
+          "/v1/gitops/notifications/providers",
+        ),
+      ]);
+      status.value = statusRes.data;
+      providers.value = Array.isArray(providersRes.data.providers)
+        ? providersRes.data.providers
+        : [];
+      error.value = null;
+    } catch {
+      error.value = "Failed to load notification providers";
+    }
+  }
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    fetchProviders().then(() => {
+      loading.value = false;
+    });
+  }, []);
+
+  useWsRefetch(fetchProviders, [
+    ["flux-providers-sub", "flux-providers", ""],
+  ], 1000);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const handler = () => {
+      openDropdown.value = null;
+    };
+    globalThis.addEventListener("click", handler);
+    return () => globalThis.removeEventListener("click", handler);
+  }, []);
+
+  async function handleRefresh() {
+    refreshing.value = true;
+    await fetchProviders();
+    refreshing.value = false;
+  }
+
+  function openCreate() {
+    editingProvider.value = null;
+    form.value = { ...EMPTY_FORM };
+    formError.value = null;
+    showForm.value = true;
+  }
+
+  function openEdit(p: NormalizedProvider) {
+    editingProvider.value = p;
+    form.value = {
+      name: p.name,
+      namespace: p.namespace,
+      type: p.type,
+      address: p.address,
+      channel: p.channel,
+      secretRef: p.secretRef,
+    };
+    formError.value = null;
+    showForm.value = true;
+  }
+
+  async function handleFormSubmit() {
+    if (formSubmitting.value) return;
+    const f = form.value;
+    if (!f.name.trim()) {
+      formError.value = "Name is required";
+      return;
+    }
+    formSubmitting.value = true;
+    formError.value = null;
+    try {
+      if (editingProvider.value) {
+        await apiPut(
+          `/v1/gitops/notifications/providers/${
+            encodeURIComponent(editingProvider.value.namespace)
+          }/${encodeURIComponent(editingProvider.value.name)}`,
+          f,
+        );
+        showToast("Provider updated", "success");
+      } else {
+        await apiPost("/v1/gitops/notifications/providers", f);
+        showToast("Provider created", "success");
+      }
+      showForm.value = false;
+      await fetchProviders();
+    } catch (err) {
+      formError.value = err instanceof Error
+        ? err.message
+        : "Failed to save provider";
+    } finally {
+      formSubmitting.value = false;
+    }
+  }
+
+  async function handleSuspendToggle(p: NormalizedProvider) {
+    try {
+      await apiPost(
+        `/v1/gitops/notifications/providers/${encodeURIComponent(p.namespace)}/${
+          encodeURIComponent(p.name)
+        }/suspend`,
+        { suspend: !p.suspend },
+      );
+      showToast(
+        p.suspend ? `Resumed ${p.name}` : `Suspended ${p.name}`,
+        "success",
+      );
+      await fetchProviders();
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : "Action failed",
+        "error",
+      );
+    }
+  }
+
+  async function handleDelete(p: NormalizedProvider) {
+    if (deleteLoading.value) return;
+    deleteLoading.value = true;
+    try {
+      await apiDelete(
+        `/v1/gitops/notifications/providers/${encodeURIComponent(p.namespace)}/${
+          encodeURIComponent(p.name)
+        }`,
+      );
+      showToast(`Deleted ${p.name}`, "success");
+      deleteTarget.value = null;
+      await fetchProviders();
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : "Delete failed",
+        "error",
+      );
+    } finally {
+      deleteLoading.value = false;
+    }
+  }
+
+  if (!IS_BROWSER) return null;
+
+  const notAvailable = status.value && !status.value.available;
+
+  const filtered = providers.value.filter((p) => {
+    if (!search.value) return true;
+    const q = search.value.toLowerCase();
+    return (
+      p.name.toLowerCase().includes(q) ||
+      p.namespace.toLowerCase().includes(q) ||
+      p.type.toLowerCase().includes(q) ||
+      p.channel.toLowerCase().includes(q) ||
+      p.address.toLowerCase().includes(q)
+    );
+  });
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
+  if (page.value > totalPages) page.value = totalPages;
+  const displayed = filtered.slice(
+    (page.value - 1) * PAGE_SIZE,
+    page.value * PAGE_SIZE,
+  );
+
+  return (
+    <div class="p-6">
+      <div class="flex items-center justify-between mb-1">
+        <div class="flex items-center gap-2">
+          <h1 class="text-2xl font-bold text-text-primary">Providers</h1>
+          {wsStatus.value === "connected" && (
+            <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
+              <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
+        <div class="flex items-center gap-2">
+          {!loading.value && (
+            <>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={openCreate}
+                disabled={!!notAvailable}
+              >
+                Create Provider
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={handleRefresh}
+                disabled={refreshing.value}
+              >
+                {refreshing.value ? "Refreshing..." : "Refresh"}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+      <p class="text-sm text-text-muted mb-6">
+        Flux notification providers &mdash; configure where alerts are sent.
+      </p>
+
+      {/* Unavailable banner */}
+      {notAvailable && !loading.value && (
+        <div class="mb-6 rounded-lg border p-4 bg-bg-elevated" style={{ borderColor: "var(--warning)" }}>
+          <p class="text-sm font-medium" style={{ color: "var(--warning)" }}>
+            Flux notification-controller not detected
+          </p>
+          <p class="text-xs text-text-muted mt-1">
+            Install the Flux notification-controller to manage notification
+            providers.{" "}
+            <a
+              href="https://fluxcd.io/docs/components/notification/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-brand hover:underline"
+            >
+              Learn more &rarr;
+            </a>
+          </p>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div class="mb-4 flex flex-wrap items-center gap-4">
+        <div class="flex-1 max-w-xs">
+          <SearchBar
+            value={search.value}
+            onInput={(v) => {
+              search.value = v;
+              page.value = 1;
+            }}
+            placeholder="Filter by name, namespace, type..."
+          />
+        </div>
+        <span class="text-xs text-text-muted">
+          {filtered.length} of {providers.value.length} providers
+        </span>
+      </div>
+
+      {loading.value && (
+        <div class="flex justify-center py-12">
+          <Spinner class="text-brand" />
+        </div>
+      )}
+
+      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+
+      {!loading.value && !error.value && filtered.length > 0 && (
+        <div class="overflow-x-auto rounded-lg border border-border-primary">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border-primary bg-surface">
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Name
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Namespace
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Type
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Channel / Address
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Status
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Created
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border-subtle">
+              {displayed.map((p) => {
+                const key = `${p.namespace}/${p.name}`;
+                return (
+                  <tr key={key} class="hover:bg-hover/30">
+                    <td class="px-3 py-2">
+                      <div class="font-medium text-text-primary">{p.name}</div>
+                      {p.suspend && (
+                        <span class="text-xs" style={{ color: "var(--warning)" }}>
+                          suspended
+                        </span>
+                      )}
+                    </td>
+                    <td class="px-3 py-2 text-text-secondary text-xs">
+                      {p.namespace}
+                    </td>
+                    <td class="px-3 py-2">
+                      <ProviderTypeBadge type={p.type} />
+                    </td>
+                    <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[240px]">
+                      {p.channel || p.address || "-"}
+                    </td>
+                    <td class="px-3 py-2">
+                      <StatusBadge
+                        status={p.suspend ? "suspended" : p.status}
+                      />
+                    </td>
+                    <td class="px-3 py-2 text-text-muted text-xs">
+                      {p.createdAt ? timeAgo(p.createdAt) : "-"}
+                    </td>
+                    <td class="px-3 py-2">
+                      <div class="relative">
+                        <button
+                          type="button"
+                          class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDropdown.value =
+                              openDropdown.value === key ? null : key;
+                          }}
+                        >
+                          &hellip;
+                        </button>
+                        {openDropdown.value === key && (
+                          <div
+                            class="absolute right-0 z-40 mt-1 w-40 rounded-md border border-border-primary bg-surface shadow-lg"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              class="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
+                              onClick={() => {
+                                openDropdown.value = null;
+                                openEdit(p);
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              class="w-full text-left px-3 py-2 text-sm text-text-primary hover:bg-hover"
+                              onClick={() => {
+                                openDropdown.value = null;
+                                handleSuspendToggle(p);
+                              }}
+                            >
+                              {p.suspend ? "Resume" : "Suspend"}
+                            </button>
+                            <button
+                              type="button"
+                              class="w-full text-left px-3 py-2 text-sm hover:bg-hover"
+                              style={{ color: "var(--error)" }}
+                              onClick={() => {
+                                openDropdown.value = null;
+                                deleteTarget.value = p;
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Pagination */}
+      {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
+        <div class="mt-4 flex items-center justify-between">
+          <p class="text-sm text-text-muted">
+            {filtered.length} providers &middot; Page {page.value} of{" "}
+            {totalPages}
+          </p>
+          <div class="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value--;
+              }}
+              disabled={page.value <= 1}
+            >
+              Previous
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                page.value++;
+              }}
+              disabled={page.value >= totalPages}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading.value && !error.value && filtered.length === 0 &&
+        !notAvailable && (
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+          <p class="text-text-muted mb-4">
+            {providers.value.length === 0
+              ? "No notification providers configured."
+              : "No providers match your filters."}
+          </p>
+          {providers.value.length === 0 && (
+            <Button type="button" variant="primary" onClick={openCreate}>
+              Create Provider
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Create / Edit modal */}
+      {showForm.value && (
+        <ProviderFormModal
+          form={form.value}
+          isEdit={!!editingProvider.value}
+          submitting={formSubmitting.value}
+          error={formError.value}
+          onInput={(f) => {
+            form.value = f;
+          }}
+          onSubmit={handleFormSubmit}
+          onCancel={() => {
+            showForm.value = false;
+          }}
+        />
+      )}
+
+      {/* Delete confirmation */}
+      {deleteTarget.value && (
+        <ConfirmDialog
+          title={`Delete ${deleteTarget.value.name}`}
+          message={`This will permanently delete the notification provider "${deleteTarget.value.name}" in namespace "${deleteTarget.value.namespace}".`}
+          confirmLabel="Delete"
+          danger
+          loading={deleteLoading.value}
+          onConfirm={() => {
+            if (deleteTarget.value) handleDelete(deleteTarget.value);
+          }}
+          onCancel={() => {
+            deleteTarget.value = null;
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Modal form for creating/editing a provider. */
+function ProviderFormModal({
+  form,
+  isEdit,
+  submitting,
+  error,
+  onInput,
+  onSubmit,
+  onCancel,
+}: {
+  form: ProviderForm;
+  isEdit: boolean;
+  submitting: boolean;
+  error: string | null;
+  onInput: (f: ProviderForm) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    globalThis.addEventListener("keydown", handler);
+    nameRef.current?.focus();
+    return () => globalThis.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  const inputClass =
+    "w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-1 focus:ring-brand";
+
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={onCancel}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="provider-form-title"
+        class="w-full max-w-md rounded-lg bg-surface p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="provider-form-title" class="text-lg font-semibold text-text-primary mb-4">
+          {isEdit ? "Edit Provider" : "Create Provider"}
+        </h3>
+
+        {error && (
+          <p class="text-sm text-danger mb-3">{error}</p>
+        )}
+
+        <div class="space-y-3">
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">Name</label>
+            <input
+              ref={nameRef}
+              type="text"
+              value={form.name}
+              disabled={isEdit}
+              onInput={(e) =>
+                onInput({
+                  ...form,
+                  name: (e.target as HTMLInputElement).value,
+                })}
+              class={inputClass}
+              placeholder="my-slack-provider"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">
+              Namespace
+            </label>
+            <input
+              type="text"
+              value={form.namespace}
+              disabled={isEdit}
+              onInput={(e) =>
+                onInput({
+                  ...form,
+                  namespace: (e.target as HTMLInputElement).value,
+                })}
+              class={inputClass}
+              placeholder="default"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">Type</label>
+            <select
+              value={form.type}
+              onChange={(e) =>
+                onInput({
+                  ...form,
+                  type: (e.target as HTMLSelectElement).value,
+                })}
+              class={inputClass}
+            >
+              {PROVIDER_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">
+              Address
+            </label>
+            <input
+              type="text"
+              value={form.address}
+              onInput={(e) =>
+                onInput({
+                  ...form,
+                  address: (e.target as HTMLInputElement).value,
+                })}
+              class={inputClass}
+              placeholder="https://hooks.slack.com/..."
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">
+              Channel
+            </label>
+            <input
+              type="text"
+              value={form.channel}
+              onInput={(e) =>
+                onInput({
+                  ...form,
+                  channel: (e.target as HTMLInputElement).value,
+                })}
+              class={inputClass}
+              placeholder="#alerts"
+            />
+          </div>
+          <div>
+            <label class="block text-sm text-text-secondary mb-1">
+              Secret Ref
+            </label>
+            <input
+              type="text"
+              value={form.secretRef}
+              onInput={(e) =>
+                onInput({
+                  ...form,
+                  secretRef: (e.target as HTMLInputElement).value,
+                })}
+              class={inputClass}
+              placeholder="webhook-url-secret"
+            />
+          </div>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            class="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={onSubmit}
+            class="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 bg-brand hover:bg-brand/90"
+          >
+            {submitting
+              ? "..."
+              : isEdit
+              ? "Update"
+              : "Create"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
