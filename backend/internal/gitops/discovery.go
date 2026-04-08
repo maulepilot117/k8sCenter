@@ -121,6 +121,20 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 		}
 	}
 
+	// Check FluxCD Notification support: look for Provider kind in notification.toolkit.fluxcd.io/v1beta3
+	fluxNotifResources, err := disco.ServerResourcesForGroupVersion("notification.toolkit.fluxcd.io/v1beta3")
+	if err == nil && fluxNotifResources != nil {
+		for _, r := range fluxNotifResources.APIResources {
+			if r.Kind == "Provider" {
+				if fluxDetail == nil {
+					fluxDetail = &ToolDetail{Available: true}
+				}
+				fluxDetail.NotificationAvailable = true
+				break
+			}
+		}
+	}
+
 	// For ArgoCD: probe pods in the argocd namespace
 	if argoDetail != nil {
 		pods, err := d.k8sClient.BaseClientset().CoreV1().Pods("argocd").List(ctx, metav1.ListOptions{Limit: 1})
@@ -135,7 +149,7 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 		deps, err := cs.AppsV1().Deployments("flux-system").List(ctx, metav1.ListOptions{})
 		if err == nil {
 			fluxDetail.Namespace = "flux-system"
-			controllerNames := []string{"source", "kustomize", "helm"}
+			controllerNames := []string{"source", "kustomize", "helm", "notification"}
 			for _, dep := range deps.Items {
 				for _, name := range controllerNames {
 					if strings.Contains(dep.Name, name) {

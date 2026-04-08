@@ -452,6 +452,33 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Get("/applicationsets/{id}", h.HandleGetAppSet)
 		gr.Post("/applicationsets/{id}/refresh", h.HandleRefreshAppSet)
 		gr.Delete("/applicationsets/{id}", h.HandleDeleteAppSet)
+
+		// Notification routes — only if handler is available
+		if s.NotificationHandler != nil {
+			nh := s.NotificationHandler
+			gr.Route("/notifications", func(nr chi.Router) {
+				nr.Get("/status", nh.HandleStatus)
+				nr.Get("/providers", nh.HandleListProviders)
+				nr.Get("/alerts", nh.HandleListAlerts)
+				nr.Get("/receivers", nh.HandleListReceivers)
+				nr.Post("/providers", nh.HandleCreateProvider)
+				nr.Post("/alerts", nh.HandleCreateAlert)
+				nr.Post("/receivers", nh.HandleCreateReceiver)
+				// Parameterized routes — validate namespace/name URL params
+				nr.Group(func(vr chi.Router) {
+					vr.Use(resources.ValidateURLParams)
+					vr.Put("/providers/{namespace}/{name}", nh.HandleUpdateProvider)
+					vr.Delete("/providers/{namespace}/{name}", nh.HandleDeleteProvider)
+					vr.Post("/providers/{namespace}/{name}/suspend", nh.HandleSuspendProvider)
+					vr.Put("/alerts/{namespace}/{name}", nh.HandleUpdateAlert)
+					vr.Delete("/alerts/{namespace}/{name}", nh.HandleDeleteAlert)
+					vr.Post("/alerts/{namespace}/{name}/suspend", nh.HandleSuspendAlert)
+					vr.Put("/receivers/{namespace}/{name}", nh.HandleUpdateReceiver)
+					vr.Delete("/receivers/{namespace}/{name}", nh.HandleDeleteReceiver)
+					vr.Post("/receivers/{namespace}/{name}/suspend", nh.HandleSuspendReceiver)
+				})
+			})
+		}
 	})
 }
 

@@ -81,6 +81,7 @@ function buildSearchIndex(): SearchItem[] {
     { label: "View Violations", href: "/security/violations" },
     { label: "View GitOps Applications", href: "/gitops/applications" },
     { label: "View ApplicationSets", href: "/gitops/applicationsets" },
+    { label: "View GitOps Notifications", href: "/gitops/notifications" },
     { label: "View Vulnerabilities", href: "/security/vulnerabilities" },
   ];
   for (const a of actions) {
