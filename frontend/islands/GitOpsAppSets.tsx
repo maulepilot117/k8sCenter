@@ -9,6 +9,7 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
 import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 
 interface AppSetListResponse {
   applicationSets: NormalizedAppSet[];
@@ -22,16 +23,6 @@ const STATUS_COLORS: Record<string, string> = {
   error: "var(--danger)",
   progressing: "var(--warning)",
 };
-
-function formatAge(dateStr: string): string {
-  const ms = Date.now() - new Date(dateStr).getTime();
-  const days = Math.floor(ms / 86400000);
-  if (days > 0) return `${days}d`;
-  const hours = Math.floor(ms / 3600000);
-  if (hours > 0) return `${hours}h`;
-  const mins = Math.floor(ms / 60000);
-  return `${mins}m`;
-}
 
 export default function GitOpsAppSets() {
   const appSets = useSignal<NormalizedAppSet[]>([]);
@@ -111,10 +102,9 @@ export default function GitOpsAppSets() {
           {!loading.value && (
             <>
               <a href="/tools/yaml-apply">
-                <Button type="button" variant="primary">Create</Button>
+                <Button variant="primary">Create</Button>
               </a>
               <Button
-                type="button"
                 variant="ghost"
                 onClick={handleRefresh}
                 disabled={refreshing.value}
@@ -265,7 +255,7 @@ export default function GitOpsAppSets() {
                       <span style={{ color: statusColor }}>{as.status}</span>
                     </td>
                     <td class="px-3 py-2 text-text-muted text-xs">
-                      {as.createdAt ? formatAge(as.createdAt) : "-"}
+                      {as.createdAt ? timeAgo(as.createdAt) : "-"}
                     </td>
                   </tr>
                 );
@@ -283,7 +273,6 @@ export default function GitOpsAppSets() {
           </p>
           <div class="flex gap-2">
             <Button
-              type="button"
               variant="ghost"
               onClick={() => {
                 page.value--;
@@ -293,7 +282,6 @@ export default function GitOpsAppSets() {
               Previous
             </Button>
             <Button
-              type="button"
               variant="ghost"
               onClick={() => {
                 page.value++;
