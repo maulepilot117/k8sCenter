@@ -76,6 +76,7 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Create HPA", href: "/scaling/hpas?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },
     { label: "Investigate Resource", href: "/observability/investigate" },
+    { label: "Create Policy", href: "/security/create-policy" },
     { label: "View Policies", href: "/security/policies" },
     { label: "View Violations", href: "/security/violations" },
     { label: "View GitOps Applications", href: "/gitops/applications" },
