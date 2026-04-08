@@ -16,6 +16,7 @@ type ComplianceSnapshot struct {
 	OverallScore float64   `json:"score"`
 	Pass         int       `json:"pass"`
 	Fail         int       `json:"fail"`
+	Warn         int       `json:"warn"`
 	Total        int       `json:"total"`
 }
 
@@ -34,6 +35,7 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 	payload, err := json.Marshal(map[string]int{
 		"pass":  snap.Pass,
 		"fail":  snap.Fail,
+		"warn":  snap.Warn,
 		"total": snap.Total,
 	})
 	if err != nil {
@@ -43,7 +45,10 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO compliance_snapshots (snapshot_date, cluster_id, overall_score, payload)
 		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (cluster_id, snapshot_date) DO NOTHING`,
+		ON CONFLICT (cluster_id, snapshot_date) DO UPDATE SET
+			overall_score = EXCLUDED.overall_score,
+			payload = EXCLUDED.payload,
+			created_at = NOW()`,
 		snap.Date, snap.ClusterID, snap.OverallScore, payload)
 	if err != nil {
 		return fmt.Errorf("insert compliance snapshot: %w", err)
@@ -58,6 +63,7 @@ func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, da
 		SELECT snapshot_date, overall_score,
 		       COALESCE((payload->>'pass')::int, 0),
 		       COALESCE((payload->>'fail')::int, 0),
+		       COALESCE((payload->>'warn')::int, 0),
 		       COALESCE((payload->>'total')::int, 0)
 		FROM compliance_snapshots
 		WHERE cluster_id = $1 AND snapshot_date >= CURRENT_DATE - $2
@@ -72,7 +78,7 @@ func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, da
 	for rows.Next() {
 		var snap ComplianceSnapshot
 		snap.ClusterID = clusterID
-		if err := rows.Scan(&snap.Date, &snap.OverallScore, &snap.Pass, &snap.Fail, &snap.Total); err != nil {
+		if err := rows.Scan(&snap.Date, &snap.OverallScore, &snap.Pass, &snap.Fail, &snap.Warn, &snap.Total); err != nil {
 			return nil, fmt.Errorf("scan compliance snapshot: %w", err)
 		}
 		snapshots = append(snapshots, snap)

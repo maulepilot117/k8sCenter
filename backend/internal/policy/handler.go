@@ -325,6 +325,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 		Score float64 `json:"score"`
 		Pass  int     `json:"pass"`
 		Fail  int     `json:"fail"`
+		Warn  int     `json:"warn"`
 		Total int     `json:"total"`
 	}
 
@@ -335,6 +336,7 @@ func (h *Handler) HandleComplianceHistory(w http.ResponseWriter, r *http.Request
 			Score: s.OverallScore,
 			Pass:  s.Pass,
 			Fail:  s.Fail,
+			Warn:  s.Warn,
 			Total: s.Total,
 		}
 	}

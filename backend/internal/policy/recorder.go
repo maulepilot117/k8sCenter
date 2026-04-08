@@ -58,6 +58,7 @@ func (r *ComplianceRecorder) takeSnapshot(ctx context.Context) {
 		OverallScore: score.Score,
 		Pass:         score.Pass,
 		Fail:         score.Fail,
+		Warn:         score.Warn,
 		Total:        score.Total,
 	}
 

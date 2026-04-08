@@ -3,6 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useCallback, useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { scoreColor } from "@/lib/health-score.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
 interface TrendPoint {
@@ -22,12 +23,6 @@ interface FilledPoint {
 }
 
 type TimeRange = 7 | 30 | 90;
-
-function scoreColor(score: number): string {
-  if (score >= 80) return "var(--success)";
-  if (score >= 50) return "var(--warning)";
-  return "var(--danger)";
-}
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00");
@@ -276,7 +271,7 @@ export default function ComplianceTrendChart() {
     error.value = null;
     try {
       const res = await apiGet<TrendPoint[]>(
-        `/v1/policy/compliance/history?days=${days}`,
+        `/v1/policies/compliance/history?days=${days}`,
       );
       const raw = Array.isArray(res.data) ? res.data : [];
       points.value = fillDateGaps(raw);
