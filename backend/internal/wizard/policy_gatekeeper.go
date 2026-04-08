@@ -127,22 +127,40 @@ func (p *PolicyWizardInput) buildConstraint(kind string) map[string]any {
 }
 
 // gatekeeperMatchKinds builds the match.kinds array for a Constraint.
+// Kinds from different API groups are separated into distinct entries
+// so that each entry has the correct apiGroup (e.g. "" for Pod, "apps" for Deployment).
 func (p *PolicyWizardInput) gatekeeperMatchKinds() []map[string]any {
-	// Determine the apiGroup based on the target kinds
-	apiGroups := []string{""}
+	grouped := map[string][]string{}
 	for _, kind := range p.TargetKinds {
+		var group string
 		switch kind {
 		case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
-			apiGroups = []string{"apps"}
+			group = "apps"
 		case "Job", "CronJob":
-			apiGroups = []string{"batch"}
+			group = "batch"
+		default:
+			group = ""
 		}
+		grouped[group] = append(grouped[group], kind)
 	}
 
-	return []map[string]any{{
-		"apiGroups": apiGroups,
-		"kinds":     p.TargetKinds,
-	}}
+	// Stable output order: core ("") first, then alphabetical
+	result := make([]map[string]any, 0, len(grouped))
+	if kinds, ok := grouped[""]; ok {
+		result = append(result, map[string]any{
+			"apiGroups": []string{""},
+			"kinds":     kinds,
+		})
+	}
+	for _, g := range []string{"apps", "batch"} {
+		if kinds, ok := grouped[g]; ok {
+			result = append(result, map[string]any{
+				"apiGroups": []string{g},
+				"kinds":     kinds,
+			})
+		}
+	}
+	return result
 }
 
 // gatekeeperParamSchema returns the OpenAPI v3 schema for template-specific parameters.

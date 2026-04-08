@@ -3,6 +3,7 @@ package wizard
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -92,6 +93,15 @@ var policyTemplates = map[string]PolicyTemplate{
 		Engines:     []string{"kyverno", "gatekeeper"},
 	},
 }
+
+// validTargetKinds restricts the resource kinds that can be targeted by policy templates.
+var validTargetKinds = map[string]bool{
+	"Pod": true, "Deployment": true, "StatefulSet": true, "DaemonSet": true,
+	"ReplicaSet": true, "Job": true, "CronJob": true,
+}
+
+// registryPatternRegex validates container registry prefixes (hostname/path format).
+var registryPatternRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
 // validPolicyEngines is the set of supported policy engines.
 var validPolicyEngines = map[string]bool{
@@ -194,6 +204,15 @@ func (p *PolicyWizardInput) Validate() []FieldError {
 	// Target kinds
 	if len(p.TargetKinds) == 0 {
 		errs = append(errs, FieldError{Field: "targetKinds", Message: "at least one target kind is required"})
+	} else {
+		for i, kind := range p.TargetKinds {
+			if !validTargetKinds[kind] {
+				errs = append(errs, FieldError{
+					Field:   fmt.Sprintf("targetKinds[%d]", i),
+					Message: fmt.Sprintf("unsupported target kind %q", kind),
+				})
+			}
+		}
 	}
 
 	// Excluded namespaces (optional, but validate format)
@@ -226,8 +245,14 @@ func (p *PolicyWizardInput) validateParams() []FieldError {
 				return []FieldError{{Field: "params", Message: "invalid capability parameters"}}
 			}
 		}
-		// Validate capability names (should be uppercase Linux capability names)
+		// Validate capability names (uppercase Linux capability names, not "ALL")
 		for i, cap := range params.AllowedAdd {
+			if cap == "ALL" {
+				return []FieldError{{
+					Field:   fmt.Sprintf("params.allowedAdd[%d]", i),
+					Message: "'ALL' cannot be added — it would negate dropping all capabilities",
+				}}
+			}
 			if cap != strings.ToUpper(cap) || cap == "" {
 				return []FieldError{{
 					Field:   fmt.Sprintf("params.allowedAdd[%d]", i),
@@ -253,6 +278,12 @@ func (p *PolicyWizardInput) validateParams() []FieldError {
 				return []FieldError{{
 					Field:   fmt.Sprintf("params.registries[%d]", i),
 					Message: "registry pattern must not be empty",
+				}}
+			}
+			if !registryPatternRegex.MatchString(reg) {
+				return []FieldError{{
+					Field:   fmt.Sprintf("params.registries[%d]", i),
+					Message: "must be a valid registry prefix (e.g. ghcr.io/ or registry.k8s.io/myorg)",
 				}}
 			}
 		}
