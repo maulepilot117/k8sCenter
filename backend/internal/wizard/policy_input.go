@@ -103,6 +103,15 @@ var validTargetKinds = map[string]bool{
 // registryPatternRegex validates container registry prefixes (hostname/path format).
 var registryPatternRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
 
+// labelKeyRegex validates Kubernetes label keys (optional prefix/name).
+var labelKeyRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?/)?[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$`)
+
+// maxDescription is the maximum length for a policy description annotation.
+const maxDescription = 1024
+
+// maxExcludedNamespaces is the maximum number of excluded namespaces.
+const maxExcludedNamespaces = 100
+
 // validPolicyEngines is the set of supported policy engines.
 var validPolicyEngines = map[string]bool{
 	"kyverno":    true,
@@ -215,7 +224,15 @@ func (p *PolicyWizardInput) Validate() []FieldError {
 		}
 	}
 
-	// Excluded namespaces (optional, but validate format)
+	// Description length
+	if len(p.Description) > maxDescription {
+		errs = append(errs, FieldError{Field: "description", Message: fmt.Sprintf("must be %d characters or fewer", maxDescription)})
+	}
+
+	// Excluded namespaces (optional, but validate format and count)
+	if len(p.ExcludedNamespaces) > maxExcludedNamespaces {
+		errs = append(errs, FieldError{Field: "excludedNamespaces", Message: fmt.Sprintf("must have %d or fewer entries", maxExcludedNamespaces)})
+	}
 	for i, ns := range p.ExcludedNamespaces {
 		if ns != "" && !dnsLabelRegex.MatchString(ns) {
 			errs = append(errs, FieldError{
@@ -319,6 +336,12 @@ func (p *PolicyWizardInput) validateParams() []FieldError {
 					Message: "label key must not be empty",
 				}}
 			}
+			if !labelKeyRegex.MatchString(label) {
+				return []FieldError{{
+					Field:   fmt.Sprintf("params.labels[%d]", i),
+					Message: "must be a valid Kubernetes label key (e.g. app.kubernetes.io/name)",
+				}}
+			}
 		}
 		return nil
 
@@ -327,49 +350,29 @@ func (p *PolicyWizardInput) validateParams() []FieldError {
 	}
 }
 
-// parseCapabilityParams parses and returns CapabilityParams from the raw Params field.
+// parseParams unmarshals the raw Params field into the given default value.
+// Validate() must be called before this to ensure the JSON is well-formed.
+func parseParams[T any](raw json.RawMessage, defaults T) T {
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &defaults)
+	}
+	return defaults
+}
+
 func (p *PolicyWizardInput) parseCapabilityParams() CapabilityParams {
-	var params CapabilityParams
-	if len(p.Params) > 0 {
-		_ = json.Unmarshal(p.Params, &params)
-	}
-	// Default: drop all capabilities
-	if len(p.Params) == 0 {
-		params.DropAll = true
-	}
-	return params
+	return parseParams(p.Params, CapabilityParams{DropAll: true})
 }
 
-// parseRegistryParams parses and returns RegistryParams from the raw Params field.
 func (p *PolicyWizardInput) parseRegistryParams() RegistryParams {
-	var params RegistryParams
-	if len(p.Params) > 0 {
-		_ = json.Unmarshal(p.Params, &params)
-	}
-	return params
+	return parseParams(p.Params, RegistryParams{})
 }
 
-// parseResourceLimitParams parses and returns ResourceLimitParams from the raw Params field.
 func (p *PolicyWizardInput) parseResourceLimitParams() ResourceLimitParams {
-	var params ResourceLimitParams
-	if len(p.Params) > 0 {
-		_ = json.Unmarshal(p.Params, &params)
-	}
-	// Default: require both
-	if len(p.Params) == 0 {
-		params.RequireCPU = true
-		params.RequireMemory = true
-	}
-	return params
+	return parseParams(p.Params, ResourceLimitParams{RequireCPU: true, RequireMemory: true})
 }
 
-// parseRequireLabelsParams parses and returns RequireLabelsParams from the raw Params field.
 func (p *PolicyWizardInput) parseRequireLabelsParams() RequireLabelsParams {
-	var params RequireLabelsParams
-	if len(p.Params) > 0 {
-		_ = json.Unmarshal(p.Params, &params)
-	}
-	return params
+	return parseParams(p.Params, RequireLabelsParams{})
 }
 
 // ToYAML generates policy YAML for the selected engine.

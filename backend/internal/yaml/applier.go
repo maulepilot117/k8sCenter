@@ -116,7 +116,7 @@ func applyOne(
 			result.Action = "failed"
 			result.Error = fmt.Sprintf("context cancelled waiting for CRD %s", gvk.String())
 			return result
-		case <-time.After(2 * time.Second):
+		case <-time.After(time.Duration(500*(1<<attempt)) * time.Millisecond): // 500ms, 1s
 		}
 	}
 

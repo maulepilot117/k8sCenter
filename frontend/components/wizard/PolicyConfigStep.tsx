@@ -5,6 +5,24 @@ import type { ParamField } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
 import type { PolicyWizardForm } from "@/islands/PolicyWizard.tsx";
 
+function CloseIcon() {
+  return (
+    <svg
+      class="w-4 h-4"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M6 18L18 6M6 6l12 12"
+      />
+    </svg>
+  );
+}
+
 interface PolicyConfigStepProps {
   form: PolicyWizardForm;
   errors: Record<string, string>;
@@ -222,19 +240,7 @@ export function PolicyConfigStep({
                 onClick={() =>
                   removeExcludedNamespace(i)}
               >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
+                <CloseIcon />
               </button>
             </div>
           ))}
@@ -342,19 +348,7 @@ function TemplateParamField({
                 class="text-text-muted hover:text-danger shrink-0"
                 onClick={() => onChange(items.filter((_, idx) => idx !== i))}
               >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
+                <CloseIcon />
               </button>
             </div>
           ))}
