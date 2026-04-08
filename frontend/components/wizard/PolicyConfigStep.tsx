@@ -144,9 +144,7 @@ export function PolicyConfigStep({
             onUpdate("name", (e.target as HTMLInputElement).value)}
           placeholder="disallow-privileged"
         />
-        {errors.name && (
-          <p class="text-sm text-danger mt-1">{errors.name}</p>
-        )}
+        {errors.name && <p class="text-sm text-danger mt-1">{errors.name}</p>}
       </div>
 
       {/* Action */}
@@ -221,7 +219,8 @@ export function PolicyConfigStep({
               <button
                 type="button"
                 class="text-text-muted hover:text-danger shrink-0"
-                onClick={() => removeExcludedNamespace(i)}
+                onClick={() =>
+                  removeExcludedNamespace(i)}
               >
                 <svg
                   class="w-4 h-4"
@@ -305,8 +304,7 @@ function TemplateParamField({
           <input
             type="checkbox"
             checked={!!value}
-            onChange={(e) =>
-              onChange((e.target as HTMLInputElement).checked)}
+            onChange={(e) => onChange((e.target as HTMLInputElement).checked)}
             class="accent-brand"
           />
           <span class="text-sm text-text-primary">{field.label}</span>

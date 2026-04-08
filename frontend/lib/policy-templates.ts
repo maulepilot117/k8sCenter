@@ -93,8 +93,7 @@ export const POLICY_TEMPLATES: PolicyTemplateInfo[] = [
         key: "allowedAdd",
         label: "Allowed capabilities",
         type: "stringList",
-        description:
-          "Capabilities that may be added (e.g. NET_BIND_SERVICE).",
+        description: "Capabilities that may be added (e.g. NET_BIND_SERVICE).",
         defaultValue: [],
       },
     ],
@@ -128,8 +127,7 @@ export const POLICY_TEMPLATES: PolicyTemplateInfo[] = [
     id: "disallow-latest-tag",
     name: "Disallow Latest Tag",
     category: "Image Policies",
-    description:
-      "Images must have an explicit tag; ':latest' is not allowed.",
+    description: "Images must have an explicit tag; ':latest' is not allowed.",
     severity: "medium",
     targetKinds: ["Pod"],
     engines: ["kyverno", "gatekeeper"],
@@ -142,8 +140,7 @@ export const POLICY_TEMPLATES: PolicyTemplateInfo[] = [
     id: "require-resource-limits",
     name: "Require Resource Limits",
     category: "Resource Management",
-    description:
-      "All containers must define CPU and memory resource limits.",
+    description: "All containers must define CPU and memory resource limits.",
     severity: "medium",
     targetKinds: ["Pod"],
     engines: ["kyverno", "gatekeeper"],
