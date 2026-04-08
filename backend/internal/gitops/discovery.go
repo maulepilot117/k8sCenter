@@ -79,13 +79,20 @@ func (d *GitOpsDiscoverer) Discover(ctx context.Context) {
 	var argoDetail *ToolDetail
 	var fluxDetail *ToolDetail
 
-	// Check ArgoCD: look for Application kind in argoproj.io/v1alpha1
+	// Check ArgoCD: look for Application and ApplicationSet kinds in argoproj.io/v1alpha1
 	argoResources, err := disco.ServerResourcesForGroupVersion("argoproj.io/v1alpha1")
 	if err == nil && argoResources != nil {
 		for _, r := range argoResources.APIResources {
 			if r.Kind == "Application" {
-				argoDetail = &ToolDetail{Available: true}
-				break
+				if argoDetail == nil {
+					argoDetail = &ToolDetail{Available: true}
+				}
+			}
+			if r.Kind == "ApplicationSet" {
+				if argoDetail == nil {
+					argoDetail = &ToolDetail{Available: true}
+				}
+				argoDetail.AppSetsAvailable = true
 			}
 		}
 	}

@@ -82,3 +82,33 @@ export interface AppListResponse {
   applications: NormalizedApp[];
   summary: AppListMetadata;
 }
+
+export interface NormalizedAppSet {
+  id: string;
+  name: string;
+  namespace: string;
+  tool: Tool;
+  generatorTypes: string[];
+  templateSource: AppSource;
+  templateDestination: string;
+  status: string;
+  statusMessage?: string;
+  generatedAppCount: number;
+  summary: AppListMetadata;
+  preserveOnDeletion: boolean;
+  createdAt: string;
+}
+
+export interface AppSetCondition {
+  type: string;
+  status: string;
+  message?: string;
+  reason?: string;
+}
+
+export interface AppSetDetail {
+  appSet: NormalizedAppSet;
+  generators: Record<string, unknown>[];
+  conditions: AppSetCondition[];
+  applications: NormalizedApp[];
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -35,10 +36,20 @@ type Handler struct {
 	cacheMu    sync.RWMutex
 	cachedData *cachedApps
 	cacheGen   uint64 // incremented on invalidation; prevents stale writes
+
+	appSetFetchGroup singleflight.Group
+	appSetMu         sync.RWMutex
+	cachedAppSets    *cachedAppSetData
+	appSetCacheGen   uint64
 }
 
 type cachedApps struct {
 	apps      []NormalizedApp
+	fetchedAt time.Time
+}
+
+type cachedAppSetData struct {
+	appSets   []NormalizedAppSet
 	fetchedAt time.Time
 }
 
@@ -53,6 +64,8 @@ func toolGVR(toolPrefix string) (apiGroup, resource string, ok bool) {
 		return "kustomize.toolkit.fluxcd.io", "kustomizations", true
 	case "flux-hr":
 		return "helm.toolkit.fluxcd.io", "helmreleases", true
+	case "argo-as":
+		return "argoproj.io", "applicationsets", true
 	default:
 		return "", "", false
 	}
@@ -630,4 +643,250 @@ func (h *Handler) HandleRollback(w http.ResponseWriter, r *http.Request) {
 	h.auditLog(r, user, audit.ActionGitOpsRollback, "Application", ns, name, audit.ResultSuccess, "revision="+req.Revision)
 	h.invalidateCache()
 	httputil.WriteData(w, map[string]string{"message": "Rollback triggered for " + name + " to revision " + req.Revision})
+}
+
+// fetchAppSets returns cached ApplicationSet data, refreshing if stale.
+func (h *Handler) fetchAppSets(ctx context.Context) ([]NormalizedAppSet, error) {
+	h.appSetMu.RLock()
+	if h.cachedAppSets != nil && time.Since(h.cachedAppSets.fetchedAt) < cacheTTL {
+		appSets := h.cachedAppSets.appSets
+		h.appSetMu.RUnlock()
+		return appSets, nil
+	}
+	h.appSetMu.RUnlock()
+
+	result, err, _ := h.appSetFetchGroup.Do("fetch-appsets", func() (any, error) {
+		return h.doFetchAppSets(ctx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	data := result.(*cachedAppSetData)
+	return data.appSets, nil
+}
+
+func (h *Handler) doFetchAppSets(ctx context.Context) (*cachedAppSetData, error) {
+	h.appSetMu.RLock()
+	gen := h.appSetCacheGen
+	h.appSetMu.RUnlock()
+
+	dynClient := h.K8sClient.BaseDynamicClient()
+
+	appSets, err := ListArgoAppSets(ctx, dynClient)
+	if err != nil {
+		return nil, err
+	}
+
+	data := &cachedAppSetData{
+		appSets:   appSets,
+		fetchedAt: time.Now(),
+	}
+
+	h.appSetMu.Lock()
+	if h.appSetCacheGen == gen {
+		h.cachedAppSets = data
+	}
+	h.appSetMu.Unlock()
+
+	return data, nil
+}
+
+func (h *Handler) invalidateAppSetCache() {
+	h.appSetMu.Lock()
+	h.cachedAppSets = nil
+	h.appSetCacheGen++
+	h.appSetMu.Unlock()
+}
+
+// InvalidateAppSetCache is the exported version for use by CRD event handlers.
+func (h *Handler) InvalidateAppSetCache() {
+	h.invalidateAppSetCache()
+}
+
+// HandleListAppSets returns all normalized ApplicationSets with child app summaries.
+func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	appSets, err := h.fetchAppSets(r.Context())
+	if err != nil {
+		h.Logger.Error("failed to fetch applicationsets", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch applicationsets", "")
+		return
+	}
+
+	// RBAC filter
+	var filtered []NormalizedAppSet
+	for _, as := range appSets {
+		if as.Namespace == "" {
+			if auth.IsAdmin(user) {
+				filtered = append(filtered, as)
+			}
+			continue
+		}
+		can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "argoproj.io", "applicationsets", as.Namespace)
+		if err == nil && can {
+			filtered = append(filtered, as)
+		}
+	}
+
+	// Fetch child apps per appset using label selector for accurate matching
+	dynClient := h.K8sClient.BaseDynamicClient()
+	for i := range filtered {
+		as := &filtered[i]
+		labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", as.Name)
+		list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
+			LabelSelector: labelSelector,
+		})
+		if err != nil {
+			h.Logger.Warn("failed to list child apps for appset", "appset", as.Name, "error", err)
+			continue
+		}
+		as.GeneratedAppCount = len(list.Items)
+
+		// Build summary from child apps
+		childNormalized := make([]NormalizedApp, 0, len(list.Items))
+		for j := range list.Items {
+			childNormalized = append(childNormalized, NormalizeArgoApp(&list.Items[j]))
+		}
+		as.Summary = computeMetadata(childNormalized)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Name < filtered[j].Name
+	})
+
+	httputil.WriteData(w, struct {
+		AppSets []NormalizedAppSet `json:"appSets"`
+		Total   int                `json:"total"`
+	}{
+		AppSets: filtered,
+		Total:   len(filtered),
+	})
+}
+
+// HandleGetAppSet returns a single ApplicationSet's full detail including child applications.
+func (h *Handler) HandleGetAppSet(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	toolPrefix, namespace, name, err := parseCompositeID(id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid applicationset ID", err.Error())
+		return
+	}
+
+	if toolPrefix != "argo-as" {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid tool prefix for applicationset", toolPrefix)
+		return
+	}
+
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	detail, err := GetArgoAppSetDetail(r.Context(), dynClient, namespace, name)
+	if err != nil {
+		h.Logger.Error("failed to get applicationset detail", "id", id, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get applicationset", "")
+		return
+	}
+
+	// Fetch child applications via label selector
+	labelSelector := fmt.Sprintf("argocd.argoproj.io/application-set-name=%s", name)
+	list, err := dynClient.Resource(ArgoApplicationGVR).Namespace("").List(r.Context(), metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		h.Logger.Warn("failed to list child apps for appset detail", "appset", name, "error", err)
+	} else {
+		childApps := make([]NormalizedApp, 0, len(list.Items))
+		for i := range list.Items {
+			childApps = append(childApps, NormalizeArgoApp(&list.Items[i]))
+		}
+		detail.Applications = childApps
+		detail.AppSet.GeneratedAppCount = len(childApps)
+		detail.AppSet.Summary = computeMetadata(childApps)
+	}
+
+	httputil.WriteData(w, detail)
+}
+
+// HandleRefreshAppSet triggers a refresh on an ApplicationSet.
+func (h *Handler) HandleRefreshAppSet(w http.ResponseWriter, r *http.Request) {
+	toolPrefix, ns, name, dynClient, user, ok := h.prepareAction(w, r)
+	if !ok {
+		return
+	}
+
+	if toolPrefix != "argo-as" {
+		httputil.WriteError(w, http.StatusBadRequest, "refresh is only supported for ApplicationSets", "")
+		return
+	}
+
+	err := RefreshArgoAppSet(r.Context(), dynClient, ns, name)
+	if err != nil {
+		h.auditLog(r, user, audit.ActionGitOpsSync, "ApplicationSet", ns, name, audit.ResultFailure, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to refresh applicationset", "")
+		return
+	}
+
+	h.auditLog(r, user, audit.ActionGitOpsSync, "ApplicationSet", ns, name, audit.ResultSuccess, "action=refresh")
+	h.invalidateAppSetCache()
+	httputil.WriteData(w, map[string]string{"message": "Refresh triggered for " + name})
+}
+
+// HandleDeleteAppSet deletes an ApplicationSet.
+func (h *Handler) HandleDeleteAppSet(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	toolPrefix, ns, name, err := parseCompositeID(id)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid applicationset ID", err.Error())
+		ok = false
+		return
+	}
+
+	if toolPrefix != "argo-as" {
+		httputil.WriteError(w, http.StatusBadRequest, "delete is only supported for ApplicationSets", "")
+		return
+	}
+
+	apiGroup, resource, _ := toolGVR(toolPrefix)
+
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "delete", apiGroup, resource, ns)
+	if err != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this applicationset", "")
+		return
+	}
+
+	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return
+	}
+
+	err = DeleteArgoAppSet(r.Context(), dynClient, ns, name)
+	if err != nil {
+		h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, audit.ResultFailure, err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete applicationset", "")
+		return
+	}
+
+	h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, audit.ResultSuccess, "")
+	h.invalidateAppSetCache()
+	httputil.WriteData(w, map[string]string{"message": "Deleted applicationset " + name})
 }

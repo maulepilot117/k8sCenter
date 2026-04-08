@@ -479,9 +479,19 @@ func main() {
 				hub.HandleEvent(eventType, kind, ns, name, obj)
 				gitopsHandler.InvalidateCache()
 			})
+
+			websocket.RegisterAllowedKind("applicationsets", "argoproj.io")
+			informerMgr.WatchCRD(ctx, gitops.ArgoApplicationSetGVR, "applicationsets", func(obj *unstructured.Unstructured) (any, error) {
+				return gitops.NormalizeArgoAppSet(obj), nil
+			}, func(eventType, kind, ns, name string, obj any) {
+				hub.HandleEvent(eventType, kind, ns, name, obj)
+				gitopsHandler.InvalidateAppSetCache()
+			})
 		} else {
 			informerMgr.StopCRD(gitops.ArgoApplicationGVR)
 			websocket.UnregisterAllowedKind("applications")
+			informerMgr.StopCRD(gitops.ArgoApplicationSetGVR)
+			websocket.UnregisterAllowedKind("applicationsets")
 		}
 		if fluxAvailable {
 			websocket.RegisterAllowedKind("kustomizations", "kustomize.toolkit.fluxcd.io")
