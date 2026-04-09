@@ -2,7 +2,9 @@
 
 **Date:** 2026-04-09
 **Status:** Draft
-**Scope:** Phase A (Cilium-focused). Phase B (Calico/Flannel/generic) planned as follow-up.
+**Scope:** Phase A (Cilium-focused). Phase B (Calico/Flannel/generic + agent exec) planned as follow-up.
+
+> **ARCHITECTURE REVISION (2026-04-09):** Research confirmed the Cilium agent REST API is Unix-socket only (`/var/run/cilium/cilium.sock`), not TCP port 9879 as originally assumed. The implementation plan (`plans/networking-overview-islands.md`) supersedes the `agent_client.go` approach described below. Phase A uses CRDs + ConfigMap as primary data sources. Phase B adds agent exec (`cilium-dbg status -o json`) for rich data not available in CRDs (WireGuard details, Envoy proxy stats, node connectivity latency, ClusterMesh connection status). All API endpoint response shapes remain as specified below.
 
 ## Summary
 
