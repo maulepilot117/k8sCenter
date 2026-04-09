@@ -1,6 +1,6 @@
 # Stage 1: Install dependencies and build (always on amd64 — Deno WASM loader
 # crashes under QEMU ARM64 emulation, but build output is arch-independent JS)
-FROM --platform=linux/amd64 denoland/deno:2.7.8 AS builder
+FROM --platform=linux/amd64 denoland/deno:2.7.11 AS builder
 
 WORKDIR /app
 
@@ -25,7 +25,7 @@ RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
 
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
-FROM denoland/deno:distroless-2.7.8
+FROM denoland/deno:distroless-2.7.11
 
 WORKDIR /app
 
