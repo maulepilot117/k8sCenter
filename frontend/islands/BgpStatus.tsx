@@ -36,9 +36,8 @@ export default function BgpStatus() {
   }
 
   const peers = resp.peers;
-  const established = peers.filter((p) =>
-    p.sessionState === "established"
-  ).length;
+  const established =
+    peers.filter((p) => p.sessionState === "established").length;
   const allEstablished = established === peers.length && peers.length > 0;
 
   return (

@@ -115,7 +115,8 @@ export default function IpamStatus() {
                     {node.node}
                   </span>
                   <span class="text-text-muted">
-                    {node.allocated} used / {node.allocated + node.available}{" "}
+                    {node.allocated} used / {node.allocated + node.available}
+                    {" "}
                     total
                   </span>
                 </div>

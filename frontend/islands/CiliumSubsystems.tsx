@@ -71,9 +71,7 @@ export default function CiliumSubsystems() {
                   </div>
                 </div>
               )
-              : (
-                <p class="text-sm text-text-muted">Disabled</p>
-              )}
+              : <p class="text-sm text-text-muted">Disabled</p>}
           </div>
 
           {/* Service Mesh */}
@@ -94,9 +92,7 @@ export default function CiliumSubsystems() {
                   </div>
                 </div>
               )
-              : (
-                <p class="text-sm text-text-muted">Disabled</p>
-              )}
+              : <p class="text-sm text-text-muted">Disabled</p>}
           </div>
 
           {/* ClusterMesh */}
@@ -105,12 +101,8 @@ export default function CiliumSubsystems() {
               ClusterMesh
             </p>
             {clusterMesh.enabled
-              ? (
-                <StatusBadge status="Enabled" variant="success" />
-              )
-              : (
-                <p class="text-sm text-text-muted">Disabled</p>
-              )}
+              ? <StatusBadge status="Enabled" variant="success" />
+              : <p class="text-sm text-text-muted">Disabled</p>}
           </div>
 
           {/* Endpoints */}
