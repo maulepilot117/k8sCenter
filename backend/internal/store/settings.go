@@ -24,19 +24,22 @@ type AppSettings struct {
 	AlertingSMTPFrom        *string  `json:"alertingSmtpFrom,omitempty"`
 	AlertingRateLimit       *int     `json:"alertingRateLimit,omitempty"`
 	AlertingRecipients      []string `json:"alertingRecipients,omitempty"`
+	GitHubToken             *string  `json:"gitHubToken,omitempty"`
 	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
 // SettingsService manages persistent application settings with an in-memory cache.
 type SettingsService struct {
-	pool  *pgxpool.Pool
-	mu    sync.RWMutex
-	cache *AppSettings
+	pool   *pgxpool.Pool
+	encKey string // encryption key for sensitive fields (empty = no encryption)
+	mu     sync.RWMutex
+	cache  *AppSettings
 }
 
 // NewSettingsService creates a settings service backed by PostgreSQL.
-func NewSettingsService(pool *pgxpool.Pool) *SettingsService {
-	return &SettingsService{pool: pool}
+// encKey is used for field-level encryption of sensitive values (e.g., GitHub token).
+func NewSettingsService(pool *pgxpool.Pool, encKey string) *SettingsService {
+	return &SettingsService{pool: pool, encKey: encKey}
 }
 
 // Get returns the current settings from cache (refreshes if stale).
@@ -54,6 +57,19 @@ func (s *SettingsService) Get(ctx context.Context) (*AppSettings, error) {
 
 // Update patches settings in the database and refreshes the cache.
 func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
+	// Encrypt GitHub token before storing
+	var tokenParam any
+	if patch.GitHubToken != nil && *patch.GitHubToken != "" && s.encKey != "" {
+		encrypted, err := Encrypt([]byte(*patch.GitHubToken), s.encKey)
+		if err != nil {
+			return fmt.Errorf("encrypting github token: %w", err)
+		}
+		tokenParam = encrypted
+	} else if patch.GitHubToken != nil {
+		// Token explicitly set (possibly empty to clear it)
+		tokenParam = []byte(*patch.GitHubToken)
+	}
+
 	_, err := s.pool.Exec(ctx, `
 		UPDATE app_settings SET
 			monitoring_prometheus_url = COALESCE($1, monitoring_prometheus_url),
@@ -68,6 +84,7 @@ func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
 			alerting_smtp_from = COALESCE($10, alerting_smtp_from),
 			alerting_rate_limit = COALESCE($11, alerting_rate_limit),
 			alerting_recipients = COALESCE($12, alerting_recipients),
+			github_token_enc = COALESCE($13, github_token_enc),
 			updated_at = NOW()
 		WHERE id = 1`,
 		patch.MonitoringPrometheusURL, patch.MonitoringGrafanaURL,
@@ -76,6 +93,7 @@ func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
 		patch.AlertingSMTPPort, patch.AlertingSMTPUsername,
 		patch.AlertingSMTPPassword, patch.AlertingSMTPFrom,
 		patch.AlertingRateLimit, patch.AlertingRecipients,
+		tokenParam,
 	)
 	if err != nil {
 		return fmt.Errorf("updating settings: %w", err)
@@ -88,11 +106,12 @@ func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
 
 func (s *SettingsService) refresh(ctx context.Context) (*AppSettings, error) {
 	var settings AppSettings
+	var tokenEnc []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT monitoring_prometheus_url, monitoring_grafana_url, monitoring_grafana_token,
 		       monitoring_namespace, alerting_enabled, alerting_smtp_host, alerting_smtp_port,
 		       alerting_smtp_username, alerting_smtp_password, alerting_smtp_from,
-		       alerting_rate_limit, alerting_recipients, updated_at
+		       alerting_rate_limit, alerting_recipients, github_token_enc, updated_at
 		FROM app_settings WHERE id = 1`).Scan(
 		&settings.MonitoringPrometheusURL, &settings.MonitoringGrafanaURL,
 		&settings.MonitoringGrafanaToken, &settings.MonitoringNamespace,
@@ -100,10 +119,20 @@ func (s *SettingsService) refresh(ctx context.Context) (*AppSettings, error) {
 		&settings.AlertingSMTPPort, &settings.AlertingSMTPUsername,
 		&settings.AlertingSMTPPassword, &settings.AlertingSMTPFrom,
 		&settings.AlertingRateLimit, &settings.AlertingRecipients,
+		&tokenEnc,
 		&settings.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("reading settings: %w", err)
+	}
+
+	// Decrypt GitHub token if present
+	if len(tokenEnc) > 0 && s.encKey != "" {
+		decrypted, err := Decrypt(tokenEnc, s.encKey)
+		if err == nil {
+			str := string(decrypted)
+			settings.GitHubToken = &str
+		}
 	}
 
 	s.mu.Lock()
@@ -127,6 +156,10 @@ func MaskedSettings(s *AppSettings) *AppSettings {
 	if masked.AlertingSMTPUsername != nil && *masked.AlertingSMTPUsername != "" {
 		m := "****"
 		masked.AlertingSMTPUsername = &m
+	}
+	if masked.GitHubToken != nil && *masked.GitHubToken != "" {
+		m := "****"
+		masked.GitHubToken = &m
 	}
 	return &masked
 }

@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
-import { apiGet, apiPost } from "@/lib/api.ts";
+import { api, apiGet, apiPost } from "@/lib/api.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/GitOpsBadges.tsx";
 import type {
   AppDetail,
+  CommitInfo,
+  CommitsResponse,
   ManagedResource,
   RevisionEntry,
 } from "@/lib/gitops-types.ts";
@@ -27,6 +29,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const error = useSignal<string | null>(null);
   const refreshing = useSignal(false);
   const actionInFlight = useSignal(false);
+  const commits = useSignal<Record<string, CommitInfo>>({});
 
   // Confirmation dialog state
   const confirmAction = useSignal<
@@ -57,6 +60,41 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
       loading.value = false;
     });
   }, []);
+
+  // Async commit message enrichment — fetches after detail loads
+  useEffect(() => {
+    if (!IS_BROWSER || !detail.value) return;
+
+    const app = detail.value.app;
+    const repoURL = app.source?.repoURL;
+    if (!repoURL || !repoURL.includes("://")) return;
+
+    // Collect SHAs: current revision + history revisions
+    const shas = new Set<string>();
+    if (app.currentRevision) shas.add(app.currentRevision);
+    for (const h of detail.value.history ?? []) {
+      if (h.revision) shas.add(h.revision);
+    }
+    if (shas.size === 0) return;
+
+    const controller = new AbortController();
+    const shaList = [...shas].slice(0, 50).join(",");
+    const url = `/v1/gitops/commits?repoURL=${
+      encodeURIComponent(repoURL)
+    }&shas=${shaList}`;
+
+    api<CommitsResponse>(url, { method: "GET", signal: controller.signal })
+      .then((res) => {
+        if (res.data?.commits) {
+          commits.value = res.data.commits;
+        }
+      })
+      .catch(() => {
+        // Graceful degradation — commit enrichment is optional
+      });
+
+    return () => controller.abort();
+  }, [detail.value?.app?.id]);
 
   // Determine the CRD kind from the composite ID
   const toolPrefix = id.split(":")[0];
@@ -455,18 +493,56 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                   {history.map((h: RevisionEntry, i: number) => {
                     const syncColor = SYNC_COLORS[h.status.toLowerCase()] ??
                       "var(--text-secondary)";
+                    const ci = commits.value[h.revision];
+                    const commitUrl = ci?.webUrl?.startsWith("https://")
+                      ? ci.webUrl
+                      : undefined;
+                    const shortSha = h.revision.length > 7
+                      ? h.revision.slice(0, 7)
+                      : h.revision;
                     return (
                       <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
                         <td class="px-3 py-2 font-mono text-text-primary">
-                          {h.revision.length > 7
-                            ? h.revision.slice(0, 7)
-                            : h.revision}
+                          {commitUrl
+                            ? (
+                              <a
+                                href={commitUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="hover:underline text-brand"
+                              >
+                                {shortSha}
+                              </a>
+                            )
+                            : shortSha}
                         </td>
                         <td class="px-3 py-2">
                           <span style={{ color: syncColor }}>{h.status}</span>
                         </td>
-                        <td class="px-3 py-2 text-text-secondary max-w-xs truncate">
-                          {h.message ?? "-"}
+                        <td class="px-3 py-2 text-text-secondary max-w-xs">
+                          {ci
+                            ? (
+                              <div class="min-w-0">
+                                <div class="truncate text-sm text-text-primary">
+                                  {commitUrl
+                                    ? (
+                                      <a
+                                        href={commitUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        class="hover:underline"
+                                      >
+                                        {ci.title}
+                                      </a>
+                                    )
+                                    : ci.title}
+                                </div>
+                                <div class="text-xs text-text-muted truncate">
+                                  {ci.authorName}
+                                </div>
+                              </div>
+                            )
+                            : (h.message ?? "-")}
                         </td>
                         <td class="px-3 py-2 text-text-muted">
                           {h.deployedAt

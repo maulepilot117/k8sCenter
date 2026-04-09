@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -31,6 +33,7 @@ type Handler struct {
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
+	CommitCache   *gitprovider.CommitCache
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -54,6 +57,8 @@ type cachedAppSetData struct {
 }
 
 const cacheTTL = 30 * time.Second
+
+var shaPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 // toolGVR resolves a tool prefix to its Kubernetes API group and resource.
 func toolGVR(toolPrefix string) (apiGroup, resource string, ok bool) {
@@ -892,4 +897,92 @@ func (h *Handler) HandleDeleteAppSet(w http.ResponseWriter, r *http.Request) {
 	h.auditLog(r, user, audit.ActionDelete, "ApplicationSet", ns, name, audit.ResultSuccess, "")
 	h.invalidateAppSetCache()
 	httputil.WriteData(w, map[string]string{"message": "Deleted applicationset " + name})
+}
+
+// HandleGetCommits returns commit metadata for a set of SHAs from a git repository.
+// GET /api/v1/gitops/commits?repoURL=<url>&shas=<sha1,sha2,...>
+func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if h.CommitCache == nil || !h.CommitCache.HasGitHub() {
+		httputil.WriteData(w, gitprovider.ToResponse(nil, nil))
+		return
+	}
+
+	repoURL := r.URL.Query().Get("repoURL")
+	shasParam := r.URL.Query().Get("shas")
+
+	if repoURL == "" || shasParam == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "repoURL and shas parameters are required", "")
+		return
+	}
+
+	// Parse and normalize the repo URL
+	ref, err := gitprovider.ParseRepoURL(repoURL)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid repoURL", "")
+		return
+	}
+
+	// Parse SHAs, filter to valid hex format, cap at 50
+	shas := strings.Split(shasParam, ",")
+	var validSHAs []string
+	for _, s := range shas {
+		s = strings.TrimSpace(s)
+		if shaPattern.MatchString(s) {
+			validSHAs = append(validSHAs, s)
+		}
+	}
+	shas = validSHAs
+	if len(shas) == 0 {
+		httputil.WriteData(w, gitprovider.ToResponse(nil, nil))
+		return
+	}
+	if len(shas) > 50 {
+		shas = shas[:50]
+	}
+
+	// RBAC: validate repoURL matches at least one app visible to this user
+	apps, err := h.fetchApps(r.Context())
+	if err != nil {
+		h.Logger.Error("failed to fetch apps for commit RBAC check", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to validate access", "")
+		return
+	}
+	apps = h.filterAppsByRBAC(r.Context(), user, apps)
+
+	canonicalURL := ref.CanonicalURL()
+	if !repoVisibleToUser(apps, repoURL, canonicalURL) {
+		httputil.WriteError(w, http.StatusForbidden, "no visible application uses this repository", "")
+		return
+	}
+
+	// Fetch commits (cache + GitHub API)
+	commits, unavailable := h.CommitCache.GetCommits(r.Context(), canonicalURL, ref.Owner, ref.Repo, shas)
+	httputil.WriteData(w, gitprovider.ToResponse(commits, unavailable))
+}
+
+// repoVisibleToUser checks if any user-visible app uses the given repo URL.
+func repoVisibleToUser(apps []NormalizedApp, rawURL, canonicalURL string) bool {
+	for _, app := range apps {
+		if app.Source.RepoURL == "" {
+			continue
+		}
+		// Try exact match first (fast path)
+		if app.Source.RepoURL == rawURL {
+			return true
+		}
+		// Parse and normalize the app's repo URL for canonical comparison
+		appRef, err := gitprovider.ParseRepoURL(app.Source.RepoURL)
+		if err != nil {
+			continue
+		}
+		if appRef.CanonicalURL() == canonicalURL {
+			return true
+		}
+	}
+	return false
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/pkg/api"
@@ -199,6 +200,22 @@ func (s *Server) handleUpdateAppSettings(w http.ResponseWriter, r *http.Request)
 	entry.ResourceKind = "Settings"
 	entry.Detail = "application settings updated"
 	s.AuditLogger.Log(r.Context(), entry)
+
+	// If GitHub token was updated, reconfigure the commit enrichment client
+	if patch.GitHubToken != nil && s.GitOpsHandler != nil && s.GitOpsHandler.CommitCache != nil {
+		if *patch.GitHubToken == "" {
+			s.GitOpsHandler.CommitCache.SetGitHubClient(nil)
+			s.Logger.Info("git commit enrichment disabled (token cleared)")
+		} else {
+			ghClient, err := gitprovider.NewGitHubClient(*patch.GitHubToken, "", s.Logger)
+			if err != nil {
+				s.Logger.Warn("failed to create github client after settings update", "error", err)
+			} else {
+				s.GitOpsHandler.CommitCache.SetGitHubClient(ghClient)
+				s.Logger.Info("git commit enrichment reconfigured")
+			}
+		}
+	}
 
 	// Return updated (masked) settings
 	settings, err := s.SettingsService.Get(r.Context())

@@ -441,6 +441,7 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Get("/status", h.HandleStatus)
 		gr.Get("/applications", h.HandleListApplications)
 		gr.Get("/applications/{id}", h.HandleGetApplication)
+		gr.Get("/commits", h.HandleGetCommits)
 
 		// Action endpoints
 		gr.Post("/applications/{id}/sync", h.HandleSync)
