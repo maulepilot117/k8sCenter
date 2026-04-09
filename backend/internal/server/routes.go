@@ -316,6 +316,11 @@ func (s *Server) registerNetworkingRoutes(ar chi.Router) {
 
 		// Hubble flow endpoint (no rate limit — read-only, behind auth)
 		nr.Get("/hubble/flows", h.HandleHubbleFlows)
+
+		// Cilium subsystem endpoints — read-only, polled by frontend islands
+		nr.Get("/cilium/bgp", h.HandleCiliumBGP)
+		nr.Get("/cilium/ipam", h.HandleCiliumIPAM)
+		nr.Get("/cilium/subsystems", h.HandleCiliumSubsystems)
 	})
 }
 

@@ -7,7 +7,7 @@ import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import FlowViewer from "@/islands/FlowViewer.tsx";
-import CniStatus from "@/islands/CniStatus.tsx";
+import NetworkOverview from "@/islands/NetworkOverview.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
 
 interface SummaryData {
@@ -339,7 +339,7 @@ export default function NetworkingDashboard(
 
       {/* Content area */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {isFlows ? <FlowViewer /> : isCni ? <CniStatus /> : (
+        {isFlows ? <FlowViewer /> : isCni ? <NetworkOverview /> : (
           <ResourceTable
             kind={kind}
             title={title}

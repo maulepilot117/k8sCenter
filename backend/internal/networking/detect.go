@@ -52,6 +52,8 @@ type CNIFeatures struct {
 	EncryptionMode   string `json:"encryptionMode,omitempty"`
 	ClusterMesh      bool   `json:"clusterMesh"`
 	WireGuard        bool   `json:"wireguard"`
+	EnvoyEnabled     bool   `json:"envoyEnabled"`
+	IPAMMode         string `json:"ipamMode,omitempty"`
 }
 
 // Detector probes the cluster for the installed CNI plugin.
@@ -232,6 +234,8 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 		features.EncryptionMode = cm.Data["encryption-type"]
 		features.ClusterMesh = cm.Data["cluster-mesh-config"] != ""
 		features.WireGuard = cm.Data["encryption-type"] == "wireguard"
+		features.EnvoyEnabled = cm.Data["enable-envoy-config"] == "true"
+		features.IPAMMode = cm.Data["ipam"]
 
 		// Discover Hubble Relay service address
 		if features.Hubble {
@@ -249,6 +253,17 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 	}
 
 	return features
+}
+
+// DetectMesh returns the active service mesh engine based on cached feature detection.
+// Returns "cilium" if Cilium's Envoy-based mesh is enabled, "none" otherwise.
+// Istio/Linkerd detection is deferred to Phase B.
+func (d *Detector) DetectMesh() string {
+	info := d.CachedInfo()
+	if info != nil && info.Features.EnvoyEnabled {
+		return "cilium"
+	}
+	return "none"
 }
 
 // extractImageVersion extracts the version tag from a container image.
