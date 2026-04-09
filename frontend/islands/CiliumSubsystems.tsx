@@ -5,8 +5,19 @@ import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
 export default function CiliumSubsystems() {
-  const { data, loading, error } = usePoll<CiliumSubsystemsResponse>(
+  const { data, loading, error, lastFetchedAt } = usePoll<
+    CiliumSubsystemsResponse
+  >(
     "/v1/networking/cilium/subsystems",
     {
       interval: 60_000,
@@ -62,6 +73,42 @@ export default function CiliumSubsystems() {
                     {encryption.nodesEncrypted} / {encryption.nodesTotal}
                   </span>
                 </div>
+                {encryption.wireGuardNodes &&
+                  encryption.wireGuardNodes.length > 0 && (
+                  <div class="mt-3 pt-2 border-t border-border-subtle">
+                    <p class="text-xs text-text-muted mb-1.5">
+                      WireGuard Peers
+                    </p>
+                    <div class="space-y-2">
+                      {encryption.wireGuardNodes.map((wgn) => (
+                        <div key={wgn.nodeName}>
+                          <div class="flex justify-between text-xs">
+                            <span class="font-mono text-text-secondary">
+                              {wgn.nodeName}
+                            </span>
+                            <span class="text-text-muted">
+                              {wgn.peerCount} peers
+                            </span>
+                          </div>
+                          {wgn.peers.map((peer) => (
+                            <div
+                              key={peer.publicKey}
+                              class="flex justify-between text-xs pl-3 mt-0.5"
+                            >
+                              <span class="font-mono text-text-muted">
+                                {peer.endpoint}
+                              </span>
+                              <span class="text-text-muted">
+                                ↓{formatBytes(peer.transferRx)}{" "}
+                                ↑{formatBytes(peer.transferTx)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )
             : <p class="text-sm text-text-muted">Disabled</p>}
@@ -83,6 +130,22 @@ export default function CiliumSubsystems() {
                     variant="success"
                   />
                 </div>
+                {mesh.deploymentMode && (
+                  <div class="flex justify-between text-sm">
+                    <span class="text-text-muted">Mode</span>
+                    <span class="text-text-primary capitalize">
+                      {mesh.deploymentMode}
+                    </span>
+                  </div>
+                )}
+                {mesh.totalRedirects != null && (
+                  <div class="flex justify-between text-sm">
+                    <span class="text-text-muted">Redirects</span>
+                    <span class="font-mono text-text-primary">
+                      {mesh.totalRedirects}
+                    </span>
+                  </div>
+                )}
               </div>
             )
             : <p class="text-sm text-text-muted">Disabled</p>}
@@ -94,7 +157,37 @@ export default function CiliumSubsystems() {
             ClusterMesh
           </p>
           {clusterMesh.enabled
-            ? <StatusBadge status="Enabled" variant="success" />
+            ? (
+              <div class="space-y-1.5">
+                <StatusBadge status="Enabled" variant="success" />
+                {clusterMesh.remoteClusters &&
+                  clusterMesh.remoteClusters.length > 0 && (
+                  <div class="mt-2 space-y-1">
+                    {clusterMesh.remoteClusters.map((rc) => (
+                      <div
+                        key={rc.name}
+                        class="flex items-center justify-between text-xs"
+                      >
+                        <div class="flex items-center gap-1.5">
+                          <span
+                            class="w-2 h-2 rounded-full inline-block"
+                            style={{
+                              background: rc.connected
+                                ? "var(--success)"
+                                : "var(--error)",
+                            }}
+                          />
+                          <span class="font-mono text-text-secondary">
+                            {rc.name}
+                          </span>
+                        </div>
+                        <span class="text-text-muted">{rc.numNodes} nodes</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
             : <p class="text-sm text-text-muted">Disabled</p>}
         </div>
 
@@ -191,6 +284,13 @@ export default function CiliumSubsystems() {
           </div>
         </div>
       </div>
+      {lastFetchedAt.value && (
+        <div class="mt-4 pt-2 border-t border-border-subtle text-right">
+          <span class="text-xs text-text-muted">
+            Updated {lastFetchedAt.value.toLocaleTimeString()}
+          </span>
+        </div>
+      )}
     </Card>
   );
 }

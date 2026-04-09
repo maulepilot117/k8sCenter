@@ -134,3 +134,11 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
     verbs: ["create"]
+{{- if .Values.ciliumAgent.execEnabled }}
+  # Cilium agent exec — runs cilium-dbg status for deep diagnostics
+  # Cluster-wide scope: pod listing already requires cluster-wide pods:list.
+  # Application-level controls (label validation, namespace allowlist, hardcoded command) provide defense-in-depth.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+{{- end }}

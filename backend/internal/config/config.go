@@ -23,7 +23,8 @@ type Config struct {
 	Database   DatabaseConfig   `koanf:"database"`
 	Dev        bool             `koanf:"dev"`
 	ClusterID  string           `koanf:"clusterid"`
-	CORS       CORSConfig       `koanf:"cors"`
+	CORS        CORSConfig       `koanf:"cors"`
+	CiliumAgent CiliumAgentConfig `koanf:"ciliumagent"`
 }
 
 // AuditConfig holds configuration for audit logging.
@@ -105,6 +106,11 @@ type LogConfig struct {
 
 type CORSConfig struct {
 	AllowedOrigins []string `koanf:"allowedorigins"`
+}
+
+// CiliumAgentConfig controls opt-in exec-based Cilium agent diagnostics.
+type CiliumAgentConfig struct {
+	ExecEnabled bool `koanf:"execenabled"` // KUBECENTER_CILIUMAGENT_EXECENABLED
 }
 
 // LokiConfig holds configuration for Loki log aggregation integration.

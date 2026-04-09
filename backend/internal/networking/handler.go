@@ -54,6 +54,9 @@ type Handler struct {
 	ipamGroup singleflight.Group
 	ipamMu    sync.RWMutex
 	ipamCache *cachedIPAM
+
+	// Phase B: opt-in Cilium agent exec collector (nil when disabled).
+	AgentCollector *CiliumAgentCollector
 }
 
 const cacheTTL = 30 * time.Second
@@ -87,6 +90,10 @@ func (h *Handler) InvalidateCaches() {
 	h.ipamMu.Lock()
 	h.ipamCache = nil
 	h.ipamMu.Unlock()
+
+	if h.AgentCollector != nil {
+		h.AgentCollector.InvalidateCache()
+	}
 
 	atomic.AddUint64(&h.cacheGen, 1)
 }
@@ -572,11 +579,14 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		encInfo.Mode = info.Features.EncryptionMode
 	}
 
-	// Fetch CiliumNodes and CiliumEndpoints concurrently
+	// Fetch CiliumNodes, CiliumEndpoints, and agent data concurrently
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	var nodes []ciliumNodeIPAM
 	var endpoints EndpointCounts
+	var agentResult *agentCollectionResult
+	var agentErr error
+
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
@@ -588,6 +598,13 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		endpoints, err = aggregateEndpoints(gCtx, dynClient)
 		return err
 	})
+	// Agent collection runs in parallel with CRD reads (opt-in, never fails the group)
+	if h.AgentCollector != nil {
+		g.Go(func() error {
+			agentResult, agentErr = h.AgentCollector.Collect(gCtx)
+			return nil // agent errors captured separately
+		})
+	}
 	if err := g.Wait(); err != nil {
 		// Log but continue with partial data — one may have succeeded
 		h.Logger.Warn("partial failure fetching subsystem data", "error", err)
@@ -621,6 +638,13 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		Endpoints:   &endpoints,
 	}
 
+	// Agent enrichment (additive — never replaces CRD data)
+	if agentErr != nil {
+		h.Logger.Warn("agent collection failed, returning CRD-only data", "error", agentErr)
+	} else if agentResult != nil {
+		mergeAgentIntoSubsystems(resp, agentResult)
+	}
+
 	// Cache the result if generation hasn't changed
 	if atomic.LoadUint64(&h.cacheGen) == gen {
 		h.subsystemMu.Lock()
@@ -629,6 +653,131 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 	}
 
 	return resp, nil
+}
+
+// mergeAgentIntoSubsystems enriches a CRD-based subsystems response with data
+// collected from Cilium agent pods. Only successful nodes contribute; failed
+// nodes retain their CRD-only data.
+func mergeAgentIntoSubsystems(resp *CiliumSubsystemsResponse, agent *agentCollectionResult) {
+	if agent == nil {
+		return
+	}
+
+	for _, node := range agent.nodes {
+		if node.status == nil {
+			continue
+		}
+
+		// Encryption: WireGuard peer data
+		if resp.Encryption != nil && node.status.Encryption != nil && node.status.Encryption.Wireguard != nil {
+			for _, iface := range node.status.Encryption.Wireguard.Interfaces {
+				wgNode := WireGuardNode{
+					NodeName:   node.nodeName,
+					PublicKey:  iface.PublicKey,
+					ListenPort: iface.ListenPort,
+					PeerCount:  iface.PeerCount,
+				}
+				for _, peer := range iface.Peers {
+					wgNode.Peers = append(wgNode.Peers, WireGuardPeer{
+						PublicKey:     peer.PublicKey,
+						Endpoint:      peer.Endpoint,
+						LastHandshake: peer.LastHandshakeTime,
+						TransferRx:    peer.TransferRx,
+						TransferTx:    peer.TransferTx,
+					})
+				}
+				if wgNode.Peers == nil {
+					wgNode.Peers = []WireGuardPeer{}
+				}
+				resp.Encryption.WireGuardNodes = append(resp.Encryption.WireGuardNodes, wgNode)
+			}
+		}
+
+		// Mesh: Envoy proxy data — DeploymentMode from first node (uniform across cluster),
+		// TotalRedirects/TotalPorts aggregated across all nodes.
+		if resp.Mesh != nil && node.status.Proxy != nil {
+			if resp.Mesh.DeploymentMode == "" {
+				resp.Mesh.DeploymentMode = node.status.Proxy.DeploymentMode
+			}
+			resp.Mesh.TotalRedirects += node.status.Proxy.TotalRedirects
+			resp.Mesh.TotalPorts += node.status.Proxy.TotalPorts
+		}
+
+		// ClusterMesh: remote clusters (take from first node that reports it)
+		if resp.ClusterMesh != nil && node.status.ClusterMesh != nil && resp.ClusterMesh.RemoteClusters == nil {
+			for _, rc := range node.status.ClusterMesh.Clusters {
+				resp.ClusterMesh.RemoteClusters = append(resp.ClusterMesh.RemoteClusters, RemoteCluster{
+					Name:              rc.Name,
+					Connected:         rc.Connected,
+					Ready:             rc.Ready,
+					Status:            rc.Status,
+					NumNodes:          rc.NumNodes,
+					NumEndpoints:      rc.NumEndpoints,
+					NumSharedServices: rc.NumSharedServices,
+					NumFailures:       rc.NumFailures,
+					LastFailure:       rc.LastFailure,
+				})
+			}
+		}
+	}
+}
+
+// HandleCiliumConnectivity returns per-node Cilium agent health status.
+// GET /api/v1/networking/cilium/connectivity
+func (h *Handler) HandleCiliumConnectivity(w http.ResponseWriter, r *http.Request) {
+	if _, ok := httputil.RequireUser(w, r); !ok {
+		return
+	}
+
+	if !h.isCiliumLocal(r) {
+		httputil.WriteData(w, CiliumConnectivityResponse{
+			Configured: false,
+			Nodes:      []NodeConnectivity{},
+		})
+		return
+	}
+
+	if h.AgentCollector == nil {
+		httputil.WriteData(w, CiliumConnectivityResponse{
+			Configured: true,
+			Nodes:      []NodeConnectivity{},
+		})
+		return
+	}
+
+	agentResult, err := h.AgentCollector.Collect(r.Context())
+	if err != nil {
+		h.Logger.Error("agent collection failed for connectivity", "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, "failed to collect Cilium agent diagnostics", "")
+		return
+	}
+
+	var nodes []NodeConnectivity
+	for _, node := range agentResult.nodes {
+		nc := NodeConnectivity{
+			NodeName:    node.nodeName,
+			HealthState: "Unknown",
+		}
+		if node.status != nil && node.status.Cluster != nil && node.status.Cluster.CiliumHealth != nil {
+			nc.HealthState = node.status.Cluster.CiliumHealth.State
+			nc.Message = node.status.Cluster.CiliumHealth.Msg
+		} else if node.err != "" {
+			nc.HealthState = "Failure"
+			nc.Message = "agent exec failed"
+		}
+		nodes = append(nodes, nc)
+	}
+	if nodes == nil {
+		nodes = []NodeConnectivity{}
+	}
+
+	httputil.WriteData(w, CiliumConnectivityResponse{
+		Configured:  true,
+		ExecEnabled: true,
+		Nodes:       nodes,
+		CollectedAt: agentResult.collected.UTC().Format(time.RFC3339),
+		Partial:     agentResult.partial,
+	})
 }
 
 // formatChangedKeys returns a sorted, comma-separated list of changed key names for audit logging.

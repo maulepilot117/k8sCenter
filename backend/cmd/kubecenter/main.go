@@ -300,13 +300,20 @@ func main() {
 		}
 	}
 
+	var agentCollector *networking.CiliumAgentCollector
+	if cfg.CiliumAgent.ExecEnabled {
+		agentCollector = networking.NewCiliumAgentCollector(k8sClient, auditLogger, logger, cfg.ClusterID)
+		logger.Info("cilium agent exec collector enabled")
+	}
+
 	networkingHandler := &networking.Handler{
-		K8sClient:    k8sClient,
-		Detector:     cniDetector,
-		HubbleClient: hubbleClient,
-		AuditLogger:  auditLogger,
-		Logger:       logger,
-		ClusterID:    cfg.ClusterID,
+		K8sClient:      k8sClient,
+		Detector:       cniDetector,
+		HubbleClient:   hubbleClient,
+		AuditLogger:    auditLogger,
+		Logger:         logger,
+		ClusterID:      cfg.ClusterID,
+		AgentCollector: agentCollector,
 	}
 
 	// Initialize alerting

@@ -48,21 +48,57 @@ type CiliumSubsystemsResponse struct {
 
 // EncryptionInfo describes the Cilium encryption configuration from ConfigMap and CiliumNode CRDs.
 type EncryptionInfo struct {
-	Enabled        bool   `json:"enabled"`
-	Mode           string `json:"mode"` // wireguard, ipsec
-	NodesEncrypted int    `json:"nodesEncrypted"`
-	NodesTotal     int    `json:"nodesTotal"`
+	Enabled        bool            `json:"enabled"`
+	Mode           string          `json:"mode"` // wireguard, ipsec
+	NodesEncrypted int             `json:"nodesEncrypted"`
+	NodesTotal     int             `json:"nodesTotal"`
+	WireGuardNodes []WireGuardNode `json:"wireGuardNodes,omitempty"` // Phase B (agent)
+}
+
+// WireGuardNode represents per-node WireGuard tunnel state from Cilium agent.
+type WireGuardNode struct {
+	NodeName   string          `json:"nodeName"`
+	PublicKey  string          `json:"publicKey"`
+	ListenPort int64           `json:"listenPort"`
+	PeerCount  int64           `json:"peerCount"`
+	Peers      []WireGuardPeer `json:"peers"`
+}
+
+// WireGuardPeer represents a single WireGuard peer tunnel.
+type WireGuardPeer struct {
+	PublicKey     string `json:"publicKey"`
+	Endpoint      string `json:"endpoint"`
+	LastHandshake string `json:"lastHandshake"`
+	TransferRx    int64  `json:"transferRx"`
+	TransferTx    int64  `json:"transferTx"`
 }
 
 // MeshInfo describes the detected service mesh engine.
 type MeshInfo struct {
-	Enabled bool   `json:"enabled"`
-	Engine  string `json:"engine"` // cilium, none (istio/linkerd deferred to Phase B)
+	Enabled        bool   `json:"enabled"`
+	Engine         string `json:"engine"`                            // cilium, none (istio/linkerd deferred to Phase C)
+	DeploymentMode string `json:"deploymentMode,omitempty"`          // Phase B (agent)
+	TotalRedirects int64  `json:"totalRedirects,omitempty"`          // Phase B (agent)
+	TotalPorts     int64  `json:"totalPorts,omitempty"`              // Phase B (agent)
 }
 
 // ClusterMeshInfo describes whether ClusterMesh is configured.
 type ClusterMeshInfo struct {
-	Enabled bool `json:"enabled"`
+	Enabled        bool            `json:"enabled"`
+	RemoteClusters []RemoteCluster `json:"remoteClusters,omitempty"` // Phase B (agent)
+}
+
+// RemoteCluster represents a ClusterMesh remote cluster connection.
+type RemoteCluster struct {
+	Name              string `json:"name"`
+	Connected         bool   `json:"connected"`
+	Ready             bool   `json:"ready"`
+	Status            string `json:"status"`
+	NumNodes          int64  `json:"numNodes"`
+	NumEndpoints      int64  `json:"numEndpoints"`
+	NumSharedServices int64  `json:"numSharedServices"`
+	NumFailures       int64  `json:"numFailures"`
+	LastFailure       string `json:"lastFailure,omitempty"`
 }
 
 // EndpointCounts aggregates Cilium endpoint states from CiliumEndpoint CRDs.
@@ -72,6 +108,22 @@ type EndpointCounts struct {
 	NotReady      int `json:"notReady"`
 	Disconnecting int `json:"disconnecting"`
 	Waiting       int `json:"waiting"`
+}
+
+// CiliumConnectivityResponse is the response for GET /api/v1/networking/cilium/connectivity.
+type CiliumConnectivityResponse struct {
+	Configured  bool               `json:"configured"`
+	ExecEnabled bool               `json:"execEnabled"`
+	Nodes       []NodeConnectivity `json:"nodes"`
+	CollectedAt string             `json:"collectedAt,omitempty"`
+	Partial     bool               `json:"partial"`
+}
+
+// NodeConnectivity represents per-node Cilium agent health.
+type NodeConnectivity struct {
+	NodeName    string `json:"nodeName"`
+	HealthState string `json:"healthState"` // Ok, Warning, Failure
+	Message     string `json:"message,omitempty"`
 }
 
 // computeExhaustionRisk returns the exhaustion risk level based on IPAM utilization.

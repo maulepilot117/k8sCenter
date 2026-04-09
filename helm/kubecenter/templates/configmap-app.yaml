@@ -33,3 +33,6 @@ data:
   {{- if .Values.cors.allowedOrigins }}
   KUBECENTER_CORS_ALLOWEDORIGINS: {{ join "," .Values.cors.allowedOrigins | quote }}
   {{- end }}
+  {{- if .Values.ciliumAgent.execEnabled }}
+  KUBECENTER_CILIUMAGENT_EXECENABLED: "true"
+  {{- end }}

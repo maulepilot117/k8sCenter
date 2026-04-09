@@ -257,7 +257,7 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 
 // DetectMesh returns the active service mesh engine based on cached feature detection.
 // Returns "cilium" if Cilium's Envoy-based mesh is enabled, "none" otherwise.
-// Istio/Linkerd detection is deferred to Phase B.
+// Istio/Linkerd detection is deferred to Phase C (needs per-mesh adapter + test environment).
 func (d *Detector) DetectMesh() string {
 	info := d.CachedInfo()
 	if info != nil && info.Features.EnvoyEnabled {
