@@ -90,10 +90,15 @@ rules:
       - validatingwebhookconfigurations
       - mutatingwebhookconfigurations
     verbs: ["get", "list", "watch"]
-  # Cilium CRDs (dynamic informer, conditional on CRD existence)
+  # Cilium CRDs (dynamic client, conditional on CRD existence)
   - apiGroups: ["cilium.io"]
     resources:
       - ciliumnetworkpolicies
+      - ciliumbgpclusterconfigs
+      - ciliumbgppeerconfigs
+      - ciliumbgpnodeconfigs
+      - ciliumnodes
+      - ciliumendpoints
     verbs: ["get", "list", "watch"]
   # GitOps CRDs (dynamic informers for real-time WebSocket updates)
   - apiGroups: ["argoproj.io"]
