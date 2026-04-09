@@ -38,9 +38,7 @@ export default function IpamStatus() {
   const allocated = resp.allocated ?? 0;
   const total = resp.total ?? 0;
 
-  const pct = total > 0
-    ? Math.round((allocated / total) * 100)
-    : 0;
+  const pct = total > 0 ? Math.round((allocated / total) * 100) : 0;
 
   const riskVariant = resp.exhaustionRisk === "high"
     ? "danger"
