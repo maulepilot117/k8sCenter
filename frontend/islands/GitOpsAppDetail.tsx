@@ -234,6 +234,9 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const { app, resources, history } = detail.value;
   const isArgo = app.tool === "argocd";
   const isSyncing = app.syncStatus === "progressing";
+  const compareBase = /^https?:\/\//i.test(app.source.repoURL ?? "")
+    ? app.source.repoURL!.replace(/\.git$/, "")
+    : null;
 
   return (
     <div class="p-6">
@@ -500,6 +503,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                     const shortSha = h.revision.length > 7
                       ? h.revision.slice(0, 7)
                       : h.revision;
+                    const prevRevision = i > 0 ? history[i - 1].revision : null;
                     return (
                       <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
                         <td class="px-3 py-2 font-mono text-text-primary">
@@ -515,6 +519,17 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                               </a>
                             )
                             : shortSha}
+                          {compareBase && prevRevision && (
+                            <a
+                              href={`${compareBase}/compare/${prevRevision}...${h.revision}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              class="ml-2 text-xs text-text-muted hover:text-brand"
+                              title="Compare with previous deployment"
+                            >
+                              diff
+                            </a>
+                          )}
                         </td>
                         <td class="px-3 py-2">
                           <span style={{ color: syncColor }}>{h.status}</span>
