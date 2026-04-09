@@ -304,6 +304,7 @@ func main() {
 		K8sClient:    k8sClient,
 		Detector:     cniDetector,
 		HubbleClient: hubbleClient,
+		Informers:    informerMgr,
 		AuditLogger:  auditLogger,
 		Logger:       logger,
 		ClusterID:    cfg.ClusterID,
