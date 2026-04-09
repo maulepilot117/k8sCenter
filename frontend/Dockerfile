@@ -23,9 +23,30 @@ RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
     find /deno-dir -path '*/@esbuild/*/bin/esbuild' -delete 2>/dev/null; \
     true
 
+# Security patch stage: update OpenSSL to fix CVE-2026-31790, CVE-2026-2673,
+# CVE-2026-28387, CVE-2026-28388, CVE-2026-28389, CVE-2026-28390, CVE-2026-31789
+# (libssl3t64 3.5.5-1~deb13u1 → 3.5.5-1~deb13u2)
+# Uses target platform so library arch paths match the distroless runtime.
+FROM denoland/deno:distroless-2.7.11 AS runtime-base
+FROM debian:trixie-slim AS security-patch
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libssl3t64 && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /patch/usr/lib && \
+    dpkg -L libssl3t64 | grep '/usr/lib' | while read f; do \
+      [ -f "$f" ] && mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; \
+    done
+# Update the distroless dpkg status.d entry so Trivy sees the patched version
+COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
+RUN sed 's/3\.5\.5-1~deb13u1/3.5.5-1~deb13u2/g' /tmp/libssl3t64-orig > /patch/libssl3t64-status
+
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
 FROM denoland/deno:distroless-2.7.11
+
+# Overlay patched OpenSSL libraries and updated package metadata
+COPY --from=security-patch /patch/usr/lib/ /usr/lib/
+COPY --from=security-patch /patch/libssl3t64-status /var/lib/dpkg/status.d/libssl3t64
 
 WORKDIR /app
 
