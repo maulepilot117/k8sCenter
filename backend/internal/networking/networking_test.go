@@ -355,19 +355,37 @@ func makeCiliumNode(name string, podCIDRs []string, poolSize, usedSize int, encK
 	}
 }
 
-func TestInvalidateSubsystemCaches(t *testing.T) {
+func TestInvalidateCaches(t *testing.T) {
 	h := &Handler{}
 	h.subsystemCache = &cachedSubsystems{
 		data: &CiliumSubsystemsResponse{Configured: true},
 	}
+	h.bgpCache = &cachedBGP{
+		data: &CiliumBGPResponse{Configured: true},
+	}
+	h.ipamCache = &cachedIPAM{
+		data: &CiliumIPAMResponse{Configured: true},
+	}
 
-	h.InvalidateSubsystemCaches()
+	h.InvalidateCaches()
 
 	h.subsystemMu.RLock()
-	defer h.subsystemMu.RUnlock()
 	if h.subsystemCache != nil {
 		t.Error("expected subsystem cache to be nil after invalidation")
 	}
+	h.subsystemMu.RUnlock()
+
+	h.bgpMu.RLock()
+	if h.bgpCache != nil {
+		t.Error("expected bgp cache to be nil after invalidation")
+	}
+	h.bgpMu.RUnlock()
+
+	h.ipamMu.RLock()
+	if h.ipamCache != nil {
+		t.Error("expected ipam cache to be nil after invalidation")
+	}
+	h.ipamMu.RUnlock()
 }
 
 // Ensure hasCRD works with a mock discovery that returns specific resources.

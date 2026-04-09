@@ -14,11 +14,9 @@ import (
 
 // Cilium CRD GroupVersionResources.
 var (
-	bgpClusterConfigGVR = schema.GroupVersionResource{Group: "cilium.io", Version: "v2alpha1", Resource: "ciliumbgpclusterconfigs"}
-	bgpPeerConfigGVR    = schema.GroupVersionResource{Group: "cilium.io", Version: "v2alpha1", Resource: "ciliumbgppeerconfigs"}
-	bgpNodeConfigGVR    = schema.GroupVersionResource{Group: "cilium.io", Version: "v2alpha1", Resource: "ciliumbgpnodeconfigs"}
-	ciliumNodeGVR       = schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnodes"}
-	ciliumEndpointGVR   = schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints"}
+	bgpNodeConfigGVR  = schema.GroupVersionResource{Group: "cilium.io", Version: "v2alpha1", Resource: "ciliumbgpnodeconfigs"}
+	ciliumNodeGVR     = schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnodes"}
+	ciliumEndpointGVR = schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints"}
 )
 
 // hasCRD checks whether the given GVR is available on the API server.
@@ -36,49 +34,6 @@ func hasCRD(disc discovery.DiscoveryInterface, gvr schema.GroupVersionResource) 
 		}
 	}
 	return false
-}
-
-// readBGPClusterConfigs reads CiliumBGPClusterConfig CRDs and returns config summaries.
-func readBGPClusterConfigs(ctx context.Context, client dynamic.Interface) ([]BGPClusterConfig, error) {
-	list, err := client.Resource(bgpClusterConfigGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list CiliumBGPClusterConfig: %w", err)
-	}
-
-	var configs []BGPClusterConfig
-	for _, obj := range list.Items {
-		cfg := BGPClusterConfig{Name: obj.GetName()}
-
-		spec, _, _ := unstructured.NestedMap(obj.Object, "spec")
-		if ns, ok, _ := unstructured.NestedStringMap(spec, "nodeSelector", "matchLabels"); ok {
-			cfg.NodeSelector = ns
-		}
-
-		configs = append(configs, cfg)
-	}
-	return configs, nil
-}
-
-// readBGPPeerConfigs reads CiliumBGPPeerConfig CRDs and returns peer config summaries.
-func readBGPPeerConfigs(ctx context.Context, client dynamic.Interface) ([]BGPPeerConfig, error) {
-	list, err := client.Resource(bgpPeerConfigGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("list CiliumBGPPeerConfig: %w", err)
-	}
-
-	var configs []BGPPeerConfig
-	for _, obj := range list.Items {
-		cfg := BGPPeerConfig{Name: obj.GetName()}
-
-		spec, _, _ := unstructured.NestedMap(obj.Object, "spec")
-		if spec != nil {
-			// Peer ASN and address are on the CiliumBGPClusterConfig peers, not on PeerConfig itself.
-			// PeerConfig holds transport/timer/auth settings. We still include the name for reference.
-		}
-
-		configs = append(configs, cfg)
-	}
-	return configs, nil
 }
 
 // readBGPNodeConfigs reads CiliumBGPNodeConfig CRDs to extract live per-peer session status.
@@ -196,30 +151,39 @@ func readCiliumNodes(ctx context.Context, client dynamic.Interface) ([]ciliumNod
 }
 
 // aggregateEndpoints reads CiliumEndpoint CRDs and returns aggregate state counts.
+// Uses pagination (500 per page) to avoid unbounded list responses in large clusters.
 func aggregateEndpoints(ctx context.Context, client dynamic.Interface) (EndpointCounts, error) {
-	list, err := client.Resource(ciliumEndpointGVR).Namespace("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return EndpointCounts{}, fmt.Errorf("list CiliumEndpoint: %w", err)
-	}
-
 	var counts EndpointCounts
-	for _, obj := range list.Items {
-		counts.Total++
-
-		state, _, _ := unstructured.NestedString(obj.Object, "status", "state")
-		switch state {
-		case "ready":
-			counts.Ready++
-		case "not-ready":
-			counts.NotReady++
-		case "disconnecting", "disconnected":
-			counts.Disconnecting++
-		case "waiting-for-identity", "waiting-to-regenerate", "regenerating", "restoring":
-			counts.Waiting++
-		default:
-			// Unknown states count as not-ready
-			counts.NotReady++
+	opts := metav1.ListOptions{Limit: 500}
+	for {
+		list, err := client.Resource(ciliumEndpointGVR).Namespace("").List(ctx, opts)
+		if err != nil {
+			return EndpointCounts{}, fmt.Errorf("list CiliumEndpoint: %w", err)
 		}
+
+		for _, obj := range list.Items {
+			counts.Total++
+
+			state, _, _ := unstructured.NestedString(obj.Object, "status", "state")
+			switch state {
+			case "ready":
+				counts.Ready++
+			case "not-ready":
+				counts.NotReady++
+			case "disconnecting", "disconnected":
+				counts.Disconnecting++
+			case "waiting-for-identity", "waiting-to-regenerate", "regenerating", "restoring":
+				counts.Waiting++
+			default:
+				// Unknown states count as not-ready
+				counts.NotReady++
+			}
+		}
+
+		if list.GetContinue() == "" {
+			break
+		}
+		opts.Continue = list.GetContinue()
 	}
 
 	return counts, nil

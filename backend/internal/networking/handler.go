@@ -11,8 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -30,30 +32,63 @@ type Handler struct {
 	K8sClient    *k8s.ClientFactory
 	Detector     *Detector
 	HubbleClient *HubbleClient
-	Informers    *k8s.InformerManager
 	AuditLogger  audit.Logger
 	Logger       *slog.Logger
 	ClusterID    string
+
+	// Generation counter — incremented on cache invalidation; fetch functions
+	// capture the value before starting work and discard the result if it changed.
+	cacheGen uint64
 
 	// Singleflight + cache for subsystems endpoint (encryption, mesh, ClusterMesh, endpoints).
 	subsystemGroup singleflight.Group
 	subsystemMu    sync.RWMutex
 	subsystemCache *cachedSubsystems
+
+	// Singleflight + cache for BGP endpoint.
+	bgpGroup singleflight.Group
+	bgpMu    sync.RWMutex
+	bgpCache *cachedBGP
+
+	// Singleflight + cache for IPAM endpoint.
+	ipamGroup singleflight.Group
+	ipamMu    sync.RWMutex
+	ipamCache *cachedIPAM
 }
 
-const subsystemCacheTTL = 30 * time.Second
+const cacheTTL = 30 * time.Second
 
 type cachedSubsystems struct {
 	data      *CiliumSubsystemsResponse
 	fetchedAt time.Time
 }
 
-// InvalidateSubsystemCaches clears the subsystem cache so the next request re-fetches.
+type cachedBGP struct {
+	data      *CiliumBGPResponse
+	fetchedAt time.Time
+}
+
+type cachedIPAM struct {
+	data      *CiliumIPAMResponse
+	fetchedAt time.Time
+}
+
+// InvalidateCaches clears all caches so the next request re-fetches.
 // Called after ConfigMap edits to prevent stale data.
-func (h *Handler) InvalidateSubsystemCaches() {
+func (h *Handler) InvalidateCaches() {
 	h.subsystemMu.Lock()
 	h.subsystemCache = nil
 	h.subsystemMu.Unlock()
+
+	h.bgpMu.Lock()
+	h.bgpCache = nil
+	h.bgpMu.Unlock()
+
+	h.ipamMu.Lock()
+	h.ipamCache = nil
+	h.ipamMu.Unlock()
+
+	atomic.AddUint64(&h.cacheGen, 1)
 }
 
 // isCiliumLocal returns true if the detected CNI is Cilium and no remote cluster is selected.
@@ -218,8 +253,8 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	// Refresh cached CNI features asynchronously (non-blocking)
 	go h.Detector.Detect(context.Background())
 
-	// Invalidate subsystem cache so next poll gets fresh data
-	h.InvalidateSubsystemCaches()
+	// Invalidate all caches so next poll gets fresh data
+	h.InvalidateCaches()
 }
 
 // HandleHubbleFlows returns network flows from Hubble Relay filtered by namespace and verdict.
@@ -290,6 +325,7 @@ func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 
 // HandleCiliumBGP returns BGP peering configuration and live peer status from Cilium CRDs.
 // GET /api/v1/networking/cilium/bgp
+// Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
 		return
@@ -300,43 +336,72 @@ func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	disc := h.K8sClient.DiscoveryClient()
-	if !hasCRD(disc, bgpClusterConfigGVR) {
-		httputil.WriteData(w, CiliumBGPResponse{Configured: false})
+	// Check cache first
+	h.bgpMu.RLock()
+	if h.bgpCache != nil && time.Since(h.bgpCache.fetchedAt) < cacheTTL {
+		data := h.bgpCache.data
+		h.bgpMu.RUnlock()
+		httputil.WriteData(w, data)
 		return
 	}
+	h.bgpMu.RUnlock()
 
-	dynClient := h.K8sClient.BaseDynamicClient()
-
-	clusterConfigs, err := readBGPClusterConfigs(r.Context(), dynClient)
+	// Singleflight to coalesce concurrent requests
+	result, err, _ := h.bgpGroup.Do("bgp", func() (any, error) {
+		return h.fetchBGP(r.Context())
+	})
 	if err != nil {
-		h.Logger.Error("failed to read BGP cluster configs", "error", err)
-	}
-
-	peerConfigs, err := readBGPPeerConfigs(r.Context(), dynClient)
-	if err != nil {
-		h.Logger.Error("failed to read BGP peer configs", "error", err)
-	}
-
-	peers, err := readBGPNodeConfigs(r.Context(), dynClient)
-	if err != nil {
-		h.Logger.Error("failed to read BGP node configs", "error", err)
+		h.Logger.Error("failed to fetch BGP status", "error", err)
 		httputil.WriteError(w, http.StatusBadGateway, "failed to read BGP status from CRDs", "")
 		return
 	}
 
-	httputil.WriteData(w, CiliumBGPResponse{
+	data := result.(*CiliumBGPResponse)
+	httputil.WriteData(w, data)
+}
+
+func (h *Handler) fetchBGP(ctx context.Context) (*CiliumBGPResponse, error) {
+	gen := atomic.LoadUint64(&h.cacheGen)
+
+	disc := h.K8sClient.DiscoveryClient()
+	if !hasCRD(disc, bgpNodeConfigGVR) {
+		resp := &CiliumBGPResponse{Configured: false}
+		if atomic.LoadUint64(&h.cacheGen) == gen {
+			h.bgpMu.Lock()
+			h.bgpCache = &cachedBGP{data: resp, fetchedAt: time.Now()}
+			h.bgpMu.Unlock()
+		}
+		return resp, nil
+	}
+
+	dynClient := h.K8sClient.BaseDynamicClient()
+	peers, err := readBGPNodeConfigs(ctx, dynClient)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure non-nil slice for consistent JSON output
+	if peers == nil {
+		peers = []BGPPeerStatus{}
+	}
+
+	resp := &CiliumBGPResponse{
 		Configured: true,
-		Config: &BGPConfig{
-			ClusterConfigs: clusterConfigs,
-			PeerConfigs:    peerConfigs,
-		},
-		Peers: peers,
-	})
+		Peers:      peers,
+	}
+
+	if atomic.LoadUint64(&h.cacheGen) == gen {
+		h.bgpMu.Lock()
+		h.bgpCache = &cachedBGP{data: resp, fetchedAt: time.Now()}
+		h.bgpMu.Unlock()
+	}
+
+	return resp, nil
 }
 
 // HandleCiliumIPAM returns IPAM allocation data from CiliumNode CRDs.
 // GET /api/v1/networking/cilium/ipam
+// Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
 		return
@@ -347,18 +412,48 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	disc := h.K8sClient.DiscoveryClient()
-	if !hasCRD(disc, ciliumNodeGVR) {
-		httputil.WriteData(w, CiliumIPAMResponse{Configured: false})
+	// Check cache first
+	h.ipamMu.RLock()
+	if h.ipamCache != nil && time.Since(h.ipamCache.fetchedAt) < cacheTTL {
+		data := h.ipamCache.data
+		h.ipamMu.RUnlock()
+		httputil.WriteData(w, data)
+		return
+	}
+	h.ipamMu.RUnlock()
+
+	// Singleflight to coalesce concurrent requests
+	result, err, _ := h.ipamGroup.Do("ipam", func() (any, error) {
+		return h.fetchIPAM(r.Context())
+	})
+	if err != nil {
+		h.Logger.Error("failed to fetch IPAM data", "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, "failed to read IPAM data from CRDs", "")
 		return
 	}
 
+	data := result.(*CiliumIPAMResponse)
+	httputil.WriteData(w, data)
+}
+
+func (h *Handler) fetchIPAM(ctx context.Context) (*CiliumIPAMResponse, error) {
+	gen := atomic.LoadUint64(&h.cacheGen)
+
+	disc := h.K8sClient.DiscoveryClient()
+	if !hasCRD(disc, ciliumNodeGVR) {
+		resp := &CiliumIPAMResponse{Configured: false}
+		if atomic.LoadUint64(&h.cacheGen) == gen {
+			h.ipamMu.Lock()
+			h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
+			h.ipamMu.Unlock()
+		}
+		return resp, nil
+	}
+
 	dynClient := h.K8sClient.BaseDynamicClient()
-	nodes, err := readCiliumNodes(r.Context(), dynClient)
+	nodes, err := readCiliumNodes(ctx, dynClient)
 	if err != nil {
-		h.Logger.Error("failed to read CiliumNode CRDs", "error", err)
-		httputil.WriteError(w, http.StatusBadGateway, "failed to read IPAM data from CRDs", "")
-		return
+		return nil, err
 	}
 
 	var totalAllocated, totalAvailable int
@@ -367,14 +462,16 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 
 	for _, n := range nodes {
 		totalAllocated += n.UsedCount
-		totalAvailable += n.PoolCount
+
+		// Available = pool capacity minus used; clamp to zero
+		avail := n.PoolCount - n.UsedCount
+		if avail < 0 {
+			avail = 0
+		}
+		totalAvailable += avail
+
 		allCIDRs = append(allCIDRs, n.PodCIDRs...)
 
-		// Per-node: allocated = used, available = pool - used
-		nodeAvail := n.PoolCount - n.UsedCount
-		if nodeAvail < 0 {
-			nodeAvail = 0
-		}
 		cidr := ""
 		if len(n.PodCIDRs) > 0 {
 			cidr = n.PodCIDRs[0]
@@ -382,22 +479,29 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 		perNode = append(perNode, NodeIPAM{
 			Node:      n.Name,
 			Allocated: n.UsedCount,
-			Available: nodeAvail,
+			Available: avail,
 			PodCIDR:   cidr,
 		})
 	}
 
 	total := totalAllocated + totalAvailable
 
-	// Determine IPAM mode from ConfigMap
-	mode := "unknown"
+	// Determine IPAM mode from cached Cilium ConfigMap detection
+	mode := "cluster-pool" // default
 	info := h.Detector.CachedInfo()
-	if info != nil {
-		// Try to read mode from ConfigMap — fall back to cluster-pool as default
-		mode = "cluster-pool"
+	if info != nil && info.Features.IPAMMode != "" {
+		mode = info.Features.IPAMMode
 	}
 
-	httputil.WriteData(w, CiliumIPAMResponse{
+	// Ensure non-nil slices for consistent JSON output
+	if allCIDRs == nil {
+		allCIDRs = []string{}
+	}
+	if perNode == nil {
+		perNode = []NodeIPAM{}
+	}
+
+	resp := &CiliumIPAMResponse{
 		Configured:     true,
 		Mode:           mode,
 		PodCIDRs:       allCIDRs,
@@ -406,11 +510,20 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 		Total:          total,
 		ExhaustionRisk: computeExhaustionRisk(totalAllocated, total),
 		PerNode:        perNode,
-	})
+	}
+
+	if atomic.LoadUint64(&h.cacheGen) == gen {
+		h.ipamMu.Lock()
+		h.ipamCache = &cachedIPAM{data: resp, fetchedAt: time.Now()}
+		h.ipamMu.Unlock()
+	}
+
+	return resp, nil
 }
 
 // HandleCiliumSubsystems returns encryption, mesh, ClusterMesh, and endpoint health status.
 // GET /api/v1/networking/cilium/subsystems
+// Note: uses BaseDynamicClient for read-only CRD access, consistent with policy/gitops/notification handlers.
 func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request) {
 	if _, ok := httputil.RequireUser(w, r); !ok {
 		return
@@ -423,7 +536,7 @@ func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request)
 
 	// Check cache first
 	h.subsystemMu.RLock()
-	if h.subsystemCache != nil && time.Since(h.subsystemCache.fetchedAt) < subsystemCacheTTL {
+	if h.subsystemCache != nil && time.Since(h.subsystemCache.fetchedAt) < cacheTTL {
 		data := h.subsystemCache.data
 		h.subsystemMu.RUnlock()
 		httputil.WriteData(w, data)
@@ -446,6 +559,8 @@ func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsResponse, error) {
+	gen := atomic.LoadUint64(&h.cacheGen)
+
 	info := h.Detector.CachedInfo()
 
 	// Encryption from ConfigMap + CiliumNode CRDs
@@ -457,15 +572,32 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		encInfo.Mode = info.Features.EncryptionMode
 	}
 
-	// Count encrypted nodes from CiliumNode CRDs
+	// Fetch CiliumNodes and CiliumEndpoints concurrently
 	dynClient := h.K8sClient.BaseDynamicClient()
-	nodes, err := readCiliumNodes(ctx, dynClient)
-	if err == nil {
-		encInfo.NodesTotal = len(nodes)
-		for _, n := range nodes {
-			if n.EncryptionKey > 0 {
-				encInfo.NodesEncrypted++
-			}
+
+	var nodes []ciliumNodeIPAM
+	var endpoints EndpointCounts
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		var err error
+		nodes, err = readCiliumNodes(gCtx, dynClient)
+		return err
+	})
+	g.Go(func() error {
+		var err error
+		endpoints, err = aggregateEndpoints(gCtx, dynClient)
+		return err
+	})
+	if err := g.Wait(); err != nil {
+		// Log but continue with partial data — one may have succeeded
+		h.Logger.Warn("partial failure fetching subsystem data", "error", err)
+	}
+
+	// Count encrypted nodes from CiliumNode data (nil-safe if readCiliumNodes failed)
+	encInfo.NodesTotal = len(nodes)
+	for _, n := range nodes {
+		if n.EncryptionKey > 0 {
+			encInfo.NodesEncrypted++
 		}
 	}
 
@@ -481,13 +613,6 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		Enabled: info != nil && info.Features.ClusterMesh,
 	}
 
-	// Endpoints from CiliumEndpoint CRDs
-	endpoints, err := aggregateEndpoints(ctx, dynClient)
-	if err != nil {
-		h.Logger.Warn("failed to aggregate CiliumEndpoints", "error", err)
-		// Non-fatal: return what we have
-	}
-
 	resp := &CiliumSubsystemsResponse{
 		Configured:  true,
 		Encryption:  encInfo,
@@ -496,10 +621,12 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		Endpoints:   &endpoints,
 	}
 
-	// Cache the result
-	h.subsystemMu.Lock()
-	h.subsystemCache = &cachedSubsystems{data: resp, fetchedAt: time.Now()}
-	h.subsystemMu.Unlock()
+	// Cache the result if generation hasn't changed
+	if atomic.LoadUint64(&h.cacheGen) == gen {
+		h.subsystemMu.Lock()
+		h.subsystemCache = &cachedSubsystems{data: resp, fetchedAt: time.Now()}
+		h.subsystemMu.Unlock()
+	}
 
 	return resp, nil
 }

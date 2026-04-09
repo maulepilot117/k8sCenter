@@ -45,7 +45,7 @@ export default function BgpStatus() {
       <div class="flex justify-between items-center -mt-2 mb-3">
         <StatusBadge
           status={allEstablished
-            ? `${established}/${peers.length} Established`
+            ? "All Established"
             : `${established}/${peers.length} Established`}
           variant={allEstablished
             ? "success"

@@ -17,6 +17,8 @@ interface UsePollResult<T> {
   data: Signal<T | null>;
   loading: Signal<boolean>;
   error: Signal<string | null>;
+  /** Trigger an immediate refetch outside the polling cycle. */
+  refetch: () => Promise<void>;
 }
 
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -37,12 +39,11 @@ export function usePoll<T>(
   const intervalRef = useRef<number | null>(null);
   const failureCount = useRef(0);
   const stoppedRef = useRef(false);
+  const doFetchRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
     if (opts.enabled === false) return;
-
-    const controller = new AbortController();
 
     const doFetch = async () => {
       try {
@@ -80,6 +81,8 @@ export function usePoll<T>(
       }
     };
 
+    doFetchRef.current = doFetch;
+
     // Initial fetch
     doFetch();
 
@@ -108,7 +111,6 @@ export function usePoll<T>(
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      controller.abort();
       if (intervalRef.current !== null) {
         clearInterval(intervalRef.current);
       }
@@ -116,5 +118,9 @@ export function usePoll<T>(
     };
   }, [url, opts.interval, opts.enabled]);
 
-  return { data, loading, error };
+  const refetch = async () => {
+    if (doFetchRef.current) await doFetchRef.current();
+  };
+
+  return { data, loading, error, refetch };
 }

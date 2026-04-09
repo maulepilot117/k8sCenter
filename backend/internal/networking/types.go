@@ -3,27 +3,7 @@ package networking
 // CiliumBGPResponse is the response for GET /api/v1/networking/cilium/bgp.
 type CiliumBGPResponse struct {
 	Configured bool            `json:"configured"`
-	Config     *BGPConfig      `json:"config,omitempty"`
 	Peers      []BGPPeerStatus `json:"peers,omitempty"`
-}
-
-// BGPConfig describes the BGP configuration from CiliumBGPClusterConfig and CiliumBGPPeerConfig CRDs.
-type BGPConfig struct {
-	ClusterConfigs []BGPClusterConfig `json:"clusterConfigs"`
-	PeerConfigs    []BGPPeerConfig    `json:"peerConfigs"`
-}
-
-// BGPClusterConfig represents a CiliumBGPClusterConfig entry.
-type BGPClusterConfig struct {
-	Name         string            `json:"name"`
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
-}
-
-// BGPPeerConfig represents a CiliumBGPPeerConfig entry.
-type BGPPeerConfig struct {
-	Name        string `json:"name"`
-	PeerASN     int64  `json:"peerASN"`
-	PeerAddress string `json:"peerAddress"`
 }
 
 // BGPPeerStatus represents the live state of a BGP peer session from CiliumBGPNodeConfig status.

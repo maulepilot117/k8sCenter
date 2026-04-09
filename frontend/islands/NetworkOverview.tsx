@@ -17,6 +17,9 @@ export default function NetworkOverview() {
   const configEditable = useSignal(false);
   const activeTab = useSignal<"status" | "config">("status");
 
+  // CNI info is fetched separately by CniOverview for full details.
+  // This lightweight fetch only determines whether to show Cilium-specific islands.
+  // Backend caches CNI detection, so the duplicate call is negligible.
   useEffect(() => {
     if (!IS_BROWSER) return;
     apiGet<CNIInfo>("/v1/networking/cni")
@@ -72,7 +75,9 @@ export default function NetworkOverview() {
               <IpamStatus />
 
               {/* Row 3: Subsystems (full-width) */}
-              <CiliumSubsystems />
+              <div class="md:col-span-2">
+                <CiliumSubsystems />
+              </div>
             </>
           )}
 

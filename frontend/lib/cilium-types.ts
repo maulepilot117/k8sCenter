@@ -5,7 +5,6 @@ export type CiliumBGPResponse =
   | { configured: false }
   | {
     configured: true;
-    config: BGPConfig;
     peers: BGPPeerStatus[];
   };
 
@@ -31,22 +30,6 @@ export type CiliumSubsystemsResponse =
     clusterMesh: ClusterMeshInfo;
     endpoints: EndpointCounts;
   };
-
-export interface BGPConfig {
-  clusterConfigs: BGPClusterConfig[];
-  peerConfigs: BGPPeerConfig[];
-}
-
-export interface BGPClusterConfig {
-  name: string;
-  nodeSelector?: Record<string, string>;
-}
-
-export interface BGPPeerConfig {
-  name: string;
-  peerASN: number;
-  peerAddress: string;
-}
 
 export interface BGPPeerStatus {
   node: string;

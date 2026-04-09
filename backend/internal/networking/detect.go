@@ -53,6 +53,7 @@ type CNIFeatures struct {
 	ClusterMesh      bool   `json:"clusterMesh"`
 	WireGuard        bool   `json:"wireguard"`
 	EnvoyEnabled     bool   `json:"envoyEnabled"`
+	IPAMMode         string `json:"ipamMode,omitempty"`
 }
 
 // Detector probes the cluster for the installed CNI plugin.
@@ -234,6 +235,7 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 		features.ClusterMesh = cm.Data["cluster-mesh-config"] != ""
 		features.WireGuard = cm.Data["encryption-type"] == "wireguard"
 		features.EnvoyEnabled = cm.Data["enable-envoy-config"] == "true"
+		features.IPAMMode = cm.Data["ipam"]
 
 		// Discover Hubble Relay service address
 		if features.Hubble {

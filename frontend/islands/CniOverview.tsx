@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { Card } from "@/components/ui/Card.tsx";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -33,63 +33,22 @@ interface CNIInfo {
   detectionMethod: string;
 }
 
-const POLL_INTERVAL = 120_000;
-
 export default function CniOverview() {
-  const cniInfo = useSignal<CNIInfo | null>(null);
-  const loading = useSignal(true);
+  const { data: cniData, loading, error } = usePoll<CNIInfo>(
+    "/v1/networking/cni",
+    { interval: 120_000 },
+  );
   const refreshing = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const intervalRef = useRef<number | null>(null);
-
-  const fetchCNI = async (refresh = false) => {
-    try {
-      const url = refresh
-        ? "/v1/networking/cni?refresh=true"
-        : "/v1/networking/cni";
-      const resp = await apiGet<CNIInfo>(url);
-      cniInfo.value = resp.data;
-      error.value = null;
-    } catch (err) {
-      error.value = err instanceof Error
-        ? err.message
-        : "Failed to fetch CNI status";
-    }
-  };
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    loading.value = true;
-    fetchCNI().finally(() => {
-      loading.value = false;
-    });
-
-    intervalRef.current = setInterval(() => {
-      if (document.hidden) return;
-      fetchCNI();
-    }, POLL_INTERVAL) as unknown as number;
-
-    return () => {
-      if (intervalRef.current !== null) clearInterval(intervalRef.current);
-    };
-  }, []);
 
   const handleRefresh = async () => {
     refreshing.value = true;
-    await fetchCNI(true);
+    try {
+      await apiGet<CNIInfo>("/v1/networking/cni?refresh=true");
+    } catch { /* ignore — next poll cycle picks up refreshed data */ }
     refreshing.value = false;
   };
 
-  if (!IS_BROWSER) {
-    return (
-      <>
-        <div class="animate-pulse h-40 bg-elevated rounded-lg" />
-        <div class="animate-pulse h-40 bg-elevated rounded-lg" />
-      </>
-    );
-  }
-
-  if (loading.value) {
+  if (!IS_BROWSER || loading.value) {
     return (
       <>
         <div class="animate-pulse h-40 bg-elevated rounded-lg" />
@@ -106,7 +65,7 @@ export default function CniOverview() {
     );
   }
 
-  const info = cniInfo.value;
+  const info = cniData.value;
   if (!info || info.name === "unknown") {
     return (
       <div class="md:col-span-2">
