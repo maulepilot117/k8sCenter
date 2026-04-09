@@ -494,16 +494,19 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                     const syncColor = SYNC_COLORS[h.status.toLowerCase()] ??
                       "var(--text-secondary)";
                     const ci = commits.value[h.revision];
+                    const commitUrl = ci?.webUrl?.startsWith("https://")
+                      ? ci.webUrl
+                      : undefined;
                     const shortSha = h.revision.length > 7
                       ? h.revision.slice(0, 7)
                       : h.revision;
                     return (
                       <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
                         <td class="px-3 py-2 font-mono text-text-primary">
-                          {ci?.webUrl
+                          {commitUrl
                             ? (
                               <a
-                                href={ci.webUrl}
+                                href={commitUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 class="hover:underline text-brand"
@@ -521,10 +524,10 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
                             ? (
                               <div class="min-w-0">
                                 <div class="truncate text-sm text-text-primary">
-                                  {ci.webUrl
+                                  {commitUrl
                                     ? (
                                       <a
-                                        href={ci.webUrl}
+                                        href={commitUrl}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         class="hover:underline"

@@ -149,11 +149,11 @@ func main() {
 			dbPing = db.Ping
 			dbPool = db.Pool
 			userStore = appstore.NewUserStore(db.Pool)
-			settingsService = appstore.NewSettingsService(db.Pool)
 			encKey := cfg.Database.EncryptionKey
 			if encKey == "" {
 				encKey = cfg.Auth.JWTSecret // fall back to JWT secret as encryption key
 			}
+			settingsService = appstore.NewSettingsService(db.Pool, encKey)
 			clusterStore = appstore.NewClusterStore(db.Pool, encKey)
 			complianceStore = appstore.NewComplianceStore(db.Pool)
 
@@ -473,15 +473,20 @@ func main() {
 		AuditLogger:   auditLogger,
 	}
 
-	// Wire git commit enrichment if a GitHub token is configured
-	if settingsService != nil {
-		if settings, err := settingsService.Get(ctx); err == nil && settings.GitHubToken != nil && *settings.GitHubToken != "" {
-			ghClient, err := gitprovider.NewGitHubClient(*settings.GitHubToken, "", logger)
-			if err != nil {
-				logger.Warn("failed to create github client for commit enrichment", "error", err)
-			} else {
-				gitopsHandler.CommitCache = gitprovider.NewCommitCache(dbPool, ghClient, logger)
-				logger.Info("git commit enrichment enabled")
+	// Wire git commit enrichment — always create cache, optionally set GitHub client
+	if dbPool != nil {
+		commitCache := gitprovider.NewCommitCache(dbPool, nil, logger)
+		gitopsHandler.CommitCache = commitCache
+
+		if settingsService != nil {
+			if settings, err := settingsService.Get(ctx); err == nil && settings.GitHubToken != nil && *settings.GitHubToken != "" {
+				ghClient, err := gitprovider.NewGitHubClient(*settings.GitHubToken, "", logger)
+				if err != nil {
+					logger.Warn("failed to create github client for commit enrichment", "error", err)
+				} else {
+					commitCache.SetGitHubClient(ghClient)
+					logger.Info("git commit enrichment enabled")
+				}
 			}
 		}
 	}

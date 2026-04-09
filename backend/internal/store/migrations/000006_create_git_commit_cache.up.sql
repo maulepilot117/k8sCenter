@@ -6,5 +6,8 @@ CREATE TABLE IF NOT EXISTS git_commit_cache (
     PRIMARY KEY (canonical_url, sha)
 );
 
--- Add GitHub token column to existing settings table
-ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS github_token TEXT;
+-- Add encrypted GitHub token column to existing settings table (AES-256-GCM)
+ALTER TABLE app_settings ADD COLUMN IF NOT EXISTS github_token_enc BYTEA;
+
+-- Index for future cache cleanup by age
+CREATE INDEX IF NOT EXISTS idx_git_commit_cache_created_at ON git_commit_cache (created_at);

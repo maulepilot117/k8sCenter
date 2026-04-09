@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -56,6 +57,8 @@ type cachedAppSetData struct {
 }
 
 const cacheTTL = 30 * time.Second
+
+var shaPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,40}$`)
 
 // toolGVR resolves a tool prefix to its Kubernetes API group and resource.
 func toolGVR(toolPrefix string) (apiGroup, resource string, ok bool) {
@@ -920,12 +923,24 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 	// Parse and normalize the repo URL
 	ref, err := gitprovider.ParseRepoURL(repoURL)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid repoURL", err.Error())
+		httputil.WriteError(w, http.StatusBadRequest, "invalid repoURL", "")
 		return
 	}
 
-	// Parse SHAs, cap at 50
+	// Parse SHAs, filter to valid hex format, cap at 50
 	shas := strings.Split(shasParam, ",")
+	var validSHAs []string
+	for _, s := range shas {
+		s = strings.TrimSpace(s)
+		if shaPattern.MatchString(s) {
+			validSHAs = append(validSHAs, s)
+		}
+	}
+	shas = validSHAs
+	if len(shas) == 0 {
+		httputil.WriteData(w, gitprovider.ToResponse(nil, nil))
+		return
+	}
 	if len(shas) > 50 {
 		shas = shas[:50]
 	}
@@ -940,7 +955,7 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 	apps = h.filterAppsByRBAC(r.Context(), user, apps)
 
 	canonicalURL := ref.CanonicalURL()
-	if !h.repoVisibleToUser(apps, repoURL, canonicalURL) {
+	if !repoVisibleToUser(apps, repoURL, canonicalURL) {
 		httputil.WriteError(w, http.StatusForbidden, "no visible application uses this repository", "")
 		return
 	}
@@ -951,7 +966,7 @@ func (h *Handler) HandleGetCommits(w http.ResponseWriter, r *http.Request) {
 }
 
 // repoVisibleToUser checks if any user-visible app uses the given repo URL.
-func (h *Handler) repoVisibleToUser(apps []NormalizedApp, rawURL, canonicalURL string) bool {
+func repoVisibleToUser(apps []NormalizedApp, rawURL, canonicalURL string) bool {
 	for _, app := range apps {
 		if app.Source.RepoURL == "" {
 			continue

@@ -3,8 +3,9 @@ package gitprovider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,6 +16,7 @@ import (
 type CommitCache struct {
 	db  *pgxpool.Pool
 	gh  *GitHubClient // nil if no token configured
+	ghMu sync.RWMutex
 	log *slog.Logger
 
 	group singleflight.Group
@@ -43,13 +45,18 @@ func (c *CommitCache) GetCommits(ctx context.Context, canonicalURL, owner, repo 
 		}
 	}
 
-	if len(missing) == 0 || c.gh == nil {
+	c.ghMu.RLock()
+	gh := c.gh
+	c.ghMu.RUnlock()
+
+	if len(missing) == 0 || gh == nil {
 		return cached, missing
 	}
 
 	// 2. Fan out fetches for uncached SHAs (bounded concurrency via singleflight)
 	var mu sync.Mutex
 	var unavailable []string
+	var fetched []*CommitInfo
 	var wg sync.WaitGroup
 
 	// Use a semaphore channel to limit concurrent GitHub API calls
@@ -64,7 +71,7 @@ func (c *CommitCache) GetCommits(ctx context.Context, canonicalURL, owner, repo 
 
 			key := canonicalURL + ":" + sha
 			result, err, _ := c.group.Do(key, func() (any, error) {
-				return c.gh.GetCommit(ctx, owner, repo, sha)
+				return gh.GetCommit(ctx, owner, repo, sha)
 			})
 
 			if err != nil {
@@ -76,15 +83,21 @@ func (c *CommitCache) GetCommits(ctx context.Context, canonicalURL, owner, repo 
 			}
 
 			info := result.(*CommitInfo)
-			c.put(ctx, canonicalURL, info)
 
 			mu.Lock()
 			cached[sha] = info
+			fetched = append(fetched, info)
 			mu.Unlock()
 		}(sha)
 	}
 
 	wg.Wait()
+
+	// Batch-insert all newly fetched commits in one query
+	if len(fetched) > 0 {
+		c.batchPut(ctx, canonicalURL, fetched)
+	}
+
 	return cached, unavailable
 }
 
@@ -120,37 +133,60 @@ func (c *CommitCache) batchGet(ctx context.Context, canonicalURL string, shas []
 	return result
 }
 
-// put writes a commit to the PostgreSQL cache.
-func (c *CommitCache) put(ctx context.Context, canonicalURL string, info *CommitInfo) {
-	data, err := json.Marshal(info)
-	if err != nil {
-		c.log.Error("marshaling commit for cache", "err", err)
+// batchPut writes multiple commits to the PostgreSQL cache in a single query.
+func (c *CommitCache) batchPut(ctx context.Context, canonicalURL string, infos []*CommitInfo) {
+	if len(infos) == 0 {
 		return
 	}
 
-	_, err = c.db.Exec(ctx,
-		`INSERT INTO git_commit_cache (canonical_url, sha, data) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-		canonicalURL, info.SHA, data,
-	)
-	if err != nil {
-		c.log.Error("caching commit", "sha", info.SHA[:min(7, len(info.SHA))], "err", err)
-	}
-}
+	var sb strings.Builder
+	sb.WriteString(`INSERT INTO git_commit_cache (canonical_url, sha, data) VALUES `)
 
-func min(a, b int) int {
-	if a < b {
-		return a
+	args := make([]any, 0, len(infos)*3)
+	written := 0
+	for _, info := range infos {
+		data, err := json.Marshal(info)
+		if err != nil {
+			c.log.Error("marshaling commit for cache", "err", err)
+			continue
+		}
+		if written > 0 {
+			sb.WriteString(", ")
+		}
+		base := written * 3
+		sb.WriteString("($")
+		sb.WriteString(strconv.Itoa(base + 1))
+		sb.WriteString(", $")
+		sb.WriteString(strconv.Itoa(base + 2))
+		sb.WriteString(", $")
+		sb.WriteString(strconv.Itoa(base + 3))
+		sb.WriteString(")")
+		args = append(args, canonicalURL, info.SHA, data)
+		written++
 	}
-	return b
+
+	if len(args) == 0 {
+		return
+	}
+
+	sb.WriteString(` ON CONFLICT DO NOTHING`)
+
+	if _, err := c.db.Exec(ctx, sb.String(), args...); err != nil {
+		c.log.Error("batch caching commits", "count", len(infos), "err", err)
+	}
 }
 
 // SetGitHubClient replaces the GitHub client (used when settings change at runtime).
 func (c *CommitCache) SetGitHubClient(gh *GitHubClient) {
+	c.ghMu.Lock()
 	c.gh = gh
+	c.ghMu.Unlock()
 }
 
 // HasGitHub returns true if a GitHub client is configured.
 func (c *CommitCache) HasGitHub() bool {
+	c.ghMu.RLock()
+	defer c.ghMu.RUnlock()
 	return c.gh != nil
 }
 
@@ -185,7 +221,7 @@ func ToResponse(commits map[string]*CommitInfo, unavailable []string) *CommitRes
 			Title:      c.Title(),
 			Message:    c.Message,
 			AuthorName: c.AuthorName,
-			AuthorDate: fmt.Sprintf("%s", c.AuthorDate.UTC().Format("2006-01-02T15:04:05Z")),
+			AuthorDate: c.AuthorDate.UTC().Format("2006-01-02T15:04:05Z"),
 			WebURL:     c.WebURL,
 		}
 	}
