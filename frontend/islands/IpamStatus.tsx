@@ -35,8 +35,11 @@ export default function IpamStatus() {
     );
   }
 
-  const pct = resp.total > 0
-    ? Math.round((resp.allocated / resp.total) * 100)
+  const allocated = resp.allocated ?? 0;
+  const total = resp.total ?? 0;
+
+  const pct = total > 0
+    ? Math.round((allocated / total) * 100)
     : 0;
 
   const riskVariant = resp.exhaustionRisk === "high"
@@ -70,7 +73,7 @@ export default function IpamStatus() {
         <div class="flex justify-between">
           <span class="text-text-muted">Allocated</span>
           <span class="font-mono text-sm text-text-primary">
-            {resp.allocated.toLocaleString()} / {resp.total.toLocaleString()}
+            {allocated.toLocaleString()} / {total.toLocaleString()}
           </span>
         </div>
         {/* Progress bar */}
@@ -84,7 +87,7 @@ export default function IpamStatus() {
                 : resp.exhaustionRisk === "medium"
                 ? "var(--warning)"
                 : "var(--accent)",
-              minWidth: resp.allocated > 0 ? "4px" : "0",
+              minWidth: allocated > 0 ? "4px" : "0",
             }}
           />
         </div>
