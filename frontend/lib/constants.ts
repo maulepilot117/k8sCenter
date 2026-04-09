@@ -167,7 +167,7 @@ export const NAV_SECTIONS = [
         href: "/networking/flows",
         icon: "networking",
       },
-      { label: "CNI Plugin", href: "/networking/cni", icon: "networking" },
+      { label: "Overview", href: "/networking", icon: "networking" },
       { label: "Endpoints", href: "/networking/endpoints", icon: "services" },
       {
         label: "EndpointSlices",
