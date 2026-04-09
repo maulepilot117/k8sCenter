@@ -24,6 +24,7 @@ type AppSettings struct {
 	AlertingSMTPFrom        *string  `json:"alertingSmtpFrom,omitempty"`
 	AlertingRateLimit       *int     `json:"alertingRateLimit,omitempty"`
 	AlertingRecipients      []string `json:"alertingRecipients,omitempty"`
+	GitHubToken             *string  `json:"gitHubToken,omitempty"`
 	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
@@ -68,6 +69,7 @@ func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
 			alerting_smtp_from = COALESCE($10, alerting_smtp_from),
 			alerting_rate_limit = COALESCE($11, alerting_rate_limit),
 			alerting_recipients = COALESCE($12, alerting_recipients),
+			github_token = COALESCE($13, github_token),
 			updated_at = NOW()
 		WHERE id = 1`,
 		patch.MonitoringPrometheusURL, patch.MonitoringGrafanaURL,
@@ -76,6 +78,7 @@ func (s *SettingsService) Update(ctx context.Context, patch AppSettings) error {
 		patch.AlertingSMTPPort, patch.AlertingSMTPUsername,
 		patch.AlertingSMTPPassword, patch.AlertingSMTPFrom,
 		patch.AlertingRateLimit, patch.AlertingRecipients,
+		patch.GitHubToken,
 	)
 	if err != nil {
 		return fmt.Errorf("updating settings: %w", err)
@@ -92,7 +95,7 @@ func (s *SettingsService) refresh(ctx context.Context) (*AppSettings, error) {
 		SELECT monitoring_prometheus_url, monitoring_grafana_url, monitoring_grafana_token,
 		       monitoring_namespace, alerting_enabled, alerting_smtp_host, alerting_smtp_port,
 		       alerting_smtp_username, alerting_smtp_password, alerting_smtp_from,
-		       alerting_rate_limit, alerting_recipients, updated_at
+		       alerting_rate_limit, alerting_recipients, github_token, updated_at
 		FROM app_settings WHERE id = 1`).Scan(
 		&settings.MonitoringPrometheusURL, &settings.MonitoringGrafanaURL,
 		&settings.MonitoringGrafanaToken, &settings.MonitoringNamespace,
@@ -100,6 +103,7 @@ func (s *SettingsService) refresh(ctx context.Context) (*AppSettings, error) {
 		&settings.AlertingSMTPPort, &settings.AlertingSMTPUsername,
 		&settings.AlertingSMTPPassword, &settings.AlertingSMTPFrom,
 		&settings.AlertingRateLimit, &settings.AlertingRecipients,
+		&settings.GitHubToken,
 		&settings.UpdatedAt,
 	)
 	if err != nil {
@@ -127,6 +131,10 @@ func MaskedSettings(s *AppSettings) *AppSettings {
 	if masked.AlertingSMTPUsername != nil && *masked.AlertingSMTPUsername != "" {
 		m := "****"
 		masked.AlertingSMTPUsername = &m
+	}
+	if masked.GitHubToken != nil && *masked.GitHubToken != "" {
+		m := "****"
+		masked.GitHubToken = &m
 	}
 	return &masked
 }

@@ -29,7 +29,9 @@ import (
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/gitops"
+	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
@@ -131,6 +133,7 @@ func main() {
 	var userStore *appstore.UserStore
 	var complianceStore *appstore.ComplianceStore
 	var dbPing func(context.Context) error
+	var dbPool *pgxpool.Pool
 	if cfg.Database.URL != "" {
 		db, err := appstore.New(ctx, cfg.Database.URL, int32(cfg.Database.MaxConns), int32(cfg.Database.MinConns), logger)
 		if err != nil {
@@ -144,6 +147,7 @@ func main() {
 
 			// Initialize settings, user, and cluster stores
 			dbPing = db.Ping
+			dbPool = db.Pool
 			userStore = appstore.NewUserStore(db.Pool)
 			settingsService = appstore.NewSettingsService(db.Pool)
 			encKey := cfg.Database.EncryptionKey
@@ -467,6 +471,19 @@ func main() {
 		AccessChecker: accessChecker,
 		Logger:        logger,
 		AuditLogger:   auditLogger,
+	}
+
+	// Wire git commit enrichment if a GitHub token is configured
+	if settingsService != nil {
+		if settings, err := settingsService.Get(ctx); err == nil && settings.GitHubToken != nil && *settings.GitHubToken != "" {
+			ghClient, err := gitprovider.NewGitHubClient(*settings.GitHubToken, "", logger)
+			if err != nil {
+				logger.Warn("failed to create github client for commit enrichment", "error", err)
+			} else {
+				gitopsHandler.CommitCache = gitprovider.NewCommitCache(dbPool, ghClient, logger)
+				logger.Info("git commit enrichment enabled")
+			}
+		}
 	}
 
 	notificationHandler := &notification.Handler{

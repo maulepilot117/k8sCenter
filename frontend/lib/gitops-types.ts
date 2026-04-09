@@ -112,3 +112,18 @@ export interface AppSetDetail {
   conditions: AppSetCondition[];
   applications: NormalizedApp[];
 }
+
+/** Commit metadata returned by the /gitops/commits endpoint. */
+export interface CommitInfo {
+  sha: string;
+  title: string;
+  message: string;
+  authorName: string;
+  authorDate: string;
+  webUrl?: string;
+}
+
+export interface CommitsResponse {
+  commits: Record<string, CommitInfo>;
+  unavailable: string[];
+}

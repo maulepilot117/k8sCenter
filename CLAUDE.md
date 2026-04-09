@@ -298,17 +298,17 @@ make check-dashboards                             # Verify Grafana JSON sync
     - Nav: GitOps section with Applications tab, command palette quick action
 - **Phase 10 (Security Scanning):** COMPLETE
   - Trivy Operator + Kubescape integration (vulnerability reports, config audits, compliance frameworks)
-- **Post-Phase Enhancements:** COMPLETE — 3 items
+- **Post-Phase Enhancements:** COMPLETE — 7 items
   - GitOps actions: sync, suspend/resume, rollback for Argo CD + Flux CD (#147)
   - Real-time WebSocket updates: watch GitOps & Policy CRDs for live sync status (#148)
   - White flash fix: eliminated FOUC on page navigation (#146)
   - Policy creation wizards: 8 Kyverno/Gatekeeper templates with dual-engine support (#149)
   - Compliance trend storage: daily PostgreSQL snapshots + SVG trend chart (#150)
+  - Argo CD ApplicationSet support: list, detail, CRUD actions (#151)
+  - Flux Notification Controller support: Provider, Alert & Receiver CRUD (#152, #153)
 
 ## Future Features (Roadmap)
 
-- **ApplicationSet support** — Argo CD ApplicationSet generators and outputs
-- **Flux notifications** — webhook receiver integration for Flux alerts
 - **Git commit display** — Git provider API integration for commit messages in revision history
 - **Diff view** — show what changed between revisions in GitOps deployments
 
