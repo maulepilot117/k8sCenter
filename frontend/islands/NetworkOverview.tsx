@@ -7,6 +7,7 @@ import CiliumConfigEditor from "@/islands/CiliumConfigEditor.tsx";
 import BgpStatus from "@/islands/BgpStatus.tsx";
 import IpamStatus from "@/islands/IpamStatus.tsx";
 import CiliumSubsystems from "@/islands/CiliumSubsystems.tsx";
+import NodeConnectivity from "@/islands/NodeConnectivity.tsx";
 
 interface CNIInfo {
   name: string;
@@ -77,6 +78,11 @@ export default function NetworkOverview() {
               {/* Row 3: Subsystems (full-width) */}
               <div class="md:col-span-2">
                 <CiliumSubsystems />
+              </div>
+
+              {/* Row 4: Node Connectivity (full-width) */}
+              <div class="md:col-span-2">
+                <NodeConnectivity />
               </div>
             </>
           )}

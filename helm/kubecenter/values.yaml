@@ -133,6 +133,11 @@ externalDatabase:
   existingSecret: ""      # k8s Secret with key "password"
   sslmode: require
 
+# -- Cilium agent deep diagnostics (requires pods/exec RBAC)
+ciliumAgent:
+  # -- Enable exec-based diagnostics for WireGuard details, ClusterMesh, Envoy stats
+  execEnabled: false
+
 # -- Alerting
 alerting:
   enabled: false

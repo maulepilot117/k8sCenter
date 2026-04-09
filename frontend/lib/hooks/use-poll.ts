@@ -19,6 +19,8 @@ interface UsePollResult<T> {
   error: Signal<string | null>;
   /** Trigger an immediate refetch outside the polling cycle. */
   refetch: () => Promise<void>;
+  /** Timestamp of the last successful fetch. */
+  lastFetchedAt: Signal<Date | null>;
 }
 
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -36,6 +38,7 @@ export function usePoll<T>(
   const data = useSignal<T | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  const lastFetchedAt = useSignal<Date | null>(null);
   const intervalRef = useRef<number | null>(null);
   const failureCount = useRef(0);
   const stoppedRef = useRef(false);
@@ -51,6 +54,7 @@ export function usePoll<T>(
         data.value = resp.data;
         error.value = null;
         failureCount.current = 0;
+        lastFetchedAt.value = new Date();
 
         // Check if polling should continue
         if (
@@ -122,5 +126,5 @@ export function usePoll<T>(
     if (doFetchRef.current) await doFetchRef.current();
   };
 
-  return { data, loading, error, refetch };
+  return { data, loading, error, refetch, lastFetchedAt };
 }

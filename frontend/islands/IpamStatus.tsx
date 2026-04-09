@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 export default function IpamStatus() {
-  const { data, loading, error } = usePoll<CiliumIPAMResponse>(
+  const { data, loading, error, lastFetchedAt } = usePoll<CiliumIPAMResponse>(
     "/v1/networking/cilium/ipam",
     {
       interval: 60_000,
@@ -126,6 +126,13 @@ export default function IpamStatus() {
           </div>
         )}
       </div>
+      {lastFetchedAt.value && (
+        <div class="mt-3 pt-2 border-t border-border-subtle text-right">
+          <span class="text-xs text-text-muted">
+            Updated {lastFetchedAt.value.toLocaleTimeString()}
+          </span>
+        </div>
+      )}
     </Card>
   );
 }

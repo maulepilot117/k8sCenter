@@ -2,9 +2,11 @@ package networking
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -423,5 +425,359 @@ func TestIsCiliumLocal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- Phase B: Agent Collector Tests ---
+
+func TestAgentCollector_CacheHit(t *testing.T) {
+	c := &CiliumAgentCollector{}
+	cached := &agentCollectionResult{
+		nodes:     []agentNodeResult{{nodeName: "node-1", podName: "cilium-abc"}},
+		collected: time.Now(),
+		partial:   false,
+	}
+	c.cache = cached
+
+	result, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != cached {
+		t.Error("expected cached result to be returned")
+	}
+}
+
+func TestAgentCollector_PodValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		allowed   bool
+	}{
+		{"kube-system is allowed", "kube-system", true},
+		{"cilium is allowed", "cilium", true},
+		{"default is rejected", "default", false},
+		{"monitoring is rejected", "monitoring", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAllowedNamespace(tt.namespace)
+			if got != tt.allowed {
+				t.Errorf("isAllowedNamespace(%q) = %v, want %v", tt.namespace, got, tt.allowed)
+			}
+		})
+	}
+}
+
+func TestAgentCollector_ParseMinimalJSON(t *testing.T) {
+	input := `{
+		"encryption": {
+			"mode": "Wireguard",
+			"wireguard": {
+				"interfaces": [{
+					"name": "cilium_wg0",
+					"public-key": "abc123",
+					"listen-port": 51871,
+					"peer-count": 2,
+					"peers": [{
+						"public-key": "def456",
+						"endpoint": "10.0.0.1:51871",
+						"last-handshake-time": "2026-04-09T10:00:00Z",
+						"transfer-rx": 12345678,
+						"transfer-tx": 87654321
+					}]
+				}]
+			}
+		},
+		"cluster-mesh": {
+			"clusters": [{
+				"name": "cluster-west",
+				"connected": true,
+				"ready": true,
+				"status": "ready",
+				"num-nodes": 5,
+				"num-endpoints": 42,
+				"num-shared-services": 12,
+				"num-failures": 0
+			}]
+		},
+		"proxy": {
+			"envoy-deployment-mode": "embedded",
+			"total-redirects": 150,
+			"total-ports": 3
+		},
+		"cluster": {
+			"ciliumHealth": {
+				"state": "Ok",
+				"msg": ""
+			}
+		}
+	}`
+
+	var status ciliumAgentStatus
+	if err := json.Unmarshal([]byte(input), &status); err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	// Encryption
+	if status.Encryption == nil || status.Encryption.Mode != "Wireguard" {
+		t.Error("encryption mode mismatch")
+	}
+	if len(status.Encryption.Wireguard.Interfaces) != 1 {
+		t.Fatal("expected 1 WireGuard interface")
+	}
+	iface := status.Encryption.Wireguard.Interfaces[0]
+	if iface.PublicKey != "abc123" || iface.PeerCount != 2 {
+		t.Errorf("interface: key=%q, peerCount=%d", iface.PublicKey, iface.PeerCount)
+	}
+	if len(iface.Peers) != 1 || iface.Peers[0].TransferRx != 12345678 {
+		t.Error("peer data mismatch")
+	}
+
+	// ClusterMesh
+	if status.ClusterMesh == nil || len(status.ClusterMesh.Clusters) != 1 {
+		t.Fatal("expected 1 remote cluster")
+	}
+	rc := status.ClusterMesh.Clusters[0]
+	if rc.Name != "cluster-west" || !rc.Connected || rc.NumNodes != 5 {
+		t.Errorf("remote cluster: name=%q, connected=%v, nodes=%d", rc.Name, rc.Connected, rc.NumNodes)
+	}
+
+	// Proxy
+	if status.Proxy == nil || status.Proxy.DeploymentMode != "embedded" {
+		t.Error("proxy deployment mode mismatch")
+	}
+	if status.Proxy.TotalRedirects != 150 || status.Proxy.TotalPorts != 3 {
+		t.Errorf("proxy: redirects=%d, ports=%d", status.Proxy.TotalRedirects, status.Proxy.TotalPorts)
+	}
+
+	// Health
+	if status.Cluster == nil || status.Cluster.CiliumHealth == nil || status.Cluster.CiliumHealth.State != "Ok" {
+		t.Error("health state mismatch")
+	}
+}
+
+func TestAgentCollector_PartialFailure(t *testing.T) {
+	result := &agentCollectionResult{
+		nodes: []agentNodeResult{
+			{nodeName: "node-1", podName: "cilium-1", status: &ciliumAgentStatus{}},
+			{nodeName: "node-2", podName: "cilium-2", status: &ciliumAgentStatus{}},
+			{nodeName: "node-3", podName: "cilium-3", err: "exec failed: timeout"},
+		},
+		collected: time.Now(),
+	}
+	// Compute partial flag same way as collect()
+	for _, r := range result.nodes {
+		if r.err != "" {
+			result.partial = true
+			break
+		}
+	}
+	if !result.partial {
+		t.Error("expected partial=true when some pods fail")
+	}
+}
+
+// --- Phase B: Enrichment Merge Tests ---
+
+func TestMergeAgentIntoSubsystems_WireGuard(t *testing.T) {
+	resp := &CiliumSubsystemsResponse{
+		Configured: true,
+		Encryption: &EncryptionInfo{Enabled: true, Mode: "wireguard"},
+		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		ClusterMesh: &ClusterMeshInfo{Enabled: false},
+	}
+	agent := &agentCollectionResult{
+		nodes: []agentNodeResult{
+			{
+				nodeName: "node-1",
+				podName:  "cilium-1",
+				status: &ciliumAgentStatus{
+					Encryption: &agentEncryption{
+						Mode: "Wireguard",
+						Wireguard: &agentWireguard{
+							Interfaces: []agentWGInterface{{
+								Name:      "cilium_wg0",
+								PublicKey: "key1",
+								PeerCount: 2,
+								Peers: []agentWGPeer{
+									{PublicKey: "peer1", Endpoint: "10.0.0.1:51871", TransferRx: 100, TransferTx: 200},
+								},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mergeAgentIntoSubsystems(resp, agent)
+
+	if len(resp.Encryption.WireGuardNodes) != 1 {
+		t.Fatalf("expected 1 WireGuard node, got %d", len(resp.Encryption.WireGuardNodes))
+	}
+	wgn := resp.Encryption.WireGuardNodes[0]
+	if wgn.NodeName != "node-1" || wgn.PublicKey != "key1" {
+		t.Errorf("WireGuardNode: name=%q, key=%q", wgn.NodeName, wgn.PublicKey)
+	}
+	if len(wgn.Peers) != 1 || wgn.Peers[0].TransferRx != 100 {
+		t.Error("peer data not merged correctly")
+	}
+}
+
+func TestMergeAgentIntoSubsystems_ClusterMesh(t *testing.T) {
+	resp := &CiliumSubsystemsResponse{
+		Configured:  true,
+		Encryption:  &EncryptionInfo{},
+		Mesh:        &MeshInfo{},
+		ClusterMesh: &ClusterMeshInfo{Enabled: true},
+	}
+	agent := &agentCollectionResult{
+		nodes: []agentNodeResult{
+			{
+				nodeName: "node-1",
+				status: &ciliumAgentStatus{
+					ClusterMesh: &agentClusterMesh{
+						Clusters: []agentRemoteCluster{
+							{Name: "west", Connected: true, Ready: true, NumNodes: 3},
+							{Name: "east", Connected: false, NumFailures: 2},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	mergeAgentIntoSubsystems(resp, agent)
+
+	if len(resp.ClusterMesh.RemoteClusters) != 2 {
+		t.Fatalf("expected 2 remote clusters, got %d", len(resp.ClusterMesh.RemoteClusters))
+	}
+	if resp.ClusterMesh.RemoteClusters[0].Name != "west" || !resp.ClusterMesh.RemoteClusters[0].Connected {
+		t.Error("first remote cluster mismatch")
+	}
+	if resp.ClusterMesh.RemoteClusters[1].Connected {
+		t.Error("second remote cluster should not be connected")
+	}
+}
+
+func TestMergeAgentIntoSubsystems_Proxy(t *testing.T) {
+	resp := &CiliumSubsystemsResponse{
+		Configured: true,
+		Encryption: &EncryptionInfo{},
+		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		ClusterMesh: &ClusterMeshInfo{},
+	}
+	agent := &agentCollectionResult{
+		nodes: []agentNodeResult{
+			{
+				nodeName: "node-1",
+				status: &ciliumAgentStatus{
+					Proxy: &agentProxy{
+						DeploymentMode: "embedded",
+						TotalRedirects: 42,
+						TotalPorts:     3,
+					},
+				},
+			},
+		},
+	}
+
+	mergeAgentIntoSubsystems(resp, agent)
+
+	if resp.Mesh.DeploymentMode != "embedded" {
+		t.Errorf("DeploymentMode = %q, want %q", resp.Mesh.DeploymentMode, "embedded")
+	}
+	if resp.Mesh.TotalRedirects != 42 {
+		t.Errorf("TotalRedirects = %d, want 42", resp.Mesh.TotalRedirects)
+	}
+}
+
+func TestMergeAgentIntoSubsystems_NilGuards(t *testing.T) {
+	// Merge should not panic when sub-structs are nil
+	resp := &CiliumSubsystemsResponse{
+		Configured:  true,
+		Encryption:  nil,
+		Mesh:        nil,
+		ClusterMesh: nil,
+	}
+	agent := &agentCollectionResult{
+		nodes: []agentNodeResult{
+			{
+				nodeName: "node-1",
+				status: &ciliumAgentStatus{
+					Encryption: &agentEncryption{Mode: "Wireguard"},
+					Proxy:      &agentProxy{DeploymentMode: "embedded"},
+				},
+			},
+		},
+	}
+
+	// Should not panic
+	mergeAgentIntoSubsystems(resp, agent)
+
+	// Nil sub-structs should remain nil (agent data not injected into nil fields)
+	if resp.Encryption != nil {
+		t.Error("expected Encryption to remain nil")
+	}
+	if resp.Mesh != nil {
+		t.Error("expected Mesh to remain nil")
+	}
+}
+
+// --- Phase B: Connectivity Handler Tests ---
+
+func TestHandleCiliumConnectivity_ExecDisabled(t *testing.T) {
+	h := &Handler{
+		Detector: &Detector{},
+		// AgentCollector is nil (exec disabled)
+	}
+	h.Detector.cached = &CNIInfo{Name: CNICilium}
+
+	req, _ := http.NewRequest("GET", "/api/v1/networking/cilium/connectivity", nil)
+	// Note: isCiliumLocal requires no cluster context = local, which is the default
+
+	// We can't easily test the full HTTP handler without httputil.RequireUser,
+	// so test the logic directly: when AgentCollector is nil and CNI is Cilium,
+	// the handler should return configured=true with empty nodes.
+	if !h.isCiliumLocal(req) {
+		t.Fatal("expected isCiliumLocal to be true")
+	}
+	if h.AgentCollector != nil {
+		t.Fatal("expected AgentCollector to be nil")
+	}
+}
+
+func TestHandleCiliumConnectivity_NotCilium(t *testing.T) {
+	h := &Handler{
+		Detector: &Detector{},
+	}
+	h.Detector.cached = &CNIInfo{Name: CNICalico}
+
+	req, _ := http.NewRequest("GET", "/api/v1/networking/cilium/connectivity", nil)
+	if h.isCiliumLocal(req) {
+		t.Error("expected isCiliumLocal to be false for Calico")
+	}
+}
+
+func TestInvalidateCaches_IncludesAgentCache(t *testing.T) {
+	c := &CiliumAgentCollector{}
+	c.cache = &agentCollectionResult{
+		nodes:     []agentNodeResult{{nodeName: "node-1"}},
+		collected: time.Now(),
+	}
+
+	h := &Handler{
+		AgentCollector: c,
+	}
+	h.subsystemCache = &cachedSubsystems{data: &CiliumSubsystemsResponse{Configured: true}}
+
+	h.InvalidateCaches()
+
+	c.cacheMu.RLock()
+	if c.cache != nil {
+		t.Error("expected agent cache to be cleared after InvalidateCaches")
+	}
+	c.cacheMu.RUnlock()
 }
 

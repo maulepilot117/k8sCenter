@@ -53,15 +53,48 @@ export interface EncryptionInfo {
   mode: string;
   nodesEncrypted: number;
   nodesTotal: number;
+  wireGuardNodes?: WireGuardNode[];
+}
+
+export interface WireGuardNode {
+  nodeName: string;
+  publicKey: string;
+  listenPort: number;
+  peerCount: number;
+  peers: WireGuardPeer[];
+}
+
+export interface WireGuardPeer {
+  publicKey: string;
+  endpoint: string;
+  lastHandshake: string;
+  transferRx: number;
+  transferTx: number;
 }
 
 export interface MeshInfo {
   enabled: boolean;
   engine: string;
+  deploymentMode?: string;
+  totalRedirects?: number;
+  totalPorts?: number;
 }
 
 export interface ClusterMeshInfo {
   enabled: boolean;
+  remoteClusters?: RemoteCluster[];
+}
+
+export interface RemoteCluster {
+  name: string;
+  connected: boolean;
+  ready: boolean;
+  status: string;
+  numNodes: number;
+  numEndpoints: number;
+  numSharedServices: number;
+  numFailures: number;
+  lastFailure?: string;
 }
 
 export interface EndpointCounts {
@@ -70,4 +103,19 @@ export interface EndpointCounts {
   notReady: number;
   disconnecting: number;
   waiting: number;
+}
+
+// Connectivity response (flat interface — matches BGP/IPAM pattern)
+export interface CiliumConnectivityResponse {
+  configured: boolean;
+  execEnabled: boolean;
+  nodes: NodeConnectivity[];
+  collectedAt?: string;
+  partial?: boolean;
+}
+
+export interface NodeConnectivity {
+  nodeName: string;
+  healthState: string;
+  message?: string;
 }

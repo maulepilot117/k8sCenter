@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 export default function BgpStatus() {
-  const { data, loading, error } = usePoll<CiliumBGPResponse>(
+  const { data, loading, error, lastFetchedAt } = usePoll<CiliumBGPResponse>(
     "/v1/networking/cilium/bgp",
     {
       interval: 60_000,
@@ -91,6 +91,13 @@ export default function BgpStatus() {
           </p>
         )}
       </div>
+      {lastFetchedAt.value && (
+        <div class="mt-3 pt-2 border-t border-border-subtle text-right">
+          <span class="text-xs text-text-muted">
+            Updated {lastFetchedAt.value.toLocaleTimeString()}
+          </span>
+        </div>
+      )}
     </Card>
   );
 }

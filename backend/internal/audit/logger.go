@@ -25,6 +25,7 @@ const (
 	ActionAlertSettingsUpdate Action = "alert_settings_update"
 	ActionAlertTest          Action = "alert_test"
 	ActionReadLogs           Action = "read_logs"
+	ActionAgentExec          Action = "agent_exec"
 	ActionGitOpsSync         Action = "gitops_sync"
 	ActionGitOpsSuspend      Action = "gitops_suspend"
 	ActionGitOpsResume       Action = "gitops_resume"
