@@ -579,11 +579,14 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		encInfo.Mode = info.Features.EncryptionMode
 	}
 
-	// Fetch CiliumNodes and CiliumEndpoints concurrently
+	// Fetch CiliumNodes, CiliumEndpoints, and agent data concurrently
 	dynClient := h.K8sClient.BaseDynamicClient()
 
 	var nodes []ciliumNodeIPAM
 	var endpoints EndpointCounts
+	var agentResult *agentCollectionResult
+	var agentErr error
+
 	g, gCtx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		var err error
@@ -595,6 +598,13 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		endpoints, err = aggregateEndpoints(gCtx, dynClient)
 		return err
 	})
+	// Agent collection runs in parallel with CRD reads (opt-in, never fails the group)
+	if h.AgentCollector != nil {
+		g.Go(func() error {
+			agentResult, agentErr = h.AgentCollector.Collect(gCtx)
+			return nil // agent errors captured separately
+		})
+	}
 	if err := g.Wait(); err != nil {
 		// Log but continue with partial data — one may have succeeded
 		h.Logger.Warn("partial failure fetching subsystem data", "error", err)
@@ -628,14 +638,11 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 		Endpoints:   &endpoints,
 	}
 
-	// Agent enrichment (opt-in, additive — never replaces CRD data)
-	if h.AgentCollector != nil {
-		agentResult, agentErr := h.AgentCollector.Collect(ctx)
-		if agentErr != nil {
-			h.Logger.Warn("agent collection failed, returning CRD-only data", "error", agentErr)
-		} else {
-			mergeAgentIntoSubsystems(resp, agentResult)
-		}
+	// Agent enrichment (additive — never replaces CRD data)
+	if agentErr != nil {
+		h.Logger.Warn("agent collection failed, returning CRD-only data", "error", agentErr)
+	} else if agentResult != nil {
+		mergeAgentIntoSubsystems(resp, agentResult)
 	}
 
 	// Cache the result if generation hasn't changed

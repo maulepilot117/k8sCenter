@@ -557,24 +557,52 @@ func TestAgentCollector_ParseMinimalJSON(t *testing.T) {
 	}
 }
 
-func TestAgentCollector_PartialFailure(t *testing.T) {
-	result := &agentCollectionResult{
+func TestMergeAgentIntoSubsystems_PartialNodes(t *testing.T) {
+	// When some nodes fail, only successful nodes contribute enrichment data
+	resp := &CiliumSubsystemsResponse{
+		Configured: true,
+		Encryption: &EncryptionInfo{Enabled: true, Mode: "wireguard"},
+		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		ClusterMesh: &ClusterMeshInfo{Enabled: false},
+	}
+	agent := &agentCollectionResult{
 		nodes: []agentNodeResult{
-			{nodeName: "node-1", podName: "cilium-1", status: &ciliumAgentStatus{}},
-			{nodeName: "node-2", podName: "cilium-2", status: &ciliumAgentStatus{}},
-			{nodeName: "node-3", podName: "cilium-3", err: "exec failed: timeout"},
+			{
+				nodeName: "node-1",
+				status: &ciliumAgentStatus{
+					Encryption: &agentEncryption{
+						Wireguard: &agentWireguard{
+							Interfaces: []agentWGInterface{{PublicKey: "key1", Peers: []agentWGPeer{}}},
+						},
+					},
+				},
+			},
+			{nodeName: "node-2", err: "exec failed: timeout"}, // failed — should be skipped
+			{
+				nodeName: "node-3",
+				status: &ciliumAgentStatus{
+					Encryption: &agentEncryption{
+						Wireguard: &agentWireguard{
+							Interfaces: []agentWGInterface{{PublicKey: "key3", Peers: []agentWGPeer{}}},
+						},
+					},
+				},
+			},
 		},
-		collected: time.Now(),
+		partial: true,
 	}
-	// Compute partial flag same way as collect()
-	for _, r := range result.nodes {
-		if r.err != "" {
-			result.partial = true
-			break
-		}
+
+	mergeAgentIntoSubsystems(resp, agent)
+
+	// Only node-1 and node-3 should contribute (node-2 failed)
+	if len(resp.Encryption.WireGuardNodes) != 2 {
+		t.Fatalf("expected 2 WireGuard nodes (skipping failed), got %d", len(resp.Encryption.WireGuardNodes))
 	}
-	if !result.partial {
-		t.Error("expected partial=true when some pods fail")
+	if resp.Encryption.WireGuardNodes[0].PublicKey != "key1" {
+		t.Errorf("first node key = %q, want %q", resp.Encryption.WireGuardNodes[0].PublicKey, "key1")
+	}
+	if resp.Encryption.WireGuardNodes[1].PublicKey != "key3" {
+		t.Errorf("second node key = %q, want %q", resp.Encryption.WireGuardNodes[1].PublicKey, "key3")
 	}
 }
 

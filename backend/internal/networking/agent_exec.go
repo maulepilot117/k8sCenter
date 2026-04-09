@@ -24,7 +24,7 @@ const (
 	agentCacheTTL      = 30 * time.Second
 	agentOuterTimeout  = 30 * time.Second
 	agentExecTimeout   = 5 * time.Second
-	agentMaxConcurrent = 5
+	agentMaxConcurrent = 10
 	agentMaxOutput     = 1 << 20 // 1 MB stdout cap
 	agentContainer     = "cilium-agent"
 )
@@ -77,9 +77,13 @@ func (c *CiliumAgentCollector) Collect(ctx context.Context) (*agentCollectionRes
 	}
 	c.cacheMu.RUnlock()
 
-	// Singleflight coalesces concurrent requests
+	// Singleflight coalesces concurrent requests.
+	// Use a detached context so one caller's cancellation (e.g., browser tab close)
+	// does not cascade to all coalesced waiters.
 	v, err, _ := c.group.Do("agent-collect", func() (any, error) {
-		return c.collect(ctx)
+		detached, cancel := context.WithTimeout(context.Background(), agentOuterTimeout)
+		defer cancel()
+		return c.collect(detached)
 	})
 	if err != nil {
 		return nil, err
@@ -265,9 +269,10 @@ func (c *CiliumAgentCollector) execInPod(ctx context.Context, namespace, podName
 
 	var stdout, stderr bytes.Buffer
 	lw := &limitedWriter{w: &stdout, remaining: agentMaxOutput}
+	stderrLW := &limitedWriter{w: &stderr, remaining: 64 * 1024} // 64KB stderr cap
 	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdout: lw,
-		Stderr: &stderr,
+		Stderr: stderrLW,
 	})
 	if err != nil {
 		return stdout.Bytes(), stderr.Bytes(), err
