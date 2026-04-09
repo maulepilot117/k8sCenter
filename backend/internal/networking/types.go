@@ -22,9 +22,9 @@ type CiliumIPAMResponse struct {
 	Configured     bool       `json:"configured"`
 	Mode           string     `json:"mode,omitempty"`
 	PodCIDRs       []string   `json:"podCIDRs,omitempty"`
-	Allocated      int        `json:"allocated,omitempty"`
-	Available      int        `json:"available,omitempty"`
-	Total          int        `json:"total,omitempty"`
+	Allocated      int        `json:"allocated"`
+	Available      int        `json:"available"`
+	Total          int        `json:"total"`
 	ExhaustionRisk string     `json:"exhaustionRisk,omitempty"` // none, medium, high
 	PerNode        []NodeIPAM `json:"perNode,omitempty"`
 }
