@@ -113,10 +113,10 @@ type EndpointCounts struct {
 // CiliumConnectivityResponse is the response for GET /api/v1/networking/cilium/connectivity.
 type CiliumConnectivityResponse struct {
 	Configured  bool               `json:"configured"`
-	ExecEnabled bool               `json:"execEnabled,omitempty"`
+	ExecEnabled bool               `json:"execEnabled"`
 	Nodes       []NodeConnectivity `json:"nodes"`
 	CollectedAt string             `json:"collectedAt,omitempty"`
-	Partial     bool               `json:"partial,omitempty"`
+	Partial     bool               `json:"partial"`
 }
 
 // NodeConnectivity represents per-node Cilium agent health.

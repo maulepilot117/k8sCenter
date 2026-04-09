@@ -693,11 +693,14 @@ func mergeAgentIntoSubsystems(resp *CiliumSubsystemsResponse, agent *agentCollec
 			}
 		}
 
-		// Mesh: Envoy proxy data (take from first node that reports it)
-		if resp.Mesh != nil && node.status.Proxy != nil && resp.Mesh.DeploymentMode == "" {
-			resp.Mesh.DeploymentMode = node.status.Proxy.DeploymentMode
-			resp.Mesh.TotalRedirects = node.status.Proxy.TotalRedirects
-			resp.Mesh.TotalPorts = node.status.Proxy.TotalPorts
+		// Mesh: Envoy proxy data — DeploymentMode from first node (uniform across cluster),
+		// TotalRedirects/TotalPorts aggregated across all nodes.
+		if resp.Mesh != nil && node.status.Proxy != nil {
+			if resp.Mesh.DeploymentMode == "" {
+				resp.Mesh.DeploymentMode = node.status.Proxy.DeploymentMode
+			}
+			resp.Mesh.TotalRedirects += node.status.Proxy.TotalRedirects
+			resp.Mesh.TotalPorts += node.status.Proxy.TotalPorts
 		}
 
 		// ClusterMesh: remote clusters (take from first node that reports it)

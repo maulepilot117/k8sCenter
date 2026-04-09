@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -29,11 +30,18 @@ const (
 	agentContainer     = "cilium-agent"
 )
 
-var agentCommand = []string{"cilium-dbg", "status", "-o", "json"}
+// agentCommandArgs returns the command to run in Cilium agent pods.
+// Returns a fresh slice to prevent accidental mutation of the shared command.
+func agentCommandArgs() []string {
+	return []string{"cilium-dbg", "status", "-o", "json"}
+}
 
-var agentPodLabels = []string{
-	"app.kubernetes.io/name=cilium-agent",
-	"k8s-app=cilium",
+// agentPodLabelSelectors returns the label selectors for finding Cilium agent pods.
+func agentPodLabelSelectors() []string {
+	return []string{
+		"app.kubernetes.io/name=cilium-agent",
+		"k8s-app=cilium",
+	}
 }
 
 // CiliumAgentCollector execs cilium-dbg into Cilium agent pods to collect
@@ -43,18 +51,21 @@ type CiliumAgentCollector struct {
 	k8sClient   *k8s.ClientFactory
 	auditLogger audit.Logger
 	logger      *slog.Logger
+	clusterID   string
 
-	group   singleflight.Group
-	cacheMu sync.RWMutex
-	cache   *agentCollectionResult
+	group    singleflight.Group
+	cacheMu  sync.RWMutex
+	cache    *agentCollectionResult
+	cacheGen uint64
 }
 
 // NewCiliumAgentCollector creates a collector for Cilium agent diagnostics.
-func NewCiliumAgentCollector(k8sClient *k8s.ClientFactory, auditLogger audit.Logger, logger *slog.Logger) *CiliumAgentCollector {
+func NewCiliumAgentCollector(k8sClient *k8s.ClientFactory, auditLogger audit.Logger, logger *slog.Logger, clusterID string) *CiliumAgentCollector {
 	return &CiliumAgentCollector{
 		k8sClient:   k8sClient,
 		auditLogger: auditLogger,
 		logger:      logger,
+		clusterID:   clusterID,
 	}
 }
 
@@ -62,6 +73,7 @@ func NewCiliumAgentCollector(k8sClient *k8s.ClientFactory, auditLogger audit.Log
 func (c *CiliumAgentCollector) InvalidateCache() {
 	c.cacheMu.Lock()
 	c.cache = nil
+	atomic.AddUint64(&c.cacheGen, 1)
 	c.cacheMu.Unlock()
 }
 
@@ -92,6 +104,7 @@ func (c *CiliumAgentCollector) Collect(ctx context.Context) (*agentCollectionRes
 }
 
 func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionResult, error) {
+	gen := atomic.LoadUint64(&c.cacheGen)
 	ctx, cancel := context.WithTimeout(ctx, agentOuterTimeout)
 	defer cancel()
 
@@ -134,18 +147,20 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 		partial:   partial,
 	}
 
-	// Cache the result
-	c.cacheMu.Lock()
-	c.cache = result
-	c.cacheMu.Unlock()
+	// Cache the result if generation hasn't changed (prevents stale writes across invalidation)
+	if atomic.LoadUint64(&c.cacheGen) == gen {
+		c.cacheMu.Lock()
+		c.cache = result
+		c.cacheMu.Unlock()
+	}
 
 	return result, nil
 }
 
-// findAgentPods searches ciliumSearchNamespaces for pods matching agentPodLabels.
+// findAgentPods searches ciliumSearchNamespaces for pods matching agent pod label selectors.
 func (c *CiliumAgentCollector) findAgentPods(ctx context.Context, cs kubernetes.Interface) ([]corev1.Pod, error) {
 	for _, ns := range ciliumSearchNamespaces {
-		for _, labelSelector := range agentPodLabels {
+		for _, labelSelector := range agentPodLabelSelectors() {
 			pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 				LabelSelector: labelSelector,
 			})
@@ -194,7 +209,7 @@ func (c *CiliumAgentCollector) execPod(ctx context.Context, cs kubernetes.Interf
 	}
 
 	start := time.Now()
-	stdout, stderr, err := c.execInPod(ctx, pod.Namespace, pod.Name, agentContainer, agentCommand)
+	stdout, stderr, err := c.execInPod(ctx, pod.Namespace, pod.Name, agentContainer, agentCommandArgs())
 	elapsed := time.Since(start)
 
 	outcome := "success"
@@ -226,8 +241,9 @@ func (c *CiliumAgentCollector) execPod(ctx context.Context, cs kubernetes.Interf
 		auditResult = audit.ResultFailure
 		detail += ": " + result.err
 	}
-	_ = c.auditLogger.Log(ctx, audit.Entry{
+	if err := c.auditLogger.Log(ctx, audit.Entry{
 		Timestamp:         time.Now().UTC(),
+		ClusterID:         c.clusterID,
 		User:              "system:serviceaccount",
 		Action:            audit.ActionAgentExec,
 		ResourceKind:      "Pod",
@@ -235,7 +251,9 @@ func (c *CiliumAgentCollector) execPod(ctx context.Context, cs kubernetes.Interf
 		ResourceName:      pod.Name,
 		Result:            auditResult,
 		Detail:            truncate(detail, 500),
-	})
+	}); err != nil {
+		c.logger.Warn("failed to write audit log for agent exec", "pod", pod.Name, "error", err)
+	}
 
 	return result
 }

@@ -321,7 +321,7 @@ func (s *Server) registerNetworkingRoutes(ar chi.Router) {
 		nr.Get("/cilium/bgp", h.HandleCiliumBGP)
 		nr.Get("/cilium/ipam", h.HandleCiliumIPAM)
 		nr.Get("/cilium/subsystems", h.HandleCiliumSubsystems)
-		nr.Get("/cilium/connectivity", h.HandleCiliumConnectivity)
+		nr.With(middleware.RequireAdmin).Get("/cilium/connectivity", h.HandleCiliumConnectivity)
 	})
 }
 

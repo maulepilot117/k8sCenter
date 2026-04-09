@@ -105,14 +105,16 @@ export interface EndpointCounts {
   waiting: number;
 }
 
-// Connectivity response (flat interface — matches BGP/IPAM pattern)
-export interface CiliumConnectivityResponse {
-  configured: boolean;
-  execEnabled: boolean;
-  nodes: NodeConnectivity[];
-  collectedAt?: string;
-  partial?: boolean;
-}
+// Connectivity response — discriminated union matching BGP/IPAM/Subsystems pattern.
+export type CiliumConnectivityResponse =
+  | { configured: false }
+  | {
+    configured: true;
+    execEnabled: boolean;
+    nodes: NodeConnectivity[];
+    collectedAt?: string;
+    partial?: boolean;
+  };
 
 export interface NodeConnectivity {
   nodeName: string;
