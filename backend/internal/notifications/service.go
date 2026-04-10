@@ -11,45 +11,96 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/kubecenter/kubecenter/internal/alerting"
-	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 )
 
 const (
-	dedupWindow    = 15 * time.Minute
-	queueSize      = 1000
-	semaphoreSize  = 20
+	dedupWindow     = 15 * time.Minute
+	queueSize       = 1000
+	semaphoreSize   = 20
 	dispatchTimeout = 10 * time.Second
 )
+
+// httpClient is a dedicated client for outbound Slack/webhook dispatch.
+// It has explicit timeouts and disables automatic redirects.
+var httpClient = &http.Client{
+	Timeout: dispatchTimeout,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+	Transport: &http.Transport{
+		MaxIdleConns:        50,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second,
+		}).DialContext,
+	},
+}
+
+// blockedHeaders are HTTP headers that custom webhook headers cannot override.
+var blockedHeaders = map[string]bool{
+	"host":              true,
+	"authorization":     true,
+	"cookie":            true,
+	"x-signature-256":   true,
+	"x-forwarded-for":   true,
+	"x-forwarded-host":  true,
+	"x-forwarded-proto": true,
+	"content-type":      true,
+	"user-agent":        true,
+}
+
+// EmailSender abstracts email sending so the service doesn't depend on *alerting.Notifier directly.
+type EmailSender interface {
+	QueueEmail(recipients []string, subject, htmlBody string) error
+	SMTPConfigured() bool
+}
+
+// webhookPayload defines the external-facing payload for webhook dispatch.
+// Excludes internal fields like ClusterID.
+type webhookPayload struct {
+	ID           string   `json:"id"`
+	Source       Source   `json:"source"`
+	Severity     Severity `json:"severity"`
+	Title        string   `json:"title"`
+	Message      string   `json:"message"`
+	ResourceKind string   `json:"resourceKind,omitempty"`
+	ResourceNS   string   `json:"resourceNamespace,omitempty"`
+	ResourceName string   `json:"resourceName,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
 
 // NotificationService is the core notification center.
 // It persists notifications, broadcasts via WebSocket, and dispatches to external channels.
 type NotificationService struct {
-	store    *Store
-	hub      *websocket.Hub
-	notifier *alerting.Notifier // for email digest (existing SMTP pipeline)
-	queue    chan Notification
-	sem      chan struct{} // dispatch semaphore
-	rules    []Rule
-	channels []Channel
-	mu       sync.RWMutex
-	logger   *slog.Logger
+	store       *Store
+	hub         *websocket.Hub
+	emailSender EmailSender
+	queue       chan Notification
+	sem         chan struct{} // dispatch semaphore
+	rules       []Rule
+	channels    []Channel
+	mu          sync.RWMutex
+	logger      *slog.Logger
 }
 
 // NewService creates a notification service.
-func NewService(store *Store, hub *websocket.Hub, notifier *alerting.Notifier, logger *slog.Logger) *NotificationService {
+func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, logger *slog.Logger) *NotificationService {
 	return &NotificationService{
-		store:    store,
-		hub:      hub,
-		notifier: notifier,
-		queue:    make(chan Notification, queueSize),
-		sem:      make(chan struct{}, semaphoreSize),
-		logger:   logger,
+		store:       store,
+		hub:         hub,
+		emailSender: emailSender,
+		queue:       make(chan Notification, queueSize),
+		sem:         make(chan struct{}, semaphoreSize),
+		logger:      logger,
 	}
 }
 
@@ -87,7 +138,8 @@ func (s *NotificationService) refreshCache(ctx context.Context) {
 // Emit persists a notification, broadcasts via WebSocket, and enqueues for external dispatch.
 // Safe to call from any goroutine. Non-blocking.
 func (s *NotificationService) Emit(ctx context.Context, n Notification) {
-	// Guard: skip audit-source to prevent circular audit → Emit → audit loop
+	// Guard: skip audit-source to prevent circular audit → Emit → audit loop.
+	// Audit notifications are persisted and broadcast but never externally dispatched.
 	if n.Source == SourceAudit {
 		if err := s.persistAndBroadcast(ctx, n); err != nil {
 			s.logger.Error("emit notification", "error", err)
@@ -126,7 +178,9 @@ func (s *NotificationService) persistAndBroadcast(ctx context.Context, n Notific
 	}
 	n.ID = id
 
-	// Broadcast stripped payload via WebSocket (no resource fields to prevent namespace leakage)
+	// Broadcast stripped payload via WebSocket — only id, source, severity, title.
+	// No resource fields to prevent namespace leakage to unauthorized WS subscribers.
+	// Clients fetch full details via REST (which enforces RBAC).
 	stripped := map[string]any{
 		"id":       n.ID,
 		"source":   n.Source,
@@ -163,22 +217,20 @@ func (s *NotificationService) dispatchToChannels(ctx context.Context, n Notifica
 	}
 
 	for _, rule := range rules {
-		if !rule.Enabled {
-			continue
-		}
-		if !ruleMatches(rule, n) {
+		if !rule.Enabled || !ruleMatches(rule, n) {
 			continue
 		}
 		ch, ok := channelMap[rule.ChannelID]
-		if !ok {
-			continue
-		}
-		if ch.Type == ChannelEmail {
-			continue // email is digest-only, not per-notification
+		if !ok || ch.Type == ChannelEmail {
+			continue // email is digest-only
 		}
 
-		// Acquire semaphore, dispatch in goroutine
-		s.sem <- struct{}{}
+		// Acquire semaphore with ctx guard to prevent goroutine hang on shutdown
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
 		go func(ch Channel, n Notification) {
 			defer func() { <-s.sem }()
 			dctx, cancel := context.WithTimeout(context.Background(), dispatchTimeout)
@@ -193,29 +245,11 @@ func (s *NotificationService) dispatchToChannels(ctx context.Context, n Notifica
 }
 
 func ruleMatches(rule Rule, n Notification) bool {
-	if len(rule.SourceFilter) > 0 {
-		found := false
-		for _, src := range rule.SourceFilter {
-			if src == n.Source {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if len(rule.SourceFilter) > 0 && !slices.Contains(rule.SourceFilter, n.Source) {
+		return false
 	}
-	if len(rule.SeverityFilter) > 0 {
-		found := false
-		for _, sev := range rule.SeverityFilter {
-			if sev == n.Severity {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if len(rule.SeverityFilter) > 0 && !slices.Contains(rule.SeverityFilter, n.Severity) {
+		return false
 	}
 	return true
 }
@@ -289,7 +323,7 @@ func (s *NotificationService) sendSlack(ctx context.Context, ch Channel, n Notif
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("slack request: %w", err)
 	}
@@ -316,14 +350,26 @@ func severityColor(sev Severity) string {
 // --- Webhook dispatch ---
 
 func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Notification) error {
-	webhookURL, _ := ch.Config["url"].(string)
-	if webhookURL == "" {
+	url, _ := ch.Config["url"].(string)
+	if url == "" {
 		return fmt.Errorf("webhook channel %q has no url configured", ch.Name)
 	}
 
-	payload, _ := json.Marshal(n)
+	// Build external-facing payload (excludes ClusterID and other internal fields)
+	wp := webhookPayload{
+		ID:           n.ID,
+		Source:       n.Source,
+		Severity:     n.Severity,
+		Title:        n.Title,
+		Message:      n.Message,
+		ResourceKind: n.ResourceKind,
+		ResourceNS:   n.ResourceNS,
+		ResourceName: n.ResourceName,
+		CreatedAt:    n.CreatedAt,
+	}
+	payload, _ := json.Marshal(wp)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", webhookURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("create webhook request: %w", err)
 	}
@@ -337,16 +383,19 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 		req.Header.Set("X-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 
-	// Custom headers from channel config
+	// Custom headers — blocklist prevents overriding security-sensitive headers
 	if headers, ok := ch.Config["headers"].(map[string]any); ok {
 		for k, v := range headers {
+			if blockedHeaders[strings.ToLower(k)] {
+				continue
+			}
 			if sv, ok := v.(string); ok {
 				req.Header.Set(k, sv)
 			}
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook request: %w", err)
 	}
@@ -362,14 +411,14 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 // --- Email digest ---
 
 func (s *NotificationService) sendTestEmail(ch Channel) error {
-	if s.notifier == nil {
-		return fmt.Errorf("SMTP notifier not configured")
+	if s.emailSender == nil || !s.emailSender.SMTPConfigured() {
+		return fmt.Errorf("SMTP not configured")
 	}
 	recipients := channelRecipients(ch)
 	if len(recipients) == 0 {
 		return fmt.Errorf("email channel %q has no recipients", ch.Name)
 	}
-	return s.notifier.QueueEmail(recipients, "[k8sCenter] Test Notification", "<p>This is a test notification from k8sCenter.</p>")
+	return s.emailSender.QueueEmail(recipients, "[k8sCenter] Test Notification", "<p>This is a test notification from k8sCenter.</p>")
 }
 
 func (s *NotificationService) runDigest(ctx context.Context) {
@@ -394,7 +443,7 @@ func nextDigestTime(now time.Time) time.Time {
 }
 
 func (s *NotificationService) sendDigests(ctx context.Context) {
-	if s.notifier == nil {
+	if s.emailSender == nil || !s.emailSender.SMTPConfigured() {
 		return
 	}
 
@@ -456,7 +505,7 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 		subject := fmt.Sprintf("k8sCenter Notification Digest — %s — %d notifications",
 			time.Now().UTC().Format("Jan 2, 2006"), len(notifications))
 
-		if err := s.notifier.QueueEmail(recipients, subject, htmlBody); err != nil {
+		if err := s.emailSender.QueueEmail(recipients, subject, htmlBody); err != nil {
 			s.logger.Error("queue digest email", "channel", ch.Name, "error", err)
 			_ = s.store.UpdateChannelError(ctx, ch.ID, err.Error())
 		}
@@ -541,11 +590,4 @@ func (s *NotificationService) runRetention(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// --- SSRF validation (re-exported for handler use) ---
-
-// ValidateChannelURL validates webhook/Slack URLs against the SSRF blocklist.
-func ValidateChannelURL(url string) error {
-	return k8s.ValidateRemoteURL(url)
 }
