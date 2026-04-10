@@ -11,8 +11,10 @@ import (
 // ciliumConfigMapName is the well-known ConfigMap name for Cilium configuration.
 const ciliumConfigMapName = "cilium-config"
 
-// ciliumSearchNamespaces are namespaces to search for the Cilium ConfigMap.
-var ciliumSearchNamespaces = []string{"kube-system", "cilium"}
+// ciliumSearchNamespaces returns namespaces to search for the Cilium ConfigMap and agent pods.
+func ciliumSearchNamespaces() []string {
+	return []string{"kube-system", "cilium"}
+}
 
 // CiliumConfig represents the Cilium configuration response.
 type CiliumConfig struct {
@@ -27,7 +29,7 @@ type CiliumConfig struct {
 // ReadCiliumConfig reads the cilium-config ConfigMap using the provided clientset.
 // The caller should pass an impersonated clientset to enforce Kubernetes RBAC.
 func ReadCiliumConfig(ctx context.Context, cs kubernetes.Interface) (*CiliumConfig, error) {
-	for _, ns := range ciliumSearchNamespaces {
+	for _, ns := range ciliumSearchNamespaces() {
 		config, err := ReadCiliumConfigFromNamespace(ctx, cs, ns)
 		if err != nil {
 			continue
@@ -35,7 +37,7 @@ func ReadCiliumConfig(ctx context.Context, cs kubernetes.Interface) (*CiliumConf
 		return config, nil
 	}
 
-	return nil, fmt.Errorf("cilium-config ConfigMap not found in namespaces %v", ciliumSearchNamespaces)
+	return nil, fmt.Errorf("cilium-config ConfigMap not found in namespaces %v", ciliumSearchNamespaces())
 }
 
 // ReadCiliumConfigFromNamespace reads the cilium-config ConfigMap from a specific namespace.
@@ -105,7 +107,7 @@ func ValidateCiliumChanges(changes map[string]string) error {
 // The caller should pass an impersonated clientset to enforce Kubernetes RBAC.
 // Returns the namespace where the update was applied.
 func UpdateCiliumConfig(ctx context.Context, cs kubernetes.Interface, changes map[string]string) (string, error) {
-	for _, ns := range ciliumSearchNamespaces {
+	for _, ns := range ciliumSearchNamespaces() {
 		cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
 		if err != nil {
 			continue
@@ -126,5 +128,5 @@ func UpdateCiliumConfig(ctx context.Context, cs kubernetes.Interface, changes ma
 		return ns, nil
 	}
 
-	return "", fmt.Errorf("cilium-config ConfigMap not found in namespaces %v", ciliumSearchNamespaces)
+	return "", fmt.Errorf("cilium-config ConfigMap not found in namespaces %v", ciliumSearchNamespaces())
 }

@@ -110,7 +110,8 @@ type CORSConfig struct {
 
 // CiliumAgentConfig controls opt-in exec-based Cilium agent diagnostics.
 type CiliumAgentConfig struct {
-	ExecEnabled bool `koanf:"execenabled"` // KUBECENTER_CILIUMAGENT_EXECENABLED
+	ExecEnabled    bool `koanf:"execenabled"`    // KUBECENTER_CILIUMAGENT_EXECENABLED
+	MaxConcurrent  int  `koanf:"maxconcurrent"`  // KUBECENTER_CILIUMAGENT_MAXCONCURRENT (default: 10)
 }
 
 // LokiConfig holds configuration for Loki log aggregation integration.

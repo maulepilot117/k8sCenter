@@ -302,7 +302,7 @@ func main() {
 
 	var agentCollector *networking.CiliumAgentCollector
 	if cfg.CiliumAgent.ExecEnabled {
-		agentCollector = networking.NewCiliumAgentCollector(k8sClient, auditLogger, logger, cfg.ClusterID)
+		agentCollector = networking.NewCiliumAgentCollector(k8sClient, auditLogger, logger, cfg.ClusterID, cfg.CiliumAgent.MaxConcurrent)
 		logger.Info("cilium agent exec collector enabled")
 	}
 

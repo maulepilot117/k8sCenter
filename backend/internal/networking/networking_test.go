@@ -1,6 +1,7 @@
 package networking
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -807,5 +808,114 @@ func TestInvalidateCaches_IncludesAgentCache(t *testing.T) {
 		t.Error("expected agent cache to be cleared after InvalidateCaches")
 	}
 	c.cacheMu.RUnlock()
+}
+
+// --- limitedWriter tests ---
+
+func TestLimitedWriter(t *testing.T) {
+	tests := []struct {
+		name       string
+		limit      int
+		writes     []string
+		wantBuf    string
+		wantExceed bool
+	}{
+		{
+			name:       "under limit",
+			limit:      100,
+			writes:     []string{"hello", " world"},
+			wantBuf:    "hello world",
+			wantExceed: false,
+		},
+		{
+			name:       "exact limit",
+			limit:      11,
+			writes:     []string{"hello", " world"},
+			wantBuf:    "hello world",
+			wantExceed: false,
+		},
+		{
+			name:       "exceed on single write",
+			limit:      5,
+			writes:     []string{"hello world"},
+			wantBuf:    "hello",
+			wantExceed: true,
+		},
+		{
+			name:       "exceed across writes",
+			limit:      8,
+			writes:     []string{"hello", " world"},
+			wantBuf:    "hello wo",
+			wantExceed: true,
+		},
+		{
+			name:       "writes after exceed are discarded",
+			limit:      5,
+			writes:     []string{"hello", " world", " more"},
+			wantBuf:    "hello",
+			wantExceed: true,
+		},
+		{
+			name:       "zero limit",
+			limit:      0,
+			writes:     []string{"hello"},
+			wantBuf:    "",
+			wantExceed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			lw := &limitedWriter{w: &buf, remaining: tt.limit}
+
+			for _, s := range tt.writes {
+				n, err := lw.Write([]byte(s))
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				// limitedWriter always reports len(p) to avoid short-write errors
+				if n != len(s) {
+					t.Errorf("Write(%q) returned n=%d, want %d", s, n, len(s))
+				}
+			}
+
+			if got := buf.String(); got != tt.wantBuf {
+				t.Errorf("buffer = %q, want %q", got, tt.wantBuf)
+			}
+			if lw.exceeded != tt.wantExceed {
+				t.Errorf("exceeded = %v, want %v", lw.exceeded, tt.wantExceed)
+			}
+		})
+	}
+}
+
+// --- truncate tests ---
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"under limit", "hello", 10, "hello"},
+		{"exact limit", "hello", 5, "hello"},
+		{"over limit", "hello world", 8, "hello..."},
+		{"minimal truncation", "abcdef", 4, "a..."},
+		{"empty string", "", 10, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+			if len(got) > tt.maxLen {
+				t.Errorf("truncate result length %d exceeds maxLen %d", len(got), tt.maxLen)
+			}
+		})
+	}
 }
 

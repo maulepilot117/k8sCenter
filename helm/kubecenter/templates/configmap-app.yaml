@@ -36,3 +36,6 @@ data:
   {{- if .Values.ciliumAgent.execEnabled }}
   KUBECENTER_CILIUMAGENT_EXECENABLED: "true"
   {{- end }}
+  {{- if and .Values.ciliumAgent.execEnabled .Values.ciliumAgent.maxConcurrent }}
+  KUBECENTER_CILIUMAGENT_MAXCONCURRENT: {{ .Values.ciliumAgent.maxConcurrent | quote }}
+  {{- end }}
