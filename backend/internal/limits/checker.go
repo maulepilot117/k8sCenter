@@ -97,12 +97,16 @@ func (c *Checker) check(ctx context.Context) {
 		return
 	}
 
+	// Track current keys to prune stale entries after iteration
+	currentKeys := make(map[string]struct{}, len(quotas)*8)
+
 	for _, quota := range quotas {
 		warn, critical := ParseThresholdAnnotations(quota)
 		utilization := c.handler.computeUtilization(quota)
 
 		for resName, util := range utilization {
 			key := stateKey(quota.Namespace, quota.Name, resName)
+			currentKeys[key] = struct{}{}
 			currentStatus := computeStatus(util.Percentage, warn, critical)
 
 			// Only dispatch if status changed
@@ -118,6 +122,15 @@ func (c *Checker) check(ctx context.Context) {
 			})
 		}
 	}
+
+	// Prune stale entries for deleted quotas/resources (prevents memory leak)
+	c.mu.Lock()
+	for key := range c.lastState {
+		if _, exists := currentKeys[key]; !exists {
+			delete(c.lastState, key)
+		}
+	}
+	c.mu.Unlock()
 }
 
 // dispatchIfChanged sends notification only when status changes.
@@ -171,9 +184,10 @@ func (c *Checker) dispatchIfChanged(ctx context.Context, key string, current Thr
 	)
 }
 
-// stateKey builds composite key with colon delimiter.
+// stateKey builds composite key using null byte delimiter to avoid collisions.
+// Null bytes cannot appear in Kubernetes resource names, making keys unambiguous.
 func stateKey(namespace, quotaName, resource string) string {
-	return namespace + ":" + quotaName + ":" + resource
+	return namespace + "\x00" + quotaName + "\x00" + resource
 }
 
 // thresholdForStatus returns the threshold value that was crossed.

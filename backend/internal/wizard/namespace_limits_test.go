@@ -171,6 +171,88 @@ func TestNamespaceLimitsInput_Validate(t *testing.T) {
 			},
 			wantErrors: []string{"limits.containerDefault.cpu"},
 		},
+		{
+			name: "warn threshold must be less than critical",
+			input: NamespaceLimitsInput{
+				Namespace:      "default",
+				QuotaName:      "my-quota",
+				LimitRangeName: "my-limits",
+				Quota: QuotaConfig{
+					CPUHard:           "8",
+					MemoryHard:        "16Gi",
+					PodsHard:          20,
+					WarnThreshold:     95, // >= critical
+					CriticalThreshold: 90,
+				},
+				Limits: LimitConfig{
+					ContainerDefault:        ResourcePair{CPU: "250m", Memory: "256Mi"},
+					ContainerDefaultRequest: ResourcePair{CPU: "100m", Memory: "128Mi"},
+					ContainerMax:            ResourcePair{CPU: "2", Memory: "4Gi"},
+					ContainerMin:            ResourcePair{CPU: "10m", Memory: "8Mi"},
+				},
+			},
+			wantErrors: []string{"quota.warnThreshold"},
+		},
+		{
+			name: "container min must be <= max",
+			input: NamespaceLimitsInput{
+				Namespace:      "default",
+				QuotaName:      "my-quota",
+				LimitRangeName: "my-limits",
+				Quota: QuotaConfig{
+					CPUHard:    "8",
+					MemoryHard: "16Gi",
+					PodsHard:   20,
+				},
+				Limits: LimitConfig{
+					ContainerDefault:        ResourcePair{CPU: "250m", Memory: "256Mi"},
+					ContainerDefaultRequest: ResourcePair{CPU: "100m", Memory: "128Mi"},
+					ContainerMax:            ResourcePair{CPU: "100m", Memory: "4Gi"}, // max < min
+					ContainerMin:            ResourcePair{CPU: "500m", Memory: "8Mi"},
+				},
+			},
+			wantErrors: []string{"limits.containerMin.cpu"},
+		},
+		{
+			name: "container default must be <= max",
+			input: NamespaceLimitsInput{
+				Namespace:      "default",
+				QuotaName:      "my-quota",
+				LimitRangeName: "my-limits",
+				Quota: QuotaConfig{
+					CPUHard:    "8",
+					MemoryHard: "16Gi",
+					PodsHard:   20,
+				},
+				Limits: LimitConfig{
+					ContainerDefault:        ResourcePair{CPU: "4", Memory: "256Mi"}, // default > max
+					ContainerDefaultRequest: ResourcePair{CPU: "100m", Memory: "128Mi"},
+					ContainerMax:            ResourcePair{CPU: "2", Memory: "4Gi"},
+					ContainerMin:            ResourcePair{CPU: "10m", Memory: "8Mi"},
+				},
+			},
+			wantErrors: []string{"limits.containerDefault.cpu"},
+		},
+		{
+			name: "container defaultRequest must be >= min",
+			input: NamespaceLimitsInput{
+				Namespace:      "default",
+				QuotaName:      "my-quota",
+				LimitRangeName: "my-limits",
+				Quota: QuotaConfig{
+					CPUHard:    "8",
+					MemoryHard: "16Gi",
+					PodsHard:   20,
+				},
+				Limits: LimitConfig{
+					ContainerDefault:        ResourcePair{CPU: "250m", Memory: "256Mi"},
+					ContainerDefaultRequest: ResourcePair{CPU: "5m", Memory: "128Mi"}, // request < min
+					ContainerMax:            ResourcePair{CPU: "2", Memory: "4Gi"},
+					ContainerMin:            ResourcePair{CPU: "10m", Memory: "8Mi"},
+				},
+			},
+			wantErrors: []string{"limits.containerDefaultRequest.cpu"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -94,14 +94,24 @@ func (h *Handler) HandleGetNamespace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check RBAC
-	allowed, err := h.AccessChecker.CanAccess(r.Context(), user.Username, user.KubernetesGroups, "get", "resourcequotas", namespace)
-	if err != nil {
-		h.Logger.Error("RBAC check failed", "namespace", namespace, "error", err)
+	// Check RBAC for both resource types — allow if user has permission for either
+	quotaAllowed, err1 := h.AccessChecker.CanAccess(r.Context(), user.Username, user.KubernetesGroups, "get", "resourcequotas", namespace)
+	if err1 != nil {
+		h.Logger.Error("RBAC check failed for resourcequotas", "namespace", namespace, "error", err1)
+	}
+	limitRangeAllowed, err2 := h.AccessChecker.CanAccess(r.Context(), user.Username, user.KubernetesGroups, "get", "limitranges", namespace)
+	if err2 != nil {
+		h.Logger.Error("RBAC check failed for limitranges", "namespace", namespace, "error", err2)
+	}
+
+	// If both checks failed with errors, return error
+	if err1 != nil && err2 != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "authorization check failed", "")
 		return
 	}
-	if !allowed {
+
+	// Require permission for at least one resource type
+	if !quotaAllowed && !limitRangeAllowed {
 		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
 		return
 	}
@@ -238,13 +248,35 @@ func (h *Handler) doFetchSummaries(ctx context.Context) ([]NamespaceSummary, err
 
 func (h *Handler) filterByRBAC(ctx context.Context, user *auth.User, summaries []NamespaceSummary) []NamespaceSummary {
 	filtered := make([]NamespaceSummary, 0, len(summaries))
+
+	// Cache RBAC results by namespace to avoid O(n) API calls
+	// Check both resourcequotas and limitranges — allow if user has permission for either
+	type accessResult struct {
+		quotaAllowed      bool
+		limitRangeAllowed bool
+	}
+	accessCache := make(map[string]accessResult)
+
 	for _, s := range summaries {
-		allowed, err := h.AccessChecker.CanAccess(ctx, user.Username, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
-		if err != nil {
-			h.Logger.Warn("RBAC check failed", "namespace", s.Namespace, "error", err)
-			continue
+		result, cached := accessCache[s.Namespace]
+		if !cached {
+			quotaAllowed, err1 := h.AccessChecker.CanAccess(ctx, user.Username, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
+			if err1 != nil {
+				h.Logger.Warn("RBAC check failed for resourcequotas", "namespace", s.Namespace, "error", err1)
+			}
+			limitRangeAllowed, err2 := h.AccessChecker.CanAccess(ctx, user.Username, user.KubernetesGroups, "get", "limitranges", s.Namespace)
+			if err2 != nil {
+				h.Logger.Warn("RBAC check failed for limitranges", "namespace", s.Namespace, "error", err2)
+			}
+			result = accessResult{
+				quotaAllowed:      err1 == nil && quotaAllowed,
+				limitRangeAllowed: err2 == nil && limitRangeAllowed,
+			}
+			accessCache[s.Namespace] = result
 		}
-		if allowed {
+
+		// Allow access if user has permission for either resource type
+		if result.quotaAllowed || result.limitRangeAllowed {
 			filtered = append(filtered, s)
 		}
 	}

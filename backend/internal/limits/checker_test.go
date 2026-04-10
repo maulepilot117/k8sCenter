@@ -146,7 +146,8 @@ func TestDispatchIfChanged(t *testing.T) {
 
 func TestStateKeyFormat(t *testing.T) {
 	key := stateKey("my-namespace", "my-quota", "cpu")
-	expected := "my-namespace:my-quota:cpu"
+	// Uses null byte delimiter to avoid collisions with names containing colons
+	expected := "my-namespace\x00my-quota\x00cpu"
 	if key != expected {
 		t.Errorf("stateKey = %q, want %q", key, expected)
 	}
