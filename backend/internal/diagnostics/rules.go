@@ -296,4 +296,3 @@ func checkPendingPVC(_ context.Context, target *DiagnosticTarget) Result {
 		Remediation: "Check StorageClass provisioner status and available PersistentVolumes",
 	}
 }
-

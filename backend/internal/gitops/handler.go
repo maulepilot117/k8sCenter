@@ -779,7 +779,7 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, struct {
 		ApplicationSets []NormalizedAppSet `json:"applicationSets"`
-		Total           int               `json:"total"`
+		Total           int                `json:"total"`
 	}{
 		ApplicationSets: filtered,
 		Total:           len(filtered),

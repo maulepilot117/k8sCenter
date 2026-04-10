@@ -19,13 +19,13 @@ type subKey struct {
 
 // Message types for the WebSocket wire protocol.
 const (
-	MsgTypeAuth          = "auth"
-	MsgTypeAuthOK        = "auth_ok"
-	MsgTypeSubscribe     = "subscribe"
-	MsgTypeUnsubscribe   = "unsubscribe"
-	MsgTypeSubscribed    = "subscribed"
-	MsgTypeEvent         = "event"
-	MsgTypeError         = "error"
+	MsgTypeAuth           = "auth"
+	MsgTypeAuthOK         = "auth_ok"
+	MsgTypeSubscribe      = "subscribe"
+	MsgTypeUnsubscribe    = "unsubscribe"
+	MsgTypeSubscribed     = "subscribed"
+	MsgTypeEvent          = "event"
+	MsgTypeError          = "error"
 	MsgTypeResyncRequired = "resync_required"
 )
 
@@ -55,40 +55,40 @@ type OutgoingMessage struct {
 var (
 	allowedKindsMu sync.RWMutex
 	allowedKinds   = map[string]bool{
-		"notifications":           true,
-		"pods":                    true,
-		"services":                true,
-		"configmaps":              true,
-		"namespaces":              true,
-		"nodes":                   true,
-		"persistentvolumeclaims":  true,
-		"pvcs":                    true, // alias — normalized to persistentvolumeclaims
-		"persistentvolumes":       true,
-		"pvs":                     true, // alias — normalized to persistentvolumes
-		"endpoints":               true,
-		"events":                  true,
-		"deployments":             true,
-		"replicasets":             true,
-		"statefulsets":            true,
-		"daemonsets":              true,
-		"jobs":                    true,
-		"cronjobs":                true,
-		"ingresses":              true,
-		"networkpolicies":         true,
-		"horizontalpodautoscalers": true,
-		"hpas":                    true, // alias — normalized to horizontalpodautoscalers
-		"storageclasses":          true,
-		"roles":                   true,
-		"clusterroles":            true,
-		"rolebindings":            true,
-		"clusterrolebindings":     true,
-		"resourcequotas":          true,
-		"limitranges":             true,
-		"serviceaccounts":         true,
-		"poddisruptionbudgets":    true,
-		"pdbs":                    true, // alias — normalized to poddisruptionbudgets
-		"endpointslices":          true,
-		"alerts":                  true,
+		"notifications":                   true,
+		"pods":                            true,
+		"services":                        true,
+		"configmaps":                      true,
+		"namespaces":                      true,
+		"nodes":                           true,
+		"persistentvolumeclaims":          true,
+		"pvcs":                            true, // alias — normalized to persistentvolumeclaims
+		"persistentvolumes":               true,
+		"pvs":                             true, // alias — normalized to persistentvolumes
+		"endpoints":                       true,
+		"events":                          true,
+		"deployments":                     true,
+		"replicasets":                     true,
+		"statefulsets":                    true,
+		"daemonsets":                      true,
+		"jobs":                            true,
+		"cronjobs":                        true,
+		"ingresses":                       true,
+		"networkpolicies":                 true,
+		"horizontalpodautoscalers":        true,
+		"hpas":                            true, // alias — normalized to horizontalpodautoscalers
+		"storageclasses":                  true,
+		"roles":                           true,
+		"clusterroles":                    true,
+		"rolebindings":                    true,
+		"clusterrolebindings":             true,
+		"resourcequotas":                  true,
+		"limitranges":                     true,
+		"serviceaccounts":                 true,
+		"poddisruptionbudgets":            true,
+		"pdbs":                            true, // alias — normalized to poddisruptionbudgets
+		"endpointslices":                  true,
+		"alerts":                          true,
 		"validatingwebhookconfigurations": true,
 		"mutatingwebhookconfigurations":   true,
 	}

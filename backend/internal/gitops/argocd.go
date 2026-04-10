@@ -107,12 +107,12 @@ func NormalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
 	suspended := healthStatusRaw == "Suspended"
 
 	return NormalizedApp{
-		ID:        fmt.Sprintf("argo:%s:%s", ns, name),
-		Name:      name,
-		Namespace: ns,
-		Tool:      ToolArgoCD,
-		Kind:      "Application",
-		SyncStatus: syncStatus,
+		ID:           fmt.Sprintf("argo:%s:%s", ns, name),
+		Name:         name,
+		Namespace:    ns,
+		Tool:         ToolArgoCD,
+		Kind:         "Application",
+		SyncStatus:   syncStatus,
 		HealthStatus: healthStatus,
 		Source: AppSource{
 			RepoURL:        repoURL,
@@ -427,10 +427,10 @@ func NormalizeArgoAppSet(obj *unstructured.Unstructured) NormalizedAppSet {
 	createdAt := obj.GetCreationTimestamp().Format("2006-01-02T15:04:05Z")
 
 	return NormalizedAppSet{
-		ID:        fmt.Sprintf("argo-as:%s:%s", ns, name),
-		Name:      name,
-		Namespace: ns,
-		Tool:      ToolArgoCD,
+		ID:             fmt.Sprintf("argo-as:%s:%s", ns, name),
+		Name:           name,
+		Namespace:      ns,
+		Tool:           ToolArgoCD,
 		GeneratorTypes: generatorTypes,
 		TemplateSource: AppSource{
 			RepoURL:        repoURL,

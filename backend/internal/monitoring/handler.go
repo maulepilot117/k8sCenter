@@ -274,4 +274,3 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 		"warnings":   warnings,
 	})
 }
-

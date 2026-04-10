@@ -76,10 +76,10 @@ type WireGuardPeer struct {
 // MeshInfo describes the detected service mesh engine.
 type MeshInfo struct {
 	Enabled        bool   `json:"enabled"`
-	Engine         string `json:"engine"`                            // cilium, none (istio/linkerd deferred to Phase C)
-	DeploymentMode string `json:"deploymentMode,omitempty"`          // Phase B (agent)
-	TotalRedirects int64  `json:"totalRedirects,omitempty"`          // Phase B (agent)
-	TotalPorts     int64  `json:"totalPorts,omitempty"`              // Phase B (agent)
+	Engine         string `json:"engine"`                   // cilium, none (istio/linkerd deferred to Phase C)
+	DeploymentMode string `json:"deploymentMode,omitempty"` // Phase B (agent)
+	TotalRedirects int64  `json:"totalRedirects,omitempty"` // Phase B (agent)
+	TotalPorts     int64  `json:"totalPorts,omitempty"`     // Phase B (agent)
 }
 
 // ClusterMeshInfo describes whether ClusterMesh is configured.

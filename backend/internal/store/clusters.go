@@ -10,27 +10,27 @@ import (
 
 // ClusterRecord represents a registered cluster in the database.
 type ClusterRecord struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	DisplayName   string    `json:"displayName,omitempty"`
-	APIServerURL  string    `json:"apiServerUrl"`
-	CAData        []byte    `json:"-"`
-	AuthType      string    `json:"authType"` // "token", "certificate"
-	AuthData      []byte    `json:"-"`        // encrypted credentials
-	Status        string    `json:"status"`
-	StatusMessage string    `json:"statusMessage,omitempty"`
-	K8sVersion    string    `json:"k8sVersion,omitempty"`
-	NodeCount     int       `json:"nodeCount"`
-	IsLocal       bool      `json:"isLocal"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	DisplayName   string     `json:"displayName,omitempty"`
+	APIServerURL  string     `json:"apiServerUrl"`
+	CAData        []byte     `json:"-"`
+	AuthType      string     `json:"authType"` // "token", "certificate"
+	AuthData      []byte     `json:"-"`        // encrypted credentials
+	Status        string     `json:"status"`
+	StatusMessage string     `json:"statusMessage,omitempty"`
+	K8sVersion    string     `json:"k8sVersion,omitempty"`
+	NodeCount     int        `json:"nodeCount"`
+	IsLocal       bool       `json:"isLocal"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 	LastProbedAt  *time.Time `json:"lastProbedAt,omitempty"`
 }
 
 // ClusterStore handles CRUD for the clusters table.
 // Credentials are encrypted at rest using AES-256-GCM.
 type ClusterStore struct {
-	pool         *pgxpool.Pool
+	pool          *pgxpool.Pool
 	encryptionKey string // master secret for encrypting credentials
 }
 

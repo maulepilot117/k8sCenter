@@ -41,8 +41,8 @@ var validProviderTypes = map[string]bool{
 	"bitbucketserver": true, "azuredevops": true,
 	"githubpullrequestcomment": true, "gitlabmergerequestcomment": true,
 	"giteapullrequestcomment": true,
-	"githubdispatch": true,
-	"grafana": true, "alertmanager": true, "sentry": true,
+	"githubdispatch":          true,
+	"grafana":                 true, "alertmanager": true, "sentry": true,
 	"pagerduty": true, "opsgenie": true, "datadog": true, "otel": true,
 	"googlepubsub": true, "azureeventhub": true, "nats": true,
 	"generic": true, "generic-hmac": true,
@@ -79,7 +79,7 @@ var validEventSourceKinds = map[string]bool{
 type NormalizedProvider struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
-	Type      string `json:"type"`      // "slack", "discord", "github", "generic", etc.
+	Type      string `json:"type"` // "slack", "discord", "github", "generic", etc.
 	Channel   string `json:"channel"`
 	Address   string `json:"address"`   // may be empty if stored in secret
 	SecretRef string `json:"secretRef"` // secret name (never the value)
@@ -106,9 +106,9 @@ type NormalizedAlert struct {
 
 // EventSourceRef identifies a Flux resource that generates events.
 type EventSourceRef struct {
-	Kind        string            `json:"kind"`                  // Kustomization, HelmRelease, GitRepository, etc.
-	Name        string            `json:"name"`                  // specific name or "*"
-	Namespace   string            `json:"namespace,omitempty"`   // empty = same as Alert
+	Kind        string            `json:"kind"`                // Kustomization, HelmRelease, GitRepository, etc.
+	Name        string            `json:"name"`                // specific name or "*"
+	Namespace   string            `json:"namespace,omitempty"` // empty = same as Alert
 	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 

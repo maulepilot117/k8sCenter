@@ -49,13 +49,13 @@ type Discoverer struct {
 	config    config.MonitoringConfig
 	logger    *slog.Logger
 
-	mu                     sync.RWMutex
-	status                 *MonitoringStatus
-	promClient             *PrometheusClient
-	grafProxy              http.Handler
-	grafClient             *GrafanaClient
-	dashboardsProvisioned  bool
-	dashboardsProvCount    int
+	mu                    sync.RWMutex
+	status                *MonitoringStatus
+	promClient            *PrometheusClient
+	grafProxy             http.Handler
+	grafClient            *GrafanaClient
+	dashboardsProvisioned bool
+	dashboardsProvCount   int
 }
 
 // NewDiscoverer creates a new monitoring discoverer.

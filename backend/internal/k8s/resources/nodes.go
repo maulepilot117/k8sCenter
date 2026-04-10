@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	kindNode             = "nodes"
-	defaultDrainTimeout  = 5 * time.Minute
+	kindNode            = "nodes"
+	defaultDrainTimeout = 5 * time.Minute
 )
 
 func (h *Handler) HandleListNodes(w http.ResponseWriter, r *http.Request) {

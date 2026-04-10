@@ -330,7 +330,9 @@ type EventCallback func(eventType, kind, namespace, name string, obj any)
 func (m *InformerManager) RegisterEventHandlers(cb EventCallback) {
 	type informerSpec struct {
 		kind     string
-		informer interface{ AddEventHandler(handler cache.ResourceEventHandler) (cache.ResourceEventHandlerRegistration, error) }
+		informer interface {
+			AddEventHandler(handler cache.ResourceEventHandler) (cache.ResourceEventHandlerRegistration, error)
+		}
 	}
 
 	specs := []informerSpec{

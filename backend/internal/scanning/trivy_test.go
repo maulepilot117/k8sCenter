@@ -22,8 +22,8 @@ func TestListTrivyVulnSummaries_GroupsByWorkload(t *testing.T) {
 				"labels": map[string]interface{}{
 					"trivy-operator.resource.kind":      "Deployment",
 					"trivy-operator.resource.name":      "nginx",
-					"trivy-operator.resource.namespace":  "default",
-					"trivy-operator.container.name":      "app",
+					"trivy-operator.resource.namespace": "default",
+					"trivy-operator.container.name":     "app",
 				},
 			},
 			"report": map[string]interface{}{
@@ -52,8 +52,8 @@ func TestListTrivyVulnSummaries_GroupsByWorkload(t *testing.T) {
 				"labels": map[string]interface{}{
 					"trivy-operator.resource.kind":      "Deployment",
 					"trivy-operator.resource.name":      "nginx",
-					"trivy-operator.resource.namespace":  "default",
-					"trivy-operator.container.name":      "sidecar",
+					"trivy-operator.resource.namespace": "default",
+					"trivy-operator.container.name":     "sidecar",
 				},
 			},
 			"report": map[string]interface{}{
@@ -166,8 +166,8 @@ func TestListTrivyVulnSummaries_MultipleWorkloads(t *testing.T) {
 				"labels": map[string]interface{}{
 					"trivy-operator.resource.kind":      "Deployment",
 					"trivy-operator.resource.name":      "api",
-					"trivy-operator.resource.namespace":  "prod",
-					"trivy-operator.container.name":      "main",
+					"trivy-operator.resource.namespace": "prod",
+					"trivy-operator.container.name":     "main",
 				},
 			},
 			"report": map[string]interface{}{
@@ -196,8 +196,8 @@ func TestListTrivyVulnSummaries_MultipleWorkloads(t *testing.T) {
 				"labels": map[string]interface{}{
 					"trivy-operator.resource.kind":      "StatefulSet",
 					"trivy-operator.resource.name":      "db",
-					"trivy-operator.resource.namespace":  "prod",
-					"trivy-operator.container.name":      "postgres",
+					"trivy-operator.resource.namespace": "prod",
+					"trivy-operator.container.name":     "postgres",
 				},
 			},
 			"report": map[string]interface{}{

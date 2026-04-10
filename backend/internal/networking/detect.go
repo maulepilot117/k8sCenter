@@ -27,14 +27,14 @@ var cniSearchNamespaces = []string{"kube-system", "cilium", "calico-system", "ku
 
 // CNIInfo represents the detected CNI plugin information.
 type CNIInfo struct {
-	Name            string    `json:"name"`
-	Version         string    `json:"version"`
-	Namespace       string    `json:"namespace"`
-	DaemonSet       string    `json:"daemonSet"`
-	Status          CNIStatus `json:"status"`
+	Name            string      `json:"name"`
+	Version         string      `json:"version"`
+	Namespace       string      `json:"namespace"`
+	DaemonSet       string      `json:"daemonSet"`
+	Status          CNIStatus   `json:"status"`
 	Features        CNIFeatures `json:"features,omitempty"`
-	HasCRDs         bool      `json:"hasCRDs"`
-	DetectionMethod string    `json:"detectionMethod"`
+	HasCRDs         bool        `json:"hasCRDs"`
+	DetectionMethod string      `json:"detectionMethod"`
 }
 
 // CNIStatus describes the health of the CNI DaemonSet.
@@ -46,14 +46,14 @@ type CNIStatus struct {
 
 // CNIFeatures describes detected CNI capabilities (Cilium-specific for now).
 type CNIFeatures struct {
-	Hubble           bool   `json:"hubble"`
-	HubbleRelayAddr  string `json:"hubbleRelayAddr,omitempty"`
-	Encryption       bool   `json:"encryption"`
-	EncryptionMode   string `json:"encryptionMode,omitempty"`
-	ClusterMesh      bool   `json:"clusterMesh"`
-	WireGuard        bool   `json:"wireguard"`
-	EnvoyEnabled     bool   `json:"envoyEnabled"`
-	IPAMMode         string `json:"ipamMode,omitempty"`
+	Hubble          bool   `json:"hubble"`
+	HubbleRelayAddr string `json:"hubbleRelayAddr,omitempty"`
+	Encryption      bool   `json:"encryption"`
+	EncryptionMode  string `json:"encryptionMode,omitempty"`
+	ClusterMesh     bool   `json:"clusterMesh"`
+	WireGuard       bool   `json:"wireguard"`
+	EnvoyEnabled    bool   `json:"envoyEnabled"`
+	IPAMMode        string `json:"ipamMode,omitempty"`
 }
 
 // Detector probes the cluster for the installed CNI plugin.
@@ -280,4 +280,3 @@ func extractImageVersion(containers []corev1.Container, containerName string) st
 	}
 	return ""
 }
-

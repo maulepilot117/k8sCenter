@@ -16,12 +16,12 @@ import (
 
 // DashboardSummary is the response payload for GET /api/v1/cluster/dashboard-summary.
 type DashboardSummary struct {
-	Nodes    NodeSummary    `json:"nodes"`
-	Pods     PodSummary     `json:"pods"`
-	Services ServiceCount   `json:"services"`
-	Alerts   AlertSummary   `json:"alerts"`
-	CPU      *Utilization   `json:"cpu"`
-	Memory   *Utilization   `json:"memory"`
+	Nodes    NodeSummary  `json:"nodes"`
+	Pods     PodSummary   `json:"pods"`
+	Services ServiceCount `json:"services"`
+	Alerts   AlertSummary `json:"alerts"`
+	CPU      *Utilization `json:"cpu"`
+	Memory   *Utilization `json:"memory"`
 }
 
 // NodeSummary contains node counts.

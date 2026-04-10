@@ -210,10 +210,10 @@ var ResourceDashboardMap = map[string]struct {
 	UID     string
 	VarName string
 }{
-	"pods":                    {UID: "kubecenter-pod-detail", VarName: "pod"},
+	"pods":                   {UID: "kubecenter-pod-detail", VarName: "pod"},
 	"deployments":            {UID: "kubecenter-deployment-detail", VarName: "deployment"},
-	"statefulsets":            {UID: "kubecenter-statefulset-detail", VarName: "statefulset"},
-	"daemonsets":              {UID: "kubecenter-daemonset-detail", VarName: "daemonset"},
+	"statefulsets":           {UID: "kubecenter-statefulset-detail", VarName: "statefulset"},
+	"daemonsets":             {UID: "kubecenter-daemonset-detail", VarName: "daemonset"},
 	"nodes":                  {UID: "kubecenter-node-detail", VarName: "node"},
 	"persistentvolumeclaims": {UID: "kubecenter-pvc-detail", VarName: "pvc"},
 }

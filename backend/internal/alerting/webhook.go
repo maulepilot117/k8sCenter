@@ -32,7 +32,7 @@ type WebhookAlert struct {
 
 // AlertAction describes what happened when a webhook alert was processed.
 type AlertAction struct {
-	Type  string       // "new", "resolved", "updated"
+	Type  string // "new", "resolved", "updated"
 	Alert WebhookAlert
 	Event AlertEvent
 }

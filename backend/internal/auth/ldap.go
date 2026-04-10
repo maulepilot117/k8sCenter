@@ -95,7 +95,7 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, creds Credentials) (*Us
 		p.config.UserBaseDN,
 		ldap.ScopeWholeSubtree,
 		ldap.NeverDerefAliases,
-		2,    // SizeLimit: expect exactly 1 result, 2 to detect ambiguity
+		2, // SizeLimit: expect exactly 1 result, 2 to detect ambiguity
 		int(ldapOperationTimeout.Seconds()),
 		false,
 		filter,

@@ -77,4 +77,3 @@ func rejectUnsafeTags(data []byte) error {
 	}
 	return nil
 }
-

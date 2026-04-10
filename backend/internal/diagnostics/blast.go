@@ -33,8 +33,8 @@ func ComputeBlastRadius(graph *topology.Graph, targetID string) *BlastResult {
 	}
 
 	// Build adjacency maps
-	children := make(map[string][]edgeInfo)  // source -> targets (downstream)
-	parents := make(map[string][]edgeInfo)    // target -> sources (upstream)
+	children := make(map[string][]edgeInfo) // source -> targets (downstream)
+	parents := make(map[string][]edgeInfo)  // target -> sources (upstream)
 	for _, e := range graph.Edges {
 		children[e.Source] = append(children[e.Source], edgeInfo{nodeID: e.Target, edgeType: e.Type})
 		parents[e.Target] = append(parents[e.Target], edgeInfo{nodeID: e.Source, edgeType: e.Type})

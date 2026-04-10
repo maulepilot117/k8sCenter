@@ -36,32 +36,32 @@ const (
 
 // Notification is a single event from any subsystem.
 type Notification struct {
-	ID           string   `json:"id"`
-	Source       Source   `json:"source"`
-	Severity     Severity `json:"severity"`
-	Title        string   `json:"title"`
-	Message      string   `json:"message"`
-	ResourceKind string   `json:"resourceKind,omitempty"`
-	ResourceNS   string   `json:"resourceNamespace,omitempty"`
-	ResourceName string   `json:"resourceName,omitempty"`
-	ClusterID    string   `json:"clusterId,omitempty"`
+	ID           string    `json:"id"`
+	Source       Source    `json:"source"`
+	Severity     Severity  `json:"severity"`
+	Title        string    `json:"title"`
+	Message      string    `json:"message"`
+	ResourceKind string    `json:"resourceKind,omitempty"`
+	ResourceNS   string    `json:"resourceNamespace,omitempty"`
+	ResourceName string    `json:"resourceName,omitempty"`
+	ClusterID    string    `json:"clusterId,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
-	Read         bool     `json:"read,omitempty"`
+	Read         bool      `json:"read,omitempty"`
 }
 
 // Channel is an external dispatch target (Slack, email, webhook).
 type Channel struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	Type        ChannelType `json:"type"`
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Type        ChannelType   `json:"type"`
 	Config      ChannelConfig `json:"config"`
-	CreatedBy   string      `json:"createdBy"`
-	CreatedAt   time.Time   `json:"createdAt"`
-	UpdatedAt   *time.Time  `json:"updatedAt,omitempty"`
-	UpdatedBy   string      `json:"updatedBy,omitempty"`
-	LastSentAt  *time.Time  `json:"lastSentAt,omitempty"`
-	LastError   string      `json:"lastError,omitempty"`
-	LastErrorAt *time.Time  `json:"lastErrorAt,omitempty"`
+	CreatedBy   string        `json:"createdBy"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	UpdatedAt   *time.Time    `json:"updatedAt,omitempty"`
+	UpdatedBy   string        `json:"updatedBy,omitempty"`
+	LastSentAt  *time.Time    `json:"lastSentAt,omitempty"`
+	LastError   string        `json:"lastError,omitempty"`
+	LastErrorAt *time.Time    `json:"lastErrorAt,omitempty"`
 }
 
 // ChannelConfig holds type-specific settings, stored as encrypted BYTEA.

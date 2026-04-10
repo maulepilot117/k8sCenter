@@ -163,8 +163,8 @@ func TestIsNamespaced(t *testing.T) {
 	}{
 		{"example.com", "widgets", true},
 		{"example.com", "clusterwidgets", false},
-		{"example.com", "nonexistent", false},      // not found
-		{"apps", "deployments", false},              // denied group
+		{"example.com", "nonexistent", false}, // not found
+		{"apps", "deployments", false},        // denied group
 	}
 
 	for _, tt := range tests {

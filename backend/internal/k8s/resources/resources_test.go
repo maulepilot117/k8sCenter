@@ -52,7 +52,6 @@ func testHandler(t *testing.T, objs ...runtime.Object) (*Handler, *fake.Clientse
 	return h, fakeCS
 }
 
-
 // requestWithUser creates an HTTP request with an authenticated user in context.
 func requestWithUser(method, path string, body string) *http.Request {
 	var req *http.Request
@@ -350,7 +349,7 @@ func TestSecretMaskingStripsLastAppliedAnnotation(t *testing.T) {
 			Namespace: "default",
 			Annotations: map[string]string{
 				"kubectl.kubernetes.io/last-applied-configuration": `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"db-creds"},"stringData":{"password":"supersecret"}}`,
-				"some-other-annotation": "keep-me",
+				"some-other-annotation":                            "keep-me",
 			},
 		},
 		Data: map[string][]byte{

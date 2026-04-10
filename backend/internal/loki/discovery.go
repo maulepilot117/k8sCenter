@@ -203,4 +203,3 @@ func (d *Discoverer) findServiceByLabel(ctx context.Context, namespace, labelKey
 	}
 	return fmt.Sprintf("http://%s.%s:%d", svc.Name, svc.Namespace, port), "service-label"
 }
-

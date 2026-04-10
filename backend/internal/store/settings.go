@@ -12,19 +12,19 @@ import (
 // AppSettings represents the mutable application settings stored in PostgreSQL.
 // Fields are pointers so nil means "not set in DB, use config default".
 type AppSettings struct {
-	MonitoringPrometheusURL *string  `json:"monitoringPrometheusUrl,omitempty"`
-	MonitoringGrafanaURL    *string  `json:"monitoringGrafanaUrl,omitempty"`
-	MonitoringGrafanaToken  *string  `json:"monitoringGrafanaToken,omitempty"`
-	MonitoringNamespace     *string  `json:"monitoringNamespace,omitempty"`
-	AlertingEnabled         *bool    `json:"alertingEnabled,omitempty"`
-	AlertingSMTPHost        *string  `json:"alertingSmtpHost,omitempty"`
-	AlertingSMTPPort        *int     `json:"alertingSmtpPort,omitempty"`
-	AlertingSMTPUsername    *string  `json:"alertingSmtpUsername,omitempty"`
-	AlertingSMTPPassword    *string  `json:"alertingSmtpPassword,omitempty"`
-	AlertingSMTPFrom        *string  `json:"alertingSmtpFrom,omitempty"`
-	AlertingRateLimit       *int     `json:"alertingRateLimit,omitempty"`
-	AlertingRecipients      []string `json:"alertingRecipients,omitempty"`
-	GitHubToken             *string  `json:"gitHubToken,omitempty"`
+	MonitoringPrometheusURL *string   `json:"monitoringPrometheusUrl,omitempty"`
+	MonitoringGrafanaURL    *string   `json:"monitoringGrafanaUrl,omitempty"`
+	MonitoringGrafanaToken  *string   `json:"monitoringGrafanaToken,omitempty"`
+	MonitoringNamespace     *string   `json:"monitoringNamespace,omitempty"`
+	AlertingEnabled         *bool     `json:"alertingEnabled,omitempty"`
+	AlertingSMTPHost        *string   `json:"alertingSmtpHost,omitempty"`
+	AlertingSMTPPort        *int      `json:"alertingSmtpPort,omitempty"`
+	AlertingSMTPUsername    *string   `json:"alertingSmtpUsername,omitempty"`
+	AlertingSMTPPassword    *string   `json:"alertingSmtpPassword,omitempty"`
+	AlertingSMTPFrom        *string   `json:"alertingSmtpFrom,omitempty"`
+	AlertingRateLimit       *int      `json:"alertingRateLimit,omitempty"`
+	AlertingRecipients      []string  `json:"alertingRecipients,omitempty"`
+	GitHubToken             *string   `json:"gitHubToken,omitempty"`
 	UpdatedAt               time.Time `json:"updatedAt"`
 }
 

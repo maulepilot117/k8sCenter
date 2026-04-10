@@ -119,7 +119,7 @@ func (h *Handler) HandlePodLogs(w http.ResponseWriter, r *http.Request) {
 
 	previous := q.Get("previous") == "true"
 	timestamps := q.Get("timestamps") != "false" // default true
-	limitBytes := int64(5 * 1024 * 1024)          // 5 MB max response
+	limitBytes := int64(5 * 1024 * 1024)         // 5 MB max response
 
 	opts := &corev1.PodLogOptions{
 		Container:  container,
