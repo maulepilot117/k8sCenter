@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
+
+// ErrNotFound is returned when a record does not exist.
+var ErrNotFound = errors.New("not found")
 
 // Store handles PostgreSQL CRUD for the notification center tables.
 type Store struct {
@@ -41,6 +45,7 @@ func (s *Store) InsertNotification(ctx context.Context, n Notification) (string,
 }
 
 // DedupExists checks whether a matching notification was created within the dedup window.
+// Uses database time (now()) to avoid clock drift between app server and PostgreSQL.
 func (s *Store) DedupExists(ctx context.Context, n Notification, window time.Duration) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
@@ -48,10 +53,10 @@ func (s *Store) DedupExists(ctx context.Context, n Notification, window time.Dur
 			SELECT 1 FROM nc_notifications
 			WHERE source = $1 AND resource_kind = $2 AND resource_ns = $3
 			  AND resource_name = $4 AND title = $5
-			  AND created_at > $6
+			  AND created_at > now() - $6::interval
 		)`,
 		n.Source, n.ResourceKind, n.ResourceNS, n.ResourceName, n.Title,
-		time.Now().Add(-window),
+		fmt.Sprintf("%d seconds", int(window.Seconds())),
 	).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("dedup check: %w", err)
@@ -68,7 +73,6 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 		opts.Limit = 200
 	}
 
-	// Build WHERE clause dynamically
 	args := []any{opts.UserID}
 	where := "WHERE 1=1"
 	argIdx := 2
@@ -104,7 +108,6 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 		where += " AND nr.notification_id IS NULL"
 	}
 
-	// Count total
 	countQuery := fmt.Sprintf(`
 		SELECT COUNT(*) FROM nc_notifications n
 		LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
@@ -114,7 +117,6 @@ func (s *Store) ListNotifications(ctx context.Context, opts ListOpts) ([]Notific
 		return nil, 0, fmt.Errorf("count notifications: %w", err)
 	}
 
-	// Fetch page
 	listQuery := fmt.Sprintf(`
 		SELECT n.id, n.source, n.severity, n.title, n.message,
 		       n.resource_kind, n.resource_ns, n.resource_name, n.cluster_id, n.created_at,
@@ -178,17 +180,23 @@ func (s *Store) MarkRead(ctx context.Context, userID, notificationID string) err
 	return nil
 }
 
-// MarkAllRead marks all notifications as read for a user.
+// MarkAllRead marks all notifications as read for a user (batched to avoid WAL pressure).
 func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO nc_reads (user_id, notification_id)
-		SELECT $1, n.id FROM nc_notifications n
-		LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
-		WHERE nr.notification_id IS NULL
-		  AND n.created_at > now() - INTERVAL '90 days'`,
-		userID)
-	if err != nil {
-		return fmt.Errorf("mark all read: %w", err)
+	for {
+		tag, err := s.pool.Exec(ctx, `
+			INSERT INTO nc_reads (user_id, notification_id)
+			SELECT $1, n.id FROM nc_notifications n
+			LEFT JOIN nc_reads nr ON nr.notification_id = n.id AND nr.user_id = $1
+			WHERE nr.notification_id IS NULL
+			  AND n.created_at > now() - INTERVAL '90 days'
+			LIMIT 5000`,
+			userID)
+		if err != nil {
+			return fmt.Errorf("mark all read: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			break
+		}
 	}
 	return nil
 }
@@ -196,8 +204,8 @@ func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
 // PruneOlderThan deletes notifications older than the given duration. Returns count deleted.
 func (s *Store) PruneOlderThan(ctx context.Context, age time.Duration) (int64, error) {
 	tag, err := s.pool.Exec(ctx,
-		"DELETE FROM nc_notifications WHERE created_at < $1",
-		time.Now().Add(-age))
+		"DELETE FROM nc_notifications WHERE created_at < now() - $1::interval",
+		fmt.Sprintf("%d seconds", int(age.Seconds())))
 	if err != nil {
 		return 0, fmt.Errorf("prune notifications: %w", err)
 	}
@@ -205,7 +213,8 @@ func (s *Store) PruneOlderThan(ctx context.Context, age time.Duration) (int64, e
 }
 
 // NotificationsSince returns notifications matching filters created after the given time.
-func (s *Store) NotificationsSince(ctx context.Context, since time.Time, sourceFilter []string, severityFilter []string) ([]Notification, error) {
+// Includes namespace filtering for RBAC compliance.
+func (s *Store) NotificationsSince(ctx context.Context, since time.Time, namespaces []string, sourceFilter []string, severityFilter []string) ([]Notification, error) {
 	query := `
 		SELECT id, source, severity, title, message,
 		       resource_kind, resource_ns, resource_name, cluster_id, created_at
@@ -214,6 +223,11 @@ func (s *Store) NotificationsSince(ctx context.Context, since time.Time, sourceF
 	args := []any{since}
 	argIdx := 2
 
+	if len(namespaces) > 0 {
+		query += fmt.Sprintf(" AND (resource_ns = ANY($%d) OR resource_ns = '')", argIdx)
+		args = append(args, namespaces)
+		argIdx++
+	}
 	if len(sourceFilter) > 0 {
 		query += fmt.Sprintf(" AND source = ANY($%d)", argIdx)
 		args = append(args, sourceFilter)
@@ -247,11 +261,35 @@ func (s *Store) NotificationsSince(ctx context.Context, since time.Time, sourceF
 
 // --- Channels ---
 
+// channelScanner is satisfied by both pgx.Row and pgx.Rows.
+type channelScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *Store) scanChannelFrom(sc channelScanner) (Channel, error) {
+	var ch Channel
+	var configBytes []byte
+	if err := sc.Scan(
+		&ch.ID, &ch.Name, &ch.Type, &configBytes, &ch.CreatedBy, &ch.CreatedAt,
+		&ch.UpdatedAt, &ch.UpdatedBy, &ch.LastSentAt, &ch.LastError, &ch.LastErrorAt,
+	); err != nil {
+		return Channel{}, fmt.Errorf("scan channel: %w", err)
+	}
+	cfg, err := s.decryptConfig(configBytes)
+	if err != nil {
+		return Channel{}, err
+	}
+	ch.Config = cfg
+	return ch, nil
+}
+
+const channelColumns = `id, name, type, config, created_by, created_at,
+	updated_at, updated_by, last_sent_at, last_error, last_error_at`
+
 // ListChannels returns all notification channels.
 func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, type, config, created_by, created_at,
-		       updated_at, updated_by, last_sent_at, last_error, last_error_at
+		SELECT `+channelColumns+`
 		FROM nc_channels
 		ORDER BY created_at`)
 	if err != nil {
@@ -261,7 +299,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 
 	var channels []Channel
 	for rows.Next() {
-		ch, err := s.scanChannel(rows)
+		ch, err := s.scanChannelFrom(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -273,10 +311,13 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 // GetChannel returns a single channel by ID.
 func (s *Store) GetChannel(ctx context.Context, id string) (Channel, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, type, config, created_by, created_at,
-		       updated_at, updated_by, last_sent_at, last_error, last_error_at
+		SELECT `+channelColumns+`
 		FROM nc_channels WHERE id = $1`, id)
-	return s.scanChannelRow(row)
+	ch, err := s.scanChannelFrom(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Channel{}, ErrNotFound
+	}
+	return ch, err
 }
 
 // CreateChannel creates a new channel with encrypted config.
@@ -299,28 +340,34 @@ func (s *Store) CreateChannel(ctx context.Context, ch Channel) (string, error) {
 	return id, nil
 }
 
-// UpdateChannel updates a channel's name and config.
+// UpdateChannel updates a channel's name and config. Returns ErrNotFound if ID doesn't exist.
 func (s *Store) UpdateChannel(ctx context.Context, ch Channel) error {
 	configBytes, err := s.encryptConfig(ch.Config)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE nc_channels SET name = $1, config = $2, updated_at = now(), updated_by = $3
 		WHERE id = $4`,
 		ch.Name, configBytes, ch.UpdatedBy, ch.ID)
 	if err != nil {
 		return fmt.Errorf("update channel: %w", err)
 	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
 	return nil
 }
 
-// DeleteChannel deletes a channel (cascades to rules).
+// DeleteChannel deletes a channel (cascades to rules). Returns ErrNotFound if ID doesn't exist.
 func (s *Store) DeleteChannel(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, "DELETE FROM nc_channels WHERE id = $1", id)
+	tag, err := s.pool.Exec(ctx, "DELETE FROM nc_channels WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("delete channel: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -336,7 +383,7 @@ func (s *Store) UpdateChannelError(ctx context.Context, id, errMsg string) error
 	return nil
 }
 
-// UpdateChannelLastSent updates the last_sent_at timestamp for digest tracking.
+// UpdateChannelLastSent updates the last_sent_at timestamp and clears errors for digest tracking.
 func (s *Store) UpdateChannelLastSent(ctx context.Context, id string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE nc_channels SET last_sent_at = now(), last_error = NULL, last_error_at = NULL WHERE id = $1`, id)
@@ -348,13 +395,31 @@ func (s *Store) UpdateChannelLastSent(ctx context.Context, id string) error {
 
 // --- Rules ---
 
+// sourcesToStrings converts a Source slice to a string slice for PostgreSQL TEXT[] columns.
+func sourcesToStrings(sources []Source) []string {
+	out := make([]string, len(sources))
+	for i, v := range sources {
+		out[i] = string(v)
+	}
+	return out
+}
+
+// severitiesToStrings converts a Severity slice to a string slice for PostgreSQL TEXT[] columns.
+func severitiesToStrings(severities []Severity) []string {
+	out := make([]string, len(severities))
+	for i, v := range severities {
+		out[i] = string(v)
+	}
+	return out
+}
+
 // ListRules returns all notification rules with channel names.
 func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.id, r.name, r.source_filter, r.severity_filter, r.channel_id,
-		       COALESCE(c.name, ''), r.enabled, r.created_by, r.created_at, r.updated_at, r.updated_by
+		       c.name, r.enabled, r.created_by, r.created_at, r.updated_at, r.updated_by
 		FROM nc_rules r
-		LEFT JOIN nc_channels c ON c.id = r.channel_id
+		INNER JOIN nc_channels c ON c.id = r.channel_id
 		ORDER BY r.created_at`)
 	if err != nil {
 		return nil, fmt.Errorf("list rules: %w", err)
@@ -377,21 +442,13 @@ func (s *Store) ListRules(ctx context.Context) ([]Rule, error) {
 
 // CreateRule creates a new routing rule.
 func (s *Store) CreateRule(ctx context.Context, r Rule) (string, error) {
-	sourceStrs := make([]string, len(r.SourceFilter))
-	for i, v := range r.SourceFilter {
-		sourceStrs[i] = string(v)
-	}
-	sevStrs := make([]string, len(r.SeverityFilter))
-	for i, v := range r.SeverityFilter {
-		sevStrs[i] = string(v)
-	}
-
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO nc_rules (name, source_filter, severity_filter, channel_id, enabled, created_by)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id`,
-		r.Name, sourceStrs, sevStrs, r.ChannelID, r.Enabled, r.CreatedBy,
+		r.Name, sourcesToStrings(r.SourceFilter), severitiesToStrings(r.SeverityFilter),
+		r.ChannelID, r.Enabled, r.CreatedBy,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("create rule: %w", err)
@@ -399,34 +456,32 @@ func (s *Store) CreateRule(ctx context.Context, r Rule) (string, error) {
 	return id, nil
 }
 
-// UpdateRule updates a rule's filters, channel, and enabled state.
+// UpdateRule updates a rule's filters, channel, and enabled state. Returns ErrNotFound if ID doesn't exist.
 func (s *Store) UpdateRule(ctx context.Context, r Rule) error {
-	sourceStrs := make([]string, len(r.SourceFilter))
-	for i, v := range r.SourceFilter {
-		sourceStrs[i] = string(v)
-	}
-	sevStrs := make([]string, len(r.SeverityFilter))
-	for i, v := range r.SeverityFilter {
-		sevStrs[i] = string(v)
-	}
-
-	_, err := s.pool.Exec(ctx, `
+	tag, err := s.pool.Exec(ctx, `
 		UPDATE nc_rules
 		SET name = $1, source_filter = $2, severity_filter = $3, channel_id = $4,
 		    enabled = $5, updated_at = now(), updated_by = $6
 		WHERE id = $7`,
-		r.Name, sourceStrs, sevStrs, r.ChannelID, r.Enabled, r.UpdatedBy, r.ID)
+		r.Name, sourcesToStrings(r.SourceFilter), severitiesToStrings(r.SeverityFilter),
+		r.ChannelID, r.Enabled, r.UpdatedBy, r.ID)
 	if err != nil {
 		return fmt.Errorf("update rule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
 
-// DeleteRule deletes a routing rule.
+// DeleteRule deletes a routing rule. Returns ErrNotFound if ID doesn't exist.
 func (s *Store) DeleteRule(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, "DELETE FROM nc_rules WHERE id = $1", id)
+	tag, err := s.pool.Exec(ctx, "DELETE FROM nc_rules WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("delete rule: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -455,38 +510,4 @@ func (s *Store) decryptConfig(encrypted []byte) (ChannelConfig, error) {
 		return nil, fmt.Errorf("unmarshal channel config: %w", err)
 	}
 	return cfg, nil
-}
-
-func (s *Store) scanChannel(rows pgx.Rows) (Channel, error) {
-	var ch Channel
-	var configBytes []byte
-	if err := rows.Scan(
-		&ch.ID, &ch.Name, &ch.Type, &configBytes, &ch.CreatedBy, &ch.CreatedAt,
-		&ch.UpdatedAt, &ch.UpdatedBy, &ch.LastSentAt, &ch.LastError, &ch.LastErrorAt,
-	); err != nil {
-		return Channel{}, fmt.Errorf("scan channel: %w", err)
-	}
-	cfg, err := s.decryptConfig(configBytes)
-	if err != nil {
-		return Channel{}, err
-	}
-	ch.Config = cfg
-	return ch, nil
-}
-
-func (s *Store) scanChannelRow(row pgx.Row) (Channel, error) {
-	var ch Channel
-	var configBytes []byte
-	if err := row.Scan(
-		&ch.ID, &ch.Name, &ch.Type, &configBytes, &ch.CreatedBy, &ch.CreatedAt,
-		&ch.UpdatedAt, &ch.UpdatedBy, &ch.LastSentAt, &ch.LastError, &ch.LastErrorAt,
-	); err != nil {
-		return Channel{}, fmt.Errorf("scan channel: %w", err)
-	}
-	cfg, err := s.decryptConfig(configBytes)
-	if err != nil {
-		return Channel{}, err
-	}
-	ch.Config = cfg
-	return ch, nil
 }
