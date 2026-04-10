@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/notification"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -67,6 +68,8 @@ type Server struct {
 	NotificationHandler  *notification.Handler
 	ScanningHandler      *scanning.Handler
 	CRDHandler           *resources.GenericCRDHandler
+	NotifCenterHandler   *notifications.Handler
+	NotifCenterService   *notifications.NotificationService
 	Hub                  *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
@@ -104,13 +107,15 @@ type Deps struct {
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
 	NotificationHandler  *notification.Handler
-	ScanningHandler      *scanning.Handler
-	CRDHandler           *resources.GenericCRDHandler
-	LogQueryLimiter      *middleware.RateLimiter
-	WebhookRateLimiter *middleware.RateLimiter
-	AccessChecker      *resources.AccessChecker
-	ReadyFn            func() bool
-	DBPing             func(context.Context) error // nil if no database
+	ScanningHandler        *scanning.Handler
+	CRDHandler             *resources.GenericCRDHandler
+	NotifCenterHandler     *notifications.Handler
+	NotifCenterService     *notifications.NotificationService
+	LogQueryLimiter        *middleware.RateLimiter
+	WebhookRateLimiter     *middleware.RateLimiter
+	AccessChecker          *resources.AccessChecker
+	ReadyFn                func() bool
+	DBPing                 func(context.Context) error // nil if no database
 }
 
 // New creates a configured HTTP server with middleware and routes.
@@ -238,6 +243,12 @@ func New(deps Deps) *Server {
 	// Scanning handler
 	if deps.ScanningHandler != nil {
 		s.ScanningHandler = deps.ScanningHandler
+	}
+
+	// Notification center
+	if deps.NotifCenterHandler != nil {
+		s.NotifCenterHandler = deps.NotifCenterHandler
+		s.NotifCenterService = deps.NotifCenterService
 	}
 
 	// CRD handler

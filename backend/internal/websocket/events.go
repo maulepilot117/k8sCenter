@@ -55,6 +55,7 @@ type OutgoingMessage struct {
 var (
 	allowedKindsMu sync.RWMutex
 	allowedKinds   = map[string]bool{
+		"notifications":           true,
 		"pods":                    true,
 		"services":                true,
 		"configmaps":              true,

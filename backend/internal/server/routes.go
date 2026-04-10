@@ -156,6 +156,11 @@ func (s *Server) registerRoutes() {
 				s.registerScanningRoutes(ar)
 			}
 
+			// Notification center routes
+			if s.NotifCenterHandler != nil {
+				s.registerNotifCenterRoutes(ar)
+			}
+
 			// User management — admin only
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
@@ -707,4 +712,37 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Post("/resources/clusterrolebindings", h.HandleCreateClusterRoleBinding)
 	ar.Put("/resources/clusterrolebindings/{name}", h.HandleUpdateClusterRoleBinding)
 	ar.Delete("/resources/clusterrolebindings/{name}", h.HandleDeleteClusterRoleBinding)
+}
+
+// registerNotifCenterRoutes registers notification center endpoints.
+// Feed endpoints are accessible to all authenticated users.
+// Channel and rule management require admin role.
+func (s *Server) registerNotifCenterRoutes(ar chi.Router) {
+	h := s.NotifCenterHandler
+	ar.Route("/notifications", func(r chi.Router) {
+		// Feed — all authenticated users
+		r.Get("/", h.HandleList)
+		r.Post("/{id}/read", h.HandleMarkRead)
+		r.Post("/read-all", h.HandleMarkAllRead)
+		r.Get("/unread-count", h.HandleUnreadCount)
+
+		// Channels — admin only
+		r.Route("/channels", func(cr chi.Router) {
+			cr.Use(middleware.RequireAdmin)
+			cr.Get("/", h.HandleListChannels)
+			cr.Post("/", h.HandleCreateChannel)
+			cr.Put("/{id}", h.HandleUpdateChannel)
+			cr.Delete("/{id}", h.HandleDeleteChannel)
+			cr.Post("/{id}/test", h.HandleTestChannel)
+		})
+
+		// Rules — admin only
+		r.Route("/rules", func(rr chi.Router) {
+			rr.Use(middleware.RequireAdmin)
+			rr.Get("/", h.HandleListRules)
+			rr.Post("/", h.HandleCreateRule)
+			rr.Put("/{id}", h.HandleUpdateRule)
+			rr.Delete("/{id}", h.HandleDeleteRule)
+		})
+	})
 }
