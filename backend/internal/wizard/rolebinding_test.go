@@ -66,8 +66,8 @@ func TestRoleBindingInputValidate(t *testing.T) {
 		{
 			name: "missing namespace for RoleBinding",
 			input: RoleBindingInput{
-				Name:    "my-binding",
-				RoleRef: RoleRefInput{Kind: "ClusterRole", Name: "view"},
+				Name:     "my-binding",
+				RoleRef:  RoleRefInput{Kind: "ClusterRole", Name: "view"},
 				Subjects: []SubjectInput{{Kind: "User", Name: "jane"}},
 			},
 			wantErrors: 1,

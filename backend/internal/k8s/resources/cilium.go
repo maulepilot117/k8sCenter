@@ -19,9 +19,9 @@ const kindCiliumNetworkPolicy = "ciliumnetworkpolicies"
 
 // CiliumPolicyRequest is the structured payload for creating a CiliumNetworkPolicy.
 type CiliumPolicyRequest struct {
-	Name             string            `json:"name"`
-	Namespace        string            `json:"namespace"`
-	EndpointSelector map[string]string `json:"endpointSelector"`
+	Name             string             `json:"name"`
+	Namespace        string             `json:"namespace"`
+	EndpointSelector map[string]string  `json:"endpointSelector"`
 	IngressRules     []CiliumPolicyRule `json:"ingressRules"`
 	EgressRules      []CiliumPolicyRule `json:"egressRules"`
 }
@@ -553,4 +553,3 @@ func toAnySlice(s []string) []any {
 	}
 	return result
 }
-

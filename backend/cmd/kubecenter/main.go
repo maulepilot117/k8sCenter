@@ -18,28 +18,29 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/alerting"
-	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
-	"github.com/kubecenter/kubecenter/internal/k8s"
-	"github.com/kubecenter/kubecenter/internal/k8s/resources"
-	"github.com/kubecenter/kubecenter/internal/loki"
-	"github.com/kubecenter/kubecenter/internal/monitoring"
-	"github.com/kubecenter/kubecenter/internal/topology"
-	"github.com/kubecenter/kubecenter/internal/networking"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
+	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/limits"
+	"github.com/kubecenter/kubecenter/internal/loki"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
-	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
+	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/storage"
 	appstore "github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/pkg/version"
 )
@@ -603,9 +604,14 @@ func main() {
 	}
 	scanHandler.InitCache()
 
+	// Namespace limits handler (ResourceQuota + LimitRange management)
+	// Note: Limits checker is created after notification center to enable threshold alerts
+	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
+
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService
 	var notifCenterHandler *notifications.Handler
+	var limitsChecker *limits.Checker
 	if dbPool != nil {
 		notifStore := notifications.NewStore(dbPool, dbEncKey)
 		notifService = notifications.NewService(notifStore, hub, alertNotifier, logger)
@@ -642,6 +648,10 @@ func main() {
 		gitopsHandler.NotifService = notifService
 		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
+
+		// Limits checker — monitors quotas and dispatches threshold notifications
+		limitsChecker = limits.NewChecker(limitsHandler, notifService, limits.DefaultCheckInterval, logger)
+		limitsChecker.Start(ctx)
 	}
 
 	// Ready state: true after informer sync, false during shutdown
@@ -650,38 +660,39 @@ func main() {
 
 	// Create HTTP server
 	srv := server.New(server.Deps{
-		Config:        cfg,
-		K8sClient:     k8sClient,
-		Informers:     informerMgr,
-		Logger:        logger,
-		TokenManager:  tokenManager,
-		LocalAuth:     localAuth,
-		AuthRegistry:   authRegistry,
-		OIDCStateStore: oidcStateStore,
-		Sessions:      sessions,
-		RBACChecker:   rbacChecker,
-		AuditLogger:     auditLogger,
-		ClusterStore:    clusterStore,
-		ClusterRouter:   clusterRouter,
-		ClusterProber:   clusterProber,
-		SettingsService: settingsService,
-		RateLimiter:     rateLimiter,
-		YAMLRateLimiter: yamlRateLimiter,
-		Hub:               hub,
+		Config:             cfg,
+		K8sClient:          k8sClient,
+		Informers:          informerMgr,
+		Logger:             logger,
+		TokenManager:       tokenManager,
+		LocalAuth:          localAuth,
+		AuthRegistry:       authRegistry,
+		OIDCStateStore:     oidcStateStore,
+		Sessions:           sessions,
+		RBACChecker:        rbacChecker,
+		AuditLogger:        auditLogger,
+		ClusterStore:       clusterStore,
+		ClusterRouter:      clusterRouter,
+		ClusterProber:      clusterProber,
+		SettingsService:    settingsService,
+		RateLimiter:        rateLimiter,
+		YAMLRateLimiter:    yamlRateLimiter,
+		Hub:                hub,
 		MonitoringHandler:  monHandler,
 		LokiHandler:        lokiHandler,
 		TopologyHandler:    topoHandler,
 		StorageHandler:     storageHandler,
 		NetworkingHandler:  networkingHandler,
-		AlertingHandler:      alertHandler,
-		DiagnosticsHandler:   diagHandler,
-		PolicyHandler:        policyHandler,
-		GitOpsHandler:        gitopsHandler,
-		FluxNotifHandler:       fluxNotifHandler,
-		NotifCenterHandler:    notifCenterHandler,
-		NotifCenterService:    notifService,
-		ScanningHandler:       scanHandler,
-		CRDHandler:           crdHandler,
+		AlertingHandler:    alertHandler,
+		DiagnosticsHandler: diagHandler,
+		PolicyHandler:      policyHandler,
+		GitOpsHandler:      gitopsHandler,
+		FluxNotifHandler:   fluxNotifHandler,
+		NotifCenterHandler: notifCenterHandler,
+		NotifCenterService: notifService,
+		ScanningHandler:    scanHandler,
+		LimitsHandler:      limitsHandler,
+		CRDHandler:         crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
 		AccessChecker:      accessChecker,
@@ -717,6 +728,11 @@ func main() {
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http server shutdown error", "error", err)
+	}
+
+	// Stop background checkers
+	if limitsChecker != nil {
+		limitsChecker.Stop()
 	}
 
 	logger.Info("kubecenter stopped")

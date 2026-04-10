@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	agentCacheTTL      = 30 * time.Second
-	agentOuterTimeout  = 30 * time.Second
-	agentExecTimeout   = 5 * time.Second
+	agentCacheTTL             = 30 * time.Second
+	agentOuterTimeout         = 30 * time.Second
+	agentExecTimeout          = 5 * time.Second
 	agentDefaultMaxConcurrent = 10
 	agentMaxOutput            = 1 << 20 // 1 MB stdout cap
-	agentContainer     = "cilium-agent"
+	agentContainer            = "cilium-agent"
 )
 
 // agentCommandArgs returns the command to run in Cilium agent pods.
@@ -48,11 +48,11 @@ func agentPodLabelSelectors() []string {
 // diagnostic data (WireGuard peers, ClusterMesh, Envoy proxy, node health).
 // Uses service account credentials (not user impersonation) — see plan for rationale.
 type CiliumAgentCollector struct {
-	k8sClient      *k8s.ClientFactory
-	auditLogger    audit.Logger
-	logger         *slog.Logger
-	clusterID      string
-	maxConcurrent  int
+	k8sClient     *k8s.ClientFactory
+	auditLogger   audit.Logger
+	logger        *slog.Logger
+	clusterID     string
+	maxConcurrent int
 
 	group    singleflight.Group
 	cacheMu  sync.RWMutex

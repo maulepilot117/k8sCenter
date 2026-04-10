@@ -14,10 +14,10 @@ import (
 
 // CommitCache resolves commit SHAs to metadata, backed by PostgreSQL and singleflight.
 type CommitCache struct {
-	db  *pgxpool.Pool
-	gh  *GitHubClient // nil if no token configured
+	db   *pgxpool.Pool
+	gh   *GitHubClient // nil if no token configured
 	ghMu sync.RWMutex
-	log *slog.Logger
+	log  *slog.Logger
 
 	group singleflight.Group
 }

@@ -19,49 +19,49 @@ import (
 )
 
 const (
-	crdResyncPeriod   = 5 * time.Minute
-	countCacheTTL     = 30 * time.Second
-	countConcurrency  = 5
+	crdResyncPeriod  = 5 * time.Minute
+	countCacheTTL    = 30 * time.Second
+	countConcurrency = 5
 )
 
 // coreAPIDenylist contains API groups that are served by built-in k8s resources
 // and must not be exposed through the CRD discovery service.
 var coreAPIDenylist = map[string]bool{
-	"":                                true, // core (pods, services, etc.)
-	"apps":                            true,
-	"batch":                           true,
-	"autoscaling":                     true,
-	"networking.k8s.io":               true,
-	"rbac.authorization.k8s.io":       true,
-	"storage.k8s.io":                  true,
-	"apiextensions.k8s.io":            true,
-	"admissionregistration.k8s.io":    true,
-	"coordination.k8s.io":             true,
-	"discovery.k8s.io":                true,
-	"events.k8s.io":                   true,
-	"flowcontrol.apiserver.k8s.io":    true,
-	"node.k8s.io":                     true,
-	"policy":                          true,
-	"scheduling.k8s.io":               true,
-	"certificates.k8s.io":             true,
-	"authentication.k8s.io":           true,
-	"authorization.k8s.io":            true,
-	"apiregistration.k8s.io":          true,
-	"resource.k8s.io":                 true,
-	"internal.apiserver.k8s.io":       true,
-	"storagemigration.k8s.io":         true,
+	"":                             true, // core (pods, services, etc.)
+	"apps":                         true,
+	"batch":                        true,
+	"autoscaling":                  true,
+	"networking.k8s.io":            true,
+	"rbac.authorization.k8s.io":    true,
+	"storage.k8s.io":               true,
+	"apiextensions.k8s.io":         true,
+	"admissionregistration.k8s.io": true,
+	"coordination.k8s.io":          true,
+	"discovery.k8s.io":             true,
+	"events.k8s.io":                true,
+	"flowcontrol.apiserver.k8s.io": true,
+	"node.k8s.io":                  true,
+	"policy":                       true,
+	"scheduling.k8s.io":            true,
+	"certificates.k8s.io":          true,
+	"authentication.k8s.io":        true,
+	"authorization.k8s.io":         true,
+	"apiregistration.k8s.io":       true,
+	"resource.k8s.io":              true,
+	"internal.apiserver.k8s.io":    true,
+	"storagemigration.k8s.io":      true,
 }
 
 // CRDInfo holds metadata about a discovered Custom Resource Definition.
 type CRDInfo struct {
-	Group                    string                                            `json:"group"`
-	Version                  string                                            `json:"version"`
-	Resource                 string                                            `json:"resource"`
-	Kind                     string                                            `json:"kind"`
-	Scope                    string                                            `json:"scope"` // "Namespaced" or "Cluster"
-	Served                   bool                                              `json:"served"`
-	StorageVersion           bool                                              `json:"storageVersion"`
-	AdditionalPrinterColumns []apiextensionsv1.CustomResourceColumnDefinition  `json:"additionalPrinterColumns,omitempty"`
+	Group                    string                                           `json:"group"`
+	Version                  string                                           `json:"version"`
+	Resource                 string                                           `json:"resource"`
+	Kind                     string                                           `json:"kind"`
+	Scope                    string                                           `json:"scope"` // "Namespaced" or "Cluster"
+	Served                   bool                                             `json:"served"`
+	StorageVersion           bool                                             `json:"storageVersion"`
+	AdditionalPrinterColumns []apiextensionsv1.CustomResourceColumnDefinition `json:"additionalPrinterColumns,omitempty"`
 }
 
 // CRDDiscovery watches CRD resources via an apiextensions informer and maintains

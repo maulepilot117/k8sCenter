@@ -55,7 +55,6 @@ func (c *Client) username() string {
 	return "unauthenticated"
 }
 
-
 // ReadPump reads messages from the WebSocket connection. Runs in its own goroutine.
 func (c *Client) ReadPump() {
 	defer func() {

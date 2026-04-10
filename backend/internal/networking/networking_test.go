@@ -240,10 +240,10 @@ func TestReadBGPNodeConfigs(t *testing.T) {
 }
 
 type bgpPeerData struct {
-	address  string
-	asn      int64
-	state    string
-	received int64
+	address    string
+	asn        int64
+	state      string
+	received   int64
 	advertised int64
 }
 
@@ -402,9 +402,9 @@ func TestHasCRD(t *testing.T) {
 // isCiliumLocal tests
 func TestIsCiliumLocal(t *testing.T) {
 	tests := []struct {
-		name      string
-		cniName   string
-		want      bool
+		name    string
+		cniName string
+		want    bool
 	}{
 		{"cilium", CNICilium, true},
 		{"calico", CNICalico, false},
@@ -561,9 +561,9 @@ func TestAgentCollector_ParseMinimalJSON(t *testing.T) {
 func TestMergeAgentIntoSubsystems_PartialNodes(t *testing.T) {
 	// When some nodes fail, only successful nodes contribute enrichment data
 	resp := &CiliumSubsystemsResponse{
-		Configured: true,
-		Encryption: &EncryptionInfo{Enabled: true, Mode: "wireguard"},
-		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		Configured:  true,
+		Encryption:  &EncryptionInfo{Enabled: true, Mode: "wireguard"},
+		Mesh:        &MeshInfo{Enabled: true, Engine: "cilium"},
 		ClusterMesh: &ClusterMeshInfo{Enabled: false},
 	}
 	agent := &agentCollectionResult{
@@ -611,9 +611,9 @@ func TestMergeAgentIntoSubsystems_PartialNodes(t *testing.T) {
 
 func TestMergeAgentIntoSubsystems_WireGuard(t *testing.T) {
 	resp := &CiliumSubsystemsResponse{
-		Configured: true,
-		Encryption: &EncryptionInfo{Enabled: true, Mode: "wireguard"},
-		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		Configured:  true,
+		Encryption:  &EncryptionInfo{Enabled: true, Mode: "wireguard"},
+		Mesh:        &MeshInfo{Enabled: true, Engine: "cilium"},
 		ClusterMesh: &ClusterMeshInfo{Enabled: false},
 	}
 	agent := &agentCollectionResult{
@@ -692,9 +692,9 @@ func TestMergeAgentIntoSubsystems_ClusterMesh(t *testing.T) {
 
 func TestMergeAgentIntoSubsystems_Proxy(t *testing.T) {
 	resp := &CiliumSubsystemsResponse{
-		Configured: true,
-		Encryption: &EncryptionInfo{},
-		Mesh:       &MeshInfo{Enabled: true, Engine: "cilium"},
+		Configured:  true,
+		Encryption:  &EncryptionInfo{},
+		Mesh:        &MeshInfo{Enabled: true, Engine: "cilium"},
 		ClusterMesh: &ClusterMeshInfo{},
 	}
 	agent := &agentCollectionResult{
@@ -918,4 +918,3 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
-

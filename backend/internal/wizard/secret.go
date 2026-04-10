@@ -16,10 +16,10 @@ type SecretInput struct {
 
 // validSecretTypes lists the allowed secret types for the wizard.
 var validSecretTypes = map[string]corev1.SecretType{
-	"Opaque":                              corev1.SecretTypeOpaque,
-	"kubernetes.io/tls":                   corev1.SecretTypeTLS,
-	"kubernetes.io/basic-auth":            corev1.SecretTypeBasicAuth,
-	"kubernetes.io/dockerconfigjson":      corev1.SecretTypeDockerConfigJson,
+	"Opaque":                         corev1.SecretTypeOpaque,
+	"kubernetes.io/tls":              corev1.SecretTypeTLS,
+	"kubernetes.io/basic-auth":       corev1.SecretTypeBasicAuth,
+	"kubernetes.io/dockerconfigjson": corev1.SecretTypeDockerConfigJson,
 }
 
 // Validate checks the SecretInput and returns field-level errors.

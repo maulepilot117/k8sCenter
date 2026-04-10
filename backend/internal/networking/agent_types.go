@@ -4,10 +4,10 @@ import "time"
 
 // ciliumAgentStatus is a minimal subset of cilium-dbg's StatusResponse.
 type ciliumAgentStatus struct {
-	Encryption *agentEncryption  `json:"encryption,omitempty"`
+	Encryption  *agentEncryption  `json:"encryption,omitempty"`
 	ClusterMesh *agentClusterMesh `json:"cluster-mesh,omitempty"`
-	Proxy      *agentProxy       `json:"proxy,omitempty"`
-	Cluster    *agentCluster     `json:"cluster,omitempty"`
+	Proxy       *agentProxy       `json:"proxy,omitempty"`
+	Cluster     *agentCluster     `json:"cluster,omitempty"`
 }
 
 type agentEncryption struct {
@@ -21,11 +21,11 @@ type agentWireguard struct {
 }
 
 type agentWGInterface struct {
-	Name       string         `json:"name,omitempty"`
-	PublicKey  string         `json:"public-key,omitempty"`
-	ListenPort int64          `json:"listen-port,omitempty"`
-	PeerCount  int64          `json:"peer-count,omitempty"`
-	Peers      []agentWGPeer  `json:"peers"`
+	Name       string        `json:"name,omitempty"`
+	PublicKey  string        `json:"public-key,omitempty"`
+	ListenPort int64         `json:"listen-port,omitempty"`
+	PeerCount  int64         `json:"peer-count,omitempty"`
+	Peers      []agentWGPeer `json:"peers"`
 }
 
 type agentWGPeer struct {

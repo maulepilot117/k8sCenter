@@ -98,7 +98,7 @@ type RevisionEntry struct {
 
 // AppDetail is the full detail response for a single application.
 type AppDetail struct {
-	App       NormalizedApp   `json:"app"`
+	App       NormalizedApp     `json:"app"`
 	Resources []ManagedResource `json:"resources,omitempty"`
 	History   []RevisionEntry   `json:"history,omitempty"`
 }

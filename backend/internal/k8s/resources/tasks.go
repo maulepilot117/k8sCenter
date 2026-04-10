@@ -166,4 +166,3 @@ func (h *Handler) HandleGetTask(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, api.Response{Data: task})
 }
-

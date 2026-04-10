@@ -50,8 +50,8 @@ func TestParseCompositeID(t *testing.T) {
 
 func TestToolGVR(t *testing.T) {
 	tests := []struct {
-		prefix   string
-		wantOK   bool
+		prefix    string
+		wantOK    bool
 		wantGroup string
 	}{
 		{"argo", true, "argoproj.io"},

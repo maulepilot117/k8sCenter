@@ -39,7 +39,7 @@ type oidcClaims struct {
 	Email             string `json:"email"`
 	EmailVerified     bool   `json:"email_verified"`
 	Name              string `json:"name"`
-	PreferredUsername  string `json:"preferred_username"`
+	PreferredUsername string `json:"preferred_username"`
 	Subject           string `json:"sub"`
 	// Groups is extracted separately because it can be string or []string.
 }

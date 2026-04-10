@@ -13,17 +13,17 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig     `koanf:"server"`
-	Log        LogConfig        `koanf:"log"`
-	Auth       AuthConfig       `koanf:"auth"`
-	Monitoring MonitoringConfig `koanf:"monitoring"`
-	Loki       LokiConfig       `koanf:"loki"`
-	Alerting   AlertingConfig   `koanf:"alerting"`
-	Audit      AuditConfig      `koanf:"audit"`
-	Database   DatabaseConfig   `koanf:"database"`
-	Dev        bool             `koanf:"dev"`
-	ClusterID  string           `koanf:"clusterid"`
-	CORS        CORSConfig       `koanf:"cors"`
+	Server      ServerConfig      `koanf:"server"`
+	Log         LogConfig         `koanf:"log"`
+	Auth        AuthConfig        `koanf:"auth"`
+	Monitoring  MonitoringConfig  `koanf:"monitoring"`
+	Loki        LokiConfig        `koanf:"loki"`
+	Alerting    AlertingConfig    `koanf:"alerting"`
+	Audit       AuditConfig       `koanf:"audit"`
+	Database    DatabaseConfig    `koanf:"database"`
+	Dev         bool              `koanf:"dev"`
+	ClusterID   string            `koanf:"clusterid"`
+	CORS        CORSConfig        `koanf:"cors"`
 	CiliumAgent CiliumAgentConfig `koanf:"ciliumagent"`
 }
 
@@ -43,8 +43,8 @@ type DatabaseConfig struct {
 type MonitoringConfig struct {
 	Namespace     string `koanf:"namespace"`     // Namespace hint for discovery (empty = search all)
 	PrometheusURL string `koanf:"prometheusurl"` // Override auto-discovery
-	GrafanaURL    string `koanf:"grafanaurl"`     // Override auto-discovery
-	GrafanaToken  string `koanf:"grafanatoken"`   // Grafana service account token
+	GrafanaURL    string `koanf:"grafanaurl"`    // Override auto-discovery
+	GrafanaToken  string `koanf:"grafanatoken"`  // Grafana service account token
 }
 
 type AuthConfig struct {
@@ -110,8 +110,8 @@ type CORSConfig struct {
 
 // CiliumAgentConfig controls opt-in exec-based Cilium agent diagnostics.
 type CiliumAgentConfig struct {
-	ExecEnabled    bool `koanf:"execenabled"`    // KUBECENTER_CILIUMAGENT_EXECENABLED
-	MaxConcurrent  int  `koanf:"maxconcurrent"`  // KUBECENTER_CILIUMAGENT_MAXCONCURRENT (default: 10)
+	ExecEnabled   bool `koanf:"execenabled"`   // KUBECENTER_CILIUMAGENT_EXECENABLED
+	MaxConcurrent int  `koanf:"maxconcurrent"` // KUBECENTER_CILIUMAGENT_MAXCONCURRENT (default: 10)
 }
 
 // LokiConfig holds configuration for Loki log aggregation integration.
@@ -148,13 +148,13 @@ func Load(configPath string) (*Config, error) {
 		"server.requesttimeout":  DefaultRequestTimeout,
 		"log.level":              DefaultLogLevel,
 		"log.format":             DefaultLogFormat,
-		"dev":                         DefaultDevMode,
-		"clusterid":                   DefaultClusterID,
-		"audit.retentiondays":         DefaultAuditRetentionDays,
-		"alerting.enabled":            DefaultAlertingEnabled,
-		"alerting.retentiondays":      DefaultAlertingRetentionDays,
-		"alerting.ratelimit":          DefaultAlertingRateLimit,
-		"alerting.smtp.port":          DefaultAlertingSMTPPort,
+		"dev":                    DefaultDevMode,
+		"clusterid":              DefaultClusterID,
+		"audit.retentiondays":    DefaultAuditRetentionDays,
+		"alerting.enabled":       DefaultAlertingEnabled,
+		"alerting.retentiondays": DefaultAlertingRetentionDays,
+		"alerting.ratelimit":     DefaultAlertingRateLimit,
+		"alerting.smtp.port":     DefaultAlertingSMTPPort,
 	}
 	for key, val := range defaults {
 		k.Set(key, val)

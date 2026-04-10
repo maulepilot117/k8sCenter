@@ -1,8 +1,8 @@
 package wizard
 
 import (
-	sigsyaml "sigs.k8s.io/yaml"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // SnapshotInput represents the wizard form data for creating a VolumeSnapshot.

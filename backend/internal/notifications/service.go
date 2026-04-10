@@ -67,14 +67,14 @@ type EmailSender interface {
 // webhookPayload defines the external-facing payload for webhook dispatch.
 // Excludes internal fields like ClusterID.
 type webhookPayload struct {
-	ID           string   `json:"id"`
-	Source       Source   `json:"source"`
-	Severity     Severity `json:"severity"`
-	Title        string   `json:"title"`
-	Message      string   `json:"message"`
-	ResourceKind string   `json:"resourceKind,omitempty"`
-	ResourceNS   string   `json:"resourceNamespace,omitempty"`
-	ResourceName string   `json:"resourceName,omitempty"`
+	ID           string    `json:"id"`
+	Source       Source    `json:"source"`
+	Severity     Severity  `json:"severity"`
+	Title        string    `json:"title"`
+	Message      string    `json:"message"`
+	ResourceKind string    `json:"resourceKind,omitempty"`
+	ResourceNS   string    `json:"resourceNamespace,omitempty"`
+	ResourceName string    `json:"resourceName,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 

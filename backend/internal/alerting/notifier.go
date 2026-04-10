@@ -260,14 +260,14 @@ func (n *Notifier) renderAlert(action AlertAction) (*EmailMessage, error) {
 	)
 
 	data := map[string]any{
-		"AlertName":   action.Alert.Labels["alertname"],
-		"Severity":    action.Alert.Labels["severity"],
-		"Namespace":   action.Alert.Labels["namespace"],
-		"Status":      action.Alert.Status,
-		"Labels":      action.Alert.Labels,
-		"Annotations": action.Alert.Annotations,
-		"StartsAt":    action.Alert.StartsAt,
-		"EndsAt":      action.Alert.EndsAt,
+		"AlertName":    action.Alert.Labels["alertname"],
+		"Severity":     action.Alert.Labels["severity"],
+		"Namespace":    action.Alert.Labels["namespace"],
+		"Status":       action.Alert.Status,
+		"Labels":       action.Alert.Labels,
+		"Annotations":  action.Alert.Annotations,
+		"StartsAt":     action.Alert.StartsAt,
+		"EndsAt":       action.Alert.EndsAt,
 		"GeneratorURL": action.Alert.GeneratorURL,
 	}
 

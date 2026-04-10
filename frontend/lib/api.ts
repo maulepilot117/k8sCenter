@@ -14,6 +14,11 @@ import type {
   NotifRule,
   NotifRuleInput,
 } from "@/lib/notif-center-types.ts";
+import type {
+  LimitsStatus,
+  NamespaceLimits,
+  NamespaceSummary,
+} from "@/lib/limits-types.ts";
 
 /** In-memory access token. Never stored in localStorage. */
 let accessToken: string | null = null;
@@ -234,4 +239,12 @@ export const notifApi = {
   updateRule: (id: string, rule: NotifRuleInput) =>
     apiPut<void>(`/v1/notifications/rules/${id}`, rule),
   deleteRule: (id: string) => apiDelete(`/v1/notifications/rules/${id}`),
+};
+
+// Namespace limits API (ResourceQuota + LimitRange management)
+export const limitsApi = {
+  status: () => apiGet<LimitsStatus>("/v1/limits/status"),
+  list: () => apiGet<NamespaceSummary[]>("/v1/limits/namespaces"),
+  get: (namespace: string) =>
+    apiGet<NamespaceLimits>(`/v1/limits/namespaces/${namespace}`),
 };

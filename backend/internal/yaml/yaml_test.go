@@ -296,7 +296,7 @@ func TestCleanForExport_StripsServerFields(t *testing.T) {
 				"uid":               "abc-123",
 				"resourceVersion":   "12345",
 				"generation":        int64(1),
-				"creationTimestamp":  "2024-01-01T00:00:00Z",
+				"creationTimestamp": "2024-01-01T00:00:00Z",
 				"managedFields":     []interface{}{},
 				"ownerReferences":   []interface{}{},
 				"selfLink":          "/api/v1/namespaces/default/configmaps/test",
@@ -356,7 +356,7 @@ func TestCleanForExport_StripsNoisyAnnotations(t *testing.T) {
 				"annotations": map[string]interface{}{
 					"kubectl.kubernetes.io/last-applied-configuration": "{}",
 					"deployment.kubernetes.io/revision":                "1",
-					"app.kubernetes.io/name":                          "test",
+					"app.kubernetes.io/name":                           "test",
 				},
 			},
 		},

@@ -507,6 +507,10 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         kind: "limitranges",
         count: true,
       },
+      {
+        label: "Namespace Limits",
+        href: "/config/namespace-limits",
+      },
     ],
   },
   {

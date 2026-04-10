@@ -131,11 +131,11 @@ func NormalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 	}
 
 	return NormalizedApp{
-		ID:        fmt.Sprintf("flux-ks:%s:%s", namespace, name),
-		Name:      name,
-		Namespace: namespace,
-		Tool:      ToolFluxCD,
-		Kind:      "Kustomization",
+		ID:           fmt.Sprintf("flux-ks:%s:%s", namespace, name),
+		Name:         name,
+		Namespace:    namespace,
+		Tool:         ToolFluxCD,
+		Kind:         "Kustomization",
 		SyncStatus:   syncStatus,
 		HealthStatus: healthStatus,
 		Source: AppSource{
@@ -183,11 +183,11 @@ func NormalizeFluxHelmRelease(obj *unstructured.Unstructured) NormalizedApp {
 	lastSyncTime := resolveLastSyncTime(obj, conditions)
 
 	return NormalizedApp{
-		ID:        fmt.Sprintf("flux-hr:%s:%s", namespace, name),
-		Name:      name,
-		Namespace: namespace,
-		Tool:      ToolFluxCD,
-		Kind:      "HelmRelease",
+		ID:           fmt.Sprintf("flux-hr:%s:%s", namespace, name),
+		Name:         name,
+		Namespace:    namespace,
+		Tool:         ToolFluxCD,
+		Kind:         "HelmRelease",
 		SyncStatus:   syncStatus,
 		HealthStatus: healthStatus,
 		Source: AppSource{

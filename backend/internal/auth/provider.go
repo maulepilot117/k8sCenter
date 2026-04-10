@@ -48,7 +48,7 @@ type UserLookup interface {
 // ProviderInfo describes a configured auth provider for the login page.
 type ProviderInfo struct {
 	ID          string `json:"id"`
-	Type        string `json:"type"`        // "local", "oidc", "ldap"
+	Type        string `json:"type"` // "local", "oidc", "ldap"
 	DisplayName string `json:"displayName"`
 	LoginURL    string `json:"loginURL,omitempty"` // only for OIDC (redirect-based)
 }

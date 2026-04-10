@@ -10,26 +10,26 @@ import (
 type Action string
 
 const (
-	ActionCreate  Action = "create"
-	ActionUpdate  Action = "update"
-	ActionDelete  Action = "delete"
-	ActionReveal  Action = "reveal" // secret reveal
-	ActionApply   Action = "apply"  // YAML server-side apply
-	ActionLogin   Action = "login"
-	ActionLogout  Action = "logout"
-	ActionRefresh Action = "refresh"
-	ActionSetup              Action = "setup"
-	ActionAlertRuleCreate    Action = "alert_rule_create"
-	ActionAlertRuleUpdate    Action = "alert_rule_update"
-	ActionAlertRuleDelete    Action = "alert_rule_delete"
+	ActionCreate              Action = "create"
+	ActionUpdate              Action = "update"
+	ActionDelete              Action = "delete"
+	ActionReveal              Action = "reveal" // secret reveal
+	ActionApply               Action = "apply"  // YAML server-side apply
+	ActionLogin               Action = "login"
+	ActionLogout              Action = "logout"
+	ActionRefresh             Action = "refresh"
+	ActionSetup               Action = "setup"
+	ActionAlertRuleCreate     Action = "alert_rule_create"
+	ActionAlertRuleUpdate     Action = "alert_rule_update"
+	ActionAlertRuleDelete     Action = "alert_rule_delete"
 	ActionAlertSettingsUpdate Action = "alert_settings_update"
-	ActionAlertTest          Action = "alert_test"
-	ActionReadLogs           Action = "read_logs"
-	ActionAgentExec          Action = "agent_exec"
-	ActionGitOpsSync         Action = "gitops_sync"
-	ActionGitOpsSuspend      Action = "gitops_suspend"
-	ActionGitOpsResume       Action = "gitops_resume"
-	ActionGitOpsRollback     Action = "gitops_rollback"
+	ActionAlertTest           Action = "alert_test"
+	ActionReadLogs            Action = "read_logs"
+	ActionAgentExec           Action = "agent_exec"
+	ActionGitOpsSync          Action = "gitops_sync"
+	ActionGitOpsSuspend       Action = "gitops_suspend"
+	ActionGitOpsResume        Action = "gitops_resume"
+	ActionGitOpsRollback      Action = "gitops_rollback"
 )
 
 // Result represents the outcome of an auditable operation.

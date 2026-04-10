@@ -102,9 +102,9 @@ func (p *PolicyWizardInput) kyvernoRules() []map[string]any {
 				"Images must come from an allowed registry.",
 				map[string]any{
 					"spec": map[string]any{
-						"containers":              []map[string]any{containerEntry},
-						"=(initContainers)":       []map[string]any{containerEntry},
-						"=(ephemeralContainers)":  []map[string]any{containerEntry},
+						"containers":             []map[string]any{containerEntry},
+						"=(initContainers)":      []map[string]any{containerEntry},
+						"=(ephemeralContainers)": []map[string]any{containerEntry},
 					},
 				}),
 		}
@@ -116,9 +116,9 @@ func (p *PolicyWizardInput) kyvernoRules() []map[string]any {
 				"Images must have an explicit tag; ':latest' is not allowed.",
 				map[string]any{
 					"spec": map[string]any{
-						"containers":              []map[string]any{containerEntry},
-						"=(initContainers)":       []map[string]any{containerEntry},
-						"=(ephemeralContainers)":  []map[string]any{containerEntry},
+						"containers":             []map[string]any{containerEntry},
+						"=(initContainers)":      []map[string]any{containerEntry},
+						"=(ephemeralContainers)": []map[string]any{containerEntry},
 					},
 				}),
 		}

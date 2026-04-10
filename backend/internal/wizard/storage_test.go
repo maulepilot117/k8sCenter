@@ -52,10 +52,10 @@ func TestStorageClassValidate_InvalidName(t *testing.T) {
 	tests := []struct {
 		name string
 	}{
-		{"MyClass"},                      // uppercase
-		{"-start-dash"},                  // starts with dash
-		{"has spaces"},                   // spaces
-		{strings.Repeat("a", 254)},       // too long
+		{"MyClass"},                // uppercase
+		{"-start-dash"},            // starts with dash
+		{"has spaces"},             // spaces
+		{strings.Repeat("a", 254)}, // too long
 	}
 	for _, tt := range tests {
 		s := StorageClassInput{Name: tt.name, Provisioner: "test.csi"}

@@ -47,14 +47,14 @@ func TestOIDCProvider_IsAllowedDomainNoDomains(t *testing.T) {
 
 func TestOIDCProvider_MapClaimsToUser(t *testing.T) {
 	tests := []struct {
-		name          string
-		config        OIDCProviderConfig
-		claims        *oidcClaims
-		groups        []string
-		subject       string
-		wantUsername   string
-		wantK8sUser   string
-		wantGroupLen  int
+		name         string
+		config       OIDCProviderConfig
+		claims       *oidcClaims
+		groups       []string
+		subject      string
+		wantUsername string
+		wantK8sUser  string
+		wantGroupLen int
 	}{
 		{
 			name: "email claim",
@@ -66,7 +66,7 @@ func TestOIDCProvider_MapClaimsToUser(t *testing.T) {
 			claims:       &oidcClaims{Email: "user@example.com", PreferredUsername: "testuser"},
 			groups:       []string{"devs", "admins"},
 			subject:      "sub-123",
-			wantUsername:  "testuser",
+			wantUsername: "testuser",
 			wantK8sUser:  "user@example.com",
 			wantGroupLen: 3, // k8scenter:users + oidc:devs + oidc:admins
 		},
@@ -79,7 +79,7 @@ func TestOIDCProvider_MapClaimsToUser(t *testing.T) {
 			claims:       &oidcClaims{Email: "user@example.com", PreferredUsername: "jdoe"},
 			groups:       nil,
 			subject:      "sub-456",
-			wantUsername:  "jdoe",
+			wantUsername: "jdoe",
 			wantK8sUser:  "jdoe",
 			wantGroupLen: 1, // k8scenter:users only
 		},
@@ -92,7 +92,7 @@ func TestOIDCProvider_MapClaimsToUser(t *testing.T) {
 			claims:       &oidcClaims{},
 			groups:       nil,
 			subject:      "sub-789",
-			wantUsername:  "sub-789",
+			wantUsername: "sub-789",
 			wantK8sUser:  "sub-789",
 			wantGroupLen: 1,
 		},
@@ -229,7 +229,7 @@ func TestLDAPUsernameAllowlist(t *testing.T) {
 		{"user.name", true},
 		{"user@domain.com", true},
 		{"user-name_123", true},
-		{"admin)(cn=*", false},  // LDAP injection attempt
+		{"admin)(cn=*", false}, // LDAP injection attempt
 		{"user*", false},
 		{"user\x00name", false},
 		{"", false},

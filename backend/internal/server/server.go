@@ -9,25 +9,26 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
+	"github.com/kubecenter/kubecenter/internal/diagnostics"
+	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/limits"
 	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/networking"
-	"github.com/kubecenter/kubecenter/internal/policy"
-	"github.com/kubecenter/kubecenter/internal/topology"
-	"github.com/kubecenter/kubecenter/internal/alerting"
-	"github.com/kubecenter/kubecenter/internal/diagnostics"
-	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
-	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/storage"
+	"github.com/kubecenter/kubecenter/internal/store"
+	"github.com/kubecenter/kubecenter/internal/topology"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
@@ -35,42 +36,43 @@ import (
 
 // Server holds all dependencies needed by HTTP handlers.
 type Server struct {
-	Router          *chi.Mux
-	Config          *config.Config
-	K8sClient       *k8s.ClientFactory
-	Informers       *k8s.InformerManager
-	Logger          *slog.Logger
-	TokenManager    *auth.TokenManager
-	LocalAuth       *auth.LocalProvider
-	AuthRegistry    *auth.ProviderRegistry
-	OIDCStateStore  *auth.OIDCStateStore
-	Sessions        *auth.SessionStore
-	RBACChecker     *auth.RBACChecker
-	AuditLogger     audit.Logger
-	ClusterStore    *store.ClusterStore
-	ClusterRouter   *k8s.ClusterRouter
-	ClusterProber   *k8s.ClusterProber
-	SettingsService *store.SettingsService
-	RateLimiter     *middleware.RateLimiter
-	YAMLRateLimiter *middleware.RateLimiter
-	ResourceHandler *resources.Handler
-	YAMLHandler     *yamlpkg.Handler
-	WizardHandler     *wizard.Handler
+	Router             *chi.Mux
+	Config             *config.Config
+	K8sClient          *k8s.ClientFactory
+	Informers          *k8s.InformerManager
+	Logger             *slog.Logger
+	TokenManager       *auth.TokenManager
+	LocalAuth          *auth.LocalProvider
+	AuthRegistry       *auth.ProviderRegistry
+	OIDCStateStore     *auth.OIDCStateStore
+	Sessions           *auth.SessionStore
+	RBACChecker        *auth.RBACChecker
+	AuditLogger        audit.Logger
+	ClusterStore       *store.ClusterStore
+	ClusterRouter      *k8s.ClusterRouter
+	ClusterProber      *k8s.ClusterProber
+	SettingsService    *store.SettingsService
+	RateLimiter        *middleware.RateLimiter
+	YAMLRateLimiter    *middleware.RateLimiter
+	ResourceHandler    *resources.Handler
+	YAMLHandler        *yamlpkg.Handler
+	WizardHandler      *wizard.Handler
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
 	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
-	AlertingHandler      *alerting.Handler
-	DiagnosticsHandler   *diagnostics.Handler
-	PolicyHandler        *policy.Handler
-	GitOpsHandler        *gitops.Handler
-	FluxNotifHandler     *notification.Handler
-	ScanningHandler      *scanning.Handler
-	CRDHandler           *resources.GenericCRDHandler
-	NotifCenterHandler   *notifications.Handler
-	NotifCenterService   *notifications.NotificationService
-	Hub                  *websocket.Hub
+	AlertingHandler    *alerting.Handler
+	DiagnosticsHandler *diagnostics.Handler
+	PolicyHandler      *policy.Handler
+	GitOpsHandler      *gitops.Handler
+	FluxNotifHandler   *notification.Handler
+	ScanningHandler    *scanning.Handler
+	LimitsHandler      *limits.Handler
+	CRDHandler         *resources.GenericCRDHandler
+	NotifCenterHandler *notifications.Handler
+	NotifCenterService *notifications.NotificationService
+	Hub                *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	ready              func() bool
@@ -79,59 +81,60 @@ type Server struct {
 
 // Deps holds all dependencies needed to create a Server.
 type Deps struct {
-	Config        *config.Config
-	K8sClient     *k8s.ClientFactory
-	Informers     *k8s.InformerManager
-	Logger        *slog.Logger
-	TokenManager  *auth.TokenManager
-	LocalAuth     *auth.LocalProvider
-	AuthRegistry    *auth.ProviderRegistry
-	OIDCStateStore  *auth.OIDCStateStore
-	Sessions      *auth.SessionStore
-	RBACChecker   *auth.RBACChecker
-	AuditLogger     audit.Logger
-	ClusterStore    *store.ClusterStore
-	ClusterRouter   *k8s.ClusterRouter
-	ClusterProber   *k8s.ClusterProber
-	SettingsService *store.SettingsService
-	RateLimiter     *middleware.RateLimiter
-	YAMLRateLimiter *middleware.RateLimiter
-	Hub               *websocket.Hub
+	Config             *config.Config
+	K8sClient          *k8s.ClientFactory
+	Informers          *k8s.InformerManager
+	Logger             *slog.Logger
+	TokenManager       *auth.TokenManager
+	LocalAuth          *auth.LocalProvider
+	AuthRegistry       *auth.ProviderRegistry
+	OIDCStateStore     *auth.OIDCStateStore
+	Sessions           *auth.SessionStore
+	RBACChecker        *auth.RBACChecker
+	AuditLogger        audit.Logger
+	ClusterStore       *store.ClusterStore
+	ClusterRouter      *k8s.ClusterRouter
+	ClusterProber      *k8s.ClusterProber
+	SettingsService    *store.SettingsService
+	RateLimiter        *middleware.RateLimiter
+	YAMLRateLimiter    *middleware.RateLimiter
+	Hub                *websocket.Hub
 	MonitoringHandler  *monitoring.Handler
 	LokiHandler        *loki.Handler
 	TopologyHandler    *topology.Handler
 	StorageHandler     *storage.Handler
 	NetworkingHandler  *networking.Handler
-	AlertingHandler      *alerting.Handler
-	DiagnosticsHandler   *diagnostics.Handler
-	PolicyHandler        *policy.Handler
-	GitOpsHandler        *gitops.Handler
-	FluxNotifHandler     *notification.Handler
-	ScanningHandler        *scanning.Handler
-	CRDHandler             *resources.GenericCRDHandler
-	NotifCenterHandler     *notifications.Handler
-	NotifCenterService     *notifications.NotificationService
-	LogQueryLimiter        *middleware.RateLimiter
-	WebhookRateLimiter     *middleware.RateLimiter
-	AccessChecker          *resources.AccessChecker
-	ReadyFn                func() bool
-	DBPing                 func(context.Context) error // nil if no database
+	AlertingHandler    *alerting.Handler
+	DiagnosticsHandler *diagnostics.Handler
+	PolicyHandler      *policy.Handler
+	GitOpsHandler      *gitops.Handler
+	FluxNotifHandler   *notification.Handler
+	ScanningHandler    *scanning.Handler
+	LimitsHandler      *limits.Handler
+	CRDHandler         *resources.GenericCRDHandler
+	NotifCenterHandler *notifications.Handler
+	NotifCenterService *notifications.NotificationService
+	LogQueryLimiter    *middleware.RateLimiter
+	WebhookRateLimiter *middleware.RateLimiter
+	AccessChecker      *resources.AccessChecker
+	ReadyFn            func() bool
+	DBPing             func(context.Context) error // nil if no database
 }
 
 // New creates a configured HTTP server with middleware and routes.
 func New(deps Deps) *Server {
 	s := &Server{
-		Router:       chi.NewRouter(),
-		Config:       deps.Config,
-		K8sClient:    deps.K8sClient,
-		Informers:    deps.Informers,
-		Logger:       deps.Logger,
-		TokenManager: deps.TokenManager,
-		LocalAuth:    deps.LocalAuth,
-		AuthRegistry:   deps.AuthRegistry,
-		OIDCStateStore: deps.OIDCStateStore,
-		Sessions:     deps.Sessions,
-		RBACChecker:  deps.RBACChecker,
+		Router:          chi.NewRouter(),
+		Config:          deps.Config,
+		K8sClient:       deps.K8sClient,
+		Informers:       deps.Informers,
+		Logger:          deps.Logger,
+		TokenManager:    deps.TokenManager,
+		LocalAuth:       deps.LocalAuth,
+		AuthRegistry:    deps.AuthRegistry,
+		OIDCStateStore:  deps.OIDCStateStore,
+		Sessions:        deps.Sessions,
+		RBACChecker:     deps.RBACChecker,
 		AuditLogger:     deps.AuditLogger,
 		ClusterStore:    deps.ClusterStore,
 		ClusterRouter:   deps.ClusterRouter,
@@ -140,8 +143,8 @@ func New(deps Deps) *Server {
 		RateLimiter:     deps.RateLimiter,
 		YAMLRateLimiter: deps.YAMLRateLimiter,
 		Hub:             deps.Hub,
-		ready:        deps.ReadyFn,
-		dbPing:       deps.DBPing,
+		ready:           deps.ReadyFn,
+		dbPing:          deps.DBPing,
 	}
 
 	// Build resource handler if k8s dependencies are available (not in auth-only tests)
@@ -243,6 +246,11 @@ func New(deps Deps) *Server {
 	// Scanning handler
 	if deps.ScanningHandler != nil {
 		s.ScanningHandler = deps.ScanningHandler
+	}
+
+	// Limits handler (namespace quota/limit range management)
+	if deps.LimitsHandler != nil {
+		s.LimitsHandler = deps.LimitsHandler
 	}
 
 	// Notification center

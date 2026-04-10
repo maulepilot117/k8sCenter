@@ -10,10 +10,10 @@ import (
 // providers (OIDC). All providers are looked up by a unique ID string.
 type ProviderRegistry struct {
 	mu            sync.RWMutex
-	credProviders map[string]AuthProvider   // "local", "ldap-corp", etc.
-	oidcProviders map[string]*OIDCProvider  // "google", "keycloak", etc.
-	userLookups   map[string]UserLookup     // providers that support GetUserByID
-	providerOrder []ProviderInfo            // for stable ordering in ListProviders
+	credProviders map[string]AuthProvider  // "local", "ldap-corp", etc.
+	oidcProviders map[string]*OIDCProvider // "google", "keycloak", etc.
+	userLookups   map[string]UserLookup    // providers that support GetUserByID
+	providerOrder []ProviderInfo           // for stable ordering in ListProviders
 }
 
 // NewProviderRegistry creates an empty provider registry.

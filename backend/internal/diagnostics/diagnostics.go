@@ -25,8 +25,8 @@ const (
 
 // Result is the outcome of a single diagnostic rule check.
 type Result struct {
-	RuleName    string `json:"ruleName"`
-	Status      string `json:"status"` // "pass", "warn", "fail"
+	RuleName    string   `json:"ruleName"`
+	Status      string   `json:"status"` // "pass", "warn", "fail"
 	Severity    Severity `json:"severity"`
 	Message     string   `json:"message"`
 	Detail      string   `json:"detail,omitempty"`

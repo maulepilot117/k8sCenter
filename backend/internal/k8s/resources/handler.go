@@ -34,16 +34,16 @@ type AlertCounter interface {
 
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
-	K8sClient       *k8s.ClientFactory
-	ClusterRouter   *k8s.ClusterRouter
-	Informers       *k8s.InformerManager
-	AccessChecker   *AccessChecker
-	AuditLogger     audit.Logger
-	Logger          *slog.Logger
-	TaskManager     *TaskManager
-	ClusterID       string
-	Utilization     UtilizationProvider // Optional — nil if monitoring unavailable
-	Alerts          AlertCounter        // Optional — nil if alerting unavailable
+	K8sClient     *k8s.ClientFactory
+	ClusterRouter *k8s.ClusterRouter
+	Informers     *k8s.InformerManager
+	AccessChecker *AccessChecker
+	AuditLogger   audit.Logger
+	Logger        *slog.Logger
+	TaskManager   *TaskManager
+	ClusterID     string
+	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
+	Alerts        AlertCounter        // Optional — nil if alerting unavailable
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool

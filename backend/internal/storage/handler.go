@@ -241,13 +241,13 @@ func (h *Handler) getSnapshotDrivers(r *http.Request) map[string]bool {
 
 // DriverInfo is the JSON response shape for a CSI driver.
 type DriverInfo struct {
-	Name               string           `json:"name"`
-	AttachRequired     bool             `json:"attachRequired"`
-	PodInfoOnMount     bool             `json:"podInfoOnMount"`
-	VolumeLifecycle    []string         `json:"volumeLifecycleModes"`
-	StorageCapacity    bool             `json:"storageCapacity"`
-	FSGroupPolicy      string           `json:"fsGroupPolicy"`
-	Capabilities       DriverCapability `json:"capabilities"`
+	Name            string           `json:"name"`
+	AttachRequired  bool             `json:"attachRequired"`
+	PodInfoOnMount  bool             `json:"podInfoOnMount"`
+	VolumeLifecycle []string         `json:"volumeLifecycleModes"`
+	StorageCapacity bool             `json:"storageCapacity"`
+	FSGroupPolicy   string           `json:"fsGroupPolicy"`
+	Capabilities    DriverCapability `json:"capabilities"`
 }
 
 // DriverCapability describes what a CSI driver supports.
@@ -367,8 +367,8 @@ func buildSnapshotInfo(item map[string]any) SnapshotInfo {
 		VolumeSnapshotClassName: snapClass,
 		SourcePVC:               sourcePVC,
 		ReadyToUse:              readyToUse,
-		RestoreSize:  restoreSize,
-		ErrorMessage: errMsg,
+		RestoreSize:             restoreSize,
+		ErrorMessage:            errMsg,
 	}
 }
 

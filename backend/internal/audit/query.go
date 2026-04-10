@@ -9,14 +9,14 @@ const (
 
 // QueryParams defines filters and pagination for audit log queries.
 type QueryParams struct {
-	User          string
-	Action        string
-	ResourceKind  string
-	Namespace     string
-	Since         time.Time
-	Until         time.Time
-	Page          int
-	PageSize      int
+	User         string
+	Action       string
+	ResourceKind string
+	Namespace    string
+	Since        time.Time
+	Until        time.Time
+	Page         int
+	PageSize     int
 }
 
 // Normalize applies defaults and clamps values.

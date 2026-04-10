@@ -138,13 +138,14 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 **Key patterns:**
 - Resource CRUD: `GET/POST/PUT/DELETE /resources/:kind[/:namespace[/:name]]`
 - Resource actions: `POST /resources/:kind/:ns/:name/{scale,restart,rollback,suspend,trigger}`
-- Wizard previews: `POST /wizards/:type/preview` (17 wizard types)
+- Wizard previews: `POST /wizards/:type/preview` (18 wizard types)
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
 - Topology: `GET /topology/{namespace}` (RBAC-gated resource dependency graph with health)
 - Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
 - Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
+- Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
@@ -216,7 +217,7 @@ make check-dashboards                             # Verify Grafana JSON sync
 - **Phase 1 (MVP):** COMPLETE — Steps 1-15
 - **Phase 2 (Multi-Cluster):** COMPLETE — Steps 16-23
 - **Phase 3 (Enhancements):** COMPLETE — 7 items (Pod Exec, User Mgmt, Cilium, Hubble, CSP, Alerts WS, RBAC gating)
-- **Phase 4 (Wizards):** COMPLETE — 4A-4D (17 wizard types total)
+- **Phase 4 (Wizards):** COMPLETE — 4A-4D (18 wizard types total)
 - **Phase 5 (Production Polish):** COMPLETE — Steps 24-30
   - Step 24: E2E Tests (95 tests, Playwright)
   - Step 25: Production Hardening (Trivy, automaxprocs, probes, NetworkPolicy)
@@ -310,8 +311,17 @@ make check-dashboards                             # Verify Grafana JSON sync
 
 ## Future Features (Roadmap)
 
-- **Git commit display** — Git provider API integration for commit messages in revision history
-- **Diff view** — show what changed between revisions in GitOps deployments
+Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges to main.
+
+- [x] **1. Notification Center** — in-app feed + Slack/email/webhook channels, rule-based dispatch, aggregated across alerts/policy/GitOps/diagnostics (PR #162)
+- [x] **2. Git commit display** — Git provider API integration for commit messages in GitOps revision history (PR #155)
+- [x] **3. Diff view** — compare manifests between GitOps revisions (PR #156)
+- [x] **4. Resource Quota & LimitRange Management** — namespace quota wizards, utilization vs. quota visualization, overage warnings (PR #164)
+- [ ] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
+- [ ] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS status, circuit breaker config
+- [ ] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management
+- [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
+- [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
 
 ---
 

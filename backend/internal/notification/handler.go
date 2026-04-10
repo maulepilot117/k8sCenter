@@ -353,7 +353,7 @@ func (h *Handler) HandleListProviders(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, struct {
 		Providers []NormalizedProvider `json:"providers"`
-		Total     int                 `json:"total"`
+		Total     int                  `json:"total"`
 	}{
 		Providers: providers,
 		Total:     len(providers),
@@ -565,7 +565,7 @@ func (h *Handler) HandleListAlerts(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, struct {
 		Alerts []NormalizedAlert `json:"alerts"`
-		Total  int              `json:"total"`
+		Total  int               `json:"total"`
 	}{
 		Alerts: alerts,
 		Total:  len(alerts),
@@ -777,7 +777,7 @@ func (h *Handler) HandleListReceivers(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, struct {
 		Receivers []NormalizedReceiver `json:"receivers"`
-		Total     int                 `json:"total"`
+		Total     int                  `json:"total"`
 	}{
 		Receivers: receivers,
 		Total:     len(receivers),

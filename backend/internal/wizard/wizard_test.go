@@ -31,10 +31,10 @@ func TestDeploymentValidate_InvalidName(t *testing.T) {
 		name string
 	}{
 		{""},
-		{"MyApp"},         // uppercase
-		{"-start-dash"},   // starts with dash
-		{"end-dash-"},     // ends with dash
-		{"has spaces"},    // spaces
+		{"MyApp"},                 // uppercase
+		{"-start-dash"},           // starts with dash
+		{"end-dash-"},             // ends with dash
+		{"has spaces"},            // spaces
 		{strings.Repeat("a", 64)}, // too long
 	}
 	for _, tt := range tests {
@@ -87,9 +87,9 @@ func TestDeploymentValidate_Ports(t *testing.T) {
 	d := DeploymentInput{
 		Name: "ok", Namespace: "default", Image: "nginx",
 		Ports: []PortInput{
-			{ContainerPort: 0},     // invalid
+			{ContainerPort: 0}, // invalid
 			{ContainerPort: 80},
-			{ContainerPort: 80},    // duplicate
+			{ContainerPort: 80},                    // duplicate
 			{ContainerPort: 443, Protocol: "SCTP"}, // bad protocol
 		},
 	}
@@ -103,10 +103,10 @@ func TestDeploymentValidate_EnvVars(t *testing.T) {
 	d := DeploymentInput{
 		Name: "ok", Namespace: "default", Image: "nginx",
 		EnvVars: []EnvVarInput{
-			{Name: "123BAD"},                                          // invalid name
-			{Name: "GOOD_NAME"},                                       // no value or ref
-			{Name: "REF_NO_KEY", ConfigMapRef: "my-cm"},               // ref without key
-			{Name: "OK", Value: "hello"},                              // valid
+			{Name: "123BAD"},                                         // invalid name
+			{Name: "GOOD_NAME"},                                      // no value or ref
+			{Name: "REF_NO_KEY", ConfigMapRef: "my-cm"},              // ref without key
+			{Name: "OK", Value: "hello"},                             // valid
 			{Name: "OK_REF", ConfigMapRef: "my-cm", Key: "data-key"}, // valid
 		},
 	}
@@ -141,7 +141,7 @@ func TestDeploymentValidate_Probes(t *testing.T) {
 	d := DeploymentInput{
 		Name: "ok", Namespace: "default", Image: "nginx",
 		Probes: &ProbesInput{
-			Liveness: &ProbeInput{Type: "http", Port: 0}, // missing path, bad port
+			Liveness:  &ProbeInput{Type: "http", Port: 0}, // missing path, bad port
 			Readiness: &ProbeInput{Type: "badtype", Port: 80},
 		},
 	}

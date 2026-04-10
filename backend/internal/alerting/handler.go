@@ -558,7 +558,6 @@ func getName(content map[string]interface{}) string {
 	return ""
 }
 
-
 // writeK8sError maps a Kubernetes API error to the appropriate HTTP status code.
 func writeK8sError(w http.ResponseWriter, err error, action string) {
 	switch {
