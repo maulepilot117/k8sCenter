@@ -344,6 +344,8 @@ GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
 
 **Before any merge:** Run `/compounding-engineering:workflows:review` first. No exceptions. Smoke test against homelab when backend/frontend changes are in scope.
 
+**After successful merge:** Delete the local and remote feature branch. Use `gh api -X DELETE` if SSH times out. Clean up stale tracking refs with `git branch -dr`.
+
 Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
 
 ---
