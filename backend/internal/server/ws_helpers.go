@@ -14,7 +14,7 @@ const (
 	wsWriteWait   = 10 * time.Second
 	wsPongWait    = 60 * time.Second
 	wsPingPeriod  = (wsPongWait * 9) / 10 // 54s
-	wsMaxReadSize = 4096                   // only expect small auth/filter messages
+	wsMaxReadSize = 4096                  // only expect small auth/filter messages
 )
 
 // wsAuthAndUpgrade handles WebSocket upgrade, origin validation, and JWT authentication.

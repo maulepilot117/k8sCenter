@@ -7,7 +7,7 @@ import (
 
 func TestIngressInputValidate(t *testing.T) {
 	validRule := IngressRule{
-		Host: "example.com",
+		Host:  "example.com",
 		Paths: []IngressPath{{Path: "/", PathType: "Prefix", ServiceName: "web", ServicePort: 80}},
 	}
 

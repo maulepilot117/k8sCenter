@@ -16,18 +16,18 @@ var hostRegex = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z
 
 // validPathTypes is the set of allowed Ingress path types.
 var validPathTypes = map[string]bool{
-	"Prefix":                   true,
-	"Exact":                    true,
-	"ImplementationSpecific":   true,
+	"Prefix":                 true,
+	"Exact":                  true,
+	"ImplementationSpecific": true,
 }
 
 // IngressInput represents the wizard form data for creating an Ingress.
 type IngressInput struct {
-	Name             string       `json:"name"`
-	Namespace        string       `json:"namespace"`
-	IngressClassName *string      `json:"ingressClassName,omitempty"`
+	Name             string        `json:"name"`
+	Namespace        string        `json:"namespace"`
+	IngressClassName *string       `json:"ingressClassName,omitempty"`
 	Rules            []IngressRule `json:"rules"`
-	TLS              []IngressTLS `json:"tls,omitempty"`
+	TLS              []IngressTLS  `json:"tls,omitempty"`
 }
 
 // IngressRule represents one host rule with its paths.

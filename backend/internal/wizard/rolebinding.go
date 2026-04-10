@@ -1,8 +1,8 @@
 package wizard
 
 import (
-	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,7 +25,7 @@ type RoleRefInput struct {
 
 // SubjectInput represents a subject in a binding.
 type SubjectInput struct {
-	Kind      string `json:"kind"`      // "User", "Group", or "ServiceAccount"
+	Kind      string `json:"kind"` // "User", "Group", or "ServiceAccount"
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"` // only for ServiceAccount
 }

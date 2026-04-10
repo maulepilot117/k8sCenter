@@ -67,13 +67,13 @@ type VolumeMountInput struct {
 
 // ContainerInput represents the shared container configuration used by workload wizards.
 type ContainerInput struct {
-	Image        string           `json:"image"`
-	Command      []string         `json:"command,omitempty"`
-	Args         []string         `json:"args,omitempty"`
-	Ports        []PortInput      `json:"ports,omitempty"`
-	EnvVars      []EnvVarInput    `json:"envVars,omitempty"`
-	Resources    *ResourcesInput  `json:"resources,omitempty"`
-	Probes       *ProbesInput     `json:"probes,omitempty"`
+	Image        string             `json:"image"`
+	Command      []string           `json:"command,omitempty"`
+	Args         []string           `json:"args,omitempty"`
+	Ports        []PortInput        `json:"ports,omitempty"`
+	EnvVars      []EnvVarInput      `json:"envVars,omitempty"`
+	Resources    *ResourcesInput    `json:"resources,omitempty"`
+	Probes       *ProbesInput       `json:"probes,omitempty"`
 	VolumeMounts []VolumeMountInput `json:"volumeMounts,omitempty"`
 }
 

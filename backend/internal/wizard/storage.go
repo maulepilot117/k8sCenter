@@ -1,9 +1,9 @@
 package wizard
 
 import (
-	sigsyaml "sigs.k8s.io/yaml"
 	"fmt"
 	"regexp"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"

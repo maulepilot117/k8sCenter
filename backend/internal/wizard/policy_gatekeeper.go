@@ -16,14 +16,14 @@ var gatekeeperTemplateInfo = map[string]struct {
 	Kind     string // CRD Kind for the Constraint (e.g. K8sDisallowPrivileged)
 	RegoFile string // filename in rego/ directory
 }{
-	"disallow-privileged":          {Kind: "K8sDisallowPrivileged", RegoFile: "disallow_privileged.rego"},
-	"disallow-root":                {Kind: "K8sDisallowRoot", RegoFile: "disallow_root.rego"},
+	"disallow-privileged":           {Kind: "K8sDisallowPrivileged", RegoFile: "disallow_privileged.rego"},
+	"disallow-root":                 {Kind: "K8sDisallowRoot", RegoFile: "disallow_root.rego"},
 	"disallow-privilege-escalation": {Kind: "K8sDisallowPrivilegeEscalation", RegoFile: "disallow_privilege_escalation.rego"},
-	"restrict-capabilities":        {Kind: "K8sRestrictCapabilities", RegoFile: "restrict_capabilities.rego"},
-	"allowed-registries":           {Kind: "K8sAllowedRegistries", RegoFile: "allowed_registries.rego"},
-	"disallow-latest-tag":          {Kind: "K8sDisallowLatestTag", RegoFile: "disallow_latest_tag.rego"},
-	"require-resource-limits":      {Kind: "K8sRequireResourceLimits", RegoFile: "require_resource_limits.rego"},
-	"require-labels":               {Kind: "K8sRequireLabels", RegoFile: "require_labels.rego"},
+	"restrict-capabilities":         {Kind: "K8sRestrictCapabilities", RegoFile: "restrict_capabilities.rego"},
+	"allowed-registries":            {Kind: "K8sAllowedRegistries", RegoFile: "allowed_registries.rego"},
+	"disallow-latest-tag":           {Kind: "K8sDisallowLatestTag", RegoFile: "disallow_latest_tag.rego"},
+	"require-resource-limits":       {Kind: "K8sRequireResourceLimits", RegoFile: "require_resource_limits.rego"},
+	"require-labels":                {Kind: "K8sRequireLabels", RegoFile: "require_labels.rego"},
 }
 
 // toGatekeeperYAML generates a multi-document YAML with ConstraintTemplate + Constraint.

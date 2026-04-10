@@ -1,10 +1,10 @@
 package wizard
 
 import (
-	sigsyaml "sigs.k8s.io/yaml"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // PVCInput represents the wizard form data for creating a PersistentVolumeClaim.
