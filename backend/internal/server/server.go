@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/notification"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/store"
@@ -64,9 +65,11 @@ type Server struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
-	NotificationHandler  *notification.Handler
+	FluxNotifHandler     *notification.Handler
 	ScanningHandler      *scanning.Handler
 	CRDHandler           *resources.GenericCRDHandler
+	NotifCenterHandler   *notifications.Handler
+	NotifCenterService   *notifications.NotificationService
 	Hub                  *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
@@ -103,14 +106,16 @@ type Deps struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
-	NotificationHandler  *notification.Handler
-	ScanningHandler      *scanning.Handler
-	CRDHandler           *resources.GenericCRDHandler
-	LogQueryLimiter      *middleware.RateLimiter
-	WebhookRateLimiter *middleware.RateLimiter
-	AccessChecker      *resources.AccessChecker
-	ReadyFn            func() bool
-	DBPing             func(context.Context) error // nil if no database
+	FluxNotifHandler     *notification.Handler
+	ScanningHandler        *scanning.Handler
+	CRDHandler             *resources.GenericCRDHandler
+	NotifCenterHandler     *notifications.Handler
+	NotifCenterService     *notifications.NotificationService
+	LogQueryLimiter        *middleware.RateLimiter
+	WebhookRateLimiter     *middleware.RateLimiter
+	AccessChecker          *resources.AccessChecker
+	ReadyFn                func() bool
+	DBPing                 func(context.Context) error // nil if no database
 }
 
 // New creates a configured HTTP server with middleware and routes.
@@ -231,13 +236,19 @@ func New(deps Deps) *Server {
 	}
 
 	// Notification handler
-	if deps.NotificationHandler != nil {
-		s.NotificationHandler = deps.NotificationHandler
+	if deps.FluxNotifHandler != nil {
+		s.FluxNotifHandler = deps.FluxNotifHandler
 	}
 
 	// Scanning handler
 	if deps.ScanningHandler != nil {
 		s.ScanningHandler = deps.ScanningHandler
+	}
+
+	// Notification center
+	if deps.NotifCenterHandler != nil {
+		s.NotifCenterHandler = deps.NotifCenterHandler
+		s.NotifCenterService = deps.NotifCenterService
 	}
 
 	// CRD handler

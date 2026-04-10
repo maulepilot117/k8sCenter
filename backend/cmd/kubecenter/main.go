@@ -33,6 +33,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/notification"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
@@ -355,7 +356,7 @@ func main() {
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber
 	if clusterStore != nil {
-		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, logger)
+		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, nil, logger)
 		go clusterProber.Run(ctx)
 	}
 
@@ -498,7 +499,7 @@ func main() {
 		}
 	}
 
-	notificationHandler := &notification.Handler{
+	fluxNotifHandler := &notification.Handler{
 		K8sClient:     k8sClient,
 		AccessChecker: accessChecker,
 		Logger:        logger,
@@ -555,7 +556,7 @@ func main() {
 					return notification.NormalizeProvider(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateProviders()
+					fluxNotifHandler.InvalidateProviders()
 				})
 
 				websocket.RegisterAllowedKind("flux-alerts", "notification.toolkit.fluxcd.io")
@@ -563,7 +564,7 @@ func main() {
 					return notification.NormalizeAlert(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateAlerts()
+					fluxNotifHandler.InvalidateAlerts()
 				})
 
 				websocket.RegisterAllowedKind("flux-receivers", "notification.toolkit.fluxcd.io")
@@ -571,7 +572,7 @@ func main() {
 					return notification.NormalizeReceiver(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateReceivers()
+					fluxNotifHandler.InvalidateReceivers()
 				})
 			} else {
 				informerMgr.StopCRD(notification.FluxProviderGVR)
@@ -601,6 +602,47 @@ func main() {
 		Logger:        logger,
 	}
 	scanHandler.InitCache()
+
+	// Notification center — aggregates events from all subsystems
+	var notifService *notifications.NotificationService
+	var notifCenterHandler *notifications.Handler
+	if dbPool != nil {
+		notifStore := notifications.NewStore(dbPool, dbEncKey)
+		notifService = notifications.NewService(notifStore, hub, alertNotifier, logger)
+		notifService.Start(ctx)
+
+		notifCenterHandler = &notifications.Handler{
+			Service:     notifService,
+			RBACChecker: rbacChecker,
+			AuditLogger: auditLogger,
+			Logger:      logger,
+		}
+
+		// Wire NotifService into event producers
+		if clusterProber != nil {
+			clusterProber.SetStatusChangeFunc(func(ctx context.Context, clusterID, oldStatus, newStatus string) {
+				sev := notifications.SeverityInfo
+				title := "Cluster " + clusterID + " is now " + newStatus
+				if newStatus != "connected" {
+					sev = notifications.SeverityCritical
+					title = "Cluster " + clusterID + " is " + newStatus
+				}
+				notifService.Emit(ctx, notifications.Notification{
+					Source:   notifications.SourceCluster,
+					Severity: sev,
+					Title:    title,
+					Message:  "Status changed from " + oldStatus + " to " + newStatus,
+				})
+			})
+		}
+		alertHandler.NotifService = notifService
+		if policyHandler != nil {
+			policyHandler.NotifService = notifService
+		}
+		gitopsHandler.NotifService = notifService
+		scanHandler.NotifService = notifService
+		diagHandler.NotifService = notifService
+	}
 
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
@@ -635,8 +677,10 @@ func main() {
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
 		GitOpsHandler:        gitopsHandler,
-		NotificationHandler:    notificationHandler,
-		ScanningHandler:      scanHandler,
+		FluxNotifHandler:       fluxNotifHandler,
+		NotifCenterHandler:    notifCenterHandler,
+		NotifCenterService:    notifService,
+		ScanningHandler:       scanHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,

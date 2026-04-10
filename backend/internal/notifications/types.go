@@ -1,0 +1,98 @@
+package notifications
+
+import "time"
+
+// Source identifies the subsystem that produced a notification.
+type Source string
+
+const (
+	SourceAlert      Source = "alert"
+	SourcePolicy     Source = "policy"
+	SourceGitOps     Source = "gitops"
+	SourceDiagnostic Source = "diagnostic"
+	SourceScan       Source = "scan"
+	SourceCluster    Source = "cluster"
+	SourceAudit      Source = "audit"
+)
+
+// Severity indicates how critical a notification is.
+type Severity string
+
+const (
+	SeverityInfo     Severity = "info"
+	SeverityWarning  Severity = "warning"
+	SeverityCritical Severity = "critical"
+)
+
+// ChannelType identifies the external dispatch mechanism.
+type ChannelType string
+
+const (
+	ChannelSlack   ChannelType = "slack"
+	ChannelEmail   ChannelType = "email"
+	ChannelWebhook ChannelType = "webhook"
+)
+
+// Notification is a single event from any subsystem.
+type Notification struct {
+	ID           string   `json:"id"`
+	Source       Source   `json:"source"`
+	Severity     Severity `json:"severity"`
+	Title        string   `json:"title"`
+	Message      string   `json:"message"`
+	ResourceKind string   `json:"resourceKind,omitempty"`
+	ResourceNS   string   `json:"resourceNamespace,omitempty"`
+	ResourceName string   `json:"resourceName,omitempty"`
+	ClusterID    string   `json:"clusterId,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	Read         bool     `json:"read,omitempty"`
+}
+
+// Channel is an external dispatch target (Slack, email, webhook).
+type Channel struct {
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Type        ChannelType `json:"type"`
+	Config      ChannelConfig `json:"config"`
+	CreatedBy   string      `json:"createdBy"`
+	CreatedAt   time.Time   `json:"createdAt"`
+	UpdatedAt   *time.Time  `json:"updatedAt,omitempty"`
+	UpdatedBy   string      `json:"updatedBy,omitempty"`
+	LastSentAt  *time.Time  `json:"lastSentAt,omitempty"`
+	LastError   string      `json:"lastError,omitempty"`
+	LastErrorAt *time.Time  `json:"lastErrorAt,omitempty"`
+}
+
+// ChannelConfig holds type-specific settings, stored as encrypted BYTEA.
+// Slack:   {"webhookUrl": "https://hooks.slack.com/..."}
+// Email:   {"recipients": ["ops@team.com"], "schedule": "daily"}
+// Webhook: {"url": "https://...", "secret": "...", "headers": {"Authorization": "Bearer ..."}}
+type ChannelConfig map[string]any
+
+// Rule maps notifications to channels based on source and severity filters.
+type Rule struct {
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	SourceFilter   []Source   `json:"sourceFilter"`
+	SeverityFilter []Severity `json:"severityFilter"`
+	ChannelID      string     `json:"channelId"`
+	ChannelName    string     `json:"channelName,omitempty"`
+	Enabled        bool       `json:"enabled"`
+	CreatedBy      string     `json:"createdBy"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      *time.Time `json:"updatedAt,omitempty"`
+	UpdatedBy      string     `json:"updatedBy,omitempty"`
+}
+
+// ListOpts controls notification feed pagination and filtering.
+type ListOpts struct {
+	UserID     string
+	Namespaces []string
+	Source     Source
+	Severity   Severity
+	ReadFilter string // "read", "unread", or "" (all)
+	Since      time.Time
+	Until      time.Time
+	Limit      int
+	Offset     int
+}

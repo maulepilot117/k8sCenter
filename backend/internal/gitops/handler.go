@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -34,6 +35,7 @@ type Handler struct {
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
 	CommitCache   *gitprovider.CommitCache
+	NotifService  *notifications.NotificationService
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -446,6 +448,14 @@ func (h *Handler) invalidateCache() {
 	h.cachedData = nil
 	h.cacheGen++
 	h.cacheMu.Unlock()
+	if h.NotifService != nil {
+		go h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:   notifications.SourceGitOps,
+			Severity: notifications.SeverityInfo,
+			Title:    "GitOps sync status changed",
+			Message:  "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
+		})
+	}
 }
 
 // InvalidateCache is the exported version for use by CRD event handlers.

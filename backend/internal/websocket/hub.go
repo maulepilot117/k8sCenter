@@ -113,9 +113,12 @@ func (h *Hub) Register(client *Client) {
 const rbacRevalidateInterval = 5 * time.Minute
 
 // alwaysAllowKinds are subscription kinds that bypass RBAC revalidation.
-// "alerts" is not a Kubernetes resource — JWT auth alone is sufficient.
+// These are not Kubernetes resources — JWT auth alone is sufficient.
+// "notifications" broadcasts stripped payloads (no resource fields);
+// full details are fetched via the REST API which enforces RBAC.
 var alwaysAllowKinds = map[string]bool{
-	"alerts": true,
+	"alerts":        true,
+	"notifications": true,
 }
 
 // Run is the main hub goroutine. Call as `go hub.Run(ctx)`.

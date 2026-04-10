@@ -15,6 +15,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -26,6 +27,7 @@ type Handler struct {
 	CRDDiscovery    *k8s.CRDDiscovery
 	AccessChecker   *resources.AccessChecker
 	ComplianceStore *store.ComplianceStore
+	NotifService    *notifications.NotificationService
 	Logger          *slog.Logger
 
 	fetchGroup singleflight.Group
@@ -71,6 +73,14 @@ func (h *Handler) InvalidateCache() {
 	h.cachedData = nil
 	h.cacheGen++
 	h.cacheMu.Unlock()
+	if h.NotifService != nil {
+		go h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:   notifications.SourcePolicy,
+			Severity: notifications.SeverityInfo,
+			Title:    "Policy engine change detected",
+			Message:  "Policy engine reported changes. Check the policy dashboard for details.",
+		})
+	}
 }
 
 // doFetch queries both engines based on discovery status and merges results.

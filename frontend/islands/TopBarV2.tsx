@@ -8,6 +8,7 @@ import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import ThemeSelector from "@/islands/ThemeSelector.tsx";
+import NotificationBell from "@/islands/NotificationBell.tsx";
 
 export default function TopBarV2() {
   const { user, logout, fetchCurrentUser, refreshPermissions } = useAuth();
@@ -170,36 +171,7 @@ export default function TopBarV2() {
         <ThemeSelector />
 
         {/* Notification bell */}
-        <button
-          type="button"
-          aria-label="Notifications"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "32px",
-            height: "32px",
-            borderRadius: "6px",
-            background: "transparent",
-            border: "none",
-            color: "var(--text-muted)",
-            cursor: "pointer",
-          }}
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M10 2a5 5 0 00-5 5v3l-1.5 2.5h13L15 10V7a5 5 0 00-5-5Z" />
-            <path d="M8 16a2 2 0 004 0" />
-          </svg>
-        </button>
+        <NotificationBell />
 
         {/* Divider */}
         <div
