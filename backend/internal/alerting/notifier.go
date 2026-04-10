@@ -46,9 +46,10 @@ var emailTemplates = template.Must(
 
 // EmailMessage represents an email to be sent.
 type EmailMessage struct {
-	Subject  string
-	Body     string
-	Priority string // "high" for critical alerts
+	Subject    string
+	Body       string
+	Priority   string   // "high" for critical alerts
+	Recipients []string // optional override; nil uses configured recipients
 }
 
 // Notifier sends alert email notifications via SMTP.
@@ -161,6 +162,25 @@ func (n *Notifier) QueueTestEmail() error {
 		Body:    buf.String(),
 	}
 
+	select {
+	case n.queue <- msg:
+		return nil
+	default:
+		return fmt.Errorf("email queue is full")
+	}
+}
+
+// QueueEmail queues an arbitrary HTML email for delivery.
+// Used by the notification center for digest emails with custom recipients.
+func (n *Notifier) QueueEmail(recipients []string, subject, htmlBody string) error {
+	if !n.SMTPConfigured() {
+		return fmt.Errorf("SMTP is not configured")
+	}
+	msg := &EmailMessage{
+		Subject:    subject,
+		Body:       htmlBody,
+		Recipients: recipients,
+	}
 	select {
 	case n.queue <- msg:
 		return nil
@@ -314,8 +334,11 @@ func (n *Notifier) send(msg *EmailMessage) error {
 		return fmt.Errorf("SMTP host not configured")
 	}
 
-	// Determine recipients: configured list, or fall back to from address
+	// Use per-message recipients if set, otherwise configured list, otherwise from address
 	rcpts := recipients
+	if len(msg.Recipients) > 0 {
+		rcpts = msg.Recipients
+	}
 	if len(rcpts) == 0 {
 		rcpts = []string{from}
 	}
