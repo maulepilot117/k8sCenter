@@ -310,8 +310,17 @@ make check-dashboards                             # Verify Grafana JSON sync
 
 ## Future Features (Roadmap)
 
-- **Git commit display** — Git provider API integration for commit messages in revision history
-- **Diff view** — show what changed between revisions in GitOps deployments
+Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges to main.
+
+- [x] **1. Notification Center** — in-app feed + Slack/email/webhook channels, rule-based dispatch, aggregated across alerts/policy/GitOps/diagnostics (PR #162)
+- [x] **2. Git commit display** — Git provider API integration for commit messages in GitOps revision history (PR #155)
+- [x] **3. Diff view** — compare manifests between GitOps revisions (PR #156)
+- [ ] **4. Resource Quota & LimitRange Management** — namespace quota wizards, utilization vs. quota visualization, overage warnings
+- [ ] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
+- [ ] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS status, circuit breaker config
+- [ ] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management
+- [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
+- [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
 
 ---
 
