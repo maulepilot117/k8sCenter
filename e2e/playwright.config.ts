@@ -66,6 +66,21 @@ export default defineConfig({
         storageState: "playwright/.auth/admin.json",
       },
       dependencies: ["setup"],
+      // api-routes.spec.ts runs as its own project so its ~100 tests don't
+      // share the runtime budget with the main smoke suite (wizard-flows is
+      // timing-sensitive and occasionally flakes under added load).
+      testIgnore: /api-routes\.spec\.ts/,
+    },
+    {
+      name: "route-contract",
+      testMatch: /api-routes\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "playwright/.auth/admin.json",
+      },
+      // Run strictly after the main suite finishes so its tests can't
+      // compete for backend rate-limit buckets or browser resources.
+      dependencies: ["chromium"],
     },
   ],
 });
