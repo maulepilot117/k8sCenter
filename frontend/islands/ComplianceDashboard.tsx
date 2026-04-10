@@ -54,7 +54,7 @@ export default function ComplianceDashboard() {
 
   async function fetchData() {
     try {
-      const res = await apiGet<ComplianceScore[]>("/v1/policy/compliance");
+      const res = await apiGet<ComplianceScore[]>("/v1/policies/compliance");
       scores.value = Array.isArray(res.data) ? res.data : [];
       error.value = null;
     } catch {

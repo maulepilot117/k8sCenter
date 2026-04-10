@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,26 @@ type cachedPolicyData struct {
 }
 
 const policyCacheTTL = 30 * time.Second
+
+// kyvernoK8sName extracts the raw k8s resource name from a normalized Kyverno
+// policy ID. IDs are formatted as "kyverno::name" for cluster-scoped policies
+// and "kyverno:namespace/name" for namespaced policies. For any other input
+// shape (e.g. a Gatekeeper ID), the input is returned unchanged.
+func kyvernoK8sName(id string) string {
+	const clusterPrefix = "kyverno::"
+	const nsPrefix = "kyverno:"
+	if strings.HasPrefix(id, clusterPrefix) {
+		return strings.TrimPrefix(id, clusterPrefix)
+	}
+	if strings.HasPrefix(id, nsPrefix) {
+		rest := strings.TrimPrefix(id, nsPrefix)
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			return rest[slash+1:]
+		}
+		return rest
+	}
+	return id
+}
 
 // fetchPoliciesAndViolations returns cached policy/violation data, refreshing
 // if the cache is stale. Concurrent callers are coalesced via singleflight.
@@ -146,6 +167,21 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 	if kr.err != nil {
 		h.Logger.Warn("kyverno fetch error", "error", kr.err)
 	} else {
+		// Kyverno reports violations via PolicyReports rather than as a field
+		// on the policy itself. Aggregate the count per policy so the policy
+		// dashboard can display it alongside Gatekeeper's native count. The
+		// violation's `policy` field is the raw k8s resource name, while
+		// NormalizedPolicy.Name may be the (prettier) title annotation — so
+		// match on the k8s name extracted from the composite ID.
+		kyvernoCounts := make(map[string]int, len(kr.policies))
+		for _, v := range kr.violations {
+			kyvernoCounts[v.Policy]++
+		}
+		for i := range kr.policies {
+			if c, ok := kyvernoCounts[kyvernoK8sName(kr.policies[i].ID)]; ok {
+				kr.policies[i].ViolationCount = c
+			}
+		}
 		allPolicies = append(allPolicies, kr.policies...)
 		allViolations = append(allViolations, kr.violations...)
 	}
@@ -453,7 +489,14 @@ func computeCompliance(policies []NormalizedPolicy, violations []NormalizedViola
 			weight = float64(severityWeights[defaultSeverity])
 		}
 
-		vCount := violationsByPolicy[p.Name]
+		// Violations reference the raw k8s resource name; NormalizedPolicy.Name
+		// may be a prettier title annotation. For Kyverno, extract the k8s name
+		// from the composite ID so the lookup matches.
+		lookupKey := p.Name
+		if p.Engine == EngineKyverno {
+			lookupKey = kyvernoK8sName(p.ID)
+		}
+		vCount := violationsByPolicy[lookupKey]
 		sev := p.Severity
 		sc := bySeverity[sev]
 		sc.Total++
