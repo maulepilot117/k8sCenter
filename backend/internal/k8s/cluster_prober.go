@@ -14,20 +14,26 @@ import (
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
+// StatusChangeFunc is called when a cluster's probe status transitions.
+// Parameters: ctx, clusterID, oldStatus, newStatus.
+type StatusChangeFunc func(ctx context.Context, clusterID, oldStatus, newStatus string)
+
 // ClusterProber periodically checks the health of registered remote clusters.
 // It also exposes ProbeOne for on-demand testing from the API.
 type ClusterProber struct {
-	clusterStore *store.ClusterStore
-	encKey       string
-	logger       *slog.Logger
+	clusterStore   *store.ClusterStore
+	encKey         string
+	onStatusChange StatusChangeFunc
+	logger         *slog.Logger
 }
 
 // NewClusterProber creates a cluster health prober.
-func NewClusterProber(cs *store.ClusterStore, encKey string, logger *slog.Logger) *ClusterProber {
+func NewClusterProber(cs *store.ClusterStore, encKey string, onStatusChange StatusChangeFunc, logger *slog.Logger) *ClusterProber {
 	return &ClusterProber{
-		clusterStore: cs,
-		encKey:       encKey,
-		logger:       logger,
+		clusterStore:   cs,
+		encKey:         encKey,
+		onStatusChange: onStatusChange,
+		logger:         logger,
 	}
 }
 
@@ -73,9 +79,12 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		return nil, fmt.Errorf("cluster %s not found: %w", clusterID, err)
 	}
 
+	oldStatus := cluster.Status
+
 	// SSRF check — re-resolve DNS at probe time (DNS rebinding defense)
 	if err := ValidateRemoteURL(cluster.APIServerURL); err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "blocked", "URL resolves to private address", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "blocked")
 		return nil, fmt.Errorf("SSRF blocked: %w", err)
 	}
 
@@ -83,6 +92,7 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	token, err := store.Decrypt(cluster.AuthData, p.encKey)
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 
@@ -92,6 +102,7 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		if err != nil {
 			// CA was stored but can't be decrypted — don't auto-downgrade to insecure
 			_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
+			p.emitStatusChange(ctx, clusterID, oldStatus, "error")
 			return nil, fmt.Errorf("CA decryption failed: %w", err)
 		}
 	}
@@ -113,12 +124,14 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", sanitizeProbeError(err), "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
 		return nil, err
 	}
 
 	version, err := cs.Discovery().ServerVersion()
 	if err != nil {
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", sanitizeProbeError(err), "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "disconnected")
 		return nil, err
 	}
 
@@ -131,10 +144,19 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 
 	// Update status
 	_ = p.clusterStore.UpdateStatus(ctx, clusterID, "connected", "", version.GitVersion, nodeCount)
+	p.emitStatusChange(ctx, clusterID, oldStatus, "connected")
 	p.logger.Debug("cluster probe succeeded", "clusterID", clusterID, "version", version.GitVersion, "nodes", nodeCount)
 
 	updated, _ := p.clusterStore.Get(ctx, clusterID)
 	return updated, nil
+}
+
+// emitStatusChange invokes the status change callback when a cluster transitions state.
+func (p *ClusterProber) emitStatusChange(ctx context.Context, clusterID, oldStatus, newStatus string) {
+	if p.onStatusChange == nil || oldStatus == newStatus {
+		return
+	}
+	p.onStatusChange(ctx, clusterID, oldStatus, newStatus)
 }
 
 // sanitizeProbeError strips raw Go error details. Returns only safe categories.

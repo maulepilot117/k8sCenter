@@ -16,6 +16,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -29,6 +30,7 @@ type Handler struct {
 	Rules        *RulesManager
 	Hub          *websocket.Hub
 	AuditLogger  audit.Logger
+	NotifService *notifications.NotificationService
 	Logger       *slog.Logger
 	ClusterID    string
 	WebhookToken string
@@ -133,6 +135,30 @@ func (h *Handler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 
 		if h.Notifier != nil {
 			h.Notifier.QueueAlert(action)
+		}
+
+		if h.NotifService != nil {
+			sev := notifications.SeverityWarning
+			if s, ok := action.Alert.Labels["severity"]; ok {
+				switch s {
+				case "critical":
+					sev = notifications.SeverityCritical
+				case "warning":
+					sev = notifications.SeverityWarning
+				default:
+					sev = notifications.SeverityInfo
+				}
+			}
+			title := "Alert " + action.Type + ": " + action.Alert.Labels["alertname"]
+			h.NotifService.Emit(r.Context(), notifications.Notification{
+				Source:       notifications.SourceAlert,
+				Severity:     sev,
+				Title:        title,
+				Message:      action.Alert.Annotations["description"],
+				ResourceKind: action.Alert.Labels["kind"],
+				ResourceNS:   action.Alert.Labels["namespace"],
+				ResourceName: action.Alert.Labels["name"],
+			})
 		}
 	}
 

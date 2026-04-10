@@ -13,6 +13,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/topology"
 )
 
@@ -21,6 +22,7 @@ type Handler struct {
 	Lister        topology.ResourceLister
 	TopoBuilder   *topology.Builder
 	AccessChecker *resources.AccessChecker
+	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 }
 
@@ -126,6 +128,27 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		blast = &BlastResult{
 			DirectlyAffected:    []AffectedResource{},
 			PotentiallyAffected: []AffectedResource{},
+		}
+	}
+
+	// Emit notifications for critical/warning diagnostic findings
+	if h.NotifService != nil {
+		for _, result := range results {
+			if result.Status == "fail" {
+				sev := notifications.SeverityWarning
+				if result.Severity == SeverityCritical {
+					sev = notifications.SeverityCritical
+				}
+				h.NotifService.Emit(ctx, notifications.Notification{
+					Source:       notifications.SourceDiagnostic,
+					Severity:     sev,
+					Title:        result.RuleName + ": " + name,
+					Message:      result.Message,
+					ResourceKind: kind,
+					ResourceNS:   namespace,
+					ResourceName: name,
+				})
+			}
 		}
 	}
 

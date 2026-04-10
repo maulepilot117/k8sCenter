@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -34,6 +35,7 @@ type Handler struct {
 	Logger        *slog.Logger
 	AuditLogger   audit.Logger
 	CommitCache   *gitprovider.CommitCache
+	NotifService  *notifications.NotificationService
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -446,11 +448,26 @@ func (h *Handler) invalidateCache() {
 	h.cachedData = nil
 	h.cacheGen++
 	h.cacheMu.Unlock()
+	go h.notifyGitOpsChange(context.Background())
 }
 
 // InvalidateCache is the exported version for use by CRD event handlers.
 func (h *Handler) InvalidateCache() {
 	h.invalidateCache()
+}
+
+// notifyGitOpsChange emits a notification when the GitOps cache is invalidated
+// (i.e. CRD watch detected a sync status change). Dedup in the service suppresses bursts.
+func (h *Handler) notifyGitOpsChange(ctx context.Context) {
+	if h.NotifService == nil {
+		return
+	}
+	h.NotifService.Emit(ctx, notifications.Notification{
+		Source:   notifications.SourceGitOps,
+		Severity: notifications.SeverityWarning,
+		Title:    "GitOps sync status changed",
+		Message:  "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
+	})
 }
 
 // prepareAction extracts the common preamble for action handlers:

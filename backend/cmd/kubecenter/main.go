@@ -355,7 +355,7 @@ func main() {
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber
 	if clusterStore != nil {
-		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, logger)
+		clusterProber = k8s.NewClusterProber(clusterStore, dbEncKey, nil, logger)
 		go clusterProber.Run(ctx)
 	}
 

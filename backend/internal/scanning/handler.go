@@ -15,6 +15,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 )
 
 // Handler serves security scanning HTTP endpoints.
@@ -22,6 +23,7 @@ type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *ScannerDiscoverer
 	AccessChecker *resources.AccessChecker
+	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 
 	fetchGroup singleflight.Group
@@ -45,6 +47,28 @@ var validNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 // This avoids lazy init under locks.
 func (h *Handler) InitCache() {
 	h.nsCache = make(map[string]*cachedNSData)
+}
+
+// InvalidateCache clears all cached scan data so subsequent requests re-fetch.
+func (h *Handler) InvalidateCache() {
+	h.cacheMu.Lock()
+	h.nsCache = make(map[string]*cachedNSData)
+	h.cacheMu.Unlock()
+	go h.notifyScanChange(context.Background())
+}
+
+// notifyScanChange emits a notification when scan data is invalidated
+// (i.e. CRD watch detected new vulnerability reports). Dedup suppresses bursts.
+func (h *Handler) notifyScanChange(ctx context.Context) {
+	if h.NotifService == nil {
+		return
+	}
+	h.NotifService.Emit(ctx, notifications.Notification{
+		Source:   notifications.SourceScan,
+		Severity: notifications.SeverityWarning,
+		Title:    "Security scan results updated",
+		Message:  "New vulnerability scan results available. Check the security dashboard for details.",
+	})
 }
 
 // fetchVulns returns cached vulnerability data for a namespace, refreshing if stale.
