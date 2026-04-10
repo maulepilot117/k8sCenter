@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { notifApi } from "@/lib/api.ts";
 import type {
@@ -140,10 +140,34 @@ export default function NotificationChannels() {
     }
   }
 
+  function validateUrl(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return u.protocol === "https:" || u.protocol === "http:";
+    } catch {
+      return false;
+    }
+  }
+
   async function handleSave() {
     if (!formName.value.trim()) {
       showToast("Name is required", "error");
       return;
+    }
+    // Client-side URL validation for Slack and Webhook channels
+    if (formType.value === "slack") {
+      const url = (formConfig.value as Record<string, string>).webhookUrl ?? "";
+      if (!url || !validateUrl(url)) {
+        showToast("Valid Slack webhook URL is required", "error");
+        return;
+      }
+    }
+    if (formType.value === "webhook") {
+      const url = (formConfig.value as Record<string, string>).url ?? "";
+      if (!url || !validateUrl(url)) {
+        showToast("Valid webhook URL is required", "error");
+        return;
+      }
     }
     saving.value = true;
     try {
@@ -168,7 +192,13 @@ export default function NotificationChannels() {
     }
   }
 
+  const testTimers = useRef<Record<string, number>>({});
+
   async function handleTest(ch: NotifChannel) {
+    // Clear any previous timer for this channel
+    if (testTimers.current[ch.id]) {
+      clearTimeout(testTimers.current[ch.id]);
+    }
     try {
       await notifApi.testChannel(ch.id);
       testResults.value = {
@@ -182,11 +212,12 @@ export default function NotificationChannels() {
       };
     }
     // Clear after 3 seconds
-    setTimeout(() => {
+    testTimers.current[ch.id] = setTimeout(() => {
       const cur = { ...testResults.value };
       delete cur[ch.id];
       testResults.value = cur;
-    }, 3000);
+      delete testTimers.current[ch.id];
+    }, 3000) as unknown as number;
   }
 
   async function handleDelete() {

@@ -114,7 +114,11 @@ export default function NotificationRules() {
     saving.value = false;
   };
 
+  const togglingIds = useSignal<Set<string>>(new Set());
+
   const handleToggle = async (rule: NotifRule) => {
+    if (togglingIds.value.has(rule.id)) return; // prevent rapid-fire
+    togglingIds.value = new Set([...togglingIds.value, rule.id]);
     try {
       await notifApi.updateRule(rule.id, {
         name: rule.name,
@@ -127,6 +131,9 @@ export default function NotificationRules() {
     } catch {
       error.value = "Failed to toggle rule";
     }
+    const next = new Set(togglingIds.value);
+    next.delete(rule.id);
+    togglingIds.value = next;
   };
 
   const handleDelete = async (id: string) => {

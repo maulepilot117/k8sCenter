@@ -87,6 +87,13 @@ export interface NotifListParams {
   offset?: number;
 }
 
+/** SubNav tabs for the admin notification center pages. */
+export const NOTIF_ADMIN_TABS = [
+  { label: "Feed", href: "/admin/notifications/feed" },
+  { label: "Channels", href: "/admin/notifications/channels" },
+  { label: "Rules", href: "/admin/notifications/rules" },
+];
+
 /** All known notification sources for filter dropdowns. */
 export const NOTIF_SOURCES: NotifSource[] = [
   "alert",

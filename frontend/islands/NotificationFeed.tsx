@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { notifApi } from "@/lib/api.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
@@ -22,8 +22,15 @@ export default function NotificationFeed() {
   const filterSource = useSignal<string>("all");
   const filterSeverity = useSignal<string>("all");
   const filterRead = useSignal<string>("all");
+  const fetchSeq = useRef(0); // sequence counter to discard stale fetch results
+  const mounted = useRef(true);
+
+  useEffect(() => () => {
+    mounted.current = false;
+  }, []);
 
   async function fetchData() {
+    const seq = ++fetchSeq.current;
     try {
       const params: Record<string, string | number> = {
         limit: PAGE_SIZE,
@@ -38,22 +45,19 @@ export default function NotificationFeed() {
       const res = await notifApi.list(
         params as unknown as Parameters<typeof notifApi.list>[0],
       );
+      if (seq !== fetchSeq.current || !mounted.current) return; // stale response
       notifications.value = res.data?.data ?? [];
       total.value = res.data?.metadata?.total ?? 0;
     } catch {
+      if (seq !== fetchSeq.current || !mounted.current) return;
       notifications.value = [];
       total.value = 0;
     } finally {
-      loading.value = false;
+      if (seq === fetchSeq.current) loading.value = false;
     }
   }
 
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    fetchData();
-  }, []);
-
-  // Re-fetch when filters or page change
+  // Fetch on mount + re-fetch when filters or page change
   useEffect(() => {
     if (!IS_BROWSER) return;
     loading.value = true;
