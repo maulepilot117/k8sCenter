@@ -27,6 +27,12 @@ type ClusterProber struct {
 	logger         *slog.Logger
 }
 
+// SetStatusChangeFunc sets the callback for cluster status transitions.
+// This allows late-binding when the notification service isn't available at construction time.
+func (p *ClusterProber) SetStatusChangeFunc(fn StatusChangeFunc) {
+	p.onStatusChange = fn
+}
+
 // NewClusterProber creates a cluster health prober.
 func NewClusterProber(cs *store.ClusterStore, encKey string, onStatusChange StatusChangeFunc, logger *slog.Logger) *ClusterProber {
 	return &ClusterProber{

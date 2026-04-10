@@ -54,21 +54,14 @@ func (h *Handler) InvalidateCache() {
 	h.cacheMu.Lock()
 	h.nsCache = make(map[string]*cachedNSData)
 	h.cacheMu.Unlock()
-	go h.notifyScanChange(context.Background())
-}
-
-// notifyScanChange emits a notification when scan data is invalidated
-// (i.e. CRD watch detected new vulnerability reports). Dedup suppresses bursts.
-func (h *Handler) notifyScanChange(ctx context.Context) {
-	if h.NotifService == nil {
-		return
+	if h.NotifService != nil {
+		go h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:   notifications.SourceScan,
+			Severity: notifications.SeverityInfo,
+			Title:    "Security scan results updated",
+			Message:  "New vulnerability scan results available. Check the security dashboard for details.",
+		})
 	}
-	h.NotifService.Emit(ctx, notifications.Notification{
-		Source:   notifications.SourceScan,
-		Severity: notifications.SeverityWarning,
-		Title:    "Security scan results updated",
-		Message:  "New vulnerability scan results available. Check the security dashboard for details.",
-	})
 }
 
 // fetchVulns returns cached vulnerability data for a namespace, refreshing if stale.

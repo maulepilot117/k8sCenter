@@ -33,6 +33,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/notification"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/policy"
 	"github.com/kubecenter/kubecenter/internal/server"
@@ -602,6 +603,47 @@ func main() {
 	}
 	scanHandler.InitCache()
 
+	// Notification center — aggregates events from all subsystems
+	var notifService *notifications.NotificationService
+	var notifCenterHandler *notifications.Handler
+	if dbPool != nil {
+		notifStore := notifications.NewStore(dbPool, dbEncKey)
+		notifService = notifications.NewService(notifStore, hub, alertNotifier, logger)
+		notifService.Start(ctx)
+
+		notifCenterHandler = &notifications.Handler{
+			Service:     notifService,
+			RBACChecker: rbacChecker,
+			AuditLogger: auditLogger,
+			Logger:      logger,
+		}
+
+		// Wire NotifService into event producers
+		if clusterProber != nil {
+			clusterProber.SetStatusChangeFunc(func(ctx context.Context, clusterID, oldStatus, newStatus string) {
+				sev := notifications.SeverityInfo
+				title := "Cluster " + clusterID + " is now " + newStatus
+				if newStatus != "connected" {
+					sev = notifications.SeverityCritical
+					title = "Cluster " + clusterID + " is " + newStatus
+				}
+				notifService.Emit(ctx, notifications.Notification{
+					Source:   notifications.SourceCluster,
+					Severity: sev,
+					Title:    title,
+					Message:  "Status changed from " + oldStatus + " to " + newStatus,
+				})
+			})
+		}
+		alertHandler.NotifService = notifService
+		if policyHandler != nil {
+			policyHandler.NotifService = notifService
+		}
+		gitopsHandler.NotifService = notifService
+		scanHandler.NotifService = notifService
+		diagHandler.NotifService = notifService
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -635,8 +677,10 @@ func main() {
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
 		GitOpsHandler:        gitopsHandler,
-		FluxNotifHandler:    fluxNotifHandler,
-		ScanningHandler:      scanHandler,
+		FluxNotifHandler:       fluxNotifHandler,
+		NotifCenterHandler:    notifCenterHandler,
+		NotifCenterService:    notifService,
+		ScanningHandler:       scanHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,

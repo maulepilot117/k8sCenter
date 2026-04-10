@@ -73,21 +73,14 @@ func (h *Handler) InvalidateCache() {
 	h.cachedData = nil
 	h.cacheGen++
 	h.cacheMu.Unlock()
-	go h.notifyPolicyChange(context.Background())
-}
-
-// notifyPolicyChange emits a notification when the policy cache is invalidated
-// (i.e. CRD watch detected a change). Dedup in the service suppresses bursts.
-func (h *Handler) notifyPolicyChange(ctx context.Context) {
-	if h.NotifService == nil {
-		return
+	if h.NotifService != nil {
+		go h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:   notifications.SourcePolicy,
+			Severity: notifications.SeverityInfo,
+			Title:    "Policy engine change detected",
+			Message:  "Policy engine reported changes. Check the policy dashboard for details.",
+		})
 	}
-	h.NotifService.Emit(ctx, notifications.Notification{
-		Source:   notifications.SourcePolicy,
-		Severity: notifications.SeverityWarning,
-		Title:    "Policy violations detected",
-		Message:  "Policy engine reported changes. Check the policy dashboard for details.",
-	})
 }
 
 // doFetch queries both engines based on discovery status and merges results.
