@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,11 +17,18 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
+// maxRequestBody limits JSON request body size to 64KB.
+const maxRequestBody = 64 * 1024
+
 // Handler handles HTTP requests for the notification center.
+// The handler accesses the store directly via h.Service.store because both
+// handler and service are in the same package. The service layer owns Emit,
+// dispatch, and caching logic; the handler owns HTTP concerns and RBAC.
 type Handler struct {
-	Service       *NotificationService
-	RBACChecker   *auth.RBACChecker
-	AuditLogger   audit.Logger
+	Service     *NotificationService
+	RBACChecker *auth.RBACChecker
+	AuditLogger audit.Logger
+	Logger      *slog.Logger
 }
 
 // --- Feed endpoints (all authenticated users) ---
@@ -151,7 +160,6 @@ func (h *Handler) HandleListChannels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mask sensitive config fields
 	for i := range channels {
 		channels[i].Config = maskConfig(channels[i].Config)
 	}
@@ -168,8 +176,8 @@ func (h *Handler) HandleCreateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var ch Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+	if err := decodeJSON(r, &ch); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -177,8 +185,10 @@ func (h *Handler) HandleCreateChannel(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadRequest, "name and type are required", "")
 		return
 	}
-
-	// SSRF validation for webhook/Slack URLs
+	if !isValidChannelType(ch.Type) {
+		httputil.WriteError(w, http.StatusBadRequest, "type must be slack, email, or webhook", "")
+		return
+	}
 	if err := validateChannelURLs(ch); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
@@ -206,12 +216,28 @@ func (h *Handler) HandleUpdateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := chi.URLParam(r, "id")
-	var ch Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+
+	// Fetch existing channel to validate URL against its type (not the request body type)
+	existing, err := h.Service.store.GetChannel(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "channel not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to get channel", "")
 		return
 	}
 
+	var ch Channel
+	if err := decodeJSON(r, &ch); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+
+	// Use existing type for SSRF validation if not provided in request
+	if ch.Type == "" {
+		ch.Type = existing.Type
+	}
 	if err := validateChannelURLs(ch); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
@@ -260,6 +286,12 @@ func (h *Handler) HandleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 
 // HandleTestChannel sends a test notification to a channel.
 func (h *Handler) HandleTestChannel(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
 	id := chi.URLParam(r, "id")
 	ch, err := h.Service.store.GetChannel(r.Context(), id)
 	if err != nil {
@@ -272,10 +304,12 @@ func (h *Handler) HandleTestChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Service.TestChannel(r.Context(), ch); err != nil {
-		httputil.WriteError(w, http.StatusBadGateway, "test failed", err.Error())
+		h.Logger.Error("channel test failed", "channel", ch.Name, "type", ch.Type, "error", err)
+		httputil.WriteError(w, http.StatusBadGateway, "channel test failed", "")
 		return
 	}
 
+	h.auditLog(r, user, audit.ActionUpdate, "notification-channel-test", ch.Name)
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": map[string]string{"status": "ok"}})
 }
 
@@ -301,8 +335,8 @@ func (h *Handler) HandleCreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var rule Rule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+	if err := decodeJSON(r, &rule); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -334,8 +368,8 @@ func (h *Handler) HandleUpdateRule(w http.ResponseWriter, r *http.Request) {
 
 	id := chi.URLParam(r, "id")
 	var rule Rule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", err.Error())
+	if err := decodeJSON(r, &rule); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
 		return
 	}
 
@@ -382,12 +416,22 @@ func (h *Handler) HandleDeleteRule(w http.ResponseWriter, r *http.Request) {
 
 // --- Helpers ---
 
+// decodeJSON decodes a JSON request body with a 64KB size limit.
+func decodeJSON(r *http.Request, v any) error {
+	r.Body = http.MaxBytesReader(nil, r.Body, maxRequestBody)
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// isValidChannelType checks if the channel type is one of the known types.
+func isValidChannelType(t ChannelType) bool {
+	return t == ChannelSlack || t == ChannelEmail || t == ChannelWebhook
+}
+
 // accessibleNamespaces returns the list of namespaces the user can access.
-// Uses the RBAC summary cache (60s TTL). Returns nil for cluster-admin users
-// (no namespace filtering needed).
+// Returns nil for admin users (no namespace filtering needed — store treats nil as "all").
 func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) ([]string, error) {
 	if auth.IsAdmin(user) {
-		return nil, nil // admin sees everything
+		return nil, nil
 	}
 
 	summary, err := h.RBACChecker.GetSummary(r.Context(), user, nil)
@@ -403,40 +447,70 @@ func (h *Handler) accessibleNamespaces(r *http.Request, user *auth.User) ([]stri
 }
 
 // validateChannelURLs validates webhook/Slack URLs against the SSRF blocklist.
+// Requires URL to be non-empty for Slack and Webhook channel types.
 func validateChannelURLs(ch Channel) error {
-	if ch.Type == ChannelSlack {
-		if url, _ := ch.Config["webhookUrl"].(string); url != "" {
-			if err := k8s.ValidateRemoteURL(url); err != nil {
-				return fmt.Errorf("invalid Slack webhook URL: %w", err)
-			}
+	switch ch.Type {
+	case ChannelSlack:
+		url, _ := ch.Config["webhookUrl"].(string)
+		if url == "" {
+			return fmt.Errorf("Slack channel requires a webhookUrl")
 		}
-	}
-	if ch.Type == ChannelWebhook {
-		if url, _ := ch.Config["url"].(string); url != "" {
-			if err := k8s.ValidateRemoteURL(url); err != nil {
-				return fmt.Errorf("invalid webhook URL: %w", err)
-			}
+		if err := k8s.ValidateRemoteURL(url); err != nil {
+			return fmt.Errorf("invalid Slack webhook URL: %w", err)
+		}
+	case ChannelWebhook:
+		url, _ := ch.Config["url"].(string)
+		if url == "" {
+			return fmt.Errorf("Webhook channel requires a url")
+		}
+		if err := k8s.ValidateRemoteURL(url); err != nil {
+			return fmt.Errorf("invalid webhook URL: %w", err)
 		}
 	}
 	return nil
 }
 
+// sensitiveKeys are config key patterns that should be masked in API responses.
+var sensitiveKeys = []string{"url", "secret", "password", "token", "key", "authorization"}
+
 // maskConfig replaces sensitive values with "****" for API responses.
+// Nested maps (like headers) are deep-masked.
 func maskConfig(cfg ChannelConfig) ChannelConfig {
 	masked := make(ChannelConfig, len(cfg))
 	for k, v := range cfg {
-		switch k {
-		case "webhookUrl", "url", "secret":
-			if s, ok := v.(string); ok && len(s) > 4 {
-				masked[k] = "****" + s[len(s)-4:]
-			} else {
+		if isSensitiveKey(k) {
+			switch val := v.(type) {
+			case string:
+				if len(val) > 4 {
+					masked[k] = "****" + val[len(val)-4:]
+				} else {
+					masked[k] = "****"
+				}
+			case map[string]any:
+				// Deep-mask all values in nested maps (e.g., headers with Authorization)
+				maskedMap := make(map[string]any, len(val))
+				for hk := range val {
+					maskedMap[hk] = "****"
+				}
+				masked[k] = maskedMap
+			default:
 				masked[k] = "****"
 			}
-		default:
+		} else {
 			masked[k] = v
 		}
 	}
 	return masked
+}
+
+func isSensitiveKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, s := range sensitiveKeys {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action, kind, name string) {
@@ -444,11 +518,11 @@ func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action
 		return
 	}
 	h.AuditLogger.Log(r.Context(), audit.Entry{
-		Action:            action,
-		ResourceKind:      kind,
-		ResourceName:      name,
-		User:              user.KubernetesUsername,
-		SourceIP:          r.RemoteAddr,
-		Result:            audit.ResultSuccess,
+		Action:       action,
+		ResourceKind: kind,
+		ResourceName: name,
+		User:         user.KubernetesUsername,
+		SourceIP:     r.RemoteAddr,
+		Result:       audit.ResultSuccess,
 	})
 }
