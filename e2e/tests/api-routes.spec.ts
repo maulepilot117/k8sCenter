@@ -24,9 +24,24 @@ const SCAN_DIRS = ["islands", "lib", "routes", "components"];
 const PATH_REGEX = /["'`](\/v1\/[A-Za-z0-9/_-]+)(?:\?[^"'`]*)?["'`]/g;
 
 // Paths we know are *expected* to be absent and should not be tested.
+// Usually this means the literal is used as a concatenation base in the
+// frontend (`${basePath}/alerts`) rather than called directly — the backend
+// mounts the subpaths but not the base.
 const IGNORE: RegExp[] = [
-  // None yet — add here if a legitimate conditional path would cause a 404.
+  // Flux notifications uses this as a concat base; real routes are
+  // /v1/gitops/notifications/{status,alerts,providers,receivers}.
+  /^\/v1\/gitops\/notifications$/,
 ];
+
+// Directory names to skip during the scan: generated build output, vendored
+// deps, and other noise that would duplicate literals from the source tree.
+const SKIP_DIRS = new Set([
+  "_fresh",
+  "node_modules",
+  "dist",
+  ".git",
+  "static",
+]);
 
 function walk(dir: string, out: string[] = []): string[] {
   let entries: string[];
@@ -36,6 +51,7 @@ function walk(dir: string, out: string[] = []): string[] {
     return out;
   }
   for (const entry of entries) {
+    if (SKIP_DIRS.has(entry)) continue;
     const p = path.join(dir, entry);
     const s = statSync(p);
     if (s.isDirectory()) {
