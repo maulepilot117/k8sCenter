@@ -61,8 +61,7 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 	}
 	blocking := strings.EqualFold(action, "Enforce")
 
-	// Ready status — Kyverno exposes readiness via status.conditions[type=Ready].
-	// Older versions also populated status.ready as a bool; fall back to it.
+	// Ready status: Kyverno 1.8+ exposes readiness via status.conditions[type=Ready].
 	ready := false
 	if conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions"); found {
 		for _, c := range conditions {
@@ -71,23 +70,21 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 				continue
 			}
 			ctype, _, _ := unstructured.NestedString(cm, "type")
-			cstatus, _, _ := unstructured.NestedString(cm, "status")
-			if strings.EqualFold(ctype, "Ready") {
-				ready = strings.EqualFold(cstatus, "True")
-				break
+			if !strings.EqualFold(ctype, "Ready") {
+				continue
 			}
+			cstatus, _, _ := unstructured.NestedString(cm, "status")
+			ready = strings.EqualFold(cstatus, "True")
+			break
 		}
-	} else if b, found, _ := unstructured.NestedBool(obj.Object, "status", "ready"); found {
-		ready = b
 	}
 
 	// Rule count
 	rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules")
 	ruleCount := len(rules)
 
-	// Extract target kinds from rules. Modern Kyverno uses `match.any` or
-	// `match.all` as a slice of `{resources: {kinds: [...]}}` blocks. Legacy
-	// policies use a flat `match.resources.kinds`. Handle both.
+	// Target kinds: Kyverno 1.8+ requires `match.any` or `match.all`, each a slice
+	// of `{resources: {kinds: [...]}}` blocks. Deduped via a set.
 	kindSet := make(map[string]struct{})
 	collectKinds := func(items []interface{}) {
 		for _, item := range items {
@@ -112,11 +109,6 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 		}
 		if allList, found, _ := unstructured.NestedSlice(ruleMap, "match", "all"); found {
 			collectKinds(allList)
-		}
-		if kinds, found, _ := unstructured.NestedStringSlice(ruleMap, "match", "resources", "kinds"); found {
-			for _, k := range kinds {
-				kindSet[k] = struct{}{}
-			}
 		}
 	}
 	var targetKinds []string
@@ -157,7 +149,9 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 		Blocking:     blocking,
 		Ready:        ready,
 		RuleCount:    ruleCount,
-		TargetKinds:  targetKinds,
+		// Violations reference policies by raw k8s name in PolicyReport.results[].policy.
+		MatchKey:    name,
+		TargetKinds: targetKinds,
 	}
 }
 
@@ -222,12 +216,9 @@ func extractKyvernoViolations(report *unstructured.Unstructured) []NormalizedVio
 			severity = defaultSeverity
 		}
 
-		// Timestamp: Kyverno writes {seconds, nanos} as a nested object;
-		// older/other producers may write an RFC3339 string.
+		// Kyverno writes timestamp as a nested {seconds, nanos} object.
 		timestamp := ""
-		if tsStr, found, _ := unstructured.NestedString(resultMap, "timestamp"); found && tsStr != "" {
-			timestamp = tsStr
-		} else if seconds, found, _ := unstructured.NestedInt64(resultMap, "timestamp", "seconds"); found {
+		if seconds, found, _ := unstructured.NestedInt64(resultMap, "timestamp", "seconds"); found {
 			nanos, _, _ := unstructured.NestedInt64(resultMap, "timestamp", "nanos")
 			timestamp = time.Unix(seconds, nanos).UTC().Format(time.RFC3339)
 		}

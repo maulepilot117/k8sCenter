@@ -38,19 +38,26 @@ type EngineDetail struct {
 
 // NormalizedPolicy is the engine-agnostic representation of a policy.
 type NormalizedPolicy struct {
-	ID             string   `json:"id"`
-	Name           string   `json:"name"`
-	Namespace      string   `json:"namespace,omitempty"`
-	Kind           string   `json:"kind"`
-	Action         string   `json:"action"`
-	Category       string   `json:"category,omitempty"`
-	Severity       string   `json:"severity"`
-	Description    string   `json:"description,omitempty"`
-	NativeAction   string   `json:"nativeAction"`
-	Engine         Engine   `json:"engine"`
-	Blocking       bool     `json:"blocking"`
-	Ready          bool     `json:"ready"`
-	RuleCount      int      `json:"ruleCount"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Namespace    string `json:"namespace,omitempty"`
+	Kind         string `json:"kind"`
+	Action       string `json:"action"`
+	Category     string `json:"category,omitempty"`
+	Severity     string `json:"severity"`
+	Description  string `json:"description,omitempty"`
+	NativeAction string `json:"nativeAction"`
+	Engine       Engine `json:"engine"`
+	Blocking     bool   `json:"blocking"`
+	Ready        bool   `json:"ready"`
+	RuleCount    int    `json:"ruleCount"`
+	// MatchKey is the stable identifier that NormalizedViolation.Policy uses to
+	// reference this policy. For Kyverno this is the raw k8s resource name; for
+	// Gatekeeper it is "{ConstraintKind}/{name}". It is set at normalization time
+	// so count-aggregation and compliance scoring can join violations to policies
+	// without engine-aware string parsing. Not exposed over the wire — Name is
+	// what users see; this is plumbing.
+	MatchKey       string   `json:"-"`
 	ViolationCount int      `json:"violationCount"`
 	TargetKinds    []string `json:"targetKinds,omitempty"`
 }
