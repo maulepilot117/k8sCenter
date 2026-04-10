@@ -224,7 +224,7 @@ func (d *Detector) detectCiliumFeatures(ctx context.Context) CNIFeatures {
 	features := CNIFeatures{}
 	cs := d.k8sClient.BaseClientset()
 
-	for _, ns := range ciliumSearchNamespaces {
+	for _, ns := range ciliumSearchNamespaces() {
 		cm, err := cs.CoreV1().ConfigMaps(ns).Get(ctx, ciliumConfigMapName, metav1.GetOptions{})
 		if err != nil {
 			continue

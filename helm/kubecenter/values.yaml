@@ -137,6 +137,9 @@ externalDatabase:
 ciliumAgent:
   # -- Enable exec-based diagnostics for WireGuard details, ClusterMesh, Envoy stats
   execEnabled: false
+  # -- Max concurrent pod execs (default: 10). With 5s per-pod timeout and 30s outer timeout,
+  # max ~(maxConcurrent * 6) nodes can be collected per cycle.
+  maxConcurrent: 10
 
 # -- Alerting
 alerting:

@@ -25,8 +25,8 @@ const (
 	agentCacheTTL      = 30 * time.Second
 	agentOuterTimeout  = 30 * time.Second
 	agentExecTimeout   = 5 * time.Second
-	agentMaxConcurrent = 10
-	agentMaxOutput     = 1 << 20 // 1 MB stdout cap
+	agentDefaultMaxConcurrent = 10
+	agentMaxOutput            = 1 << 20 // 1 MB stdout cap
 	agentContainer     = "cilium-agent"
 )
 
@@ -48,10 +48,11 @@ func agentPodLabelSelectors() []string {
 // diagnostic data (WireGuard peers, ClusterMesh, Envoy proxy, node health).
 // Uses service account credentials (not user impersonation) — see plan for rationale.
 type CiliumAgentCollector struct {
-	k8sClient   *k8s.ClientFactory
-	auditLogger audit.Logger
-	logger      *slog.Logger
-	clusterID   string
+	k8sClient      *k8s.ClientFactory
+	auditLogger    audit.Logger
+	logger         *slog.Logger
+	clusterID      string
+	maxConcurrent  int
 
 	group    singleflight.Group
 	cacheMu  sync.RWMutex
@@ -60,12 +61,18 @@ type CiliumAgentCollector struct {
 }
 
 // NewCiliumAgentCollector creates a collector for Cilium agent diagnostics.
-func NewCiliumAgentCollector(k8sClient *k8s.ClientFactory, auditLogger audit.Logger, logger *slog.Logger, clusterID string) *CiliumAgentCollector {
+// maxConcurrent controls parallel pod execs (0 = default 10). With 5s per-pod timeout
+// and 30s outer timeout, max ~(maxConcurrent * 6) nodes can be collected per cycle.
+func NewCiliumAgentCollector(k8sClient *k8s.ClientFactory, auditLogger audit.Logger, logger *slog.Logger, clusterID string, maxConcurrent int) *CiliumAgentCollector {
+	if maxConcurrent <= 0 {
+		maxConcurrent = agentDefaultMaxConcurrent
+	}
 	return &CiliumAgentCollector{
-		k8sClient:   k8sClient,
-		auditLogger: auditLogger,
-		logger:      logger,
-		clusterID:   clusterID,
+		k8sClient:     k8sClient,
+		auditLogger:   auditLogger,
+		logger:        logger,
+		clusterID:     clusterID,
+		maxConcurrent: maxConcurrent,
 	}
 }
 
@@ -105,8 +112,7 @@ func (c *CiliumAgentCollector) Collect(ctx context.Context) (*agentCollectionRes
 
 func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionResult, error) {
 	gen := atomic.LoadUint64(&c.cacheGen)
-	ctx, cancel := context.WithTimeout(ctx, agentOuterTimeout)
-	defer cancel()
+	// Note: ctx already has agentOuterTimeout from Collect() — no redundant timeout here.
 
 	cs := c.k8sClient.BaseClientset()
 
@@ -122,7 +128,7 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 	// Exec into pods concurrently with bounded parallelism
 	results := make([]agentNodeResult, len(pods))
 	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(agentMaxConcurrent)
+	g.SetLimit(c.maxConcurrent)
 
 	for i, pod := range pods {
 		g.Go(func() error {
@@ -159,7 +165,7 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 
 // findAgentPods searches ciliumSearchNamespaces for pods matching agent pod label selectors.
 func (c *CiliumAgentCollector) findAgentPods(ctx context.Context, cs kubernetes.Interface) ([]corev1.Pod, error) {
-	for _, ns := range ciliumSearchNamespaces {
+	for _, ns := range ciliumSearchNamespaces() {
 		for _, labelSelector := range agentPodLabelSelectors() {
 			pods, err := cs.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 				LabelSelector: labelSelector,
@@ -192,7 +198,7 @@ func (c *CiliumAgentCollector) findAgentPods(ctx context.Context, cs kubernetes.
 
 // isAllowedNamespace checks the pod is in an expected namespace.
 func isAllowedNamespace(ns string) bool {
-	for _, allowed := range ciliumSearchNamespaces {
+	for _, allowed := range ciliumSearchNamespaces() {
 		if ns == allowed {
 			return true
 		}

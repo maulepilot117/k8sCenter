@@ -353,9 +353,12 @@ func (h *Handler) HandleCiliumBGP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.bgpMu.RUnlock()
 
-	// Singleflight to coalesce concurrent requests
+	// Singleflight to coalesce concurrent requests.
+	// Detached context prevents one caller's cancellation from cascading to all waiters.
 	result, err, _ := h.bgpGroup.Do("bgp", func() (any, error) {
-		return h.fetchBGP(r.Context())
+		ctx, cancel := context.WithTimeout(context.Background(), cacheTTL+10*time.Second)
+		defer cancel()
+		return h.fetchBGP(ctx)
 	})
 	if err != nil {
 		h.Logger.Error("failed to fetch BGP status", "error", err)
@@ -429,9 +432,12 @@ func (h *Handler) HandleCiliumIPAM(w http.ResponseWriter, r *http.Request) {
 	}
 	h.ipamMu.RUnlock()
 
-	// Singleflight to coalesce concurrent requests
+	// Singleflight to coalesce concurrent requests.
+	// Detached context prevents one caller's cancellation from cascading to all waiters.
 	result, err, _ := h.ipamGroup.Do("ipam", func() (any, error) {
-		return h.fetchIPAM(r.Context())
+		ctx, cancel := context.WithTimeout(context.Background(), cacheTTL+10*time.Second)
+		defer cancel()
+		return h.fetchIPAM(ctx)
 	})
 	if err != nil {
 		h.Logger.Error("failed to fetch IPAM data", "error", err)
@@ -551,9 +557,12 @@ func (h *Handler) HandleCiliumSubsystems(w http.ResponseWriter, r *http.Request)
 	}
 	h.subsystemMu.RUnlock()
 
-	// Singleflight to coalesce concurrent requests
+	// Singleflight to coalesce concurrent requests.
+	// Detached context prevents one caller's cancellation from cascading to all waiters.
 	result, err, _ := h.subsystemGroup.Do("subsystems", func() (any, error) {
-		return h.fetchSubsystems(r.Context())
+		ctx, cancel := context.WithTimeout(context.Background(), agentOuterTimeout+10*time.Second)
+		defer cancel()
+		return h.fetchSubsystems(ctx)
 	})
 	if err != nil {
 		h.Logger.Error("failed to fetch subsystems", "error", err)
