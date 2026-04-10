@@ -65,7 +65,7 @@ type Server struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
-	NotificationHandler  *notification.Handler
+	FluxNotifHandler     *notification.Handler
 	ScanningHandler      *scanning.Handler
 	CRDHandler           *resources.GenericCRDHandler
 	NotifCenterHandler   *notifications.Handler
@@ -106,7 +106,7 @@ type Deps struct {
 	DiagnosticsHandler   *diagnostics.Handler
 	PolicyHandler        *policy.Handler
 	GitOpsHandler        *gitops.Handler
-	NotificationHandler  *notification.Handler
+	FluxNotifHandler     *notification.Handler
 	ScanningHandler        *scanning.Handler
 	CRDHandler             *resources.GenericCRDHandler
 	NotifCenterHandler     *notifications.Handler
@@ -236,8 +236,8 @@ func New(deps Deps) *Server {
 	}
 
 	// Notification handler
-	if deps.NotificationHandler != nil {
-		s.NotificationHandler = deps.NotificationHandler
+	if deps.FluxNotifHandler != nil {
+		s.FluxNotifHandler = deps.FluxNotifHandler
 	}
 
 	// Scanning handler

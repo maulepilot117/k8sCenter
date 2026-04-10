@@ -498,7 +498,7 @@ func main() {
 		}
 	}
 
-	notificationHandler := &notification.Handler{
+	fluxNotifHandler := &notification.Handler{
 		K8sClient:     k8sClient,
 		AccessChecker: accessChecker,
 		Logger:        logger,
@@ -555,7 +555,7 @@ func main() {
 					return notification.NormalizeProvider(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateProviders()
+					fluxNotifHandler.InvalidateProviders()
 				})
 
 				websocket.RegisterAllowedKind("flux-alerts", "notification.toolkit.fluxcd.io")
@@ -563,7 +563,7 @@ func main() {
 					return notification.NormalizeAlert(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateAlerts()
+					fluxNotifHandler.InvalidateAlerts()
 				})
 
 				websocket.RegisterAllowedKind("flux-receivers", "notification.toolkit.fluxcd.io")
@@ -571,7 +571,7 @@ func main() {
 					return notification.NormalizeReceiver(obj), nil
 				}, func(eventType, kind, ns, name string, obj any) {
 					hub.HandleEvent(eventType, kind, ns, name, obj)
-					notificationHandler.InvalidateReceivers()
+					fluxNotifHandler.InvalidateReceivers()
 				})
 			} else {
 				informerMgr.StopCRD(notification.FluxProviderGVR)
@@ -635,7 +635,7 @@ func main() {
 		DiagnosticsHandler:   diagHandler,
 		PolicyHandler:        policyHandler,
 		GitOpsHandler:        gitopsHandler,
-		NotificationHandler:    notificationHandler,
+		FluxNotifHandler:    fluxNotifHandler,
 		ScanningHandler:      scanHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,

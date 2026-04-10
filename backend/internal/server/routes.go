@@ -466,8 +466,8 @@ func (s *Server) registerGitOpsRoutes(ar chi.Router) {
 		gr.Delete("/applicationsets/{id}", h.HandleDeleteAppSet)
 
 		// Notification routes — only if handler is available
-		if s.NotificationHandler != nil {
-			nh := s.NotificationHandler
+		if s.FluxNotifHandler != nil {
+			nh := s.FluxNotifHandler
 			gr.Route("/notifications", func(nr chi.Router) {
 				nr.Get("/status", nh.HandleStatus)
 				nr.Get("/providers", nh.HandleListProviders)
