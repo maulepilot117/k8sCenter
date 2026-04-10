@@ -86,6 +86,11 @@ function buildSearchIndex(): SearchItem[] {
     { label: "View Notifications", href: "/notifications" },
     { label: "Notification Channels", href: "/admin/notifications/channels" },
     { label: "Notification Rules", href: "/admin/notifications/rules" },
+    { label: "View Namespace Limits", href: "/config/namespace-limits" },
+    {
+      label: "Create Namespace Limits",
+      href: "/config/namespace-limits/new",
+    },
   ];
   for (const a of actions) {
     items.push({

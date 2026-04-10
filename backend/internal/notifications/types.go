@@ -13,6 +13,7 @@ const (
 	SourceScan       Source = "scan"
 	SourceCluster    Source = "cluster"
 	SourceAudit      Source = "audit"
+	SourceLimits     Source = "limits"
 )
 
 // Severity indicates how critical a notification is.

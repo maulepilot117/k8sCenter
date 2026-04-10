@@ -4,7 +4,9 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 type ButtonSize = "sm" | "md" | "lg";
 
-interface ButtonProps extends JSX.HTMLAttributes<HTMLButtonElement> {
+interface ButtonProps
+  extends Omit<JSX.HTMLAttributes<HTMLButtonElement>, "size"> {
+  type?: "button" | "submit" | "reset";
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;

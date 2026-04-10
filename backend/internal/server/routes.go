@@ -156,6 +156,11 @@ func (s *Server) registerRoutes() {
 				s.registerScanningRoutes(ar)
 			}
 
+			// Namespace limits routes — only registered if limits handler is available
+			if s.LimitsHandler != nil {
+				s.registerLimitsRoutes(ar)
+			}
+
 			// Notification center routes
 			if s.NotifCenterHandler != nil {
 				s.registerNotifCenterRoutes(ar)
@@ -264,6 +269,7 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/hpa/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.HPAInput{} }))
 		wr.Post("/pdb/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PDBInput{} }))
 		wr.Post("/policy/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PolicyWizardInput{} }))
+		wr.Post("/namespace-limits/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.NamespaceLimitsInput{} }))
 	})
 }
 
@@ -504,6 +510,20 @@ func (s *Server) registerScanningRoutes(ar chi.Router) {
 		sr.Use(middleware.RateLimit(yamlRL))
 		sr.Get("/status", h.HandleStatus)
 		sr.Get("/vulnerabilities", h.HandleVulnerabilities)
+	})
+}
+
+func (s *Server) registerLimitsRoutes(ar chi.Router) {
+	h := s.LimitsHandler
+	ar.Route("/limits", func(lr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		lr.Use(middleware.RateLimit(yamlRL))
+		lr.Get("/status", h.HandleStatus)
+		lr.Get("/namespaces", h.HandleListNamespaces)
+		lr.With(resources.ValidateURLParams).Get("/namespaces/{namespace}", h.HandleGetNamespace)
 	})
 }
 

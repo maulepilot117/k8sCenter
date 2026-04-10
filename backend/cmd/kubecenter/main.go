@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
+	"github.com/kubecenter/kubecenter/internal/limits"
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/scanning"
@@ -603,6 +604,10 @@ func main() {
 	}
 	scanHandler.InitCache()
 
+	// Namespace limits handler (ResourceQuota + LimitRange management)
+	// Note: Limits checker is created after notification center to enable threshold alerts
+	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
+
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService
 	var notifCenterHandler *notifications.Handler
@@ -642,6 +647,10 @@ func main() {
 		gitopsHandler.NotifService = notifService
 		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
+
+		// Limits checker — monitors quotas and dispatches threshold notifications
+		limitsChecker := limits.NewChecker(limitsHandler, notifService, limits.DefaultCheckInterval, logger)
+		limitsChecker.Start(ctx)
 	}
 
 	// Ready state: true after informer sync, false during shutdown
@@ -681,6 +690,7 @@ func main() {
 		NotifCenterHandler:    notifCenterHandler,
 		NotifCenterService:    notifService,
 		ScanningHandler:       scanHandler,
+		LimitsHandler:         limitsHandler,
 		CRDHandler:           crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
