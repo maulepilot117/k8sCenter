@@ -6,6 +6,14 @@
  */
 import { selectedCluster } from "@/lib/cluster.ts";
 import type { APIError, APIResponse } from "@/lib/k8s-types.ts";
+import type {
+  AppNotification,
+  NotifChannel,
+  NotifChannelInput,
+  NotifListParams,
+  NotifRule,
+  NotifRuleInput,
+} from "@/lib/notif-center-types.ts";
 
 /** In-memory access token. Never stored in localStorage. */
 let accessToken: string | null = null;
@@ -182,13 +190,6 @@ export const apiPostRaw = <T>(
 
 // --- Notification Center API ---
 
-import type {
-  AppNotification,
-  NotifChannel,
-  NotifListParams,
-  NotifRule,
-} from "@/lib/notif-center-types.ts";
-
 function notifQueryString(params: NotifListParams): string {
   const p = new URLSearchParams();
   if (params.source) p.set("source", params.source);
@@ -196,8 +197,8 @@ function notifQueryString(params: NotifListParams): string {
   if (params.read) p.set("read", params.read);
   if (params.since) p.set("since", params.since);
   if (params.until) p.set("until", params.until);
-  if (params.limit) p.set("limit", String(params.limit));
-  if (params.offset) p.set("offset", String(params.offset));
+  if (params.limit !== undefined) p.set("limit", String(params.limit));
+  if (params.offset !== undefined) p.set("offset", String(params.offset));
   const qs = p.toString();
   return qs ? `?${qs}` : "";
 }
@@ -216,9 +217,9 @@ export const notifApi = {
   // Channels (admin)
   listChannels: () =>
     apiGet<{ data: NotifChannel[] }>("/v1/notifications/channels"),
-  createChannel: (ch: Partial<NotifChannel>) =>
+  createChannel: (ch: NotifChannelInput) =>
     apiPost<{ data: { id: string } }>("/v1/notifications/channels", ch),
-  updateChannel: (id: string, ch: Partial<NotifChannel>) =>
+  updateChannel: (id: string, ch: NotifChannelInput) =>
     apiPut<void>(`/v1/notifications/channels/${id}`, ch),
   deleteChannel: (id: string) => apiDelete(`/v1/notifications/channels/${id}`),
   testChannel: (id: string) =>
@@ -228,9 +229,9 @@ export const notifApi = {
 
   // Rules (admin)
   listRules: () => apiGet<{ data: NotifRule[] }>("/v1/notifications/rules"),
-  createRule: (rule: Partial<NotifRule>) =>
+  createRule: (rule: NotifRuleInput) =>
     apiPost<{ data: { id: string } }>("/v1/notifications/rules", rule),
-  updateRule: (id: string, rule: Partial<NotifRule>) =>
+  updateRule: (id: string, rule: NotifRuleInput) =>
     apiPut<void>(`/v1/notifications/rules/${id}`, rule),
   deleteRule: (id: string) => apiDelete(`/v1/notifications/rules/${id}`),
 };

@@ -26,6 +26,7 @@ export interface AppNotification {
   resourceName?: string;
   clusterId?: string;
   createdAt: string;
+  /** Absent means unread (Go omitempty omits false). Treat undefined as false. */
   read?: boolean;
 }
 
@@ -59,6 +60,22 @@ export interface NotifRule {
   updatedBy?: string;
 }
 
+/** Input for creating/updating a channel (only mutable fields). */
+export interface NotifChannelInput {
+  name: string;
+  type: NotifChannelType;
+  config: Record<string, unknown>;
+}
+
+/** Input for creating/updating a rule (only mutable fields). */
+export interface NotifRuleInput {
+  name: string;
+  sourceFilter: NotifSource[];
+  severityFilter: NotifSeverity[];
+  channelId: string;
+  enabled: boolean;
+}
+
 /** Query parameters for the notification feed endpoint. */
 export interface NotifListParams {
   source?: NotifSource;
@@ -89,7 +106,7 @@ export const NOTIF_SEVERITIES: NotifSeverity[] = [
 ];
 
 /** Severity → CSS color variable mapping. */
-export const SEVERITY_COLORS: Record<NotifSeverity, string> = {
+export const NOTIF_SEVERITY_COLORS: Record<NotifSeverity, string> = {
   critical: "var(--danger)",
   warning: "var(--warning)",
   info: "var(--accent)",
