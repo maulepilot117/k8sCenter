@@ -56,7 +56,7 @@ export default function PolicyWizard() {
   useDirtyGuard(dirty);
 
   useEffect(() => {
-    apiGet<EngineStatus>("/v1/policy/status").then((resp) => {
+    apiGet<EngineStatus>("/v1/policies/status").then((resp) => {
       const status = resp.data;
       engineStatus.value = status;
       if (status.detected === "kyverno" || status.detected === "gatekeeper") {

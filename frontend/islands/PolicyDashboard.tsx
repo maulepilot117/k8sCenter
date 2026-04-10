@@ -31,8 +31,8 @@ export default function PolicyDashboard() {
   async function fetchData() {
     try {
       const [statusRes, policiesRes] = await Promise.all([
-        apiGet<EngineStatus>("/v1/policy/status"),
-        apiGet<NormalizedPolicy[]>("/v1/policy/policies"),
+        apiGet<EngineStatus>("/v1/policies/status"),
+        apiGet<NormalizedPolicy[]>("/v1/policies"),
       ]);
       status.value = statusRes.data;
       policies.value = Array.isArray(policiesRes.data) ? policiesRes.data : [];

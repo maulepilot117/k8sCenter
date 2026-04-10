@@ -1,0 +1,133 @@
+apiVersion: wgpolicyk8s.io/v1alpha2
+kind: PolicyReport
+metadata:
+  creationTimestamp: "2026-04-10T01:46:15Z"
+  generation: 11
+  labels:
+    app.kubernetes.io/managed-by: kyverno
+  name: 1a5e056c-6e87-435a-8a0b-403f0a85fdd5
+  namespace: adguard
+  ownerReferences:
+  - apiVersion: apps/v1
+    kind: ReplicaSet
+    name: adguard-755f84d66f
+    uid: 1a5e056c-6e87-435a-8a0b-403f0a85fdd5
+  resourceVersion: "6718492"
+  uid: 5d40b704-5cc8-45d8-a901-e77a0a45d0ff
+results:
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-host-process-containers' passed.
+  policy: disallow-host-process
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-host-process-containers
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-privileged-containers' passed.
+  policy: disallow-privileged-containers
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-privileged-containers
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-check-proc-mount' passed.
+  policy: disallow-proc-mount
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-check-proc-mount
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-selinux-type' passed.
+  policy: disallow-selinux
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-selinux-type
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-selinux-user-role' passed.
+  policy: disallow-selinux
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-selinux-user-role
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-app-armor' passed.
+  policy: restrict-apparmor-profiles
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-app-armor
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-check-seccomp' passed.
+  policy: restrict-seccomp
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-check-seccomp
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+- category: Pod Security Standards (Baseline)
+  message: validation rule 'autogen-check-sysctls' passed.
+  policy: restrict-sysctls
+  properties:
+    process: background scan
+  result: pass
+  rule: autogen-check-sysctls
+  scored: true
+  severity: medium
+  source: kyverno
+  timestamp:
+    nanos: 0
+    seconds: 1775817995
+scope:
+  apiVersion: apps/v1
+  kind: ReplicaSet
+  name: adguard-755f84d66f
+  namespace: adguard
+  uid: 1a5e056c-6e87-435a-8a0b-403f0a85fdd5
+summary:
+  error: 0
+  fail: 0
+  pass: 8
+  skip: 0
+  warn: 0

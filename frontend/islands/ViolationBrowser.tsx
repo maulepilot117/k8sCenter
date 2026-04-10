@@ -37,7 +37,7 @@ export default function ViolationBrowser() {
   async function fetchData() {
     try {
       const res = await apiGet<NormalizedViolation[]>(
-        "/v1/policy/violations",
+        "/v1/policies/violations",
       );
       violations.value = Array.isArray(res.data) ? res.data : [];
       error.value = null;

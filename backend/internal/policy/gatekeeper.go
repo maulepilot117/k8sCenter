@@ -107,9 +107,6 @@ func NormalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKin
 	}
 	blocking := strings.EqualFold(action, "deny")
 
-	// Total violations from status
-	violationCount, _, _ := unstructured.NestedInt64(obj.Object, "status", "totalViolations")
-
 	// Target kinds from spec.match.kinds
 	var targetKinds []string
 	matchKinds, found, _ := unstructured.NestedSlice(obj.Object, "spec", "match", "kinds")
@@ -139,19 +136,23 @@ func NormalizeGatekeeperConstraint(obj *unstructured.Unstructured, constraintKin
 	category := annotations["metadata.gatekeeper.sh/category"]
 
 	return NormalizedPolicy{
-		ID:             fmt.Sprintf("gatekeeper::%s/%s", constraintKind, name),
-		Name:           title,
-		Kind:           constraintKind,
-		Action:         action,
-		Category:       category,
-		Severity:       strings.ToLower(severity),
-		Description:    description,
-		NativeAction:   action,
-		Engine:         EngineGatekeeper,
-		Blocking:       blocking,
-		Ready:          true, // Gatekeeper constraints are ready once created
-		ViolationCount: int(violationCount),
-		TargetKinds:    targetKinds,
+		ID:           fmt.Sprintf("gatekeeper::%s/%s", constraintKind, name),
+		Name:         title,
+		Kind:         constraintKind,
+		Action:       action,
+		Category:     category,
+		Severity:     strings.ToLower(severity),
+		Description:  description,
+		NativeAction: action,
+		Engine:       EngineGatekeeper,
+		Blocking:     blocking,
+		Ready:        true, // Gatekeeper constraints are ready once created
+		// Violations reference policies via "{ConstraintKind}/{name}" — see
+		// extractGatekeeperViolations below, which writes the same shape.
+		// ViolationCount is populated post-RBAC-filter in the handler so it
+		// reflects only violations the requesting user can see.
+		MatchKey:    fmt.Sprintf("%s/%s", constraintKind, name),
+		TargetKinds: targetKinds,
 	}
 }
 

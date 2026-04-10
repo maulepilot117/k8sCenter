@@ -44,6 +44,24 @@ type cachedPolicyData struct {
 
 const policyCacheTTL = 30 * time.Second
 
+// populateViolationCounts returns a copy of policies with ViolationCount
+// populated from the given violations, using MatchKey as the join key. Policies
+// and violations are expected to already be RBAC-filtered for the requesting
+// user so the resulting counts reflect only what that user can see. The input
+// slice is not mutated — callers must use the returned slice.
+func populateViolationCounts(policies []NormalizedPolicy, violations []NormalizedViolation) []NormalizedPolicy {
+	counts := make(map[string]int, len(policies))
+	for _, v := range violations {
+		counts[v.Policy]++
+	}
+	out := make([]NormalizedPolicy, len(policies))
+	copy(out, policies)
+	for i := range out {
+		out[i].ViolationCount = counts[out[i].MatchKey]
+	}
+	return out
+}
+
 // fetchPoliciesAndViolations returns cached policy/violation data, refreshing
 // if the cache is stale. Concurrent callers are coalesced via singleflight.
 // The cache is populated using the service account (full visibility); callers
@@ -214,19 +232,19 @@ func (h *Handler) HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policies, _, err := h.fetchPoliciesAndViolations(r.Context())
+	policies, violations, err := h.fetchPoliciesAndViolations(r.Context())
 	if err != nil {
 		h.Logger.Error("failed to fetch policies", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch policies", "")
 		return
 	}
 
-	// Filter policies by RBAC
+	// Filter both slices by RBAC, then aggregate ViolationCount from the
+	// user's visible violations. populateViolationCounts returns a copy so the
+	// cached slice is never mutated.
 	policies = h.filterPoliciesByRBAC(r.Context(), user, policies)
-
-	// Sort by severity weight descending
-	sorted := make([]NormalizedPolicy, len(policies))
-	copy(sorted, policies)
+	violations = h.filterViolationsByRBAC(r.Context(), user, violations)
+	sorted := populateViolationCounts(policies, violations)
 	sort.Slice(sorted, func(i, j int) bool {
 		wi := severityWeights[sorted[i].Severity]
 		wj := severityWeights[sorted[j].Severity]
@@ -453,7 +471,7 @@ func computeCompliance(policies []NormalizedPolicy, violations []NormalizedViola
 			weight = float64(severityWeights[defaultSeverity])
 		}
 
-		vCount := violationsByPolicy[p.Name]
+		vCount := violationsByPolicy[p.MatchKey]
 		sev := p.Severity
 		sc := bySeverity[sev]
 		sc.Total++

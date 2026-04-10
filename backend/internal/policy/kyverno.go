@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -60,30 +61,59 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 	}
 	blocking := strings.EqualFold(action, "Enforce")
 
-	// Ready status
-	ready, _, _ := unstructured.NestedBool(obj.Object, "status", "ready")
+	// Ready status: Kyverno 1.8+ exposes readiness via status.conditions[type=Ready].
+	ready := false
+	if conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions"); found {
+		for _, c := range conditions {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ctype, _, _ := unstructured.NestedString(cm, "type")
+			if !strings.EqualFold(ctype, "Ready") {
+				continue
+			}
+			cstatus, _, _ := unstructured.NestedString(cm, "status")
+			ready = strings.EqualFold(cstatus, "True")
+			break
+		}
+	}
 
 	// Rule count
 	rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules")
 	ruleCount := len(rules)
 
-	// Extract target kinds from rules
-	var targetKinds []string
+	// Target kinds: Kyverno 1.8+ requires `match.any` or `match.all`, each a slice
+	// of `{resources: {kinds: [...]}}` blocks. Deduped via a set.
+	kindSet := make(map[string]struct{})
+	collectKinds := func(items []interface{}) {
+		for _, item := range items {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if kinds, found, _ := unstructured.NestedStringSlice(m, "resources", "kinds"); found {
+				for _, k := range kinds {
+					kindSet[k] = struct{}{}
+				}
+			}
+		}
+	}
 	for _, rule := range rules {
 		ruleMap, ok := rule.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		matchResources, found, _ := unstructured.NestedMap(ruleMap, "match", "any")
-		if !found {
-			matchResources, _, _ = unstructured.NestedMap(ruleMap, "match", "resources")
+		if anyList, found, _ := unstructured.NestedSlice(ruleMap, "match", "any"); found {
+			collectKinds(anyList)
 		}
-		if matchResources != nil {
-			kinds, found, _ := unstructured.NestedStringSlice(matchResources, "kinds")
-			if found {
-				targetKinds = append(targetKinds, kinds...)
-			}
+		if allList, found, _ := unstructured.NestedSlice(ruleMap, "match", "all"); found {
+			collectKinds(allList)
 		}
+	}
+	var targetKinds []string
+	for k := range kindSet {
+		targetKinds = append(targetKinds, k)
 	}
 
 	// Annotations
@@ -119,7 +149,9 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 		Blocking:     blocking,
 		Ready:        ready,
 		RuleCount:    ruleCount,
-		TargetKinds:  targetKinds,
+		// Violations reference policies by raw k8s name in PolicyReport.results[].policy.
+		MatchKey:    name,
+		TargetKinds: targetKinds,
 	}
 }
 
@@ -155,6 +187,16 @@ func extractKyvernoViolations(report *unstructured.Unstructured) []NormalizedVio
 		return nil
 	}
 
+	// Modern Kyverno writes one PolicyReport per resource, with the resource
+	// identified by the top-level `scope` field ({apiVersion, kind, name, namespace}).
+	// Fall back to the report's own namespace for namespaced reports.
+	reportKind, _, _ := unstructured.NestedString(report.Object, "scope", "kind")
+	reportName, _, _ := unstructured.NestedString(report.Object, "scope", "name")
+	reportNamespace, _, _ := unstructured.NestedString(report.Object, "scope", "namespace")
+	if reportNamespace == "" {
+		reportNamespace = report.GetNamespace()
+	}
+
 	for _, result := range results {
 		resultMap, ok := result.(map[string]interface{})
 		if !ok {
@@ -170,27 +212,32 @@ func extractKyvernoViolations(report *unstructured.Unstructured) []NormalizedVio
 		rule, _, _ := unstructured.NestedString(resultMap, "rule")
 		message, _, _ := unstructured.NestedString(resultMap, "message")
 		severity, _, _ := unstructured.NestedString(resultMap, "severity")
-		timestamp, _, _ := unstructured.NestedString(resultMap, "timestamp")
 		if severity == "" {
 			severity = defaultSeverity
 		}
 
-		// Resource reference — resources is a slice of ObjectReference
-		var resKind, resName, resNamespace string
-		resourcesList, _, _ := unstructured.NestedSlice(resultMap, "resources")
-		if len(resourcesList) > 0 {
-			if resMap, ok := resourcesList[0].(map[string]interface{}); ok {
-				resKind, _, _ = unstructured.NestedString(resMap, "kind")
-				resName, _, _ = unstructured.NestedString(resMap, "name")
-				resNamespace, _, _ = unstructured.NestedString(resMap, "namespace")
-			}
+		// Kyverno writes timestamp as a nested {seconds, nanos} object.
+		timestamp := ""
+		if seconds, found, _ := unstructured.NestedInt64(resultMap, "timestamp", "seconds"); found {
+			nanos, _, _ := unstructured.NestedInt64(resultMap, "timestamp", "nanos")
+			timestamp = time.Unix(seconds, nanos).UTC().Format(time.RFC3339)
 		}
 
-		// Fallback: some reports use a flat resource structure
-		if resKind == "" {
-			resKind, _, _ = unstructured.NestedString(resultMap, "resourceKind")
-			resName, _, _ = unstructured.NestedString(resultMap, "resourceName")
-			resNamespace, _, _ = unstructured.NestedString(resultMap, "resourceNamespace")
+		// Prefer per-result `resources[]` (legacy / ClusterPolicyReport style),
+		// otherwise fall back to the report-level `scope`.
+		resKind, resName, resNamespace := reportKind, reportName, reportNamespace
+		if resourcesList, _, _ := unstructured.NestedSlice(resultMap, "resources"); len(resourcesList) > 0 {
+			if resMap, ok := resourcesList[0].(map[string]interface{}); ok {
+				if k, _, _ := unstructured.NestedString(resMap, "kind"); k != "" {
+					resKind = k
+				}
+				if n, _, _ := unstructured.NestedString(resMap, "name"); n != "" {
+					resName = n
+				}
+				if ns, _, _ := unstructured.NestedString(resMap, "namespace"); ns != "" {
+					resNamespace = ns
+				}
+			}
 		}
 
 		violations = append(violations, NormalizedViolation{
