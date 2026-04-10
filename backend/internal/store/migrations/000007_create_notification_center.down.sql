@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS nc_rules;
+DROP TABLE IF EXISTS nc_channels;
+DROP TABLE IF EXISTS nc_reads;
+DROP TABLE IF EXISTS nc_notifications;
