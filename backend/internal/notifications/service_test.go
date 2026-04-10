@@ -190,3 +190,72 @@ func TestRenderDigestEmail(t *testing.T) {
 		t.Error("digest HTML should contain header")
 	}
 }
+
+func TestRenderDigestEmailEscapesHTML(t *testing.T) {
+	// Verify html/template escapes malicious input (XSS protection)
+	notifications := []Notification{
+		{
+			Source:    SourceAlert,
+			Severity:  SeverityCritical,
+			Title:     "<script>alert('xss')</script>",
+			Message:   "<img src=x onerror=alert(1)>",
+			CreatedAt: time.Now().UTC(),
+		},
+	}
+	html, err := renderDigestEmail(notifications)
+	if err != nil {
+		t.Fatalf("renderDigestEmail failed: %v", err)
+	}
+	// html/template should escape the angle brackets so the browser sees them
+	// as text, not HTML elements. We don't strip "onerror=" — we just ensure
+	// the < > characters are escaped so the tag never executes.
+	if strings.Contains(html, "<script>") {
+		t.Error("digest HTML should escape <script> tags")
+	}
+	if strings.Contains(html, "<img src=x") {
+		t.Error("digest HTML should escape <img> tags")
+	}
+	// Should contain escaped versions
+	if !strings.Contains(html, "&lt;script&gt;") {
+		t.Error("digest HTML should contain HTML-escaped script tags")
+	}
+}
+
+func TestBlockedHeaders(t *testing.T) {
+	// Verify all security-sensitive headers are blocked
+	required := []string{
+		"host",
+		"authorization",
+		"cookie",
+		"x-signature-256",
+		"x-forwarded-for",
+		"x-forwarded-host",
+		"x-forwarded-proto",
+		"content-type",
+		"user-agent",
+	}
+	for _, h := range required {
+		if !blockedHeaders[h] {
+			t.Errorf("blockedHeaders should contain %q", h)
+		}
+	}
+}
+
+func TestSeverityColorFallback(t *testing.T) {
+	// Unknown severity should fall back to info color
+	if got := severityColor(Severity("unknown")); got != ":large_blue_circle:" {
+		t.Errorf("severityColor for unknown should fall back to info color, got %q", got)
+	}
+	if got := severityColor(""); got != ":large_blue_circle:" {
+		t.Errorf("severityColor for empty should fall back to info color, got %q", got)
+	}
+}
+
+func TestNextDigestTimeBoundary(t *testing.T) {
+	// Exactly at 08:00:00 — should advance to tomorrow (uses !t.After(now))
+	exactly := time.Date(2026, 4, 10, 8, 0, 0, 0, time.UTC)
+	next := nextDigestTime(exactly)
+	if next.Day() != 11 {
+		t.Errorf("nextDigestTime at exactly 08:00 should advance to tomorrow, got day %d", next.Day())
+	}
+}
