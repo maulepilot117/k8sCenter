@@ -179,3 +179,58 @@ export const apiPostRaw = <T>(
     body,
     headers: { "Content-Type": contentType },
   });
+
+// --- Notification Center API ---
+
+import type {
+  AppNotification,
+  NotifChannel,
+  NotifListParams,
+  NotifRule,
+} from "@/lib/notif-center-types.ts";
+
+function notifQueryString(params: NotifListParams): string {
+  const p = new URLSearchParams();
+  if (params.source) p.set("source", params.source);
+  if (params.severity) p.set("severity", params.severity);
+  if (params.read) p.set("read", params.read);
+  if (params.since) p.set("since", params.since);
+  if (params.until) p.set("until", params.until);
+  if (params.limit) p.set("limit", String(params.limit));
+  if (params.offset) p.set("offset", String(params.offset));
+  const qs = p.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export const notifApi = {
+  // Feed
+  list: (params: NotifListParams = {}) =>
+    apiGet<{ data: AppNotification[]; metadata: { total: number } }>(
+      `/v1/notifications${notifQueryString(params)}`,
+    ),
+  unreadCount: () =>
+    apiGet<{ data: { count: number } }>("/v1/notifications/unread-count"),
+  markRead: (id: string) => apiPost<void>(`/v1/notifications/${id}/read`),
+  markAllRead: () => apiPost<void>("/v1/notifications/read-all"),
+
+  // Channels (admin)
+  listChannels: () =>
+    apiGet<{ data: NotifChannel[] }>("/v1/notifications/channels"),
+  createChannel: (ch: Partial<NotifChannel>) =>
+    apiPost<{ data: { id: string } }>("/v1/notifications/channels", ch),
+  updateChannel: (id: string, ch: Partial<NotifChannel>) =>
+    apiPut<void>(`/v1/notifications/channels/${id}`, ch),
+  deleteChannel: (id: string) => apiDelete(`/v1/notifications/channels/${id}`),
+  testChannel: (id: string) =>
+    apiPost<{ data: { status: string } }>(
+      `/v1/notifications/channels/${id}/test`,
+    ),
+
+  // Rules (admin)
+  listRules: () => apiGet<{ data: NotifRule[] }>("/v1/notifications/rules"),
+  createRule: (rule: Partial<NotifRule>) =>
+    apiPost<{ data: { id: string } }>("/v1/notifications/rules", rule),
+  updateRule: (id: string, rule: Partial<NotifRule>) =>
+    apiPut<void>(`/v1/notifications/rules/${id}`, rule),
+  deleteRule: (id: string) => apiDelete(`/v1/notifications/rules/${id}`),
+};
