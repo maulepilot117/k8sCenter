@@ -1,9 +1,10 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { subscribe } from "@/lib/ws.ts";
+import { subscribe, wsStatus } from "@/lib/ws.ts";
 import { notifApi } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
+import { resourceHref } from "@/lib/k8s-links.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
 import {
   SeverityDot,
@@ -27,18 +28,25 @@ export default function NotificationBell() {
   const showPanel = useSignal(false);
   const recent = useSignal<AppNotification[]>([]);
   const loading = useSignal(false);
+  const suppressWsUntil = useSignal(0); // timestamp: suppress WS increments after markAllRead
   const panelRef = useRef<HTMLDivElement>(null);
   const { user } = useAuth();
+
+  /** Fetch the absolute unread count from the server. */
+  const fetchUnreadCount = () => {
+    notifApi.unreadCount().then((res) => {
+      unreadCount.value = res.data.count;
+    }).catch(() => {});
+  };
 
   // Fetch initial unread count on mount
   useEffect(() => {
     if (!IS_BROWSER) return;
-    notifApi.unreadCount().then((res) => {
-      unreadCount.value = res.data.count;
-    }).catch(() => {});
+    fetchUnreadCount();
   }, []);
 
-  // Subscribe to WS notifications for real-time badge updates
+  // Subscribe to WS notifications — fetch absolute count instead of blind increment.
+  // This resolves badge drift, reconnect staleness, and markAllRead zombies.
   useEffect(() => {
     if (!IS_BROWSER) return;
     const unsub = subscribe(
@@ -46,21 +54,32 @@ export default function NotificationBell() {
       "notifications",
       "",
       (_eventType, _obj) => {
-        // Increment badge on any new notification
-        unreadCount.value++;
+        // Suppress WS-triggered re-fetches briefly after markAllRead
+        if (Date.now() < suppressWsUntil.value) return;
+        fetchUnreadCount();
       },
     );
     return unsub;
   }, []);
 
-  // Close panel on outside click or Escape
+  // Re-fetch unread count when WS reconnects (covers missed events during disconnect)
   useEffect(() => {
     if (!IS_BROWSER) return;
+    // wsStatus is a Preact signal — subscribe to its changes
+    const checkStatus = () => {
+      if (wsStatus.value === "connected") {
+        fetchUnreadCount();
+      }
+    };
+    // Use effect dependency on wsStatus.value to re-run on changes
+    checkStatus();
+  }, [wsStatus.value]);
+
+  // Close panel on outside click or Escape — only when panel is open
+  useEffect(() => {
+    if (!IS_BROWSER || !showPanel.value) return;
     const handleClickOutside = (e: MouseEvent) => {
-      if (
-        showPanel.value && panelRef.current &&
-        !panelRef.current.contains(e.target as Node)
-      ) {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
         showPanel.value = false;
       }
     };
@@ -73,12 +92,13 @@ export default function NotificationBell() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [showPanel.value]);
 
-  // Fetch recent notifications when panel opens
+  // Fetch recent notifications when panel opens (guarded against double-open)
   const openPanel = async () => {
+    if (loading.value) return; // prevent double-fetch on rapid clicks
     showPanel.value = !showPanel.value;
-    if (showPanel.value && recent.value.length === 0) {
+    if (showPanel.value) {
       loading.value = true;
       try {
         const res = await notifApi.list({ limit: 20 });
@@ -92,16 +112,17 @@ export default function NotificationBell() {
 
   const handleMarkAllRead = async () => {
     try {
+      // Suppress WS increments for 3s to prevent badge resurrection
+      suppressWsUntil.value = Date.now() + 3000;
       await notifApi.markAllRead();
       unreadCount.value = 0;
       recent.value = recent.value.map((n) => ({ ...n, read: true }));
     } catch {
-      // Silently fail
+      suppressWsUntil.value = 0;
     }
   };
 
   const handleClickNotification = async (n: AppNotification) => {
-    // Mark as read
     if (!n.read) {
       try {
         await notifApi.markRead(n.id);
@@ -113,19 +134,22 @@ export default function NotificationBell() {
         // Silently fail
       }
     }
-    // Navigate to resource if available
-    if (n.resourceKind && n.resourceNamespace && n.resourceName) {
-      const kind = n.resourceKind.toLowerCase() + "s";
-      globalThis.location.href =
-        `/workloads/${kind}/${n.resourceNamespace}/${n.resourceName}`;
+    // Navigate using resourceHref which handles irregular plurals correctly
+    if (n.resourceKind && n.resourceName) {
+      const href = resourceHref(
+        n.resourceKind,
+        n.resourceNamespace,
+        n.resourceName,
+      );
+      if (href) {
+        globalThis.location.href = href;
+      }
     }
     showPanel.value = false;
   };
 
-  // Determine "View all" target based on user role
   const isAdmin = user.value?.roles?.includes("admin");
   const viewAllHref = isAdmin ? "/admin/notifications" : "/notifications";
-
   const badgeCount = unreadCount.value > 99 ? "99+" : unreadCount.value;
 
   return (
