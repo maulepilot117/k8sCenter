@@ -1,0 +1,66 @@
+# ArgoCD Application for self-managing k8sCenter.
+#
+# Apply once to bootstrap:
+#   kubectl apply -n argocd -f argocd/k8scenter-application.yaml
+#
+# After that, ArgoCD tracks `main` and keeps the cluster in sync with
+# the Helm chart at helm/kubecenter/ using values-homelab.yaml.
+#
+# Note on image updates: both backend and frontend pin `tag: latest` with
+# `pullPolicy: Always` in values-homelab.yaml. Because the rendered manifest
+# doesn't change when a new image is pushed to GHCR, ArgoCD won't detect
+# drift and won't restart pods on its own. To pick up a new image either:
+#   1. Run `kubectl rollout restart deploy/kubecenter-backend deploy/kubecenter-frontend -n kubecenter`
+#   2. Or install argocd-image-updater to automate registry polling:
+#      https://argocd-image-updater.readthedocs.io/
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8scenter
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/maulepilot117/k8sCenter.git
+    path: helm/kubecenter
+    targetRevision: main
+    helm:
+      releaseName: kubecenter
+      valueFiles:
+        - values-homelab.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kubecenter
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+
+  # The Helm chart bundles kube-prometheus-stack and postgresql as
+  # subcharts. Those CRDs and generated Secrets are owned by their own
+  # controllers and should not trip ArgoCD's drift detection.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
