@@ -53,7 +53,7 @@ func (v *VeleroBackupInput) Validate() []FieldError {
 
 // ToBackup converts the input to an unstructured Velero Backup resource.
 func (v *VeleroBackupInput) ToBackup() *unstructured.Unstructured {
-	spec := map[string]interface{}{}
+	spec := map[string]any{}
 
 	if len(v.IncludedNamespaces) > 0 {
 		spec["includedNamespaces"] = v.IncludedNamespaces
@@ -71,7 +71,7 @@ func (v *VeleroBackupInput) ToBackup() *unstructured.Unstructured {
 		spec["snapshotVolumes"] = *v.SnapshotVolumes
 	}
 
-	metadata := map[string]interface{}{
+	metadata := map[string]any{
 		"name":      v.Name,
 		"namespace": v.Namespace,
 	}
@@ -80,7 +80,7 @@ func (v *VeleroBackupInput) ToBackup() *unstructured.Unstructured {
 	}
 
 	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "velero.io/v1",
 			"kind":       "Backup",
 			"metadata":   metadata,
@@ -139,7 +139,7 @@ func (v *VeleroRestoreInput) Validate() []FieldError {
 
 // ToRestore converts the input to an unstructured Velero Restore resource.
 func (v *VeleroRestoreInput) ToRestore() *unstructured.Unstructured {
-	spec := map[string]interface{}{}
+	spec := map[string]any{}
 
 	if v.BackupName != "" {
 		spec["backupName"] = v.BackupName
@@ -161,10 +161,10 @@ func (v *VeleroRestoreInput) ToRestore() *unstructured.Unstructured {
 	}
 
 	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "velero.io/v1",
 			"kind":       "Restore",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      v.Name,
 				"namespace": v.Namespace,
 			},
@@ -221,7 +221,7 @@ func (v *VeleroScheduleInput) Validate() []FieldError {
 
 // ToSchedule converts the input to an unstructured Velero Schedule resource.
 func (v *VeleroScheduleInput) ToSchedule() *unstructured.Unstructured {
-	template := map[string]interface{}{}
+	template := map[string]any{}
 	if len(v.IncludedNamespaces) > 0 {
 		template["includedNamespaces"] = v.IncludedNamespaces
 	}
@@ -238,7 +238,7 @@ func (v *VeleroScheduleInput) ToSchedule() *unstructured.Unstructured {
 		template["snapshotVolumes"] = *v.SnapshotVolumes
 	}
 
-	spec := map[string]interface{}{
+	spec := map[string]any{
 		"schedule": v.Schedule,
 	}
 	if v.Paused {
@@ -249,10 +249,10 @@ func (v *VeleroScheduleInput) ToSchedule() *unstructured.Unstructured {
 	}
 
 	return &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "velero.io/v1",
 			"kind":       "Schedule",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":      v.Name,
 				"namespace": v.Namespace,
 			},

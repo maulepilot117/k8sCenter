@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/robfig/cron/v3"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -23,8 +25,12 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
+
+// dnsLabelRegex validates DNS label names (RFC 1123).
+var dnsLabelRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 const cacheTTL = 30 * time.Second
 
@@ -34,6 +40,7 @@ type Handler struct {
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	AuditLogger   audit.Logger
+	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 
 	fetchGroup singleflight.Group
@@ -56,6 +63,7 @@ func NewHandler(
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
 	auditLogger audit.Logger,
+	notifService *notifications.NotificationService,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
@@ -63,16 +71,42 @@ func NewHandler(
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
 		AuditLogger:   auditLogger,
+		NotifService:  notifService,
 		Logger:        logger,
 	}
 }
 
-// InvalidateCache clears the cached data.
+// InvalidateCache clears the cached data and emits a notification.
 func (h *Handler) InvalidateCache() {
 	h.cacheMu.Lock()
 	h.cacheGen++
 	h.cachedData = nil
 	h.cacheMu.Unlock()
+
+	if h.NotifService != nil {
+		go h.NotifService.Emit(context.Background(), notifications.Notification{
+			Source:   notifications.SourceVelero,
+			Severity: notifications.SeverityInfo,
+			Title:    "Velero data updated",
+			Message:  "Backup or restore data has changed",
+		})
+	}
+}
+
+// getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
+func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User) (dynamic.Interface, bool) {
+	client, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create impersonating client", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return nil, false
+	}
+	return client, true
+}
+
+// validateDNSLabel validates that a string is a valid DNS label.
+func validateDNSLabel(s string) bool {
+	return len(s) > 0 && len(s) <= 63 && dnsLabelRegex.MatchString(s)
 }
 
 // canAccess checks if the user can access a Velero resource.
@@ -220,18 +254,27 @@ func (h *Handler) HandleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Name == "" {
-		httputil.WriteError(w, http.StatusBadRequest, "name is required", "")
+	// Validate DNS label names
+	if !validateDNSLabel(input.Name) {
+		httputil.WriteError(w, http.StatusBadRequest, "name must be a valid DNS label (lowercase, 1-63 chars)", "")
 		return
 	}
 	if input.Namespace == "" {
 		input.Namespace = "velero"
 	}
+	if !validateDNSLabel(input.Namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace must be a valid DNS label", "")
+		return
+	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	// RBAC pre-check
+	if !h.canAccess(r.Context(), user, "create", "backups", input.Namespace) {
+		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+		return
+	}
+
+	dynClient, ok := h.getImpersonatingClient(w, user)
+	if !ok {
 		return
 	}
 
@@ -289,11 +332,31 @@ func (h *Handler) HandleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	// RBAC pre-check
+	if !h.canAccess(r.Context(), user, "delete", "backups", namespace) {
+		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
 		return
+	}
+
+	dynClient, ok := h.getImpersonatingClient(w, user)
+	if !ok {
+		return
+	}
+
+	// Check for dependent restores that reference this backup
+	restores, err := h.fetchRestores(r.Context())
+	if err == nil {
+		for _, restore := range restores {
+			if restore.BackupName == name && restore.Namespace == namespace {
+				// Only block if restore is in progress
+				if restore.Phase == "InProgress" || restore.Phase == "New" || restore.Phase == "WaitingForPluginOperations" {
+					httputil.WriteError(w, http.StatusConflict,
+						"cannot delete backup with in-progress restore",
+						fmt.Sprintf("restore %s/%s is using this backup", restore.Namespace, restore.Name))
+					return
+				}
+			}
+		}
 	}
 
 	// Create a DeleteBackupRequest to gracefully delete the backup
@@ -455,8 +518,9 @@ func (h *Handler) HandleCreateRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Name == "" {
-		httputil.WriteError(w, http.StatusBadRequest, "name is required", "")
+	// Validate DNS label names
+	if !validateDNSLabel(input.Name) {
+		httputil.WriteError(w, http.StatusBadRequest, "name must be a valid DNS label (lowercase, 1-63 chars)", "")
 		return
 	}
 	if input.BackupName == "" && input.ScheduleName == "" {
@@ -466,12 +530,39 @@ func (h *Handler) HandleCreateRestore(w http.ResponseWriter, r *http.Request) {
 	if input.Namespace == "" {
 		input.Namespace = "velero"
 	}
-
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	if !validateDNSLabel(input.Namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace must be a valid DNS label", "")
 		return
+	}
+
+	// Validate existingResourcePolicy enum
+	if input.ExistingResourcePolicy != "" && !slices.Contains([]string{"none", "update"}, input.ExistingResourcePolicy) {
+		httputil.WriteError(w, http.StatusBadRequest, "existingResourcePolicy must be 'none' or 'update'", "")
+		return
+	}
+
+	// RBAC pre-check
+	if !h.canAccess(r.Context(), user, "create", "restores", input.Namespace) {
+		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+		return
+	}
+
+	dynClient, ok := h.getImpersonatingClient(w, user)
+	if !ok {
+		return
+	}
+
+	// Validate backup exists and is completed (if backupName is specified)
+	if input.BackupName != "" {
+		backup, err := h.getBackup(r.Context(), dynClient, input.Namespace, input.BackupName)
+		if err != nil {
+			httputil.WriteError(w, http.StatusBadRequest, "backup not found", input.BackupName)
+			return
+		}
+		if backup.Phase != "Completed" && backup.Phase != "PartiallyFailed" {
+			httputil.WriteError(w, http.StatusBadRequest, "backup must be Completed or PartiallyFailed", backup.Phase)
+			return
+		}
 	}
 
 	spec := map[string]any{}
@@ -616,8 +707,9 @@ func (h *Handler) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Name == "" {
-		httputil.WriteError(w, http.StatusBadRequest, "name is required", "")
+	// Validate DNS label names
+	if !validateDNSLabel(input.Name) {
+		httputil.WriteError(w, http.StatusBadRequest, "name must be a valid DNS label (lowercase, 1-63 chars)", "")
 		return
 	}
 	if input.Schedule == "" {
@@ -627,6 +719,10 @@ func (h *Handler) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 	if input.Namespace == "" {
 		input.Namespace = "velero"
 	}
+	if !validateDNSLabel(input.Namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace must be a valid DNS label", "")
+		return
+	}
 
 	// Validate cron expression
 	if _, err := cron.ParseStandard(input.Schedule); err != nil {
@@ -634,10 +730,14 @@ func (h *Handler) HandleCreateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	// RBAC pre-check
+	if !h.canAccess(r.Context(), user, "create", "schedules", input.Namespace) {
+		httputil.WriteError(w, http.StatusForbidden, "access denied", "")
+		return
+	}
+
+	dynClient, ok := h.getImpersonatingClient(w, user)
+	if !ok {
 		return
 	}
 
@@ -899,109 +999,158 @@ func (h *Handler) HandleListLocations(w http.ResponseWriter, r *http.Request) {
 // Fetch helpers with caching
 // ============================================================================
 
-func (h *Handler) fetchBackups(ctx context.Context) ([]Backup, error) {
+// fetchAll fetches all Velero data in parallel and caches the result.
+func (h *Handler) fetchAll(ctx context.Context) (*cachedVeleroData, error) {
 	h.cacheMu.RLock()
 	if h.cachedData != nil && time.Since(h.cachedData.fetchedAt) < cacheTTL {
-		backups := h.cachedData.backups
+		data := h.cachedData
 		h.cacheMu.RUnlock()
-		return backups, nil
+		return data, nil
 	}
+	gen := h.cacheGen
 	h.cacheMu.RUnlock()
 
-	result, err, _ := h.fetchGroup.Do("backups", func() (any, error) {
-		return h.doFetchBackups(ctx)
+	result, err, _ := h.fetchGroup.Do("all", func() (any, error) {
+		return h.doFetchAll(ctx, gen)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return result.([]Backup), nil
+	return result.(*cachedVeleroData), nil
 }
 
-func (h *Handler) doFetchBackups(ctx context.Context) ([]Backup, error) {
+func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData, error) {
+	// Add timeout to prevent hanging on slow k8s API
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
 	dynClient := h.K8sClient.BaseDynamicClient()
 
-	list, err := dynClient.Resource(BackupGVR).Namespace("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
+	var (
+		backups   []Backup
+		restores  []Restore
+		schedules []Schedule
+		bsls      []BackupStorageLocation
+		vsls      []VolumeSnapshotLocation
+	)
 
-	backups := make([]Backup, 0, len(list.Items))
-	for _, item := range list.Items {
-		backups = append(backups, parseBackup(&item))
-	}
+	g, gctx := errgroup.WithContext(ctx)
 
-	return backups, nil
-}
-
-func (h *Handler) fetchRestores(ctx context.Context) ([]Restore, error) {
-	result, err, _ := h.fetchGroup.Do("restores", func() (any, error) {
-		dynClient := h.K8sClient.BaseDynamicClient()
-		list, err := dynClient.Resource(RestoreGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	g.Go(func() error {
+		list, err := dynClient.Resource(BackupGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		restores := make([]Restore, 0, len(list.Items))
+		backups = make([]Backup, 0, len(list.Items))
+		for _, item := range list.Items {
+			backups = append(backups, parseBackup(&item))
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		list, err := dynClient.Resource(RestoreGVR).Namespace("").List(gctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		restores = make([]Restore, 0, len(list.Items))
 		for _, item := range list.Items {
 			restores = append(restores, parseRestore(&item))
 		}
-		return restores, nil
+		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return result.([]Restore), nil
-}
 
-func (h *Handler) fetchSchedules(ctx context.Context) ([]Schedule, error) {
-	result, err, _ := h.fetchGroup.Do("schedules", func() (any, error) {
-		dynClient := h.K8sClient.BaseDynamicClient()
-		list, err := dynClient.Resource(ScheduleGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	g.Go(func() error {
+		list, err := dynClient.Resource(ScheduleGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		schedules := make([]Schedule, 0, len(list.Items))
+		schedules = make([]Schedule, 0, len(list.Items))
 		for _, item := range list.Items {
 			schedules = append(schedules, parseSchedule(&item))
 		}
-		return schedules, nil
+		return nil
 	})
+
+	g.Go(func() error {
+		list, err := dynClient.Resource(BackupStorageLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		bsls = make([]BackupStorageLocation, 0, len(list.Items))
+		for _, item := range list.Items {
+			bsls = append(bsls, parseBSL(&item))
+		}
+		return nil
+	})
+
+	g.Go(func() error {
+		list, err := dynClient.Resource(VolumeSnapshotLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		vsls = make([]VolumeSnapshotLocation, 0, len(list.Items))
+		for _, item := range list.Items {
+			vsls = append(vsls, parseVSL(&item))
+		}
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	data := &cachedVeleroData{
+		backups:   backups,
+		restores:  restores,
+		schedules: schedules,
+		locations: &LocationsResponse{
+			BackupStorageLocations:  bsls,
+			VolumeSnapshotLocations: vsls,
+		},
+		fetchedAt: time.Now(),
+	}
+
+	// Store in cache if not invalidated
+	h.cacheMu.Lock()
+	if h.cacheGen == gen {
+		h.cachedData = data
+	}
+	h.cacheMu.Unlock()
+
+	return data, nil
+}
+
+func (h *Handler) fetchBackups(ctx context.Context) ([]Backup, error) {
+	data, err := h.fetchAll(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return result.([]Schedule), nil
+	return data.backups, nil
+}
+
+func (h *Handler) fetchRestores(ctx context.Context) ([]Restore, error) {
+	data, err := h.fetchAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data.restores, nil
+}
+
+func (h *Handler) fetchSchedules(ctx context.Context) ([]Schedule, error) {
+	data, err := h.fetchAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data.schedules, nil
 }
 
 func (h *Handler) fetchLocations(ctx context.Context) (*LocationsResponse, error) {
-	result, err, _ := h.fetchGroup.Do("locations", func() (any, error) {
-		dynClient := h.K8sClient.BaseDynamicClient()
-
-		bslList, err := dynClient.Resource(BackupStorageLocationGVR).Namespace("").List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		bsls := make([]BackupStorageLocation, 0, len(bslList.Items))
-		for _, item := range bslList.Items {
-			bsls = append(bsls, parseBSL(&item))
-		}
-
-		vslList, err := dynClient.Resource(VolumeSnapshotLocationGVR).Namespace("").List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		vsls := make([]VolumeSnapshotLocation, 0, len(vslList.Items))
-		for _, item := range vslList.Items {
-			vsls = append(vsls, parseVSL(&item))
-		}
-
-		return &LocationsResponse{
-			BackupStorageLocations:  bsls,
-			VolumeSnapshotLocations: vsls,
-		}, nil
-	})
+	data, err := h.fetchAll(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return result.(*LocationsResponse), nil
+	return data.locations, nil
 }
 
 // ============================================================================
@@ -1297,14 +1446,4 @@ func computeNextRun(cronExpr string, lastRun *time.Time) *time.Time {
 
 	next := sched.Next(from)
 	return &next
-}
-
-// stringSliceContains checks if a string slice contains a value.
-func stringSliceContains(slice []string, val string) bool {
-	for _, s := range slice {
-		if strings.EqualFold(s, val) {
-			return true
-		}
-	}
-	return false
 }

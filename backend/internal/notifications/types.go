@@ -14,6 +14,7 @@ const (
 	SourceCluster    Source = "cluster"
 	SourceAudit      Source = "audit"
 	SourceLimits     Source = "limits"
+	SourceVelero     Source = "velero"
 )
 
 // Severity indicates how critical a notification is.
