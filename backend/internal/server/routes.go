@@ -161,6 +161,11 @@ func (s *Server) registerRoutes() {
 				s.registerLimitsRoutes(ar)
 			}
 
+			// Velero backup/restore routes — only registered if velero handler is available
+			if s.VeleroHandler != nil {
+				s.registerVeleroRoutes(ar)
+			}
+
 			// Notification center routes
 			if s.NotifCenterHandler != nil {
 				s.registerNotifCenterRoutes(ar)
@@ -270,6 +275,9 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/pdb/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PDBInput{} }))
 		wr.Post("/policy/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.PolicyWizardInput{} }))
 		wr.Post("/namespace-limits/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.NamespaceLimitsInput{} }))
+		wr.Post("/velero-backup/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroBackupInput{} }))
+		wr.Post("/velero-restore/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroRestoreInput{} }))
+		wr.Post("/velero-schedule/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroScheduleInput{} }))
 	})
 }
 
@@ -524,6 +532,41 @@ func (s *Server) registerLimitsRoutes(ar chi.Router) {
 		lr.Get("/status", h.HandleStatus)
 		lr.Get("/namespaces", h.HandleListNamespaces)
 		lr.With(resources.ValidateURLParams).Get("/namespaces/{namespace}", h.HandleGetNamespace)
+	})
+}
+
+func (s *Server) registerVeleroRoutes(ar chi.Router) {
+	h := s.VeleroHandler
+	ar.Route("/velero", func(vr chi.Router) {
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		// Status (read-only, no rate limit needed)
+		vr.Get("/status", h.HandleStatus)
+
+		// Backups
+		vr.Get("/backups", h.HandleListBackups)
+		vr.With(resources.ValidateURLParams).Get("/backups/{namespace}/{name}", h.HandleGetBackup)
+		vr.With(middleware.RateLimit(yamlRL)).Post("/backups", h.HandleCreateBackup)
+		vr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).Delete("/backups/{namespace}/{name}", h.HandleDeleteBackup)
+		vr.With(resources.ValidateURLParams).Get("/backups/{namespace}/{name}/logs", h.HandleGetBackupLogs)
+
+		// Restores
+		vr.Get("/restores", h.HandleListRestores)
+		vr.With(resources.ValidateURLParams).Get("/restores/{namespace}/{name}", h.HandleGetRestore)
+		vr.With(middleware.RateLimit(yamlRL)).Post("/restores", h.HandleCreateRestore)
+
+		// Schedules
+		vr.Get("/schedules", h.HandleListSchedules)
+		vr.With(resources.ValidateURLParams).Get("/schedules/{namespace}/{name}", h.HandleGetSchedule)
+		vr.With(middleware.RateLimit(yamlRL)).Post("/schedules", h.HandleCreateSchedule)
+		vr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).Put("/schedules/{namespace}/{name}", h.HandleUpdateSchedule)
+		vr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).Delete("/schedules/{namespace}/{name}", h.HandleDeleteSchedule)
+		vr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).Post("/schedules/{namespace}/{name}/trigger", h.HandleTriggerSchedule)
+
+		// Locations (read-only)
+		vr.Get("/locations", h.HandleListLocations)
 	})
 }
 

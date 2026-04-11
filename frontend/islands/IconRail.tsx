@@ -27,6 +27,8 @@ const ICONS: Record<string, string> = {
     '<path d="M12.5 3.5a2.5 2.5 0 0 0-5 0V5H5a2.5 2.5 0 0 0-2.5 2.5V10H4a2.5 2.5 0 1 1 0 5H2.5V17.5A2.5 2.5 0 0 0 5 20h2.5v-1.5a2.5 2.5 0 1 1 5 0V20H15a2.5 2.5 0 0 0 2.5-2.5V15H16a2.5 2.5 0 1 1 0-5h1.5V7.5A2.5 2.5 0 0 0 15 5h-2.5V3.5z"/>',
   "git-branch":
     '<line x1="7" y1="7" x2="7" y2="17"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="7" r="2"/><path d="M7 7c0 3 6 3 6 0"/>',
+  archive:
+    '<rect x="3" y="7" width="14" height="10" rx="1"/><path d="M3 10h14"/><path d="M5 4h10v3H5z"/><rect x="8" y="12" width="4" height="2" rx="0.5"/>',
   settings:
     '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4"/>',
 };

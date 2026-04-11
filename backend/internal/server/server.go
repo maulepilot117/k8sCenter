@@ -29,6 +29,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/topology"
+	"github.com/kubecenter/kubecenter/internal/velero"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/internal/wizard"
 	yamlpkg "github.com/kubecenter/kubecenter/internal/yaml"
@@ -69,6 +70,7 @@ type Server struct {
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
+	VeleroHandler      *velero.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -111,6 +113,7 @@ type Deps struct {
 	FluxNotifHandler   *notification.Handler
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
+	VeleroHandler      *velero.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -251,6 +254,11 @@ func New(deps Deps) *Server {
 	// Limits handler (namespace quota/limit range management)
 	if deps.LimitsHandler != nil {
 		s.LimitsHandler = deps.LimitsHandler
+	}
+
+	// Velero handler (backup/restore)
+	if deps.VeleroHandler != nil {
+		s.VeleroHandler = deps.VeleroHandler
 	}
 
 	// Notification center

@@ -30,6 +30,15 @@ const (
 	ActionGitOpsSuspend       Action = "gitops_suspend"
 	ActionGitOpsResume        Action = "gitops_resume"
 	ActionGitOpsRollback      Action = "gitops_rollback"
+
+	// Velero actions
+	ActionVeleroBackupCreate    Action = "velero_backup_create"
+	ActionVeleroBackupDelete    Action = "velero_backup_delete"
+	ActionVeleroRestoreCreate   Action = "velero_restore_create"
+	ActionVeleroScheduleCreate  Action = "velero_schedule_create"
+	ActionVeleroScheduleUpdate  Action = "velero_schedule_update"
+	ActionVeleroScheduleDelete  Action = "velero_schedule_delete"
+	ActionVeleroScheduleTrigger Action = "velero_schedule_trigger"
 )
 
 // Result represents the outcome of an auditable operation.

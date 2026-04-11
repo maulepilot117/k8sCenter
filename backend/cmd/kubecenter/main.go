@@ -41,6 +41,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/storage"
 	appstore "github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/topology"
+	"github.com/kubecenter/kubecenter/internal/velero"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 	"github.com/kubecenter/kubecenter/pkg/version"
 )
@@ -608,6 +609,10 @@ func main() {
 	// Note: Limits checker is created after notification center to enable threshold alerts
 	limitsHandler := limits.NewHandler(informerMgr, accessChecker, logger)
 
+	// Velero backup/restore handler
+	veleroDiscoverer := velero.NewDiscoverer(k8sClient, logger)
+	veleroHandler := velero.NewHandler(k8sClient, veleroDiscoverer, accessChecker, auditLogger, nil, logger)
+
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService
 	var notifCenterHandler *notifications.Handler
@@ -648,6 +653,7 @@ func main() {
 		gitopsHandler.NotifService = notifService
 		scanHandler.NotifService = notifService
 		diagHandler.NotifService = notifService
+		veleroHandler.NotifService = notifService
 
 		// Limits checker — monitors quotas and dispatches threshold notifications
 		limitsChecker = limits.NewChecker(limitsHandler, notifService, limits.DefaultCheckInterval, logger)
@@ -692,6 +698,7 @@ func main() {
 		NotifCenterService: notifService,
 		ScanningHandler:    scanHandler,
 		LimitsHandler:      limitsHandler,
+		VeleroHandler:      veleroHandler,
 		CRDHandler:         crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,

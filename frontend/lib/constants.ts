@@ -574,6 +574,17 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     ],
   },
   {
+    id: "backup",
+    label: "Backup",
+    icon: "archive",
+    href: "/backup",
+    tabs: [
+      { label: "Backups", href: "/backup/backups" },
+      { label: "Restores", href: "/backup/restores" },
+      { label: "Schedules", href: "/backup/schedules" },
+    ],
+  },
+  {
     id: "tools",
     label: "Tools",
     icon: "wrench",
