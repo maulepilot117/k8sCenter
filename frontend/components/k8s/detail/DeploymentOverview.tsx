@@ -3,6 +3,7 @@ import { age } from "@/lib/format.ts";
 import { InfoGrid } from "./InfoGrid.tsx";
 import type { InfoGridItem } from "./InfoGrid.tsx";
 import { ConditionsGrid, SectionTitle } from "./ConditionsGrid.tsx";
+import { VulnerabilityLink } from "./VulnerabilityLink.tsx";
 
 function parseCpuMillis(val: string | undefined): number {
   if (!val || val === "-") return 0;
@@ -98,6 +99,12 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
   return (
     <div>
       <InfoGrid items={items} />
+
+      <VulnerabilityLink
+        namespace={dep.metadata.namespace}
+        kind="Deployment"
+        name={dep.metadata.name}
+      />
 
       {dep.status?.conditions && (
         <ConditionsGrid conditions={dep.status.conditions} />

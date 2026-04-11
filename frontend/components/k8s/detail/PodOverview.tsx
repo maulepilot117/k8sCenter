@@ -3,6 +3,7 @@ import { statusColor } from "@/lib/status-colors.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { ConditionsTable } from "./ConditionsTable.tsx";
 import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";
+import { VulnerabilityLink } from "./VulnerabilityLink.tsx";
 
 function containerStateLabel(state: Record<string, unknown>): string {
   if (state.running) return "Running";
@@ -34,6 +35,12 @@ export function PodOverview({ resource }: { resource: K8sResource }) {
 
   return (
     <div class="space-y-4">
+      <VulnerabilityLink
+        namespace={p.metadata.namespace}
+        kind="Pod"
+        name={p.metadata.name}
+      />
+
       {/* Summary */}
       <div>
         <SectionHeader>Summary</SectionHeader>
