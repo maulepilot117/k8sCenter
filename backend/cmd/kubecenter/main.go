@@ -742,5 +742,10 @@ func main() {
 		limitsChecker.Stop()
 	}
 
+	// Flush pending audit log entries
+	if pgLogger, ok := auditLogger.(*audit.PostgresLogger); ok {
+		pgLogger.Close()
+	}
+
 	logger.Info("kubecenter stopped")
 }
