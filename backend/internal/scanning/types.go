@@ -54,3 +54,33 @@ type VulnListMetadata struct {
 	Total    int             `json:"total"`
 	Severity SeveritySummary `json:"severity"`
 }
+
+// CVEDetail represents an individual vulnerability finding with full metadata.
+type CVEDetail struct {
+	ID               string   `json:"id"`
+	Severity         string   `json:"severity"` // CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN
+	CVSSScore        *float64 `json:"cvssScore"` // nil when unavailable
+	Package          string   `json:"package"`
+	InstalledVersion string   `json:"installedVersion"`
+	FixedVersion     string   `json:"fixedVersion"` // empty = no fix available
+	Title            string   `json:"title"`
+	PrimaryLink      string   `json:"primaryLink"`
+}
+
+// ImageVulnDetail holds detailed vulnerabilities for a single container image.
+type ImageVulnDetail struct {
+	Name            string      `json:"name"`      // image reference (repo:tag)
+	Container       string      `json:"container"` // container name in workload
+	Vulnerabilities []CVEDetail `json:"vulnerabilities"`
+}
+
+// WorkloadVulnDetail is the full detail response for a workload.
+// Summary counts are computed client-side from the vulnerabilities array.
+type WorkloadVulnDetail struct {
+	Namespace   string            `json:"namespace"`
+	Kind        string            `json:"kind"`
+	Name        string            `json:"name"`
+	Scanner     Scanner           `json:"scanner"`
+	LastScanned string            `json:"lastScanned"`
+	Images      []ImageVulnDetail `json:"images"`
+}

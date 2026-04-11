@@ -518,6 +518,7 @@ func (s *Server) registerScanningRoutes(ar chi.Router) {
 		sr.Use(middleware.RateLimit(yamlRL))
 		sr.Get("/status", h.HandleStatus)
 		sr.Get("/vulnerabilities", h.HandleVulnerabilities)
+		sr.With(resources.ValidateURLParams).Get("/vulnerabilities/{namespace}/{kind}/{name}", h.HandleVulnerabilityDetail)
 	})
 }
 

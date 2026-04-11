@@ -19,6 +19,14 @@ import (
 )
 
 // Handler serves security scanning HTTP endpoints.
+//
+// Known limitations carried from existing scanning endpoints (tracked for
+// follow-up; see todos/297 and todos/304):
+//   - Reads use the service account (BaseDynamicClient) plus an SSAR precheck
+//     rather than user impersonation. Stale-authorization window up to the
+//     AccessChecker cache TTL (~5 min).
+//   - Multi-cluster routing (X-Cluster-ID) is not threaded through — all reads
+//     hit the local cluster.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *ScannerDiscoverer
@@ -26,9 +34,10 @@ type Handler struct {
 	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 
-	fetchGroup singleflight.Group
-	cacheMu    sync.RWMutex
-	nsCache    map[string]*cachedNSData // initialized eagerly, never nil
+	fetchGroup  singleflight.Group
+	cacheMu     sync.RWMutex
+	nsCache     map[string]*cachedNSData     // namespace-scoped summary cache
+	detailCache map[string]*cachedDetailData // per-workload detail cache
 }
 
 type cachedNSData struct {
@@ -36,23 +45,31 @@ type cachedNSData struct {
 	fetchedAt time.Time
 }
 
+type cachedDetailData struct {
+	detail    *WorkloadVulnDetail
+	fetchedAt time.Time
+}
+
 const (
-	cacheTTL        = 30 * time.Second
-	cacheMaxEntries = 200 // evict oldest entries beyond this
+	cacheTTL              = 30 * time.Second
+	cacheMaxEntries       = 200 // evict oldest entries beyond this
+	detailCacheMaxEntries = 200
 )
 
 var validNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// InitCache must be called after construction to initialize the cache map.
+// InitCache must be called after construction to initialize the cache maps.
 // This avoids lazy init under locks.
 func (h *Handler) InitCache() {
 	h.nsCache = make(map[string]*cachedNSData)
+	h.detailCache = make(map[string]*cachedDetailData)
 }
 
 // InvalidateCache clears all cached scan data so subsequent requests re-fetch.
 func (h *Handler) InvalidateCache() {
 	h.cacheMu.Lock()
 	h.nsCache = make(map[string]*cachedNSData)
+	h.detailCache = make(map[string]*cachedDetailData)
 	h.cacheMu.Unlock()
 	if h.NotifService != nil {
 		go h.NotifService.Emit(context.Background(), notifications.Notification{

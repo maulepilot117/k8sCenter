@@ -10,7 +10,34 @@ export const SEVERITY_COLORS: Record<string, string> = {
   high: "var(--warning)",
   medium: "var(--accent)",
   low: "var(--text-muted)",
+  unknown: "var(--text-muted)",
 };
+
+/** Badge for a CVE severity with consistent coloring and text labels. */
+export function CVESeverityBadge({ severity }: { severity: string }) {
+  const key = severity.toLowerCase();
+  const color = SEVERITY_COLORS[key] ?? "var(--text-muted)";
+  const label = severity.charAt(0).toUpperCase() +
+    severity.slice(1).toLowerCase();
+  return <ColorBadge label={label} color={color} />;
+}
+
+/** Indicator shown when a CVE's fixedVersion is non-empty. */
+export function FixAvailableBadge({ fixedVersion }: { fixedVersion: string }) {
+  if (!fixedVersion) {
+    return <span class="text-text-muted">&mdash;</span>;
+  }
+  return (
+    <span
+      class="inline-flex items-center gap-1 font-mono text-xs"
+      style={{ color: "var(--success)" }}
+      title="Upgrade available"
+    >
+      <span aria-hidden="true">✓</span>
+      {fixedVersion}
+    </span>
+  );
+}
 
 export function ScannerBadge({ scanner }: { scanner: string }) {
   const labels: Record<string, string> = {

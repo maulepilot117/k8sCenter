@@ -67,3 +67,4 @@ e2e/test-results/
 *.tmp
 *.png
 .superpowers/
+.worktrees
