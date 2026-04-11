@@ -514,6 +514,168 @@ func TestGetTrivyWorkloadVulnDetails_MultipleImages(t *testing.T) {
 	if len(detail.Images) != 2 {
 		t.Fatalf("expected 2 images, got %d", len(detail.Images))
 	}
+
+	// Assert per-image identity: CVE ID should match its container.
+	byContainer := map[string]ImageVulnDetail{}
+	for _, img := range detail.Images {
+		byContainer[img.Container] = img
+	}
+	main, ok := byContainer["main"]
+	if !ok {
+		t.Fatalf("expected image for container 'main', got containers: %v", keys(byContainer))
+	}
+	if main.Name != "myrepo/app:v1" {
+		t.Errorf("main image name: expected %q, got %q", "myrepo/app:v1", main.Name)
+	}
+	if len(main.Vulnerabilities) != 1 || main.Vulnerabilities[0].ID != "CVE-A" {
+		t.Errorf("main CVE: expected [CVE-A], got %+v", main.Vulnerabilities)
+	}
+	sidecar, ok := byContainer["sidecar"]
+	if !ok {
+		t.Fatalf("expected image for container 'sidecar', got containers: %v", keys(byContainer))
+	}
+	if sidecar.Name != "envoy:v1.28" {
+		t.Errorf("sidecar image name: expected %q, got %q", "envoy:v1.28", sidecar.Name)
+	}
+	if len(sidecar.Vulnerabilities) != 1 || sidecar.Vulnerabilities[0].ID != "CVE-B" {
+		t.Errorf("sidecar CVE: expected [CVE-B], got %+v", sidecar.Vulnerabilities)
+	}
+}
+
+func keys(m map[string]ImageVulnDetail) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestGetTrivyWorkloadVulnDetails_TopLevelScoreFallback verifies that when a
+// vulnerability has no nested cvss map but carries a top-level "score" field,
+// that value is used as the CVSS score.
+func TestGetTrivyWorkloadVulnDetails_TopLevelScoreFallback(t *testing.T) {
+	report := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "aquasecurity.github.io/v1alpha1",
+			"kind":       "VulnerabilityReport",
+			"metadata": map[string]interface{}{
+				"name":      "ds-node-agent",
+				"namespace": "default",
+				"labels": map[string]interface{}{
+					"trivy-operator.resource.kind":      "DaemonSet",
+					"trivy-operator.resource.name":      "node-agent",
+					"trivy-operator.resource.namespace": "default",
+					"trivy-operator.container.name":     "agent",
+				},
+			},
+			"report": map[string]interface{}{
+				"artifact": map[string]interface{}{"repository": "agent", "tag": "v1"},
+				"vulnerabilities": []interface{}{
+					map[string]interface{}{
+						"vulnerabilityID": "CVE-TOP",
+						"severity":        "MEDIUM",
+						"resource":        "glibc",
+						"score":           5.5, // top-level, no nested cvss map
+					},
+				},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
+		map[schema.GroupVersionResource]string{trivyVulnReportGVR: "VulnerabilityReportList"},
+		report,
+	)
+
+	detail, err := GetTrivyWorkloadVulnDetails(context.Background(), dynClient, "default", "DaemonSet", "node-agent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(detail.Images) != 1 || len(detail.Images[0].Vulnerabilities) != 1 {
+		t.Fatalf("expected 1 image with 1 CVE, got %+v", detail.Images)
+	}
+	cve := detail.Images[0].Vulnerabilities[0]
+	if cve.CVSSScore == nil || *cve.CVSSScore != 5.5 {
+		t.Errorf("expected CVSS 5.5 from top-level score, got %v", cve.CVSSScore)
+	}
+}
+
+// TestGetTrivyWorkloadVulnDetails_SkipsMalformedEntries ensures the loop
+// silently drops non-map entries and entries missing vulnerabilityID.
+func TestGetTrivyWorkloadVulnDetails_SkipsMalformedEntries(t *testing.T) {
+	report := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "aquasecurity.github.io/v1alpha1",
+			"kind":       "VulnerabilityReport",
+			"metadata": map[string]interface{}{
+				"name":      "deploy-app-main",
+				"namespace": "default",
+				"labels": map[string]interface{}{
+					"trivy-operator.resource.kind":      "Deployment",
+					"trivy-operator.resource.name":      "app",
+					"trivy-operator.resource.namespace": "default",
+					"trivy-operator.container.name":     "main",
+				},
+			},
+			"report": map[string]interface{}{
+				"artifact": map[string]interface{}{"repository": "app", "tag": "v1"},
+				"vulnerabilities": []interface{}{
+					"not-a-map", // non-map entry, should be skipped
+					map[string]interface{}{
+						// missing vulnerabilityID, should be skipped
+						"severity": "HIGH",
+						"resource": "x",
+					},
+					map[string]interface{}{
+						"vulnerabilityID": "CVE-OK",
+						"severity":        "LOW",
+						"resource":        "pkg",
+					},
+				},
+			},
+		},
+	}
+
+	scheme := runtime.NewScheme()
+	dynClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme,
+		map[schema.GroupVersionResource]string{trivyVulnReportGVR: "VulnerabilityReportList"},
+		report,
+	)
+
+	detail, err := GetTrivyWorkloadVulnDetails(context.Background(), dynClient, "default", "Deployment", "app")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(detail.Images) != 1 {
+		t.Fatalf("expected 1 image, got %d", len(detail.Images))
+	}
+	cves := detail.Images[0].Vulnerabilities
+	if len(cves) != 1 {
+		t.Fatalf("expected 1 CVE (malformed entries skipped), got %d: %+v", len(cves), cves)
+	}
+	if cves[0].ID != "CVE-OK" {
+		t.Errorf("expected CVE-OK, got %q", cves[0].ID)
+	}
+}
+
+// TestSelectCVSSScore_DeterministicFallback verifies that when no preferred
+// vendor is present, alphabetical ordering of remaining vendors yields
+// deterministic results regardless of Go's map iteration order.
+func TestSelectCVSSScore_DeterministicFallback(t *testing.T) {
+	cvss := map[string]interface{}{
+		"zzz":    map[string]interface{}{"V3Score": 9.0},
+		"alpine": map[string]interface{}{"V3Score": 5.0},
+		"custom": map[string]interface{}{"V3Score": 7.0},
+	}
+	// Expected: alphabetical first with V3Score = "alpine" → 5.0
+	got := selectCVSSScore(cvss)
+	if got == nil {
+		t.Fatalf("expected non-nil score")
+	}
+	if *got != 5.0 {
+		t.Errorf("expected 5.0 (alpine) via deterministic fallback, got %v", *got)
+	}
 }
 
 func TestGetTrivyWorkloadVulnDetails_EmptyReports(t *testing.T) {

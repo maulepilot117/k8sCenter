@@ -1,16 +1,33 @@
 package scanning
 
 import (
+	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
+
+// imageRefFromArtifact builds a container image reference from a Trivy report's
+// report.artifact fields, falling back to the container name when repository is empty.
+func imageRefFromArtifact(obj map[string]interface{}, containerName string) string {
+	repo, _, _ := unstructured.NestedString(obj, "report", "artifact", "repository")
+	tag, _, _ := unstructured.NestedString(obj, "report", "artifact", "tag")
+	if repo == "" {
+		return containerName
+	}
+	if tag == "" {
+		return repo
+	}
+	return repo + ":" + tag
+}
 
 var trivyVulnReportGVR = schema.GroupVersionResource{
 	Group:    "aquasecurity.github.io",
@@ -58,18 +75,7 @@ func ListTrivyVulnSummaries(ctx context.Context, dynClient dynamic.Interface, na
 		medium, _, _ := unstructured.NestedInt64(obj.Object, "report", "summary", "mediumCount")
 		low, _, _ := unstructured.NestedInt64(obj.Object, "report", "summary", "lowCount")
 
-		// Build image reference from artifact.
-		repo, _, _ := unstructured.NestedString(obj.Object, "report", "artifact", "repository")
-		tag, _, _ := unstructured.NestedString(obj.Object, "report", "artifact", "tag")
-		image := repo
-		if tag != "" {
-			image = repo + ":" + tag
-		}
-
-		// Use container name as fallback image label when artifact is missing.
-		if image == "" {
-			image = container
-		}
+		image := imageRefFromArtifact(obj.Object, container)
 
 		scanTime, _, _ := unstructured.NestedString(obj.Object, "report", "updateTimestamp")
 
@@ -143,46 +149,38 @@ func severityRank(severity string) int {
 }
 
 // selectCVSSScore picks the best CVSS v3 score from Trivy's vendor-keyed CVSS map.
-// Prefers NVD, falls back to known vendors, then to the first available.
-// Returns nil when no CVSS data is present.
+// Prefers NVD, falls back to RedHat/Ubuntu/Debian, then to any remaining vendor
+// in alphabetical order for determinism. Returns nil when no V3Score is present.
+//
+// Trivy's report.vulnerabilities[].cvss is serialized as YAML and decoded via
+// unstructured, so numeric values arrive as float64 — int branches are dead.
 func selectCVSSScore(cvss map[string]interface{}) *float64 {
 	if len(cvss) == 0 {
 		return nil
 	}
-	preferred := []string{"nvd", "redhat", "ubuntu", "debian"}
-	for _, vendor := range preferred {
-		if score := extractV3Score(cvss, vendor); score != nil {
-			return score
+	get := func(vendor string) *float64 {
+		m, _ := cvss[vendor].(map[string]interface{})
+		if f, ok := m["V3Score"].(float64); ok {
+			return &f
+		}
+		return nil
+	}
+	for _, vendor := range []string{"nvd", "redhat", "ubuntu", "debian"} {
+		if s := get(vendor); s != nil {
+			return s
 		}
 	}
-	// Fall back to the first vendor with a score.
+	// Deterministic fallback: sort remaining vendors so the same input always
+	// yields the same output regardless of Go's map iteration order.
+	remaining := make([]string, 0, len(cvss))
 	for vendor := range cvss {
-		if score := extractV3Score(cvss, vendor); score != nil {
-			return score
+		remaining = append(remaining, vendor)
+	}
+	sort.Strings(remaining)
+	for _, vendor := range remaining {
+		if s := get(vendor); s != nil {
+			return s
 		}
-	}
-	return nil
-}
-
-// extractV3Score pulls V3Score from a nested CVSS vendor map.
-func extractV3Score(cvss map[string]interface{}, vendor string) *float64 {
-	vendorMap, ok := cvss[vendor].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	raw, ok := vendorMap["V3Score"]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case float64:
-		return &v
-	case int64:
-		f := float64(v)
-		return &f
-	case int:
-		f := float64(v)
-		return &f
 	}
 	return nil
 }
@@ -190,22 +188,25 @@ func extractV3Score(cvss map[string]interface{}, vendor string) *float64 {
 // GetTrivyWorkloadVulnDetails fetches full CVE details for a specific workload
 // from Trivy VulnerabilityReport CRDs. Returns grouped-by-image results sorted
 // by severity (CRITICAL→LOW→UNKNOWN) then by CVSS score descending.
+//
+// Callers must validate namespace/kind/name before invoking — inputs flow into
+// a label selector and must not contain selector metacharacters. In practice,
+// scanning/handler.go applies regex validation and the resources.ValidateURLParams
+// middleware before this function is reached.
 func GetTrivyWorkloadVulnDetails(
 	ctx context.Context,
 	dynClient dynamic.Interface,
 	namespace, kind, name string,
 ) (*WorkloadVulnDetail, error) {
-	// Filter reports via label selectors. Trivy labels use these keys:
-	//   trivy-operator.resource.namespace
-	//   trivy-operator.resource.kind
-	//   trivy-operator.resource.name
-	labelSelector := fmt.Sprintf(
-		"trivy-operator.resource.namespace=%s,trivy-operator.resource.kind=%s,trivy-operator.resource.name=%s",
-		namespace, kind, name,
-	)
+	// Build the label selector via the typed API so it can't be mis-escaped.
+	selector := labels.SelectorFromSet(labels.Set{
+		"trivy-operator.resource.namespace": namespace,
+		"trivy-operator.resource.kind":      kind,
+		"trivy-operator.resource.name":      name,
+	}).String()
 
 	list, err := dynClient.Resource(trivyVulnReportGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelSelector,
+		LabelSelector: selector,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing trivy vulnerability reports for %s/%s/%s: %w", namespace, kind, name, err)
@@ -216,24 +217,15 @@ func GetTrivyWorkloadVulnDetails(
 		Kind:      kind,
 		Name:      name,
 		Scanner:   ScannerTrivy,
-		Images:    []ImageVulnDetail{},
+		Images:    make([]ImageVulnDetail, 0, len(list.Items)),
 	}
 
 	for i := range list.Items {
 		obj := &list.Items[i]
-		labels := obj.GetLabels()
-		container := labels["trivy-operator.container.name"]
+		reportLabels := obj.GetLabels()
+		container := reportLabels["trivy-operator.container.name"]
 
-		// Build image reference from artifact.
-		repo, _, _ := unstructured.NestedString(obj.Object, "report", "artifact", "repository")
-		tag, _, _ := unstructured.NestedString(obj.Object, "report", "artifact", "tag")
-		image := repo
-		if tag != "" {
-			image = repo + ":" + tag
-		}
-		if image == "" {
-			image = container
-		}
+		image := imageRefFromArtifact(obj.Object, container)
 
 		scanTime, _, _ := unstructured.NestedString(obj.Object, "report", "updateTimestamp")
 		if scanTime > detail.LastScanned {
@@ -256,23 +248,22 @@ func GetTrivyWorkloadVulnDetails(
 		}
 
 		// Sort CVEs: severity asc (0=critical first), CVSS desc, ID asc.
-		sort.SliceStable(cves, func(i, j int) bool {
-			si, sj := severityRank(cves[i].Severity), severityRank(cves[j].Severity)
-			if si != sj {
-				return si < sj
+		// Comparator defines a total order so stability isn't required.
+		slices.SortFunc(cves, func(a, b CVEDetail) int {
+			if n := cmp.Compare(severityRank(a.Severity), severityRank(b.Severity)); n != 0 {
+				return n
 			}
-			ci := float64(0)
-			if cves[i].CVSSScore != nil {
-				ci = *cves[i].CVSSScore
+			ai, bi := float64(0), float64(0)
+			if a.CVSSScore != nil {
+				ai = *a.CVSSScore
 			}
-			cj := float64(0)
-			if cves[j].CVSSScore != nil {
-				cj = *cves[j].CVSSScore
+			if b.CVSSScore != nil {
+				bi = *b.CVSSScore
 			}
-			if ci != cj {
-				return ci > cj
+			if n := cmp.Compare(bi, ai); n != 0 { // descending on score
+				return n
 			}
-			return cves[i].ID < cves[j].ID
+			return cmp.Compare(a.ID, b.ID)
 		})
 
 		detail.Images = append(detail.Images, ImageVulnDetail{
@@ -292,9 +283,11 @@ func extractCVEDetail(v map[string]interface{}) CVEDetail {
 		return s
 	}
 
+	// Trivy emits severities in uppercase; severityRank normalizes case at
+	// sort time as defense-in-depth, so ToUpper here would be redundant.
 	cve := CVEDetail{
 		ID:               getStr("vulnerabilityID"),
-		Severity:         strings.ToUpper(getStr("severity")),
+		Severity:         getStr("severity"),
 		Package:          getStr("resource"),
 		InstalledVersion: getStr("installedVersion"),
 		FixedVersion:     getStr("fixedVersion"),

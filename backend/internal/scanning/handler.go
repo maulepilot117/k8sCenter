@@ -2,7 +2,6 @@ package scanning
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -21,6 +19,14 @@ import (
 )
 
 // Handler serves security scanning HTTP endpoints.
+//
+// Known limitations carried from existing scanning endpoints (tracked for
+// follow-up; see todos/297 and todos/304):
+//   - Reads use the service account (BaseDynamicClient) plus an SSAR precheck
+//     rather than user impersonation. Stale-authorization window up to the
+//     AccessChecker cache TTL (~5 min).
+//   - Multi-cluster routing (X-Cluster-ID) is not threaded through — all reads
+//     hit the local cluster.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
 	Discoverer    *ScannerDiscoverer
@@ -28,9 +34,10 @@ type Handler struct {
 	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 
-	fetchGroup singleflight.Group
-	cacheMu    sync.RWMutex
-	nsCache    map[string]*cachedNSData // initialized eagerly, never nil
+	fetchGroup  singleflight.Group
+	cacheMu     sync.RWMutex
+	nsCache     map[string]*cachedNSData     // namespace-scoped summary cache
+	detailCache map[string]*cachedDetailData // per-workload detail cache
 }
 
 type cachedNSData struct {
@@ -38,23 +45,31 @@ type cachedNSData struct {
 	fetchedAt time.Time
 }
 
+type cachedDetailData struct {
+	detail    *WorkloadVulnDetail
+	fetchedAt time.Time
+}
+
 const (
-	cacheTTL        = 30 * time.Second
-	cacheMaxEntries = 200 // evict oldest entries beyond this
+	cacheTTL              = 30 * time.Second
+	cacheMaxEntries       = 200 // evict oldest entries beyond this
+	detailCacheMaxEntries = 200
 )
 
 var validNamespace = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// InitCache must be called after construction to initialize the cache map.
+// InitCache must be called after construction to initialize the cache maps.
 // This avoids lazy init under locks.
 func (h *Handler) InitCache() {
 	h.nsCache = make(map[string]*cachedNSData)
+	h.detailCache = make(map[string]*cachedDetailData)
 }
 
 // InvalidateCache clears all cached scan data so subsequent requests re-fetch.
 func (h *Handler) InvalidateCache() {
 	h.cacheMu.Lock()
 	h.nsCache = make(map[string]*cachedNSData)
+	h.detailCache = make(map[string]*cachedDetailData)
 	h.cacheMu.Unlock()
 	if h.NotifService != nil {
 		go h.NotifService.Emit(context.Background(), notifications.Notification{
@@ -249,75 +264,6 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 		Vulnerabilities: vulns,
 		Summary:         computeMetadata(vulns),
 	})
-}
-
-// validWorkloadKind limits accepted resource kinds in the detail endpoint to prevent
-// free-form path injection into the Kubernetes API.
-var validWorkloadKind = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{1,62}$`)
-
-// validWorkloadName matches standard DNS-1123 subdomain (Kubernetes resource name).
-var validWorkloadName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$`)
-
-// HandleVulnerabilityDetail returns full CVE details for a specific workload.
-// Route: GET /v1/scanning/vulnerabilities/{namespace}/{kind}/{name}
-func (h *Handler) HandleVulnerabilityDetail(w http.ResponseWriter, r *http.Request) {
-	user, ok := httputil.RequireUser(w, r)
-	if !ok {
-		return
-	}
-
-	namespace := chi.URLParam(r, "namespace")
-	kind := chi.URLParam(r, "kind")
-	name := chi.URLParam(r, "name")
-
-	if !validNamespace.MatchString(namespace) {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace", "")
-		return
-	}
-	if !validWorkloadKind.MatchString(kind) {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid resource kind", "")
-		return
-	}
-	if !validWorkloadName.MatchString(name) {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid resource name", "")
-		return
-	}
-
-	// RBAC: require Trivy access. Kubescape CVE-level detail is not supported.
-	if !h.canAccessTrivy(r.Context(), user, namespace) {
-		httputil.WriteError(w, http.StatusForbidden,
-			fmt.Sprintf("access denied to vulnerability reports in namespace %q", namespace), "")
-		return
-	}
-
-	// Check scanner status. If only Kubescape is available, return a helpful message.
-	status := h.Discoverer.Status()
-	if status.Trivy == nil || !status.Trivy.Available {
-		httputil.WriteError(w, http.StatusNotImplemented,
-			"CVE-level detail requires Trivy Operator; Kubescape summaries only expose severity totals", "")
-		return
-	}
-
-	// Add 30s timeout to prevent hanging on slow API servers.
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	dynClient := h.K8sClient.BaseDynamicClient()
-	detail, err := GetTrivyWorkloadVulnDetails(ctx, dynClient, namespace, kind, name)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			h.Logger.Warn("vulnerability detail fetch timed out",
-				"namespace", namespace, "kind", kind, "name", name)
-			httputil.WriteError(w, http.StatusGatewayTimeout, "timed out fetching vulnerability details", "")
-			return
-		}
-		h.Logger.Error("failed to fetch vulnerability detail",
-			"namespace", namespace, "kind", kind, "name", name, "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch vulnerability details", "")
-		return
-	}
-
-	httputil.WriteData(w, detail)
 }
 
 // canAccessTrivy checks if the user can list Trivy VulnerabilityReports in the namespace.
