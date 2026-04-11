@@ -88,7 +88,6 @@ export interface VulnDetailSummary {
   low: number;
   unknown: number;
   fixable: number;
-  unfixable: number;
   total: number;
 }
 
@@ -103,7 +102,6 @@ export function computeVulnSummary(
     low: 0,
     unknown: 0,
     fixable: 0,
-    unfixable: 0,
     total: 0,
   };
   for (const img of images) {
@@ -125,25 +123,8 @@ export function computeVulnSummary(
         default:
           s.unknown++;
       }
-      if (v.fixedVersion) {
-        s.fixable++;
-      } else {
-        s.unfixable++;
-      }
+      if (v.fixedVersion) s.fixable++;
     }
   }
   return s;
-}
-
-const SEVERITY_RANK: Record<Severity, number> = {
-  CRITICAL: 0,
-  HIGH: 1,
-  MEDIUM: 2,
-  LOW: 3,
-  UNKNOWN: 4,
-};
-
-/** Severity rank for sorting (lower = more severe). Handles unknown values. */
-export function severityRank(severity: string): number {
-  return SEVERITY_RANK[severity as Severity] ?? 4;
 }
