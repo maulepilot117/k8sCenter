@@ -52,8 +52,9 @@ const DANGER_STATUSES = new Set([
 
 const NEUTRAL_STATUSES = new Set(["unknown", "not ready"]);
 
-/** Maps a k8s status string to a semantic variant. */
-function statusVariant(status: string): StatusVariant {
+/** Maps a k8s status string to a semantic variant. Undefined → neutral. */
+function statusVariant(status: string | undefined): StatusVariant {
+  if (!status) return "neutral";
   const s = status.toLowerCase();
   if (SUCCESS_STATUSES.has(s)) return "success";
   if (WARNING_STATUSES.has(s)) return "warning";
@@ -62,13 +63,15 @@ function statusVariant(status: string): StatusVariant {
   return "info";
 }
 
-/** Returns Tailwind classes for a given status string. */
-export function statusColor(status: string): string {
+/** Returns Tailwind classes for a given status string. Undefined → neutral. */
+export function statusColor(status: string | undefined): string {
   return VARIANT_CLASSES[statusVariant(status)];
 }
 
 /** Returns inline style object for a given status string using CSS variables. */
-export function statusStyle(status: string): Record<string, string> {
+export function statusStyle(
+  status: string | undefined,
+): Record<string, string> {
   const v = statusVariant(status);
   const map: Record<StatusVariant, Record<string, string>> = {
     success: { background: "var(--success-dim)", color: "var(--success)" },
