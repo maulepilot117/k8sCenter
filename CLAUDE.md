@@ -79,6 +79,7 @@ k8scenter/
 │       ├── auth/             # JWT, local/OIDC/LDAP providers, RBAC checker, sessions
 │       ├── k8s/              # ClientFactory, ClusterRouter, InformerManager, resources/ (33 handler files)
 │       ├── store/            # PostgreSQL persistence (users, settings, clusters, audit, encrypt)
+│       ├── certmanager/      # cert-manager CRD discovery, certificate/issuer inventory, renew/reissue, expiry poller
 │       ├── diagnostics/      # Diagnostic rules engine, blast radius BFS, resolver
 │       ├── loki/             # Loki discovery, LogQL proxy, namespace enforcement, WebSocket tail
 │       ├── policy/           # Kyverno + Gatekeeper discovery, adapters, compliance scoring
@@ -146,6 +147,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
 - Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
 - Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)
+- Certificates: `GET /certificates/{status,certificates,certificates/:ns/:name,issuers,clusterissuers,expiring}`, `POST /certificates/certificates/:ns/:name/{renew,reissue}` (cert-manager, RBAC-filtered)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
@@ -308,6 +310,13 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Compliance trend storage: daily PostgreSQL snapshots + SVG trend chart (#150)
   - Argo CD ApplicationSet support: list, detail, CRUD actions (#151)
   - Flux Notification Controller support: Provider, Alert & Receiver CRUD (#152, #153)
+- **Phase 11A (Cert-Manager Observatory):** COMPLETE
+  - New `internal/certmanager/` package: CRD discovery, normalized types, dynamic client reads, singleflight + 30s cache, RBAC filtering via `CanAccessGroupResource`
+  - 8 HTTP endpoints: `GET /certificates/{status,certificates,certificates/{ns}/{name},issuers,clusterissuers,expiring}`, `POST /certificates/certificates/{ns}/{name}/{renew,reissue}`
+  - Background expiry poller (60s tick, local cluster only) emits `certificate.expiring`/`expired`/`failed` events to Notification Center with `(uid, threshold)` dedupe
+  - 3 frontend islands: CertificatesList, CertificateDetail (with Renew/Re-issue actions), IssuersList
+  - 4 routes under `/security/certificates/*` with SubNav tab and command palette quick actions
+  - Theme-compliant: Tailwind semantic token classes for all colors
 
 ## Future Features (Roadmap)
 
@@ -317,9 +326,10 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **2. Git commit display** — Git provider API integration for commit messages in GitOps revision history (PR #155)
 - [x] **3. Diff view** — compare manifests between GitOps revisions (PR #156)
 - [x] **4. Resource Quota & LimitRange Management** — namespace quota wizards, utilization vs. quota visualization, overage warnings (PR #164)
-- [ ] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
+- [x] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
 - [ ] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS status, circuit breaker config
-- [ ] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management
+- [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
+- [ ] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards, configurable expiry thresholds
 - [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
 - [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
 

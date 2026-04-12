@@ -166,6 +166,11 @@ func (s *Server) registerRoutes() {
 				s.registerVeleroRoutes(ar)
 			}
 
+			// Cert-Manager routes — only registered if cert-manager handler is available
+			if s.CertManagerHandler != nil {
+				s.registerCertManagerRoutes(ar)
+			}
+
 			// Notification center routes
 			if s.NotifCenterHandler != nil {
 				s.registerNotifCenterRoutes(ar)
@@ -568,6 +573,29 @@ func (s *Server) registerVeleroRoutes(ar chi.Router) {
 
 		// Locations (read-only)
 		vr.Get("/locations", h.HandleListLocations)
+	})
+}
+
+func (s *Server) registerCertManagerRoutes(ar chi.Router) {
+	h := s.CertManagerHandler
+	ar.Route("/certificates", func(cr chi.Router) {
+		// Read endpoints
+		cr.Get("/status", h.HandleStatus)
+		cr.Get("/certificates", h.HandleListCertificates)
+		cr.With(resources.ValidateURLParams).Get("/certificates/{namespace}/{name}", h.HandleGetCertificate)
+		cr.Get("/issuers", h.HandleListIssuers)
+		cr.Get("/clusterissuers", h.HandleListClusterIssuers)
+		cr.Get("/expiring", h.HandleListExpiring)
+
+		// Write endpoints (rate-limited)
+		yamlRL := s.YAMLRateLimiter
+		if yamlRL == nil {
+			yamlRL = s.RateLimiter
+		}
+		cr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).
+			Post("/certificates/{namespace}/{name}/renew", h.HandleRenew)
+		cr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).
+			Post("/certificates/{namespace}/{name}/reissue", h.HandleReissue)
 	})
 }
 

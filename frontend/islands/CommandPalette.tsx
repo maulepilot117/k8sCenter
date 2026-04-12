@@ -83,6 +83,11 @@ function buildSearchIndex(): SearchItem[] {
     { label: "View ApplicationSets", href: "/gitops/applicationsets" },
     { label: "View GitOps Notifications", href: "/gitops/notifications" },
     { label: "View Vulnerabilities", href: "/security/vulnerabilities" },
+    { label: "View Certificates", href: "/security/certificates" },
+    {
+      label: "View Expiring Certificates",
+      href: "/security/certificates?status=expiring",
+    },
     { label: "View Notifications", href: "/notifications" },
     { label: "Notification Channels", href: "/admin/notifications/channels" },
     { label: "Notification Rules", href: "/admin/notifications/rules" },
