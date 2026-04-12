@@ -154,14 +154,13 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 	}
 
 	c := rec.Certificate
-	title := fmt.Sprintf("Certificate expiring: %s/%s", c.Namespace, c.Name)
-	var msg string
+	var title, msg string
 	if rec.Threshold == thresholdExpired {
-		title = fmt.Sprintf("Certificate expired: %s/%s", c.Namespace, c.Name)
-		msg = fmt.Sprintf("Certificate %s/%s has already expired", c.Namespace, c.Name)
+		title = "Certificate expired (critical)"
+		msg = "A certificate has already expired"
 	} else {
-		msg = fmt.Sprintf("Certificate %s/%s expires in %d day(s) (issuer: %s)",
-			c.Namespace, c.Name, *c.DaysRemaining, c.IssuerRef.Name)
+		title = fmt.Sprintf("Certificate expiring (%s)", rec.Severity)
+		msg = fmt.Sprintf("A certificate expires in %d day(s)", *c.DaysRemaining)
 	}
 
 	p.notifService.Emit(ctx, notifications.Notification{
@@ -208,6 +207,7 @@ func (p *Poller) tick(ctx context.Context) {
 		return
 	}
 
+	seen := make(map[string]bool, len(list.Items))
 	for i := range list.Items {
 		cert, err := normalizeCertificate(&list.Items[i])
 		if err != nil {
@@ -219,9 +219,20 @@ func (p *Poller) tick(ctx context.Context) {
 			continue
 		}
 
+		seen[cert.UID] = true
+
 		records := p.check(cert)
 		for _, rec := range records {
 			p.emit(ctx, rec)
 		}
 	}
+
+	// Prune stale UIDs from dedupe map
+	p.mu.Lock()
+	for uid := range p.dedupe {
+		if !seen[uid] {
+			delete(p.dedupe, uid)
+		}
+	}
+	p.mu.Unlock()
 }

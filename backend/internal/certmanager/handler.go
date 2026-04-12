@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -478,30 +479,57 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch CertificateRequests for this certificate
-	crList, err := dynClient.Resource(CertificateRequestGVR).Namespace(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("cert-manager.io/certificate-name=%s", name),
+	crSel := labels.Set{"cert-manager.io/certificate-name": name}.String()
+
+	// Fetch CRs, Orders, Challenges in parallel
+	g, gCtx := errgroup.WithContext(ctx)
+
+	var crList *unstructured.UnstructuredList
+	g.Go(func() error {
+		var fetchErr error
+		crList, fetchErr = dynClient.Resource(CertificateRequestGVR).Namespace(ns).List(gCtx, metav1.ListOptions{
+			LabelSelector: crSel,
+		})
+		return fetchErr
 	})
-	if err != nil {
-		h.Logger.Error("failed to list certificate requests", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to fetch certificate requests", "")
-		return
+
+	var orderList *unstructured.UnstructuredList
+	g.Go(func() error {
+		var fetchErr error
+		orderList, fetchErr = dynClient.Resource(OrderGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
+		return fetchErr
+	})
+
+	var challengeList *unstructured.UnstructuredList
+	g.Go(func() error {
+		var fetchErr error
+		challengeList, fetchErr = dynClient.Resource(ChallengeGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
+		return fetchErr
+	})
+
+	if err := g.Wait(); err != nil {
+		h.Logger.Debug("sub-resource fetch partial failure", "error", err)
 	}
 
-	certRequests := make([]CertificateRequest, 0, len(crList.Items))
-	crUIDs := make(map[string]bool, len(crList.Items))
-	for i := range crList.Items {
-		cr := normalizeCertRequest(&crList.Items[i])
-		certRequests = append(certRequests, cr)
-		crUIDs[cr.UID] = true
+	// Process CertificateRequests
+	var certRequests []CertificateRequest
+	crUIDs := make(map[string]bool)
+	if crList != nil {
+		certRequests = make([]CertificateRequest, 0, len(crList.Items))
+		for i := range crList.Items {
+			cr := normalizeCertRequest(&crList.Items[i])
+			certRequests = append(certRequests, cr)
+			crUIDs[cr.UID] = true
+		}
+	} else {
+		certRequests = []CertificateRequest{}
 	}
 
-	// Fetch Orders owned by the CertificateRequests
-	orderList, err := dynClient.Resource(OrderGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+	// Filter Orders owned by the CertificateRequests
 	var orders []Order
-	var orderUIDs map[string]bool
-	if err == nil {
+	orderUIDs := make(map[string]bool)
+	if orderList != nil {
 		orders = make([]Order, 0)
-		orderUIDs = make(map[string]bool)
 		for i := range orderList.Items {
 			owners := orderList.Items[i].GetOwnerReferences()
 			for _, ref := range owners {
@@ -514,15 +542,12 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		h.Logger.Debug("failed to list orders", "error", err)
 		orders = []Order{}
-		orderUIDs = map[string]bool{}
 	}
 
-	// Fetch Challenges owned by the Orders
-	challengeList, err := dynClient.Resource(ChallengeGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+	// Filter Challenges owned by the Orders
 	var challenges []Challenge
-	if err == nil {
+	if challengeList != nil {
 		challenges = make([]Challenge, 0)
 		for i := range challengeList.Items {
 			owners := challengeList.Items[i].GetOwnerReferences()
@@ -534,7 +559,6 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		h.Logger.Debug("failed to list challenges", "error", err)
 		challenges = []Challenge{}
 	}
 
@@ -691,7 +715,7 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 	if lastErr != nil {
 		h.Logger.Error("failed to renew certificate", "namespace", ns, "name", name, "error", lastErr)
 		h.auditLog(r, user, audit.ActionCertRenew, "Certificate", ns, name, audit.ResultFailure)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to renew certificate", lastErr.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to renew certificate", "")
 		return
 	}
 
@@ -837,7 +861,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	if err := cs.CoreV1().Secrets(ns).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
 		h.Logger.Error("failed to delete secret", "namespace", ns, "name", secretName, "error", err)
 		h.auditLog(r, user, audit.ActionCertReissue, "Certificate", ns, name, audit.ResultFailure)
-		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete backing secret", err.Error())
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to delete backing secret", "")
 		return
 	}
 

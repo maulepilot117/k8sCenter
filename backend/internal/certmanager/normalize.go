@@ -249,7 +249,7 @@ func normalizeOrder(u *unstructured.Unstructured) Order {
 	if owners, ok := obj["metadata"].(map[string]any)["ownerReferences"].([]any); ok {
 		for _, o := range owners {
 			if om, ok := o.(map[string]any); ok {
-				if kind, _ := om["kind"].(string); kind == "Certificate" {
+				if kind, _ := om["kind"].(string); kind == "CertificateRequest" {
 					crName, _ = om["name"].(string)
 					break
 				}
