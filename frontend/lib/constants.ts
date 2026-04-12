@@ -544,6 +544,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
       { label: "Violations", href: "/security/violations" },
       { label: "Compliance", href: "/security/compliance" },
       { label: "Vulnerabilities", href: "/security/vulnerabilities" },
+      { label: "Certificates", href: "/security/certificates" },
     ],
   },
   {
