@@ -137,7 +137,7 @@ export default function CertificatesList() {
                 <tr key={c.uid} class="hover:bg-hover/30">
                   <td class="px-3 py-2">
                     <a
-                      href={`/security/certificates/certificates/${c.namespace}/${c.name}`}
+                      href={`/security/certificates/${c.namespace}/${c.name}`}
                       class="font-medium text-brand hover:underline"
                     >
                       {c.name}
