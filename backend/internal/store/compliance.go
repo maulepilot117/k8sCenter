@@ -48,7 +48,7 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 		ON CONFLICT (cluster_id, snapshot_date) DO UPDATE SET
 			overall_score = EXCLUDED.overall_score,
 			payload = EXCLUDED.payload,
-			created_at = NOW()`,
+			updated_at = NOW()`,
 		snap.Date, snap.ClusterID, snap.OverallScore, payload)
 	if err != nil {
 		return fmt.Errorf("insert compliance snapshot: %w", err)
@@ -59,6 +59,9 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 // QueryHistory returns snapshots for a cluster within the last N days.
 // Returns sparse data (only days with snapshots); the frontend fills gaps.
 func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, days int) ([]ComplianceSnapshot, error) {
+	if days < 1 {
+		days = 1
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT snapshot_date, overall_score,
 		       COALESCE((payload->>'pass')::int, 0),
