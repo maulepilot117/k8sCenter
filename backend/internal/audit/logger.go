@@ -39,6 +39,10 @@ const (
 	ActionVeleroScheduleUpdate  Action = "velero_schedule_update"
 	ActionVeleroScheduleDelete  Action = "velero_schedule_delete"
 	ActionVeleroScheduleTrigger Action = "velero_schedule_trigger"
+
+	// Cert-manager actions
+	ActionCertRenew   Action = "cert_renew"
+	ActionCertReissue Action = "cert_reissue"
 )
 
 // Result represents the outcome of an auditable operation.
