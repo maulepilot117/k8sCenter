@@ -50,6 +50,13 @@ postgresql:
     password: "k8sC3nterDB2026"
     database: k8scenter
   primary:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
     persistence:
       storageClass: local-path
       size: 5Gi

@@ -54,8 +54,15 @@ export default function ComplianceDashboard() {
 
   async function fetchData() {
     try {
-      const res = await apiGet<ComplianceScore[]>("/v1/policies/compliance");
-      scores.value = Array.isArray(res.data) ? res.data : [];
+      const res = await apiGet<ComplianceScore | ComplianceScore[]>(
+        "/v1/policies/compliance",
+      );
+      // Backend returns a single object (cluster-wide) or an array
+      scores.value = Array.isArray(res.data)
+        ? res.data
+        : res.data
+        ? [res.data]
+        : [];
       error.value = null;
     } catch {
       error.value = "Failed to load compliance data";
@@ -82,9 +89,11 @@ export default function ComplianceDashboard() {
 
   if (!IS_BROWSER) return null;
 
-  const clusterScore = scores.value.find((s) => s.scope === "cluster");
+  const clusterScore = scores.value.find((s) =>
+    s.scope === "" || s.scope === "cluster"
+  );
   const nsScores = scores.value
-    .filter((s) => s.scope !== "cluster")
+    .filter((s) => s.scope !== "" && s.scope !== "cluster")
     .sort((a, b) => a.score - b.score);
 
   return (
