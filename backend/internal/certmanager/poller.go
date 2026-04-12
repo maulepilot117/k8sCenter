@@ -64,6 +64,7 @@ type emitRecord struct {
 type Poller struct {
 	k8s          *k8s.ClientFactory
 	disc         *Discoverer
+	handler      *Handler
 	notifService *notifications.NotificationService
 	logger       *slog.Logger
 
@@ -71,11 +72,12 @@ type Poller struct {
 	dedupe map[string]threshold // key: cert UID; value: last emitted bucket
 }
 
-// NewPoller creates a Poller wired to the cluster client, discoverer, and notification service.
-func NewPoller(cf *k8s.ClientFactory, disc *Discoverer, notifService *notifications.NotificationService, logger *slog.Logger) *Poller {
+// NewPoller creates a Poller wired to the cluster client, discoverer, handler cache, and notification service.
+func NewPoller(cf *k8s.ClientFactory, disc *Discoverer, handler *Handler, notifService *notifications.NotificationService, logger *slog.Logger) *Poller {
 	return &Poller{
 		k8s:          cf,
 		disc:         disc,
+		handler:      handler,
 		notifService: notifService,
 		logger:       logger,
 		dedupe:       make(map[string]threshold),
@@ -199,26 +201,14 @@ func (p *Poller) tick(ctx context.Context) {
 		return
 	}
 
-	dyn := p.k8s.BaseDynamicClient()
-
-	list, err := dyn.Resource(CertificateGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	certs, err := p.fetchCertificates(ctx)
 	if err != nil {
 		p.logger.Error("certmanager poller: failed to list certificates", "error", err)
 		return
 	}
 
-	seen := make(map[string]bool, len(list.Items))
-	for i := range list.Items {
-		cert, err := normalizeCertificate(&list.Items[i])
-		if err != nil {
-			p.logger.Warn("certmanager poller: failed to normalize certificate",
-				"name", list.Items[i].GetName(),
-				"namespace", list.Items[i].GetNamespace(),
-				"error", err,
-			)
-			continue
-		}
-
+	seen := make(map[string]bool, len(certs))
+	for _, cert := range certs {
 		seen[cert.UID] = true
 
 		records := p.check(cert)
@@ -235,4 +225,34 @@ func (p *Poller) tick(ctx context.Context) {
 		}
 	}
 	p.mu.Unlock()
+}
+
+// fetchCertificates returns certificates from the handler cache if available,
+// otherwise falls back to direct API listing.
+func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
+	if p.handler != nil {
+		return p.handler.CachedCertificates(ctx)
+	}
+
+	// Fallback: direct list (used in tests or when handler is nil)
+	dyn := p.k8s.BaseDynamicClient()
+	list, err := dyn.Resource(CertificateGVR).Namespace("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	certs := make([]Certificate, 0, len(list.Items))
+	for i := range list.Items {
+		cert, cerr := normalizeCertificate(&list.Items[i])
+		if cerr != nil {
+			p.logger.Warn("certmanager poller: failed to normalize certificate",
+				"name", list.Items[i].GetName(),
+				"namespace", list.Items[i].GetNamespace(),
+				"error", cerr,
+			)
+			continue
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
 }

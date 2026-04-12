@@ -50,11 +50,6 @@ func normalizeCertificate(u *unstructured.Unstructured) (Certificate, error) {
 		status = map[string]any{}
 	}
 
-	meta, _ := obj["metadata"].(map[string]any)
-	if meta == nil {
-		meta = map[string]any{}
-	}
-
 	// IssuerRef
 	issuerRefRaw, _ := spec["issuerRef"].(map[string]any)
 	issuerRef := IssuerRef{
@@ -63,21 +58,8 @@ func normalizeCertificate(u *unstructured.Unstructured) (Certificate, error) {
 		Group: stringFrom(issuerRefRaw, "group"),
 	}
 
-	// Labels
-	var labels map[string]string
-	if rawLabels, ok := meta["labels"].(map[string]any); ok {
-		labels = make(map[string]string, len(rawLabels))
-		for k, v := range rawLabels {
-			if s, ok := v.(string); ok {
-				labels[k] = s
-			}
-		}
-	}
-
-	// DNS names, IP addresses, URIs from spec
+	// DNS names from spec
 	dnsNames, _, _ := unstructured.NestedStringSlice(obj, "spec", "dnsNames")
-	ipAddresses, _, _ := unstructured.NestedStringSlice(obj, "spec", "ipAddresses")
-	uris, _, _ := unstructured.NestedStringSlice(obj, "spec", "uris")
 
 	// Time fields
 	notBefore := parseTimeField(status, "notBefore")
@@ -103,8 +85,6 @@ func normalizeCertificate(u *unstructured.Unstructured) (Certificate, error) {
 		IssuerRef:     issuerRef,
 		SecretName:    stringFrom(spec, "secretName"),
 		DNSNames:      dnsNames,
-		IPAddresses:   ipAddresses,
-		URIs:          uris,
 		CommonName:    stringFrom(spec, "commonName"),
 		Duration:      stringFrom(spec, "duration"),
 		RenewBefore:   stringFrom(spec, "renewBefore"),
@@ -113,7 +93,6 @@ func normalizeCertificate(u *unstructured.Unstructured) (Certificate, error) {
 		RenewalTime:   renewalTime,
 		DaysRemaining: daysRemaining,
 		UID:           string(u.GetUID()),
-		Labels:        labels,
 	}
 
 	return cert, nil
@@ -269,7 +248,6 @@ func normalizeOrder(u *unstructured.Unstructured) Order {
 		Namespace: u.GetNamespace(),
 		State:     stringFrom(status, "state"),
 		Reason:    stringFrom(status, "reason"),
-		URL:       stringFrom(status, "url"),
 		CreatedAt: createdAt,
 		UID:       string(u.GetUID()),
 		CRName:    crName,
@@ -319,7 +297,6 @@ func normalizeChallenge(u *unstructured.Unstructured) Challenge {
 		State:     stringFrom(status, "state"),
 		Reason:    stringFrom(status, "reason"),
 		DNSName:   stringFrom(spec, "dnsName"),
-		Token:     stringFrom(spec, "token"),
 		CreatedAt: createdAt,
 		UID:       string(u.GetUID()),
 		OrderName: orderName,
@@ -358,38 +335,16 @@ func stringFrom(m map[string]any, key string) string {
 	return s
 }
 
-// parseTimeField parses an RFC3339 timestamp from a nested map key path.
-// The final key is the last element in fields; all preceding elements are
-// sub-map keys. Returns nil on any error or missing value.
+// parseTimeField parses an RFC3339 timestamp from a nested map path.
+// Returns nil on any error or missing value.
 func parseTimeField(obj map[string]any, fields ...string) *time.Time {
-	if obj == nil || len(fields) == 0 {
+	s, found, err := unstructured.NestedString(obj, fields...)
+	if err != nil || !found || s == "" {
 		return nil
 	}
-
-	cur := obj
-	for i, f := range fields {
-		if i == len(fields)-1 {
-			// Last key — extract the string and parse.
-			raw, ok := cur[f]
-			if !ok {
-				return nil
-			}
-			s, ok := raw.(string)
-			if !ok || s == "" {
-				return nil
-			}
-			t, err := time.Parse(time.RFC3339, s)
-			if err != nil {
-				return nil
-			}
-			return &t
-		}
-		// Intermediate key — descend into sub-map.
-		next, ok := cur[f].(map[string]any)
-		if !ok {
-			return nil
-		}
-		cur = next
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil
 	}
-	return nil
+	return &t
 }

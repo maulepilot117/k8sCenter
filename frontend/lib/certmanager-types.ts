@@ -23,8 +23,6 @@ export interface Certificate {
   issuerRef: IssuerRef;
   secretName: string;
   dnsNames?: string[];
-  ipAddresses?: string[];
-  uris?: string[];
   commonName?: string;
   duration?: string;
   renewBefore?: string;
@@ -33,7 +31,6 @@ export interface Certificate {
   renewalTime?: string;
   daysRemaining?: number;
   uid: string;
-  labels?: Record<string, string>;
 }
 
 export interface Issuer {
@@ -67,7 +64,6 @@ export interface Order {
   namespace: string;
   state: string;
   reason?: string;
-  url?: string;
   createdAt: string;
   uid: string;
   crName?: string;
@@ -80,7 +76,6 @@ export interface Challenge {
   state: string;
   reason?: string;
   dnsName?: string;
-  token?: string;
   createdAt: string;
   uid: string;
   orderName?: string;

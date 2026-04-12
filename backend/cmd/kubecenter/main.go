@@ -664,7 +664,7 @@ func main() {
 	// Cert-Manager integration
 	cmDisc := certmanager.NewDiscoverer(k8sClient, logger)
 	cmHandler := certmanager.NewHandler(k8sClient, cmDisc, accessChecker, auditLogger, notifService, logger)
-	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, notifService, logger)
+	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
 
 	// Ready state: true after informer sync, false during shutdown

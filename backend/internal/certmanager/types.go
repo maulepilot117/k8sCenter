@@ -77,8 +77,6 @@ type Certificate struct {
 	IssuerRef     IssuerRef         `json:"issuerRef"`
 	SecretName    string            `json:"secretName"`
 	DNSNames      []string          `json:"dnsNames,omitempty"`
-	IPAddresses   []string          `json:"ipAddresses,omitempty"`
-	URIs          []string          `json:"uris,omitempty"`
 	CommonName    string            `json:"commonName,omitempty"`
 	Duration      string            `json:"duration,omitempty"`
 	RenewBefore   string            `json:"renewBefore,omitempty"`
@@ -87,7 +85,6 @@ type Certificate struct {
 	RenewalTime   *time.Time        `json:"renewalTime,omitempty"`
 	DaysRemaining *int              `json:"daysRemaining,omitempty"`
 	UID           string            `json:"uid"`
-	Labels        map[string]string `json:"labels,omitempty"`
 }
 
 // Issuer is the API representation of a cert-manager Issuer or ClusterIssuer.
@@ -124,7 +121,6 @@ type Order struct {
 	Namespace string    `json:"namespace"`
 	State     string    `json:"state"`
 	Reason    string    `json:"reason,omitempty"`
-	URL       string    `json:"url,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UID       string    `json:"uid"`
 	CRName    string    `json:"crName,omitempty"` // owning Certificate name
@@ -138,7 +134,6 @@ type Challenge struct {
 	State     string    `json:"state"`
 	Reason    string    `json:"reason,omitempty"`
 	DNSName   string    `json:"dnsName"`
-	Token     string    `json:"token,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UID       string    `json:"uid"`
 	OrderName string    `json:"orderName,omitempty"` // owning Order name
