@@ -66,7 +66,7 @@ func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, da
 		       COALESCE((payload->>'warn')::int, 0),
 		       COALESCE((payload->>'total')::int, 0)
 		FROM compliance_snapshots
-		WHERE cluster_id = $1 AND snapshot_date >= CURRENT_DATE - $2
+		WHERE cluster_id = $1 AND snapshot_date >= CURRENT_DATE - ($2 || ' days')::interval
 		ORDER BY snapshot_date`,
 		clusterID, days)
 	if err != nil {
@@ -92,7 +92,7 @@ func (s *ComplianceStore) Cleanup(ctx context.Context, retentionDays int) (int64
 		return 0, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
 	}
 	tag, err := s.pool.Exec(ctx,
-		"DELETE FROM compliance_snapshots WHERE snapshot_date < CURRENT_DATE - $1",
+		"DELETE FROM compliance_snapshots WHERE snapshot_date < CURRENT_DATE - ($1 || ' days')::interval",
 		retentionDays)
 	if err != nil {
 		return 0, fmt.Errorf("cleanup compliance snapshots: %w", err)
