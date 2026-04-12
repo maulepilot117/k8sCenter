@@ -1,0 +1,46 @@
+# argocd-image-updater v1.1.1 CRD-based configuration.
+#
+# The v1 operator redesigned image tracking from Application annotations
+# to a dedicated CRD. This ImageUpdater CR tells the controller to watch
+# the k8scenter Application in the argocd namespace and update its
+# backend/frontend images when new digests appear on the `latest` tag in
+# GHCR.
+#
+# Apply with:
+#   kubectl apply -n argocd -f argocd/k8scenter-image-updater.yaml
+#
+# Flow on each reconcile (default every 2 minutes):
+#   1. Controller polls ghcr.io for ghcr.io/maulepilot117/k8scenter-{backend,frontend}
+#   2. Detects a new digest on the `latest` tag
+#   3. Writes new helm parameter overrides to the k8scenter Application CR
+#   4. ArgoCD detects drift, re-renders, applies, pods roll out
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: k8scenter-images
+  namespace: argocd
+spec:
+  # Defaults inherited by every image below.
+  commonUpdateSettings:
+    updateStrategy: digest
+    allowTags: "regexp:^latest$"
+
+  # Write parameter overrides back to the Application CR (no git credentials).
+  writeBackConfig:
+    method: argocd
+
+  applicationRefs:
+    - namePattern: k8scenter
+      images:
+        - alias: backend
+          imageName: ghcr.io/maulepilot117/k8scenter-backend:latest
+          manifestTargets:
+            helm:
+              name: backend.image.repository
+              tag: backend.image.tag
+        - alias: frontend
+          imageName: ghcr.io/maulepilot117/k8scenter-frontend:latest
+          manifestTargets:
+            helm:
+              name: frontend.image.repository
+              tag: frontend.image.tag
