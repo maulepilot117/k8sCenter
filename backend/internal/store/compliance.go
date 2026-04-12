@@ -48,7 +48,7 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 		ON CONFLICT (cluster_id, snapshot_date) DO UPDATE SET
 			overall_score = EXCLUDED.overall_score,
 			payload = EXCLUDED.payload,
-			created_at = NOW()`,
+			updated_at = NOW()`,
 		snap.Date, snap.ClusterID, snap.OverallScore, payload)
 	if err != nil {
 		return fmt.Errorf("insert compliance snapshot: %w", err)
@@ -59,6 +59,9 @@ func (s *ComplianceStore) Insert(ctx context.Context, snap *ComplianceSnapshot) 
 // QueryHistory returns snapshots for a cluster within the last N days.
 // Returns sparse data (only days with snapshots); the frontend fills gaps.
 func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, days int) ([]ComplianceSnapshot, error) {
+	if days < 1 {
+		days = 1
+	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT snapshot_date, overall_score,
 		       COALESCE((payload->>'pass')::int, 0),
@@ -66,7 +69,7 @@ func (s *ComplianceStore) QueryHistory(ctx context.Context, clusterID string, da
 		       COALESCE((payload->>'warn')::int, 0),
 		       COALESCE((payload->>'total')::int, 0)
 		FROM compliance_snapshots
-		WHERE cluster_id = $1 AND snapshot_date >= CURRENT_DATE - $2
+		WHERE cluster_id = $1 AND snapshot_date >= CURRENT_DATE - $2 * INTERVAL '1 day'
 		ORDER BY snapshot_date`,
 		clusterID, days)
 	if err != nil {
@@ -92,7 +95,7 @@ func (s *ComplianceStore) Cleanup(ctx context.Context, retentionDays int) (int64
 		return 0, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
 	}
 	tag, err := s.pool.Exec(ctx,
-		"DELETE FROM compliance_snapshots WHERE snapshot_date < CURRENT_DATE - $1",
+		"DELETE FROM compliance_snapshots WHERE snapshot_date < CURRENT_DATE - $1 * INTERVAL '1 day'",
 		retentionDays)
 	if err != nil {
 		return 0, fmt.Errorf("cleanup compliance snapshots: %w", err)
