@@ -24,6 +24,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
+	"github.com/kubecenter/kubecenter/internal/certmanager"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
 	"github.com/kubecenter/kubecenter/internal/storage"
@@ -71,6 +72,7 @@ type Server struct {
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
+	CertManagerHandler *certmanager.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -114,6 +116,7 @@ type Deps struct {
 	ScanningHandler    *scanning.Handler
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
+	CertManagerHandler *certmanager.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -259,6 +262,11 @@ func New(deps Deps) *Server {
 	// Velero handler (backup/restore)
 	if deps.VeleroHandler != nil {
 		s.VeleroHandler = deps.VeleroHandler
+	}
+
+	// Cert-Manager handler
+	if deps.CertManagerHandler != nil {
+		s.CertManagerHandler = deps.CertManagerHandler
 	}
 
 	// Notification center

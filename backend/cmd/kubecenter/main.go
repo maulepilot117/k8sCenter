@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/certmanager"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
@@ -660,6 +661,12 @@ func main() {
 		limitsChecker.Start(ctx)
 	}
 
+	// Cert-Manager integration
+	cmDisc := certmanager.NewDiscoverer(k8sClient, logger)
+	cmHandler := certmanager.NewHandler(k8sClient, cmDisc, accessChecker, auditLogger, notifService, logger)
+	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, notifService, logger)
+	go cmPoller.Start(ctx)
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -699,6 +706,7 @@ func main() {
 		ScanningHandler:    scanHandler,
 		LimitsHandler:      limitsHandler,
 		VeleroHandler:      veleroHandler,
+		CertManagerHandler: cmHandler,
 		CRDHandler:         crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
