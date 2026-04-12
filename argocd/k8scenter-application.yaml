@@ -6,13 +6,11 @@
 # After that, ArgoCD tracks `main` and keeps the cluster in sync with
 # the Helm chart at helm/kubecenter/ using values-homelab.yaml.
 #
-# Note on image updates: both backend and frontend pin `tag: latest` with
-# `pullPolicy: Always` in values-homelab.yaml. Because the rendered manifest
-# doesn't change when a new image is pushed to GHCR, ArgoCD won't detect
-# drift and won't restart pods on its own. To pick up a new image either:
-#   1. Run `kubectl rollout restart deploy/kubecenter-backend deploy/kubecenter-frontend -n kubecenter`
-#   2. Or install argocd-image-updater to automate registry polling:
-#      https://argocd-image-updater.readthedocs.io/
+# Image updates are automated via argocd-image-updater:
+#   - Polls ghcr.io for new digests on the `latest` tag
+#   - Writes parameter overrides back to this Application
+#   - ArgoCD detects drift and rolls out new pods
+# See the argocd-image-updater.argoproj.io/* annotations below.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -20,6 +18,32 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # --- argocd-image-updater configuration ---
+    # Watches both container images on GHCR. Uses the `digest` strategy
+    # so a new push to the mutable `latest` tag triggers an update as
+    # soon as the image digest changes, even though the tag string
+    # itself stays the same.
+    argocd-image-updater.argoproj.io/image-list: >-
+      backend=ghcr.io/maulepilot117/k8scenter-backend,
+      frontend=ghcr.io/maulepilot117/k8scenter-frontend
+
+    # Write parameter overrides directly back to this Application CR.
+    # No git write credentials required; values-homelab.yaml stays
+    # the source of truth for everything else.
+    argocd-image-updater.argoproj.io/write-back-method: argocd
+
+    # Backend image tracking
+    argocd-image-updater.argoproj.io/backend.update-strategy: digest
+    argocd-image-updater.argoproj.io/backend.allow-tags: regexp:^latest$
+    argocd-image-updater.argoproj.io/backend.helm.image-name: backend.image.repository
+    argocd-image-updater.argoproj.io/backend.helm.image-tag: backend.image.tag
+
+    # Frontend image tracking
+    argocd-image-updater.argoproj.io/frontend.update-strategy: digest
+    argocd-image-updater.argoproj.io/frontend.allow-tags: regexp:^latest$
+    argocd-image-updater.argoproj.io/frontend.helm.image-name: frontend.image.repository
+    argocd-image-updater.argoproj.io/frontend.helm.image-tag: frontend.image.tag
 spec:
   project: default
 
