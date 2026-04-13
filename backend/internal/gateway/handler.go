@@ -212,22 +212,16 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		installedSet[k] = true
 	}
 
-	type routeFetchSpec struct {
-		kind     string
-		gvr      func() interface{ /* dummy */ }
-		kindName string
-	}
-
 	var routes []RouteSummary
 	var routesMu sync.Mutex
 
 	g2, gctx2 := errgroup.WithContext(ctx)
 
 	for rk, gvr := range routeKindGVR {
-		kindName := routeKindToKind[string(rk)]
-		if !installedSet[kindName] {
+		if !installedSet[string(rk)] {
 			continue
 		}
+		kindName := routeKindToKind[string(rk)]
 		capturedGVR := gvr
 		capturedKind := kindName
 		g2.Go(func() error {
@@ -283,7 +277,7 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 // HandleSummary returns aggregated counts and health per Gateway API kind.
 func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
-	_, ok := httputil.RequireUser(w, r)
+	user, ok := httputil.RequireUser(w, r)
 	if !ok {
 		return
 	}
@@ -300,21 +294,27 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
 	summary := GatewayAPISummary{}
 
-	// GatewayClasses: healthy = has Accepted=True condition
-	summary.GatewayClasses.Total = len(data.gatewayClasses)
-	for _, gc := range data.gatewayClasses {
-		if hasCondition(gc.Conditions, "Accepted", "True") {
-			summary.GatewayClasses.Healthy++
-		} else {
-			summary.GatewayClasses.Degraded++
+	// RBAC-filter before counting so users only see counts for resources they can access.
+
+	// GatewayClasses: cluster-scoped RBAC check
+	if h.canAccess(ctx, user, "list", "gatewayclasses", "") {
+		summary.GatewayClasses.Total = len(data.gatewayClasses)
+		for _, gc := range data.gatewayClasses {
+			if hasCondition(gc.Conditions, "Accepted", "True") {
+				summary.GatewayClasses.Healthy++
+			} else {
+				summary.GatewayClasses.Degraded++
+			}
 		}
 	}
 
 	// Gateways: healthy = has Programmed=True condition
-	summary.Gateways.Total = len(data.gateways)
-	for _, gw := range data.gateways {
+	filteredGateways := filterByRBAC(ctx, h, user, "gateways", data.gateways)
+	summary.Gateways.Total = len(filteredGateways)
+	for _, gw := range filteredGateways {
 		if hasCondition(gw.Conditions, "Programmed", "True") {
 			summary.Gateways.Healthy++
 		} else {
@@ -323,8 +323,9 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// HTTPRoutes: healthy = has Accepted=True condition
-	summary.HTTPRoutes.Total = len(data.httpRoutes)
-	for _, hr := range data.httpRoutes {
+	filteredHTTPRoutes := filterByRBAC(ctx, h, user, "httproutes", data.httpRoutes)
+	summary.HTTPRoutes.Total = len(filteredHTTPRoutes)
+	for _, hr := range filteredHTTPRoutes {
 		if hasCondition(hr.Conditions, "Accepted", "True") {
 			summary.HTTPRoutes.Healthy++
 		} else {
@@ -332,14 +333,15 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Non-HTTP routes: group by Kind
+	// Non-HTTP routes: RBAC-filter then group by Kind
+	filteredRoutes := filterByRBAC(ctx, h, user, "httproutes", data.routes)
 	routesByKind := map[string]*KindSummary{
 		"GRPCRoute": &summary.GRPCRoutes,
 		"TCPRoute":  &summary.TCPRoutes,
 		"TLSRoute":  &summary.TLSRoutes,
 		"UDPRoute":  &summary.UDPRoutes,
 	}
-	for _, rt := range data.routes {
+	for _, rt := range filteredRoutes {
 		ks, ok := routesByKind[rt.Kind]
 		if !ok {
 			continue
@@ -501,7 +503,8 @@ func (h *Handler) HandleGetGateway(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		detail.AttachedRoutes = attached
+		// RBAC-filter attached routes so users only see routes in namespaces they can access.
+		detail.AttachedRoutes = filterByRBAC(r.Context(), h, user, "httproutes", attached)
 	}
 
 	if detail.AttachedRoutes == nil {
@@ -675,12 +678,19 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 // Relationship resolution helpers
 // ============================================================================
 
+// maxResolveConcurrency caps goroutine fan-out for relationship resolution.
+const maxResolveConcurrency = 10
+
 // resolveRouteRelationships resolves parent gateway conditions and backend service existence
-// for HTTPRoute detail views. Uses a WaitGroup with a 2s timeout.
+// for HTTPRoute detail views. Uses a WaitGroup with a 2s timeout and bounded concurrency.
 func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User, dynClient dynamic.Interface, parentRefs []ParentRef, rules []HTTPRouteRule) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	// Hoist typed client creation outside goroutine loop.
+	cs, csErr := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+
+	sem := make(chan struct{}, maxResolveConcurrency)
 	var wg sync.WaitGroup
 
 	// Resolve parent gateways
@@ -688,6 +698,8 @@ func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			ref := &parentRefs[idx]
 			gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 			if err != nil {
@@ -698,31 +710,30 @@ func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User
 	}
 
 	// Resolve backend services
-	for ri := range rules {
-		for bi := range rules[ri].BackendRefs {
-			wg.Add(1)
-			go func(ruleIdx, backendIdx int) {
-				defer wg.Done()
-				ref := &rules[ruleIdx].BackendRefs[backendIdx]
-				if ref.Kind != "Service" && ref.Kind != "" {
-					return
-				}
-				svcNs := ref.Namespace
-				if svcNs == "" {
-					// Default to the route's namespace — use first parentRef namespace as fallback.
-					if len(parentRefs) > 0 {
-						svcNs = parentRefs[0].Namespace
+	if csErr == nil {
+		for ri := range rules {
+			for bi := range rules[ri].BackendRefs {
+				wg.Add(1)
+				go func(ruleIdx, backendIdx int) {
+					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+					ref := &rules[ruleIdx].BackendRefs[backendIdx]
+					if ref.Kind != "Service" && ref.Kind != "" {
+						return
 					}
-				}
-				cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-				if err != nil {
-					return
-				}
-				_, err = cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-				if err == nil {
-					ref.Resolved = true
-				}
-			}(ri, bi)
+					svcNs := ref.Namespace
+					if svcNs == "" {
+						if len(parentRefs) > 0 {
+							svcNs = parentRefs[0].Namespace
+						}
+					}
+					_, err := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
+					if err == nil {
+						ref.Resolved = true
+					}
+				}(ri, bi)
+			}
 		}
 	}
 
@@ -734,11 +745,14 @@ func (h *Handler) resolveParentGateways(ctx context.Context, dynClient dynamic.I
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	sem := make(chan struct{}, maxResolveConcurrency)
 	var wg sync.WaitGroup
 	for i := range parentRefs {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			ref := &parentRefs[idx]
 			gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
 			if err != nil {
@@ -755,11 +769,20 @@ func (h *Handler) resolveBackendServices(ctx context.Context, user *auth.User, r
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	// Hoist typed client creation outside goroutine loop.
+	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		return
+	}
+
+	sem := make(chan struct{}, maxResolveConcurrency)
 	var wg sync.WaitGroup
 	for i := range refs {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			ref := &refs[idx]
 			if ref.Kind != "Service" && ref.Kind != "" {
 				return
@@ -768,12 +791,8 @@ func (h *Handler) resolveBackendServices(ctx context.Context, user *auth.User, r
 			if svcNs == "" {
 				svcNs = routeNs
 			}
-			cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-			if err != nil {
-				return
-			}
-			_, err = cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-			if err == nil {
+			_, svcErr := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
+			if svcErr == nil {
 				ref.Resolved = true
 			}
 		}(i)

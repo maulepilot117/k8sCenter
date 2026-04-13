@@ -671,14 +671,16 @@ func normalizeSimpleRouteDetail(u *unstructured.Unstructured, kind string) Simpl
 
 	hostnames, _, _ := unstructured.NestedStringSlice(obj, "spec", "hostnames")
 
-	// TCP/UDP/TLS routes have rules with backendRefs.
+	// TCP/UDP/TLS routes have rules with backendRefs — aggregate from all rules.
 	var backendRefs []BackendRef
 	rules, _, _ := unstructured.NestedSlice(obj, "spec", "rules")
-	if len(rules) > 0 {
-		if rm, ok := rules[0].(map[string]any); ok {
-			if refs, ok := rm["backendRefs"].([]any); ok {
-				backendRefs = extractBackendRefs(refs)
-			}
+	for _, rule := range rules {
+		rm, ok := rule.(map[string]any)
+		if !ok {
+			continue
+		}
+		if refs, ok := rm["backendRefs"].([]any); ok {
+			backendRefs = append(backendRefs, extractBackendRefs(refs)...)
 		}
 	}
 

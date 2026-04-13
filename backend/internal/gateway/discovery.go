@@ -89,16 +89,27 @@ func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 	status.Available = true
 	status.Version = "v1"
 
-	// Collect installed kinds from v1.
+	// Collect installed kinds as lowercase plural resource names (matching frontend GatewayResourceKind).
+	kindToResource := map[string]string{
+		"GatewayClass": "gatewayclasses",
+		"Gateway":      "gateways",
+		"HTTPRoute":    "httproutes",
+		"GRPCRoute":    "grpcroutes",
+		"TCPRoute":     "tcproutes",
+		"TLSRoute":     "tlsroutes",
+		"UDPRoute":     "udproutes",
+	}
 	for _, kind := range []string{"GatewayClass", "Gateway", "HTTPRoute", "GRPCRoute"} {
 		if v1Kinds[kind] {
-			status.InstalledKinds = append(status.InstalledKinds, kind)
+			status.InstalledKinds = append(status.InstalledKinds, kindToResource[kind])
 		}
 	}
 
 	// Check if TLSRoute is already at v1 (some clusters promote it early).
+	hasTLSRoute := false
 	if v1Kinds["TLSRoute"] {
-		status.InstalledKinds = append(status.InstalledKinds, "TLSRoute")
+		status.InstalledKinds = append(status.InstalledKinds, kindToResource["TLSRoute"])
+		hasTLSRoute = true
 	}
 
 	// Probe v1alpha2 for experimental route kinds.
@@ -110,11 +121,11 @@ func (d *Discoverer) Probe(ctx context.Context) GatewayAPIStatus {
 			}
 			switch r.Kind {
 			case "TCPRoute", "UDPRoute":
-				status.InstalledKinds = append(status.InstalledKinds, r.Kind)
+				status.InstalledKinds = append(status.InstalledKinds, kindToResource[r.Kind])
 			case "TLSRoute":
 				// Only add if not already found in v1.
-				if !v1Kinds["TLSRoute"] {
-					status.InstalledKinds = append(status.InstalledKinds, r.Kind)
+				if !hasTLSRoute {
+					status.InstalledKinds = append(status.InstalledKinds, kindToResource[r.Kind])
 				}
 			}
 		}
