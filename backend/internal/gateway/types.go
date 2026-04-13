@@ -249,8 +249,6 @@ type namespacedResource interface {
 	getNamespace() string
 }
 
-func (g GatewaySummary) getNamespace() string    { return g.Namespace }
-func (h HTTPRouteSummary) getNamespace() string   { return h.Namespace }
-func (r RouteSummary) getNamespace() string       { return r.Namespace }
-func (g GRPCRouteDetail) getNamespace() string    { return g.Namespace }
-func (s SimpleRouteDetail) getNamespace() string  { return s.Namespace }
+func (g GatewaySummary) getNamespace() string  { return g.Namespace }
+func (h HTTPRouteSummary) getNamespace() string { return h.Namespace }
+func (r RouteSummary) getNamespace() string     { return r.Namespace }

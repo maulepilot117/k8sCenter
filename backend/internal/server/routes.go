@@ -606,17 +606,24 @@ func (s *Server) registerCertManagerRoutes(ar chi.Router) {
 
 func (s *Server) registerGatewayRoutes(ar chi.Router) {
 	h := s.GatewayHandler
+	rl := s.YAMLRateLimiter
+	if rl == nil {
+		rl = s.RateLimiter
+	}
 	ar.Route("/gateway", func(gr chi.Router) {
+		// Cached list endpoints (no direct API calls)
 		gr.Get("/status", h.HandleStatus)
 		gr.Get("/summary", h.HandleSummary)
 		gr.Get("/gatewayclasses", h.HandleListGatewayClasses)
-		gr.With(resources.ValidateURLParams).Get("/gatewayclasses/{name}", h.HandleGetGatewayClass)
 		gr.Get("/gateways", h.HandleListGateways)
-		gr.With(resources.ValidateURLParams).Get("/gateways/{namespace}/{name}", h.HandleGetGateway)
 		gr.Get("/httproutes", h.HandleListHTTPRoutes)
-		gr.With(resources.ValidateURLParams).Get("/httproutes/{namespace}/{name}", h.HandleGetHTTPRoute)
 		gr.Get("/routes", h.HandleListRoutes)
-		gr.With(resources.ValidateURLParams).Get("/routes/{kind}/{namespace}/{name}", h.HandleGetRoute)
+
+		// Detail endpoints hit the API server directly — rate-limited
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/gatewayclasses/{name}", h.HandleGetGatewayClass)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/gateways/{namespace}/{name}", h.HandleGetGateway)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/httproutes/{namespace}/{name}", h.HandleGetHTTPRoute)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/routes/{kind}/{namespace}/{name}", h.HandleGetRoute)
 	})
 }
 

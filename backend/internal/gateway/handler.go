@@ -50,7 +50,8 @@ type cachedData struct {
 	gatewayClasses []GatewayClassSummary
 	gateways       []GatewaySummary
 	httpRoutes     []HTTPRouteSummary
-	routes         []RouteSummary // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
+	routes         []RouteSummary        // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
+	summary        GatewayAPISummary     // pre-computed unfiltered summary
 	fetchedAt      time.Time
 }
 
@@ -166,7 +167,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	g, gctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		list, err := dynClient.Resource(GatewayClassGVR).List(gctx, metav1.ListOptions{})
+		list, err := dynClient.Resource(GatewayClassGVR).List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list gatewayclasses: %w", err)
 		}
@@ -178,7 +179,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	})
 
 	g.Go(func() error {
-		list, err := dynClient.Resource(GatewayGVR).Namespace("").List(gctx, metav1.ListOptions{})
+		list, err := dynClient.Resource(GatewayGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list gateways: %w", err)
 		}
@@ -190,7 +191,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	})
 
 	g.Go(func() error {
-		list, err := dynClient.Resource(HTTPRouteGVR).Namespace("").List(gctx, metav1.ListOptions{})
+		list, err := dynClient.Resource(HTTPRouteGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list httproutes: %w", err)
 		}
@@ -243,11 +244,15 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	_ = g2.Wait()
 
+	// Pre-compute unfiltered summary to avoid O(n) iteration on every summary request.
+	sum := computeSummary(gatewayClasses, gateways, httpRoutes, routes)
+
 	data := &cachedData{
 		gatewayClasses: gatewayClasses,
 		gateways:       gateways,
 		httpRoutes:     httpRoutes,
 		routes:         routes,
+		summary:        sum,
 		fetchedAt:      time.Now(),
 	}
 
@@ -294,54 +299,62 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	summary := GatewayAPISummary{}
-
 	// RBAC-filter before counting so users only see counts for resources they can access.
+	ctx := r.Context()
 
-	// GatewayClasses: cluster-scoped RBAC check
+	var filteredClasses []GatewayClassSummary
 	if h.canAccess(ctx, user, "list", "gatewayclasses", "") {
-		summary.GatewayClasses.Total = len(data.gatewayClasses)
-		for _, gc := range data.gatewayClasses {
-			if hasCondition(gc.Conditions, "Accepted", "True") {
-				summary.GatewayClasses.Healthy++
-			} else {
-				summary.GatewayClasses.Degraded++
-			}
+		filteredClasses = data.gatewayClasses
+	}
+
+	summary := computeSummary(
+		filteredClasses,
+		filterByRBAC(ctx, h, user, "gateways", data.gateways),
+		filterByRBAC(ctx, h, user, "httproutes", data.httpRoutes),
+		filterByRBAC(ctx, h, user, "httproutes", data.routes),
+	)
+
+	httputil.WriteData(w, summary)
+}
+
+// computeSummary builds a GatewayAPISummary from the given resource slices.
+func computeSummary(gatewayClasses []GatewayClassSummary, gateways []GatewaySummary, httpRoutes []HTTPRouteSummary, routes []RouteSummary) GatewayAPISummary {
+	s := GatewayAPISummary{}
+
+	s.GatewayClasses.Total = len(gatewayClasses)
+	for _, gc := range gatewayClasses {
+		if hasCondition(gc.Conditions, "Accepted", "True") {
+			s.GatewayClasses.Healthy++
+		} else {
+			s.GatewayClasses.Degraded++
 		}
 	}
 
-	// Gateways: healthy = has Programmed=True condition
-	filteredGateways := filterByRBAC(ctx, h, user, "gateways", data.gateways)
-	summary.Gateways.Total = len(filteredGateways)
-	for _, gw := range filteredGateways {
+	s.Gateways.Total = len(gateways)
+	for _, gw := range gateways {
 		if hasCondition(gw.Conditions, "Programmed", "True") {
-			summary.Gateways.Healthy++
+			s.Gateways.Healthy++
 		} else {
-			summary.Gateways.Degraded++
+			s.Gateways.Degraded++
 		}
 	}
 
-	// HTTPRoutes: healthy = has Accepted=True condition
-	filteredHTTPRoutes := filterByRBAC(ctx, h, user, "httproutes", data.httpRoutes)
-	summary.HTTPRoutes.Total = len(filteredHTTPRoutes)
-	for _, hr := range filteredHTTPRoutes {
+	s.HTTPRoutes.Total = len(httpRoutes)
+	for _, hr := range httpRoutes {
 		if hasCondition(hr.Conditions, "Accepted", "True") {
-			summary.HTTPRoutes.Healthy++
+			s.HTTPRoutes.Healthy++
 		} else {
-			summary.HTTPRoutes.Degraded++
+			s.HTTPRoutes.Degraded++
 		}
 	}
 
-	// Non-HTTP routes: RBAC-filter then group by Kind
-	filteredRoutes := filterByRBAC(ctx, h, user, "httproutes", data.routes)
 	routesByKind := map[string]*KindSummary{
-		"GRPCRoute": &summary.GRPCRoutes,
-		"TCPRoute":  &summary.TCPRoutes,
-		"TLSRoute":  &summary.TLSRoutes,
-		"UDPRoute":  &summary.UDPRoutes,
+		"GRPCRoute": &s.GRPCRoutes,
+		"TCPRoute":  &s.TCPRoutes,
+		"TLSRoute":  &s.TLSRoutes,
+		"UDPRoute":  &s.UDPRoutes,
 	}
-	for _, rt := range filteredRoutes {
+	for _, rt := range routes {
 		ks, ok := routesByKind[rt.Kind]
 		if !ok {
 			continue
@@ -354,7 +367,7 @@ func (h *Handler) HandleSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	httputil.WriteData(w, summary)
+	return s
 }
 
 // hasCondition checks if the conditions slice contains a condition with the given type and status.

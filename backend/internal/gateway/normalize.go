@@ -184,80 +184,10 @@ func normalizeGatewayClass(u *unstructured.Unstructured) GatewayClassSummary {
 }
 
 // normalizeGateway converts an unstructured Gateway into a GatewaySummary.
-func normalizeGateway(u *unstructured.Unstructured) GatewaySummary {
-	obj := u.Object
-
-	className, _, _ := unstructured.NestedString(obj, "spec", "gatewayClassName")
-
-	// Parse spec.listeners[]
-	specListeners, _, _ := unstructured.NestedSlice(obj, "spec", "listeners")
-	listeners := make([]Listener, 0, len(specListeners))
-	for _, item := range specListeners {
-		lm, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		listeners = append(listeners, Listener{
-			Name:     stringFrom(lm, "name"),
-			Port:     intFrom(lm, "port"),
-			Protocol: stringFrom(lm, "protocol"),
-			Hostname: stringFrom(lm, "hostname"),
-		})
-	}
-
-	// Merge attachedRoutes count from status.listeners[]
-	statusListeners, _, _ := unstructured.NestedSlice(obj, "status", "listeners")
-	attachedTotal := 0
-	for _, item := range statusListeners {
-		slm, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name := stringFrom(slm, "name")
-		count := intFrom(slm, "attachedRoutes")
-		attachedTotal += count
-		// Match to spec listener by name and set count.
-		for i := range listeners {
-			if listeners[i].Name == name {
-				listeners[i].AttachedRouteCount = count
-				break
-			}
-		}
-	}
-
-	// Addresses from status.addresses[]
-	var addresses []string
-	addrSlice, _, _ := unstructured.NestedSlice(obj, "status", "addresses")
-	for _, item := range addrSlice {
-		am, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if v := stringFrom(am, "value"); v != "" {
-			addresses = append(addresses, v)
-		}
-	}
-
-	return GatewaySummary{
-		Name:               u.GetName(),
-		Namespace:          u.GetNamespace(),
-		GatewayClassName:   className,
-		Listeners:          listeners,
-		Addresses:          addresses,
-		AttachedRouteCount: attachedTotal,
-		Conditions:         extractConditions(obj, "status", "conditions"),
-		Age:                u.GetCreationTimestamp().Time,
-	}
-}
-
-// normalizeGatewayDetail converts an unstructured Gateway into a GatewayDetail
-// with richer listener data. AttachedRoutes starts empty (filled by handler from cache).
-func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
-	obj := u.Object
-
-	className, _, _ := unstructured.NestedString(obj, "spec", "gatewayClassName")
-
-	// Parse spec.listeners[] with full detail (TLS, allowedRoutes).
+// parseListeners extracts listeners from spec.listeners[], optionally including detail fields (TLS, allowedRoutes).
+// It also merges per-listener attachedRoutes counts (and conditions if detail=true) from status.listeners[].
+// Returns the listeners slice and total attached route count.
+func parseListeners(obj map[string]any, detail bool) ([]Listener, int) {
 	specListeners, _, _ := unstructured.NestedSlice(obj, "spec", "listeners")
 	listeners := make([]Listener, 0, len(specListeners))
 	for _, item := range specListeners {
@@ -271,32 +201,28 @@ func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
 			Protocol: stringFrom(lm, "protocol"),
 			Hostname: stringFrom(lm, "hostname"),
 		}
-
-		// TLS mode and certificate ref.
-		if tls, ok := lm["tls"].(map[string]any); ok {
-			l.TLSMode = stringFrom(tls, "mode")
-			if certRefs, ok := tls["certificateRefs"].([]any); ok && len(certRefs) > 0 {
-				if cr, ok := certRefs[0].(map[string]any); ok {
-					ns := stringFrom(cr, "namespace")
-					name := stringFrom(cr, "name")
-					if ns != "" {
-						l.CertificateRef = ns + "/" + name
-					} else {
-						l.CertificateRef = name
+		if detail {
+			if tls, ok := lm["tls"].(map[string]any); ok {
+				l.TLSMode = stringFrom(tls, "mode")
+				if certRefs, ok := tls["certificateRefs"].([]any); ok && len(certRefs) > 0 {
+					if cr, ok := certRefs[0].(map[string]any); ok {
+						ns := stringFrom(cr, "namespace")
+						name := stringFrom(cr, "name")
+						if ns != "" {
+							l.CertificateRef = ns + "/" + name
+						} else {
+							l.CertificateRef = name
+						}
 					}
 				}
 			}
+			if ar, ok := lm["allowedRoutes"].(map[string]any); ok {
+				l.AllowedRoutes = stringifyAllowedRoutes(ar)
+			}
 		}
-
-		// AllowedRoutes: stringify kind constraints.
-		if ar, ok := lm["allowedRoutes"].(map[string]any); ok {
-			l.AllowedRoutes = stringifyAllowedRoutes(ar)
-		}
-
 		listeners = append(listeners, l)
 	}
 
-	// Merge per-listener conditions and attachedRoutes from status.listeners[].
 	statusListeners, _, _ := unstructured.NestedSlice(obj, "status", "listeners")
 	attachedTotal := 0
 	for _, item := range statusListeners {
@@ -307,19 +233,24 @@ func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
 		name := stringFrom(slm, "name")
 		count := intFrom(slm, "attachedRoutes")
 		attachedTotal += count
-		conds := extractConditions(slm, "conditions")
 		for i := range listeners {
 			if listeners[i].Name == name {
 				listeners[i].AttachedRouteCount = count
-				listeners[i].Conditions = conds
+				if detail {
+					listeners[i].Conditions = extractConditions(slm, "conditions")
+				}
 				break
 			}
 		}
 	}
 
-	// Addresses from status.addresses[].
-	var addresses []string
+	return listeners, attachedTotal
+}
+
+// parseAddresses extracts address values from status.addresses[].
+func parseAddresses(obj map[string]any) []string {
 	addrSlice, _, _ := unstructured.NestedSlice(obj, "status", "addresses")
+	var addresses []string
 	for _, item := range addrSlice {
 		am, ok := item.(map[string]any)
 		if !ok {
@@ -329,6 +260,32 @@ func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
 			addresses = append(addresses, v)
 		}
 	}
+	return addresses
+}
+
+func normalizeGateway(u *unstructured.Unstructured) GatewaySummary {
+	obj := u.Object
+	className, _, _ := unstructured.NestedString(obj, "spec", "gatewayClassName")
+	listeners, attachedTotal := parseListeners(obj, false)
+
+	return GatewaySummary{
+		Name:               u.GetName(),
+		Namespace:          u.GetNamespace(),
+		GatewayClassName:   className,
+		Listeners:          listeners,
+		Addresses:          parseAddresses(obj),
+		AttachedRouteCount: attachedTotal,
+		Conditions:         extractConditions(obj, "status", "conditions"),
+		Age:                u.GetCreationTimestamp().Time,
+	}
+}
+
+// normalizeGatewayDetail converts an unstructured Gateway into a GatewayDetail
+// with richer listener data. AttachedRoutes starts empty (filled by handler from cache).
+func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
+	obj := u.Object
+	className, _, _ := unstructured.NestedString(obj, "spec", "gatewayClassName")
+	listeners, attachedTotal := parseListeners(obj, true)
 
 	return GatewayDetail{
 		GatewaySummary: GatewaySummary{
@@ -336,7 +293,7 @@ func normalizeGatewayDetail(u *unstructured.Unstructured) GatewayDetail {
 			Namespace:          u.GetNamespace(),
 			GatewayClassName:   className,
 			Listeners:          listeners,
-			Addresses:          addresses,
+			Addresses:          parseAddresses(obj),
 			AttachedRouteCount: attachedTotal,
 			Conditions:         extractConditions(obj, "status", "conditions"),
 			Age:                u.GetCreationTimestamp().Time,
