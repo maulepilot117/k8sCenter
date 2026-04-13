@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { notifApi } from "@/lib/api.ts";
+import { useAuth } from "@/lib/auth.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { notifActionUrl } from "@/lib/notif-action.ts";
 import {
@@ -93,12 +94,21 @@ export default function NotificationFeed() {
     resetAndFilter();
   }
 
+  const { user } = useAuth();
+  const isAdmin = !!user.value?.roles?.includes("admin");
+
   function handleRowClick(n: AppNotification) {
-    // Fire-and-forget markRead — no await so navigation isn't delayed
+    // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
-      notifApi.markRead(n.id).catch(() => {});
+      notifApi.markReadQuiet(n.id).catch((e) =>
+        console.warn("markRead failed:", e)
+      );
+      // Optimistic read-state update
+      notifications.value = notifications.value.map((item) =>
+        item.id === n.id ? { ...item, read: true } : item
+      );
     }
-    const href = notifActionUrl(n);
+    const href = notifActionUrl(n, { isAdmin });
     if (href) {
       globalThis.location.href = href;
     }
@@ -278,7 +288,7 @@ export default function NotificationFeed() {
                 <tbody>
                   {notifications.value.map((n) => {
                     const isUnread = !n.read;
-                    const href = notifActionUrl(n);
+                    const href = notifActionUrl(n, { isAdmin });
                     return (
                       <tr
                         key={n.id}

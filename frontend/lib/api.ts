@@ -217,6 +217,12 @@ export const notifApi = {
   unreadCount: () =>
     apiGet<{ data: { count: number } }>("/v1/notifications/unread-count"),
   markRead: (id: string) => apiPost<void>(`/v1/notifications/${id}/read`),
+  /** Fire-and-forget markRead that survives page navigation. */
+  markReadQuiet: (id: string) =>
+    api<void>(`/v1/notifications/${id}/read`, {
+      method: "POST",
+      keepalive: true,
+    }),
   markAllRead: () => apiPost<void>("/v1/notifications/read-all"),
 
   // Channels (admin)

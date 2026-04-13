@@ -6,22 +6,11 @@ import { notifApi } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
 import { notifActionUrl } from "@/lib/notif-action.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 import {
   SeverityDot,
   SourceBadge,
 } from "@/components/ui/NotifCenterBadges.tsx";
-
-/** Time-ago helper for relative timestamps. */
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
 
 export default function NotificationBell() {
   const unreadCount = useSignal(0);
@@ -122,23 +111,25 @@ export default function NotificationBell() {
     }
   };
 
+  const isAdmin = !!user.value?.roles?.includes("admin");
+
   const handleClickNotification = (n: AppNotification) => {
-    // Fire-and-forget markRead — no await so navigation isn't delayed
+    // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
-      notifApi.markRead(n.id).catch(() => {});
+      notifApi.markReadQuiet(n.id).catch((e) =>
+        console.warn("markRead failed:", e)
+      );
       unreadCount.value = Math.max(0, unreadCount.value - 1);
       recent.value = recent.value.map((item) =>
         item.id === n.id ? { ...item, read: true } : item
       );
     }
     showPanel.value = false;
-    const href = notifActionUrl(n);
+    const href = notifActionUrl(n, { isAdmin });
     if (href) {
       globalThis.location.href = href;
     }
   };
-
-  const isAdmin = user.value?.roles?.includes("admin");
   const viewAllHref = isAdmin ? "/admin/notifications" : "/notifications";
   const badgeCount = unreadCount.value > 99 ? "99+" : unreadCount.value;
 
