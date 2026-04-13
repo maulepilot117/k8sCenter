@@ -441,6 +441,7 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         kind: "endpointslices",
         count: true,
       },
+      { label: "Gateway API", href: "/networking/gateway-api" },
     ],
   },
   {

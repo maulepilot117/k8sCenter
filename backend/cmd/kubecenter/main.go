@@ -22,6 +22,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/certmanager"
+	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
@@ -667,6 +668,10 @@ func main() {
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
 
+	// Gateway API integration
+	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
+	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -707,6 +712,7 @@ func main() {
 		LimitsHandler:      limitsHandler,
 		VeleroHandler:      veleroHandler,
 		CertManagerHandler: cmHandler,
+		GatewayHandler:     gwHandler,
 		CRDHandler:         crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,
