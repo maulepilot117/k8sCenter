@@ -1,31 +1,27 @@
-# argocd-image-updater v1.1.1 CRD-based configuration.
+# argocd-image-updater CRD-based configuration (v1.x).
 #
-# The v1 operator redesigned image tracking from Application annotations
-# to a dedicated CRD. This ImageUpdater CR tells the controller to watch
-# the k8scenter Application in the argocd namespace and update its
-# backend/frontend images when new digests appear on the `latest` tag in
-# GHCR.
+# This is kept as a secondary mechanism alongside the annotation-based
+# config on the Application CR. The annotations are the primary/stable
+# approach and work with any argocd-image-updater version. This CRD
+# takes effect only if argocd-image-updater v1.x with CRD support is
+# installed.
+#
+# Strategy: newest-build on sha-<commit> tags.  Each CI merge to main
+# pushes images tagged sha-<short-sha>, so the updater detects a new
+# tag, writes the Helm parameter override, and ArgoCD rolls out.
 #
 # Apply with:
 #   kubectl apply -n argocd -f argocd/k8scenter-image-updater.yaml
-#
-# Flow on each reconcile (default every 2 minutes):
-#   1. Controller polls ghcr.io for ghcr.io/maulepilot117/k8scenter-{backend,frontend}
-#   2. Detects a new digest on the `latest` tag
-#   3. Writes new helm parameter overrides to the k8scenter Application CR
-#   4. ArgoCD detects drift, re-renders, applies, pods roll out
 apiVersion: argocd-image-updater.argoproj.io/v1alpha1
 kind: ImageUpdater
 metadata:
   name: k8scenter-images
   namespace: argocd
 spec:
-  # Defaults inherited by every image below.
   commonUpdateSettings:
-    updateStrategy: digest
-    allowTags: "regexp:^latest$"
+    updateStrategy: newest-build
+    allowTags: "regexp:^sha-[0-9a-f]+$"
 
-  # Write parameter overrides back to the Application CR (no git credentials).
   writeBackConfig:
     method: argocd
 
@@ -33,13 +29,13 @@ spec:
     - namePattern: k8scenter
       images:
         - alias: backend
-          imageName: ghcr.io/maulepilot117/k8scenter-backend:latest
+          imageName: ghcr.io/maulepilot117/k8scenter-backend
           manifestTargets:
             helm:
               name: backend.image.repository
               tag: backend.image.tag
         - alias: frontend
-          imageName: ghcr.io/maulepilot117/k8scenter-frontend:latest
+          imageName: ghcr.io/maulepilot117/k8scenter-frontend
           manifestTargets:
             helm:
               name: frontend.image.repository
