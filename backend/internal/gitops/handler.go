@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -377,10 +378,15 @@ func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []
 }
 
 // parseCompositeID splits "argo:namespace:name" into (tool, namespace, name).
+// The id may arrive URL-encoded from chi.URLParam, so unescape first.
 func parseCompositeID(id string) (tool, namespace, name string, err error) {
-	parts := strings.SplitN(id, ":", 3)
+	decoded, uerr := url.PathUnescape(id)
+	if uerr != nil {
+		decoded = id // fall back to raw value
+	}
+	parts := strings.SplitN(decoded, ":", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", "", "", fmt.Errorf("invalid composite ID: %q (expected tool:namespace:name)", id)
+		return "", "", "", fmt.Errorf("invalid composite ID: %q (expected tool:namespace:name)", decoded)
 	}
 	return parts[0], parts[1], parts[2], nil
 }
