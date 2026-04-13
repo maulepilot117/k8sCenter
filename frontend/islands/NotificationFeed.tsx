@@ -3,7 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { notifApi } from "@/lib/api.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { resourceHref } from "@/lib/k8s-links.ts";
+import { notifActionUrl } from "@/lib/notif-action.ts";
 import {
   SeverityDot,
   SourceBadge,
@@ -93,22 +93,14 @@ export default function NotificationFeed() {
     resetAndFilter();
   }
 
-  async function handleRowClick(n: AppNotification) {
-    // Mark as read
+  function handleRowClick(n: AppNotification) {
+    // Fire-and-forget markRead — no await so navigation isn't delayed
     if (!n.read) {
-      await notifApi.markRead(n.id);
+      notifApi.markRead(n.id).catch(() => {});
     }
-    // Navigate to resource detail if possible
-    if (n.resourceKind && n.resourceName) {
-      const href = resourceHref(
-        n.resourceKind,
-        n.resourceNamespace,
-        n.resourceName,
-      );
-      if (href) {
-        globalThis.location.href = href;
-        return;
-      }
+    const href = notifActionUrl(n);
+    if (href) {
+      globalThis.location.href = href;
     }
   }
 
@@ -286,13 +278,7 @@ export default function NotificationFeed() {
                 <tbody>
                   {notifications.value.map((n) => {
                     const isUnread = !n.read;
-                    const href = n.resourceKind && n.resourceName
-                      ? resourceHref(
-                        n.resourceKind,
-                        n.resourceNamespace,
-                        n.resourceName,
-                      )
-                      : null;
+                    const href = notifActionUrl(n);
                     return (
                       <tr
                         key={n.id}

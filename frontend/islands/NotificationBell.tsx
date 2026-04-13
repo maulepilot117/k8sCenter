@@ -4,7 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { subscribe, wsStatus } from "@/lib/ws.ts";
 import { notifApi } from "@/lib/api.ts";
 import { useAuth } from "@/lib/auth.ts";
-import { resourceHref } from "@/lib/k8s-links.ts";
+import { notifActionUrl } from "@/lib/notif-action.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
 import {
   SeverityDot,
@@ -122,30 +122,20 @@ export default function NotificationBell() {
     }
   };
 
-  const handleClickNotification = async (n: AppNotification) => {
+  const handleClickNotification = (n: AppNotification) => {
+    // Fire-and-forget markRead — no await so navigation isn't delayed
     if (!n.read) {
-      try {
-        await notifApi.markRead(n.id);
-        unreadCount.value = Math.max(0, unreadCount.value - 1);
-        recent.value = recent.value.map((item) =>
-          item.id === n.id ? { ...item, read: true } : item
-        );
-      } catch {
-        // Silently fail
-      }
-    }
-    // Navigate using resourceHref which handles irregular plurals correctly
-    if (n.resourceKind && n.resourceName) {
-      const href = resourceHref(
-        n.resourceKind,
-        n.resourceNamespace,
-        n.resourceName,
+      notifApi.markRead(n.id).catch(() => {});
+      unreadCount.value = Math.max(0, unreadCount.value - 1);
+      recent.value = recent.value.map((item) =>
+        item.id === n.id ? { ...item, read: true } : item
       );
-      if (href) {
-        globalThis.location.href = href;
-      }
     }
     showPanel.value = false;
+    const href = notifActionUrl(n);
+    if (href) {
+      globalThis.location.href = href;
+    }
   };
 
   const isAdmin = user.value?.roles?.includes("admin");

@@ -14,6 +14,9 @@ const SOURCE_COLORS: Record<NotifSource, string> = {
   scan: "var(--warning)",
   cluster: "var(--success)",
   audit: "var(--text-muted)",
+  limits: "var(--warning)",
+  velero: "var(--accent)",
+  certmanager: "var(--success)",
 };
 
 /** Colored dot indicating notification severity. */
