@@ -88,6 +88,7 @@ function buildSearchIndex(): SearchItem[] {
       label: "View Expiring Certificates",
       href: "/security/certificates?status=expiring",
     },
+    { label: "View Gateway API", href: "/networking/gateway-api" },
     { label: "View Notifications", href: "/notifications" },
     { label: "Notification Channels", href: "/admin/notifications/channels" },
     { label: "Notification Rules", href: "/admin/notifications/rules" },

@@ -171,6 +171,11 @@ func (s *Server) registerRoutes() {
 				s.registerCertManagerRoutes(ar)
 			}
 
+			// Gateway API routes — only registered if gateway handler is available
+			if s.GatewayHandler != nil {
+				s.registerGatewayRoutes(ar)
+			}
+
 			// Notification center routes
 			if s.NotifCenterHandler != nil {
 				s.registerNotifCenterRoutes(ar)
@@ -596,6 +601,29 @@ func (s *Server) registerCertManagerRoutes(ar chi.Router) {
 			Post("/certificates/{namespace}/{name}/renew", h.HandleRenew)
 		cr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).
 			Post("/certificates/{namespace}/{name}/reissue", h.HandleReissue)
+	})
+}
+
+func (s *Server) registerGatewayRoutes(ar chi.Router) {
+	h := s.GatewayHandler
+	rl := s.YAMLRateLimiter
+	if rl == nil {
+		rl = s.RateLimiter
+	}
+	ar.Route("/gateway", func(gr chi.Router) {
+		// Cached list endpoints (no direct API calls)
+		gr.Get("/status", h.HandleStatus)
+		gr.Get("/summary", h.HandleSummary)
+		gr.Get("/gatewayclasses", h.HandleListGatewayClasses)
+		gr.Get("/gateways", h.HandleListGateways)
+		gr.Get("/httproutes", h.HandleListHTTPRoutes)
+		gr.Get("/routes", h.HandleListRoutes)
+
+		// Detail endpoints hit the API server directly — rate-limited
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/gatewayclasses/{name}", h.HandleGetGatewayClass)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/gateways/{namespace}/{name}", h.HandleGetGateway)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/httproutes/{namespace}/{name}", h.HandleGetHTTPRoute)
+		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/routes/{kind}/{namespace}/{name}", h.HandleGetRoute)
 	})
 }
 

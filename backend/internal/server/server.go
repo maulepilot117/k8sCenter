@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
+	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
@@ -73,6 +74,7 @@ type Server struct {
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
+	GatewayHandler     *gateway.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -117,6 +119,7 @@ type Deps struct {
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
+	GatewayHandler     *gateway.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -267,6 +270,11 @@ func New(deps Deps) *Server {
 	// Cert-Manager handler
 	if deps.CertManagerHandler != nil {
 		s.CertManagerHandler = deps.CertManagerHandler
+	}
+
+	// Gateway API handler
+	if deps.GatewayHandler != nil {
+		s.GatewayHandler = deps.GatewayHandler
 	}
 
 	// Notification center
