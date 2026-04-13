@@ -9,7 +9,10 @@ export type NotifSource =
   | "diagnostic"
   | "scan"
   | "cluster"
-  | "audit";
+  | "audit"
+  | "limits"
+  | "velero"
+  | "certmanager";
 
 /** Notification channel types matching backend notifications.ChannelType */
 export type NotifChannelType = "slack" | "email" | "webhook";
@@ -103,6 +106,9 @@ export const NOTIF_SOURCES: NotifSource[] = [
   "scan",
   "cluster",
   "audit",
+  "limits",
+  "velero",
+  "certmanager",
 ];
 
 /** All known notification severities for filter dropdowns. */
@@ -128,4 +134,7 @@ export const SOURCE_LABELS: Record<NotifSource, string> = {
   scan: "Security",
   cluster: "Cluster",
   audit: "Audit",
+  limits: "Limits",
+  velero: "Backup",
+  certmanager: "Certificate",
 };

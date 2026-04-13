@@ -2,8 +2,9 @@ import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { notifApi } from "@/lib/api.ts";
+import { useAuth } from "@/lib/auth.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { resourceHref } from "@/lib/k8s-links.ts";
+import { notifActionUrl } from "@/lib/notif-action.ts";
 import {
   SeverityDot,
   SourceBadge,
@@ -93,22 +94,23 @@ export default function NotificationFeed() {
     resetAndFilter();
   }
 
-  async function handleRowClick(n: AppNotification) {
-    // Mark as read
+  const { user } = useAuth();
+  const isAdmin = !!user.value?.roles?.includes("admin");
+
+  function handleRowClick(n: AppNotification) {
+    // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
-      await notifApi.markRead(n.id);
-    }
-    // Navigate to resource detail if possible
-    if (n.resourceKind && n.resourceName) {
-      const href = resourceHref(
-        n.resourceKind,
-        n.resourceNamespace,
-        n.resourceName,
+      notifApi.markReadQuiet(n.id).catch((e) =>
+        console.warn("markRead failed:", e)
       );
-      if (href) {
-        globalThis.location.href = href;
-        return;
-      }
+      // Optimistic read-state update
+      notifications.value = notifications.value.map((item) =>
+        item.id === n.id ? { ...item, read: true } : item
+      );
+    }
+    const href = notifActionUrl(n, { isAdmin });
+    if (href) {
+      globalThis.location.href = href;
     }
   }
 
@@ -286,13 +288,7 @@ export default function NotificationFeed() {
                 <tbody>
                   {notifications.value.map((n) => {
                     const isUnread = !n.read;
-                    const href = n.resourceKind && n.resourceName
-                      ? resourceHref(
-                        n.resourceKind,
-                        n.resourceNamespace,
-                        n.resourceName,
-                      )
-                      : null;
+                    const href = notifActionUrl(n, { isAdmin });
                     return (
                       <tr
                         key={n.id}
