@@ -6,16 +6,30 @@
 # After that, ArgoCD tracks `main` and keeps the cluster in sync with
 # the Helm chart at helm/kubecenter/ using values-homelab.yaml.
 #
-# Image updates are automated by argocd-image-updater — see the
-# k8scenter-image-updater.yaml in this directory for the ImageUpdater
-# CR that drives backend/frontend digest tracking on the `latest` tag.
-# Note: argocd-image-updater v1.x is CRD-based; the legacy
-# argocd-image-updater.argoproj.io/* annotations are no longer read.
+# Image updates are automated by argocd-image-updater via the
+# annotations below.  Strategy: newest-build on sha-<commit> tags so
+# each CI push produces a unique, immutable tag that the updater picks
+# up and writes as a Helm parameter override on this Application CR.
+# Write-back method is "argocd" (no git credentials needed).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: k8scenter
   namespace: argocd
+  annotations:
+    # -- argocd-image-updater: auto-roll on new sha-* image tags --
+    argocd-image-updater.argoproj.io/image-list: >-
+      backend=ghcr.io/maulepilot117/k8scenter-backend,
+      frontend=ghcr.io/maulepilot117/k8scenter-frontend
+    argocd-image-updater.argoproj.io/backend.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/backend.allow-tags: "regexp:^sha-[0-9a-f]+$"
+    argocd-image-updater.argoproj.io/backend.helm.image-name: backend.image.repository
+    argocd-image-updater.argoproj.io/backend.helm.image-tag: backend.image.tag
+    argocd-image-updater.argoproj.io/frontend.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/frontend.allow-tags: "regexp:^sha-[0-9a-f]+$"
+    argocd-image-updater.argoproj.io/frontend.helm.image-name: frontend.image.repository
+    argocd-image-updater.argoproj.io/frontend.helm.image-tag: frontend.image.tag
+    argocd-image-updater.argoproj.io/write-back-method: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -26,13 +40,13 @@ spec:
     path: helm/kubecenter
     targetRevision: main
     helm:
-      releaseName: kubecenter
+      releaseName: k8scenter
       valueFiles:
         - values-homelab.yaml
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: kubecenter
+    namespace: k8scenter
 
   syncPolicy:
     automated:

@@ -4,15 +4,15 @@ replicaCount: 1
 backend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-backend
-    tag: latest
-    pullPolicy: Always  # always pull latest on upgrade
+    tag: latest  # overridden at runtime by argocd-image-updater → sha-<commit>
+    pullPolicy: Always
   config:
     dev: true  # relaxes rate limiting to 60 req/min for homelab
 
 frontend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-frontend
-    tag: latest
+    tag: latest  # overridden at runtime by argocd-image-updater → sha-<commit>
     pullPolicy: Always
   resources:
     requests:

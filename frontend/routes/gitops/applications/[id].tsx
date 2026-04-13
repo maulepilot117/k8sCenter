@@ -6,7 +6,7 @@ import GitOpsAppDetail from "@/islands/GitOpsAppDetail.tsx";
 const section = DOMAIN_SECTIONS.find((s) => s.id === "gitops")!;
 
 export default define.page(function GitOpsAppDetailPage(ctx) {
-  const id = ctx.params.id;
+  const id = decodeURIComponent(ctx.params.id);
   return (
     <>
       <SubNav tabs={section.tabs ?? []} currentPath="/gitops/applications" />
