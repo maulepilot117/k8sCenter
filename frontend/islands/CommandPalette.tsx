@@ -88,6 +88,15 @@ function buildSearchIndex(): SearchItem[] {
       label: "View Expiring Certificates",
       href: "/security/certificates?status=expiring",
     },
+    { label: "Create Certificate", href: "/security/certificates/new" },
+    {
+      label: "Create Issuer",
+      href: "/security/certificates/issuers/new",
+    },
+    {
+      label: "Create ClusterIssuer",
+      href: "/security/certificates/cluster-issuers/new",
+    },
     { label: "View Gateway API", href: "/networking/gateway-api" },
     { label: "View Notifications", href: "/notifications" },
     { label: "Notification Channels", href: "/admin/notifications/channels" },
