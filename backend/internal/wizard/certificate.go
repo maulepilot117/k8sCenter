@@ -2,17 +2,11 @@ package wizard
 
 import (
 	"fmt"
-	"net/mail"
-	"regexp"
 	"strings"
 	"time"
 
 	sigsyaml "sigs.k8s.io/yaml"
 )
-
-// dnsNameRegex validates DNS names including wildcards (*.example.com).
-// The leftmost label may be "*"; other labels must be RFC 1123.
-var dnsNameRegex = regexp.MustCompile(`^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
 
 var validPrivateKeyAlgorithms = map[string]bool{
 	"RSA":     true,
@@ -24,35 +18,7 @@ var validRSASizes = map[int]bool{2048: true, 3072: true, 4096: true}
 
 var validECDSASizes = map[int]bool{256: true, 384: true, 521: true}
 
-var validPrivateKeyEncodings = map[string]bool{"PKCS1": true, "PKCS8": true}
-
 var validRotationPolicies = map[string]bool{"Always": true, "Never": true}
-
-var validCertificateUsages = map[string]bool{
-	"signing":            true,
-	"digital signature":  true,
-	"content commitment": true,
-	"key encipherment":   true,
-	"key agreement":      true,
-	"data encipherment":  true,
-	"cert sign":          true,
-	"crl sign":           true,
-	"encipher only":      true,
-	"decipher only":      true,
-	"any":                true,
-	"server auth":        true,
-	"client auth":        true,
-	"code signing":       true,
-	"email protection":   true,
-	"s/mime":             true,
-	"ipsec end system":   true,
-	"ipsec tunnel":       true,
-	"ipsec user":         true,
-	"timestamping":       true,
-	"ocsp signing":       true,
-	"microsoft sgc":      true,
-	"netscape sgc":       true,
-}
 
 // CertificateIssuerRefInput identifies the Issuer or ClusterIssuer that signs the certificate.
 type CertificateIssuerRefInput struct {
@@ -64,8 +30,7 @@ type CertificateIssuerRefInput struct {
 // CertificatePrivateKeyInput configures the private key generation.
 type CertificatePrivateKeyInput struct {
 	Algorithm      string `json:"algorithm,omitempty"`      // RSA, ECDSA, Ed25519
-	Size           int    `json:"size,omitempty"`           // algorithm-dependent
-	Encoding       string `json:"encoding,omitempty"`       // PKCS1 or PKCS8
+	Size           int    `json:"size,omitempty"`           // algorithm-dependent; must be 0 for Ed25519
 	RotationPolicy string `json:"rotationPolicy,omitempty"` // Always or Never
 }
 
@@ -77,12 +42,9 @@ type CertificateInput struct {
 	IssuerRef   CertificateIssuerRefInput   `json:"issuerRef"`
 	DNSNames    []string                    `json:"dnsNames,omitempty"`
 	CommonName  string                      `json:"commonName,omitempty"`
-	IPAddresses []string                    `json:"ipAddresses,omitempty"`
-	URIs        []string                    `json:"uris,omitempty"`
 	Duration    string                      `json:"duration,omitempty"`    // Go duration string, default 2160h
 	RenewBefore string                      `json:"renewBefore,omitempty"` // default 360h
 	PrivateKey  *CertificatePrivateKeyInput `json:"privateKey,omitempty"`
-	Usages      []string                    `json:"usages,omitempty"`
 	IsCA        bool                        `json:"isCA,omitempty"`
 }
 
@@ -115,8 +77,8 @@ func (c *CertificateInput) Validate() []FieldError {
 	}
 
 	// Need at least one identifier.
-	if len(c.DNSNames) == 0 && c.CommonName == "" && len(c.IPAddresses) == 0 && len(c.URIs) == 0 {
-		errs = append(errs, FieldError{Field: "dnsNames", Message: "at least one of dnsNames, commonName, ipAddresses, or uris is required"})
+	if len(c.DNSNames) == 0 && c.CommonName == "" {
+		errs = append(errs, FieldError{Field: "dnsNames", Message: "at least one of dnsNames or commonName is required"})
 	}
 
 	// dnsNames: RFC 1123 with optional leftmost wildcard.
@@ -139,9 +101,16 @@ func (c *CertificateInput) Validate() []FieldError {
 		}
 	}
 
-	// commonName: CA/Browser Forum and x509 enforce ≤64 chars.
+	// commonName: CA/Browser Forum and x509 enforce ≤64 chars. Reject control
+	// characters — they survive into x509 subject fields and can corrupt logs.
 	if len(c.CommonName) > 64 {
 		errs = append(errs, FieldError{Field: "commonName", Message: "must be 64 characters or fewer"})
+	}
+	for _, r := range c.CommonName {
+		if r < 0x20 || r == 0x7f {
+			errs = append(errs, FieldError{Field: "commonName", Message: "must not contain control characters"})
+			break
+		}
 	}
 
 	// duration and renewBefore must parse and obey renewBefore < duration.
@@ -178,16 +147,6 @@ func (c *CertificateInput) Validate() []FieldError {
 		errs = append(errs, c.PrivateKey.validate()...)
 	}
 
-	// usages
-	for i, u := range c.Usages {
-		if !validCertificateUsages[strings.ToLower(u)] {
-			errs = append(errs, FieldError{
-				Field:   fmt.Sprintf("usages[%d]", i),
-				Message: fmt.Sprintf("unknown usage %q", u),
-			})
-		}
-	}
-
 	return errs
 }
 
@@ -205,9 +164,10 @@ func (pk *CertificatePrivateKeyInput) validate() []FieldError {
 		if pk.Size != 0 && !validECDSASizes[pk.Size] {
 			errs = append(errs, FieldError{Field: "privateKey.size", Message: "ECDSA size must be 256, 384, or 521"})
 		}
-	}
-	if pk.Encoding != "" && !validPrivateKeyEncodings[pk.Encoding] {
-		errs = append(errs, FieldError{Field: "privateKey.encoding", Message: "must be PKCS1 or PKCS8"})
+	case "Ed25519":
+		if pk.Size != 0 {
+			errs = append(errs, FieldError{Field: "privateKey.size", Message: "Ed25519 does not accept a size"})
+		}
 	}
 	if pk.RotationPolicy != "" && !validRotationPolicies[pk.RotationPolicy] {
 		errs = append(errs, FieldError{Field: "privateKey.rotationPolicy", Message: "must be Always or Never"})
@@ -239,12 +199,6 @@ func (c *CertificateInput) ToCertificate() map[string]any {
 	if c.CommonName != "" {
 		spec["commonName"] = c.CommonName
 	}
-	if len(c.IPAddresses) > 0 {
-		spec["ipAddresses"] = c.IPAddresses
-	}
-	if len(c.URIs) > 0 {
-		spec["uris"] = c.URIs
-	}
 	if c.Duration != "" {
 		spec["duration"] = c.Duration
 	}
@@ -259,18 +213,12 @@ func (c *CertificateInput) ToCertificate() map[string]any {
 		if c.PrivateKey.Size != 0 {
 			pk["size"] = c.PrivateKey.Size
 		}
-		if c.PrivateKey.Encoding != "" {
-			pk["encoding"] = c.PrivateKey.Encoding
-		}
 		if c.PrivateKey.RotationPolicy != "" {
 			pk["rotationPolicy"] = c.PrivateKey.RotationPolicy
 		}
 		if len(pk) > 0 {
 			spec["privateKey"] = pk
 		}
-	}
-	if len(c.Usages) > 0 {
-		spec["usages"] = c.Usages
 	}
 	if c.IsCA {
 		spec["isCA"] = true
@@ -294,13 +242,4 @@ func (c *CertificateInput) ToYAML() (string, error) {
 		return "", err
 	}
 	return string(y), nil
-}
-
-// validateEmailAddress is a helper shared with the Issuer wizard's ACME block.
-func validateEmailAddress(addr string) bool {
-	if addr == "" {
-		return false
-	}
-	_, err := mail.ParseAddress(addr)
-	return err == nil
 }

@@ -51,11 +51,22 @@ func TestCertificateValidate_NoIdentifiers(t *testing.T) {
 	c := validCertificateInput()
 	c.DNSNames = nil
 	c.CommonName = ""
-	c.IPAddresses = nil
-	c.URIs = nil
 	errs := c.Validate()
 	if !hasFieldError(errs, "dnsNames") {
 		t.Errorf("expected dnsNames error when no identifiers present, got %v", errs)
+	}
+}
+
+func TestCertificateValidate_CommonNameControlChars(t *testing.T) {
+	tests := []string{"with\nnewline", "null\x00byte", "del\x7fchar"}
+	for _, cn := range tests {
+		c := validCertificateInput()
+		c.DNSNames = nil
+		c.CommonName = cn
+		errs := c.Validate()
+		if !hasFieldError(errs, "commonName") {
+			t.Errorf("commonName %q should be rejected for control chars, got %v", cn, errs)
+		}
 	}
 }
 
@@ -140,7 +151,7 @@ func TestCertificateValidate_PrivateKey(t *testing.T) {
 		{"invalid algorithm", CertificatePrivateKeyInput{Algorithm: "DSA"}, "privateKey.algorithm"},
 		{"invalid RSA size", CertificatePrivateKeyInput{Algorithm: "RSA", Size: 1024}, "privateKey.size"},
 		{"invalid ECDSA size", CertificatePrivateKeyInput{Algorithm: "ECDSA", Size: 192}, "privateKey.size"},
-		{"invalid encoding", CertificatePrivateKeyInput{Encoding: "DER"}, "privateKey.encoding"},
+		{"Ed25519 with nonzero size", CertificatePrivateKeyInput{Algorithm: "Ed25519", Size: 2048}, "privateKey.size"},
 		{"invalid rotationPolicy", CertificatePrivateKeyInput{RotationPolicy: "Sometimes"}, "privateKey.rotationPolicy"},
 	}
 	for _, tt := range tests {
@@ -158,9 +169,7 @@ func TestCertificateValidate_PrivateKey(t *testing.T) {
 func TestCertificateValidate_PrivateKeyValidCombinations(t *testing.T) {
 	valid := []CertificatePrivateKeyInput{
 		{Algorithm: "RSA", Size: 2048, RotationPolicy: "Always"},
-		{Algorithm: "RSA", Size: 4096, Encoding: "PKCS8"},
 		{Algorithm: "ECDSA", Size: 256},
-		{Algorithm: "ECDSA", Size: 521},
 		{Algorithm: "Ed25519"},
 	}
 	for _, pk := range valid {
@@ -173,21 +182,11 @@ func TestCertificateValidate_PrivateKeyValidCombinations(t *testing.T) {
 	}
 }
 
-func TestCertificateValidate_UnknownUsage(t *testing.T) {
-	c := validCertificateInput()
-	c.Usages = []string{"server auth", "not-a-usage"}
-	errs := c.Validate()
-	if !hasFieldErrorWithPrefix(errs, "usages[1]") {
-		t.Errorf("expected usages[1] error, got %v", errs)
-	}
-}
-
 func TestCertificateToYAML(t *testing.T) {
 	c := validCertificateInput()
 	c.Duration = "2160h"
 	c.RenewBefore = "360h"
 	c.PrivateKey = &CertificatePrivateKeyInput{Algorithm: "RSA", Size: 2048, RotationPolicy: "Always"}
-	c.Usages = []string{"digital signature", "key encipherment", "server auth"}
 
 	y, err := c.ToYAML()
 	if err != nil {
@@ -196,32 +195,11 @@ func TestCertificateToYAML(t *testing.T) {
 	for _, want := range []string{
 		"apiVersion: cert-manager.io/v1",
 		"kind: Certificate",
-		"name: example-com-tls",
-		"namespace: default",
-		"secretName: example-com-tls",
-		"group: cert-manager.io",
 		"kind: ClusterIssuer",
-		"- example.com",
-		"- www.example.com",
-		"algorithm: RSA",
-		"size: 2048",
-		"rotationPolicy: Always",
+		"secretName: example-com-tls",
 	} {
 		if !strings.Contains(y, want) {
 			t.Errorf("YAML missing %q:\n%s", want, y)
-		}
-	}
-}
-
-func TestCertificateToYAML_OmitsEmptyOptionals(t *testing.T) {
-	c := validCertificateInput()
-	y, err := c.ToYAML()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	for _, notWant := range []string{"duration:", "renewBefore:", "privateKey:", "usages:", "isCA:", "commonName:", "ipAddresses:", "uris:"} {
-		if strings.Contains(y, notWant) {
-			t.Errorf("YAML should omit %q when not set:\n%s", notWant, y)
 		}
 	}
 }

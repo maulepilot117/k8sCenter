@@ -1,4 +1,5 @@
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import type { Issuer } from "@/lib/certmanager-types.ts";
 import type { CertificateWizardForm } from "@/islands/CertificateWizard.tsx";
 
@@ -7,6 +8,7 @@ interface CertificateFormProps {
   errors: Record<string, string>;
   issuers: Issuer[];
   issuersLoading: boolean;
+  namespaces: string[];
   onUpdate: (field: string, value: unknown) => void;
   onUpdatePrivateKey: (field: string, value: unknown) => void;
 }
@@ -21,6 +23,7 @@ export function CertificateForm({
   errors,
   issuers,
   issuersLoading,
+  namespaces,
   onUpdate,
   onUpdatePrivateKey,
 }: CertificateFormProps) {
@@ -49,22 +52,12 @@ export function CertificateForm({
           {errors.name && <p class="mt-1 text-xs text-danger">{errors.name}</p>}
         </div>
 
-        <div>
-          <label class="block text-sm font-medium text-text-primary">
-            Namespace <span class="text-danger">*</span>
-          </label>
-          <input
-            type="text"
-            value={form.namespace}
-            onInput={(e) =>
-              onUpdate("namespace", (e.target as HTMLInputElement).value)}
-            placeholder="default"
-            class={WIZARD_INPUT_CLASS}
-          />
-          {errors.namespace && (
-            <p class="mt-1 text-xs text-danger">{errors.namespace}</p>
-          )}
-        </div>
+        <NamespaceSelect
+          value={form.namespace}
+          namespaces={namespaces}
+          error={errors.namespace}
+          onChange={(ns) => onUpdate("namespace", ns)}
+        />
       </div>
 
       <div>

@@ -1,9 +1,25 @@
 package wizard
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// TestIssuerInput_ScopeNotJSONDecoded ensures a client cannot override the
+// route-assigned scope by supplying it in the JSON body. Route authority is
+// required because wizard preview feeds into server-side apply.
+func TestIssuerInput_ScopeNotJSONDecoded(t *testing.T) {
+	// Factory sets cluster scope; client body attempts to downgrade to namespaced.
+	in := &IssuerInput{Scope: IssuerScopeCluster}
+	body := []byte(`{"scope":"namespaced","name":"x","type":"selfSigned","selfSigned":{}}`)
+	if err := json.Unmarshal(body, in); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if in.Scope != IssuerScopeCluster {
+		t.Errorf("scope overridden by client: got %q, want %q", in.Scope, IssuerScopeCluster)
+	}
+}
 
 func validSelfSignedNamespaced() IssuerInput {
 	return IssuerInput{

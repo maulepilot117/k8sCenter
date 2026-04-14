@@ -2,14 +2,13 @@ package wizard
 
 import (
 	"fmt"
-	"net"
-	"net/url"
-	"strings"
 
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
-// IssuerScope indicates whether the wizard produces a namespaced Issuer or a cluster-scoped ClusterIssuer.
+// IssuerScope indicates whether the wizard produces a namespaced Issuer or a
+// cluster-scoped ClusterIssuer. The field is not JSON-decoded — the HTTP route
+// is authoritative and bakes in the scope via the HandlePreview factory.
 type IssuerScope string
 
 const (
@@ -46,10 +45,10 @@ type ACMESolverInput struct {
 
 // ACMEInput configures an ACME issuer.
 type ACMEInput struct {
-	Server                 string            `json:"server"`
-	Email                  string            `json:"email"`
-	PrivateKeySecretRefName string           `json:"privateKeySecretRefName"`
-	Solvers                []ACMESolverInput `json:"solvers"`
+	Server                  string            `json:"server"`
+	Email                   string            `json:"email"`
+	PrivateKeySecretRefName string            `json:"privateKeySecretRefName"`
+	Solvers                 []ACMESolverInput `json:"solvers"`
 }
 
 // CAInput configures a CA issuer.
@@ -60,9 +59,9 @@ type CAInput struct {
 // VaultAuthInput configures one of Vault's authentication methods.
 // Exactly one of the nested fields must be set.
 type VaultAuthInput struct {
-	TokenSecretRefName string `json:"tokenSecretRefName,omitempty"`
+	TokenSecretRefName   string `json:"tokenSecretRefName,omitempty"`
 	AppRoleSecretRefName string `json:"appRoleSecretRefName,omitempty"`
-	KubernetesRole     string `json:"kubernetesRole,omitempty"`
+	KubernetesRole       string `json:"kubernetesRole,omitempty"`
 }
 
 // VaultInput configures a Vault issuer.
@@ -72,9 +71,11 @@ type VaultInput struct {
 	Auth   VaultAuthInput `json:"auth"`
 }
 
-// IssuerInput represents the wizard form data for creating a cert-manager Issuer or ClusterIssuer.
+// IssuerInput represents the wizard form data for creating a cert-manager
+// Issuer or ClusterIssuer. Scope is intentionally not JSON-tagged so the route
+// remains authoritative — see the HandlePreview factories in routes.go.
 type IssuerInput struct {
-	Scope     IssuerScope `json:"scope"`
+	Scope     IssuerScope `json:"-"`
 	Name      string      `json:"name"`
 	Namespace string      `json:"namespace,omitempty"` // ignored for cluster scope
 	Type      IssuerType  `json:"type"`
@@ -198,24 +199,6 @@ func (a *ACMEInput) validate() []FieldError {
 	return errs
 }
 
-// validateHTTPSPublicURL rejects non-HTTPS URLs and URLs that resolve to RFC1918 or loopback addresses.
-func validateHTTPSPublicURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("must be a valid URL")
-	}
-	if u.Scheme != "https" {
-		return fmt.Errorf("must use https scheme")
-	}
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return fmt.Errorf("must not target a private or loopback IP")
-		}
-	}
-	return nil
-}
-
 func (c *CAInput) validate() []FieldError {
 	var errs []FieldError
 	if c.SecretName == "" {
@@ -253,6 +236,7 @@ func (v *VaultInput) validate() []FieldError {
 }
 
 // ToIssuer returns a map representation suitable for YAML marshaling.
+// cert-manager is not in go.mod; map-based construction avoids the dep tree.
 func (i *IssuerInput) ToIssuer() map[string]any {
 	kind := "Issuer"
 	if i.Scope == IssuerScopeCluster {
@@ -339,6 +323,5 @@ func (i *IssuerInput) ToYAML() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Strip trailing empty line, for prettier preview rendering.
-	return strings.TrimRight(string(y), "\n") + "\n", nil
+	return string(y), nil
 }

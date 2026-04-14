@@ -79,3 +79,10 @@ export const RESTART_POLICY_OPTIONS = [
 /** Standard Tailwind input class for wizard form fields. */
 export const WIZARD_INPUT_CLASS =
   "mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand";
+
+/** Let's Encrypt production ACME directory endpoint. */
+export const LE_PROD_ACME = "https://acme-v02.api.letsencrypt.org/directory";
+
+/** Let's Encrypt staging ACME directory endpoint. */
+export const LE_STAGING_ACME =
+  "https://acme-staging-v02.api.letsencrypt.org/directory";

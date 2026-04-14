@@ -1,4 +1,9 @@
-import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import {
+  LE_PROD_ACME,
+  LE_STAGING_ACME,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
+import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import type {
   IssuerWizardForm,
   VaultAuthMethod,
@@ -8,6 +13,7 @@ interface IssuerFormStepProps {
   scope: "namespaced" | "cluster";
   form: IssuerWizardForm;
   errors: Record<string, string>;
+  namespaces: string[];
   onUpdate: (field: string, value: unknown) => void;
   onUpdateAcme: (field: string, value: unknown) => void;
   onUpdateCa: (field: string, value: unknown) => void;
@@ -15,13 +21,11 @@ interface IssuerFormStepProps {
   onUpdateVaultAuth: (method: VaultAuthMethod, value: string) => void;
 }
 
-const LE_PROD = "https://acme-v02.api.letsencrypt.org/directory";
-const LE_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory";
-
 export function IssuerFormStep({
   scope,
   form,
   errors,
+  namespaces,
   onUpdate,
   onUpdateAcme,
   onUpdateCa,
@@ -47,25 +51,12 @@ export function IssuerFormStep({
         </div>
 
         {scope === "namespaced" && (
-          <div>
-            <label class="block text-sm font-medium text-text-primary">
-              Namespace <span class="text-danger">*</span>
-            </label>
-            <input
-              type="text"
-              value={form.namespace}
-              onInput={(e) =>
-                onUpdate(
-                  "namespace",
-                  (e.target as HTMLInputElement).value,
-                )}
-              placeholder="default"
-              class={WIZARD_INPUT_CLASS}
-            />
-            {errors.namespace && (
-              <p class="mt-1 text-xs text-danger">{errors.namespace}</p>
-            )}
-          </div>
+          <NamespaceSelect
+            value={form.namespace}
+            namespaces={namespaces}
+            error={errors.namespace}
+            onChange={(ns) => onUpdate("namespace", ns)}
+          />
         )}
       </div>
 
@@ -86,22 +77,22 @@ export function IssuerFormStep({
               <button
                 type="button"
                 class={`text-xs rounded border px-2 py-1 ${
-                  form.acme.server === LE_STAGING
+                  form.acme.server === LE_STAGING_ACME
                     ? "border-brand text-brand"
                     : "border-border-primary text-text-muted"
                 }`}
-                onClick={() => onUpdateAcme("server", LE_STAGING)}
+                onClick={() => onUpdateAcme("server", LE_STAGING_ACME)}
               >
                 Let's Encrypt Staging
               </button>
               <button
                 type="button"
                 class={`text-xs rounded border px-2 py-1 ${
-                  form.acme.server === LE_PROD
+                  form.acme.server === LE_PROD_ACME
                     ? "border-brand text-brand"
                     : "border-border-primary text-text-muted"
                 }`}
-                onClick={() => onUpdateAcme("server", LE_PROD)}
+                onClick={() => onUpdateAcme("server", LE_PROD_ACME)}
               >
                 Let's Encrypt Production
               </button>

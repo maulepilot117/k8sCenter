@@ -3,7 +3,9 @@ import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
+import { DNS_LABEL_REGEX, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { IssuerTypePickerStep } from "@/components/wizard/IssuerTypePickerStep.tsx";
@@ -44,21 +46,31 @@ const STEPS = [
   { title: "Review" },
 ];
 
-const LE_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory";
+function initialAcme(): IssuerWizardForm["acme"] {
+  return {
+    server: LE_STAGING_ACME,
+    email: "",
+    privateKeySecretRefName: "",
+    ingressClassName: "",
+  };
+}
+
+function initialCa(): IssuerWizardForm["ca"] {
+  return { secretName: "" };
+}
+
+function initialVault(): IssuerWizardForm["vault"] {
+  return { server: "", path: "", authMethod: "token", authValue: "" };
+}
 
 function initialForm(): IssuerWizardForm {
   return {
     type: "",
     name: "",
-    namespace: "default",
-    acme: {
-      server: LE_STAGING,
-      email: "",
-      privateKeySecretRefName: "",
-      ingressClassName: "",
-    },
-    ca: { secretName: "" },
-    vault: { server: "", path: "", authMethod: "token", authValue: "" },
+    namespace: initialNamespace(),
+    acme: initialAcme(),
+    ca: initialCa(),
+    vault: initialVault(),
   };
 }
 
@@ -67,6 +79,7 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
   const form = useSignal<IssuerWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
+  const namespaces = useNamespaces();
 
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
@@ -126,9 +139,17 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
     [],
   );
 
+  // Changing type resets every sibling subform so switching away from ACME and
+  // back (or across any pair) never shows stale values from a prior session.
   const selectType = useCallback((t: IssuerType) => {
     dirty.value = true;
-    form.value = { ...form.value, type: t };
+    form.value = {
+      ...form.value,
+      type: t,
+      acme: initialAcme(),
+      ca: initialCa(),
+      vault: initialVault(),
+    };
   }, []);
 
   const validateStep = (step: number): boolean => {
@@ -309,6 +330,7 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
             scope={scope}
             form={form.value}
             errors={errors.value}
+            namespaces={namespaces.value}
             onUpdate={updateField}
             onUpdateAcme={updateAcme}
             onUpdateCa={updateCa}
@@ -325,7 +347,9 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
             }}
             loading={previewLoading.value}
             error={previewError.value}
-            detailBasePath="/security/certificates/issuers"
+            detailBasePath={scope === "cluster"
+              ? "/security/certificates/cluster-issuers"
+              : "/security/certificates/issuers"}
           />
         )}
       </div>

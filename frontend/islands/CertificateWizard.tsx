@@ -3,6 +3,8 @@ import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
@@ -35,7 +37,7 @@ const STEPS = [
 function initialForm(): CertificateWizardForm {
   return {
     name: "",
-    namespace: "default",
+    namespace: initialNamespace(),
     secretName: "",
     issuerRefValue: "",
     dnsNamesInput: "",
@@ -45,6 +47,21 @@ function initialForm(): CertificateWizardForm {
     privateKey: { algorithm: "RSA", size: 2048, rotationPolicy: "Always" },
     isCA: false,
   };
+}
+
+// decodeIssuerRef splits "Kind:Name" into its parts, using indexOf so names
+// containing further colons (won't happen for DNS labels but guards future changes)
+// don't truncate. Returns null for malformed or empty input.
+function decodeIssuerRef(
+  encoded: string,
+): { kind: string; name: string } | null {
+  const idx = encoded.indexOf(":");
+  if (idx <= 0 || idx === encoded.length - 1) return null;
+  const kind = encoded.slice(0, idx);
+  const name = encoded.slice(idx + 1);
+  if (kind !== "Issuer" && kind !== "ClusterIssuer") return null;
+  if (!name) return null;
+  return { kind, name };
 }
 
 function splitDnsNames(input: string): string[] {
@@ -62,6 +79,7 @@ export default function CertificateWizard() {
 
   const issuers = useSignal<Issuer[]>([]);
   const issuersLoading = useSignal(true);
+  const namespaces = useNamespaces();
 
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
@@ -133,6 +151,8 @@ export default function CertificateWizard() {
     }
     if (!f.issuerRefValue) {
       errs.issuerRef = "Select an issuer";
+    } else if (!decodeIssuerRef(f.issuerRefValue)) {
+      errs.issuerRef = "Invalid issuer selection";
     }
     const dnsNames = splitDnsNames(f.dnsNamesInput);
     if (dnsNames.length === 0 && f.commonName.trim() === "") {
@@ -148,7 +168,12 @@ export default function CertificateWizard() {
     previewError.value = null;
 
     const f = form.value;
-    const [kind, issuerName] = f.issuerRefValue.split(":");
+    const ref = decodeIssuerRef(f.issuerRefValue);
+    if (!ref) {
+      previewError.value = "Invalid issuer selection";
+      previewLoading.value = false;
+      return;
+    }
     const dnsNames = splitDnsNames(f.dnsNamesInput);
 
     const payload: Record<string, unknown> = {
@@ -156,8 +181,8 @@ export default function CertificateWizard() {
       namespace: f.namespace,
       secretName: f.secretName,
       issuerRef: {
-        kind,
-        name: issuerName,
+        kind: ref.kind,
+        name: ref.name,
         group: "cert-manager.io",
       },
     };
@@ -237,6 +262,7 @@ export default function CertificateWizard() {
             errors={errors.value}
             issuers={issuers.value}
             issuersLoading={issuersLoading.value}
+            namespaces={namespaces.value}
             onUpdate={updateField}
             onUpdatePrivateKey={updatePrivateKey}
           />
