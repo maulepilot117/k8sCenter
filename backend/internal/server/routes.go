@@ -288,6 +288,13 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/velero-backup/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroBackupInput{} }))
 		wr.Post("/velero-restore/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroRestoreInput{} }))
 		wr.Post("/velero-schedule/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.VeleroScheduleInput{} }))
+		wr.Post("/certificate/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.CertificateInput{} }))
+		wr.Post("/issuer/preview", h.HandlePreview(func() wizard.WizardInput {
+			return &wizard.IssuerInput{Scope: wizard.IssuerScopeNamespaced}
+		}))
+		wr.Post("/cluster-issuer/preview", h.HandlePreview(func() wizard.WizardInput {
+			return &wizard.IssuerInput{Scope: wizard.IssuerScopeCluster}
+		}))
 	})
 }
 

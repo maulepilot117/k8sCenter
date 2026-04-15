@@ -74,9 +74,15 @@ export default function CertificatesList() {
 
   return (
     <div class="p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-1">
-        Certificates
-      </h1>
+      <div class="flex items-start justify-between mb-1">
+        <h1 class="text-2xl font-bold text-text-primary">Certificates</h1>
+        <a
+          href="/security/certificates/new"
+          class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90"
+        >
+          Create Certificate
+        </a>
+      </div>
       <p class="text-sm text-text-muted mb-6">
         cert-manager certificates across all namespaces.
         {expiringOnly && " Showing expiring and expired certificates only."}
