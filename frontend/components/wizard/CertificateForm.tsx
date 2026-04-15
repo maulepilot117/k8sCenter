@@ -38,18 +38,28 @@ export function CertificateForm({
     <div class="space-y-5">
       <div class="grid grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-text-primary">
+          <label
+            for="cert-name"
+            class="block text-sm font-medium text-text-primary"
+          >
             Name <span class="text-danger">*</span>
           </label>
           <input
+            id="cert-name"
             type="text"
             value={form.name}
             onInput={(e) =>
               onUpdate("name", (e.target as HTMLInputElement).value)}
             placeholder="example-com-tls"
             class={WIZARD_INPUT_CLASS}
+            aria-invalid={errors.name ? "true" : undefined}
+            aria-describedby={errors.name ? "cert-name-error" : undefined}
           />
-          {errors.name && <p class="mt-1 text-xs text-danger">{errors.name}</p>}
+          {errors.name && (
+            <p id="cert-name-error" class="mt-1 text-xs text-danger">
+              {errors.name}
+            </p>
+          )}
         </div>
 
         <NamespaceSelect
@@ -61,31 +71,45 @@ export function CertificateForm({
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-text-primary">
+        <label
+          for="cert-secret-name"
+          class="block text-sm font-medium text-text-primary"
+        >
           Secret Name <span class="text-danger">*</span>
         </label>
         <input
+          id="cert-secret-name"
           type="text"
           value={form.secretName}
           onInput={(e) =>
             onUpdate("secretName", (e.target as HTMLInputElement).value)}
           placeholder="example-com-tls"
           class={WIZARD_INPUT_CLASS}
+          aria-invalid={errors.secretName ? "true" : undefined}
+          aria-describedby={errors.secretName
+            ? "cert-secret-name-error"
+            : undefined}
         />
         <p class="mt-1 text-xs text-text-muted">
           Secret where cert-manager will write the issued TLS certificate and
           private key.
         </p>
         {errors.secretName && (
-          <p class="mt-1 text-xs text-danger">{errors.secretName}</p>
+          <p id="cert-secret-name-error" class="mt-1 text-xs text-danger">
+            {errors.secretName}
+          </p>
         )}
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-text-primary">
+        <label
+          for="cert-issuer"
+          class="block text-sm font-medium text-text-primary"
+        >
           Issuer <span class="text-danger">*</span>
         </label>
         <select
+          id="cert-issuer"
           value={form.issuerRefValue}
           onChange={(e) =>
             onUpdate(

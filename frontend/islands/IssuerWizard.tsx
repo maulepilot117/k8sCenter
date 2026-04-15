@@ -1,5 +1,4 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -12,8 +11,7 @@ import { IssuerTypePickerStep } from "@/components/wizard/IssuerTypePickerStep.t
 import { IssuerFormStep } from "@/components/wizard/IssuerFormStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 
-export type IssuerType = "selfSigned" | "acme" | "ca" | "vault";
-export type VaultAuthMethod = "token" | "appRole" | "kubernetes";
+export type IssuerType = "selfSigned" | "acme";
 
 export interface IssuerWizardForm {
   type: IssuerType | "";
@@ -24,15 +22,9 @@ export interface IssuerWizardForm {
     email: string;
     privateKeySecretRefName: string;
     ingressClassName: string;
-  };
-  ca: {
-    secretName: string;
-  };
-  vault: {
-    server: string;
-    path: string;
-    authMethod: VaultAuthMethod;
-    authValue: string;
+    // True once the user has edited privateKeySecretRefName themselves;
+    // we stop auto-deriving it from `name` after that.
+    privateKeySecretRefNameTouched: boolean;
   };
 }
 
@@ -52,15 +44,8 @@ function initialAcme(): IssuerWizardForm["acme"] {
     email: "",
     privateKeySecretRefName: "",
     ingressClassName: "",
+    privateKeySecretRefNameTouched: false,
   };
-}
-
-function initialCa(): IssuerWizardForm["ca"] {
-  return { secretName: "" };
-}
-
-function initialVault(): IssuerWizardForm["vault"] {
-  return { server: "", path: "", authMethod: "token", authValue: "" };
 }
 
 function initialForm(): IssuerWizardForm {
@@ -69,8 +54,6 @@ function initialForm(): IssuerWizardForm {
     name: "",
     namespace: initialNamespace(),
     acme: initialAcme(),
-    ca: initialCa(),
-    vault: initialVault(),
   };
 }
 
@@ -87,14 +70,15 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
 
   useDirtyGuard(dirty);
 
-  const updateField = useCallback((field: string, value: unknown) => {
+  const updateField = (field: string, value: unknown) => {
     dirty.value = true;
     const f = { ...form.value, [field]: value } as IssuerWizardForm;
-    // Default ACME private key secret from issuer name when untouched.
+    // Auto-derive ACME account-key Secret name from the issuer name until the
+    // user explicitly edits it. Uses a touched flag instead of comparing
+    // against `${oldName}-account`, which breaks after switching type.
     if (
       field === "name" && typeof value === "string" && f.type === "acme" &&
-      (f.acme.privateKeySecretRefName === "" ||
-        f.acme.privateKeySecretRefName === `${form.value.name}-account`)
+      !f.acme.privateKeySecretRefNameTouched
     ) {
       f.acme = {
         ...f.acme,
@@ -102,62 +86,30 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
       };
     }
     form.value = f;
-  }, []);
+  };
 
-  const updateAcme = useCallback((field: string, value: unknown) => {
+  const updateAcme = (field: string, value: unknown) => {
     dirty.value = true;
-    form.value = {
-      ...form.value,
-      acme: { ...form.value.acme, [field]: value },
-    };
-  }, []);
+    const next = { ...form.value.acme, [field]: value };
+    if (field === "privateKeySecretRefName") {
+      next.privateKeySecretRefNameTouched = true;
+    }
+    form.value = { ...form.value, acme: next };
+  };
 
-  const updateCa = useCallback((field: string, value: unknown) => {
+  // Changing type resets the ACME subform so stale values from a prior session
+  // never surface after toggling back.
+  const selectType = (t: IssuerType) => {
     dirty.value = true;
-    form.value = {
-      ...form.value,
-      ca: { ...form.value.ca, [field]: value },
-    };
-  }, []);
-
-  const updateVault = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      vault: { ...form.value.vault, [field]: value },
-    };
-  }, []);
-
-  const updateVaultAuth = useCallback(
-    (method: VaultAuthMethod, value: string) => {
-      dirty.value = true;
-      form.value = {
-        ...form.value,
-        vault: { ...form.value.vault, authMethod: method, authValue: value },
-      };
-    },
-    [],
-  );
-
-  // Changing type resets every sibling subform so switching away from ACME and
-  // back (or across any pair) never shows stale values from a prior session.
-  const selectType = useCallback((t: IssuerType) => {
-    dirty.value = true;
-    form.value = {
-      ...form.value,
-      type: t,
-      acme: initialAcme(),
-      ca: initialCa(),
-      vault: initialVault(),
-    };
-  }, []);
+    form.value = { ...form.value, type: t, acme: initialAcme() };
+  };
 
   const validateStep = (step: number): boolean => {
     const f = form.value;
     const errs: Record<string, string> = {};
 
-    if (step === 0) {
-      if (!f.type) errs.type = "Select an issuer type";
+    if (step === 0 && !f.type) {
+      errs.type = "Select an issuer type";
     }
 
     if (step === 1) {
@@ -169,7 +121,6 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
           errs.namespace = "Must be a valid DNS label";
         }
       }
-
       if (f.type === "acme") {
         if (!f.acme.server || !f.acme.server.startsWith("https://")) {
           errs["acme.server"] = "ACME server must be an HTTPS URL";
@@ -184,22 +135,6 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
           errs["acme.privateKeySecretRefName"] = "Must be a valid DNS label";
         }
       }
-
-      if (f.type === "ca") {
-        if (!f.ca.secretName || !DNS_LABEL_REGEX.test(f.ca.secretName)) {
-          errs["ca.secretName"] = "Must be a valid DNS label";
-        }
-      }
-
-      if (f.type === "vault") {
-        if (!f.vault.server || !f.vault.server.startsWith("https://")) {
-          errs["vault.server"] = "Vault server must be an HTTPS URL";
-        }
-        if (!f.vault.path) errs["vault.path"] = "PKI path is required";
-        if (!f.vault.authValue) {
-          errs["vault.auth"] = "One authentication method must be configured";
-        }
-      }
     }
 
     errors.value = errs;
@@ -212,7 +147,6 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
 
     const f = form.value;
     const payload: Record<string, unknown> = {
-      scope,
       name: f.name,
       type: f.type,
     };
@@ -233,25 +167,6 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
           email: f.acme.email,
           privateKeySecretRefName: f.acme.privateKeySecretRefName,
           solvers: [solver],
-        };
-        break;
-      }
-      case "ca":
-        payload.ca = { secretName: f.ca.secretName };
-        break;
-      case "vault": {
-        const auth: Record<string, unknown> = {};
-        if (f.vault.authMethod === "token") {
-          auth.tokenSecretRefName = f.vault.authValue;
-        } else if (f.vault.authMethod === "appRole") {
-          auth.appRoleSecretRefName = f.vault.authValue;
-        } else {
-          auth.kubernetesRole = f.vault.authValue;
-        }
-        payload.vault = {
-          server: f.vault.server,
-          path: f.vault.path,
-          auth,
         };
         break;
       }
@@ -333,9 +248,6 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
             namespaces={namespaces.value}
             onUpdate={updateField}
             onUpdateAcme={updateAcme}
-            onUpdateCa={updateCa}
-            onUpdateVault={updateVault}
-            onUpdateVaultAuth={updateVaultAuth}
           />
         )}
 

@@ -1,6 +1,6 @@
 ---
 name: Collapse signals/useCallback ceremony in wizard islands
-status: pending
+status: complete
 priority: p2
 issue_id: 332
 tags: [code-review, frontend, simplicity, pr-180]

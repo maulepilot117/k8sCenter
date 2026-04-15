@@ -1,6 +1,6 @@
 ---
 name: Cert-manager wizard P3 cleanups (bundled)
-status: pending
+status: complete
 priority: p3
 issue_id: 334
 tags: [code-review, cleanup, pr-180]

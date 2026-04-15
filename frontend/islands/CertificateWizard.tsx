@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
@@ -106,7 +106,7 @@ export default function CertificateWizard() {
       });
   }, []);
 
-  const updateField = useCallback((field: string, value: unknown) => {
+  const updateField = (field: string, value: unknown) => {
     dirty.value = true;
     const f = { ...form.value, [field]: value };
     // Auto-default secretName from name when user hasn't customised it.
@@ -117,9 +117,9 @@ export default function CertificateWizard() {
       f.secretName = value ? `${value}-tls` : "";
     }
     form.value = f;
-  }, []);
+  };
 
-  const updatePrivateKey = useCallback((field: string, value: unknown) => {
+  const updatePrivateKey = (field: string, value: unknown) => {
     dirty.value = true;
     const pk = { ...form.value.privateKey, [field]: value };
     // Sensible default size when algorithm changes.
@@ -129,7 +129,7 @@ export default function CertificateWizard() {
       else if (value === "Ed25519") pk.size = 0;
     }
     form.value = { ...form.value, privateKey: pk };
-  }, []);
+  };
 
   const validateStep = (step: number): boolean => {
     if (step !== 0) {

@@ -17,20 +17,18 @@ const (
 )
 
 // IssuerType enumerates the supported cert-manager issuer backends for v1.
+// CA and Vault are deliberately excluded: they have trivial enough specs that
+// operators are better served by the YAML editor than a bespoke wizard.
 type IssuerType string
 
 const (
 	IssuerTypeSelfSigned IssuerType = "selfSigned"
 	IssuerTypeACME       IssuerType = "acme"
-	IssuerTypeCA         IssuerType = "ca"
-	IssuerTypeVault      IssuerType = "vault"
 )
 
 var validIssuerTypes = map[IssuerType]bool{
 	IssuerTypeSelfSigned: true,
 	IssuerTypeACME:       true,
-	IssuerTypeCA:         true,
-	IssuerTypeVault:      true,
 }
 
 // ACMEHTTP01IngressInput configures the HTTP01 ingress solver.
@@ -51,26 +49,6 @@ type ACMEInput struct {
 	Solvers                 []ACMESolverInput `json:"solvers"`
 }
 
-// CAInput configures a CA issuer.
-type CAInput struct {
-	SecretName string `json:"secretName"`
-}
-
-// VaultAuthInput configures one of Vault's authentication methods.
-// Exactly one of the nested fields must be set.
-type VaultAuthInput struct {
-	TokenSecretRefName   string `json:"tokenSecretRefName,omitempty"`
-	AppRoleSecretRefName string `json:"appRoleSecretRefName,omitempty"`
-	KubernetesRole       string `json:"kubernetesRole,omitempty"`
-}
-
-// VaultInput configures a Vault issuer.
-type VaultInput struct {
-	Server string         `json:"server"`
-	Path   string         `json:"path"`
-	Auth   VaultAuthInput `json:"auth"`
-}
-
 // IssuerInput represents the wizard form data for creating a cert-manager
 // Issuer or ClusterIssuer. Scope is intentionally not JSON-tagged so the route
 // remains authoritative — see the HandlePreview factories in routes.go.
@@ -80,10 +58,8 @@ type IssuerInput struct {
 	Namespace string      `json:"namespace,omitempty"` // ignored for cluster scope
 	Type      IssuerType  `json:"type"`
 
-	SelfSigned *struct{}   `json:"selfSigned,omitempty"`
-	ACME       *ACMEInput  `json:"acme,omitempty"`
-	CA         *CAInput    `json:"ca,omitempty"`
-	Vault      *VaultInput `json:"vault,omitempty"`
+	SelfSigned *struct{}  `json:"selfSigned,omitempty"`
+	ACME       *ACMEInput `json:"acme,omitempty"`
 }
 
 // Validate checks the IssuerInput and returns field-level errors.
@@ -107,7 +83,7 @@ func (i *IssuerInput) Validate() []FieldError {
 	}
 
 	if !validIssuerTypes[i.Type] {
-		errs = append(errs, FieldError{Field: "type", Message: "must be selfSigned, acme, ca, or vault"})
+		errs = append(errs, FieldError{Field: "type", Message: "must be selfSigned or acme"})
 		return errs
 	}
 
@@ -117,12 +93,6 @@ func (i *IssuerInput) Validate() []FieldError {
 		populated++
 	}
 	if i.ACME != nil {
-		populated++
-	}
-	if i.CA != nil {
-		populated++
-	}
-	if i.Vault != nil {
 		populated++
 	}
 	if populated != 1 {
@@ -141,18 +111,6 @@ func (i *IssuerInput) Validate() []FieldError {
 			return errs
 		}
 		errs = append(errs, i.ACME.validate()...)
-	case IssuerTypeCA:
-		if i.CA == nil {
-			errs = append(errs, FieldError{Field: "ca", Message: "ca body is required when type=ca"})
-			return errs
-		}
-		errs = append(errs, i.CA.validate()...)
-	case IssuerTypeVault:
-		if i.Vault == nil {
-			errs = append(errs, FieldError{Field: "vault", Message: "vault body is required when type=vault"})
-			return errs
-		}
-		errs = append(errs, i.Vault.validate()...)
 	}
 
 	return errs
@@ -199,42 +157,6 @@ func (a *ACMEInput) validate() []FieldError {
 	return errs
 }
 
-func (c *CAInput) validate() []FieldError {
-	var errs []FieldError
-	if c.SecretName == "" {
-		errs = append(errs, FieldError{Field: "ca.secretName", Message: "is required"})
-	} else if !dnsLabelRegex.MatchString(c.SecretName) {
-		errs = append(errs, FieldError{Field: "ca.secretName", Message: "must be a valid DNS label"})
-	}
-	return errs
-}
-
-func (v *VaultInput) validate() []FieldError {
-	var errs []FieldError
-	if v.Server == "" {
-		errs = append(errs, FieldError{Field: "vault.server", Message: "is required"})
-	} else if err := validateHTTPSPublicURL(v.Server); err != nil {
-		errs = append(errs, FieldError{Field: "vault.server", Message: err.Error()})
-	}
-	if v.Path == "" {
-		errs = append(errs, FieldError{Field: "vault.path", Message: "is required"})
-	}
-	populated := 0
-	if v.Auth.TokenSecretRefName != "" {
-		populated++
-	}
-	if v.Auth.AppRoleSecretRefName != "" {
-		populated++
-	}
-	if v.Auth.KubernetesRole != "" {
-		populated++
-	}
-	if populated != 1 {
-		errs = append(errs, FieldError{Field: "vault.auth", Message: "exactly one of tokenSecretRefName, appRoleSecretRefName, or kubernetesRole must be set"})
-	}
-	return errs
-}
-
 // ToIssuer returns a map representation suitable for YAML marshaling.
 // cert-manager is not in go.mod; map-based construction avoids the dep tree.
 func (i *IssuerInput) ToIssuer() map[string]any {
@@ -264,10 +186,6 @@ func (i *IssuerInput) buildSpec() map[string]any {
 		return map[string]any{"selfSigned": map[string]any{}}
 	case IssuerTypeACME:
 		return map[string]any{"acme": i.ACME.toMap()}
-	case IssuerTypeCA:
-		return map[string]any{"ca": map[string]any{"secretName": i.CA.SecretName}}
-	case IssuerTypeVault:
-		return map[string]any{"vault": i.Vault.toMap()}
 	}
 	return map[string]any{}
 }
@@ -294,26 +212,6 @@ func (a *ACMEInput) toMap() map[string]any {
 	if len(solvers) > 0 {
 		out["solvers"] = solvers
 	}
-	return out
-}
-
-func (v *VaultInput) toMap() map[string]any {
-	out := map[string]any{
-		"server": v.Server,
-		"path":   v.Path,
-	}
-	auth := map[string]any{}
-	switch {
-	case v.Auth.TokenSecretRefName != "":
-		auth["tokenSecretRef"] = map[string]any{"name": v.Auth.TokenSecretRefName}
-	case v.Auth.AppRoleSecretRefName != "":
-		auth["appRole"] = map[string]any{
-			"secretRef": map[string]any{"name": v.Auth.AppRoleSecretRefName},
-		}
-	case v.Auth.KubernetesRole != "":
-		auth["kubernetes"] = map[string]any{"role": v.Auth.KubernetesRole}
-	}
-	out["auth"] = auth
 	return out
 }
 

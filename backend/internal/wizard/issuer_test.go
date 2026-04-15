@@ -202,48 +202,6 @@ func TestACMEValidate_DNS01Rejected(t *testing.T) {
 	}
 }
 
-func TestCAValidate(t *testing.T) {
-	i := IssuerInput{
-		Scope: IssuerScopeNamespaced, Name: "ca", Namespace: "cert-manager",
-		Type: IssuerTypeCA, CA: &CAInput{SecretName: ""},
-	}
-	errs := i.Validate()
-	if !hasFieldError(errs, "ca.secretName") {
-		t.Errorf("expected ca.secretName error, got %v", errs)
-	}
-}
-
-func TestVaultValidate(t *testing.T) {
-	base := IssuerInput{
-		Scope: IssuerScopeCluster, Name: "vault", Type: IssuerTypeVault,
-		Vault: &VaultInput{
-			Server: "https://vault.example.com",
-			Path:   "pki/sign/example",
-			Auth:   VaultAuthInput{TokenSecretRefName: "vault-token"},
-		},
-	}
-	if errs := base.Validate(); len(errs) != 0 {
-		t.Errorf("valid vault issuer: %v", errs)
-	}
-
-	none := base
-	none.Vault = &VaultInput{Server: base.Vault.Server, Path: base.Vault.Path}
-	errs := none.Validate()
-	if !hasFieldError(errs, "vault.auth") {
-		t.Errorf("expected vault.auth error for no auth method, got %v", errs)
-	}
-
-	multi := base
-	multi.Vault = &VaultInput{
-		Server: base.Vault.Server, Path: base.Vault.Path,
-		Auth: VaultAuthInput{TokenSecretRefName: "t", KubernetesRole: "r"},
-	}
-	errs = multi.Validate()
-	if !hasFieldError(errs, "vault.auth") {
-		t.Errorf("expected vault.auth error for multiple methods, got %v", errs)
-	}
-}
-
 func TestIssuerToYAML_SelfSignedCluster(t *testing.T) {
 	i := validSelfSignedCluster()
 	y, err := i.ToYAML()
