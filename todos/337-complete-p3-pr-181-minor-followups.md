@@ -1,6 +1,6 @@
 ---
 name: PR #181 P3 minor cleanups (bundled)
-status: pending
+status: complete
 priority: p3
 issue_id: 337
 tags: [code-review, cleanup, pr-181]

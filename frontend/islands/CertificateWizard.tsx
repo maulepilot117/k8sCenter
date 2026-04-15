@@ -109,12 +109,14 @@ export default function CertificateWizard() {
   const updateField = (field: string, value: unknown) => {
     dirty.value = true;
     const f = { ...form.value, [field]: value };
-    // Auto-default secretName from name when user hasn't customised it.
+    // Auto-derive secretName from name as long as it still matches the
+    // previously-derived value. Only fires for non-empty new names so clearing
+    // `name` doesn't wipe the user's secretName entry alongside it.
     if (
-      field === "name" && typeof value === "string" &&
+      field === "name" && typeof value === "string" && value !== "" &&
       (f.secretName === "" || f.secretName === form.value.name + "-tls")
     ) {
-      f.secretName = value ? `${value}-tls` : "";
+      f.secretName = `${value}-tls`;
     }
     form.value = f;
   };

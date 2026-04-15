@@ -98,8 +98,10 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
   };
 
   // Changing type resets the ACME subform so stale values from a prior session
-  // never surface after toggling back.
+  // never surface after toggling back. Re-selecting the same type is a no-op
+  // — don't wipe what the user is currently editing.
   const selectType = (t: IssuerType) => {
+    if (t === form.value.type) return;
     dirty.value = true;
     form.value = { ...form.value, type: t, acme: initialAcme() };
   };
