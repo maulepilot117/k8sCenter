@@ -146,6 +146,12 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
     previewError.value = null;
 
     const f = form.value;
+    if (!f.type) {
+      previewError.value = "Issuer type is not selected";
+      previewLoading.value = false;
+      return;
+    }
+
     const payload: Record<string, unknown> = {
       name: f.name,
       type: f.type,
@@ -169,6 +175,14 @@ export default function IssuerWizard({ scope }: IssuerWizardProps) {
           solvers: [solver],
         };
         break;
+      }
+      default: {
+        // Exhaustiveness check: adding a new IssuerType without a switch arm
+        // here becomes a compile error.
+        const _exhaustive: never = f.type;
+        previewError.value = `Unsupported issuer type: ${_exhaustive}`;
+        previewLoading.value = false;
+        return;
       }
     }
 
