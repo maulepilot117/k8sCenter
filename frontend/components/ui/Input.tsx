@@ -31,13 +31,23 @@ export function Input(
   return (
     <div class="space-y-1">
       {label && (
-        <label
-          for={inputId}
-          class="block text-sm font-medium text-text-secondary"
-        >
-          {label}
-          {required && <span class="ml-0.5 text-danger">*</span>}
-        </label>
+        <div class="flex items-baseline gap-0.5">
+          <label
+            for={inputId}
+            class="block text-sm font-medium text-text-secondary"
+          >
+            {label}
+          </label>
+          {
+            /* Asterisk rendered as a sibling — kept OUT of the <label> so the
+              accessible/visible label text is exactly the `label` prop (some
+              test frameworks match label text including descendants).
+              aria-required on the input announces required-ness for AT. */
+          }
+          {required && (
+            <span aria-hidden="true" class="text-sm text-danger">*</span>
+          )}
+        </div>
       )}
       <input
         id={inputId}

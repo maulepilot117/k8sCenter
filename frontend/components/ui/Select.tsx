@@ -36,13 +36,18 @@ export function Select(
   return (
     <div class="space-y-1">
       {label && (
-        <label
-          for={selectId}
-          class="block text-sm font-medium text-text-secondary"
-        >
-          {label}
-          {required && <span class="ml-0.5 text-danger">*</span>}
-        </label>
+        <div class="flex items-baseline gap-0.5">
+          <label
+            for={selectId}
+            class="block text-sm font-medium text-text-secondary"
+          >
+            {label}
+          </label>
+          {/* Asterisk rendered as a sibling — see Input.tsx for rationale. */}
+          {required && (
+            <span aria-hidden="true" class="text-sm text-danger">*</span>
+          )}
+        </div>
       )}
       <select
         id={selectId}
