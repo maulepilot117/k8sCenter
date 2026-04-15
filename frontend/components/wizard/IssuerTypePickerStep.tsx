@@ -22,18 +22,6 @@ const TYPES: Array<{
     description:
       "Automated public certificates. HTTP01 ingress solver supported in this release.",
   },
-  {
-    id: "ca",
-    title: "CA",
-    description:
-      "Sign from a private CA stored in a Kubernetes Secret (tls.crt + tls.key).",
-  },
-  {
-    id: "vault",
-    title: "Vault",
-    description:
-      "Sign from HashiCorp Vault's PKI engine using token, AppRole, or Kubernetes auth.",
-  },
 ];
 
 export function IssuerTypePickerStep({

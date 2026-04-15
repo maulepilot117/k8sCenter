@@ -1,6 +1,6 @@
 ---
 name: Consider removing CA and Vault issuer types from the wizard
-status: pending
+status: complete
 priority: p2
 issue_id: 333
 tags: [code-review, yagni, cert-manager, design-decision, pr-180]
