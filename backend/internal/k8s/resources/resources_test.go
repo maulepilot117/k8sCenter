@@ -265,10 +265,11 @@ func TestListPods(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/pods/default", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "pods")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListPods(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -397,9 +398,10 @@ func TestListNodes(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/nodes", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "nodes")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListNodes(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -457,10 +459,11 @@ func TestUnauthenticatedRequest(t *testing.T) {
 	req := httptest.NewRequest("GET", "/api/v1/resources/pods/default", nil)
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "pods")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListPods(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rr.Code, rr.Body.String())

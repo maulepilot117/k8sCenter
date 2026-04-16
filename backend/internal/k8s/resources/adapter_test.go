@@ -76,6 +76,8 @@ func TestAllAdaptersRegistered(t *testing.T) {
 		"roles", "clusterroles", "rolebindings", "clusterrolebindings",
 		"events", "endpointslices", "resourcequotas",
 		"validatingwebhookconfigurations", "mutatingwebhookconfigurations",
+		// Former custom-only handlers (2)
+		"pods", "nodes",
 	}
 	for _, kind := range expected {
 		if a := GetAdapter(kind); a == nil {
