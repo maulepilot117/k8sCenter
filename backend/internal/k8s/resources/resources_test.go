@@ -470,9 +470,10 @@ func TestListNamespaces(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/namespaces", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "namespaces")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListNamespaces(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())

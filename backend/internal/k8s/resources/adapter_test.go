@@ -1,0 +1,71 @@
+package resources
+
+import (
+	"testing"
+)
+
+func TestPilotAdaptersRegistered(t *testing.T) {
+	for _, kind := range []string{"configmaps", "secrets", "namespaces", "serviceaccounts", "endpoints"} {
+		if a := GetAdapter(kind); a == nil {
+			t.Errorf("adapter not registered for kind %q", kind)
+		}
+	}
+}
+
+func TestPilotAdapterMetadata(t *testing.T) {
+	tests := []struct {
+		kind         string
+		apiResource  string
+		displayName  string
+		clusterScope bool
+	}{
+		{"configmaps", "configmaps", "ConfigMap", false},
+		{"secrets", "secrets", "Secret", false},
+		{"namespaces", "namespaces", "Namespace", true},
+		{"serviceaccounts", "serviceaccounts", "ServiceAccount", false},
+		{"endpoints", "endpoints", "Endpoints", false},
+	}
+	for _, tt := range tests {
+		a := GetAdapter(tt.kind)
+		if a == nil {
+			t.Fatalf("adapter not registered for kind %q", tt.kind)
+		}
+		if got := a.APIResource(); got != tt.apiResource {
+			t.Errorf("%s: APIResource() = %q, want %q", tt.kind, got, tt.apiResource)
+		}
+		if got := a.DisplayName(); got != tt.displayName {
+			t.Errorf("%s: DisplayName() = %q, want %q", tt.kind, got, tt.displayName)
+		}
+		if got := a.ClusterScoped(); got != tt.clusterScope {
+			t.Errorf("%s: ClusterScoped() = %v, want %v", tt.kind, got, tt.clusterScope)
+		}
+	}
+}
+
+func TestReadOnlyAdaptersRejectWrites(t *testing.T) {
+	for _, kind := range []string{"serviceaccounts", "endpoints"} {
+		a := GetAdapter(kind)
+		if a == nil {
+			t.Fatalf("adapter not registered for kind %q", kind)
+		}
+		if _, err := a.Create(nil, "default", []byte(`{}`)); err == nil {
+			t.Errorf("%s: Create should return error for read-only adapter", kind)
+		}
+		if _, err := a.Update(nil, "default", "test", []byte(`{}`)); err == nil {
+			t.Errorf("%s: Update should return error for read-only adapter", kind)
+		}
+		if err := a.Delete(nil, "default", "test"); err == nil {
+			t.Errorf("%s: Delete should return error for read-only adapter", kind)
+		}
+	}
+}
+
+func TestNamespaceAdapterRejectsUpdate(t *testing.T) {
+	a := GetAdapter("namespaces")
+	if a == nil {
+		t.Fatal("adapter not registered for kind namespaces")
+	}
+	if _, err := a.Update(nil, "", "test", []byte(`{}`)); err == nil {
+		t.Error("namespaces: Update should return error")
+	}
+}
