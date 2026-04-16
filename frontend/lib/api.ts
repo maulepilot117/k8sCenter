@@ -75,7 +75,8 @@ async function refreshAccessToken(): Promise<boolean> {
       return true;
     }
     return false;
-  } catch {
+  } catch (e) {
+    console.info("token refresh failed:", e);
     return false;
   }
 }

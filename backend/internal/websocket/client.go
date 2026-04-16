@@ -161,7 +161,7 @@ func (c *Client) waitForAuth() bool {
 
 	c.user = auth.UserFromClaims(claims)
 
-	data, _ := json.Marshal(OutgoingMessage{Type: MsgTypeAuthOK})
+	data := mustJSON(OutgoingMessage{Type: MsgTypeAuthOK})
 	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 	if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return false
@@ -234,7 +234,7 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 	c.subCount++
 	c.hub.addSub <- subChange{client: c, key: key, add: true, id: msg.ID}
 
-	data, _ := json.Marshal(OutgoingMessage{Type: MsgTypeSubscribed, ID: msg.ID})
+	data := mustJSON(OutgoingMessage{Type: MsgTypeSubscribed, ID: msg.ID})
 	select {
 	case c.send <- data:
 	default:
@@ -260,7 +260,7 @@ func (c *Client) handleUnsubscribe(msg IncomingMessage) {
 }
 
 func (c *Client) sendError(id string, code int, message string) {
-	data, _ := json.Marshal(OutgoingMessage{
+	data := mustJSON(OutgoingMessage{
 		Type:    MsgTypeError,
 		ID:      id,
 		Code:    code,
