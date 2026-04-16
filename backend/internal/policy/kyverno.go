@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -63,19 +64,10 @@ func NormalizeKyvernoPolicy(obj *unstructured.Unstructured, clusterScoped bool) 
 
 	// Ready status: Kyverno 1.8+ exposes readiness via status.conditions[type=Ready].
 	ready := false
-	if conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions"); found {
-		for _, c := range conditions {
-			cm, ok := c.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			ctype, _, _ := unstructured.NestedString(cm, "type")
-			if !strings.EqualFold(ctype, "Ready") {
-				continue
-			}
-			cstatus, _, _ := unstructured.NestedString(cm, "status")
-			ready = strings.EqualFold(cstatus, "True")
-			break
+	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if found {
+		if c := k8s.FindCondition(k8s.ExtractConditions(conditions), "Ready"); c != nil {
+			ready = strings.EqualFold(c.Status, "True")
 		}
 	}
 

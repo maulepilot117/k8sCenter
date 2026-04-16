@@ -4,6 +4,7 @@ package gateway
 import (
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -82,14 +83,8 @@ type KindSummary struct {
 	Degraded int `json:"degraded"`
 }
 
-// Condition represents a Kubernetes-style status condition.
-type Condition struct {
-	Type               string     `json:"type"`
-	Status             string     `json:"status"`
-	Reason             string     `json:"reason"`
-	Message            string     `json:"message"`
-	LastTransitionTime *time.Time `json:"lastTransitionTime,omitempty"`
-}
+// Condition is a Kubernetes-style status condition (shared type).
+type Condition = k8s.Condition
 
 // ParentRef identifies a parent resource (typically a Gateway) that a route is attached to.
 type ParentRef struct {

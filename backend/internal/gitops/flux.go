@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -112,7 +114,8 @@ func NormalizeFluxKustomization(obj *unstructured.Unstructured) NormalizedApp {
 	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
 
 	// Status conditions
-	conditions := extractConditions(obj)
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := k8s.ExtractConditions(rawConditions)
 	syncStatus, healthStatus, message := mapFluxConditions(conditions)
 
 	if suspended {
@@ -171,7 +174,8 @@ func NormalizeFluxHelmRelease(obj *unstructured.Unstructured) NormalizedApp {
 	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
 
 	// Status conditions
-	conditions := extractConditions(obj)
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := k8s.ExtractConditions(rawConditions)
 	syncStatus, healthStatus, message := mapFluxConditions(conditions)
 
 	if suspended {
@@ -205,7 +209,7 @@ func NormalizeFluxHelmRelease(obj *unstructured.Unstructured) NormalizedApp {
 
 // mapFluxConditions maps Flux status conditions to normalized sync/health status
 // and extracts the Ready condition message.
-func mapFluxConditions(conditions []map[string]string) (SyncStatus, HealthStatus, string) {
+func mapFluxConditions(conditions []k8s.Condition) (SyncStatus, HealthStatus, string) {
 	syncStatus := SyncUnknown
 	healthStatus := HealthUnknown
 	var message string
@@ -214,20 +218,17 @@ func mapFluxConditions(conditions []map[string]string) (SyncStatus, HealthStatus
 	var reconcilingTrue, stalledTrue, healthCheckFailedTrue bool
 
 	for _, c := range conditions {
-		condType := c["type"]
-		condStatus := c["status"]
-
-		switch condType {
+		switch c.Type {
 		case "Ready":
-			readyStatus = condStatus
-			readyReason = c["reason"]
-			readyMessage = c["message"]
+			readyStatus = c.Status
+			readyReason = c.Reason
+			readyMessage = c.Message
 		case "Reconciling":
-			reconcilingTrue = condStatus == "True"
+			reconcilingTrue = c.Status == "True"
 		case "Stalled":
-			stalledTrue = condStatus == "True"
+			stalledTrue = c.Status == "True"
 		case "HealthCheckFailed":
-			healthCheckFailedTrue = condStatus == "True"
+			healthCheckFailedTrue = c.Status == "True"
 		}
 	}
 
@@ -265,41 +266,14 @@ func mapFluxConditions(conditions []map[string]string) (SyncStatus, HealthStatus
 	return syncStatus, healthStatus, message
 }
 
-// extractConditions pulls status.conditions from an unstructured object
-// into a slice of string maps for easier processing.
-func extractConditions(obj *unstructured.Unstructured) []map[string]string {
-	raw, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if !found {
-		return nil
-	}
-
-	conditions := make([]map[string]string, 0, len(raw))
-	for _, item := range raw {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		c := make(map[string]string)
-		for _, key := range []string{"type", "status", "reason", "message", "lastTransitionTime"} {
-			if v, ok := m[key].(string); ok {
-				c[key] = v
-			}
-		}
-		conditions = append(conditions, c)
-	}
-	return conditions
-}
-
 // resolveLastSyncTime extracts lastHandledReconcileAt or falls back to the
 // Ready condition's lastTransitionTime.
-func resolveLastSyncTime(obj *unstructured.Unstructured, conditions []map[string]string) string {
+func resolveLastSyncTime(obj *unstructured.Unstructured, conditions []k8s.Condition) string {
 	if t, found, _ := unstructured.NestedString(obj.Object, "status", "lastHandledReconcileAt"); found && t != "" {
 		return t
 	}
-	for _, c := range conditions {
-		if c["type"] == "Ready" {
-			return c["lastTransitionTime"]
-		}
+	if c := k8s.FindCondition(conditions, "Ready"); c != nil {
+		return c.LastTransitionTime
 	}
 	return ""
 }
