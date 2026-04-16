@@ -84,6 +84,19 @@ func TestAllAdaptersRegistered(t *testing.T) {
 			t.Errorf("adapter not registered for kind %q", kind)
 		}
 	}
+	// Reverse check: no registered adapter is missing from expected list
+	expectedSet := make(map[string]bool, len(expected))
+	for _, k := range expected {
+		expectedSet[k] = true
+	}
+	for _, kind := range RegisteredKinds() {
+		if !expectedSet[kind] {
+			t.Errorf("registered adapter %q is not in expected list — update test", kind)
+		}
+	}
+	if len(expected) != len(RegisteredKinds()) {
+		t.Errorf("expected %d adapters, got %d registered", len(expected), len(RegisteredKinds()))
+	}
 }
 
 func TestCapabilityInterfaces(t *testing.T) {
