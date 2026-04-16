@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"errors"
+
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
@@ -61,20 +63,7 @@ func (ReadOnlyAdapter) Delete(_ kubernetes.Interface, _, _ string) error {
 	return errReadOnly
 }
 
-// errReadOnly is a sentinel error for read-only adapter methods.
-var errReadOnly = &readOnlyError{}
-
-type readOnlyError struct{}
-
-func (e *readOnlyError) Error() string {
-	return "this resource is read-only and does not support this operation"
-}
-
-// IsReadOnlyError reports whether err indicates a read-only adapter rejected a write.
-func IsReadOnlyError(err error) bool {
-	_, ok := err.(*readOnlyError)
-	return ok
-}
+var errReadOnly = errors.New("this resource is read-only and does not support this operation")
 
 // ---------------------------------------------------------------------------
 // Capability interfaces — adapters may optionally implement these for actions.

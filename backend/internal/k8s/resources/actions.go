@@ -232,8 +232,12 @@ func (h *Handler) HandleRollbackResource(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	body, err := readBody(w, r)
+	if err != nil {
+		return
+	}
 	var req rollbackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid rollback request body", err.Error())
 		return
 	}

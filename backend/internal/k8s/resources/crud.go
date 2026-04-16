@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,7 +114,7 @@ func (h *Handler) HandleCreateResource(w http.ResponseWriter, r *http.Request) {
 
 	result, err := adapter.Create(cs, ns, body)
 	if err != nil {
-		if IsReadOnlyError(err) {
+		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
 			return
 		}
@@ -158,7 +159,7 @@ func (h *Handler) HandleUpdateResource(w http.ResponseWriter, r *http.Request) {
 
 	result, err := adapter.Update(cs, ns, name, body)
 	if err != nil {
-		if IsReadOnlyError(err) {
+		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
 			return
 		}
@@ -198,7 +199,7 @@ func (h *Handler) HandleDeleteResource(w http.ResponseWriter, r *http.Request) {
 
 	err = adapter.Delete(cs, ns, name)
 	if err != nil {
-		if IsReadOnlyError(err) {
+		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
 			return
 		}
