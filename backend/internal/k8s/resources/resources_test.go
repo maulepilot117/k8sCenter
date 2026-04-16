@@ -110,10 +110,11 @@ func TestListDeployments(t *testing.T) {
 
 	// Set chi URL params
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -154,9 +155,10 @@ func TestListDeployments_AllNamespaces(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -197,10 +199,11 @@ func TestListDeployments_LabelSelector(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default?labelSelector=app%3Dnginx", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -233,10 +236,11 @@ func TestPagination(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default?limit=2", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -292,11 +296,12 @@ func TestGetDeployment(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default/nginx", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	rctx.URLParams.Add("name", "nginx")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleGetDeployment(rr, req)
+	h.HandleGetResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -309,11 +314,12 @@ func TestGetDeployment_NotFound(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default/nonexistent", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	rctx.URLParams.Add("name", "nonexistent")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleGetDeployment(rr, req)
+	h.HandleGetResource(rr, req)
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
@@ -494,10 +500,11 @@ func TestListServices(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/services/default", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "services")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListServices(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -517,11 +524,12 @@ func TestErrorMapping(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default/missing", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	rctx.URLParams.Add("name", "missing")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleGetDeployment(rr, req)
+	h.HandleGetResource(rr, req)
 
 	// Informer lister returns a not-found error
 	if rr.Code != http.StatusNotFound {
@@ -537,10 +545,11 @@ func TestAccessDenied_List(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rr.Code, rr.Body.String())
@@ -566,11 +575,12 @@ func TestAccessDenied_Get(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default/nginx", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	rctx.URLParams.Add("name", "nginx")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleGetDeployment(rr, req)
+	h.HandleGetResource(rr, req)
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rr.Code, rr.Body.String())
@@ -583,10 +593,11 @@ func TestInvalidLabelSelector(t *testing.T) {
 	req := requestWithUser("GET", "/api/v1/resources/deployments/default?labelSelector=!!!invalid", "")
 
 	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("kind", "deployments")
 	rctx.URLParams.Add("namespace", "default")
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	h.HandleListDeployments(rr, req)
+	h.HandleListResource(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid label selector, got %d: %s", rr.Code, rr.Body.String())

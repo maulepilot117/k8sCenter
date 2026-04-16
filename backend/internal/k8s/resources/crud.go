@@ -9,6 +9,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // ---------------------------------------------------------------------------
@@ -287,4 +289,75 @@ func paginateAny(items []any, limit int, continueToken string) ([]any, string) {
 	}
 
 	return items[start:end], nextToken
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers — label selectors, typed pagination, object sort keys
+// ---------------------------------------------------------------------------
+
+// parseSelector converts a label selector string to a labels.Selector.
+// An empty string returns labels.Everything().
+func parseSelector(s string) (labels.Selector, error) {
+	if s == "" {
+		return labels.Everything(), nil
+	}
+	return labels.Parse(s)
+}
+
+// parseSelectorOrReject parses the label selector and writes a 400 error if invalid.
+// Returns the selector and true if valid, or zero value and false if an error was written.
+func parseSelectorOrReject(w http.ResponseWriter, s string) (labels.Selector, bool) {
+	sel, err := parseSelector(s)
+	if err != nil {
+		writeError(w, http.StatusBadRequest,
+			"invalid label selector: "+s,
+			err.Error(),
+		)
+		return nil, false
+	}
+	return sel, true
+}
+
+// paginate implements simple offset-based pagination using a continue token
+// that represents the starting index. Items are sorted by namespace+name for
+// deterministic ordering across requests. Returns the page of items and the
+// next continue token (empty if no more items).
+func paginate[T any](items []*T, limit int, continueToken string) ([]*T, string) {
+	sort.Slice(items, func(i, j int) bool {
+		a, b := objectKey(items[i]), objectKey(items[j])
+		return a < b
+	})
+
+	start := 0
+	if continueToken != "" {
+		fmt.Sscanf(continueToken, "%d", &start)
+	}
+
+	if start >= len(items) {
+		return []*T{}, ""
+	}
+
+	end := start + limit
+	if end > len(items) {
+		end = len(items)
+	}
+
+	var nextToken string
+	if end < len(items) {
+		nextToken = fmt.Sprintf("%d", end)
+	}
+
+	return items[start:end], nextToken
+}
+
+// objectKey returns "namespace/name" for a Kubernetes object to use as a sort key.
+func objectKey(obj any) string {
+	if acc, ok := obj.(metav1.ObjectMetaAccessor); ok {
+		m := acc.GetObjectMeta()
+		if m.GetNamespace() != "" {
+			return m.GetNamespace() + "/" + m.GetName()
+		}
+		return m.GetName()
+	}
+	return ""
 }

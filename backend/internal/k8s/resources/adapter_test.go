@@ -62,6 +62,58 @@ func TestReadOnlyAdaptersRejectWrites(t *testing.T) {
 	}
 }
 
+func TestAllAdaptersRegistered(t *testing.T) {
+	expected := []string{
+		// Pilot (5)
+		"configmaps", "secrets", "namespaces", "serviceaccounts", "endpoints",
+		// Bulk CRUD (5)
+		"services", "ingresses", "networkpolicies", "pvcs", "pvs",
+		// Bulk with actions (5)
+		"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
+		// Bulk read-only/simple (5)
+		"replicasets", "storageclasses", "hpas", "pdbs", "limitranges",
+	}
+	for _, kind := range expected {
+		if a := GetAdapter(kind); a == nil {
+			t.Errorf("adapter not registered for kind %q", kind)
+		}
+	}
+}
+
+func TestCapabilityInterfaces(t *testing.T) {
+	// Scalable
+	for _, kind := range []string{"deployments", "statefulsets"} {
+		a := GetAdapter(kind)
+		if _, ok := a.(Scalable); !ok {
+			t.Errorf("%s should implement Scalable", kind)
+		}
+	}
+	// Restartable
+	for _, kind := range []string{"deployments", "statefulsets", "daemonsets"} {
+		a := GetAdapter(kind)
+		if _, ok := a.(Restartable); !ok {
+			t.Errorf("%s should implement Restartable", kind)
+		}
+	}
+	// Suspendable
+	for _, kind := range []string{"jobs", "cronjobs"} {
+		a := GetAdapter(kind)
+		if _, ok := a.(Suspendable); !ok {
+			t.Errorf("%s should implement Suspendable", kind)
+		}
+	}
+	// Triggerable
+	a := GetAdapter("cronjobs")
+	if _, ok := a.(Triggerable); !ok {
+		t.Error("cronjobs should implement Triggerable")
+	}
+	// Rollbackable
+	a = GetAdapter("deployments")
+	if _, ok := a.(Rollbackable); !ok {
+		t.Error("deployments should implement Rollbackable")
+	}
+}
+
 func TestNamespaceAdapterRejectsUpdate(t *testing.T) {
 	a := GetAdapter("namespaces")
 	if a == nil {

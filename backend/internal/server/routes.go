@@ -653,58 +653,12 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Post("/resources/{kind}/{namespace}/{name}/trigger", h.HandleTriggerResource)
 	ar.Post("/resources/{kind}/{namespace}/{name}/rollback", h.HandleRollbackResource)
 
-	// Deployments
-	ar.Get("/resources/deployments", h.HandleListDeployments)
-	ar.Get("/resources/deployments/{namespace}", h.HandleListDeployments)
-	ar.Get("/resources/deployments/{namespace}/{name}", h.HandleGetDeployment)
-	ar.Post("/resources/deployments/{namespace}", h.HandleCreateDeployment)
-	ar.Put("/resources/deployments/{namespace}/{name}", h.HandleUpdateDeployment)
-	ar.Delete("/resources/deployments/{namespace}/{name}", h.HandleDeleteDeployment)
-	ar.Post("/resources/deployments/{namespace}/{name}/scale", h.HandleScaleDeployment)
-	ar.Post("/resources/deployments/{namespace}/{name}/rollback", h.HandleRollbackDeployment)
-	ar.Post("/resources/deployments/{namespace}/{name}/restart", h.HandleRestartDeployment)
-
-	// StatefulSets
-	ar.Get("/resources/statefulsets", h.HandleListStatefulSets)
-	ar.Get("/resources/statefulsets/{namespace}", h.HandleListStatefulSets)
-	ar.Get("/resources/statefulsets/{namespace}/{name}", h.HandleGetStatefulSet)
-	ar.Post("/resources/statefulsets/{namespace}", h.HandleCreateStatefulSet)
-	ar.Put("/resources/statefulsets/{namespace}/{name}", h.HandleUpdateStatefulSet)
-	ar.Delete("/resources/statefulsets/{namespace}/{name}", h.HandleDeleteStatefulSet)
-	ar.Post("/resources/statefulsets/{namespace}/{name}/scale", h.HandleScaleStatefulSet)
-	ar.Post("/resources/statefulsets/{namespace}/{name}/restart", h.HandleRestartStatefulSet)
-
-	// DaemonSets
-	ar.Get("/resources/daemonsets", h.HandleListDaemonSets)
-	ar.Get("/resources/daemonsets/{namespace}", h.HandleListDaemonSets)
-	ar.Get("/resources/daemonsets/{namespace}/{name}", h.HandleGetDaemonSet)
-	ar.Post("/resources/daemonsets/{namespace}", h.HandleCreateDaemonSet)
-	ar.Put("/resources/daemonsets/{namespace}/{name}", h.HandleUpdateDaemonSet)
-	ar.Delete("/resources/daemonsets/{namespace}/{name}", h.HandleDeleteDaemonSet)
-	ar.Post("/resources/daemonsets/{namespace}/{name}/restart", h.HandleRestartDaemonSet)
-
 	// Pods
 	ar.Get("/resources/pods", h.HandleListPods)
 	ar.Get("/resources/pods/{namespace}", h.HandleListPods)
 	ar.Get("/resources/pods/{namespace}/{name}", h.HandleGetPod)
 	ar.Delete("/resources/pods/{namespace}/{name}", h.HandleDeletePod)
 	ar.Get("/resources/pods/{namespace}/{name}/logs", h.HandlePodLogs)
-
-	// Services
-	ar.Get("/resources/services", h.HandleListServices)
-	ar.Get("/resources/services/{namespace}", h.HandleListServices)
-	ar.Get("/resources/services/{namespace}/{name}", h.HandleGetService)
-	ar.Post("/resources/services/{namespace}", h.HandleCreateService)
-	ar.Put("/resources/services/{namespace}/{name}", h.HandleUpdateService)
-	ar.Delete("/resources/services/{namespace}/{name}", h.HandleDeleteService)
-
-	// Ingresses
-	ar.Get("/resources/ingresses", h.HandleListIngresses)
-	ar.Get("/resources/ingresses/{namespace}", h.HandleListIngresses)
-	ar.Get("/resources/ingresses/{namespace}/{name}", h.HandleGetIngress)
-	ar.Post("/resources/ingresses/{namespace}", h.HandleCreateIngress)
-	ar.Put("/resources/ingresses/{namespace}/{name}", h.HandleUpdateIngress)
-	ar.Delete("/resources/ingresses/{namespace}/{name}", h.HandleDeleteIngress)
 
 	// Nodes (cluster-scoped)
 	ar.Get("/resources/nodes", h.HandleListNodes)
@@ -722,59 +676,6 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Put("/resources/secrets/{namespace}/{name}", h.HandleUpdateSecret)
 	ar.Delete("/resources/secrets/{namespace}/{name}", h.HandleDeleteSecret)
 
-	// PVCs
-	ar.Get("/resources/pvcs", h.HandleListPVCs)
-	ar.Get("/resources/pvcs/{namespace}", h.HandleListPVCs)
-	ar.Get("/resources/pvcs/{namespace}/{name}", h.HandleGetPVC)
-	ar.Post("/resources/pvcs/{namespace}", h.HandleCreatePVC)
-	ar.Delete("/resources/pvcs/{namespace}/{name}", h.HandleDeletePVC)
-
-	// Jobs
-	ar.Get("/resources/jobs", h.HandleListJobs)
-	ar.Get("/resources/jobs/{namespace}", h.HandleListJobs)
-	ar.Get("/resources/jobs/{namespace}/{name}", h.HandleGetJob)
-	ar.Post("/resources/jobs/{namespace}", h.HandleCreateJob)
-	ar.Delete("/resources/jobs/{namespace}/{name}", h.HandleDeleteJob)
-	ar.Post("/resources/jobs/{namespace}/{name}/suspend", h.HandleSuspendJob)
-
-	// CronJobs
-	ar.Get("/resources/cronjobs", h.HandleListCronJobs)
-	ar.Get("/resources/cronjobs/{namespace}", h.HandleListCronJobs)
-	ar.Get("/resources/cronjobs/{namespace}/{name}", h.HandleGetCronJob)
-	ar.Post("/resources/cronjobs/{namespace}", h.HandleCreateCronJob)
-	ar.Delete("/resources/cronjobs/{namespace}/{name}", h.HandleDeleteCronJob)
-	ar.Post("/resources/cronjobs/{namespace}/{name}/suspend", h.HandleSuspendCronJob)
-	ar.Post("/resources/cronjobs/{namespace}/{name}/trigger", h.HandleTriggerCronJob)
-
-	// NetworkPolicies
-	ar.Get("/resources/networkpolicies", h.HandleListNetworkPolicies)
-	ar.Get("/resources/networkpolicies/{namespace}", h.HandleListNetworkPolicies)
-	ar.Get("/resources/networkpolicies/{namespace}/{name}", h.HandleGetNetworkPolicy)
-	ar.Post("/resources/networkpolicies/{namespace}", h.HandleCreateNetworkPolicy)
-	ar.Put("/resources/networkpolicies/{namespace}/{name}", h.HandleUpdateNetworkPolicy)
-	ar.Delete("/resources/networkpolicies/{namespace}/{name}", h.HandleDeleteNetworkPolicy)
-
-	// ReplicaSets (read-only — managed by Deployments)
-	ar.Get("/resources/replicasets", h.HandleListReplicaSets)
-	ar.Get("/resources/replicasets/{namespace}", h.HandleListReplicaSets)
-	ar.Get("/resources/replicasets/{namespace}/{name}", h.HandleGetReplicaSet)
-
-	// HorizontalPodAutoscalers
-	ar.Get("/resources/hpas", h.HandleListHPAs)
-	ar.Get("/resources/hpas/{namespace}", h.HandleListHPAs)
-	ar.Get("/resources/hpas/{namespace}/{name}", h.HandleGetHPA)
-	ar.Post("/resources/hpas/{namespace}", h.HandleCreateHPA)
-	ar.Put("/resources/hpas/{namespace}/{name}", h.HandleUpdateHPA)
-	ar.Delete("/resources/hpas/{namespace}/{name}", h.HandleDeleteHPA)
-
-	// PersistentVolumes (cluster-scoped, read-only)
-	ar.Get("/resources/pvs", h.HandleListPVs)
-	ar.Get("/resources/pvs/{name}", h.HandleGetPV)
-
-	// StorageClasses (cluster-scoped, read-only)
-	ar.Get("/resources/storageclasses", h.HandleListStorageClasses)
-	ar.Get("/resources/storageclasses/{name}", h.HandleGetStorageClass)
-
 	// Events (read-only)
 	ar.Get("/resources/events", h.HandleListEvents)
 	ar.Get("/resources/events/{namespace}", h.HandleListEvents)
@@ -790,18 +691,6 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/resourcequotas", h.HandleListResourceQuotas)
 	ar.Get("/resources/resourcequotas/{namespace}", h.HandleListResourceQuotas)
 	ar.Get("/resources/resourcequotas/{namespace}/{name}", h.HandleGetResourceQuota)
-
-	// LimitRanges (read-only)
-	ar.Get("/resources/limitranges", h.HandleListLimitRanges)
-	ar.Get("/resources/limitranges/{namespace}", h.HandleListLimitRanges)
-	ar.Get("/resources/limitranges/{namespace}/{name}", h.HandleGetLimitRange)
-
-	// PodDisruptionBudgets
-	ar.Get("/resources/pdbs", h.HandleListPDBs)
-	ar.Get("/resources/pdbs/{namespace}", h.HandleListPDBs)
-	ar.Get("/resources/pdbs/{namespace}/{name}", h.HandleGetPDB)
-	ar.Post("/resources/pdbs/{namespace}", h.HandleCreatePDB)
-	ar.Delete("/resources/pdbs/{namespace}/{name}", h.HandleDeletePDB)
 
 	// EndpointSlices (read-only)
 	ar.Get("/resources/endpointslices", h.HandleListEndpointSlices)
