@@ -1,6 +1,9 @@
 package websocket
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // ResourceEvent is emitted by informer event handlers and consumed by the Hub.
 type ResourceEvent struct {
@@ -148,4 +151,13 @@ func normalizeKind(kind string) string {
 		return canonical
 	}
 	return kind
+}
+
+// mustJSON marshals v, panicking on error. Only for types with known-safe fields (strings, ints).
+func mustJSON(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic("websocket: impossible marshal error: " + err.Error())
+	}
+	return data
 }

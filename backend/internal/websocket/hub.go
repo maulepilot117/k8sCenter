@@ -318,11 +318,10 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			Code:    403,
 			Message: "subscription revoked: access denied",
 		}
-		if data, err := json.Marshal(msg); err == nil {
-			select {
-			case r.client.send <- data:
-			default:
-			}
+		data := mustJSON(msg)
+		select {
+		case r.client.send <- data:
+		default:
 		}
 		h.logger.Info("subscription revoked by RBAC revalidation",
 			"user", r.client.username(), "kind", r.key.Kind,

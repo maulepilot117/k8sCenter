@@ -112,7 +112,8 @@ export async function fetchCurrentUser(
     userSignal.value = res.data.user;
     rbacSignal.value = res.data.rbac;
     return res.data.user;
-  } catch {
+  } catch (e) {
+    console.info("fetchCurrentUser failed:", e);
     userSignal.value = null;
     rbacSignal.value = null;
     return null;
@@ -133,10 +134,8 @@ export async function refreshPermissions(namespace: string): Promise<void> {
       { method: "GET" },
     );
     rbacSignal.value = res.data.rbac;
-  } catch {
-    // Clear stale permissions from previous namespace — prevents showing
-    // actions that were valid for namespace A but not namespace B.
-    // canPerform defaults to true when null, so actions show optimistically.
+  } catch (e) {
+    console.info("refreshPermissions failed:", e);
     rbacSignal.value = null;
   }
 }

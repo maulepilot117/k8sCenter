@@ -205,7 +205,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, result
 		if json.Unmarshal(body, &lokiErr) == nil && lokiErr.Error != "" {
 			return fmt.Errorf("loki error (%d): %s", resp.StatusCode, lokiErr.Error)
 		}
-		return fmt.Errorf("loki returned status %d", resp.StatusCode)
+		return fmt.Errorf("loki returned status %d: %s", resp.StatusCode, body)
 	}
 
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(result); err != nil {
