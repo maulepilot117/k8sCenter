@@ -58,6 +58,7 @@ export interface Schedule {
   storageLocation?: string;
   ttl?: string;
   lastBackup?: string;
+  lastBackupPhase?: string;
   nextRunTime?: string;
   validationErrors?: string[];
 }

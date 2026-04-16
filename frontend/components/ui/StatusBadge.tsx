@@ -1,7 +1,7 @@
 import { statusStyle } from "@/lib/status-colors.ts";
 import type { StatusVariant } from "@/lib/status-colors.ts";
 
-interface StatusBadgeProps {
+export interface StatusBadgeProps {
   status: string;
   variant?: StatusVariant;
 }

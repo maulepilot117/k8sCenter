@@ -10,10 +10,7 @@ import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 
-interface KeyValueEntry {
-  key: string;
-  value: string;
-}
+import type { KeyValueEntry } from "@/components/ui/KeyValueListEditor.tsx";
 
 interface ConfigMapFormState {
   name: string;

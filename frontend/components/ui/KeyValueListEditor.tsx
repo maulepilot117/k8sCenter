@@ -1,7 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 
-interface KeyValueEntry {
+export interface KeyValueEntry {
   key: string;
   value: string;
 }
