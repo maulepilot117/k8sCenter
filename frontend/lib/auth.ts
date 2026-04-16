@@ -136,6 +136,7 @@ export async function refreshPermissions(namespace: string): Promise<void> {
     rbacSignal.value = res.data.rbac;
   } catch (e) {
     console.info("refreshPermissions failed:", e);
+    // null = optimistic (allow all actions until permissions load)
     rbacSignal.value = null;
   }
 }
