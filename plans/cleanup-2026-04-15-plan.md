@@ -66,14 +66,13 @@ independently shippable with `/review` + CI + smoke test gate.
 - Migrate 3-5 wizards as pilot (ConfigMap, Service, StatefulSet), measure LOC reduction before expanding.
 - Consolidate badge color maps into `lib/color-maps.ts`; single `ColorBadge` component.
 
-## Tier 3 — High risk, brainstorm-first
+## Tier 3 — COMPLETE (2026-04-16)
 
-### PR-H: Go resource handler generics
-- 35+ files in `backend/internal/k8s/resources/` currently repeat ~80% boilerplate.
-- Potential: `ResourceHandler[T any]` with `HandleList/HandleGet/HandleCreate/HandleDelete` generic methods.
-- Preserve per-kind clientset type safety (AppsV1().Deployments() vs AppsV1().StatefulSets()) via functional clientset-getter.
-- Requires dedicated `superpowers:brainstorming` session before any code.
-- Do NOT batch with Tier 2.
+### Handler Adapter Refactor (PRs #191-#195 + #192)
+- Interface + Registration approach (not generics — per brainstorm review)
+- 30 adapters registered, 23 old handler files deleted
+- Design spec: `docs/superpowers/specs/2026-04-16-handler-adapter-refactor-design.md`
+- Implementation plan: `docs/superpowers/plans/2026-04-16-handler-adapter-refactor.md`
 
 ## Workflow per PR
 1. Branch `fix/cleanup-prX-<slug>` from `main`.
