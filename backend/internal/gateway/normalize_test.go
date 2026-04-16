@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"testing"
-	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -629,7 +628,6 @@ func TestExtractBackendRefs(t *testing.T) {
 
 func TestExtractConditions(t *testing.T) {
 	transitionTime := "2024-06-01T12:00:00Z"
-	parsedTime, _ := time.Parse(time.RFC3339, transitionTime)
 
 	tests := []struct {
 		name    string
@@ -696,17 +694,14 @@ func TestExtractConditions(t *testing.T) {
 				if got[0].Message != "Gateway accepted" {
 					t.Errorf("Conditions[0].Message = %q; want %q", got[0].Message, "Gateway accepted")
 				}
-				if got[0].LastTransitionTime == nil {
-					t.Fatal("Conditions[0].LastTransitionTime is nil; want non-nil")
-				}
-				if !got[0].LastTransitionTime.Equal(parsedTime) {
-					t.Errorf("Conditions[0].LastTransitionTime = %v; want %v", got[0].LastTransitionTime, parsedTime)
+				if got[0].LastTransitionTime != transitionTime {
+					t.Errorf("Conditions[0].LastTransitionTime = %q; want %q", got[0].LastTransitionTime, transitionTime)
 				}
 				if got[1].Type != "Programmed" {
 					t.Errorf("Conditions[1].Type = %q; want %q", got[1].Type, "Programmed")
 				}
-				if got[1].LastTransitionTime != nil {
-					t.Errorf("Conditions[1].LastTransitionTime = %v; want nil", got[1].LastTransitionTime)
+				if got[1].LastTransitionTime != "" {
+					t.Errorf("Conditions[1].LastTransitionTime = %q; want empty", got[1].LastTransitionTime)
 				}
 			}
 		})

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -85,10 +87,11 @@ func NormalizeArgoApp(obj *unstructured.Unstructured) NormalizedApp {
 	// Status - message (operationState.message, fallback to first condition)
 	message, _, _ := unstructured.NestedString(obj.Object, "status", "operationState", "message")
 	if message == "" {
-		conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-		if found && len(conditions) > 0 {
-			if condMap, ok := conditions[0].(map[string]interface{}); ok {
-				message, _, _ = unstructured.NestedString(condMap, "message")
+		rawConditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+		if found {
+			parsed := k8s.ExtractConditions(rawConditions)
+			if len(parsed) > 0 {
+				message = parsed[0].Message
 			}
 		}
 	}
@@ -399,24 +402,14 @@ func NormalizeArgoAppSet(obj *unstructured.Unstructured) NormalizedAppSet {
 	// Status from conditions
 	status := "Healthy"
 	statusMessage := ""
-	conditions, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	rawConds, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if found {
-		for _, raw := range conditions {
-			condMap, ok := raw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			condType, _, _ := unstructured.NestedString(condMap, "type")
-			condStatus, _, _ := unstructured.NestedString(condMap, "status")
-
-			if condType == "ErrorOccurred" && condStatus == "True" {
-				status = "Error"
-				statusMessage, _, _ = unstructured.NestedString(condMap, "message")
-				break
-			}
-			if condType == "ResourcesUpToDate" && condStatus == "False" {
-				status = "Progressing"
-			}
+		parsedConds := k8s.ExtractConditions(rawConds)
+		if errCond := k8s.FindCondition(parsedConds, "ErrorOccurred"); errCond != nil && errCond.Status == "True" {
+			status = "Error"
+			statusMessage = errCond.Message
+		} else if updCond := k8s.FindCondition(parsedConds, "ResourcesUpToDate"); updCond != nil && updCond.Status == "False" {
+			status = "Progressing"
 		}
 	}
 
@@ -466,21 +459,14 @@ func GetArgoAppSetDetail(ctx context.Context, dynClient dynamic.Interface, names
 
 	// Extract conditions
 	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	conditions := make([]AppSetCondition, 0, len(rawConditions))
-	for _, raw := range rawConditions {
-		condMap, ok := raw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		condType, _, _ := unstructured.NestedString(condMap, "type")
-		condStatus, _, _ := unstructured.NestedString(condMap, "status")
-		condMessage, _, _ := unstructured.NestedString(condMap, "message")
-		condReason, _, _ := unstructured.NestedString(condMap, "reason")
+	parsedConds := k8s.ExtractConditions(rawConditions)
+	conditions := make([]AppSetCondition, 0, len(parsedConds))
+	for _, c := range parsedConds {
 		conditions = append(conditions, AppSetCondition{
-			Type:    condType,
-			Status:  condStatus,
-			Message: condMessage,
-			Reason:  condReason,
+			Type:    c.Type,
+			Status:  c.Status,
+			Message: c.Message,
+			Reason:  c.Reason,
 		})
 	}
 

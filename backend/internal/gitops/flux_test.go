@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -14,8 +16,8 @@ import (
 )
 
 func TestMapFluxConditions_ReadyTrue(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "True", "message": "Applied revision: main@sha1:abc123"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "True", Message: "Applied revision: main@sha1:abc123"},
 	}
 
 	sync, health, msg := mapFluxConditions(conditions)
@@ -32,8 +34,8 @@ func TestMapFluxConditions_ReadyTrue(t *testing.T) {
 }
 
 func TestMapFluxConditions_ReadyFalse_Failed(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "False", "reason": "ReconciliationFailed", "message": "kustomize build failed"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "False", Reason: "ReconciliationFailed", Message: "kustomize build failed"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)
@@ -47,8 +49,8 @@ func TestMapFluxConditions_ReadyFalse_Failed(t *testing.T) {
 }
 
 func TestMapFluxConditions_ReadyFalse_OutOfSync(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "False", "reason": "ProgressingWithRetry", "message": "retrying"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "False", Reason: "ProgressingWithRetry", Message: "retrying"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)
@@ -62,9 +64,9 @@ func TestMapFluxConditions_ReadyFalse_OutOfSync(t *testing.T) {
 }
 
 func TestMapFluxConditions_Reconciling(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "Unknown", "message": "reconciliation in progress"},
-		{"type": "Reconciling", "status": "True"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "Unknown", Message: "reconciliation in progress"},
+		{Type: "Reconciling", Status: "True"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)
@@ -78,9 +80,9 @@ func TestMapFluxConditions_Reconciling(t *testing.T) {
 }
 
 func TestMapFluxConditions_Stalled(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "False", "reason": "ReconciliationFailed", "message": "dependency not ready"},
-		{"type": "Stalled", "status": "True"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "False", Reason: "ReconciliationFailed", Message: "dependency not ready"},
+		{Type: "Stalled", Status: "True"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)
@@ -94,9 +96,9 @@ func TestMapFluxConditions_Stalled(t *testing.T) {
 }
 
 func TestMapFluxConditions_HealthCheckFailed(t *testing.T) {
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "True", "message": "Applied revision"},
-		{"type": "HealthCheckFailed", "status": "True"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "True", Message: "Applied revision"},
+		{Type: "HealthCheckFailed", Status: "True"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)
@@ -125,10 +127,10 @@ func TestMapFluxConditions_Empty(t *testing.T) {
 
 func TestMapFluxConditions_StalledOverridesReconciling(t *testing.T) {
 	// Both Stalled and Reconciling are true; Stalled should win.
-	conditions := []map[string]string{
-		{"type": "Ready", "status": "False", "reason": "SomeReason", "message": "stuck"},
-		{"type": "Reconciling", "status": "True"},
-		{"type": "Stalled", "status": "True"},
+	conditions := []k8s.Condition{
+		{Type: "Ready", Status: "False", Reason: "SomeReason", Message: "stuck"},
+		{Type: "Reconciling", Status: "True"},
+		{Type: "Stalled", Status: "True"},
 	}
 
 	sync, health, _ := mapFluxConditions(conditions)

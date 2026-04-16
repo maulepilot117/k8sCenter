@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -47,49 +48,6 @@ type ReceiverInput struct {
 }
 
 // --- Helpers ---
-
-// extractConditions pulls status.conditions from an unstructured object
-// into a slice of string maps for easier processing.
-func extractConditions(obj *unstructured.Unstructured) []map[string]string {
-	raw, found, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if !found {
-		return nil
-	}
-
-	conditions := make([]map[string]string, 0, len(raw))
-	for _, item := range raw {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		c := make(map[string]string)
-		for _, key := range []string{"type", "status", "reason", "message", "lastTransitionTime"} {
-			if v, ok := m[key].(string); ok {
-				c[key] = v
-			}
-		}
-		conditions = append(conditions, c)
-	}
-	return conditions
-}
-
-// mapReadyCondition extracts the Ready condition from a conditions list
-// and returns a status string and message. If the resource is suspended,
-// the caller should override the returned status to "Suspended".
-func mapReadyCondition(conditions []map[string]string) (string, string) {
-	for _, c := range conditions {
-		if c["type"] != "Ready" {
-			continue
-		}
-		switch c["status"] {
-		case "True":
-			return "Ready", c["message"]
-		case "False":
-			return "Not Ready", c["message"]
-		}
-	}
-	return "Unknown", ""
-}
 
 // extractEventSources parses a slice of event source references from the given
 // nested path in an unstructured object.
@@ -264,8 +222,9 @@ func NormalizeProvider(obj *unstructured.Unstructured) NormalizedProvider {
 	secretRef, _, _ := unstructured.NestedString(obj.Object, "spec", "secretRef", "name")
 	suspended, _, _ := unstructured.NestedBool(obj.Object, "spec", "suspend")
 
-	conditions := extractConditions(obj)
-	status, message := mapReadyCondition(conditions)
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := k8s.ExtractConditions(rawConditions)
+	status, message := k8s.MapReadyCondition(conditions)
 
 	if suspended {
 		status = "Suspended"
@@ -305,8 +264,9 @@ func NormalizeAlert(obj *unstructured.Unstructured) NormalizedAlert {
 	inclusionList := extractStringSlice(obj, "spec", "inclusionList")
 	exclusionList := extractStringSlice(obj, "spec", "exclusionList")
 
-	conditions := extractConditions(obj)
-	status, message := mapReadyCondition(conditions)
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := k8s.ExtractConditions(rawConditions)
+	status, message := k8s.MapReadyCondition(conditions)
 
 	if suspended {
 		status = "Suspended"
@@ -341,8 +301,9 @@ func NormalizeReceiver(obj *unstructured.Unstructured) NormalizedReceiver {
 	// Extract resources
 	resources := extractEventSources(obj, "spec", "resources")
 
-	conditions := extractConditions(obj)
-	status, message := mapReadyCondition(conditions)
+	rawConditions, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	conditions := k8s.ExtractConditions(rawConditions)
+	status, message := k8s.MapReadyCondition(conditions)
 
 	if suspended {
 		status = "Suspended"

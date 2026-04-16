@@ -3,7 +3,6 @@ package gateway
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -36,20 +35,6 @@ func intFrom(m map[string]any, key string) int {
 	return 0
 }
 
-// parseTimeField parses an RFC3339 timestamp from a nested map path.
-// Returns nil on any error or missing value.
-func parseTimeField(obj map[string]any, fields ...string) *time.Time {
-	s, found, err := unstructured.NestedString(obj, fields...)
-	if err != nil || !found || s == "" {
-		return nil
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return nil
-	}
-	return &t
-}
-
 // extractConditions reads status conditions from a nested path.
 // Used for both top-level status.conditions and per-listener/per-parent conditions.
 func extractConditions(obj map[string]any, path ...string) []Condition {
@@ -69,7 +54,9 @@ func extractConditions(obj map[string]any, path ...string) []Condition {
 			Reason:  stringFrom(cm, "reason"),
 			Message: stringFrom(cm, "message"),
 		}
-		c.LastTransitionTime = parseTimeField(cm, "lastTransitionTime")
+		if s, _, _ := unstructured.NestedString(cm, "lastTransitionTime"); s != "" {
+			c.LastTransitionTime = s
+		}
 		out = append(out, c)
 	}
 	return out
