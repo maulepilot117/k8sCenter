@@ -1,4 +1,5 @@
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+export { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 
 export const SCANNER_COLORS: Record<string, string> = {
