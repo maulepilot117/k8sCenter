@@ -72,6 +72,10 @@ func TestAllAdaptersRegistered(t *testing.T) {
 		"deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
 		// Bulk read-only/simple (5)
 		"replicasets", "storageclasses", "hpas", "pdbs", "limitranges",
+		// RBAC + remaining (8)
+		"roles", "clusterroles", "rolebindings", "clusterrolebindings",
+		"events", "endpointslices", "resourcequotas",
+		"validatingwebhookconfigurations", "mutatingwebhookconfigurations",
 	}
 	for _, kind := range expected {
 		if a := GetAdapter(kind); a == nil {
