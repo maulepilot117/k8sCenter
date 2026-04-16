@@ -33,27 +33,27 @@ func (secretAdapter) GetFromCache(_ *k8s.InformerManager, _, _ string) (any, err
 	return nil, errSecretsNotCached
 }
 
-func (secretAdapter) Create(cs kubernetes.Interface, ns string, body []byte) (any, error) {
+func (secretAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj corev1.Secret
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
 	obj.Namespace = ns
-	return cs.CoreV1().Secrets(ns).Create(context.TODO(), &obj, metav1.CreateOptions{})
+	return cs.CoreV1().Secrets(ns).Create(ctx, &obj, metav1.CreateOptions{})
 }
 
-func (secretAdapter) Update(cs kubernetes.Interface, ns, name string, body []byte) (any, error) {
+func (secretAdapter) Update(ctx context.Context, cs kubernetes.Interface, ns, name string, body []byte) (any, error) {
 	var obj corev1.Secret
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	return cs.CoreV1().Secrets(ns).Update(context.TODO(), &obj, metav1.UpdateOptions{})
+	return cs.CoreV1().Secrets(ns).Update(ctx, &obj, metav1.UpdateOptions{})
 }
 
-func (secretAdapter) Delete(cs kubernetes.Interface, ns, name string) error {
-	return cs.CoreV1().Secrets(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
+func (secretAdapter) Delete(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
+	return cs.CoreV1().Secrets(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func init() { Register(secretAdapter{}) }

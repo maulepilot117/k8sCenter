@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"errors"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -34,13 +35,16 @@ type ResourceAdapter interface {
 	GetFromCache(inf *k8s.InformerManager, ns, name string) (any, error)
 
 	// Create creates a new resource from the JSON body using an impersonating client.
-	Create(cs kubernetes.Interface, ns string, body []byte) (any, error)
+	// The context should be the HTTP request context to propagate cancellation and timeouts.
+	Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error)
 
 	// Update updates an existing resource from the JSON body using an impersonating client.
-	Update(cs kubernetes.Interface, ns, name string, body []byte) (any, error)
+	// The context should be the HTTP request context to propagate cancellation and timeouts.
+	Update(ctx context.Context, cs kubernetes.Interface, ns, name string, body []byte) (any, error)
 
 	// Delete removes a resource by namespace and name using an impersonating client.
-	Delete(cs kubernetes.Interface, ns, name string) error
+	// The context should be the HTTP request context to propagate cancellation and timeouts.
+	Delete(ctx context.Context, cs kubernetes.Interface, ns, name string) error
 }
 
 // ReadOnlyAdapter provides default no-op implementations for Create, Update, and Delete
@@ -49,17 +53,17 @@ type ResourceAdapter interface {
 type ReadOnlyAdapter struct{}
 
 // Create is not supported for read-only resources.
-func (ReadOnlyAdapter) Create(_ kubernetes.Interface, _ string, _ []byte) (any, error) {
+func (ReadOnlyAdapter) Create(_ context.Context, _ kubernetes.Interface, _ string, _ []byte) (any, error) {
 	return nil, errReadOnly
 }
 
 // Update is not supported for read-only resources.
-func (ReadOnlyAdapter) Update(_ kubernetes.Interface, _, _ string, _ []byte) (any, error) {
+func (ReadOnlyAdapter) Update(_ context.Context, _ kubernetes.Interface, _, _ string, _ []byte) (any, error) {
 	return nil, errReadOnly
 }
 
 // Delete is not supported for read-only resources.
-func (ReadOnlyAdapter) Delete(_ kubernetes.Interface, _, _ string) error {
+func (ReadOnlyAdapter) Delete(_ context.Context, _ kubernetes.Interface, _, _ string) error {
 	return errReadOnly
 }
 
@@ -72,25 +76,25 @@ var errReadOnly = errors.New("this resource is read-only and does not support th
 
 // Scalable indicates a resource supports scale (e.g. Deployments, StatefulSets, ReplicaSets).
 type Scalable interface {
-	Scale(cs kubernetes.Interface, ns, name string, replicas int32) (any, error)
+	Scale(ctx context.Context, cs kubernetes.Interface, ns, name string, replicas int32) (any, error)
 }
 
 // Restartable indicates a resource supports rolling restart (e.g. Deployments, StatefulSets, DaemonSets).
 type Restartable interface {
-	Restart(cs kubernetes.Interface, ns, name string) (any, error)
+	Restart(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error)
 }
 
 // Suspendable indicates a resource supports suspend/resume (e.g. CronJobs).
 type Suspendable interface {
-	Suspend(cs kubernetes.Interface, ns, name string, suspend bool) (any, error)
+	Suspend(ctx context.Context, cs kubernetes.Interface, ns, name string, suspend bool) (any, error)
 }
 
 // Triggerable indicates a resource supports manual triggering (e.g. CronJobs → create Job).
 type Triggerable interface {
-	Trigger(cs kubernetes.Interface, ns, name string) (any, error)
+	Trigger(ctx context.Context, cs kubernetes.Interface, ns, name string) (any, error)
 }
 
 // Rollbackable indicates a resource supports rollback to a previous revision (e.g. Deployments).
 type Rollbackable interface {
-	Rollback(cs kubernetes.Interface, ns, name string, revision int64) (any, error)
+	Rollback(ctx context.Context, cs kubernetes.Interface, ns, name string, revision int64) (any, error)
 }
