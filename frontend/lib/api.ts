@@ -69,7 +69,7 @@ async function refreshAccessToken(): Promise<boolean> {
     });
     if (!res.ok) return false;
 
-    const body = await res.json();
+    const body = (await res.json()) as APIResponse<{ accessToken: string }>;
     if (body.data?.accessToken) {
       accessToken = body.data.accessToken;
       return true;

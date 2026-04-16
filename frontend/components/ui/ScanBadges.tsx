@@ -1,16 +1,9 @@
-import { ColorBadge } from "@/components/ui/PolicyBadges.tsx";
+import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 
 export const SCANNER_COLORS: Record<string, string> = {
   trivy: "var(--accent)",
   kubescape: "var(--success)",
-};
-
-export const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
-  high: "var(--warning)",
-  medium: "var(--accent)",
-  low: "var(--text-muted)",
-  unknown: "var(--text-muted)",
 };
 
 /** Badge for a CVE severity with consistent coloring and text labels. */

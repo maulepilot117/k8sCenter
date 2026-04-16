@@ -25,7 +25,14 @@ import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
 import { age } from "@/lib/format.ts";
-import type { K8sEvent, K8sResource } from "@/lib/k8s-types.ts";
+import type {
+  DaemonSet,
+  Deployment,
+  K8sEvent,
+  K8sResource,
+  Pod,
+  StatefulSet,
+} from "@/lib/k8s-types.ts";
 import { getOverviewComponent } from "@/components/k8s/detail/index.tsx";
 import { MetadataSection } from "@/components/k8s/detail/MetadataSection.tsx";
 import { stringify } from "yaml";
@@ -609,8 +616,7 @@ export default function ResourceDetail({
   );
   const podSelector = (() => {
     if (!isWorkload || !resource.value || !namespace) return "";
-    // deno-lint-ignore no-explicit-any
-    const res = resource.value as any;
+    const res = resource.value as Deployment | StatefulSet | DaemonSet;
     const matchLabels = res?.spec?.selector?.matchLabels ?? {};
     return Object.entries(matchLabels).map(([k, v]) => `${k}=${v}`).join(",");
   })();
@@ -621,14 +627,13 @@ export default function ResourceDetail({
       id: "logs",
       label: "Logs",
       content: () => {
-        // deno-lint-ignore no-explicit-any
-        const res = resource.value as any;
-        const containers: string[] =
-          // deno-lint-ignore no-explicit-any
-          res?.spec?.containers?.map((c: any) => c.name) ?? [];
-        const initContainers: string[] =
-          // deno-lint-ignore no-explicit-any
-          res?.spec?.initContainers?.map((c: any) => c.name) ?? [];
+        const res = resource.value as Pod;
+        const containers: string[] = res?.spec?.containers?.map((c) =>
+          c.name
+        ) ?? [];
+        const initContainers: string[] = res?.spec?.initContainers?.map((c) =>
+          c.name
+        ) ?? [];
         return (
           <LogViewer
             namespace={namespace}
@@ -643,11 +648,10 @@ export default function ResourceDetail({
       id: "terminal",
       label: "Terminal",
       content: () => {
-        // deno-lint-ignore no-explicit-any
-        const res = resource.value as any;
-        const containers: string[] =
-          // deno-lint-ignore no-explicit-any
-          res?.spec?.containers?.map((c: any) => c.name) ?? [];
+        const res = resource.value as Pod;
+        const containers: string[] = res?.spec?.containers?.map((c) =>
+          c.name
+        ) ?? [];
         return (
           <PodTerminal
             namespace={namespace}

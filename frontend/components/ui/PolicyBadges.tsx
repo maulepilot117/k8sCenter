@@ -1,10 +1,7 @@
-/** Shared color maps for policy UI */
-export const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
-  high: "var(--warning)",
-  medium: "var(--accent)",
-  low: "var(--text-muted)",
-};
+import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+export { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+export { SEVERITY_COLORS, SEVERITY_ORDER } from "@/lib/badge-colors.ts";
+import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 
 export const ENGINE_COLORS: Record<string, string> = {
   kyverno: "var(--success)",
@@ -16,25 +13,6 @@ export const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   warned: { label: "Warned", color: "var(--warning)" },
   audited: { label: "Audited", color: "var(--text-muted)" },
 };
-
-export const SEVERITY_ORDER = ["critical", "high", "medium", "low"] as const;
-
-/** Generic tinted badge — color text on a color-mix background. */
-export function ColorBadge(
-  { label, color }: { label: string; color: string },
-) {
-  return (
-    <span
-      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-      style={{
-        color,
-        backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
 
 export function SeverityBadge({ severity }: { severity: string }) {
   return (
