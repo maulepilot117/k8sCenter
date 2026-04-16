@@ -640,8 +640,10 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/{kind}", h.HandleListResource)
 	ar.Get("/resources/{kind}/{namespace}", h.HandleListResource)
 	ar.Get("/resources/{kind}/{namespace}/{name}", h.HandleGetResource)
+	ar.Post("/resources/{kind}", h.HandleCreateResource)
 	ar.Post("/resources/{kind}/{namespace}", h.HandleCreateResource)
 	ar.Put("/resources/{kind}/{namespace}/{name}", h.HandleUpdateResource)
+	ar.Delete("/resources/{kind}/{namespace}", h.HandleDeleteResource)
 	ar.Delete("/resources/{kind}/{namespace}/{name}", h.HandleDeleteResource)
 
 	// Generic action routes
