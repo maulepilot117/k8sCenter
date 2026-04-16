@@ -23,45 +23,6 @@ const (
 	defaultDrainTimeout = 5 * time.Minute
 )
 
-func (h *Handler) HandleListNodes(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
-	if !ok {
-		return
-	}
-	params := parseListParams(r)
-	if !h.checkAccess(w, r, user, "list", kindNode, "") {
-		return
-	}
-	sel, ok := parseSelectorOrReject(w, params.LabelSelector)
-	if !ok {
-		return
-	}
-	all, err := h.Informers.Nodes().List(sel)
-	if err != nil {
-		mapK8sError(w, err, "list", "Node", "", "")
-		return
-	}
-	items, cont := paginate(all, params.Limit, params.Continue)
-	writeList(w, items, len(all), cont)
-}
-
-func (h *Handler) HandleGetNode(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireUser(w, r)
-	if !ok {
-		return
-	}
-	name := chi.URLParam(r, "name")
-	if !h.checkAccess(w, r, user, "get", kindNode, "") {
-		return
-	}
-	obj, err := h.Informers.Nodes().Get(name)
-	if err != nil {
-		mapK8sError(w, err, "get", "Node", "", name)
-		return
-	}
-	writeData(w, obj)
-}
-
 // HandleCordonNode handles POST /api/v1/resources/nodes/:name/cordon
 func (h *Handler) HandleCordonNode(w http.ResponseWriter, r *http.Request) {
 	h.setNodeUnschedulable(w, r, true)

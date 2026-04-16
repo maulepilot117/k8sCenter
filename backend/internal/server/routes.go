@@ -653,28 +653,19 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Post("/resources/{kind}/{namespace}/{name}/trigger", h.HandleTriggerResource)
 	ar.Post("/resources/{kind}/{namespace}/{name}/rollback", h.HandleRollbackResource)
 
-	// Pods
-	ar.Get("/resources/pods", h.HandleListPods)
-	ar.Get("/resources/pods/{namespace}", h.HandleListPods)
-	ar.Get("/resources/pods/{namespace}/{name}", h.HandleGetPod)
-	ar.Delete("/resources/pods/{namespace}/{name}", h.HandleDeletePod)
+	// Pods — custom handlers (logs only; CRUD served by pod adapter)
 	ar.Get("/resources/pods/{namespace}/{name}/logs", h.HandlePodLogs)
 
-	// Nodes (cluster-scoped)
-	ar.Get("/resources/nodes", h.HandleListNodes)
-	ar.Get("/resources/nodes/{name}", h.HandleGetNode)
+	// Nodes — custom actions (CRUD served by node adapter)
 	ar.Post("/resources/nodes/{name}/cordon", h.HandleCordonNode)
 	ar.Post("/resources/nodes/{name}/uncordon", h.HandleUncordonNode)
 	ar.Post("/resources/nodes/{name}/drain", h.HandleDrainNode)
 
-	// Secrets
+	// Secrets — custom handlers (list/get/reveal use impersonating client; CUD served by secret adapter)
 	ar.Get("/resources/secrets", h.HandleListSecrets)
 	ar.Get("/resources/secrets/{namespace}", h.HandleListSecrets)
 	ar.Get("/resources/secrets/{namespace}/{name}", h.HandleGetSecret)
 	ar.Get("/resources/secrets/{namespace}/{name}/reveal/{key}", h.HandleRevealSecret)
-	ar.Post("/resources/secrets/{namespace}", h.HandleCreateSecret)
-	ar.Put("/resources/secrets/{namespace}/{name}", h.HandleUpdateSecret)
-	ar.Delete("/resources/secrets/{namespace}/{name}", h.HandleDeleteSecret)
 
 	// CiliumNetworkPolicies (via dynamic client)
 	ar.Get("/resources/ciliumnetworkpolicies", h.HandleListCiliumPolicies)
