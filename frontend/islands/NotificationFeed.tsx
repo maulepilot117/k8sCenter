@@ -100,9 +100,7 @@ export default function NotificationFeed() {
   function handleRowClick(n: AppNotification) {
     // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
-      notifApi.markReadQuiet(n.id).catch((e) =>
-        console.warn("markRead failed:", e)
-      );
+      notifApi.markReadQuiet(n.id).catch(() => {});
       // Optimistic read-state update
       notifications.value = notifications.value.map((item) =>
         item.id === n.id ? { ...item, read: true } : item

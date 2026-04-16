@@ -141,10 +141,6 @@ func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action
 	})
 }
 
-// ============================================================================
-// Status
-// ============================================================================
-
 // HandleStatus returns the Velero detection status.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	_, ok := httputil.RequireUser(w, r)
@@ -155,10 +151,6 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	status := h.Discoverer.Status(r.Context())
 	httputil.WriteData(w, status)
 }
-
-// ============================================================================
-// Backups
-// ============================================================================
 
 // HandleListBackups returns all Velero backups.
 func (h *Handler) HandleListBackups(w http.ResponseWriter, r *http.Request) {
@@ -419,10 +411,6 @@ func (h *Handler) HandleGetBackupLogs(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, map[string]string{"url": url})
 }
 
-// ============================================================================
-// Restores
-// ============================================================================
-
 // HandleListRestores returns all Velero restores.
 func (h *Handler) HandleListRestores(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
@@ -613,10 +601,6 @@ func (h *Handler) HandleCreateRestore(w http.ResponseWriter, r *http.Request) {
 	restore := parseRestore(created)
 	httputil.WriteData(w, restore)
 }
-
-// ============================================================================
-// Schedules
-// ============================================================================
 
 // HandleListSchedules returns all Velero schedules.
 func (h *Handler) HandleListSchedules(w http.ResponseWriter, r *http.Request) {
@@ -957,10 +941,6 @@ func (h *Handler) HandleTriggerSchedule(w http.ResponseWriter, r *http.Request) 
 	httputil.WriteData(w, backup)
 }
 
-// ============================================================================
-// Locations
-// ============================================================================
-
 // HandleListLocations returns BSLs and VSLs.
 func (h *Handler) HandleListLocations(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
@@ -994,10 +974,6 @@ func (h *Handler) HandleListLocations(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, locations)
 }
-
-// ============================================================================
-// Fetch helpers with caching
-// ============================================================================
 
 // fetchAll fetches all Velero data in parallel and caches the result.
 func (h *Handler) fetchAll(ctx context.Context) (*cachedVeleroData, error) {
@@ -1153,10 +1129,6 @@ func (h *Handler) fetchLocations(ctx context.Context) (*LocationsResponse, error
 	return data.locations, nil
 }
 
-// ============================================================================
-// Single-item fetchers with impersonation
-// ============================================================================
-
 func (h *Handler) getBackup(ctx context.Context, client dynamic.Interface, namespace, name string) (*Backup, error) {
 	obj, err := client.Resource(BackupGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -1229,10 +1201,6 @@ func (h *Handler) requestBackupLogs(ctx context.Context, client dynamic.Interfac
 
 	return "", fmt.Errorf("timeout waiting for download request to be processed")
 }
-
-// ============================================================================
-// Parse helpers
-// ============================================================================
 
 func parseBackup(obj *unstructured.Unstructured) Backup {
 	spec, _, _ := unstructured.NestedMap(obj.Object, "spec")
@@ -1388,10 +1356,6 @@ func parseVSL(obj *unstructured.Unstructured) VolumeSnapshotLocation {
 
 	return vsl
 }
-
-// ============================================================================
-// Utility functions
-// ============================================================================
 
 func getStringSlice(m map[string]any, key string) []string {
 	val, found, _ := unstructured.NestedStringSlice(m, key)

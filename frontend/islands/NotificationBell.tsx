@@ -116,9 +116,7 @@ export default function NotificationBell() {
   const handleClickNotification = (n: AppNotification) => {
     // Fire-and-forget markRead with keepalive so it survives page navigation
     if (!n.read) {
-      notifApi.markReadQuiet(n.id).catch((e) =>
-        console.warn("markRead failed:", e)
-      );
+      notifApi.markReadQuiet(n.id).catch(() => {});
       unreadCount.value = Math.max(0, unreadCount.value - 1);
       recent.value = recent.value.map((item) =>
         item.id === n.id ? { ...item, read: true } : item

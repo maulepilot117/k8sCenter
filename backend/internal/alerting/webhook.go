@@ -37,8 +37,7 @@ type AlertAction struct {
 	Event AlertEvent
 }
 
-// ProcessWebhook processes a webhook payload and returns the actions taken.
-// It updates the store and returns actions for WS broadcasting and email notification.
+// ProcessWebhook ingests an Alertmanager payload and returns actions for WS broadcast + email dispatch.
 func ProcessWebhook(ctx context.Context, store Store, payload *WebhookPayload, clusterID string) ([]AlertAction, error) {
 	var actions []AlertAction
 

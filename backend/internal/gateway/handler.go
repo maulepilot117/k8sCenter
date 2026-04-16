@@ -29,10 +29,6 @@ var routeKindToKind = map[string]string{
 	"udproutes":  "UDPRoute",
 }
 
-// ============================================================================
-// Handler
-// ============================================================================
-
 // Handler serves Gateway API HTTP endpoints.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
@@ -78,10 +74,6 @@ func (h *Handler) InvalidateCache() {
 	h.cacheMu.Unlock()
 }
 
-// ============================================================================
-// Helper methods
-// ============================================================================
-
 // getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
 func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User) (dynamic.Interface, bool) {
 	client, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
@@ -107,10 +99,6 @@ func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource
 	return err == nil && can
 }
 
-// ============================================================================
-// RBAC filter helpers
-// ============================================================================
-
 // filterByRBAC returns only items the user can access in their respective namespaces.
 func filterByRBAC[T namespacedResource](ctx context.Context, h *Handler, user *auth.User, resource string, items []T) []T {
 	nsAllow := map[string]bool{}
@@ -128,10 +116,6 @@ func filterByRBAC[T namespacedResource](ctx context.Context, h *Handler, user *a
 	}
 	return out
 }
-
-// ============================================================================
-// Cache (singleflight + 30s TTL)
-// ============================================================================
 
 func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	h.cacheMu.RLock()
@@ -264,10 +248,6 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	return data, nil
 }
-
-// ============================================================================
-// Read handlers
-// ============================================================================
 
 // HandleStatus returns the Gateway API detection status.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
@@ -686,10 +666,6 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 	h.resolveBackendServices(r.Context(), user, ns, detail.BackendRefs)
 	httputil.WriteData(w, detail)
 }
-
-// ============================================================================
-// Relationship resolution helpers
-// ============================================================================
 
 // maxResolveConcurrency caps goroutine fan-out for relationship resolution.
 const maxResolveConcurrency = 10
