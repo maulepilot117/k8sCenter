@@ -34,10 +34,6 @@ const (
 	issuingMessage  = "Certificate re-issuance manually triggered"
 )
 
-// ============================================================================
-// Handler
-// ============================================================================
-
 // Handler serves cert-manager HTTP endpoints.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
@@ -96,10 +92,6 @@ func (h *Handler) InvalidateCache() {
 	}
 }
 
-// ============================================================================
-// Helper methods
-// ============================================================================
-
 // getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
 func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User) (dynamic.Interface, bool) {
 	client, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
@@ -143,10 +135,6 @@ func (h *Handler) auditLog(r *http.Request, user *auth.User, action audit.Action
 	})
 }
 
-// ============================================================================
-// RBAC filter helpers
-// ============================================================================
-
 // namespacedResource is implemented by types that carry a Kubernetes namespace.
 type namespacedResource interface {
 	getNamespace() string
@@ -172,10 +160,6 @@ func filterByRBAC[T namespacedResource](ctx context.Context, h *Handler, user *a
 	}
 	return out
 }
-
-// ============================================================================
-// Cache (singleflight + 30s TTL)
-// ============================================================================
 
 func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	h.cacheMu.RLock()
@@ -278,10 +262,6 @@ func (h *Handler) CachedCertificates(ctx context.Context) ([]Certificate, error)
 	}
 	return data.certificates, nil
 }
-
-// ============================================================================
-// Read handlers
-// ============================================================================
 
 // HandleStatus returns the cert-manager detection status.
 func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
@@ -564,10 +544,6 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 
 	httputil.WriteData(w, expiring)
 }
-
-// ============================================================================
-// Write handlers
-// ============================================================================
 
 // HandleRenew triggers certificate renewal by setting the Issuing condition on the status subresource.
 func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
