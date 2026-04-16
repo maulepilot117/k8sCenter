@@ -67,6 +67,7 @@ export interface K8sMetadata {
 
 /** Generic k8s resource with metadata — base for all resource types. */
 export interface K8sResource {
+  kind?: string;
   metadata: K8sMetadata;
   [key: string]: unknown;
 }
@@ -86,16 +87,15 @@ export interface PodStatus {
 export interface Pod extends K8sResource {
   spec: {
     nodeName?: string;
-    containers: Array<
-      {
-        name: string;
-        image: string;
-        resources?: {
-          requests?: Record<string, string>;
-          limits?: Record<string, string>;
-        };
-      }
-    >;
+    containers: Array<{
+      name: string;
+      image: string;
+      resources?: {
+        requests?: Record<string, string>;
+        limits?: Record<string, string>;
+      };
+    }>;
+    initContainers?: Array<{ name: string; image: string }>;
     restartPolicy?: string;
   };
   status?: PodStatus;
@@ -146,6 +146,18 @@ export interface StatefulSet extends K8sResource {
     replicas?: number;
     serviceName: string;
     selector: { matchLabels?: Record<string, string> };
+    template?: {
+      spec?: {
+        containers?: Array<{
+          name: string;
+          image: string;
+          resources?: {
+            requests?: Record<string, string>;
+            limits?: Record<string, string>;
+          };
+        }>;
+      };
+    };
     updateStrategy?: {
       type?: string;
       rollingUpdate?: { partition?: number };
@@ -163,6 +175,18 @@ export interface StatefulSet extends K8sResource {
 export interface DaemonSet extends K8sResource {
   spec: {
     selector: { matchLabels?: Record<string, string> };
+    template?: {
+      spec?: {
+        containers?: Array<{
+          name: string;
+          image: string;
+          resources?: {
+            requests?: Record<string, string>;
+            limits?: Record<string, string>;
+          };
+        }>;
+      };
+    };
   };
   status?: {
     desiredNumberScheduled?: number;

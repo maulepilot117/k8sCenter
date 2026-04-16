@@ -1,6 +1,6 @@
 import type { CertStatus, Issuer } from "@/lib/certmanager-types.ts";
+import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
-/** Status color map for certificate lifecycle states. */
 const STATUS_COLORS: Record<CertStatus, string> = {
   Ready: "var(--success)",
   Issuing: "var(--accent)",
@@ -19,25 +19,10 @@ const ISSUER_TYPE_COLORS: Record<Issuer["type"], string> = {
   Unknown: "var(--text-muted)",
 };
 
-/** Generic tinted badge — color text on a color-mix background. */
-function CertBadge({ label, color }: { label: string; color: string }) {
-  return (
-    <span
-      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
-      style={{
-        color,
-        backgroundColor: `color-mix(in srgb, ${color} 15%, transparent)`,
-      }}
-    >
-      {label}
-    </span>
-  );
-}
-
 /** Renders a pill badge for certificate status. */
 export function StatusBadge({ status }: { status: CertStatus }) {
   return (
-    <CertBadge
+    <ColorBadge
       label={status}
       color={STATUS_COLORS[status] ?? "var(--text-muted)"}
     />
@@ -47,7 +32,7 @@ export function StatusBadge({ status }: { status: CertStatus }) {
 /** Renders a pill badge for issuer type (ACME, CA, Vault, etc.). */
 export function IssuerTypeBadge({ type }: { type: Issuer["type"] }) {
   return (
-    <CertBadge
+    <ColorBadge
       label={type}
       color={ISSUER_TYPE_COLORS[type] ?? "var(--text-muted)"}
     />
@@ -62,15 +47,17 @@ export function ExpiryBadge(
     return <span class="text-xs text-text-muted">&mdash;</span>;
   }
   if (daysRemaining < 0) {
-    return <CertBadge label="Expired" color="var(--danger)" />;
+    return <ColorBadge label="Expired" color="var(--danger)" />;
   }
   if (daysRemaining <= 7) {
-    return <CertBadge label={`${daysRemaining}d left`} color="var(--danger)" />;
+    return (
+      <ColorBadge label={`${daysRemaining}d left`} color="var(--danger)" />
+    );
   }
   if (daysRemaining <= 30) {
     return (
-      <CertBadge label={`${daysRemaining}d left`} color="var(--warning)" />
+      <ColorBadge label={`${daysRemaining}d left`} color="var(--warning)" />
     );
   }
-  return <CertBadge label={`${daysRemaining}d`} color="var(--text-muted)" />;
+  return <ColorBadge label={`${daysRemaining}d`} color="var(--text-muted)" />;
 }

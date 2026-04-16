@@ -382,8 +382,7 @@ const statefulsetColumns: Column<K8sResource>[] = [
     key: "image",
     label: "Image",
     render: (r) => {
-      // deno-lint-ignore no-explicit-any
-      const s = r as any;
+      const s = r as StatefulSet;
       return styledImage(
         s.spec?.template?.spec?.containers?.[0]?.image ?? "-",
       );
@@ -439,8 +438,7 @@ const daemonsetColumns: Column<K8sResource>[] = [
     key: "image",
     label: "Image",
     render: (r) => {
-      // deno-lint-ignore no-explicit-any
-      const ds = r as any;
+      const ds = r as DaemonSet;
       return styledImage(
         ds.spec?.template?.spec?.containers?.[0]?.image ?? "-",
       );
