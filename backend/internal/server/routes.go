@@ -635,6 +635,22 @@ func (s *Server) registerGatewayRoutes(ar chi.Router) {
 }
 
 func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) {
+	// Generic adapter-based routes — any resource registered via Register() in adapter init()
+	// is served by these. Per-resource routes below take priority for resources with custom behavior.
+	ar.Get("/resources/{kind}", h.HandleListResource)
+	ar.Get("/resources/{kind}/{namespace}", h.HandleListResource)
+	ar.Get("/resources/{kind}/{namespace}/{name}", h.HandleGetResource)
+	ar.Post("/resources/{kind}/{namespace}", h.HandleCreateResource)
+	ar.Put("/resources/{kind}/{namespace}/{name}", h.HandleUpdateResource)
+	ar.Delete("/resources/{kind}/{namespace}/{name}", h.HandleDeleteResource)
+
+	// Generic action routes
+	ar.Post("/resources/{kind}/{namespace}/{name}/scale", h.HandleScaleResource)
+	ar.Post("/resources/{kind}/{namespace}/{name}/restart", h.HandleRestartResource)
+	ar.Post("/resources/{kind}/{namespace}/{name}/suspend", h.HandleSuspendResource)
+	ar.Post("/resources/{kind}/{namespace}/{name}/trigger", h.HandleTriggerResource)
+	ar.Post("/resources/{kind}/{namespace}/{name}/rollback", h.HandleRollbackResource)
+
 	// Deployments
 	ar.Get("/resources/deployments", h.HandleListDeployments)
 	ar.Get("/resources/deployments/{namespace}", h.HandleListDeployments)
@@ -688,26 +704,12 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Put("/resources/ingresses/{namespace}/{name}", h.HandleUpdateIngress)
 	ar.Delete("/resources/ingresses/{namespace}/{name}", h.HandleDeleteIngress)
 
-	// Namespaces (cluster-scoped)
-	ar.Get("/resources/namespaces", h.HandleListNamespaces)
-	ar.Get("/resources/namespaces/{name}", h.HandleGetNamespace)
-	ar.Post("/resources/namespaces", h.HandleCreateNamespace)
-	ar.Delete("/resources/namespaces/{name}", h.HandleDeleteNamespace)
-
 	// Nodes (cluster-scoped)
 	ar.Get("/resources/nodes", h.HandleListNodes)
 	ar.Get("/resources/nodes/{name}", h.HandleGetNode)
 	ar.Post("/resources/nodes/{name}/cordon", h.HandleCordonNode)
 	ar.Post("/resources/nodes/{name}/uncordon", h.HandleUncordonNode)
 	ar.Post("/resources/nodes/{name}/drain", h.HandleDrainNode)
-
-	// ConfigMaps
-	ar.Get("/resources/configmaps", h.HandleListConfigMaps)
-	ar.Get("/resources/configmaps/{namespace}", h.HandleListConfigMaps)
-	ar.Get("/resources/configmaps/{namespace}/{name}", h.HandleGetConfigMap)
-	ar.Post("/resources/configmaps/{namespace}", h.HandleCreateConfigMap)
-	ar.Put("/resources/configmaps/{namespace}/{name}", h.HandleUpdateConfigMap)
-	ar.Delete("/resources/configmaps/{namespace}/{name}", h.HandleDeleteConfigMap)
 
 	// Secrets
 	ar.Get("/resources/secrets", h.HandleListSecrets)
@@ -755,11 +757,6 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/replicasets/{namespace}", h.HandleListReplicaSets)
 	ar.Get("/resources/replicasets/{namespace}/{name}", h.HandleGetReplicaSet)
 
-	// Endpoints (read-only)
-	ar.Get("/resources/endpoints", h.HandleListEndpoints)
-	ar.Get("/resources/endpoints/{namespace}", h.HandleListEndpoints)
-	ar.Get("/resources/endpoints/{namespace}/{name}", h.HandleGetEndpoints)
-
 	// HorizontalPodAutoscalers
 	ar.Get("/resources/hpas", h.HandleListHPAs)
 	ar.Get("/resources/hpas/{namespace}", h.HandleListHPAs)
@@ -796,11 +793,6 @@ func (s *Server) registerResourceEndpoints(ar chi.Router, h *resources.Handler) 
 	ar.Get("/resources/limitranges", h.HandleListLimitRanges)
 	ar.Get("/resources/limitranges/{namespace}", h.HandleListLimitRanges)
 	ar.Get("/resources/limitranges/{namespace}/{name}", h.HandleGetLimitRange)
-
-	// ServiceAccounts (read-only)
-	ar.Get("/resources/serviceaccounts", h.HandleListServiceAccounts)
-	ar.Get("/resources/serviceaccounts/{namespace}", h.HandleListServiceAccounts)
-	ar.Get("/resources/serviceaccounts/{namespace}/{name}", h.HandleGetServiceAccount)
 
 	// PodDisruptionBudgets
 	ar.Get("/resources/pdbs", h.HandleListPDBs)
