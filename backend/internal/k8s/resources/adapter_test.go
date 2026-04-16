@@ -1,6 +1,7 @@
 package resources
 
 import (
+	"context"
 	"testing"
 )
 
@@ -48,13 +49,14 @@ func TestReadOnlyAdaptersRejectWrites(t *testing.T) {
 		if a == nil {
 			t.Fatalf("adapter not registered for kind %q", kind)
 		}
-		if _, err := a.Create(nil, "default", []byte(`{}`)); err == nil {
+		ctx := context.Background()
+		if _, err := a.Create(ctx, nil, "default", []byte(`{}`)); err == nil {
 			t.Errorf("%s: Create should return error for read-only adapter", kind)
 		}
-		if _, err := a.Update(nil, "default", "test", []byte(`{}`)); err == nil {
+		if _, err := a.Update(ctx, nil, "default", "test", []byte(`{}`)); err == nil {
 			t.Errorf("%s: Update should return error for read-only adapter", kind)
 		}
-		if err := a.Delete(nil, "default", "test"); err == nil {
+		if err := a.Delete(ctx, nil, "default", "test"); err == nil {
 			t.Errorf("%s: Delete should return error for read-only adapter", kind)
 		}
 	}
@@ -65,7 +67,7 @@ func TestNamespaceAdapterRejectsUpdate(t *testing.T) {
 	if a == nil {
 		t.Fatal("adapter not registered for kind namespaces")
 	}
-	if _, err := a.Update(nil, "", "test", []byte(`{}`)); err == nil {
+	if _, err := a.Update(context.Background(), nil, "", "test", []byte(`{}`)); err == nil {
 		t.Error("namespaces: Update should return error")
 	}
 }

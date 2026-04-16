@@ -54,7 +54,7 @@ func (h *Handler) HandleScaleResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := scalable.Scale(cs, ns, name, req.Replicas)
+	result, err := scalable.Scale(r.Context(), cs, ns, name, req.Replicas)
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionUpdate, adapter.DisplayName(), ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "scale", adapter.DisplayName(), ns, name)
@@ -96,7 +96,7 @@ func (h *Handler) HandleRestartResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := restartable.Restart(cs, ns, name)
+	result, err := restartable.Restart(r.Context(), cs, ns, name)
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionUpdate, adapter.DisplayName(), ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "restart", adapter.DisplayName(), ns, name)
@@ -149,7 +149,7 @@ func (h *Handler) HandleSuspendResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := suspendable.Suspend(cs, ns, name, req.Suspend)
+	result, err := suspendable.Suspend(r.Context(), cs, ns, name, req.Suspend)
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionUpdate, adapter.DisplayName(), ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "suspend", adapter.DisplayName(), ns, name)
@@ -191,7 +191,7 @@ func (h *Handler) HandleTriggerResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	result, err := triggerable.Trigger(cs, ns, name)
+	result, err := triggerable.Trigger(r.Context(), cs, ns, name)
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionCreate, adapter.DisplayName(), ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "trigger", adapter.DisplayName(), ns, name)
@@ -248,7 +248,7 @@ func (h *Handler) HandleRollbackResource(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	result, err := rollbackable.Rollback(cs, ns, name, req.Revision)
+	result, err := rollbackable.Rollback(r.Context(), cs, ns, name, req.Revision)
 	if err != nil {
 		h.auditWrite(r, user, audit.ActionUpdate, adapter.DisplayName(), ns, name, audit.ResultFailure)
 		mapK8sError(w, err, "rollback", adapter.DisplayName(), ns, name)

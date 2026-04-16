@@ -112,7 +112,7 @@ func (h *Handler) HandleCreateResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := adapter.Create(cs, ns, body)
+	result, err := adapter.Create(r.Context(), cs, ns, body)
 	if err != nil {
 		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
@@ -157,7 +157,7 @@ func (h *Handler) HandleUpdateResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := adapter.Update(cs, ns, name, body)
+	result, err := adapter.Update(r.Context(), cs, ns, name, body)
 	if err != nil {
 		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
@@ -197,7 +197,7 @@ func (h *Handler) HandleDeleteResource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = adapter.Delete(cs, ns, name)
+	err = adapter.Delete(r.Context(), cs, ns, name)
 	if err != nil {
 		if errors.Is(err, errReadOnly) {
 			writeError(w, http.StatusMethodNotAllowed, adapter.DisplayName()+" is read-only", "")
@@ -229,7 +229,11 @@ func resolveAdapter(w http.ResponseWriter, r *http.Request) (ResourceAdapter, bo
 }
 
 // extractNsName extracts namespace and name from URL params.
-// For cluster-scoped resources, the first path segment after kind is the name (no namespace).
+// WARNING: For cluster-scoped resources, chi's {namespace} URL param is
+// reinterpreted as the resource name because cluster-scoped GET/DELETE
+// routes use the same 2-segment pattern /resources/{kind}/{name} which
+// chi maps to the {namespace} param. This is a deliberate semantic
+// mismatch to avoid registering separate route handlers.
 func extractNsName(r *http.Request, adapter ResourceAdapter) (ns, name string) {
 	if adapter.ClusterScoped() {
 		// Route: /resources/{kind}/{name} — chi maps first segment to "namespace"

@@ -41,27 +41,27 @@ func (configMapAdapter) GetFromCache(inf *k8s.InformerManager, ns, name string) 
 	return inf.ConfigMaps().ConfigMaps(ns).Get(name)
 }
 
-func (configMapAdapter) Create(cs kubernetes.Interface, ns string, body []byte) (any, error) {
+func (configMapAdapter) Create(ctx context.Context, cs kubernetes.Interface, ns string, body []byte) (any, error) {
 	var obj corev1.ConfigMap
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
 	obj.Namespace = ns
-	return cs.CoreV1().ConfigMaps(ns).Create(context.TODO(), &obj, metav1.CreateOptions{})
+	return cs.CoreV1().ConfigMaps(ns).Create(ctx, &obj, metav1.CreateOptions{})
 }
 
-func (configMapAdapter) Update(cs kubernetes.Interface, ns, name string, body []byte) (any, error) {
+func (configMapAdapter) Update(ctx context.Context, cs kubernetes.Interface, ns, name string, body []byte) (any, error) {
 	var obj corev1.ConfigMap
 	if err := json.Unmarshal(body, &obj); err != nil {
 		return nil, err
 	}
 	obj.Namespace = ns
 	obj.Name = name
-	return cs.CoreV1().ConfigMaps(ns).Update(context.TODO(), &obj, metav1.UpdateOptions{})
+	return cs.CoreV1().ConfigMaps(ns).Update(ctx, &obj, metav1.UpdateOptions{})
 }
 
-func (configMapAdapter) Delete(cs kubernetes.Interface, ns, name string) error {
-	return cs.CoreV1().ConfigMaps(ns).Delete(context.TODO(), name, metav1.DeleteOptions{})
+func (configMapAdapter) Delete(ctx context.Context, cs kubernetes.Interface, ns, name string) error {
+	return cs.CoreV1().ConfigMaps(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func init() { Register(configMapAdapter{}) }
