@@ -260,7 +260,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit A2: Normalized types + Istio adapter**
+- [x] **Unit A2: Normalized types + Istio adapter**
 
 **Goal:** Istio adapter lists VirtualService, DestinationRule, Gateway, PeerAuthentication, AuthorizationPolicy and normalizes them into the shared `TrafficRoute` / `NormalizedPolicy` shapes.
 
