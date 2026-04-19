@@ -364,6 +364,9 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 - Unit tests pass.
 - E2E smoke: `curl /api/v1/mesh/status` on homelab with Istio installed returns expected shape.
 
+**Notes carried in from A3 (2026-04-19):**
+- `ListIstio` and `ListLinkerd` are structurally near-identical — both fan out a goroutine per CRD, share `listCRD` for timeout/cap, and return a `{Routes, Policies, Errors map[string]string}` bundle. After A4 is wired up and the handler call-sites are visible, decide whether a generic helper (e.g., `listMeshCRDs[T](...)`) pays its way. Defer for now; the plan's "per-mesh adapter isolation" principle is the tiebreaker while the handler side is still unwritten.
+
 ### Phase B — mTLS posture + golden signals (PR 2)
 
 - [ ] **Unit B1: mTLS posture computation**
