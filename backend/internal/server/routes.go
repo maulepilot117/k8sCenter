@@ -651,6 +651,7 @@ func (s *Server) registerServiceMeshRoutes(ar chi.Router) {
 		mr.Get("/routing", h.HandleListRoutes)
 		mr.Get("/routing/{id}", h.HandleGetRoute)
 		mr.Get("/policies", h.HandleListPolicies)
+		mr.Get("/mtls", h.HandleMTLSPosture)
 	})
 }
 

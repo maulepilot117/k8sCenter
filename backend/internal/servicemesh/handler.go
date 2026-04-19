@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,11 +21,13 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 )
 
 const meshCacheTTL = 30 * time.Second
@@ -40,6 +43,12 @@ type Handler struct {
 	AccessChecker *resources.AccessChecker
 	Logger        *slog.Logger
 
+	// MonitoringDisc is optional; when set, Phase-B endpoints use it to
+	// query Prometheus for metric-backed cross-checks (mTLS posture) and
+	// golden-signal metrics. Nil is a supported configuration — the
+	// handler degrades to policy-only results.
+	MonitoringDisc *monitoring.Discoverer
+
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedMeshData
@@ -48,6 +57,14 @@ type Handler struct {
 	// dynOverride, when non-nil, replaces K8sClient.BaseDynamicClient() for
 	// cache-population reads. Exposed only to tests in this package.
 	dynOverride dynamic.Interface
+
+	// clientsetOverride is the typed-clientset test seam mirroring
+	// dynOverride; used by HandleMTLSPosture when listing pods in tests.
+	clientsetOverride kubernetes.Interface
+
+	// promClientOverride lets tests inject a PrometheusClient without
+	// standing up a monitoring.Discoverer.
+	promClientOverride *monitoring.PrometheusClient
 }
 
 type cachedMeshData struct {
@@ -477,6 +494,122 @@ func normalizeRouteByMesh(mesh MeshType, kind string, obj *unstructured.Unstruct
 		Namespace: obj.GetNamespace(),
 		Raw:       obj.Object,
 	}
+}
+
+// clientset returns the typed Kubernetes clientset, respecting any test
+// override. Returns nil when neither K8sClient nor an override is set.
+func (h *Handler) clientset() kubernetes.Interface {
+	if h.clientsetOverride != nil {
+		return h.clientsetOverride
+	}
+	if h.K8sClient == nil {
+		return nil
+	}
+	return h.K8sClient.BaseClientset()
+}
+
+// promClient returns the Prometheus client if monitoring is configured.
+// Nil is a supported state — handlers degrade gracefully without it.
+func (h *Handler) promClient() *monitoring.PrometheusClient {
+	if h.promClientOverride != nil {
+		return h.promClientOverride
+	}
+	if h.MonitoringDisc == nil {
+		return nil
+	}
+	return h.MonitoringDisc.PrometheusClient()
+}
+
+// HandleMTLSPosture returns per-workload mTLS posture. Optional
+// ?namespace= query param scopes to a single namespace; omitted means
+// cluster-wide (RBAC-filtered).
+//
+// The handler is read-only and degrades gracefully: no mesh → empty
+// workloads slice with status.detected == "none"; Prometheus offline →
+// policy-only results.
+func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	status := h.Discoverer.Status(r.Context())
+	resp := MTLSPostureResponse{Status: status, Workloads: []WorkloadMTLS{}, Errors: map[string]string{}}
+
+	if status.Detected == MeshNone {
+		httputil.WriteData(w, resp)
+		return
+	}
+
+	namespace := r.URL.Query().Get("namespace")
+
+	// Pre-filter: only list pods in namespaces the user can read. An empty
+	// namespace request is cluster-wide — we let the API server's RBAC filter
+	// push back via 403, then drop the rows at aggregation time. Checking
+	// before touching the clientset keeps denied users from noisy error
+	// responses when the binary is built without a real k8s client.
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
+	if err != nil || !can {
+		httputil.WriteData(w, resp)
+		return
+	}
+
+	cs := h.clientset()
+	if cs == nil {
+		h.Logger.Error("mTLS posture requested but no clientset available")
+		httputil.WriteError(w, http.StatusInternalServerError, "kubernetes client unavailable", "")
+		return
+	}
+
+	pods, err := listNamespacePods(r.Context(), cs, namespace)
+	if err != nil {
+		h.Logger.Error("failed to list pods for mTLS posture", "namespace", namespace, "error", err)
+		resp.Errors["pods"] = err.Error()
+		httputil.WriteData(w, resp)
+		return
+	}
+
+	data, err := h.fetchData(r.Context())
+	if err != nil {
+		h.Logger.Error("failed to fetch mesh policies", "error", err)
+		resp.Errors["policies"] = err.Error()
+		httputil.WriteData(w, resp)
+		return
+	}
+
+	peerAuths := peerAuthsFromPolicies(data.policies)
+
+	// Scope PAs to the mesh root (always in scope) plus the requested
+	// namespace when a filter is applied — keeps precedence resolution
+	// correct for a namespace-scoped request.
+	if namespace != "" {
+		filtered := peerAuths[:0]
+		for _, pa := range peerAuths {
+			if pa.Namespace == namespace || pa.Namespace == istioMeshRootNamespace {
+				filtered = append(filtered, pa)
+			}
+		}
+		peerAuths = filtered
+	}
+
+	postures := computePodPostures(pods, peerAuths)
+	workloads := aggregateWorkloads(postures)
+
+	if pc := h.promClient(); pc != nil && namespace != "" {
+		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
+		if perr != nil {
+			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "namespace", namespace, "error", perr)
+		} else {
+			workloads = applyMTLSMetricOverrides(workloads, ratios)
+		}
+	}
+
+	maps.Copy(resp.Errors, data.errors)
+	if len(resp.Errors) == 0 {
+		resp.Errors = nil
+	}
+	resp.Workloads = workloads
+	httputil.WriteData(w, resp)
 }
 
 // parseMeshCompositeID splits "{mesh}:{namespace}:{kindCode}:{name}" into
