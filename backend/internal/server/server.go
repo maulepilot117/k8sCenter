@@ -28,6 +28,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/certmanager"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
+	"github.com/kubecenter/kubecenter/internal/servicemesh"
 	"github.com/kubecenter/kubecenter/internal/storage"
 	"github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/topology"
@@ -75,6 +76,7 @@ type Server struct {
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
 	GatewayHandler     *gateway.Handler
+	ServiceMeshHandler *servicemesh.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -120,6 +122,7 @@ type Deps struct {
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
 	GatewayHandler     *gateway.Handler
+	ServiceMeshHandler *servicemesh.Handler
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
@@ -275,6 +278,11 @@ func New(deps Deps) *Server {
 	// Gateway API handler
 	if deps.GatewayHandler != nil {
 		s.GatewayHandler = deps.GatewayHandler
+	}
+
+	// Service Mesh handler (Istio + Linkerd observability)
+	if deps.ServiceMeshHandler != nil {
+		s.ServiceMeshHandler = deps.ServiceMeshHandler
 	}
 
 	// Notification center

@@ -326,7 +326,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit A4: Handler + routes + RBAC filtering**
+- [x] **Unit A4: Handler + routes + RBAC filtering**
 
 **Goal:** HTTP handlers for `GET /mesh/{status,routing,policies,routing/{id}}` with singleflight + 30s cache and per-user RBAC filtering.
 
