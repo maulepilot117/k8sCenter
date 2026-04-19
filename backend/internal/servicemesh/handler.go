@@ -612,6 +612,97 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteData(w, resp)
 }
 
+// goldenSignalsResponse envelopes GoldenSignals with the common
+// MeshStatus so clients can disambiguate "no mesh installed" from
+// "service not meshed" without a separate probe.
+type goldenSignalsResponse struct {
+	Status  MeshStatus    `json:"status"`
+	Signals GoldenSignals `json:"signals"`
+}
+
+// HandleGoldenSignals returns RPS, error rate, and p50/p95/p99 latency
+// for a single mesh-managed service.
+//
+// Required query params: namespace, service, mesh=istio|linkerd. The
+// mesh param is explicit in v1; auto-detection based on sidecar
+// annotations is deferred to Phase D when the frontend can pass
+// workload context. Input values are re-validated through the existing
+// monitoring.QueryTemplate render path — the handler never concatenates
+// user input into PromQL.
+func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
+	user, ok := httputil.RequireUser(w, r)
+	if !ok {
+		return
+	}
+
+	status := h.Discoverer.Status(r.Context())
+	namespace := r.URL.Query().Get("namespace")
+	service := r.URL.Query().Get("service")
+	meshParam := r.URL.Query().Get("mesh")
+
+	if namespace == "" || service == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "namespace and service are required", "")
+		return
+	}
+
+	mesh, merr := resolveMeshParam(meshParam, status)
+	if merr != nil {
+		httputil.WriteError(w, http.StatusBadRequest, merr.Error(), "")
+		return
+	}
+
+	// RBAC: require pod-list in the target namespace. Golden signals name
+	// the service, but the underlying workload lives in the namespace; if
+	// the user can't read pods there, the metric breakdown would leak
+	// workload names they shouldn't see.
+	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
+	if aerr != nil || !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to view metrics for this namespace", "")
+		return
+	}
+
+	pc := h.promClient()
+	signals, gerr := goldenSignalsForService(r.Context(), pc, mesh, namespace, service)
+	if gerr != nil {
+		// Validation errors (render failures) are 400; the plan's error
+		// scenario for "label-substitution rejects a namespace with quotes".
+		httputil.WriteError(w, http.StatusBadRequest, gerr.Error(), "")
+		return
+	}
+
+	httputil.WriteData(w, goldenSignalsResponse{Status: status, Signals: signals})
+}
+
+// resolveMeshParam validates the `?mesh=` query parameter against the
+// discovered mesh installation. Empty param + exactly one mesh installed
+// → that mesh. Empty param + none or both installed → error (ambiguous
+// or impossible). Explicit param must match an installed mesh.
+func resolveMeshParam(param string, status MeshStatus) (MeshType, error) {
+	switch param {
+	case string(MeshIstio):
+		if status.Istio == nil || !status.Istio.Installed {
+			return MeshNone, errors.New("mesh=istio requested but istio is not installed")
+		}
+		return MeshIstio, nil
+	case string(MeshLinkerd):
+		if status.Linkerd == nil || !status.Linkerd.Installed {
+			return MeshNone, errors.New("mesh=linkerd requested but linkerd is not installed")
+		}
+		return MeshLinkerd, nil
+	case "":
+		switch status.Detected {
+		case MeshIstio:
+			return MeshIstio, nil
+		case MeshLinkerd:
+			return MeshLinkerd, nil
+		case MeshBoth:
+			return MeshNone, errors.New("both meshes installed — pass ?mesh=istio or ?mesh=linkerd")
+		}
+		return MeshNone, errors.New("no service mesh detected")
+	}
+	return MeshNone, fmt.Errorf("unsupported mesh %q", param)
+}
+
 // parseMeshCompositeID splits "{mesh}:{namespace}:{kindCode}:{name}" into
 // its four parts. The id may arrive URL-encoded from chi.URLParam.
 func parseMeshCompositeID(id string) (mesh, namespace, code, name string, err error) {
