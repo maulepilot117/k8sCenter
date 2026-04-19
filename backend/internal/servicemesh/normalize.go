@@ -234,6 +234,221 @@ func normalizeIstioAuthzPolicy(obj *unstructured.Unstructured) MeshedPolicy {
 	}
 }
 
+// linkerdKindCodes maps CRD Kind → short code used in composite IDs.
+// Matches the plan's scheme (ServiceProfile → "sp", Server → "srv", etc.).
+var linkerdKindCodes = map[string]string{
+	"ServiceProfile":        "sp",
+	"Server":                "srv",
+	"HTTPRoute":             "hr",
+	"AuthorizationPolicy":   "ap",
+	"MeshTLSAuthentication": "mtls",
+}
+
+func linkerdCompositeID(kind, namespace, name string) string {
+	code, ok := linkerdKindCodes[kind]
+	if !ok {
+		code = strings.ToLower(kind)
+	}
+	return fmt.Sprintf("linkerd:%s:%s:%s", namespace, code, name)
+}
+
+// normalizeLinkerdRoute dispatches to the per-kind normalizer. Mirrors
+// normalizeIstioRoute for symmetry so the handler in A4 can treat both
+// meshes identically at the call site.
+func normalizeLinkerdRoute(obj *unstructured.Unstructured, kind string) TrafficRoute {
+	switch kind {
+	case "ServiceProfile":
+		return normalizeServiceProfile(obj)
+	case "Server":
+		return normalizeLinkerdServer(obj)
+	case "HTTPRoute":
+		return normalizeLinkerdHTTPRoute(obj)
+	}
+	return TrafficRoute{
+		ID:        linkerdCompositeID(kind, obj.GetNamespace(), obj.GetName()),
+		Mesh:      MeshLinkerd,
+		Kind:      kind,
+		Name:      obj.GetName(),
+		Namespace: obj.GetNamespace(),
+		Raw:       obj.Object,
+	}
+}
+
+// normalizeServiceProfile preserves per-route matchers in Matchers so UI
+// rows can render them without re-parsing Raw. Initializes to an empty
+// (non-nil) slice when no routes exist so the API payload doesn't surface
+// JSON `null` for a list-shaped field.
+func normalizeServiceProfile(obj *unstructured.Unstructured) TrafficRoute {
+	name, ns := obj.GetName(), obj.GetNamespace()
+	routesRaw, _, _ := unstructured.NestedSlice(obj.Object, "spec", "routes")
+
+	matchers := make([]RouteMatcher, 0, len(routesRaw))
+	for _, r := range routesRaw {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		routeName, _, _ := unstructured.NestedString(rm, "name")
+		method, _, _ := unstructured.NestedString(rm, "condition", "method")
+		pathRegex, _, _ := unstructured.NestedString(rm, "condition", "pathRegex")
+		matchers = append(matchers, RouteMatcher{
+			Name:      routeName,
+			Method:    method,
+			PathRegex: pathRegex,
+		})
+	}
+
+	return TrafficRoute{
+		ID:        linkerdCompositeID("ServiceProfile", ns, name),
+		Mesh:      MeshLinkerd,
+		Kind:      "ServiceProfile",
+		Name:      name,
+		Namespace: ns,
+		// Linkerd encodes the FQDN as the resource name — surface it as a host
+		// so the UI can render a "traffic to X" row without reaching into Raw.
+		Hosts:    []string{name},
+		Matchers: matchers,
+		Raw:      obj.Object,
+	}
+}
+
+func normalizeLinkerdServer(obj *unstructured.Unstructured) TrafficRoute {
+	name, ns := obj.GetName(), obj.GetNamespace()
+	return TrafficRoute{
+		ID:        linkerdCompositeID("Server", ns, name),
+		Mesh:      MeshLinkerd,
+		Kind:      "Server",
+		Name:      name,
+		Namespace: ns,
+		Selector:  stringifyMatchLabels(obj.Object, "spec", "podSelector", "matchLabels"),
+		Raw:       obj.Object,
+	}
+}
+
+func normalizeLinkerdHTTPRoute(obj *unstructured.Unstructured) TrafficRoute {
+	name, ns := obj.GetName(), obj.GetNamespace()
+
+	parents, _, _ := unstructured.NestedSlice(obj.Object, "spec", "parentRefs")
+	var gateways []string
+	for _, p := range parents {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if n, _, _ := unstructured.NestedString(pm, "name"); n != "" {
+			gateways = append(gateways, n)
+		}
+	}
+
+	rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules")
+	var matchers []RouteMatcher
+	for _, r := range rules {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		matches, _, _ := unstructured.NestedSlice(rm, "matches")
+		for _, m := range matches {
+			mm, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			matchers = append(matchers, extractGatewayAPIMatcher(mm))
+		}
+	}
+
+	return TrafficRoute{
+		ID:        linkerdCompositeID("HTTPRoute", ns, name),
+		Mesh:      MeshLinkerd,
+		Kind:      "HTTPRoute",
+		Name:      name,
+		Namespace: ns,
+		Gateways:  gateways,
+		Matchers:  matchers,
+		Raw:       obj.Object,
+	}
+}
+
+// extractGatewayAPIMatcher reads Gateway-API-shaped path+method matchers
+// (used by both Linkerd HTTPRoute and upstream gateway.networking.k8s.io).
+// Extracted so future Gateway-API adapters can reuse it.
+func extractGatewayAPIMatcher(m map[string]any) RouteMatcher {
+	method, _, _ := unstructured.NestedString(m, "method")
+	pathType, _, _ := unstructured.NestedString(m, "path", "type")
+	pathValue, _, _ := unstructured.NestedString(m, "path", "value")
+
+	out := RouteMatcher{Method: method}
+	switch pathType {
+	case "Exact":
+		out.PathExact = pathValue
+	case "PathPrefix":
+		out.PathPrefix = pathValue
+	case "RegularExpression":
+		out.PathRegex = pathValue
+	}
+	return out
+}
+
+// normalizeLinkerdPolicy dispatches Linkerd security CRDs into MeshedPolicy.
+func normalizeLinkerdPolicy(obj *unstructured.Unstructured, kind string) MeshedPolicy {
+	switch kind {
+	case "AuthorizationPolicy":
+		return normalizeLinkerdAuthzPolicy(obj)
+	case "MeshTLSAuthentication":
+		return normalizeLinkerdMeshTLSAuth(obj)
+	}
+	return MeshedPolicy{
+		ID:        linkerdCompositeID(kind, obj.GetNamespace(), obj.GetName()),
+		Mesh:      MeshLinkerd,
+		Kind:      kind,
+		Name:      obj.GetName(),
+		Namespace: obj.GetNamespace(),
+		Raw:       obj.Object,
+	}
+}
+
+func normalizeLinkerdAuthzPolicy(obj *unstructured.Unstructured) MeshedPolicy {
+	name, ns := obj.GetName(), obj.GetNamespace()
+	targetKind, _, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "kind")
+	targetName, _, _ := unstructured.NestedString(obj.Object, "spec", "targetRef", "name")
+	authns, _, _ := unstructured.NestedSlice(obj.Object, "spec", "requiredAuthenticationRefs")
+
+	// Linkerd AuthorizationPolicies are allow-lists: presence grants access
+	// to the targetRef. The "target" identifier acts as a Selector the UI
+	// can show alongside Istio's label-based selector.
+	var selector string
+	if targetKind != "" && targetName != "" {
+		selector = targetKind + "/" + targetName
+	}
+
+	return MeshedPolicy{
+		ID:        linkerdCompositeID("AuthorizationPolicy", ns, name),
+		Mesh:      MeshLinkerd,
+		Kind:      "AuthorizationPolicy",
+		Name:      name,
+		Namespace: ns,
+		Action:    "ALLOW",
+		Selector:  selector,
+		RuleCount: len(authns),
+		Raw:       obj.Object,
+	}
+}
+
+func normalizeLinkerdMeshTLSAuth(obj *unstructured.Unstructured) MeshedPolicy {
+	name, ns := obj.GetName(), obj.GetNamespace()
+	identities, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "identities")
+
+	return MeshedPolicy{
+		ID:        linkerdCompositeID("MeshTLSAuthentication", ns, name),
+		Mesh:      MeshLinkerd,
+		Kind:      "MeshTLSAuthentication",
+		Name:      name,
+		Namespace: ns,
+		RuleCount: len(identities),
+		Raw:       obj.Object,
+	}
+}
+
 // stringifyMatchLabels renders a nested matchLabels map as a stable,
 // sorted "k=v,k=v" string for display.
 func stringifyMatchLabels(obj map[string]any, path ...string) string {

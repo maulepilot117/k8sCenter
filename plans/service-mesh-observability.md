@@ -296,7 +296,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit A3: Linkerd adapter**
+- [x] **Unit A3: Linkerd adapter**
 
 **Goal:** Linkerd adapter for ServiceProfile, AuthorizationPolicy, Server, HTTPRoute, MeshTLSAuthentication.
 

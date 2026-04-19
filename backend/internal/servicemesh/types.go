@@ -62,7 +62,7 @@ var (
 // by API group.
 var (
 	LinkerdServiceProfileGVR = schema.GroupVersionResource{
-		Group: "linkerd.io", Version: "v1beta1", Resource: "serviceprofiles",
+		Group: "linkerd.io", Version: "v1alpha2", Resource: "serviceprofiles",
 	}
 	LinkerdServerGVR = schema.GroupVersionResource{
 		Group: "policy.linkerd.io", Version: "v1beta3", Resource: "servers",
@@ -107,6 +107,18 @@ type RouteDestination struct {
 	Weight int64  `json:"weight,omitempty"`
 }
 
+// RouteMatcher describes how a route selects requests. Different meshes
+// populate different fields — Linkerd ServiceProfile uses Method + PathRegex,
+// Linkerd HTTPRoute (and Gateway API) uses Method + Path{Exact,Prefix,Regex}.
+// Empty fields mean "no constraint on that axis".
+type RouteMatcher struct {
+	Name       string `json:"name,omitempty"`
+	Method     string `json:"method,omitempty"`
+	PathExact  string `json:"pathExact,omitempty"`
+	PathPrefix string `json:"pathPrefix,omitempty"`
+	PathRegex  string `json:"pathRegex,omitempty"`
+}
+
 // TrafficRoute is the mesh-agnostic shape for routing CRDs (Istio
 // VirtualService / DestinationRule / Gateway, Linkerd ServiceProfile /
 // HTTPRoute / Server). `Mesh` + `Kind` discriminate for typed UI handling.
@@ -120,6 +132,8 @@ type TrafficRoute struct {
 	Hosts        []string           `json:"hosts,omitempty"`
 	Gateways     []string           `json:"gateways,omitempty"`
 	Subsets      []string           `json:"subsets,omitempty"`
+	Selector     string             `json:"selector,omitempty"` // stringified matchLabels for Server-like resources
+	Matchers     []RouteMatcher     `json:"matchers,omitempty"` // request-level matchers (SP routes, HTTPRoute rules)
 	Destinations []RouteDestination `json:"destinations,omitempty"`
 	Raw          map[string]any     `json:"raw,omitempty"`
 }
