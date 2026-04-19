@@ -40,6 +40,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
+	"github.com/kubecenter/kubecenter/internal/servicemesh"
 	"github.com/kubecenter/kubecenter/internal/storage"
 	appstore "github.com/kubecenter/kubecenter/internal/store"
 	"github.com/kubecenter/kubecenter/internal/topology"
@@ -672,6 +673,15 @@ func main() {
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
 
+	// Service Mesh integration (Istio + Linkerd)
+	meshDisc := servicemesh.NewDiscoverer(k8sClient, logger)
+	meshHandler := &servicemesh.Handler{
+		K8sClient:     k8sClient,
+		Discoverer:    meshDisc,
+		AccessChecker: accessChecker,
+		Logger:        logger,
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -713,6 +723,7 @@ func main() {
 		VeleroHandler:      veleroHandler,
 		CertManagerHandler: cmHandler,
 		GatewayHandler:     gwHandler,
+		ServiceMeshHandler: meshHandler,
 		CRDHandler:         crdHandler,
 		LogQueryLimiter:    logQueryLimiter,
 		WebhookRateLimiter: webhookRateLimiter,

@@ -176,6 +176,11 @@ func (s *Server) registerRoutes() {
 				s.registerGatewayRoutes(ar)
 			}
 
+			// Service Mesh routes — only registered if service mesh handler is available
+			if s.ServiceMeshHandler != nil {
+				s.registerServiceMeshRoutes(ar)
+			}
+
 			// Notification center routes
 			if s.NotifCenterHandler != nil {
 				s.registerNotifCenterRoutes(ar)
@@ -631,6 +636,21 @@ func (s *Server) registerGatewayRoutes(ar chi.Router) {
 		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/gateways/{namespace}/{name}", h.HandleGetGateway)
 		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/httproutes/{namespace}/{name}", h.HandleGetHTTPRoute)
 		gr.With(middleware.RateLimit(rl), resources.ValidateURLParams).Get("/routes/{kind}/{namespace}/{name}", h.HandleGetRoute)
+	})
+}
+
+func (s *Server) registerServiceMeshRoutes(ar chi.Router) {
+	h := s.ServiceMeshHandler
+	ar.Route("/mesh", func(mr chi.Router) {
+		rl := s.YAMLRateLimiter
+		if rl == nil {
+			rl = s.RateLimiter
+		}
+		mr.Use(middleware.RateLimit(rl))
+		mr.Get("/status", h.HandleStatus)
+		mr.Get("/routing", h.HandleListRoutes)
+		mr.Get("/routing/{id}", h.HandleGetRoute)
+		mr.Get("/policies", h.HandleListPolicies)
 	})
 }
 
