@@ -676,10 +676,11 @@ func main() {
 	// Service Mesh integration (Istio + Linkerd)
 	meshDisc := servicemesh.NewDiscoverer(k8sClient, logger)
 	meshHandler := &servicemesh.Handler{
-		K8sClient:     k8sClient,
-		Discoverer:    meshDisc,
-		AccessChecker: accessChecker,
-		Logger:        logger,
+		K8sClient:      k8sClient,
+		Discoverer:     meshDisc,
+		AccessChecker:  accessChecker,
+		Logger:         logger,
+		MonitoringDisc: monDiscoverer,
 	}
 
 	// Ready state: true after informer sync, false during shutdown
