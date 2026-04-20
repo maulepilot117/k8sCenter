@@ -72,3 +72,9 @@ e2e/test-results/
 # Claude Code scheduling state
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
+
+# Claude Code per-user local settings
+.claude/settings.local.json
+
+# Compound-engineering ephemeral review artifacts
+.context/
