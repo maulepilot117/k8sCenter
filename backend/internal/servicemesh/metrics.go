@@ -2,10 +2,8 @@ package servicemesh
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math"
-	"sync"
 	"time"
 
 	"github.com/prometheus/common/model"
@@ -13,10 +11,17 @@ import (
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 )
 
-// goldenSignalsTimeout bounds every PromQL query originating from
-// HandleGoldenSignals. The plan explicitly forbids blocking the UI on
+// promQueryTimeout bounds every PromQL query originating from this
+// package's handlers. The plan explicitly forbids blocking the UI on
 // Prometheus, so we degrade to "unavailable" on timeout.
-const goldenSignalsTimeout = 2 * time.Second
+//
+// The underlying monitoring.PrometheusClient.Query wraps the caller's
+// context with its own 10s WithTimeout. context.WithTimeout selects the
+// earlier deadline, so this 2s budget is authoritative regardless of the
+// client's internal value. Callers in this package rely on that
+// ordering — do not raise this above 10s without also reviewing the
+// client.
+const promQueryTimeout = 2 * time.Second
 
 // GoldenSignals carries RPS + latency quantiles + error rate for a
 // single service. All values are zero when no traffic was observed —
@@ -115,6 +120,14 @@ func templatesForMesh(mesh MeshType) (goldenSignalsTemplates, error) {
 // GoldenSignals. Context-deadline breaches produce a degraded result
 // with Available=false rather than an error — this matches the plan's
 // "never block the UI" contract.
+//
+// Partial-failure policy: if any subset of queries succeeds, those
+// results are used and Available is true. p99 histogram_quantile is
+// reliably the slowest query — under load it is the most likely to
+// time out. Discarding RPS and error-rate because p99 didn't return
+// would hide the signals operators need most in that moment. Missing
+// signals are zero-valued (matching the "silent service" convention);
+// only a full fan-out failure flips Available to false.
 func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClient, mesh MeshType, namespace, service string) (GoldenSignals, error) {
 	result := GoldenSignals{Mesh: mesh, Namespace: namespace, Service: service}
 
@@ -155,41 +168,44 @@ func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClien
 		rendered[name] = rq
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, goldenSignalsTimeout)
+	queryCtx, cancel := context.WithTimeout(ctx, promQueryTimeout)
 	defer cancel()
 
-	results := make(map[string]float64, len(rendered))
-	var resultsMu sync.Mutex
-	var firstErr onceBox[error]
-	var wg sync.WaitGroup
+	type outcome struct {
+		name  string
+		value float64
+		ok    bool
+		err   error
+	}
+	outcomes := make(chan outcome, len(rendered))
 	now := time.Now()
 
 	for name, q := range rendered {
-		wg.Add(1)
 		go func(name, q string) {
-			defer wg.Done()
 			val, _, qerr := pc.Query(queryCtx, q, now)
 			if qerr != nil {
-				firstErr.storeOnce(qerr)
+				outcomes <- outcome{name: name, err: qerr}
 				return
 			}
 			scalar, ok := firstScalarValue(val)
-			if !ok {
-				return
-			}
-			resultsMu.Lock()
-			results[name] = scalar
-			resultsMu.Unlock()
+			outcomes <- outcome{name: name, value: scalar, ok: ok}
 		}(name, q)
 	}
-	wg.Wait()
 
-	if err := firstErr.load(); err != nil {
-		result.Available = false
-		if errors.Is(err, context.DeadlineExceeded) {
-			result.Reason = "metrics_unavailable"
-			return result, nil
+	results := make(map[string]float64, len(rendered))
+	for i := 0; i < len(rendered); i++ {
+		o := <-outcomes
+		if o.err != nil || !o.ok {
+			continue
 		}
+		results[o.name] = o.value
+	}
+
+	// Full fan-out failure is the only state where Available flips false.
+	// Any partial success still counts — operators would rather see RPS
+	// and error-rate without latency than a blank panel.
+	if len(results) == 0 {
+		result.Available = false
 		result.Reason = "metrics_unavailable"
 		return result, nil
 	}
@@ -218,8 +234,15 @@ func nanToZero(v float64) float64 {
 }
 
 // firstScalarValue pulls a single numeric value from a Prometheus
-// result. Empty vectors (no traffic in the window) cleanly return
-// (0, true) rather than an error — "silent service" is normal state.
+// instant-query result. Empty vectors (no traffic in the window)
+// cleanly return (0, true) — "silent service" is normal state.
+//
+// pc.Query is an instant query; its result is always Scalar or Vector.
+// We do not handle Matrix here because a Matrix response would indicate
+// the client was swapped with QueryRange — a mismatch the caller should
+// fix at the call site, not paper over by taking the last sample.
+// Unknown types return (0, false) so the caller treats the query as
+// having no usable value.
 func firstScalarValue(v model.Value) (float64, bool) {
 	switch val := v.(type) {
 	case *model.Scalar:
@@ -229,36 +252,6 @@ func firstScalarValue(v model.Value) (float64, bool) {
 			return 0, true
 		}
 		return float64(val[0].Value), true
-	case model.Matrix:
-		if len(val) == 0 || len(val[0].Values) == 0 {
-			return 0, true
-		}
-		last := val[0].Values[len(val[0].Values)-1]
-		return float64(last.Value), true
 	}
 	return 0, false
-}
-
-// onceBox[T] is a minimal generic cell used for first-error capture in
-// the parallel fan-out. storeOnce keeps the first non-nil error; the
-// rest are dropped — the handler surfaces only one cause anyway.
-type onceBox[T any] struct {
-	mu  sync.Mutex
-	set bool
-	v   T
-}
-
-func (a *onceBox[T]) storeOnce(v T) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.set {
-		a.v = v
-		a.set = true
-	}
-}
-
-func (a *onceBox[T]) load() T {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.v
 }

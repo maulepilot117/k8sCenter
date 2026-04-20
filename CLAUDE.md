@@ -148,6 +148,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
 - Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)
 - Certificates: `GET /certificates/{status,certificates,certificates/:ns/:name,issuers,clusterissuers,expiring}`, `POST /certificates/certificates/:ns/:name/{renew,reissue}` (cert-manager, RBAC-filtered)
+- Service mesh: `GET /mesh/{status,routing,routing/:id,policies,mtls,golden-signals}` (Istio + Linkerd, RBAC-filtered; mtls and golden-signals require ?namespace=; golden-signals also needs ?service= and optional ?mesh=istio|linkerd; Prometheus cross-check is best-effort, endpoint degrades to policy-only when Prom is offline)
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
 - Multi-cluster: `GET/POST/DELETE /clusters`
@@ -317,6 +318,13 @@ make check-dashboards                             # Verify Grafana JSON sync
   - 3 frontend islands: CertificatesList, CertificateDetail (with Renew/Re-issue actions), IssuersList
   - 4 routes under `/security/certificates/*` with SubNav tab and command palette quick actions
   - Theme-compliant: Tailwind semantic token classes for all colors
+- **Phase 11B (Cert-Manager Wizards):** COMPLETE
+  - Three wizards in `internal/wizard/`: `certificate.go`, `issuer.go`, `cert_helpers.go` with full table-driven validation tests
+  - 3 HTTP endpoints: `POST /wizards/{certificate,issuer,cluster-issuer}/preview`
+  - 2 frontend islands: `CertificateWizard.tsx`, `IssuerWizard.tsx` (Issuer/ClusterIssuer share one island via `scope` prop)
+  - Routes: `/security/certificates/{new,issuers/new,cluster-issuers/new}` plus entry buttons on list pages and command palette quick actions
+  - v1 ACME scope: SelfSigned + HTTP01 ingress only (CA/Vault/DNS01 deferred to YAML editor)
+  - Ships via PR #180 with cleanup follow-ups in #181, #182, #183
 
 ## Future Features (Roadmap)
 
@@ -329,7 +337,8 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
 - [ ] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS status, circuit breaker config
 - [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
-- [ ] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards, configurable expiry thresholds
+- [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards (PR #180, follow-ups #181–#183)
+- [ ] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation
 - [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
 - [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
 

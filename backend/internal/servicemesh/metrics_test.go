@@ -3,6 +3,7 @@ package servicemesh
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -282,7 +283,7 @@ func TestHandler_GoldenSignals_PrometheusOffline(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var env struct {
-		Data goldenSignalsResponse `json:"data"`
+		Data GoldenSignalsResponse `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -295,11 +296,197 @@ func TestHandler_GoldenSignals_PrometheusOffline(t *testing.T) {
 	}
 }
 
+// --- fan-out coverage -----------------------------------------------------
+
+// TestGoldenSignalsForService_HappyPath exercises the six-query fan-out
+// end-to-end with a fake Prometheus HTTP server. It asserts that every
+// result lands in the right bucket (RPS, errorRate, P50/P95/P99), which
+// is the regression coverage the Phase B review flagged as the largest
+// testing gap: a mis-keying of "rps" vs "errorNum" would compile and
+// pass every existing test.
+func TestGoldenSignalsForService_HappyPath(t *testing.T) {
+	srv := newFakePromServer(t, map[string]float64{
+		// Order matters: more-specific fragments first so errorNum
+		// (which contains response_code) doesn't collide with the
+		// plain RPS template.
+		`response_code=~"5.."`:             2.5,  // errorNum
+		"istio_requests_total":             100,  // rps + errorDen
+		"histogram_quantile(0.50":          11.0, // p50
+		"histogram_quantile(0.95":          55.0, // p95
+		"histogram_quantile(0.99":          99.0, // p99
+	})
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	got, gerr := goldenSignalsForService(context.Background(), pc, MeshIstio, "shop", "cart")
+	if gerr != nil {
+		t.Fatalf("unexpected error: %v", gerr)
+	}
+	if !got.Available {
+		t.Fatalf("Available = false, want true")
+	}
+	if got.RPS != 100 {
+		t.Errorf("RPS = %v, want 100", got.RPS)
+	}
+	if wantRate := 2.5 / 100.0; got.ErrorRate != wantRate {
+		t.Errorf("ErrorRate = %v, want %v", got.ErrorRate, wantRate)
+	}
+	if got.P50Ms != 11 || got.P95Ms != 55 || got.P99Ms != 99 {
+		t.Errorf("latencies = (%v, %v, %v), want (11, 55, 99)", got.P50Ms, got.P95Ms, got.P99Ms)
+	}
+}
+
+// TestGoldenSignalsForService_PartialFailure drops one of the six
+// queries and asserts the rest still populate the response. The Phase B
+// review flagged this as a UX regression: p99 histogram_quantile is
+// reliably the slowest query under load, and discarding RPS +
+// error-rate because p99 errored out would blank exactly the signals
+// operators need most during an incident.
+func TestGoldenSignalsForService_PartialFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.FormValue("query")
+		if strings.Contains(query, "histogram_quantile(0.99") {
+			// Simulate a backend failure for p99 only.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"status":"error","errorType":"timeout","error":"query timed out"}`))
+			return
+		}
+		var value float64
+		switch {
+		case strings.Contains(query, `response_code=~"5.."`):
+			value = 1
+		case strings.Contains(query, "istio_requests_total"):
+			value = 50
+		case strings.Contains(query, "histogram_quantile(0.50"):
+			value = 7
+		case strings.Contains(query, "histogram_quantile(0.95"):
+			value = 23
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w,
+			`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%g"]}]}}`, value)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	got, gerr := goldenSignalsForService(context.Background(), pc, MeshIstio, "shop", "cart")
+	if gerr != nil {
+		t.Fatalf("unexpected error: %v", gerr)
+	}
+	if !got.Available {
+		t.Fatalf("Available = false, want true (partial results should still count)")
+	}
+	if got.RPS != 50 {
+		t.Errorf("RPS = %v, want 50", got.RPS)
+	}
+	if got.P50Ms != 7 || got.P95Ms != 23 {
+		t.Errorf("P50/P95 = (%v, %v), want (7, 23)", got.P50Ms, got.P95Ms)
+	}
+	if got.P99Ms != 0 {
+		t.Errorf("P99 = %v, want 0 (query failed so no value)", got.P99Ms)
+	}
+}
+
+// TestGoldenSignalsForService_AllQueriesFailReportsUnavailable asserts
+// the whole-fan-out-failure path still flips Available=false. Without
+// this, a blanket Prometheus outage would incorrectly look like a
+// meshed service reporting zero traffic.
+func TestGoldenSignalsForService_AllQueriesFailReportsUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	got, gerr := goldenSignalsForService(context.Background(), pc, MeshIstio, "shop", "cart")
+	if gerr != nil {
+		t.Fatalf("unexpected error: %v", gerr)
+	}
+	if got.Available {
+		t.Error("Available = true, want false when every query fails")
+	}
+	if got.Reason != "metrics_unavailable" {
+		t.Errorf("Reason = %q, want metrics_unavailable", got.Reason)
+	}
+}
+
+// TestHandler_GoldenSignals_RenderFailureSurfacesAs400 covers the
+// handler's mapping of a monitoring.QueryTemplate render error onto an
+// HTTP 400 with a user-safe message. Internal render-key text ("render
+// rps:" etc.) must not leak into the body.
+func TestHandler_GoldenSignals_RenderFailureSurfacesAs400(t *testing.T) {
+	// promClientOverride bypasses the nil-client early-exit, ensuring
+	// the render path is the one that fails.
+	srv := newFakePromServer(t, map[string]float64{"istio_requests_total": 1})
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	h := &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		promClientOverride: pc,
+	}
+	// Namespace with embedded double-quote — the monitoring package's
+	// k8s-name guard rejects this.
+	w := doGoldenSignals(t, h, url.Values{"namespace": {`bad"ns`}, "service": {"cart"}})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "render") {
+		t.Errorf("body leaks internal render-key prefix: %q", body)
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
+
+// newFakePromServer returns an httptest.Server that impersonates a
+// Prometheus v1 /api/v1/query endpoint. The values map is keyed by a
+// substring of the PromQL query; whichever entry matches first wins, so
+// callers must order the map with the most-specific fragments first.
+// Queries that match no entry produce an empty vector (valid, zero).
+func newFakePromServer(t *testing.T, values map[string]float64) *httptest.Server {
+	t.Helper()
+	// Preserve insertion order so callers control match precedence.
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		query := r.FormValue("query")
+		w.Header().Set("Content-Type", "application/json")
+		for _, frag := range keys {
+			if strings.Contains(query, frag) {
+				_, _ = fmt.Fprintf(w,
+					`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%g"]}]}}`,
+					values[frag])
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+}
 
 func doGoldenSignals(t *testing.T, h *Handler, q url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/mesh/metrics?"+q.Encode(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/mesh/golden-signals?"+q.Encode(), nil)
 	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
 	w := httptest.NewRecorder()
 	h.HandleGoldenSignals(w, req)

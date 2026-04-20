@@ -288,6 +288,15 @@ func filterByRBAC[T namespacedResource](ctx context.Context, h *Handler, user *a
 	return out
 }
 
+// MeshStatusResponse wraps MeshStatus under a `status` key so all
+// /mesh/* endpoints share one envelope shape. Without this wrapper,
+// /mesh/status returned MeshStatus flat while the routing, policies,
+// mtls, and golden-signals endpoints all embed it under `status` —
+// forcing clients to special-case the one endpoint.
+type MeshStatusResponse struct {
+	Status MeshStatus `json:"status"`
+}
+
 // HandleStatus returns detected mesh installations. Non-admin users see a
 // stripped view without control-plane namespace details, matching the
 // gitops/policy precedent.
@@ -312,7 +321,7 @@ func (h *Handler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	httputil.WriteData(w, status)
+	httputil.WriteData(w, MeshStatusResponse{Status: status})
 }
 
 // routingResponse is the envelope for GET /mesh/routing. When no mesh is
@@ -496,16 +505,22 @@ func normalizeRouteByMesh(mesh MeshType, kind string, obj *unstructured.Unstruct
 	}
 }
 
-// clientset returns the typed Kubernetes clientset, respecting any test
-// override. Returns nil when neither K8sClient nor an override is set.
-func (h *Handler) clientset() kubernetes.Interface {
+// userClient returns an impersonating Kubernetes clientset scoped to the
+// authenticated user. All request-time read paths in this handler MUST
+// go through this helper — using BaseClientset() (the service account's
+// own credentials) would violate the impersonation rule in CLAUDE.md
+// and mis-attribute the call in the Kubernetes audit log.
+//
+// The clientsetOverride test seam is preserved for unit tests; fake
+// clientsets stand in for a real impersonating client in table tests.
+func (h *Handler) userClient(user *auth.User) (kubernetes.Interface, error) {
 	if h.clientsetOverride != nil {
-		return h.clientsetOverride
+		return h.clientsetOverride, nil
 	}
 	if h.K8sClient == nil {
-		return nil
+		return nil, errors.New("no kubernetes client configured")
 	}
-	return h.K8sClient.BaseClientset()
+	return h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
 }
 
 // promClient returns the Prometheus client if monitoring is configured.
@@ -524,9 +539,18 @@ func (h *Handler) promClient() *monitoring.PrometheusClient {
 // ?namespace= query param scopes to a single namespace; omitted means
 // cluster-wide (RBAC-filtered).
 //
-// The handler is read-only and degrades gracefully: no mesh → empty
-// workloads slice with status.detected == "none"; Prometheus offline →
-// policy-only results.
+// The handler is read-only and degrades gracefully:
+//   - no mesh → empty workloads slice with status.detected == "none"
+//   - Prometheus offline → policy-only results
+//   - cluster-wide request → Prom cross-check is skipped (the template
+//     requires a concrete destination_workload_namespace); posture is
+//     policy-derived only. Revisiting this is tracked as a follow-up.
+//
+// Partial failure policy: pod-list and policy-fetch failures are
+// accumulated into resp.Errors with user-safe messages and internal
+// details in the log; the handler continues with whatever data it has
+// rather than failing the request. System errors (RBAC check failed,
+// impersonation failed) are 5xx; RBAC denial is 403.
 func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -534,7 +558,7 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := h.Discoverer.Status(r.Context())
-	resp := MTLSPostureResponse{Status: status, Workloads: []WorkloadMTLS{}, Errors: map[string]string{}}
+	resp := MTLSPostureResponse{Status: status, Workloads: []WorkloadMTLS{}}
 
 	if status.Detected == MeshNone {
 		httputil.WriteData(w, resp)
@@ -542,48 +566,63 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	namespace := r.URL.Query().Get("namespace")
+	errs := map[string]string{}
 
-	// Pre-filter: only list pods in namespaces the user can read. An empty
-	// namespace request is cluster-wide — we let the API server's RBAC filter
-	// push back via 403, then drop the rows at aggregation time. Checking
-	// before touching the clientset keeps denied users from noisy error
-	// responses when the binary is built without a real k8s client.
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
-	if err != nil || !can {
-		httputil.WriteData(w, resp)
+	// RBAC: a checker error is a system fault (500); a plain "no" is 403.
+	// Conflating the two would mask infrastructure outages as access
+	// denials.
+	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
+	if aerr != nil {
+		h.Logger.Error("mTLS posture RBAC check failed", "user", user.KubernetesUsername, "namespace", namespace, "error", aerr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+	if !can {
+		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to view mTLS posture for this scope", "")
 		return
 	}
 
-	cs := h.clientset()
-	if cs == nil {
-		h.Logger.Error("mTLS posture requested but no clientset available")
+	cs, cerr := h.userClient(user)
+	if cerr != nil {
+		h.Logger.Error("mTLS posture: impersonating client unavailable", "user", user.KubernetesUsername, "error", cerr)
 		httputil.WriteError(w, http.StatusInternalServerError, "kubernetes client unavailable", "")
 		return
 	}
 
-	pods, err := listNamespacePods(r.Context(), cs, namespace)
-	if err != nil {
-		h.Logger.Error("failed to list pods for mTLS posture", "namespace", namespace, "error", err)
-		resp.Errors["pods"] = err.Error()
-		httputil.WriteData(w, resp)
-		return
+	pods, truncated, listErr := listNamespacePods(r.Context(), cs, namespace)
+	if listErr != nil {
+		h.Logger.Error("failed to list pods for mTLS posture", "user", user.KubernetesUsername, "namespace", namespace, "error", listErr)
+		errs["pods"] = "failed to list pods"
+		pods = nil
+	} else if truncated {
+		// Surface the silent-truncation hazard called out in the Phase B
+		// review: a namespace (or cluster-wide request) with more than
+		// meshListCap pods returns a partial posture table with no
+		// Continue handling. Make the partial nature visible instead of
+		// pretending the result is complete.
+		if namespace == "" {
+			errs["truncated"] = fmt.Sprintf("result capped at %d pods; pass ?namespace= to scope the request", meshListCap)
+		} else {
+			errs["truncated"] = fmt.Sprintf("result capped at %d pods in namespace %q", meshListCap, namespace)
+		}
 	}
 
-	data, err := h.fetchData(r.Context())
-	if err != nil {
-		h.Logger.Error("failed to fetch mesh policies", "error", err)
-		resp.Errors["policies"] = err.Error()
-		httputil.WriteData(w, resp)
-		return
+	var peerAuths []peerAuthRef
+	data, derr := h.fetchData(r.Context())
+	if derr != nil {
+		h.Logger.Error("failed to fetch mesh policies for mTLS posture", "user", user.KubernetesUsername, "error", derr)
+		errs["policies"] = "failed to fetch mesh policies"
+	} else {
+		peerAuths = peerAuthsFromPolicies(data.policies)
 	}
-
-	peerAuths := peerAuthsFromPolicies(data.policies)
 
 	// Scope PAs to the mesh root (always in scope) plus the requested
-	// namespace when a filter is applied — keeps precedence resolution
-	// correct for a namespace-scoped request.
-	if namespace != "" {
-		filtered := peerAuths[:0]
+	// namespace when a filter is applied. Full-slice expression
+	// (peerAuths[:0:0]) prevents the filter from aliasing into a
+	// cache-backed backing array if peerAuthsFromPolicies ever returns a
+	// view instead of a copy.
+	if namespace != "" && len(peerAuths) > 0 {
+		filtered := peerAuths[:0:0]
 		for _, pa := range peerAuths {
 			if pa.Namespace == namespace || pa.Namespace == istioMeshRootNamespace {
 				filtered = append(filtered, pa)
@@ -595,27 +634,36 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	postures := computePodPostures(pods, peerAuths)
 	workloads := aggregateWorkloads(postures)
 
+	// Prom cross-check is only meaningful when the query template can be
+	// bound to a concrete namespace. Cluster-wide requests skip it by
+	// design; a surfaced follow-up will either aggregate across known
+	// namespaces or rewrite the template to run un-scoped.
 	if pc := h.promClient(); pc != nil && namespace != "" {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
-			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "namespace", namespace, "error", perr)
+			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
+			errs["prometheus-cross-check"] = "metric cross-check unavailable; posture derived from policies only"
 		} else {
 			workloads = applyMTLSMetricOverrides(workloads, ratios)
 		}
 	}
 
-	maps.Copy(resp.Errors, data.errors)
-	if len(resp.Errors) == 0 {
-		resp.Errors = nil
+	if data != nil {
+		maps.Copy(errs, data.errors)
+	}
+	if len(errs) > 0 {
+		resp.Errors = errs
 	}
 	resp.Workloads = workloads
 	httputil.WriteData(w, resp)
 }
 
-// goldenSignalsResponse envelopes GoldenSignals with the common
+// GoldenSignalsResponse envelopes GoldenSignals with the common
 // MeshStatus so clients can disambiguate "no mesh installed" from
-// "service not meshed" without a separate probe.
-type goldenSignalsResponse struct {
+// "service not meshed" without a separate probe. Exported so external
+// consumers get a compile-time signal on wire-shape changes, mirroring
+// MTLSPostureResponse.
+type GoldenSignalsResponse struct {
 	Status  MeshStatus    `json:"status"`
 	Signals GoldenSignals `json:"signals"`
 }
@@ -629,6 +677,11 @@ type goldenSignalsResponse struct {
 // workload context. Input values are re-validated through the existing
 // monitoring.QueryTemplate render path — the handler never concatenates
 // user input into PromQL.
+//
+// Error semantics mirror HandleMTLSPosture: RBAC checker failure is a
+// 500 (system fault), RBAC denial is a 403, invalid param is a 400 with
+// a user-safe message. Internal render errors are logged in full but
+// never echoed to the response body.
 func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -656,7 +709,12 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	// the user can't read pods there, the metric breakdown would leak
 	// workload names they shouldn't see.
 	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
-	if aerr != nil || !can {
+	if aerr != nil {
+		h.Logger.Error("golden signals RBAC check failed", "user", user.KubernetesUsername, "namespace", namespace, "error", aerr)
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+	if !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to view metrics for this namespace", "")
 		return
 	}
@@ -664,13 +722,15 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	pc := h.promClient()
 	signals, gerr := goldenSignalsForService(r.Context(), pc, mesh, namespace, service)
 	if gerr != nil {
-		// Validation errors (render failures) are 400; the plan's error
-		// scenario for "label-substitution rejects a namespace with quotes".
-		httputil.WriteError(w, http.StatusBadRequest, gerr.Error(), "")
+		// Validation errors come from the monitoring package's k8s-name
+		// guard inside QueryTemplate.Render. The full cause goes to the
+		// log; the response says only what the caller needs to retry.
+		h.Logger.Warn("golden signals render failed", "user", user.KubernetesUsername, "namespace", namespace, "service", service, "mesh", mesh, "error", gerr)
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace or service name", "")
 		return
 	}
 
-	httputil.WriteData(w, goldenSignalsResponse{Status: status, Signals: signals})
+	httputil.WriteData(w, GoldenSignalsResponse{Status: status, Signals: signals})
 }
 
 // resolveMeshParam validates the `?mesh=` query parameter against the

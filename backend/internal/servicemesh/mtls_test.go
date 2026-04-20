@@ -221,6 +221,191 @@ func TestWorkloadKey_OrphanPod(t *testing.T) {
 	}
 }
 
+// TestWorkloadKey_DaemonSetJobCronJob covers the StatefulSet-adjacent
+// owner kinds that previously had no test coverage. The resolver must
+// return (OwnerKind, OwnerName) verbatim for these — no "-<hash>"
+// strip.
+func TestWorkloadKey_DaemonSetJobCronJob(t *testing.T) {
+	cases := []struct {
+		kind     string
+		ownerKey string
+	}{
+		{"DaemonSet", "fluentd"},
+		{"Job", "migrate-db"},
+		{"CronJob", "nightly-report"},
+	}
+	for _, c := range cases {
+		t.Run(c.kind, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "pod-x",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: c.kind, Name: c.ownerKey},
+					},
+				},
+			}
+			kind, name := workloadKey(pod)
+			if kind != c.kind || name != c.ownerKey {
+				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.kind, c.ownerKey)
+			}
+		})
+	}
+}
+
+// TestWorkloadKey_ReplicaSetNoHash: a ReplicaSet name with no hyphen
+// (e.g. a user-created RS named "frontend") falls through to the
+// (ReplicaSet, name) branch rather than attempting a Deployment strip.
+// Documents the intentional fallback.
+func TestWorkloadKey_ReplicaSetNoHash(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "frontend-0",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "frontend"},
+			},
+		},
+	}
+	kind, name := workloadKey(pod)
+	if kind != "ReplicaSet" || name != "frontend" {
+		t.Errorf("got (%q,%q), want (ReplicaSet, frontend)", kind, name)
+	}
+}
+
+// TestPodMeshMembership_AmbientAnnotation covers the Istio ambient-mode
+// annotation path: no istio-proxy sidecar, but the
+// sidecar.istio.io/status annotation is still present. The resolver
+// classifies this as MeshIstio so ambient pods don't fall off the
+// posture table.
+func TestPodMeshMembership_AmbientAnnotation(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"sidecar.istio.io/status": `{"initContainers":[],"containers":[]}`,
+			},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}},
+	}
+	if got := podMeshMembership(pod); got != MeshIstio {
+		t.Errorf("ambient-annotated pod: mesh = %q, want %q", got, MeshIstio)
+	}
+}
+
+// --- peerAuthsFromPolicies ordering ---------------------------------------
+
+// TestPeerAuthsFromPolicies_WorkloadBeatsNamespaceInSort asserts the
+// load-bearing sort that makes the precedence resolver correct:
+// workload-scoped PAs must sort before namespace-scoped PAs within the
+// same namespace. A regression here would silently flip every
+// workload-vs-namespace decision in the cluster.
+func TestPeerAuthsFromPolicies_WorkloadBeatsNamespaceInSort(t *testing.T) {
+	policies := []MeshedPolicy{
+		{
+			Mesh: MeshIstio, Kind: "PeerAuthentication",
+			Namespace: "shop", Name: "namespace-wide",
+			MTLSMode: IstioMTLSPermissive,
+			Raw: map[string]any{
+				"spec": map[string]any{"mtls": map[string]any{"mode": IstioMTLSPermissive}},
+			},
+		},
+		{
+			Mesh: MeshIstio, Kind: "PeerAuthentication",
+			Namespace: "shop", Name: "cart-strict",
+			MTLSMode: IstioMTLSStrict,
+			Raw: map[string]any{
+				"spec": map[string]any{
+					"selector": map[string]any{
+						"matchLabels": map[string]any{"app": "cart"},
+					},
+					"mtls": map[string]any{"mode": IstioMTLSStrict},
+				},
+			},
+		},
+	}
+	out := peerAuthsFromPolicies(policies)
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	if out[0].Name != "cart-strict" {
+		t.Errorf("first = %q, want cart-strict (workload-scoped must sort first)", out[0].Name)
+	}
+	if out[0].compiled == nil {
+		t.Error("workload-scoped PA should have a pre-compiled selector")
+	}
+	if len(out[1].Selector) != 0 {
+		t.Errorf("second = %+v, want namespace-wide (empty selector)", out[1])
+	}
+}
+
+// TestPeerAuthsFromPolicies_FiltersNonPeerAuths confirms the filter
+// drops non-PA policies and normalizes empty Mode to UNSET.
+func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
+	policies := []MeshedPolicy{
+		{Mesh: MeshIstio, Kind: "PeerAuthentication", Namespace: "shop", Name: "pa1", MTLSMode: ""},
+		{Mesh: MeshIstio, Kind: "AuthorizationPolicy", Namespace: "shop", Name: "ap"},
+		{Mesh: MeshLinkerd, Kind: "Server", Namespace: "shop", Name: "srv"},
+	}
+	out := peerAuthsFromPolicies(policies)
+	if len(out) != 1 {
+		t.Fatalf("len = %d, want 1 (only the PA)", len(out))
+	}
+	if out[0].Mode != IstioMTLSUnset {
+		t.Errorf("Mode = %q, want %q (empty normalizes to UNSET)", out[0].Mode, IstioMTLSUnset)
+	}
+}
+
+// --- cluster-wide handler path --------------------------------------------
+
+// TestHandler_MTLSPosture_ClusterWide exercises the namespace-omitted
+// path: posture should aggregate across every visible namespace and the
+// Prometheus cross-check is intentionally skipped (the template
+// requires a concrete namespace). Gives the cluster-wide code path its
+// first integration-level coverage.
+func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
+	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
+	cs := fake.NewClientset(
+		injectedPod("shop", "cart-6d-xyz", map[string]string{"app": "cart"}),
+		injectedPod("billing", "invoice-4a-aa", map[string]string{"app": "invoice"}),
+	)
+
+	h := &Handler{
+		Discoverer:        seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker:     resources.NewAlwaysAllowAccessChecker(),
+		Logger:            slog.Default(),
+		dynOverride:       newIstioFakeDynClient(pa),
+		clientsetOverride: cs,
+	}
+
+	// No ?namespace= → cluster-wide.
+	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
+	w := httptest.NewRecorder()
+	h.HandleMTLSPosture(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var env struct {
+		Data MTLSPostureResponse `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(env.Data.Workloads) != 2 {
+		t.Fatalf("workloads = %d, want 2 (one per namespace)", len(env.Data.Workloads))
+	}
+	seen := map[string]bool{}
+	for _, w := range env.Data.Workloads {
+		seen[w.Namespace] = true
+		if w.Source != MTLSSourcePolicy {
+			t.Errorf("workload %s/%s Source = %q, want policy (cluster-wide skips Prom cross-check)",
+				w.Namespace, w.Workload, w.Source)
+		}
+	}
+	if !seen["shop"] || !seen["billing"] {
+		t.Errorf("missing namespace coverage: %+v", seen)
+	}
+}
+
 // --- metric overrides ------------------------------------------------------
 
 // TestApplyMTLSMetricOverrides_MixedFromRatio: policy says STRICT, but
@@ -337,8 +522,11 @@ func TestHandler_MTLSPosture_NoMesh(t *testing.T) {
 	}
 }
 
-// TestHandler_MTLSPosture_Denied: user can't list pods → empty workloads,
-// not 403. Mirrors HandleListRoutes' precedent.
+// TestHandler_MTLSPosture_Denied: user can't list pods → 403 with a
+// user-safe message. An earlier revision returned 200 empty to match
+// HandleListRoutes' precedent, but mTLS posture is not a pure list
+// endpoint — silent denial would mask a misconfigured RBAC as
+// "no workloads in this scope" and hide real infrastructure problems.
 func TestHandler_MTLSPosture_Denied(t *testing.T) {
 	h := &Handler{
 		Discoverer:    seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
@@ -351,17 +539,8 @@ func TestHandler_MTLSPosture_Denied(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.HandleMTLSPosture(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (denial yields empty list)", w.Code)
-	}
-	var env struct {
-		Data MTLSPostureResponse `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(env.Data.Workloads) != 0 {
-		t.Errorf("workloads = %d, want 0", len(env.Data.Workloads))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }
 

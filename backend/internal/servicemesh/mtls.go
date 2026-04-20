@@ -87,8 +87,9 @@ type MTLSPostureResponse struct {
 }
 
 // peerAuthRef is the precedence-resolver-friendly shape extracted from
-// a PeerAuthentication. Keep labels as map[string]string (not Selector)
-// so the resolver can compare cheaply against pod labels.
+// a PeerAuthentication. We keep the raw Selector map (for equality and
+// tests) plus a compiled labels.Selector so selectorMatches avoids
+// reallocating one per (pod, PA) pair inside computePodPostures.
 type peerAuthRef struct {
 	Namespace string
 	Name      string
@@ -97,6 +98,10 @@ type peerAuthRef struct {
 	// PA applies to the whole namespace (or whole mesh when Namespace is
 	// the mesh-root namespace).
 	Selector map[string]string
+	// compiled caches labels.SelectorFromSet(Selector). Populated by
+	// peerAuthsFromPolicies; nil in tests that construct peerAuthRef
+	// directly (selectorMatches falls back to just-in-time compilation).
+	compiled labels.Selector
 }
 
 // resolveIstioMTLSMode applies Istio's three-level precedence:
@@ -115,7 +120,7 @@ func resolveIstioMTLSMode(podLabels map[string]string, podNS, meshRootNS string,
 		pa := peerAuths[i]
 		switch {
 		case pa.Namespace == podNS && len(pa.Selector) > 0:
-			if selectorMatches(pa.Selector, podLabels) {
+			if peerAuths[i].matches(podLabels) {
 				return pa.Mode, "workload"
 			}
 		case pa.Namespace == podNS && len(pa.Selector) == 0:
@@ -144,6 +149,21 @@ func selectorMatches(selector, podLabels map[string]string) bool {
 		return false
 	}
 	return labels.SelectorFromSet(selector).Matches(labels.Set(podLabels))
+}
+
+// matches is the peerAuthRef-scoped selector check. It prefers the
+// pre-compiled selector when peerAuthsFromPolicies populated one;
+// otherwise it falls back to the allocating helper. Production code
+// paths always hit the compiled branch — the fallback exists so tests
+// constructing peerAuthRef literals stay legible.
+func (p *peerAuthRef) matches(podLabels map[string]string) bool {
+	if len(p.Selector) == 0 {
+		return false
+	}
+	if p.compiled != nil {
+		return p.compiled.Matches(labels.Set(podLabels))
+	}
+	return selectorMatches(p.Selector, podLabels)
 }
 
 // modeToState collapses a resolved PeerAuthentication mode to the
@@ -175,6 +195,14 @@ func linkerdPodState(pod *corev1.Pod) MTLSState {
 // one level of OwnerReferences, unwrapping ReplicaSet → Deployment via
 // the standard "-<hash>" suffix convention. Orphan pods key under
 // ("Pod", <podName>).
+//
+// TODO: the ReplicaSet → Deployment strip is a best-effort heuristic —
+// orphan ReplicaSets (bare RSes not owned by a Deployment, common in
+// Helm charts) and RSes with dashed non-hash suffixes like "worker-v1"
+// are reported as fabricated Deployments. Tracked as a Phase-B follow-up
+// (see memory: project_servicemesh_phase_b_followups). Treat the
+// returned kind as authoritative only for pods whose RS is clearly
+// Deployment-owned.
 func workloadKey(pod *corev1.Pod) (kind, name string) {
 	for _, or := range pod.OwnerReferences {
 		switch or.Kind {
@@ -193,6 +221,16 @@ func workloadKey(pod *corev1.Pod) (kind, name string) {
 // podMeshMembership returns which mesh (if any) a pod is a member of.
 // Sidecar-container name is the authoritative signal; annotations are
 // checked as a fallback so ambient Istio pods (no sidecar) still count.
+//
+// Known v1 scope limits (tracked in the plan's scope-boundaries section):
+//   - Istio Ambient-mode pods that have neither the istio-proxy sidecar
+//     nor the sidecar.istio.io/status annotation are classified as
+//     unmeshed. ztunnel handles L4 mTLS out-of-band, so a dedicated
+//     ambient-aware view is deferred beyond Phase B.
+//   - Linkerd workloads do not have a Prometheus cross-check equivalent
+//     to Istio's queryIstioMTLSRatios. A crashed linkerd-proxy will
+//     continue to report MTLSActive with Source=policy until the pod is
+//     restarted. Surfacing proxy-crash state is Phase D work.
 func podMeshMembership(pod *corev1.Pod) MeshType {
 	for _, c := range pod.Spec.Containers {
 		switch c.Name {
@@ -226,12 +264,16 @@ func peerAuthsFromPolicies(policies []MeshedPolicy) []peerAuthRef {
 			mode = IstioMTLSUnset
 		}
 		selector, _, _ := unstructured.NestedStringMap(p.Raw, "spec", "selector", "matchLabels")
-		out = append(out, peerAuthRef{
+		ref := peerAuthRef{
 			Namespace: p.Namespace,
 			Name:      p.Name,
 			Mode:      mode,
 			Selector:  selector,
-		})
+		}
+		if len(selector) > 0 {
+			ref.compiled = labels.SelectorFromSet(selector)
+		}
+		out = append(out, ref)
 	}
 	// Deterministic ordering: workload-scoped first within each namespace
 	// (so a workload PA beats a namespace PA when both match via the
@@ -378,13 +420,14 @@ func (r IstioMTLSRatio) Ratio() float64 {
 }
 
 // queryIstioMTLSRatios runs one PromQL instant query per namespace to
-// learn observed mTLS ratios by workload. A short 2s timeout matches the
-// plan's "never block the UI" rule; callers must tolerate a nil return.
+// learn observed mTLS ratios by workload. Uses the shared
+// promQueryTimeout budget (see metrics.go) so both Phase B Prom calls
+// share one knob and age together; callers must tolerate a nil return.
 func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, namespace string) ([]IstioMTLSRatio, error) {
 	if pc == nil {
 		return nil, nil
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, promQueryTimeout)
 	defer cancel()
 
 	// Namespace is user-supplied; the existing monitoring.QueryTemplate
@@ -466,15 +509,23 @@ func applyMTLSMetricOverrides(workloads []WorkloadMTLS, ratios []IstioMTLSRatio)
 	return workloads
 }
 
-// listNamespacePods lists pods visible to the service account clientset,
-// optionally scoped to a namespace ("" means cluster-wide). RBAC filtering
-// is the caller's responsibility.
-func listNamespacePods(ctx context.Context, cs kubernetes.Interface, namespace string) ([]corev1.Pod, error) {
+// listNamespacePods lists pods visible to the caller-supplied clientset,
+// optionally scoped to a namespace ("" means cluster-wide). The caller
+// is expected to pass an impersonating client; RBAC filtering is the
+// Kubernetes API server's responsibility from that point on.
+//
+// The List call caps at meshListCap items per request and does not
+// continue. The truncated return flag tells the handler to surface a
+// response-level warning so users reading mTLS posture on very large
+// namespaces (or cluster-wide) know the result is partial rather than
+// authoritative.
+func listNamespacePods(ctx context.Context, cs kubernetes.Interface, namespace string) (pods []corev1.Pod, truncated bool, err error) {
 	callCtx, cancel := context.WithTimeout(ctx, meshListTimeout)
 	defer cancel()
-	list, err := cs.CoreV1().Pods(namespace).List(callCtx, metav1.ListOptions{Limit: meshListCap})
-	if err != nil {
-		return nil, err
+	list, lerr := cs.CoreV1().Pods(namespace).List(callCtx, metav1.ListOptions{Limit: meshListCap})
+	if lerr != nil {
+		return nil, false, lerr
 	}
-	return list.Items, nil
+	truncated = list.Continue != "" || int64(len(list.Items)) == meshListCap
+	return list.Items, truncated, nil
 }
