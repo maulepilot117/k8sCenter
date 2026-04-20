@@ -305,15 +305,15 @@ func TestHandler_GoldenSignals_PrometheusOffline(t *testing.T) {
 // testing gap: a mis-keying of "rps" vs "errorNum" would compile and
 // pass every existing test.
 func TestGoldenSignalsForService_HappyPath(t *testing.T) {
-	srv := newFakePromServer(t, map[string]float64{
+	srv := newFakePromServer(t, []promStub{
 		// Order matters: more-specific fragments first so errorNum
-		// (which contains response_code) doesn't collide with the
-		// plain RPS template.
-		`response_code=~"5.."`:             2.5,  // errorNum
-		"istio_requests_total":             100,  // rps + errorDen
-		"histogram_quantile(0.50":          11.0, // p50
-		"histogram_quantile(0.95":          55.0, // p95
-		"histogram_quantile(0.99":          99.0, // p99
+		// (which contains istio_requests_total) doesn't collide with
+		// the plain RPS template.
+		{`response_code=~"5.."`, 2.5},     // errorNum
+		{"istio_requests_total", 100},     // rps + errorDen
+		{"histogram_quantile(0.50", 11.0}, // p50
+		{"histogram_quantile(0.95", 55.0}, // p95
+		{"histogram_quantile(0.99", 99.0}, // p99
 	})
 	defer srv.Close()
 	pc, err := monitoring.NewPrometheusClient(srv.URL)
@@ -426,7 +426,7 @@ func TestGoldenSignalsForService_AllQueriesFailReportsUnavailable(t *testing.T) 
 func TestHandler_GoldenSignals_RenderFailureSurfacesAs400(t *testing.T) {
 	// promClientOverride bypasses the nil-client early-exit, ensuring
 	// the render path is the one that fails.
-	srv := newFakePromServer(t, map[string]float64{"istio_requests_total": 1})
+	srv := newFakePromServer(t, []promStub{{"istio_requests_total", 1}})
 	defer srv.Close()
 	pc, err := monitoring.NewPrometheusClient(srv.URL)
 	if err != nil {
@@ -453,18 +453,24 @@ func TestHandler_GoldenSignals_RenderFailureSurfacesAs400(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
+// promStub pairs a query-fragment with the scalar value the fake
+// Prometheus server should return when the PromQL query contains that
+// fragment. Callers pass an ordered slice so match precedence is
+// deterministic — a Go map would randomize iteration and silently
+// cross-wire queries whose templates share a common substring (e.g.
+// errorNum embeds istio_requests_total).
+type promStub struct {
+	frag  string
+	value float64
+}
+
 // newFakePromServer returns an httptest.Server that impersonates a
-// Prometheus v1 /api/v1/query endpoint. The values map is keyed by a
-// substring of the PromQL query; whichever entry matches first wins, so
-// callers must order the map with the most-specific fragments first.
-// Queries that match no entry produce an empty vector (valid, zero).
-func newFakePromServer(t *testing.T, values map[string]float64) *httptest.Server {
+// Prometheus v1 /api/v1/query endpoint. Stubs are checked in slice
+// order; the first fragment contained in the query wins. Callers must
+// list the most-specific fragments first. Queries that match no stub
+// produce an empty vector (valid, zero).
+func newFakePromServer(t *testing.T, stubs []promStub) *httptest.Server {
 	t.Helper()
-	// Preserve insertion order so callers control match precedence.
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/query" {
 			w.WriteHeader(http.StatusNotFound)
@@ -472,11 +478,11 @@ func newFakePromServer(t *testing.T, values map[string]float64) *httptest.Server
 		}
 		query := r.FormValue("query")
 		w.Header().Set("Content-Type", "application/json")
-		for _, frag := range keys {
-			if strings.Contains(query, frag) {
+		for _, s := range stubs {
+			if strings.Contains(query, s.frag) {
 				_, _ = fmt.Fprintf(w,
 					`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%g"]}]}}`,
-					values[frag])
+					s.value)
 				return
 			}
 		}
