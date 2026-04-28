@@ -542,9 +542,10 @@ func (h *Handler) promClient() *monitoring.PrometheusClient {
 // The handler is read-only and degrades gracefully:
 //   - no mesh → empty workloads slice with status.detected == "none"
 //   - Prometheus offline → policy-only results
-//   - cluster-wide request → Prom cross-check is skipped (the template
-//     requires a concrete destination_workload_namespace); posture is
-//     policy-derived only. Revisiting this is tracked as a follow-up.
+//   - cluster-wide request → Prom cross-check fires against an
+//     unfiltered template that aggregates across all namespaces.
+//     queryIstioMTLSRatios picks the scoped vs cluster-wide template
+//     based on the namespace argument.
 //
 // Partial failure policy: pod-list and policy-fetch failures are
 // accumulated into resp.Errors with user-safe messages and internal
@@ -638,8 +639,10 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	// queryIstioMTLSRatios switches between the namespace-filtered and
 	// cluster-wide PromQL templates based on the namespace argument; the
 	// cross-check still degrades silently to policy-only when Prometheus
-	// is offline.
-	if pc := h.promClient(); pc != nil {
+	// is offline. Skip the call entirely when there are no workloads to
+	// override — pod-list errors leave workloads empty and a wasted Prom
+	// query on a degraded cluster has no upside.
+	if pc := h.promClient(); pc != nil && len(workloads) > 0 {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)

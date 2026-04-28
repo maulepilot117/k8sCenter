@@ -469,8 +469,11 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 	)
 
 	// Fake Prom returns multi-namespace samples in a single response —
-	// matching the cluster-wide template's shape. cart sees 90% mTLS
-	// (mixed override); invoice sees 100% (active preserved).
+	// matching the cluster-wide template's shape. Both workloads have
+	// non-trivial overrides (ratio < 1) so the test would fail if the
+	// dispatch silently filtered ratios to a single namespace: cart
+	// sees 90% mTLS (flips to mixed/metric); invoice sees ~83%
+	// (also flips to mixed/metric).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
@@ -480,7 +483,8 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 				"result": [
 					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"9"]},
 					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"1"]},
-					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"mutual_tls"},"value":[1,"5"]}
+					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"mutual_tls"},"value":[1,"5"]},
+					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"none"},"value":[1,"1"]}
 				]
 			}
 		}`)
@@ -520,7 +524,7 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 		source MTLSSource
 	}{
 		"shop/cart":       {state: MTLSMixed, source: MTLSSourceMetric},
-		"billing/invoice": {state: MTLSActive, source: MTLSSourcePolicy},
+		"billing/invoice": {state: MTLSMixed, source: MTLSSourceMetric},
 	}
 	if len(env.Data.Workloads) != len(want) {
 		t.Fatalf("workloads = %d, want %d", len(env.Data.Workloads), len(want))
@@ -551,6 +555,9 @@ func TestRenderIstioMTLSQuery_ScopeSwitch(t *testing.T) {
 	}
 	if strings.Contains(clusterQ, "destination_workload_namespace=") {
 		t.Errorf("cluster-wide query carries a namespace filter: %s", clusterQ)
+	}
+	if !strings.Contains(clusterQ, "istio_requests_total") {
+		t.Errorf("cluster-wide query missing istio_requests_total metric: %s", clusterQ)
 	}
 
 	scopedQ, err := renderIstioMTLSQuery("shop")

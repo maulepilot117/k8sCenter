@@ -472,7 +472,12 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 		workload := string(s.Metric["destination_workload"])
 		ns := string(s.Metric["destination_workload_namespace"])
 		policy := string(s.Metric["connection_security_policy"])
-		if workload == "" {
+		// Istio emits passthrough/unknown-target traffic with empty
+		// workload OR empty namespace labels. Either one alone makes
+		// the ratio key ambiguous (a "/cart" entry would shadow the
+		// real "shop/cart" lookup in applyMTLSMetricOverrides), so
+		// drop the sample rather than aggregating into a ghost row.
+		if workload == "" || ns == "" {
 			continue
 		}
 		key := ns + "/" + workload
@@ -495,9 +500,12 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 }
 
 // renderIstioMTLSQuery picks the scoped or cluster-wide PromQL template
-// based on namespace and runs it through monitoring.QueryTemplate so
-// user-supplied values still flow through the k8s-name validator.
-// Cluster-wide queries have no variables and skip Render entirely.
+// based on namespace and runs the scoped path through
+// monitoring.QueryTemplate so user-supplied values still flow through
+// the k8s-name validator. The cluster-wide path returns the literal
+// template unchanged: it carries zero $-variables and any future
+// developer adding a variable here MUST also add a Render call,
+// otherwise unsanitized input would reach PromQL.
 func renderIstioMTLSQuery(namespace string) (string, error) {
 	const (
 		scoped      = `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total{destination_workload_namespace="$ns"}[5m]))`
