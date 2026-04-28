@@ -271,6 +271,53 @@ func TestWorkloadKey_ReplicaSetNoHash(t *testing.T) {
 	}
 }
 
+// TestWorkloadKey_ReplicaSetHashSuffixHeuristic exercises the boundary
+// of the "is this RS owned by a Deployment?" heuristic. Only suffixes
+// matching the kube-controller pod-template-hash safe alphabet
+// (bcdfghjklmnpqrstvwxz2456789, length 5-10) are stripped as
+// Deployment-owned. Anything else — orphan RSes, user-named RSes with
+// dashed non-hash suffixes — is reported verbatim as a ReplicaSet so we
+// never fabricate a Deployment that isn't there.
+func TestWorkloadKey_ReplicaSetHashSuffixHeuristic(t *testing.T) {
+	cases := []struct {
+		name     string
+		rsName   string
+		wantKind string
+		wantName string
+	}{
+		// Real Deployment-owned ReplicaSets: 5-10 chars from the safe
+		// alphabet, mix of letters and digits.
+		{"five-char-hash", "cart-6d4b7", "Deployment", "cart"},
+		{"ten-char-hash", "cart-5d4f7c8b9d", "Deployment", "cart"},
+		{"hash-with-multi-segment-base", "my-app-svc-78b8b6c789", "Deployment", "my-app-svc"},
+
+		// Not-a-hash suffixes — the suffix is too short, contains
+		// vowels, or contains digits (0/1/3) that the safe alphabet
+		// excludes. These are typically orphan or user-managed RSes.
+		{"version-suffix", "worker-v1", "ReplicaSet", "worker-v1"},
+		{"vowel-suffix", "my-standalone", "ReplicaSet", "my-standalone"},
+		{"unsafe-digit-suffix", "app-12345", "ReplicaSet", "app-12345"},
+		{"too-short-suffix", "svc-ab12", "ReplicaSet", "svc-ab12"},
+		{"too-long-suffix", "svc-bcdfghjklmn", "ReplicaSet", "svc-bcdfghjklmn"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: c.rsName + "-pod",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: "ReplicaSet", Name: c.rsName},
+					},
+				},
+			}
+			kind, name := workloadKey(pod)
+			if kind != c.wantKind || name != c.wantName {
+				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.wantKind, c.wantName)
+			}
+		})
+	}
+}
+
 // TestPodMeshMembership_AmbientAnnotation covers the Istio ambient-mode
 // annotation path: no istio-proxy sidecar, but the
 // sidecar.istio.io/status annotation is still present. The resolver
@@ -363,8 +410,8 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
 	cs := fake.NewClientset(
-		injectedPod("shop", "cart-6d-xyz", map[string]string{"app": "cart"}),
-		injectedPod("billing", "invoice-4a-aa", map[string]string{"app": "invoice"}),
+		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
+		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
 	)
 
 	h := &Handler{
@@ -549,7 +596,7 @@ func TestHandler_MTLSPosture_Denied(t *testing.T) {
 // with mesh-root STRICT resolves to active/policy/mesh.
 func TestHandler_MTLSPosture_IstioNamespaceStrict(t *testing.T) {
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
-	cs := fake.NewClientset(injectedPod("shop", "cart-6d-xyz", map[string]string{"app": "cart"}))
+	cs := fake.NewClientset(injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}))
 
 	h := &Handler{
 		Discoverer:        seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
@@ -703,9 +750,10 @@ func linkerdPod(ns, name string, labels map[string]string) *corev1.Pod {
 }
 
 // deriveRSName strips the last "-xxx" suffix of a pod name so that pod
-// "cart-6d-xyz" yields RS "cart-6d" — the workload resolver in turn
-// strips to "cart". Mirrors the Deployment naming convention without
-// recreating the hash algorithm.
+// "cart-6d4b7-xyz" yields RS "cart-6d4b7" — the workload resolver in
+// turn strips the hash-shaped suffix to "cart". Fixture pod names must
+// embed a real pod-template-hash shape (5-10 chars from the kube
+// safe alphabet) or workloadKey will keep the RS name verbatim.
 func deriveRSName(podName string) string {
 	for i := len(podName) - 1; i > 0; i-- {
 		if podName[i] == '-' {

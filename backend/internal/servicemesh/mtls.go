@@ -192,22 +192,17 @@ func linkerdPodState(pod *corev1.Pod) MTLSState {
 }
 
 // workloadKey identifies the top-level controller for a pod. We walk
-// one level of OwnerReferences, unwrapping ReplicaSet → Deployment via
-// the standard "-<hash>" suffix convention. Orphan pods key under
+// one level of OwnerReferences, unwrapping a Deployment-owned
+// ReplicaSet via the kube-controller "-<hash>" suffix convention.
+// Orphan ReplicaSets and user-named RSes whose suffix is not a real
+// pod-template-hash are reported verbatim as ReplicaSet so we never
+// fabricate a Deployment that isn't there. Orphan pods key under
 // ("Pod", <podName>).
-//
-// TODO: the ReplicaSet → Deployment strip is a best-effort heuristic —
-// orphan ReplicaSets (bare RSes not owned by a Deployment, common in
-// Helm charts) and RSes with dashed non-hash suffixes like "worker-v1"
-// are reported as fabricated Deployments. Tracked as a Phase-B follow-up
-// (see memory: project_servicemesh_phase_b_followups). Treat the
-// returned kind as authoritative only for pods whose RS is clearly
-// Deployment-owned.
 func workloadKey(pod *corev1.Pod) (kind, name string) {
 	for _, or := range pod.OwnerReferences {
 		switch or.Kind {
 		case "ReplicaSet":
-			if idx := strings.LastIndex(or.Name, "-"); idx > 0 {
+			if idx := strings.LastIndex(or.Name, "-"); idx > 0 && isReplicaSetHashSuffix(or.Name[idx+1:]) {
 				return "Deployment", or.Name[:idx]
 			}
 			return "ReplicaSet", or.Name
@@ -216,6 +211,33 @@ func workloadKey(pod *corev1.Pod) (kind, name string) {
 		}
 	}
 	return "Pod", pod.Name
+}
+
+// isReplicaSetHashSuffix reports whether s looks like a kube-controller
+// pod-template-hash. Modern Deployment hashes are produced by
+// k8s.io/apimachinery/pkg/util/rand.SafeEncodeString, which translates
+// every byte through a 27-character alphabet that excludes vowels and
+// the digits 0/1/3 (avoids generating profanity-like strings). The
+// length tracks fmt.Sprint(uint32) — never more than 10 chars — and we
+// floor at 5 to match the shortest hash kube-controller is observed to
+// produce in real clusters. A match is a strong signal that the "-"
+// stripped from a ReplicaSet name belongs to a Deployment; a miss
+// means the suffix is a user-chosen string ("worker-v1", "app-12345")
+// and the name should be treated as the workload itself.
+func isReplicaSetHashSuffix(s string) bool {
+	if len(s) < 5 || len(s) > 10 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case 'b', 'c', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm',
+			'n', 'p', 'q', 'r', 's', 't', 'v', 'w', 'x', 'z',
+			'2', '4', '5', '6', '7', '8', '9':
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // podMeshMembership returns which mesh (if any) a pod is a member of.
