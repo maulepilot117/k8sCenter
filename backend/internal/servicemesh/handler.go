@@ -634,11 +634,12 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	postures := computePodPostures(pods, peerAuths)
 	workloads := aggregateWorkloads(postures)
 
-	// Prom cross-check is only meaningful when the query template can be
-	// bound to a concrete namespace. Cluster-wide requests skip it by
-	// design; a surfaced follow-up will either aggregate across known
-	// namespaces or rewrite the template to run un-scoped.
-	if pc := h.promClient(); pc != nil && namespace != "" {
+	// Prom cross-check fires for both scoped and cluster-wide requests.
+	// queryIstioMTLSRatios switches between the namespace-filtered and
+	// cluster-wide PromQL templates based on the namespace argument; the
+	// cross-check still degrades silently to policy-only when Prometheus
+	// is offline.
+	if pc := h.promClient(); pc != nil {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)

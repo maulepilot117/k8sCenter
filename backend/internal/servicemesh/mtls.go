@@ -441,10 +441,13 @@ func (r IstioMTLSRatio) Ratio() float64 {
 	return r.MTLS / r.Total
 }
 
-// queryIstioMTLSRatios runs one PromQL instant query per namespace to
-// learn observed mTLS ratios by workload. Uses the shared
-// promQueryTimeout budget (see metrics.go) so both Phase B Prom calls
-// share one knob and age together; callers must tolerate a nil return.
+// queryIstioMTLSRatios runs a single PromQL instant query for observed
+// mTLS ratios by workload. namespace=="" returns ratios for every
+// namespace visible to Prometheus (cluster-wide cross-check); a
+// concrete namespace renders the scoped variant for narrower queries.
+// Uses the shared promQueryTimeout budget (see metrics.go) so both
+// Phase B Prom calls share one knob and age together; callers must
+// tolerate a nil return.
 func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, namespace string) ([]IstioMTLSRatio, error) {
 	if pc == nil {
 		return nil, nil
@@ -452,16 +455,9 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 	queryCtx, cancel := context.WithTimeout(ctx, promQueryTimeout)
 	defer cancel()
 
-	// Namespace is user-supplied; the existing monitoring.QueryTemplate
-	// validator rejects anything that isn't a k8s-valid name, so we run
-	// it through Render for defence in depth.
-	tmpl := monitoring.QueryTemplate{
-		Query: `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total{destination_workload_namespace="$ns"}[5m]))`,
-		Variables: []string{"ns"},
-	}
-	q, err := tmpl.Render(map[string]string{"ns": namespace})
+	q, err := renderIstioMTLSQuery(namespace)
 	if err != nil {
-		return nil, fmt.Errorf("render istio mtls query: %w", err)
+		return nil, err
 	}
 	val, _, err := pc.Query(queryCtx, q, time.Now())
 	if err != nil {
@@ -496,6 +492,26 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 		out = append(out, *r)
 	}
 	return out, nil
+}
+
+// renderIstioMTLSQuery picks the scoped or cluster-wide PromQL template
+// based on namespace and runs it through monitoring.QueryTemplate so
+// user-supplied values still flow through the k8s-name validator.
+// Cluster-wide queries have no variables and skip Render entirely.
+func renderIstioMTLSQuery(namespace string) (string, error) {
+	const (
+		scoped      = `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total{destination_workload_namespace="$ns"}[5m]))`
+		clusterWide = `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total[5m]))`
+	)
+	if namespace == "" {
+		return clusterWide, nil
+	}
+	tmpl := monitoring.QueryTemplate{Query: scoped, Variables: []string{"ns"}}
+	q, err := tmpl.Render(map[string]string{"ns": namespace})
+	if err != nil {
+		return "", fmt.Errorf("render istio mtls query: %w", err)
+	}
+	return q, nil
 }
 
 // applyMTLSMetricOverrides promotes policy-derived "active" results to

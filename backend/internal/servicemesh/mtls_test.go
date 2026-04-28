@@ -2,9 +2,11 @@ package servicemesh
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 )
 
 // --- precedence resolver unit tests ----------------------------------------
@@ -403,10 +406,9 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 // --- cluster-wide handler path --------------------------------------------
 
 // TestHandler_MTLSPosture_ClusterWide exercises the namespace-omitted
-// path: posture should aggregate across every visible namespace and the
-// Prometheus cross-check is intentionally skipped (the template
-// requires a concrete namespace). Gives the cluster-wide code path its
-// first integration-level coverage.
+// path with Prometheus offline. Posture should aggregate across every
+// visible namespace and Source stays policy because the cross-check
+// silently degrades when no Prom client is wired.
 func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
 	cs := fake.NewClientset(
@@ -444,12 +446,123 @@ func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
 	for _, w := range env.Data.Workloads {
 		seen[w.Namespace] = true
 		if w.Source != MTLSSourcePolicy {
-			t.Errorf("workload %s/%s Source = %q, want policy (cluster-wide skips Prom cross-check)",
+			t.Errorf("workload %s/%s Source = %q, want policy (no Prom client wired → cross-check degrades)",
 				w.Namespace, w.Workload, w.Source)
 		}
 	}
 	if !seen["shop"] || !seen["billing"] {
 		t.Errorf("missing namespace coverage: %+v", seen)
+	}
+}
+
+// TestHandler_MTLSPosture_ClusterWideMetricOverride covers the Phase B
+// follow-up: when no namespace is specified and Prometheus is online,
+// the cross-check fires against an unfiltered template and per-namespace
+// ratios still flip individual workloads to source=metric. Without this
+// path the dashboard's most common shape (cluster-wide) silently
+// disagreed with the scoped view.
+func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
+	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
+	cs := fake.NewClientset(
+		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
+		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
+	)
+
+	// Fake Prom returns multi-namespace samples in a single response —
+	// matching the cluster-wide template's shape. cart sees 90% mTLS
+	// (mixed override); invoice sees 100% (active preserved).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"9"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"1"]},
+					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"mutual_tls"},"value":[1,"5"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	h := &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		dynOverride:        newIstioFakeDynClient(pa),
+		clientsetOverride:  cs,
+		promClientOverride: pc,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
+	rec := httptest.NewRecorder()
+	h.HandleMTLSPosture(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var env struct {
+		Data MTLSPostureResponse `json:"data"`
+	}
+	if jerr := json.Unmarshal(rec.Body.Bytes(), &env); jerr != nil {
+		t.Fatalf("decode: %v", jerr)
+	}
+
+	want := map[string]struct {
+		state  MTLSState
+		source MTLSSource
+	}{
+		"shop/cart":       {state: MTLSMixed, source: MTLSSourceMetric},
+		"billing/invoice": {state: MTLSActive, source: MTLSSourcePolicy},
+	}
+	if len(env.Data.Workloads) != len(want) {
+		t.Fatalf("workloads = %d, want %d", len(env.Data.Workloads), len(want))
+	}
+	for _, wl := range env.Data.Workloads {
+		key := wl.Namespace + "/" + wl.Workload
+		exp, ok := want[key]
+		if !ok {
+			t.Errorf("unexpected workload %s", key)
+			continue
+		}
+		if wl.State != exp.state {
+			t.Errorf("%s State = %q, want %q", key, wl.State, exp.state)
+		}
+		if wl.Source != exp.source {
+			t.Errorf("%s Source = %q, want %q", key, wl.Source, exp.source)
+		}
+	}
+}
+
+// TestRenderIstioMTLSQuery_ScopeSwitch documents that cluster-wide and
+// scoped requests use different PromQL templates and that the scoped
+// path still validates the namespace through the monitoring template.
+func TestRenderIstioMTLSQuery_ScopeSwitch(t *testing.T) {
+	clusterQ, err := renderIstioMTLSQuery("")
+	if err != nil {
+		t.Fatalf("cluster-wide render: %v", err)
+	}
+	if strings.Contains(clusterQ, "destination_workload_namespace=") {
+		t.Errorf("cluster-wide query carries a namespace filter: %s", clusterQ)
+	}
+
+	scopedQ, err := renderIstioMTLSQuery("shop")
+	if err != nil {
+		t.Fatalf("scoped render: %v", err)
+	}
+	if !strings.Contains(scopedQ, `destination_workload_namespace="shop"`) {
+		t.Errorf("scoped query missing namespace filter: %s", scopedQ)
+	}
+
+	if _, err := renderIstioMTLSQuery(`bad"ns`); err == nil {
+		t.Error("invalid namespace passed render validation")
 	}
 }
 
