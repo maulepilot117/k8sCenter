@@ -442,6 +442,9 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         count: true,
       },
       { label: "Gateway API", href: "/networking/gateway-api" },
+      { label: "Service Mesh", href: "/networking/mesh" },
+      { label: "Mesh Routing", href: "/networking/mesh/routing" },
+      { label: "mTLS Posture", href: "/networking/mesh/mtls" },
     ],
   },
   {
