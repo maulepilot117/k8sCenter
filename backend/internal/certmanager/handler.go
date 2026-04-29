@@ -238,6 +238,13 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil, err
 	}
 
+	// Resolve per-cert thresholds against the just-fetched issuer set
+	// before caching. Every read path (CachedCertificates, /expiring,
+	// detail) consumes the cache, so doing it once here keeps the
+	// resolution out of the hot path and ensures every consumer sees
+	// the same view.
+	certificates = ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
+
 	data := &cachedData{
 		certificates:   certificates,
 		issuers:        issuers,
@@ -344,6 +351,17 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Error("failed to normalize certificate", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse certificate", "")
 		return
+	}
+
+	// Resolve per-cert thresholds against the cluster-wide issuer cache
+	// so the detail response carries the same WarningThresholdDays /
+	// CriticalThresholdDays / ThresholdSource that the list endpoints
+	// emit. Cache miss falls through to defaults — safe degradation.
+	if data, derr := h.getCached(ctx); derr == nil && data != nil {
+		applied := ApplyThresholds([]Certificate{cert}, data.issuers, data.clusterIssuers, h.Logger)
+		if len(applied) == 1 {
+			cert = applied[0]
+		}
 	}
 
 	// Fetch CertificateRequests for this certificate
@@ -515,11 +533,23 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 
 	expiring := make([]ExpiringCertificate, 0)
 	for _, c := range certs {
-		if c.DaysRemaining == nil || *c.DaysRemaining > WarningThresholdDays {
+		// ApplyThresholds (during the cache fetch) resolved each cert's
+		// effective warn/crit. The /expiring endpoint filters per-cert
+		// rather than against package globals so per-Issuer / per-cert
+		// annotations take effect.
+		warn := c.WarningThresholdDays
+		if warn <= 0 {
+			warn = WarningThresholdDays
+		}
+		crit := c.CriticalThresholdDays
+		if crit <= 0 {
+			crit = CriticalThresholdDays
+		}
+		if c.DaysRemaining == nil || *c.DaysRemaining > warn {
 			continue
 		}
 		severity := "warning"
-		if *c.DaysRemaining <= CriticalThresholdDays {
+		if *c.DaysRemaining <= crit {
 			severity = "critical"
 		}
 		var notAfter time.Time

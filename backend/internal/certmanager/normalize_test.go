@@ -10,7 +10,10 @@ import (
 // ptrTime returns a pointer to the given time.Time value.
 func ptrTime(t time.Time) *time.Time { return &t }
 
-// TestComputeStatus covers the 8 status derivation cases.
+// TestComputeStatus covers base-status derivation. computeStatus
+// deliberately never returns StatusExpiring — the warning band depends
+// on the resolved per-cert threshold and is layered on by DeriveStatus.
+// See TestDeriveStatus for the threshold-aware cases.
 func TestComputeStatus(t *testing.T) {
 	now := time.Now()
 
@@ -29,18 +32,18 @@ func TestComputeStatus(t *testing.T) {
 			want:        StatusReady,
 		},
 		{
-			name:        "ready-expiring-warning-20d",
+			name:        "ready-near-expiry-base-stays-ready",
 			readyStatus: "True",
 			reason:      "",
 			notAfter:    ptrTime(now.Add(20 * 24 * time.Hour)),
-			want:        StatusExpiring,
+			want:        StatusReady, // DeriveStatus is responsible for Expiring overlay
 		},
 		{
-			name:        "ready-expiring-critical-3d",
+			name:        "ready-very-near-expiry-base-stays-ready",
 			readyStatus: "True",
 			reason:      "",
 			notAfter:    ptrTime(now.Add(3 * 24 * time.Hour)),
-			want:        StatusExpiring,
+			want:        StatusReady, // DeriveStatus overlay handles this
 		},
 		{
 			name:        "expired",
@@ -85,6 +88,130 @@ func TestComputeStatus(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("computeStatus(%q, %q, notAfter) = %q; want %q",
 					tc.readyStatus, tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDeriveStatus covers the threshold-aware Expiring overlay. The
+// base status comes from computeStatus; DeriveStatus only flips Ready
+// to Expiring when DaysRemaining drops at or below the resolved
+// WarningThresholdDays.
+func TestDeriveStatus(t *testing.T) {
+	intp := func(n int) *int { return &n }
+
+	cases := []struct {
+		name string
+		cert Certificate
+		want Status
+	}{
+		{
+			name: "ready-with-runway",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        intp(60),
+				WarningThresholdDays: 30,
+			},
+			want: StatusReady,
+		},
+		{
+			name: "ready-at-default-warn-boundary",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        intp(30),
+				WarningThresholdDays: 30,
+			},
+			want: StatusExpiring,
+		},
+		{
+			name: "ready-with-elevated-warn-from-issuer-overlay-fires-early",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        intp(50),
+				WarningThresholdDays: 60, // resolver picked up an annotation
+			},
+			want: StatusExpiring,
+		},
+		{
+			name: "ready-with-tight-warn-no-overlay-yet",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        intp(20),
+				WarningThresholdDays: 14, // ACME-style short warning
+			},
+			want: StatusReady,
+		},
+		{
+			name: "ready-with-zero-warn-falls-back-to-package-default",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        intp(20),
+				WarningThresholdDays: 0,
+			},
+			want: StatusExpiring, // 20 <= default 30
+		},
+		{
+			name: "expired-stays-expired",
+			cert: Certificate{
+				Status:               StatusExpired,
+				DaysRemaining:        intp(-1),
+				WarningThresholdDays: 30,
+			},
+			want: StatusExpired,
+		},
+		{
+			name: "failed-stays-failed-even-near-expiry",
+			cert: Certificate{
+				Status:               StatusFailed,
+				DaysRemaining:        intp(2),
+				WarningThresholdDays: 30,
+			},
+			want: StatusFailed,
+		},
+		{
+			name: "ready-without-days-remaining-stays-ready",
+			cert: Certificate{
+				Status:               StatusReady,
+				DaysRemaining:        nil,
+				WarningThresholdDays: 30,
+			},
+			want: StatusReady,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DeriveStatus(tc.cert); got != tc.want {
+				t.Errorf("DeriveStatus(%q, days=%v, warn=%d) = %q; want %q",
+					tc.cert.Status, tc.cert.DaysRemaining, tc.cert.WarningThresholdDays, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseThresholdAnnotation covers the strict-positive parser used
+// for both warn and crit annotations.
+func TestParseThresholdAnnotation(t *testing.T) {
+	cases := []struct {
+		in     string
+		wantN  int
+		wantOK bool
+	}{
+		{"60", 60, true},
+		{"1", 1, true},
+		{"030", 30, true}, // strconv.Atoi accepts leading zeros
+		{"", 0, false},
+		{"0", 0, false},   // zero treated as "not set"
+		{"-5", 0, false},  // negative rejected
+		{"60d", 0, false}, // unit suffix rejected
+		{"potato", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			n, ok := parseThresholdAnnotation(tc.in)
+			if n != tc.wantN || ok != tc.wantOK {
+				t.Errorf("parseThresholdAnnotation(%q) = (%d, %v); want (%d, %v)",
+					tc.in, n, ok, tc.wantN, tc.wantOK)
 			}
 		})
 	}

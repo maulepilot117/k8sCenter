@@ -37,14 +37,31 @@ func (t threshold) String() string {
 	}
 }
 
-// thresholdBucket maps a days-remaining value to its threshold bucket.
-func thresholdBucket(days int) threshold {
+// thresholdBucket maps a days-remaining value to its threshold bucket
+// using the cert's resolved per-cert thresholds. If ApplyThresholds
+// hasn't been run on this cert (zero values), defense-in-depth falls
+// back to the package defaults so a forgotten resolution call still
+// emits sensible (global-default) notifications instead of treating
+// warn=0 as "never warn".
+func thresholdBucket(cert Certificate) threshold {
+	if cert.DaysRemaining == nil {
+		return thresholdNone
+	}
+	days := *cert.DaysRemaining
+	warn := cert.WarningThresholdDays
+	if warn <= 0 {
+		warn = WarningThresholdDays
+	}
+	crit := cert.CriticalThresholdDays
+	if crit <= 0 {
+		crit = CriticalThresholdDays
+	}
 	switch {
 	case days < 0:
 		return thresholdExpired
-	case days <= CriticalThresholdDays:
+	case days <= crit:
 		return thresholdCritical
-	case days <= WarningThresholdDays:
+	case days <= warn:
 		return thresholdWarning
 	default:
 		return thresholdNone
@@ -105,7 +122,7 @@ func (p *Poller) check(c Certificate) []emitRecord {
 		return nil
 	}
 
-	bucket := thresholdBucket(*c.DaysRemaining)
+	bucket := thresholdBucket(c)
 
 	prev, hasPrev := p.dedupe[c.UID]
 
@@ -227,8 +244,13 @@ func (p *Poller) tick(ctx context.Context) {
 	p.mu.Unlock()
 }
 
-// fetchCertificates returns certificates from the handler cache if available,
-// otherwise falls back to direct API listing.
+// fetchCertificates returns certificates from the handler cache if
+// available, otherwise falls back to direct API listing. The cache
+// path returns thresholds-resolved certs (handler.fetchAll runs
+// ApplyThresholds before storing). The fallback path also lists
+// Issuers + ClusterIssuers and runs ApplyThresholds so it produces
+// the same threshold-resolved view — otherwise tests and degraded
+// startup would skip per-cert overrides entirely.
 func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 	if p.handler != nil {
 		return p.handler.CachedCertificates(ctx)
@@ -254,5 +276,23 @@ func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 		}
 		certs = append(certs, cert)
 	}
-	return certs, nil
+
+	// Best-effort issuer fetches — failures fall through to defaults
+	// rather than erroring the whole poll cycle. The poller already
+	// degrades gracefully when fields are missing (thresholdBucket has
+	// belt-and-suspenders defaults), so this just enriches when
+	// possible.
+	var issuers, clusterIssuers []Issuer
+	if iList, ierr := dyn.Resource(IssuerGVR).Namespace("").List(ctx, metav1.ListOptions{}); ierr == nil {
+		for i := range iList.Items {
+			issuers = append(issuers, normalizeIssuer(&iList.Items[i], "Namespaced"))
+		}
+	}
+	if ciList, cerr := dyn.Resource(ClusterIssuerGVR).Namespace("").List(ctx, metav1.ListOptions{}); cerr == nil {
+		for i := range ciList.Items {
+			clusterIssuers = append(clusterIssuers, normalizeIssuer(&ciList.Items[i], "Cluster"))
+		}
+	}
+
+	return ApplyThresholds(certs, issuers, clusterIssuers, p.logger), nil
 }

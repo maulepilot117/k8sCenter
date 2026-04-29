@@ -9,6 +9,7 @@ import {
   StatusBadge,
 } from "@/components/ui/CertificateBadges.tsx";
 import type {
+  Certificate,
   CertificateDetail,
   CertificateRequest,
   Challenge,
@@ -23,6 +24,39 @@ interface Props {
 function formatDate(iso?: string): string {
   if (!iso) return "\u2014";
   return new Date(iso).toLocaleString();
+}
+
+// thresholdSourceLabel returns the badge text for the threshold-source
+// tile. Mirrors backend ThresholdSource values from certmanager-types.ts.
+function thresholdSourceLabel(cert: Certificate): string {
+  switch (cert.thresholdSource) {
+    case "certificate":
+      return "From this certificate";
+    case "issuer":
+      return `From Issuer ${cert.issuerRef.name}`;
+    case "clusterissuer":
+      return `From ClusterIssuer ${cert.issuerRef.name}`;
+    default:
+      return "Default";
+  }
+}
+
+// thresholdSourceTooltip explains the resolution chain in plain English
+// so an operator unfamiliar with the annotation contract can read the
+// tile without diving into docs.
+function thresholdSourceTooltip(cert: Certificate): string {
+  const base =
+    "Set kubecenter.io/cert-warn-threshold-days or kubecenter.io/cert-critical-threshold-days on a Certificate or its Issuer / ClusterIssuer to override these values.";
+  switch (cert.thresholdSource) {
+    case "certificate":
+      return `Resolved from an annotation on this Certificate. ${base}`;
+    case "issuer":
+      return `Resolved from an annotation on Issuer ${cert.issuerRef.name}. ${base}`;
+    case "clusterissuer":
+      return `Resolved from an annotation on ClusterIssuer ${cert.issuerRef.name}. ${base}`;
+    default:
+      return `Using the package defaults. ${base}`;
+  }
 }
 
 export default function CertificateDetailIsland({ namespace, name }: Props) {
@@ -220,6 +254,22 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
             <dt class="text-text-muted">Renewal Time</dt>
             <dd class="text-text-primary">{formatDate(cert.renewalTime)}</dd>
           </div>
+          {cert.warningThresholdDays !== undefined &&
+            cert.warningThresholdDays > 0 && (
+            <div class="sm:col-span-2">
+              <dt class="text-text-muted">Expiry Thresholds</dt>
+              <dd
+                class="text-text-primary"
+                title={thresholdSourceTooltip(cert)}
+              >
+                Warns at {cert.warningThresholdDays}d, critical at{" "}
+                {cert.criticalThresholdDays ?? "—"}d
+                <span class="ml-2 rounded bg-bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
+                  {thresholdSourceLabel(cert)}
+                </span>
+              </dd>
+            </div>
+          )}
           {cert.reason && (
             <div class="sm:col-span-2">
               <dt class="text-text-muted">Reason</dt>

@@ -14,6 +14,15 @@ export interface IssuerRef {
   group?: string;
 }
 
+/** Layer of the resolution chain that supplied a Certificate's
+ * effective expiry thresholds. Drives the "Warns at: 60d (from
+ * Issuer X)" tooltip on the Certificate detail page. */
+export type ThresholdSource =
+  | "default"
+  | "certificate"
+  | "issuer"
+  | "clusterissuer";
+
 export interface Certificate {
   name: string;
   namespace: string;
@@ -30,6 +39,12 @@ export interface Certificate {
   notAfter?: string;
   renewalTime?: string;
   daysRemaining?: number;
+  /** Effective per-cert thresholds resolved through cert > issuer >
+   * clusterissuer > package-default. omitempty on the wire when the
+   * resolver hasn't run; absent or zero means "not resolved yet". */
+  warningThresholdDays?: number;
+  criticalThresholdDays?: number;
+  thresholdSource?: ThresholdSource;
   uid: string;
 }
 
@@ -43,6 +58,11 @@ export interface Issuer {
   message?: string;
   acmeEmail?: string;
   acmeServer?: string;
+  /** Annotation-set threshold overrides on this Issuer. Inherited by
+   * Certificates that reference it when those certs don't carry their
+   * own annotation. omitempty when the issuer has no annotation. */
+  warningThresholdDays?: number;
+  criticalThresholdDays?: number;
   uid: string;
   updatedAt: string;
 }

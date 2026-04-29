@@ -324,6 +324,13 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Routes: `/security/certificates/{new,issuers/new,cluster-issuers/new}` plus entry buttons on list pages and command palette quick actions
   - v1 ACME scope: SelfSigned + HTTP01 ingress only (CA/Vault/DNS01 deferred to YAML editor)
   - Ships via PR #180 with cleanup follow-ups in #181, #182, #183
+- **Phase 13 (Cert-Manager Configurable Thresholds):** COMPLETE
+  - New `kubecenter.io/cert-warn-threshold-days` and `kubecenter.io/cert-critical-threshold-days` annotations on Certificate / Issuer / ClusterIssuer override the package defaults (30 / 7 days). Resolution chain: cert annotation > issuer annotation > clusterissuer annotation > package default. Each key resolves independently — a cert can override warn alone and inherit crit from the issuer.
+  - New `internal/certmanager/thresholds.go` houses `ResolveCertThresholds` (per-cert chain walk) and `ApplyThresholds` (slice mutator that resolves + computes Status). Single source of truth — handler `fetchAll` and poller fallback both call it.
+  - `Certificate` response gains `warningThresholdDays`, `criticalThresholdDays`, `thresholdSource` (`"default" | "certificate" | "issuer" | "clusterissuer"`). `Issuer` response gains pointer-typed `warningThresholdDays` / `criticalThresholdDays` to distinguish "not set" from "set".
+  - `Status` derivation moved out of `normalizeCertificate` into a new `DeriveStatus(cert)` so the threshold-aware Expiring overlay runs after `ApplyThresholds`. Base statuses (Ready / Issuing / Failed / Expired / Unknown) still come from the unstructured-only path.
+  - Invalid annotations (non-integer, non-positive, `crit >= warn`) log and silently fall through to the next resolution layer; never break the response.
+  - Frontend `CertificateDetail` page renders a "Warns at: 60d, critical at 14d (From Issuer X)" row with a tooltip explaining the resolution chain.
 - **Phase 12 (Service Mesh Observability):** COMPLETE — 4 sub-phases (A–D)
   - **Phase A (Inventory):** New `internal/servicemesh/` package — CRD-based auto-detection of Istio + Linkerd with 5min discovery cache, dynamic-client reads via singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`. Endpoints: `GET /mesh/{status,routing,policies,routing/:id}`. Composite-ID scheme `mesh:namespace:kindCode:name`. Mesh CRDs covered: Istio VirtualService/DestinationRule/Gateway/PeerAuthentication/AuthorizationPolicy, Linkerd ServiceProfile/Server/HTTPRoute/AuthorizationPolicy/MeshTLSAuthentication. Ships via PR #199.
   - **Phase B (mTLS posture + golden signals):** Per-workload mTLS state (`active`/`inactive`/`mixed`/`unmeshed`) with policy + Prometheus metric cross-check, three-source attribution (`policy`/`metric`/`default`). Per-service golden signals (RPS, error rate, p50/p95/p99 latency) via templated PromQL with `monitoring.QueryTemplate.Render` k8s-name guard. Endpoints: `GET /mesh/{mtls,golden-signals}`. Partial-failure surface via response `errors` map; ReplicaSet pod-template-hash heuristic for workload-kind attribution with `workloadKindConfident` flag. Ships via PR #200; follow-ups #203 (RS heuristic + cluster-wide PromQL cross-check).
@@ -342,7 +349,7 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS posture, golden signals, topology overlay (Phase 12)
 - [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
 - [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards (PR #180, follow-ups #181–#183)
-- [ ] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation
+- [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation (Phase 13)
 - [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
 - [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
 
