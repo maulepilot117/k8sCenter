@@ -604,7 +604,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D3: Golden signals on service detail**
+- [x] **Unit D3: Golden signals on service detail**
 
 **Goal:** Surface RPS, p50/p95/p99 latency, and error rate on the existing Service detail page when the service is meshed.
 

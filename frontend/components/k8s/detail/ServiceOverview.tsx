@@ -1,10 +1,12 @@
 import type { K8sResource, Service } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { KeyValueTable } from "./KeyValueTable.tsx";
+import { MeshGoldenSignals } from "@/components/mesh/GoldenSignals.tsx";
 
 export function ServiceOverview({ resource }: { resource: K8sResource }) {
   const s = resource as Service;
   const spec = s.spec;
+  const meta = s.metadata;
 
   return (
     <div class="space-y-4">
@@ -65,6 +67,15 @@ export function ServiceOverview({ resource }: { resource: K8sResource }) {
       {/* Selector */}
       {spec.selector && Object.keys(spec.selector).length > 0 && (
         <KeyValueTable title="Selector" data={spec.selector} />
+      )}
+
+      {/* Service mesh golden signals — silently absent for unmeshed
+          services, otherwise refreshes on a 30s cadence. */}
+      {meta?.namespace && meta?.name && (
+        <MeshGoldenSignals
+          namespace={meta.namespace}
+          service={meta.name}
+        />
       )}
     </div>
   );
