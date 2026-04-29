@@ -5,14 +5,19 @@
  *    - no service mesh is installed in the cluster
  *    - the request 4xx's (e.g. service not in mesh, or both meshes
  *      installed and the auto-detect is ambiguous in v1)
- *    - the response carries available=true but every metric is zero —
- *      this matches the "unmeshed service" silent-absence contract;
- *      genuinely silent meshed services also hide, which is acceptable
- *      for v1 (the card adds no signal at zero traffic).
+ *    - the response carries available=true, every metric is zero, AND
+ *      missingQueries is empty (the unmeshed-or-genuinely-silent case;
+ *      the card adds no signal there).
  *
- *  The card RENDERS (with a "Metrics unavailable" sub-message) when the
- *  backend reports available=false, so an offline Prometheus is visible
- *  rather than indistinguishable from "no data".
+ *  The card RENDERS in three meaningful states:
+ *    - available=false (Prometheus offline): "Metrics unavailable"
+ *      sub-message with the backend reason.
+ *    - available=true with at least one non-zero metric: full tile
+ *      grid with values and tone-coded error rate.
+ *    - available=true with all-zero metrics BUT missingQueries
+ *      non-empty: tile grid renders with em-dashes for the failed
+ *      queries plus a "Partial metrics" badge, so a heavily-degraded
+ *      Prometheus is visible distinct from a silent meshed service.
  *
  *  Refresh cadence: 30s, matching the monitoring-dashboard convention.
  *  Component is rendered from inside the ResourceDetail island, so its

@@ -56,10 +56,46 @@ type GoldenSignals struct {
 // (destination_service_name) and Linkerd's inbound-authority labels
 // (authority=...) are incompatible shapes — no shared template set.
 type goldenSignalsTemplates struct {
-	rps       monitoring.QueryTemplate
-	errorNum  monitoring.QueryTemplate
-	errorDen  monitoring.QueryTemplate
-	latencyP  func(q string) monitoring.QueryTemplate
+	rps      monitoring.QueryTemplate
+	errorNum monitoring.QueryTemplate
+	errorDen monitoring.QueryTemplate
+	latencyP func(q string) monitoring.QueryTemplate
+}
+
+// goldenSignalQueryNames is the single ordered source of truth for the
+// six PromQL query identifiers exposed by goldenSignalsForService. The
+// fan-out map and the MissingQueries iteration both walk this slice so
+// they can't silently drift apart. Adding a seventh signal requires
+// updating this slice AND queryTemplate (compile-time enforced for the
+// latter via the default panic).
+var goldenSignalQueryNames = []string{
+	"rps",
+	"errorNum",
+	"errorDen",
+	"p50",
+	"p95",
+	"p99",
+}
+
+// queryTemplate selects the QueryTemplate for a given goldenSignalQueryNames
+// entry. Panics on unknown names so a typo or stale slice is caught at
+// init / first call rather than silently rendering an empty PromQL string.
+func queryTemplate(t goldenSignalsTemplates, name string) monitoring.QueryTemplate {
+	switch name {
+	case "rps":
+		return t.rps
+	case "errorNum":
+		return t.errorNum
+	case "errorDen":
+		return t.errorDen
+	case "p50":
+		return t.latencyP("0.50")
+	case "p95":
+		return t.latencyP("0.95")
+	case "p99":
+		return t.latencyP("0.99")
+	}
+	panic(fmt.Sprintf("servicemesh: queryTemplate: unknown query name %q (must match goldenSignalQueryNames)", name))
 }
 
 // istioTemplates use the v1.18+ Istio standard metric names. Labels
@@ -159,13 +195,16 @@ func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClien
 	// Render all queries up front. Any render failure is a validation
 	// error — the injected values failed the monitoring package's k8s-name
 	// check — and should surface to the caller as a 400.
-	queries := map[string]monitoring.QueryTemplate{
-		"rps":      templates.rps,
-		"errorNum": templates.errorNum,
-		"errorDen": templates.errorDen,
-		"p50":      templates.latencyP("0.50"),
-		"p95":      templates.latencyP("0.95"),
-		"p99":      templates.latencyP("0.99"),
+	//
+	// goldenSignalQueryNames is the single ordered source of truth for
+	// the six PromQL query identifiers. The map is built by iterating
+	// it, and MissingQueries is populated by iterating the same slice,
+	// so adding a seventh signal is a one-line change in goldenSignalQueryNames
+	// (plus a corresponding case in queryTemplate) — it can no longer
+	// silently desync the partial-success surface from the fan-out.
+	queries := make(map[string]monitoring.QueryTemplate, len(goldenSignalQueryNames))
+	for _, name := range goldenSignalQueryNames {
+		queries[name] = queryTemplate(templates, name)
 	}
 
 	rendered := make(map[string]string, len(queries))
@@ -232,8 +271,9 @@ func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClien
 	// Surface partial success so the UI can flag a degraded Prometheus
 	// (one query answering with zeros vs all six answering) rather than
 	// silently rendering zeros that look like an idle service. Iterate
-	// in stable order so the response shape is deterministic.
-	for _, name := range []string{"rps", "errorNum", "errorDen", "p50", "p95", "p99"} {
+	// goldenSignalQueryNames so the ordering is deterministic AND tied
+	// to the same slice the fan-out used.
+	for _, name := range goldenSignalQueryNames {
 		if _, ok := results[name]; !ok {
 			result.MissingQueries = append(result.MissingQueries, name)
 		}

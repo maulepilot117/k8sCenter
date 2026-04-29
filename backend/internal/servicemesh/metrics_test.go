@@ -1,6 +1,7 @@
 package servicemesh
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -425,6 +426,19 @@ func TestGoldenSignalsForService_AllSucceedHasNoMissingQueries(t *testing.T) {
 	}
 	if len(got.MissingQueries) != 0 {
 		t.Errorf("MissingQueries = %v, want empty (all queries succeeded)", got.MissingQueries)
+	}
+
+	// Lock the wire-format contract end-to-end: omitempty on a nil slice
+	// keeps the field out of the JSON. A future refactor that
+	// preallocates the slice (e.g. make([]string, 0, 6)) would silently
+	// start emitting "missingQueries":[] and break the frontend's
+	// "treat absence as success" assumption — this assertion catches it.
+	body, jerr := json.Marshal(got)
+	if jerr != nil {
+		t.Fatalf("marshal: %v", jerr)
+	}
+	if bytes.Contains(body, []byte("missingQueries")) {
+		t.Errorf("JSON body contains \"missingQueries\" on a fully-successful response; want field omitted.\nbody: %s", body)
 	}
 }
 
