@@ -632,16 +632,31 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 		peerAuths = filtered
 	}
 
-	postures := computePodPostures(pods, peerAuths)
+	// rsOwners makes WorkloadKind authoritative for RS-owned pods. The
+	// list call uses the same impersonating client and budget as the
+	// pod list, but degrades silently — RBAC denial, timeout, or any
+	// other failure leaves the map nil and workloadKey falls back to
+	// the alphabet heuristic with WorkloadKindConfident=false. We do
+	// not surface this as a partial-failure error key because the
+	// fallback still produces a usable response; clients can read
+	// WorkloadKindConfident on each row.
+	var rsOwners map[string]rsOwner
+	if rss, rerr := listReplicaSetControllers(r.Context(), cs, namespace); rerr != nil {
+		h.Logger.Debug("rs owner lookup unavailable; workload kinds derived heuristically", "user", user.KubernetesUsername, "namespace", namespace, "error", rerr)
+	} else {
+		rsOwners = rss
+	}
+
+	postures := computePodPostures(pods, peerAuths, rsOwners)
 	workloads := aggregateWorkloads(postures)
 
 	// Prom cross-check fires for both scoped and cluster-wide requests.
 	// queryIstioMTLSRatios switches between the namespace-filtered and
 	// cluster-wide PromQL templates based on the namespace argument; the
 	// cross-check still degrades silently to policy-only when Prometheus
-	// is offline. Skip the call entirely when there are no workloads to
-	// override — pod-list errors leave workloads empty and a wasted Prom
-	// query on a degraded cluster has no upside.
+	// is offline. Skip the call when workloads is empty: applyMTLSMetricOverrides
+	// is a no-op on an empty slice, so the Prom round-trip would have no
+	// consumer (covers both pod-list-failure and zero-meshed-pods cases).
 	if pc := h.promClient(); pc != nil && len(workloads) > 0 {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {

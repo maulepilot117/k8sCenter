@@ -195,9 +195,12 @@ func TestWorkloadKey_DeploymentStrippedFromReplicaSet(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "Deployment" || name != "cart" {
 		t.Errorf("got (%q,%q), want (Deployment, cart)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
 	}
 }
 
@@ -210,17 +213,23 @@ func TestWorkloadKey_StatefulSet(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "StatefulSet" || name != "db" {
 		t.Errorf("got (%q,%q), want (StatefulSet, db)", kind, name)
+	}
+	if !confident {
+		t.Errorf("confident = false, want true (non-RS top-level kind is authoritative)")
 	}
 }
 
 func TestWorkloadKey_OrphanPod(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "solo"}}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "Pod" || name != "solo" {
 		t.Errorf("got (%q,%q), want (Pod, solo)", kind, name)
+	}
+	if !confident {
+		t.Errorf("confident = false, want true (orphan pod kind is authoritative)")
 	}
 }
 
@@ -247,9 +256,12 @@ func TestWorkloadKey_DaemonSetJobCronJob(t *testing.T) {
 					},
 				},
 			}
-			kind, name := workloadKey(pod)
+			kind, name, confident := workloadKey(pod, nil)
 			if kind != c.kind || name != c.ownerKey {
 				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.kind, c.ownerKey)
+			}
+			if !confident {
+				t.Errorf("confident = false, want true (%s is authoritative)", c.kind)
 			}
 		})
 	}
@@ -268,9 +280,12 @@ func TestWorkloadKey_ReplicaSetNoHash(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "ReplicaSet" || name != "frontend" {
 		t.Errorf("got (%q,%q), want (ReplicaSet, frontend)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
 	}
 }
 
@@ -313,9 +328,12 @@ func TestWorkloadKey_ReplicaSetHashSuffixHeuristic(t *testing.T) {
 					},
 				},
 			}
-			kind, name := workloadKey(pod)
+			kind, name, confident := workloadKey(pod, nil)
 			if kind != c.wantKind || name != c.wantName {
 				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.wantKind, c.wantName)
+			}
+			if confident {
+				t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
 			}
 		})
 	}
@@ -405,11 +423,13 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 
 // --- cluster-wide handler path --------------------------------------------
 
-// TestHandler_MTLSPosture_ClusterWide exercises the namespace-omitted
-// path with Prometheus offline. Posture should aggregate across every
-// visible namespace and Source stays policy because the cross-check
-// silently degrades when no Prom client is wired.
-func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
+// TestHandler_MTLSPosture_ClusterWide_NoProm exercises the
+// namespace-omitted path with Prometheus offline. Posture should
+// aggregate across every visible namespace and Source stays policy
+// because the cross-check silently degrades when no Prom client is
+// wired. The online-Prom cluster-wide path is covered by
+// TestHandler_MTLSPosture_ClusterWideMetricOverride.
+func TestHandler_MTLSPosture_ClusterWide_NoProm(t *testing.T) {
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
 	cs := fake.NewClientset(
 		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
@@ -570,6 +590,204 @@ func TestRenderIstioMTLSQuery_ScopeSwitch(t *testing.T) {
 
 	if _, err := renderIstioMTLSQuery(`bad"ns`); err == nil {
 		t.Error("invalid namespace passed render validation")
+	}
+
+	// Cluster-wide template MUST stay variable-free. The function comment
+	// documents that any future $-variable addition requires routing
+	// through QueryTemplate.Render; this assertion makes the invariant
+	// machine-checkable so a regression fails CI rather than reaching
+	// PromQL with unsanitized input.
+	if strings.Contains(clusterQ, "$") {
+		t.Errorf("cluster-wide query contains $-variable; must route through Render: %s", clusterQ)
+	}
+
+	// Cardinality cap: the cluster-wide template wraps the aggregation in
+	// topk to bound the result vector for federated/high-cardinality
+	// Prometheus installs. The 2s timeout is the only other backstop.
+	if !strings.Contains(clusterQ, "topk(") {
+		t.Errorf("cluster-wide query missing topk cap: %s", clusterQ)
+	}
+}
+
+// TestQueryIstioMTLSRatios_DropsNaNAndInfSamples ensures Prometheus
+// samples with NaN or +/-Inf values never reach the aggregator. Without
+// the guard, "+Inf" bypasses the r.Total == 0 check (+Inf != 0) and a
+// downstream "ratio = MTLS/+Inf = 0" wrongly demotes a STRICT workload
+// to inactive.
+func TestQueryIstioMTLSRatios_DropsNaNAndInfSamples(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"NaN"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"+Inf"]},
+					{"metric":{"destination_workload":"checkout","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"-Inf"]},
+					{"metric":{"destination_workload":"checkout","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"3"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	ratios, err := queryIstioMTLSRatios(t.Context(), pc, "")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+
+	// cart had every sample dropped by the NaN/Inf guard — must not
+	// appear in the output. checkout had only one finite sample (a
+	// "none" policy entry of 3.0); it should appear with Total=3, MTLS=0.
+	for _, r := range ratios {
+		if r.Workload == "cart" {
+			t.Errorf("cart present in output despite all-NaN/Inf samples: %+v", r)
+		}
+	}
+	var checkout *IstioMTLSRatio
+	for i := range ratios {
+		if ratios[i].Workload == "checkout" {
+			checkout = &ratios[i]
+			break
+		}
+	}
+	if checkout == nil {
+		t.Fatalf("checkout missing from output (its non-NaN sample should survive)")
+	}
+	if checkout.Total != 3 || checkout.MTLS != 0 {
+		t.Errorf("checkout = {MTLS:%v, Total:%v}, want {MTLS:0, Total:3}", checkout.MTLS, checkout.Total)
+	}
+}
+
+// TestQueryIstioMTLSRatios_DropsEmptyNamespaceSample exercises the
+// new "ns == \"\" → drop sample" guard. Without the guard, a Prom
+// sample with empty destination_workload_namespace would aggregate
+// under "/cart" and shadow the real "shop/cart" lookup in
+// applyMTLSMetricOverrides.
+func TestQueryIstioMTLSRatios_DropsEmptyNamespaceSample(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"","connection_security_policy":"mutual_tls"},"value":[1,"5"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"10"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	ratios, err := queryIstioMTLSRatios(t.Context(), pc, "")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(ratios) != 1 {
+		t.Fatalf("len(ratios) = %d, want 1 (empty-namespace sample must be dropped)", len(ratios))
+	}
+	if ratios[0].Namespace != "shop" || ratios[0].Workload != "cart" || ratios[0].Total != 10 {
+		t.Errorf("survivor = %+v, want {Namespace:shop, Workload:cart, Total:10}", ratios[0])
+	}
+}
+
+// TestIstioMTLSRatio_HasTraffic documents the contract: HasTraffic
+// distinguishes "no data" (Total==0) from "all plaintext" (Total>0,
+// MTLS==0), both of which Ratio() collapses to 0.
+func TestIstioMTLSRatio_HasTraffic(t *testing.T) {
+	cases := []struct {
+		name string
+		r    IstioMTLSRatio
+		want bool
+	}{
+		{"no-traffic", IstioMTLSRatio{Total: 0}, false},
+		{"all-plaintext", IstioMTLSRatio{MTLS: 0, Total: 100}, true},
+		{"mixed", IstioMTLSRatio{MTLS: 50, Total: 100}, true},
+		{"all-mtls", IstioMTLSRatio{MTLS: 100, Total: 100}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.r.HasTraffic(); got != c.want {
+				t.Errorf("HasTraffic() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestWorkloadKey_OwnerRefMapAuthoritative covers the rsOwners path:
+// when the orchestrator successfully listed RSes, workloadKey consults
+// the map directly and returns confident=true.
+func TestWorkloadKey_OwnerRefMapAuthoritative(t *testing.T) {
+	cases := []struct {
+		name         string
+		ownerKind    string
+		ownerName    string
+		wantKind     string
+		wantName     string
+		wantConfident bool
+	}{
+		// Real Deployment-owned RS — confident Deployment promotion.
+		{"deployment-owned", "Deployment", "cart", "Deployment", "cart", true},
+		// Bare RS or RS owned by a non-Deployment controller (e.g. Argo
+		// Rollout) is reported verbatim; the heuristic would have
+		// fabricated a Deployment.
+		{"rollout-owned", "Rollout", "cart", "ReplicaSet", "cart-bcdfg", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "shop",
+					Name:      "cart-bcdfg-pod",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: "ReplicaSet", Name: "cart-bcdfg"},
+					},
+				},
+			}
+			rsOwners := map[string]rsOwner{
+				"shop/cart-bcdfg": {Kind: c.ownerKind, Name: c.ownerName},
+			}
+			kind, name, confident := workloadKey(pod, rsOwners)
+			if kind != c.wantKind || name != c.wantName || confident != c.wantConfident {
+				t.Errorf("got (%q, %q, confident=%v), want (%q, %q, confident=%v)",
+					kind, name, confident, c.wantKind, c.wantName, c.wantConfident)
+			}
+		})
+	}
+}
+
+// TestWorkloadKey_OwnerRefMapMissingFallsBackToHeuristic: when the RS
+// list call partially succeeded (truncation, race) and a pod's RS
+// isn't in the map, workloadKey falls back to the alphabet heuristic
+// and reports confident=false.
+func TestWorkloadKey_OwnerRefMapMissingFallsBackToHeuristic(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "shop",
+			Name:      "cart-6d4b7-pod",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "cart-6d4b7"},
+			},
+		},
+	}
+	// Map is non-nil but doesn't contain cart-6d4b7.
+	rsOwners := map[string]rsOwner{"shop/other-app": {Kind: "Deployment", Name: "other-app"}}
+	kind, name, confident := workloadKey(pod, rsOwners)
+	if kind != "Deployment" || name != "cart" {
+		t.Errorf("got (%q,%q), want (Deployment, cart)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (RS missing from map → heuristic fallback)")
 	}
 }
 

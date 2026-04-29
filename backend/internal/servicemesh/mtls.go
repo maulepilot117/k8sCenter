@@ -3,6 +3,7 @@ package servicemesh
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -77,6 +78,13 @@ type WorkloadMTLS struct {
 	// "workload", "namespace", or "mesh". Empty for Linkerd, for the
 	// UNSET default, or for metric-driven decisions.
 	SourceDetail string `json:"sourceDetail,omitempty"`
+	// WorkloadKindConfident is true when WorkloadKind was confirmed via a
+	// ReplicaSet owner-reference lookup (or by a non-RS top-level kind
+	// like StatefulSet). False when derived from the alphabet heuristic
+	// because the RS list call failed or was RBAC-denied — the kind
+	// could be a fabricated Deployment from a user-named RS. UI clients
+	// should mark non-confident rows visually.
+	WorkloadKindConfident bool `json:"workloadKindConfident"`
 }
 
 // MTLSPostureResponse is the envelope for GET /mesh/mtls.
@@ -191,39 +199,96 @@ func linkerdPodState(pod *corev1.Pod) MTLSState {
 	return MTLSUnmeshed
 }
 
-// workloadKey identifies the top-level controller for a pod. We walk
-// one level of OwnerReferences, unwrapping a Deployment-owned
-// ReplicaSet via the kube-controller "-<hash>" suffix convention.
-// Orphan ReplicaSets and user-named RSes whose suffix is not a real
-// pod-template-hash are reported verbatim as ReplicaSet so we never
-// fabricate a Deployment that isn't there. Orphan pods key under
-// ("Pod", <podName>).
-func workloadKey(pod *corev1.Pod) (kind, name string) {
+// rsOwner is a normalized record of a ReplicaSet's controller owner
+// reference. Populated by listReplicaSetControllers; consulted by
+// workloadKey to decide whether an RS-owned pod should report its
+// top-level Deployment authoritatively or fall back to the heuristic.
+type rsOwner struct {
+	Kind string
+	Name string
+}
+
+// listReplicaSetControllers returns a map keyed on "ns/rsname" of every
+// ReplicaSet's controller owner reference. namespace=="" lists
+// cluster-wide. Errors are non-fatal: callers pass the returned map
+// (possibly nil) into workloadKey, which falls back to the alphabet
+// heuristic when an entry is missing. The same meshListCap/Timeout
+// budget as listNamespacePods applies.
+func listReplicaSetControllers(ctx context.Context, cs kubernetes.Interface, namespace string) (map[string]rsOwner, error) {
+	callCtx, cancel := context.WithTimeout(ctx, meshListTimeout)
+	defer cancel()
+	list, err := cs.AppsV1().ReplicaSets(namespace).List(callCtx, metav1.ListOptions{Limit: meshListCap})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]rsOwner, len(list.Items))
+	for i := range list.Items {
+		rs := &list.Items[i]
+		for _, or := range rs.OwnerReferences {
+			if or.Controller != nil && *or.Controller {
+				out[rs.Namespace+"/"+rs.Name] = rsOwner{Kind: or.Kind, Name: or.Name}
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// workloadKey identifies the top-level controller for a pod and
+// reports whether the answer is authoritative. When rsOwners is
+// non-nil, an RS-owned pod looks up the owner reference directly and
+// the result is confident. When rsOwners is nil (RS list failed or
+// was RBAC-denied), the function falls back to the alphabet heuristic
+// — Deployment-owned ReplicaSets are recognized by a kube-controller
+// pod-template-hash suffix, and the "Deployment" kind is marked
+// non-confident so the response can flag the row to the UI. Orphan
+// pods key under ("Pod", <podName>) and are always confident.
+func workloadKey(pod *corev1.Pod, rsOwners map[string]rsOwner) (kind, name string, confident bool) {
 	for _, or := range pod.OwnerReferences {
 		switch or.Kind {
 		case "ReplicaSet":
-			if idx := strings.LastIndex(or.Name, "-"); idx > 0 && isReplicaSetHashSuffix(or.Name[idx+1:]) {
-				return "Deployment", or.Name[:idx]
+			if rsOwners != nil {
+				if owner, ok := rsOwners[pod.Namespace+"/"+or.Name]; ok {
+					if owner.Kind == "Deployment" {
+						return "Deployment", owner.Name, true
+					}
+					// Non-Deployment RS owner (e.g. Argo Rollout) or
+					// no controller-owner: report the RS verbatim
+					// rather than mis-classifying.
+					return "ReplicaSet", or.Name, true
+				}
+				// RS missing from the map: race (RS deleted between
+				// pod and rs list), truncation, or selective RBAC.
+				// Fall through to the heuristic, marked non-confident.
 			}
-			return "ReplicaSet", or.Name
+			if idx := strings.LastIndex(or.Name, "-"); idx > 0 && isReplicaSetHashSuffix(or.Name[idx+1:]) {
+				return "Deployment", or.Name[:idx], false
+			}
+			return "ReplicaSet", or.Name, false
 		case "StatefulSet", "DaemonSet", "Job", "CronJob":
-			return or.Kind, or.Name
+			return or.Kind, or.Name, true
 		}
 	}
-	return "Pod", pod.Name
+	return "Pod", pod.Name, true
 }
 
 // isReplicaSetHashSuffix reports whether s looks like a kube-controller
 // pod-template-hash. Modern Deployment hashes are produced by
-// k8s.io/apimachinery/pkg/util/rand.SafeEncodeString, which translates
-// every byte through a 27-character alphabet that excludes vowels and
-// the digits 0/1/3 (avoids generating profanity-like strings). The
-// length tracks fmt.Sprint(uint32) — never more than 10 chars — and we
-// floor at 5 to match the shortest hash kube-controller is observed to
-// produce in real clusters. A match is a strong signal that the "-"
-// stripped from a ReplicaSet name belongs to a Deployment; a miss
-// means the suffix is a user-chosen string ("worker-v1", "app-12345")
-// and the name should be treated as the workload itself.
+// k8s.io/apimachinery/pkg/util/rand.SafeEncodeString (apimachinery
+// pkg/util/rand/rand.go), which translates every byte through a
+// 27-character alphabet that excludes vowels and the digits 0/1/3
+// (avoids generating profanity-like strings). The length tracks
+// fmt.Sprint(uint32) — never more than 10 chars. We floor at 5: real
+// kube-controller output is bounded above by 10 but the lower bound
+// is empirical, not derived. uint32 hash values 0–9999 produce 1–4
+// char outputs and would be misclassified as user-named RSes (rate
+// ~2.3e-6 per workload); accepting that as a graceful false negative
+// is preferable to the prior code's false positive (fabricated
+// Deployment from any "-<suffix>" RS name). A match is a strong
+// signal that the "-" stripped from a ReplicaSet name belongs to a
+// Deployment; a miss means the suffix is a user-chosen string
+// ("worker-v1", "app-12345") and the name should be treated as the
+// workload itself.
 func isReplicaSetHashSuffix(s string) bool {
 	if len(s) < 5 || len(s) > 10 {
 		return false
@@ -319,32 +384,34 @@ func peerAuthsFromPolicies(policies []MeshedPolicy) []peerAuthRef {
 // aggregateWorkloads so the Prom cross-check can run between the two
 // passes without coupling to the resolver.
 type podPosture struct {
-	Namespace    string
-	PodName      string
-	PodLabels    map[string]string
-	WorkloadKind string
-	Workload     string
-	Mesh         MeshType
-	State        MTLSState
-	Source       MTLSSource
-	IstioMode    string
-	SourceDetail string
+	Namespace             string
+	PodName               string
+	PodLabels             map[string]string
+	WorkloadKind          string
+	Workload              string
+	WorkloadKindConfident bool
+	Mesh                  MeshType
+	State                 MTLSState
+	Source                MTLSSource
+	IstioMode             string
+	SourceDetail          string
 }
 
-func computePodPostures(pods []corev1.Pod, peerAuths []peerAuthRef) []podPosture {
+func computePodPostures(pods []corev1.Pod, peerAuths []peerAuthRef, rsOwners map[string]rsOwner) []podPosture {
 	out := make([]podPosture, 0, len(pods))
 	for i := range pods {
 		pod := &pods[i]
 		mesh := podMeshMembership(pod)
-		kind, name := workloadKey(pod)
+		kind, name, confident := workloadKey(pod, rsOwners)
 
 		pp := podPosture{
-			Namespace:    pod.Namespace,
-			PodName:      pod.Name,
-			PodLabels:    pod.Labels,
-			WorkloadKind: kind,
-			Workload:     name,
-			Mesh:         mesh,
+			Namespace:             pod.Namespace,
+			PodName:               pod.Name,
+			PodLabels:             pod.Labels,
+			WorkloadKind:          kind,
+			Workload:              name,
+			WorkloadKindConfident: confident,
+			Mesh:                  mesh,
 		}
 
 		switch mesh {
@@ -394,14 +461,15 @@ func aggregateWorkloads(postures []podPosture) []WorkloadMTLS {
 		// Start from the first pod and widen to mixed if any peer disagrees.
 		first := members[0]
 		agg := WorkloadMTLS{
-			Namespace:    first.Namespace,
-			Workload:     first.Workload,
-			WorkloadKind: first.WorkloadKind,
-			Mesh:         first.Mesh,
-			State:        first.State,
-			Source:       first.Source,
-			IstioMode:    first.IstioMode,
-			SourceDetail: first.SourceDetail,
+			Namespace:             first.Namespace,
+			Workload:               first.Workload,
+			WorkloadKind:           first.WorkloadKind,
+			WorkloadKindConfident:  first.WorkloadKindConfident,
+			Mesh:                   first.Mesh,
+			State:                  first.State,
+			Source:                 first.Source,
+			IstioMode:              first.IstioMode,
+			SourceDetail:           first.SourceDetail,
 		}
 		for _, m := range members[1:] {
 			if m.State != agg.State {
@@ -409,6 +477,11 @@ func aggregateWorkloads(postures []podPosture) []WorkloadMTLS {
 				// Mesh divergence across pods of the same workload is
 				// pathological; keep the initial mesh label so the row
 				// still renders.
+			}
+			// A workload is only confident when every member pod is
+			// confident — one heuristic-derived pod taints the row.
+			if !m.WorkloadKindConfident {
+				agg.WorkloadKindConfident = false
 			}
 		}
 		out = append(out, agg)
@@ -433,9 +506,21 @@ type IstioMTLSRatio struct {
 	Total     float64
 }
 
-// Ratio returns the mTLS fraction; 0 when no traffic was observed.
+// HasTraffic reports whether Prometheus observed any rated traffic for
+// this workload over the query window. Callers must check this before
+// interpreting Ratio(): Ratio() returns 0 for both no-traffic and
+// all-plaintext, which are opposite signals for posture overrides.
+func (r IstioMTLSRatio) HasTraffic() bool {
+	return r.Total > 0
+}
+
+// Ratio returns the mTLS fraction in [0, 1]. Returns 0 in two distinct
+// cases: no traffic observed (Total == 0) AND all traffic was
+// plaintext (MTLS == 0, Total > 0). Use HasTraffic() to disambiguate;
+// applying overrides on a 0-Ratio with no upstream HasTraffic() check
+// will demote a STRICT workload to inactive based on missing data.
 func (r IstioMTLSRatio) Ratio() float64 {
-	if r.Total == 0 {
+	if !r.HasTraffic() {
 		return 0
 	}
 	return r.MTLS / r.Total
@@ -455,6 +540,9 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 	queryCtx, cancel := context.WithTimeout(ctx, promQueryTimeout)
 	defer cancel()
 
+	// namespace=="" → cluster-wide template; non-empty → k8s-name-validated
+	// scoped template. The namespace-filter and the validation step are both
+	// inside renderIstioMTLSQuery; do not concatenate user input here.
 	q, err := renderIstioMTLSQuery(namespace)
 	if err != nil {
 		return nil, err
@@ -480,13 +568,23 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 		if workload == "" || ns == "" {
 			continue
 		}
+		v := float64(s.Value)
+		// NaN/Inf samples bypass the r.Total == 0 guard downstream
+		// (+Inf != 0). Left unfiltered, "10/+Inf == 0" would mistakenly
+		// flip a STRICT workload to inactive/metric. Drop the sample
+		// before allocating the map entry — Istio should never emit
+		// these, but a misbehaving recording rule or federation chain
+		// can. Filtering after entry allocation would also leave a
+		// zero-Total ghost row that surfaces in the output.
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
+		}
 		key := ns + "/" + workload
 		entry, ok := agg[key]
 		if !ok {
 			entry = &IstioMTLSRatio{Namespace: ns, Workload: workload}
 			agg[key] = entry
 		}
-		v := float64(s.Value)
 		entry.Total += v
 		if policy == "mutual_tls" {
 			entry.MTLS += v
@@ -506,10 +604,16 @@ func queryIstioMTLSRatios(ctx context.Context, pc *monitoring.PrometheusClient, 
 // template unchanged: it carries zero $-variables and any future
 // developer adding a variable here MUST also add a Render call,
 // otherwise unsanitized input would reach PromQL.
+//
+// Cardinality cap: the cluster-wide query wraps the aggregation in
+// topk(mtlsClusterWideTopK, ...) so a federated or high-cardinality
+// Prometheus can't produce an unbounded result vector. Workloads with
+// zero traffic don't influence applyMTLSMetricOverrides anyway, so
+// dropping the long tail is harmless to posture accuracy.
 func renderIstioMTLSQuery(namespace string) (string, error) {
 	const (
 		scoped      = `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total{destination_workload_namespace="$ns"}[5m]))`
-		clusterWide = `sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total[5m]))`
+		clusterWide = `topk(5000, sum by (destination_workload, destination_workload_namespace, connection_security_policy) (rate(istio_requests_total[5m])))`
 	)
 	if namespace == "" {
 		return clusterWide, nil
@@ -540,7 +644,7 @@ func applyMTLSMetricOverrides(workloads []WorkloadMTLS, ratios []IstioMTLSRatio)
 			continue
 		}
 		r, ok := byKey[w.Namespace+"/"+w.Workload]
-		if !ok || r.Total == 0 {
+		if !ok || !r.HasTraffic() {
 			continue
 		}
 		ratio := r.Ratio()
