@@ -1,7 +1,7 @@
 ---
 title: feat — Service Mesh Observability (Istio + Linkerd)
 type: feat
-status: active
+status: complete
 date: 2026-04-16
 roadmap: "#6"
 ---
@@ -630,7 +630,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D4: Helm chart + docs**
+- [x] **Unit D4: Helm chart + docs**
 
 **Goal:** Helm chart updates + smoke documentation.
 
