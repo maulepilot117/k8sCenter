@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -316,6 +317,11 @@ func TestWorkloadKey_ReplicaSetHashSuffixHeuristic(t *testing.T) {
 		{"vowel-suffix", "my-standalone", "ReplicaSet", "my-standalone"},
 		{"unsafe-digit-suffix", "app-12345", "ReplicaSet", "app-12345"},
 		{"too-short-suffix", "svc-ab12", "ReplicaSet", "svc-ab12"},
+		// Pure-length-short rejection: suffix "bcdf" is 4 chars and
+		// every char is in the safe alphabet, so the only thing
+		// rejecting it is len < 5. Removing or lowering the floor
+		// would silently break here.
+		{"too-short-but-all-valid-chars", "svc-bcdf", "ReplicaSet", "svc-bcdf"},
 		{"too-long-suffix", "svc-bcdfghjklmn", "ReplicaSet", "svc-bcdfghjklmn"},
 	}
 	for _, c := range cases {
@@ -423,6 +429,31 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 
 // --- cluster-wide handler path --------------------------------------------
 
+// newClusterWideMTLSFixture returns a Handler pre-wired with a
+// mesh-root STRICT PeerAuthentication and two Istio-injected pods
+// across "shop" and "billing" namespaces. Pass nil for promClient to
+// exercise the offline-Prom degradation path; pass a real
+// monitoring.PrometheusClient to exercise the cluster-wide
+// cross-check. Pod fixture names embed real pod-template-hash shapes
+// (5–10 chars from the kube safe alphabet) so workloadKey's heuristic
+// fallback returns Deployment without an authoritative RS-list call.
+func newClusterWideMTLSFixture(t *testing.T, promClient *monitoring.PrometheusClient) *Handler {
+	t.Helper()
+	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
+	cs := fake.NewClientset(
+		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
+		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
+	)
+	return &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		dynOverride:        newIstioFakeDynClient(pa),
+		clientsetOverride:  cs,
+		promClientOverride: promClient,
+	}
+}
+
 // TestHandler_MTLSPosture_ClusterWide_NoProm exercises the
 // namespace-omitted path with Prometheus offline. Posture should
 // aggregate across every visible namespace and Source stays policy
@@ -430,19 +461,7 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 // wired. The online-Prom cluster-wide path is covered by
 // TestHandler_MTLSPosture_ClusterWideMetricOverride.
 func TestHandler_MTLSPosture_ClusterWide_NoProm(t *testing.T) {
-	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
-	cs := fake.NewClientset(
-		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
-		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
-	)
-
-	h := &Handler{
-		Discoverer:        seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
-		AccessChecker:     resources.NewAlwaysAllowAccessChecker(),
-		Logger:            slog.Default(),
-		dynOverride:       newIstioFakeDynClient(pa),
-		clientsetOverride: cs,
-	}
+	h := newClusterWideMTLSFixture(t, nil)
 
 	// No ?namespace= → cluster-wide.
 	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
@@ -481,13 +500,17 @@ func TestHandler_MTLSPosture_ClusterWide_NoProm(t *testing.T) {
 // ratios still flip individual workloads to source=metric. Without this
 // path the dashboard's most common shape (cluster-wide) silently
 // disagreed with the scoped view.
+//
+// Also asserts the dispatched PromQL: a regression that mistakenly
+// passes a non-empty namespace to queryIstioMTLSRatios (selecting the
+// scoped template instead) would still pass the body assertions
+// because the fake server's payload is namespace-agnostic. Capturing
+// the query closes that gap.
 func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
-	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
-	cs := fake.NewClientset(
-		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
-		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
+	var (
+		mu             sync.Mutex
+		capturedQuery  string
 	)
-
 	// Fake Prom returns multi-namespace samples in a single response —
 	// matching the cluster-wide template's shape. Both workloads have
 	// non-trivial overrides (ratio < 1) so the test would fail if the
@@ -495,6 +518,9 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 	// sees 90% mTLS (flips to mixed/metric); invoice sees ~83%
 	// (also flips to mixed/metric).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		capturedQuery = r.FormValue("query")
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
 			"status": "success",
@@ -515,14 +541,7 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 		t.Fatalf("prom client: %v", err)
 	}
 
-	h := &Handler{
-		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
-		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
-		Logger:             slog.Default(),
-		dynOverride:        newIstioFakeDynClient(pa),
-		clientsetOverride:  cs,
-		promClientOverride: pc,
-	}
+	h := newClusterWideMTLSFixture(t, pc)
 
 	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
 	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
@@ -537,6 +556,19 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 	}
 	if jerr := json.Unmarshal(rec.Body.Bytes(), &env); jerr != nil {
 		t.Fatalf("decode: %v", jerr)
+	}
+
+	mu.Lock()
+	got := capturedQuery
+	mu.Unlock()
+	if got == "" {
+		t.Fatalf("Prom server received no query; cluster-wide cross-check did not dispatch")
+	}
+	if strings.Contains(got, `destination_workload_namespace="`) {
+		t.Errorf("cluster-wide path dispatched namespace-filtered query (regression to scoped template): %s", got)
+	}
+	if !strings.Contains(got, "topk(") {
+		t.Errorf("cluster-wide query missing topk cap (regression on cardinality bound): %s", got)
 	}
 
 	want := map[string]struct {
@@ -562,6 +594,56 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 		if wl.Source != exp.source {
 			t.Errorf("%s Source = %q, want %q", key, wl.Source, exp.source)
 		}
+	}
+}
+
+// TestHandler_MTLSPosture_LinkerdOnlySkipsPromCrossCheck verifies the
+// mesh-type gate: queryIstioMTLSRatios targets istio_requests_total,
+// so a Linkerd-only cluster has nothing useful to ask Prometheus.
+// applyMTLSMetricOverrides already filters by Mesh != MeshIstio, so
+// without the gate the Prom round-trip is purely wasted. The test
+// wires a fake Prom server that fails the test if it ever receives a
+// request.
+func TestHandler_MTLSPosture_LinkerdOnlySkipsPromCrossCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Prom server received a request from a Linkerd-only cluster: %s %s", r.Method, r.URL.String())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	cs := fake.NewClientset(linkerdPod("shop", "cart-abc", map[string]string{"app": "cart"}))
+	h := &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshLinkerd, Linkerd: &MeshInfo{Installed: true, Version: "edge-25"}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		clientsetOverride:  cs,
+		promClientOverride: pc,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
+	rec := httptest.NewRecorder()
+	h.HandleMTLSPosture(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var env struct {
+		Data MTLSPostureResponse `json:"data"`
+	}
+	if jerr := json.Unmarshal(rec.Body.Bytes(), &env); jerr != nil {
+		t.Fatalf("decode: %v", jerr)
+	}
+	if len(env.Data.Workloads) != 1 || env.Data.Workloads[0].Mesh != MeshLinkerd {
+		t.Errorf("workloads = %+v, want one Linkerd entry", env.Data.Workloads)
+	}
+	if env.Data.Workloads[0].Source != MTLSSourcePolicy {
+		t.Errorf("Source = %q, want policy (Linkerd has no metric override)", env.Data.Workloads[0].Source)
 	}
 }
 

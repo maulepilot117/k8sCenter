@@ -650,20 +650,37 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	postures := computePodPostures(pods, peerAuths, rsOwners)
 	workloads := aggregateWorkloads(postures)
 
-	// Prom cross-check fires for both scoped and cluster-wide requests.
-	// queryIstioMTLSRatios switches between the namespace-filtered and
-	// cluster-wide PromQL templates based on the namespace argument; the
-	// cross-check still degrades silently to policy-only when Prometheus
-	// is offline. Skip the call when workloads is empty: applyMTLSMetricOverrides
-	// is a no-op on an empty slice, so the Prom round-trip would have no
-	// consumer (covers both pod-list-failure and zero-meshed-pods cases).
-	if pc := h.promClient(); pc != nil && len(workloads) > 0 {
+	// Prom cross-check fires for both scoped and cluster-wide requests
+	// when Istio is part of the detected mesh. queryIstioMTLSRatios
+	// switches between the namespace-filtered and cluster-wide PromQL
+	// templates based on the namespace argument; the cross-check still
+	// degrades silently to policy-only when Prometheus is offline.
+	//
+	// Skip conditions:
+	//   - workloads empty: applyMTLSMetricOverrides is a no-op so the
+	//     Prom round-trip would have no consumer (also covers the
+	//     pod-list-failure and zero-meshed-pods cases).
+	//   - mesh is Linkerd-only: the query template targets
+	//     istio_requests_total; Linkerd has no equivalent and
+	//     applyMTLSMetricOverrides already filters by Mesh != MeshIstio,
+	//     so the call would be wasted on a Linkerd-only cluster.
+	istioPresent := status.Detected == MeshIstio || status.Detected == MeshBoth
+	if pc := h.promClient(); pc != nil && len(workloads) > 0 && istioPresent {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
 			errs["prometheus-cross-check"] = "metric cross-check unavailable; posture derived from policies only"
 		} else {
 			workloads = applyMTLSMetricOverrides(workloads, ratios)
+			// When the pod list was capped AND the Prom cross-check ran
+			// cluster-wide, the metric ratios cover the full cluster but
+			// only the visible pods are in the response. Ratios for
+			// invisible workloads were silently dropped. Surface this so
+			// "Source=metric" rows aren't read as authoritative on a
+			// partial pod set.
+			if truncated && namespace == "" {
+				errs["truncated"] = fmt.Sprintf("result capped at %d pods; metric cross-check covered only visible workloads (pass ?namespace= to scope the request)", meshListCap)
+			}
 		}
 	}
 
