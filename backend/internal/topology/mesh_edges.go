@@ -116,27 +116,30 @@ func buildMeshEdges(
 	return edges, stats
 }
 
-// resolveServiceHost looks up a mesh route's host string against the topology
-// nameIndex. It accepts the three common Kubernetes service-host shapes:
+// resolveServiceHost looks up a mesh route's host string against the
+// topology nameIndex. It accepts the three common Kubernetes service-
+// host shapes:
 //
 //	bare name:        my-svc
 //	namespaced:       my-svc.foo
-//	fully qualified:  my-svc.foo.svc.cluster.local
+//	fully qualified:  my-svc.foo.svc.<cluster-domain>
 //
-// Lookup is case-insensitive: DNS hostnames are case-insensitive and Istio
-// VS hosts are user-supplied free-form text, but Kubernetes Service names
-// are RFC 1123 lowercase. We lowercase the host first so an operator who
-// types "MyService.foo" in a VirtualService still resolves to the
-// corresponding Service.
+// Lookup is case-insensitive: DNS hostnames are case-insensitive and
+// Istio VS hosts are user-supplied free-form text, but Kubernetes
+// Service names are RFC 1123 lowercase. We lowercase the host first so
+// an operator who types "MyService.foo" in a VirtualService still
+// resolves to the corresponding Service.
+//
+// Custom cluster domains are supported transparently. Rather than
+// matching the literal "cluster.local" tail (which fails for clusters
+// using --cluster-domain=k8s.example.com or similar), we split at the
+// first ".svc." separator and take everything before it. This works for
+// any cluster domain because the ".svc." separator is canonical in the
+// Kubernetes service-FQDN format regardless of the trailing domain.
 //
 // Only hosts that resolve to a Service node in the requested namespace
-// match. Cross-namespace hosts (my-svc.bar from inside namespace foo) and
-// external hosts (api.example.com) return ok=false.
-//
-// Custom cluster domains (clusterDomain != "cluster.local") are a known
-// limitation inherited from Phase B; these FQDN-form hosts won't resolve.
-// The bare and namespaced forms still work because they don't depend on
-// the cluster domain.
+// match. Cross-namespace hosts (my-svc.bar from inside namespace foo)
+// and external hosts (api.example.com) return ok=false.
 func resolveServiceHost(host, namespace string, nameIndex map[string]string) (string, bool) {
 	if host == "" || namespace == "" {
 		return "", false
@@ -145,13 +148,15 @@ func resolveServiceHost(host, namespace string, nameIndex map[string]string) (st
 	// Lowercase before any matching so case differences in user-supplied
 	// VS hosts don't silently drop edges.
 	bare := strings.ToLower(host)
-	// Strip the FQDN suffix. We accept .svc.cluster.local and .svc; the
-	// shorter forms still flow through the dot-split below.
-	for _, suffix := range []string{".svc.cluster.local", ".svc"} {
-		if trimmed, ok := strings.CutSuffix(bare, suffix); ok {
-			bare = trimmed
-			break
-		}
+	// Strip the cluster-domain suffix by splitting at ".svc." (the
+	// canonical k8s service-FQDN separator). "name.namespace.svc.<any>"
+	// becomes "name.namespace" without depending on the cluster domain
+	// being "cluster.local". Plain ".svc" with nothing after it is
+	// handled by the trailing CutSuffix.
+	if idx := strings.Index(bare, ".svc."); idx >= 0 {
+		bare = bare[:idx]
+	} else if trimmed, ok := strings.CutSuffix(bare, ".svc"); ok {
+		bare = trimmed
 	}
 
 	// At this point the candidate is either "name" or "name.namespace".

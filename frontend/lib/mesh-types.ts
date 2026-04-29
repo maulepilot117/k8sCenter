@@ -123,6 +123,14 @@ export interface GoldenSignals {
   available: boolean;
   /** Populated only when `available` is false. */
   reason?: string;
+  /**
+   * Names of PromQL queries (rps, errorNum, errorDen, p50, p95, p99) that
+   * failed during a partial-success response. Empty / absent on a fully
+   * successful fetch. The UI uses this to flag a degraded Prometheus
+   * response (one query answering with zeros) distinctly from a silent
+   * meshed service (every query answering with zeros).
+   */
+  missingQueries?: string[];
   rps: number;
   /** Fraction in [0, 1]. */
   errorRate: number;

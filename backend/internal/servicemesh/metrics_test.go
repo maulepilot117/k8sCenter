@@ -1,6 +1,7 @@
 package servicemesh
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -390,6 +392,53 @@ func TestGoldenSignalsForService_PartialFailure(t *testing.T) {
 	}
 	if got.P99Ms != 0 {
 		t.Errorf("P99 = %v, want 0 (query failed so no value)", got.P99Ms)
+	}
+	// Partial-success surface: the failed P99 query should appear in
+	// MissingQueries so the UI can flag the response as degraded.
+	if !slices.Contains(got.MissingQueries, "p99") {
+		t.Errorf("MissingQueries = %v, want it to include 'p99' (partial-success contract)", got.MissingQueries)
+	}
+}
+
+// TestGoldenSignalsForService_AllSucceedHasNoMissingQueries locks the
+// happy-path invariant that MissingQueries is empty (and thus
+// JSON-omitted) when every query returns. The frontend treats
+// MissingQueries as the authoritative "is this response degraded?"
+// signal, so a stray entry in the all-good case would cause spurious
+// "Partial metrics" warnings in the UI.
+func TestGoldenSignalsForService_AllSucceedHasNoMissingQueries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"42"]}]}}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	got, gerr := goldenSignalsForService(context.Background(), pc, MeshIstio, "shop", "cart")
+	if gerr != nil {
+		t.Fatalf("unexpected error: %v", gerr)
+	}
+	if !got.Available {
+		t.Fatalf("Available = false, want true")
+	}
+	if len(got.MissingQueries) != 0 {
+		t.Errorf("MissingQueries = %v, want empty (all queries succeeded)", got.MissingQueries)
+	}
+
+	// Lock the wire-format contract end-to-end: omitempty on a nil slice
+	// keeps the field out of the JSON. A future refactor that
+	// preallocates the slice (e.g. make([]string, 0, 6)) would silently
+	// start emitting "missingQueries":[] and break the frontend's
+	// "treat absence as success" assumption — this assertion catches it.
+	body, jerr := json.Marshal(got)
+	if jerr != nil {
+		t.Fatalf("marshal: %v", jerr)
+	}
+	if bytes.Contains(body, []byte("missingQueries")) {
+		t.Errorf("JSON body contains \"missingQueries\" on a fully-successful response; want field omitted.\nbody: %s", body)
 	}
 }
 
