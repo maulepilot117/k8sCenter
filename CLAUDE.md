@@ -142,7 +142,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
-- Topology: `GET /topology/{namespace}` (RBAC-gated resource dependency graph with health)
+- Topology: `GET /topology/{namespace}[?overlay=mesh]` (RBAC-gated resource dependency graph with health; `?overlay=mesh` adds service-to-service `mesh_vs` (Istio VirtualService) and `mesh_sp` (Linkerd ServiceProfile) edges. Response gains `overlay` (`""` omitted when not requested, `"mesh"` when applied, `"unavailable"` when no mesh installed / provider unwired / fetch errored), `edgesTruncated` flagged separately from `truncated` (node cap), and `errors` for per-stage warnings)
 - Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
 - Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
 - Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)
@@ -324,6 +324,11 @@ make check-dashboards                             # Verify Grafana JSON sync
   - Routes: `/security/certificates/{new,issuers/new,cluster-issuers/new}` plus entry buttons on list pages and command palette quick actions
   - v1 ACME scope: SelfSigned + HTTP01 ingress only (CA/Vault/DNS01 deferred to YAML editor)
   - Ships via PR #180 with cleanup follow-ups in #181, #182, #183
+- **Phase 12 (Service Mesh Observability):** COMPLETE — 4 sub-phases (A–D)
+  - **Phase A (Inventory):** New `internal/servicemesh/` package — CRD-based auto-detection of Istio + Linkerd with 5min discovery cache, dynamic-client reads via singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`. Endpoints: `GET /mesh/{status,routing,policies,routing/:id}`. Composite-ID scheme `mesh:namespace:kindCode:name`. Mesh CRDs covered: Istio VirtualService/DestinationRule/Gateway/PeerAuthentication/AuthorizationPolicy, Linkerd ServiceProfile/Server/HTTPRoute/AuthorizationPolicy/MeshTLSAuthentication. Ships via PR #199.
+  - **Phase B (mTLS posture + golden signals):** Per-workload mTLS state (`active`/`inactive`/`mixed`/`unmeshed`) with policy + Prometheus metric cross-check, three-source attribution (`policy`/`metric`/`default`). Per-service golden signals (RPS, error rate, p50/p95/p99 latency) via templated PromQL with `monitoring.QueryTemplate.Render` k8s-name guard. Endpoints: `GET /mesh/{mtls,golden-signals}`. Partial-failure surface via response `errors` map; ReplicaSet pod-template-hash heuristic for workload-kind attribution with `workloadKindConfident` flag. Ships via PR #200; follow-ups #203 (RS heuristic + cluster-wide PromQL cross-check).
+  - **Phase C (Frontend dashboard / routing / mTLS):** 3 islands — `MeshDashboard`, `RoutingTable`, `MTLSPosture` — under `/networking/mesh/*`. `lib/mesh-types.ts` mirrors backend types; `lib/mesh-api.ts` typed client. Theme tokens only. Ships via PR #204.
+  - **Phase D (Topology overlay + golden signals on Service detail):** Backend (D1) extends topology builder with `?overlay=mesh`: new `MeshRouteProvider` interface, pure `buildMeshEdges` emitter (mesh_vs / mesh_sp service-to-service edges with name/namespaced/FQDN host resolution + `(source, target, type)` dedup + 2000-edge cap), per-CRD-group RBAC fail-closed via `CanAccessGroupResource`, `Graph.Overlay` field omitempty so default response is byte-identical. Frontend (D2) adds toolbar toggle on `/observability/topology` with themed mesh edges (`var(--accent)` for Istio, `var(--accent-secondary)` for Linkerd) and disabled state when backend reports `overlay: "unavailable"`. Frontend (D3) adds inline `MeshGoldenSignals` card on Service detail — silently absent for unmeshed services or zero-traffic baselines, renders "Metrics unavailable" when Prometheus is offline, refreshes every 30s. Helm (D4) declares explicit ClusterRole grants for mesh CRD groups (Istio + Linkerd) so the discoverer + cache layer doesn't depend on the Extensions Hub catch-all `*/*` wildcard.
 
 ## Future Features (Roadmap)
 
@@ -334,7 +339,7 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **3. Diff view** — compare manifests between GitOps revisions (PR #156)
 - [x] **4. Resource Quota & LimitRange Management** — namespace quota wizards, utilization vs. quota visualization, overage warnings (PR #164)
 - [x] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
-- [ ] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS status, circuit breaker config
+- [x] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS posture, golden signals, topology overlay (Phase 12)
 - [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
 - [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards (PR #180, follow-ups #181–#183)
 - [ ] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation

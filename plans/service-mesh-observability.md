@@ -1,7 +1,7 @@
 ---
 title: feat — Service Mesh Observability (Istio + Linkerd)
 type: feat
-status: active
+status: complete
 date: 2026-04-16
 roadmap: "#6"
 ---
@@ -580,7 +580,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D2: Frontend topology overlay toggle**
+- [x] **Unit D2: Frontend topology overlay toggle**
 
 **Goal:** "Show mesh traffic" toggle on `/observability/topology` renders mesh edges with a distinct style.
 
@@ -604,7 +604,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D3: Golden signals on service detail**
+- [x] **Unit D3: Golden signals on service detail**
 
 **Goal:** Surface RPS, p50/p95/p99 latency, and error rate on the existing Service detail page when the service is meshed.
 
@@ -630,7 +630,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D4: Helm chart + docs**
+- [x] **Unit D4: Helm chart + docs**
 
 **Goal:** Helm chart updates + smoke documentation.
 

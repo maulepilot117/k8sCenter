@@ -265,9 +265,32 @@ func main() {
 	logQueryLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
 	logQueryLimiter.StartCleanup(ctx)
 
-	// Initialize topology graph builder
+	// Service Mesh integration (Istio + Linkerd) — hoisted above topology so
+	// the topology builder's mesh-overlay path has a route provider wired in.
+	meshDisc := servicemesh.NewDiscoverer(k8sClient, logger)
+	meshHandler := &servicemesh.Handler{
+		K8sClient:      k8sClient,
+		Discoverer:     meshDisc,
+		AccessChecker:  accessChecker,
+		Logger:         logger,
+		MonitoringDisc: monDiscoverer,
+	}
+	// On a mesh-detection transition (install / uninstall), drop the
+	// 30s route cache so the next overlay/list request returns the new
+	// shape without waiting out the TTL. Mirrors the gitops/policy
+	// invalidation pattern.
+	meshDisc.SetOnChange(func(prev, current servicemesh.MeshType) {
+		logger.Info("service mesh detection changed; invalidating cache", "prev", prev, "current", current)
+		meshHandler.InvalidateCache()
+	})
+	go meshDisc.RunDiscoveryLoop(ctx)
+
+	// Initialize topology graph builder. The mesh handler doubles as the
+	// MeshRouteProvider for the ?overlay=mesh path; passing a nil here
+	// would degrade the overlay to "unavailable" without affecting the
+	// base graph.
 	topoLister := topology.NewInformerLister(informerMgr)
-	topoBuilder := topology.NewBuilder(topoLister, logger)
+	topoBuilder := topology.NewBuilder(topoLister, meshHandler, logger)
 	topoHandler := &topology.Handler{
 		Builder:       topoBuilder,
 		AccessChecker: accessChecker,
@@ -672,16 +695,6 @@ func main() {
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
-
-	// Service Mesh integration (Istio + Linkerd)
-	meshDisc := servicemesh.NewDiscoverer(k8sClient, logger)
-	meshHandler := &servicemesh.Handler{
-		K8sClient:      k8sClient,
-		Discoverer:     meshDisc,
-		AccessChecker:  accessChecker,
-		Logger:         logger,
-		MonitoringDisc: monDiscoverer,
-	}
 
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool

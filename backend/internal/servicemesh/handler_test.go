@@ -297,6 +297,52 @@ func TestHandler_SingleflightCoalesces(t *testing.T) {
 	}
 }
 
+// TestHandler_Routes_ReturnsCachedSliceUnfiltered covers the Phase D1
+// invariant: Handler.Routes returns the cluster-wide cached slice without
+// applying RBAC. Cross-package consumers (the topology overlay) need this
+// raw view so they can apply CanAccessGroupResource per-CRD-group at the
+// scope of the namespace they're rendering.
+func TestHandler_Routes_ReturnsCachedSliceUnfiltered(t *testing.T) {
+	vsFoo := virtualService("foo", "a", []string{"a.foo"}, nil)
+	vsBar := virtualService("bar", "b", []string{"b.bar"}, nil)
+
+	h := &Handler{
+		Discoverer:    seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker: resources.NewAlwaysDenyAccessChecker(), // RBAC denies everything
+		Logger:        slog.Default(),
+		dynOverride:   newIstioFakeDynClient(vsFoo, vsBar),
+	}
+
+	routes, err := h.Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	// Two VS routes seeded; deny-all RBAC must NOT be applied at this layer.
+	if got := len(routes); got != 2 {
+		t.Errorf("Routes len = %d, want 2 (Routes is unfiltered; RBAC is the caller's job)", got)
+	}
+}
+
+// TestHandler_Routes_NilDynClient covers the degraded-cluster path: when no
+// dynamic client is wired, Routes returns an empty slice and no error so
+// callers can render an empty overlay rather than 5xx.
+func TestHandler_Routes_NilDynClient(t *testing.T) {
+	h := &Handler{
+		Discoverer:    seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		// no dynOverride and no K8sClient -> dynClient() returns nil
+	}
+
+	routes, err := h.Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	if len(routes) != 0 {
+		t.Errorf("Routes len = %d, want 0 when no dynamic client is wired", len(routes))
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func doGet(t *testing.T, handler http.HandlerFunc, user *auth.User) *httptest.ResponseRecorder {

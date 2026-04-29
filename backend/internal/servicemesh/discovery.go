@@ -19,12 +19,18 @@ import (
 
 const (
 	staleDuration    = 5 * time.Minute
+	recheckInterval  = 60 * time.Second
 	istioSystemNS    = "istio-system"
 	linkerdControlNS = "linkerd"
 	istioDeployLabel = "app=istiod"
 	linkerdDeployLbl = "linkerd.io/control-plane-component=identity"
 	versionUnknown   = "unknown"
 )
+
+// DiscoveryChangeCallback fires when Probe detects a change in the mesh
+// detection state (e.g., MeshNone → MeshIstio after install). Wired by
+// main() to invalidate cross-package caches that depend on mesh data.
+type DiscoveryChangeCallback func(prev, current MeshType)
 
 // Discoverer probes the cluster for Istio and Linkerd control planes
 // and maintains cached mesh-status state with a lazy re-probe on stale reads.
@@ -33,8 +39,9 @@ type Discoverer struct {
 	disco  discovery.DiscoveryInterface
 	logger *slog.Logger
 
-	mu     sync.RWMutex
-	status MeshStatus
+	mu       sync.RWMutex
+	status   MeshStatus
+	onChange DiscoveryChangeCallback
 }
 
 // NewDiscoverer creates a new service-mesh discoverer. Passing a nil
@@ -83,6 +90,35 @@ func (d *Discoverer) IsInstalled(ctx context.Context) bool {
 	return s.Istio != nil || s.Linkerd != nil
 }
 
+// SetOnChange registers a callback invoked when Probe detects a change
+// in mesh detection state. Use this from main() to invalidate downstream
+// caches (e.g., the handler's 30s route cache, the topology overlay) so
+// a fresh install doesn't lag behind the discovery cycle.
+func (d *Discoverer) SetOnChange(cb DiscoveryChangeCallback) {
+	d.mu.Lock()
+	d.onChange = cb
+	d.mu.Unlock()
+}
+
+// RunDiscoveryLoop probes immediately, then every recheckInterval. The
+// loop exits cleanly when ctx is canceled. Without this loop the
+// Discoverer is purely lazy (probe-on-stale-read), which means a
+// post-startup mesh install isn't noticed until the next user request.
+func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
+	d.Probe(ctx)
+	ticker := time.NewTicker(recheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.Probe(ctx)
+		}
+	}
+}
+
 // Probe runs CRD discovery + control-plane deployment probes and refreshes
 // the cached status. Callers may invoke Probe directly to force a refresh.
 //
@@ -93,16 +129,16 @@ func (d *Discoverer) Probe(ctx context.Context) MeshStatus {
 	// Short-circuit for the test constructor with nil client.
 	if d.disco == nil {
 		d.mu.Lock()
-		defer d.mu.Unlock()
 		d.status = MeshStatus{LastChecked: time.Now().UTC()}
-		return d.status
+		s := d.status
+		d.mu.Unlock()
+		return s
 	}
 
 	istioInfo, istioErr := d.probeIstio(ctx)
 	linkerdInfo, linkerdErr := d.probeLinkerd(ctx)
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	prev := d.status
 	status := MeshStatus{LastChecked: time.Now().UTC()}
@@ -122,11 +158,22 @@ func (d *Discoverer) Probe(ctx context.Context) MeshStatus {
 	status.Detected = detectionFrom(status.Istio, status.Linkerd)
 
 	d.status = status
+	cb := d.onChange
+	prevDetected := prev.Detected
+	d.mu.Unlock()
+
 	d.logger.Info("service mesh discovery completed",
 		"detected", status.Detected,
 		"istioInstalled", status.Istio != nil && status.Istio.Installed,
 		"linkerdInstalled", status.Linkerd != nil && status.Linkerd.Installed,
 	)
+
+	// Fire the change callback OUTSIDE the lock so callbacks (typically
+	// cache invalidations on the handler) don't block subsequent probes.
+	// Only fire on a real transition; a steady state keeps caches warm.
+	if cb != nil && prevDetected != status.Detected {
+		cb(prevDetected, status.Detected)
+	}
 	return status
 }
 

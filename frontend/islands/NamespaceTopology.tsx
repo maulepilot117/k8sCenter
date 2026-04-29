@@ -11,6 +11,21 @@ import { timeAgo } from "@/lib/timeAgo.ts";
 interface TopoGraph {
   nodes: TopoNode[];
   edges: TopoEdge[];
+  // truncated signals nodes were dropped at maxNodes. edgesTruncated
+  // signals mesh-overlay edges were dropped at maxMeshEdges. They are
+  // independent so consumers can tell "graph missing nodes" from
+  // "graph complete, only some mesh edges capped".
+  truncated?: boolean;
+  edgesTruncated?: boolean;
+  // Set by the backend when ?overlay=mesh is requested.
+  // "mesh" — overlay applied (mesh edges may or may not be present).
+  // "unavailable" — overlay was requested but couldn't be applied
+  //                  (no mesh installed, provider unwired, fetch errored).
+  overlay?: "mesh" | "unavailable";
+  // Per-stage warnings; currently used for mesh-overlay host-resolution
+  // drops so a custom-cluster-domain namespace doesn't return a silent
+  // empty overlay.
+  errors?: Record<string, string>;
   computedAt: string;
 }
 
@@ -26,7 +41,7 @@ interface TopoNode {
 interface TopoEdge {
   source: string;
   target: string;
-  type: "owner" | "selector" | "mount" | "ingress";
+  type: "owner" | "selector" | "mount" | "ingress" | "mesh_vs" | "mesh_sp";
 }
 
 // ── Layout types ──
@@ -53,15 +68,38 @@ const HEALTH_COLORS: Record<TopoNode["health"], string> = {
   unknown: "var(--text-muted)",
 };
 
+// Edge styles. The mesh entries set their own stroke color (themed); base
+// edges use var(--border-primary) at the line element level. The `stroke`
+// property here is consulted only when present, keeping base behavior
+// untouched.
 const EDGE_STYLES: Record<
   TopoEdge["type"],
-  { dasharray: string; opacity: number }
+  { dasharray: string; opacity: number; stroke?: string; markerId?: string }
 > = {
   owner: { dasharray: "", opacity: 0.7 },
   selector: { dasharray: "6,3", opacity: 0.7 },
   mount: { dasharray: "2,2", opacity: 0.4 },
   ingress: { dasharray: "6,3", opacity: 0.7 },
+  // Istio VirtualService traffic edges — primary accent.
+  mesh_vs: {
+    dasharray: "4,2",
+    opacity: 0.85,
+    stroke: "var(--accent)",
+    markerId: "arrow-mesh-vs",
+  },
+  // Linkerd ServiceProfile traffic edges — secondary accent so the two
+  // mesh types are visually distinct when both are installed.
+  mesh_sp: {
+    dasharray: "4,2",
+    opacity: 0.85,
+    stroke: "var(--accent-secondary)",
+    markerId: "arrow-mesh-sp",
+  },
 };
+
+function isMeshEdge(t: TopoEdge["type"]): boolean {
+  return t === "mesh_vs" || t === "mesh_sp";
+}
 
 // ── Kind abbreviations ──
 
@@ -120,6 +158,17 @@ export default function NamespaceTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
+  // meshOverlay drives the "Show mesh traffic" toggle. When true, the
+  // next graph fetch appends ?overlay=mesh; the response's `overlay`
+  // field then tells us whether the backend could honor it.
+  const meshOverlay = useSignal(false);
+  // meshUnavailable latches once the backend reports overlay=unavailable
+  // for this namespace. While latched, the toggle renders disabled +
+  // unchecked and the explanatory tooltip explains why. Resetting the
+  // namespace (or any new graph response that comes back with
+  // overlay !== "unavailable") clears the latch.
+  const meshUnavailable = useSignal(false);
+
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
   const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
@@ -132,8 +181,21 @@ export default function NamespaceTopology() {
     loading.value = true;
     error.value = null;
     try {
-      const res = await apiGet<TopoGraph>(`/v1/topology/${ns}`);
+      const overlayParam = meshOverlay.value ? "?overlay=mesh" : "";
+      const res = await apiGet<TopoGraph>(`/v1/topology/${ns}${overlayParam}`);
       graph.value = res.data;
+      // Latch / unlatch the unavailable state so the toggle renders
+      // disabled+unchecked once we know there's no mesh, and frees up
+      // again when conditions change. Force the user-visible toggle off
+      // whenever we latch — leaving it checked while disabled is the
+      // bug that prompted this latch (browsers ignore clicks on
+      // disabled inputs, so the user couldn't un-check).
+      if (res.data.overlay === "unavailable") {
+        meshUnavailable.value = true;
+        meshOverlay.value = false;
+      } else if (res.data.overlay === "mesh") {
+        meshUnavailable.value = false;
+      }
     } catch (err) {
       error.value = err instanceof Error
         ? err.message
@@ -150,8 +212,19 @@ export default function NamespaceTopology() {
       loading.value = false;
       return;
     }
+    // A different namespace means a different cluster slice — clear the
+    // unavailable latch so the user can probe again.
+    meshUnavailable.value = false;
     fetchGraph();
   }, [selectedNamespace.value]);
+
+  // Re-fetch when the user flips the toggle. Separate effect so the
+  // namespace-change reset above doesn't fight a same-tick toggle change.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (selectedNamespace.value === "all") return;
+    fetchGraph();
+  }, [meshOverlay.value]);
 
   // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
 
@@ -399,12 +472,56 @@ export default function NamespaceTopology() {
             >
               Refresh
             </button>
+            <label
+              class={`ml-2 flex items-center gap-1.5 rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs ${
+                meshUnavailable.value
+                  ? "cursor-not-allowed text-text-muted opacity-60"
+                  : "cursor-pointer text-text-secondary hover:text-text-primary"
+              }`}
+              title={meshUnavailable.value
+                ? "No service mesh detected in this cluster"
+                : "Show Istio VirtualService and Linkerd ServiceProfile traffic edges"}
+            >
+              <input
+                type="checkbox"
+                class="h-3 w-3 cursor-pointer accent-accent disabled:cursor-not-allowed"
+                checked={meshOverlay.value}
+                disabled={meshUnavailable.value}
+                onChange={(e) => {
+                  meshOverlay.value =
+                    (e.currentTarget as HTMLInputElement).checked;
+                }}
+              />
+              Show mesh traffic
+            </label>
           </div>
-          {graph.value.computedAt && (
-            <span class="text-xs text-text-muted">
-              Updated {timeAgo(graph.value.computedAt)}
-            </span>
-          )}
+          <div class="flex items-center gap-3">
+            {meshOverlay.value && graph.value.overlay === "mesh" && (
+              <div class="flex items-center gap-3 text-xs text-text-muted">
+                <span class="flex items-center gap-1.5">
+                  <span
+                    class="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent)" }}
+                    aria-hidden="true"
+                  />
+                  Istio
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span
+                    class="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent-secondary)" }}
+                    aria-hidden="true"
+                  />
+                  Linkerd
+                </span>
+              </div>
+            )}
+            {graph.value.computedAt && (
+              <span class="text-xs text-text-muted">
+                Updated {timeAgo(graph.value.computedAt)}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* SVG Graph */}
@@ -462,6 +579,28 @@ export default function NamespaceTopology() {
                 opacity="0.5"
               />
             </marker>
+            <marker
+              id="arrow-mesh-vs"
+              viewBox="0 0 10 6"
+              refX="10"
+              refY="3"
+              markerWidth="8"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--accent)" />
+            </marker>
+            <marker
+              id="arrow-mesh-sp"
+              viewBox="0 0 10 6"
+              refX="10"
+              refY="3"
+              markerWidth="8"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--accent-secondary)" />
+            </marker>
           </defs>
 
           {/* Edges */}
@@ -469,8 +608,16 @@ export default function NamespaceTopology() {
             const src = layoutNodeMap.value.get(edge.source);
             const tgt = layoutNodeMap.value.get(edge.target);
             if (!src || !tgt) return null;
-            const style = EDGE_STYLES[edge.type];
+            // Backend EdgeType is a Go string typedef (open enum); a new
+            // type added server-side would land in the response before
+            // any frontend-side TS update. Fall back to the owner style
+            // so an unknown edge renders as a generic dependency line
+            // rather than crashing on style.dasharray of undefined.
+            const style = EDGE_STYLES[edge.type] ?? EDGE_STYLES.owner;
             const op = edgeOpacity(edge.source, edge.target, style.opacity);
+            const stroke = style.stroke ?? "var(--border-primary)";
+            const markerId = style.markerId ??
+              (edge.type === "mount" ? "arrow-mount" : "arrow-default");
             return (
               <line
                 key={`edge-${i}`}
@@ -478,13 +625,11 @@ export default function NamespaceTopology() {
                 y1={src.y}
                 x2={tgt.x}
                 y2={tgt.y}
-                stroke="var(--border-primary)"
-                stroke-width={1.5}
+                stroke={stroke}
+                stroke-width={isMeshEdge(edge.type) ? 2 : 1.5}
                 stroke-dasharray={style.dasharray}
                 opacity={op}
-                marker-end={`url(#arrow-${
-                  edge.type === "mount" ? "mount" : "default"
-                })`}
+                marker-end={`url(#${markerId})`}
               />
             );
           })}

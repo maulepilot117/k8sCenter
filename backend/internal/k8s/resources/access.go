@@ -32,14 +32,20 @@ type accessCacheEntry struct {
 // AccessChecker provides per-request RBAC filtering for informer cache reads.
 // It uses SelfSubjectAccessReview to verify individual verb+resource+namespace
 // permissions, cached for 60 seconds per user.
+// AccessPredicate decides whether a user should be granted a specific
+// (verb, apiGroup, resource, namespace) tuple. Used only by the
+// predicate test fake — production never sets it.
+type AccessPredicate func(verb, apiGroup, resource, namespace string) bool
+
 type AccessChecker struct {
 	clientFactory interface {
 		ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
 	}
 	cache       sync.Map // map[accessCacheKey]accessCacheEntry
 	logger      *slog.Logger
-	alwaysAllow bool // for testing only
-	alwaysDeny  bool // for testing only
+	alwaysAllow bool            // for testing only
+	alwaysDeny  bool            // for testing only
+	predicate   AccessPredicate // for testing only
 }
 
 // NewAccessChecker creates an AccessChecker that verifies user permissions.
@@ -63,6 +69,13 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 	}
 	if ac.alwaysDeny {
 		return false, nil
+	}
+	// In predicate-fake mode, CanAccess short-circuits to allow so tests
+	// targeting CanAccessGroupResource (the CRD path) aren't forced to
+	// supply rules for every core resource the base graph touches. The
+	// predicate is consulted directly by CanAccessGroupResource.
+	if ac.predicate != nil {
+		return true, nil
 	}
 	key := accessCacheKey{
 		username:  username,
@@ -138,6 +151,9 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 	if ac.alwaysDeny {
 		return false, nil
 	}
+	if ac.predicate != nil {
+		return ac.predicate(verb, apiGroup, resource, namespace), nil
+	}
 
 	key := accessCacheKey{
 		username:  username,
@@ -211,6 +227,19 @@ func NewAlwaysDenyAccessChecker() *AccessChecker {
 		clientFactory: nil,
 		logger:        slog.Default(),
 		alwaysDeny:    true,
+	}
+}
+
+// NewPredicateAccessChecker returns an AccessChecker that consults the
+// supplied predicate for every CanAccessGroupResource call. Intended for
+// tests covering partial-RBAC scenarios (e.g., "user can list one CRD
+// group but not another"). The predicate isn't consulted by the basic
+// CanAccess method because no current test scenario needs it.
+func NewPredicateAccessChecker(fn AccessPredicate) *AccessChecker {
+	return &AccessChecker{
+		clientFactory: nil,
+		logger:        slog.Default(),
+		predicate:     fn,
 	}
 }
 

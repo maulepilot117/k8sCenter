@@ -2,6 +2,7 @@ package topology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -15,11 +16,40 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/servicemesh"
 )
+
+// ErrUnsupportedOverlay is returned by BuildNamespaceGraphWithOverlay when
+// the caller passes an overlay value the builder doesn't recognize. The
+// HTTP handler maps this (via errors.Is) to a 400. Wrapping the sentinel
+// keeps the wire status code stable across error-message tweaks.
+var ErrUnsupportedOverlay = errors.New("unsupported overlay")
 
 // maxNodes caps the total number of nodes in a graph to prevent
 // oversized responses for very large namespaces.
 const maxNodes = 2000
+
+// maxMeshEdges caps mesh-overlay edges separately from maxNodes.
+// A single VirtualService can fan out to dozens of destinations; in a
+// 1000-service mesh this is the realistic blow-up vector. Surfaces via
+// Graph.EdgesTruncated, distinct from Graph.Truncated which signals
+// node-cap truncation.
+const maxMeshEdges = 2000
+
+// MeshRouteProvider returns cached, cluster-wide mesh traffic routes
+// and a coarse "is a mesh installed" signal. Implemented by
+// *servicemesh.Handler. The returned routes slice is not RBAC-filtered —
+// Builder applies per-CRD-group access checks before emitting edges.
+// A nil provider disables the mesh overlay path.
+//
+// MeshDetected is required so the overlay path can distinguish
+// "no mesh installed in this cluster" (return OverlayUnavailable, the
+// honest answer) from "mesh installed but the user has no visible
+// routes" (return OverlayMesh with zero edges).
+type MeshRouteProvider interface {
+	Routes(ctx context.Context) ([]servicemesh.TrafficRoute, error)
+	MeshDetected(ctx context.Context) bool
+}
 
 // ResourceLister abstracts resource listing for the graph builder.
 // Implemented by InformerLister (wraps InformerManager) and test fakes.
@@ -39,14 +69,19 @@ type ResourceLister interface {
 }
 
 // Builder constructs resource dependency graphs from a ResourceLister.
+// meshProvider is optional; pass nil to disable the mesh-overlay path
+// (the overlay then resolves to OverlayUnavailable).
 type Builder struct {
-	lister ResourceLister
-	logger *slog.Logger
+	lister       ResourceLister
+	meshProvider MeshRouteProvider
+	logger       *slog.Logger
 }
 
-// NewBuilder creates a new topology graph builder.
-func NewBuilder(lister ResourceLister, logger *slog.Logger) *Builder {
-	return &Builder{lister: lister, logger: logger}
+// NewBuilder creates a topology graph builder. meshProvider may be nil;
+// callers without mesh-overlay needs (e.g. diagnostics blast-radius) pass
+// nil here without affecting any other behavior.
+func NewBuilder(lister ResourceLister, meshProvider MeshRouteProvider, logger *slog.Logger) *Builder {
+	return &Builder{lister: lister, meshProvider: meshProvider, logger: logger}
 }
 
 // resourceMeta is a normalized representation of a k8s resource for generic node building.
@@ -67,8 +102,23 @@ func canAccess(ctx context.Context, user *auth.User, checker *resources.AccessCh
 	return allowed
 }
 
-// BuildNamespaceGraph builds a full resource dependency graph for a namespace.
+// BuildNamespaceGraph builds a full resource dependency graph for a namespace
+// without any optional overlay. Equivalent to calling
+// BuildNamespaceGraphWithOverlay with an empty overlay string.
 func (b *Builder) BuildNamespaceGraph(ctx context.Context, namespace string, user *auth.User, checker *resources.AccessChecker) (*Graph, error) {
+	return b.BuildNamespaceGraphWithOverlay(ctx, namespace, user, checker, "")
+}
+
+// BuildNamespaceGraphWithOverlay builds the namespace graph and optionally
+// layers an additional set of edges on top.
+//
+// Supported overlay values:
+//   - ""      — no overlay (response is byte-identical to the no-overlay path)
+//   - "mesh"  — emit mesh-overlay edges between Service nodes when the
+//     caller has list permission on the underlying CRD groups
+//
+// Unknown overlay values return an error so the handler can emit a 400.
+func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace string, user *auth.User, checker *resources.AccessChecker, overlay string) (*Graph, error) {
 	graph := NewGraph()
 	nameIndex := make(map[string]string) // "Kind/Name" -> UID
 
@@ -287,7 +337,172 @@ func (b *Builder) BuildNamespaceGraph(ctx context.Context, namespace string, use
 	// Propagate health
 	propagateHealth(nodeMap, graph.Edges)
 
+	// Apply optional overlay last so health propagation is unaffected by
+	// mesh edges. Overlay errors are logged and downgraded to "unavailable"
+	// — never fail the base graph because the overlay couldn't load.
+	if err := b.applyOverlay(ctx, graph, namespace, user, checker, overlay, nameIndex); err != nil {
+		return nil, err
+	}
+
 	return graph, nil
+}
+
+// applyOverlay layers optional edges on top of an already-built graph.
+// Returns ErrUnsupportedOverlay (wrappable, matchable via errors.Is) for
+// unknown overlay values so the handler can map cleanly to a 400.
+// Runtime failures (provider unwired, fetch errored, no mesh installed)
+// degrade gracefully via Graph.Overlay = OverlayUnavailable.
+func (b *Builder) applyOverlay(
+	ctx context.Context,
+	graph *Graph,
+	namespace string,
+	user *auth.User,
+	checker *resources.AccessChecker,
+	overlay string,
+	nameIndex map[string]string,
+) error {
+	switch overlay {
+	case "":
+		return nil
+	case string(OverlayMesh):
+		b.applyMeshOverlay(ctx, graph, namespace, user, checker, nameIndex)
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrUnsupportedOverlay, overlay)
+	}
+}
+
+// applyMeshOverlay fetches mesh routes via the configured provider,
+// filters them by the caller's RBAC on each CRD group, and appends the
+// resulting edges to graph.Edges. The base graph is only mutated by
+// appending edges and toggling EdgesTruncated; if anything goes wrong
+// the overlay falls back to OverlayUnavailable and the function returns
+// silently.
+//
+// Unresolved-host counts are surfaced via Graph.Errors so a custom
+// cluster-domain or all-external-hosts namespace doesn't return a silent
+// empty graph.
+func (b *Builder) applyMeshOverlay(
+	ctx context.Context,
+	graph *Graph,
+	namespace string,
+	user *auth.User,
+	checker *resources.AccessChecker,
+	nameIndex map[string]string,
+) {
+	if b.meshProvider == nil {
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+
+	// MeshDetected lets us reserve OverlayMesh for "we asked a real
+	// mesh"; clusters with no mesh installed yield OverlayUnavailable so
+	// the frontend's disabled-toggle path activates. Cheap call: backed
+	// by the discoverer's 5min cache.
+	if !b.meshProvider.MeshDetected(ctx) {
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+
+	routes, err := b.meshProvider.Routes(ctx)
+	if err != nil {
+		b.logger.Warn("mesh overlay: route fetch failed", "namespace", namespace, "error", err)
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+
+	// From this point on the overlay is OverlayMesh — even if every
+	// route is dropped by RBAC. OverlayUnavailable is reserved for "we
+	// couldn't try" (provider unwired, fetch errored, no mesh installed).
+	graph.Overlay = OverlayMesh
+
+	// Filter to the requested namespace before the RBAC fan-out so we
+	// make at most one SSAR per (CRD group, namespace) pair.
+	scoped := routes[:0:0]
+	for _, r := range routes {
+		if r.Namespace == namespace {
+			scoped = append(scoped, r)
+		}
+	}
+	if len(scoped) == 0 {
+		return
+	}
+
+	// Cache RBAC decisions per (apiGroup, resource) for this namespace.
+	// The number of unique CRD groups across both meshes is small (≤ 2),
+	// so a plain map is fine. A checker error fail-closes that CRD
+	// group — we drop its routes rather than emit edges the user might
+	// not be allowed to see.
+	type accessKey struct{ apiGroup, resource string }
+	access := map[accessKey]bool{}
+	allowed := func(apiGroup, resource string) bool {
+		key := accessKey{apiGroup, resource}
+		if v, ok := access[key]; ok {
+			return v
+		}
+		can, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, namespace)
+		if err != nil {
+			b.logger.Warn("mesh overlay: RBAC check failed", "namespace", namespace, "apiGroup", apiGroup, "resource", resource, "error", err)
+			access[key] = false
+			return false
+		}
+		access[key] = can
+		return can
+	}
+
+	visible := scoped[:0]
+	for _, r := range scoped {
+		// Single canonical (mesh, kind) → (group, resource) source —
+		// see servicemesh.MeshKindForRoute. Routes for kinds the
+		// overlay doesn't emit (DestinationRule, Gateway, etc.) return
+		// empty strings here and are filtered upstream of buildMeshEdges.
+		apiGroup, resource := servicemesh.MeshKindForRoute(r)
+		if apiGroup == "" {
+			continue
+		}
+		// In the overlay path we only emit edges for VS and SP, so
+		// short-circuit kinds the emitter wouldn't touch even if the
+		// dispatch table lists them (e.g., PeerAuthentication).
+		if !overlayEmitsEdgesFor(r) {
+			continue
+		}
+		if !allowed(apiGroup, resource) {
+			continue
+		}
+		visible = append(visible, r)
+	}
+	if len(visible) == 0 {
+		return
+	}
+
+	meshEdges, stats := buildMeshEdges(visible, namespace, nameIndex, maxMeshEdges)
+	if stats.Truncated {
+		graph.EdgesTruncated = true
+	}
+	if stats.UnresolvedSources > 0 || stats.UnresolvedDests > 0 {
+		if graph.Errors == nil {
+			graph.Errors = map[string]string{}
+		}
+		graph.Errors["mesh.unresolvedHosts"] = fmt.Sprintf(
+			"%d route(s) had unresolved source hosts and %d destination hosts didn't match any Service in this namespace; check for cross-namespace targets, external hosts, or a custom cluster domain",
+			stats.UnresolvedSources, stats.UnresolvedDests,
+		)
+	}
+	graph.Edges = append(graph.Edges, meshEdges...)
+}
+
+// overlayEmitsEdgesFor reports whether the mesh-edge emitter has a
+// service-to-service edge type for this route. Keeping the predicate
+// next to applyMeshOverlay (rather than inside buildMeshEdges) lets
+// the RBAC fan-out skip CRD groups the overlay would never use.
+func overlayEmitsEdgesFor(r servicemesh.TrafficRoute) bool {
+	switch r.Mesh {
+	case servicemesh.MeshIstio:
+		return r.Kind == "VirtualService"
+	case servicemesh.MeshLinkerd:
+		return r.Kind == "ServiceProfile"
+	}
+	return false
 }
 
 // addResourceNodes adds nodes for a list of resources, respecting the node cap.

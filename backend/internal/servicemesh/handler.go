@@ -228,6 +228,54 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedMeshData, error) {
 	return data, nil
 }
 
+// Routes returns the cached, cluster-wide TrafficRoute slice without RBAC
+// filtering. Callers are responsible for applying their own RBAC scope
+// before surfacing routes to a user — this accessor exists for cross-
+// package consumers (the topology overlay) that already have a user in
+// context and need to apply CanAccessGroupResource per-CRD-group.
+//
+// The returned slice is a defensive copy of the cache header so callers
+// can't extend it via append into the cache's spare capacity. The
+// underlying TrafficRoute elements (and TrafficRoute.Raw maps) are
+// shared; treat them as read-only.
+func (h *Handler) Routes(ctx context.Context) ([]TrafficRoute, error) {
+	data, err := h.fetchData(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(data.routes) == 0 {
+		return nil, nil
+	}
+	out := make([]TrafficRoute, len(data.routes))
+	copy(out, data.routes)
+	return out, nil
+}
+
+// MeshDetected reports whether at least one supported service mesh is
+// installed in the cluster. The topology overlay calls this to choose
+// between OverlayMesh ("we asked, here's what's visible") and
+// OverlayUnavailable ("no mesh installed, the question is meaningless")
+// without paying for a full Routes() fetch.
+func (h *Handler) MeshDetected(ctx context.Context) bool {
+	status := h.Discoverer.Status(ctx)
+	return status.Detected != MeshNone
+}
+
+// MeshKindForRoute returns the (apiGroup, resource) pair the topology
+// overlay needs to RBAC-check a route's source CRD. The mapping lives in
+// servicemesh's meshKindDispatch table; exposing it through one helper
+// keeps topology and servicemesh in sync without re-encoding the (mesh,
+// kind) → (group, resource) translation in two places.
+//
+// Returns ("", "") when the route's (mesh, kind) isn't a known mesh CRD.
+func MeshKindForRoute(r TrafficRoute) (apiGroup, resource string) {
+	entry, ok := meshKindDispatch[string(r.Mesh)+"/"+r.Kind]
+	if !ok {
+		return "", ""
+	}
+	return entry.APIGroup, entry.Resource
+}
+
 // InvalidateCache clears the cache so the next call re-fetches. Exported for
 // CRD event handlers to hook into, mirroring gitops/policy.
 func (h *Handler) InvalidateCache() {
