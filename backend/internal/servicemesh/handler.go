@@ -228,6 +228,22 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedMeshData, error) {
 	return data, nil
 }
 
+// Routes returns the cached, cluster-wide TrafficRoute slice without RBAC
+// filtering. Callers are responsible for applying their own RBAC scope before
+// surfacing routes to a user — this accessor exists for cross-package
+// consumers (e.g., the topology overlay) that already have a user in context
+// and need to apply CanAccessGroupResource per-CRD-group.
+//
+// The returned slice may be a view into the cache; callers must treat it as
+// read-only and copy any data they intend to mutate.
+func (h *Handler) Routes(ctx context.Context) ([]TrafficRoute, error) {
+	data, err := h.fetchData(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return data.routes, nil
+}
+
 // InvalidateCache clears the cache so the next call re-fetches. Exported for
 // CRD event handlers to hook into, mirroring gitops/policy.
 func (h *Handler) InvalidateCache() {

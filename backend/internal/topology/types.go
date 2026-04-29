@@ -3,10 +3,19 @@ package topology
 import "time"
 
 // Graph is the resource dependency graph for a namespace.
+//
+// Overlay is empty (and JSON-omitted) by default, preserving byte-identical
+// responses for callers that don't pass ?overlay=. Set to "mesh" when the
+// caller requested ?overlay=mesh and a mesh route provider is wired, even
+// if no mesh edges are emitted (e.g., RBAC denies every mesh CRD or no
+// mesh is installed). "unavailable" means the caller asked for the overlay
+// but the provider was nil or returned an error — base graph is returned
+// rather than a 5xx.
 type Graph struct {
 	Nodes      []Node `json:"nodes"`
 	Edges      []Edge `json:"edges"`
 	Truncated  bool   `json:"truncated,omitempty"`
+	Overlay    string `json:"overlay,omitempty"`
 	ComputedAt string `json:"computedAt"`
 }
 
@@ -45,6 +54,13 @@ const (
 	EdgeSelector EdgeType = "selector"
 	EdgeMount    EdgeType = "mount"
 	EdgeIngress  EdgeType = "ingress"
+	// Mesh-overlay edge types. EdgeMeshVS connects an Istio VirtualService's
+	// host service to each destination service it routes to. EdgeMeshSP is
+	// the Linkerd ServiceProfile equivalent. Both are emitted only when the
+	// caller passes ?overlay=mesh AND has list permission on the underlying
+	// CRD group.
+	EdgeMeshVS EdgeType = "mesh_vs"
+	EdgeMeshSP EdgeType = "mesh_sp"
 )
 
 // NewGraph creates a new empty graph with the current timestamp.
