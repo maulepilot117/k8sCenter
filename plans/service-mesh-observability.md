@@ -580,7 +580,7 @@ Phases deliver independently-shippable PRs. Each phase is reviewed and merged be
 
 ---
 
-- [ ] **Unit D2: Frontend topology overlay toggle**
+- [x] **Unit D2: Frontend topology overlay toggle**
 
 **Goal:** "Show mesh traffic" toggle on `/observability/topology` renders mesh edges with a distinct style.
 
