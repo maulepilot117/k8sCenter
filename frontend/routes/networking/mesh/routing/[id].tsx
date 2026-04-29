@@ -9,7 +9,10 @@ export default define.page(function MeshRouteDetailPage(ctx) {
   const id = decodeURIComponent(ctx.params.id);
   return (
     <>
-      <SubNav tabs={section.tabs ?? []} currentPath="/networking/mesh/routing" />
+      <SubNav
+        tabs={section.tabs ?? []}
+        currentPath="/networking/mesh/routing"
+      />
       <MeshRouteDetail id={id} />
     </>
   );
