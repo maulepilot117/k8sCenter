@@ -275,13 +275,22 @@ func main() {
 		Logger:         logger,
 		MonitoringDisc: monDiscoverer,
 	}
+	// On a mesh-detection transition (install / uninstall), drop the
+	// 30s route cache so the next overlay/list request returns the new
+	// shape without waiting out the TTL. Mirrors the gitops/policy
+	// invalidation pattern.
+	meshDisc.SetOnChange(func(prev, current servicemesh.MeshType) {
+		logger.Info("service mesh detection changed; invalidating cache", "prev", prev, "current", current)
+		meshHandler.InvalidateCache()
+	})
+	go meshDisc.RunDiscoveryLoop(ctx)
 
 	// Initialize topology graph builder. The mesh handler doubles as the
 	// MeshRouteProvider for the ?overlay=mesh path; passing a nil here
 	// would degrade the overlay to "unavailable" without affecting the
 	// base graph.
 	topoLister := topology.NewInformerLister(informerMgr)
-	topoBuilder := topology.NewBuilderWithMesh(topoLister, meshHandler, logger)
+	topoBuilder := topology.NewBuilder(topoLister, meshHandler, logger)
 	topoHandler := &topology.Handler{
 		Builder:       topoBuilder,
 		AccessChecker: accessChecker,

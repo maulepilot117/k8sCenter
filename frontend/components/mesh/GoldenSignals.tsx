@@ -43,29 +43,35 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
   useEffect(() => {
     if (!IS_BROWSER) return;
     let cancelled = false;
+    // inFlight protects against re-entry: if a load() is still awaiting
+    // when the 30s tick fires, we skip rather than stack concurrent
+    // fetches. On slow networks or during a Prometheus restart the
+    // setInterval cadence can outrun the round-trip; skipping keeps
+    // request count bounded to one per cycle.
+    let inFlight = false;
 
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const status = await meshApi.status();
+        if (cancelled) return;
         const detected: MeshType = status.data.status.detected;
         if (!detected) {
           // No mesh installed — hide.
-          if (!cancelled) {
-            data.value = null;
-            offline.value = false;
-          }
+          data.value = null;
+          offline.value = false;
           return;
         }
 
-        // When both meshes are installed the backend requires an explicit
-        // ?mesh= disambiguator. In v1 we can't infer which mesh manages
-        // this specific service from the frontend, so we hide rather than
-        // guess. (Phase D3 future enhancement: pass workload context.)
+        // When both meshes are installed the backend requires an
+        // explicit ?mesh= disambiguator. In v1 we can't infer which
+        // mesh manages this specific service from the frontend, so we
+        // hide rather than guess. (Future enhancement: pass workload
+        // context from ServiceOverview.)
         if (detected === "both") {
-          if (!cancelled) {
-            data.value = null;
-            offline.value = false;
-          }
+          data.value = null;
+          offline.value = false;
           return;
         }
 
@@ -75,9 +81,9 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         const signals = res.data.signals;
 
         if (!signals.available) {
-          // Prometheus offline (or full PromQL fan-out failure). Render
-          // the card with the unavailable banner — operators need to
-          // see this rather than silent absence.
+          // Prometheus offline (or full PromQL fan-out failure).
+          // Render the card with the unavailable banner — operators
+          // need to see this rather than silent absence.
           data.value = null;
           offline.value = true;
           offlineReason.value = signals.reason || "metrics_unavailable";
@@ -89,6 +95,13 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         // metric is non-zero. A meshed service with traffic always has
         // at least RPS > 0; a meshed-but-silent service produces no
         // useful card. Hide both cases.
+        //
+        // Known limitation: the backend reports available=true even
+        // when 5 of 6 PromQL queries failed (partial-success contract,
+        // see internal/servicemesh/metrics.go). A heavily degraded
+        // Prometheus that only answers one query with zeros looks the
+        // same as a silent meshed service here. Surfacing that
+        // distinction requires a backend signal we don't have today.
         const hasTraffic = signals.rps > 0 ||
           signals.errorRate > 0 ||
           signals.p50Ms > 0 ||
@@ -103,13 +116,15 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         data.value = signals;
         offline.value = false;
       } catch (_err) {
-        // 4xx (no mesh detected, validation, RBAC denial) — hide silently.
-        // The Service detail page must not surface a toast for an
-        // optional enrichment that didn't apply.
+        // 4xx (no mesh detected, validation, RBAC denial) — hide
+        // silently. The Service detail page must not surface a toast
+        // for an optional enrichment that didn't apply.
         if (!cancelled) {
           data.value = null;
           offline.value = false;
         }
+      } finally {
+        inFlight = false;
       }
     }
 

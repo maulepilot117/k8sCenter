@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -39,10 +40,12 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 
 	graph, err := h.Builder.BuildNamespaceGraphWithOverlay(r.Context(), namespace, user, h.AccessChecker, overlay)
 	if err != nil {
-		// Validation errors (e.g., unsupported overlay value) surface as 400
-		// with a user-safe message; everything else is a 500.
-		if isInvalidOverlayErr(err) {
-			httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		// Validation errors (unsupported overlay value) surface as 400
+		// with a stable user-message and the offending value in detail —
+		// matching the envelope shape used by /mesh/* peers. Everything
+		// else is a 500.
+		if errors.Is(err, ErrUnsupportedOverlay) {
+			httputil.WriteError(w, http.StatusBadRequest, "unsupported overlay value", overlay)
 			return
 		}
 		h.Logger.Error("failed to build namespace graph", "namespace", namespace, "error", err)
@@ -51,15 +54,4 @@ func (h *Handler) HandleNamespaceGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httputil.WriteData(w, graph)
-}
-
-// isInvalidOverlayErr reports whether err is a builder-level validation
-// failure for an unsupported overlay value. Kept narrow so unrelated
-// errors don't get misclassified as 400.
-func isInvalidOverlayErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	const prefix = "unsupported overlay "
-	return len(err.Error()) >= len(prefix) && err.Error()[:len(prefix)] == prefix
 }

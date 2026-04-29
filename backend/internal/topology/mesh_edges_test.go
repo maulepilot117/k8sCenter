@@ -62,9 +62,9 @@ func TestBuildMeshEdges_HappyPath_IstioVS(t *testing.T) {
 	idx := makeIndex("a", "b")
 	routes := []servicemesh.TrafficRoute{vsRoute("foo", "vs-a", "a", "b")}
 
-	edges, truncated := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
+	edges, stats := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
 
-	if truncated {
+	if stats.Truncated {
 		t.Fatalf("unexpected truncation")
 	}
 	if len(edges) != 1 {
@@ -172,19 +172,19 @@ func TestBuildMeshEdges_CrossNamespaceHost(t *testing.T) {
 func TestBuildMeshEdges_EmptyAndNilInputs(t *testing.T) {
 	idx := makeIndex("a", "b")
 
-	edges, truncated := buildMeshEdges(nil, "foo", idx, maxMeshEdges)
-	if len(edges) != 0 || truncated {
-		t.Errorf("nil routes: edges=%d truncated=%v, want 0/false", len(edges), truncated)
+	edges, stats := buildMeshEdges(nil, "foo", idx, maxMeshEdges)
+	if len(edges) != 0 || stats.Truncated {
+		t.Errorf("nil routes: edges=%d truncated=%v, want 0/false", len(edges), stats.Truncated)
 	}
 
-	edges, truncated = buildMeshEdges([]servicemesh.TrafficRoute{vsRoute("foo", "v", "a", "b")}, "", idx, maxMeshEdges)
-	if len(edges) != 0 || truncated {
-		t.Errorf("empty namespace: edges=%d truncated=%v, want 0/false", len(edges), truncated)
+	edges, stats = buildMeshEdges([]servicemesh.TrafficRoute{vsRoute("foo", "v", "a", "b")}, "", idx, maxMeshEdges)
+	if len(edges) != 0 || stats.Truncated {
+		t.Errorf("empty namespace: edges=%d truncated=%v, want 0/false", len(edges), stats.Truncated)
 	}
 
-	edges, truncated = buildMeshEdges([]servicemesh.TrafficRoute{vsRoute("foo", "v", "a", "b")}, "foo", nil, maxMeshEdges)
-	if len(edges) != 0 || truncated {
-		t.Errorf("nil index: edges=%d truncated=%v, want 0/false", len(edges), truncated)
+	edges, stats = buildMeshEdges([]servicemesh.TrafficRoute{vsRoute("foo", "v", "a", "b")}, "foo", nil, maxMeshEdges)
+	if len(edges) != 0 || stats.Truncated {
+		t.Errorf("nil index: edges=%d truncated=%v, want 0/false", len(edges), stats.Truncated)
 	}
 }
 
@@ -222,9 +222,9 @@ func TestBuildMeshEdges_Cap(t *testing.T) {
 	}
 
 	routes := []servicemesh.TrafficRoute{vsRoute("foo", "fan", "a", dests...)}
-	edges, truncated := buildMeshEdges(routes, "foo", idx, 2000)
+	edges, stats := buildMeshEdges(routes, "foo", idx, 2000)
 
-	if !truncated {
+	if !stats.Truncated {
 		t.Errorf("truncated = false, want true at cap")
 	}
 	if len(edges) != 2000 {
@@ -289,16 +289,67 @@ func TestBuildMeshEdges_UnknownMeshOrKindSkipped(t *testing.T) {
 	}
 }
 
-func TestBuildMeshEdges_SelfEdgeSkipped(t *testing.T) {
-	// A route whose destination is the same host as its source produces a
-	// self-edge that's not informative; emitter drops it.
+func TestBuildMeshEdges_SelfEdgeAllowed(t *testing.T) {
+	// Istio canary patterns route a single host through DestinationRule
+	// subsets of the same Service: VS hosts:[cart] route to cart-stable
+	// and cart-canary, both of which are subsets of the cart Service.
+	// In topology terms that's a single mesh_vs edge from cart to itself.
+	// Dropping it would silently hide canary traffic from the overlay.
 	idx := makeIndex("a")
 	routes := []servicemesh.TrafficRoute{vsRoute("foo", "vs", "a", "a")}
 
 	edges, _ := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
 
-	if len(edges) != 0 {
-		t.Errorf("edges = %d, want 0 (self-edge a->a should be skipped)", len(edges))
+	if !findEdge(edges, "uid-a", "uid-a", EdgeMeshVS) {
+		t.Errorf("missing self-edge uid-a -> uid-a; got %+v", edges)
+	}
+}
+
+func TestBuildMeshEdges_CaseInsensitiveHostResolution(t *testing.T) {
+	// VirtualService hosts are user-supplied free-form text, but the
+	// underlying Service names are RFC 1123 lowercase. DNS hostnames are
+	// case-insensitive, so an operator typing "MyService" in a VS spec
+	// must still resolve to the lowercase "myservice" Service node.
+	idx := makeIndex("a", "b")
+	routes := []servicemesh.TrafficRoute{
+		vsRoute("foo", "vs-1", "A", "B"),
+		vsRoute("foo", "vs-2", "a", "B.Foo"),
+		vsRoute("foo", "vs-3", "A.foo.svc.cluster.local", "b"),
+	}
+
+	edges, _ := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
+
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d, want 1 (case-insensitive lookups must dedup)", len(edges))
+	}
+	if !findEdge(edges, "uid-a", "uid-b", EdgeMeshVS) {
+		t.Errorf("missing edge uid-a -> uid-b; got %+v", edges)
+	}
+}
+
+func TestBuildMeshEdges_StatsCountsUnresolvedHosts(t *testing.T) {
+	// One route's source host doesn't resolve (external host); two of
+	// another route's destinations don't resolve. Stats should count
+	// each independently so the caller can surface a "N unresolved hosts"
+	// diagnostic instead of returning a silent empty graph.
+	idx := makeIndex("a", "b")
+	routes := []servicemesh.TrafficRoute{
+		// Source unresolvable.
+		vsRoute("foo", "vs-1", "external.example.com", "b"),
+		// Source resolves; two of three destinations don't.
+		vsRoute("foo", "vs-2", "a", "b", "external1.example.com", "external2.example.com"),
+	}
+
+	_, stats := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
+
+	if stats.Considered != 2 {
+		t.Errorf("Considered = %d, want 2", stats.Considered)
+	}
+	if stats.UnresolvedSources != 1 {
+		t.Errorf("UnresolvedSources = %d, want 1", stats.UnresolvedSources)
+	}
+	if stats.UnresolvedDests != 2 {
+		t.Errorf("UnresolvedDests = %d, want 2", stats.UnresolvedDests)
 	}
 }
 

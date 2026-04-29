@@ -11,12 +11,21 @@ import { timeAgo } from "@/lib/timeAgo.ts";
 interface TopoGraph {
   nodes: TopoNode[];
   edges: TopoEdge[];
+  // truncated signals nodes were dropped at maxNodes. edgesTruncated
+  // signals mesh-overlay edges were dropped at maxMeshEdges. They are
+  // independent so consumers can tell "graph missing nodes" from
+  // "graph complete, only some mesh edges capped".
   truncated?: boolean;
+  edgesTruncated?: boolean;
   // Set by the backend when ?overlay=mesh is requested.
   // "mesh" — overlay applied (mesh edges may or may not be present).
-  // "unavailable" — overlay was requested but the route provider was nil
-  // or errored; frontend renders the toggle as disabled with a tooltip.
+  // "unavailable" — overlay was requested but couldn't be applied
+  //                  (no mesh installed, provider unwired, fetch errored).
   overlay?: "mesh" | "unavailable";
+  // Per-stage warnings; currently used for mesh-overlay host-resolution
+  // drops so a custom-cluster-domain namespace doesn't return a silent
+  // empty overlay.
+  errors?: Record<string, string>;
   computedAt: string;
 }
 
@@ -149,12 +158,16 @@ export default function NamespaceTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // meshOverlay drives the "Show mesh traffic" toggle. When true, the next
-  // graph fetch appends ?overlay=mesh; the response's `overlay` field then
-  // tells us whether the backend could honor it. If the backend reports
-  // "unavailable" (no mesh installed or provider unwired), the toggle is
-  // disabled with an explanatory tooltip.
+  // meshOverlay drives the "Show mesh traffic" toggle. When true, the
+  // next graph fetch appends ?overlay=mesh; the response's `overlay`
+  // field then tells us whether the backend could honor it.
   const meshOverlay = useSignal(false);
+  // meshUnavailable latches once the backend reports overlay=unavailable
+  // for this namespace. While latched, the toggle renders disabled +
+  // unchecked and the explanatory tooltip explains why. Resetting the
+  // namespace (or any new graph response that comes back with
+  // overlay !== "unavailable") clears the latch.
+  const meshUnavailable = useSignal(false);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
@@ -171,6 +184,18 @@ export default function NamespaceTopology() {
       const overlayParam = meshOverlay.value ? "?overlay=mesh" : "";
       const res = await apiGet<TopoGraph>(`/v1/topology/${ns}${overlayParam}`);
       graph.value = res.data;
+      // Latch / unlatch the unavailable state so the toggle renders
+      // disabled+unchecked once we know there's no mesh, and frees up
+      // again when conditions change. Force the user-visible toggle off
+      // whenever we latch — leaving it checked while disabled is the
+      // bug that prompted this latch (browsers ignore clicks on
+      // disabled inputs, so the user couldn't un-check).
+      if (res.data.overlay === "unavailable") {
+        meshUnavailable.value = true;
+        meshOverlay.value = false;
+      } else if (res.data.overlay === "mesh") {
+        meshUnavailable.value = false;
+      }
     } catch (err) {
       error.value = err instanceof Error
         ? err.message
@@ -187,8 +212,19 @@ export default function NamespaceTopology() {
       loading.value = false;
       return;
     }
+    // A different namespace means a different cluster slice — clear the
+    // unavailable latch so the user can probe again.
+    meshUnavailable.value = false;
     fetchGraph();
-  }, [selectedNamespace.value, meshOverlay.value]);
+  }, [selectedNamespace.value]);
+
+  // Re-fetch when the user flips the toggle. Separate effect so the
+  // namespace-change reset above doesn't fight a same-tick toggle change.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (selectedNamespace.value === "all") return;
+    fetchGraph();
+  }, [meshOverlay.value]);
 
   // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
 
@@ -436,38 +472,28 @@ export default function NamespaceTopology() {
             >
               Refresh
             </button>
-            {(() => {
-              // Disable the toggle only after we've actually asked the
-              // backend and learned the mesh isn't available. Before the
-              // first overlay request, we don't know — keep it enabled so
-              // the user can flip it on and find out.
-              const unavailable = meshOverlay.value &&
-                graph.value.overlay === "unavailable";
-              return (
-                <label
-                  class={`ml-2 flex items-center gap-1.5 rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs ${
-                    unavailable
-                      ? "cursor-not-allowed text-text-muted opacity-60"
-                      : "cursor-pointer text-text-secondary hover:text-text-primary"
-                  }`}
-                  title={unavailable
-                    ? "No service mesh detected in this cluster"
-                    : "Show Istio VirtualService and Linkerd ServiceProfile traffic edges"}
-                >
-                  <input
-                    type="checkbox"
-                    class="h-3 w-3 cursor-pointer accent-accent disabled:cursor-not-allowed"
-                    checked={meshOverlay.value}
-                    disabled={unavailable}
-                    onChange={(e) => {
-                      meshOverlay.value =
-                        (e.currentTarget as HTMLInputElement).checked;
-                    }}
-                  />
-                  Show mesh traffic
-                </label>
-              );
-            })()}
+            <label
+              class={`ml-2 flex items-center gap-1.5 rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs ${
+                meshUnavailable.value
+                  ? "cursor-not-allowed text-text-muted opacity-60"
+                  : "cursor-pointer text-text-secondary hover:text-text-primary"
+              }`}
+              title={meshUnavailable.value
+                ? "No service mesh detected in this cluster"
+                : "Show Istio VirtualService and Linkerd ServiceProfile traffic edges"}
+            >
+              <input
+                type="checkbox"
+                class="h-3 w-3 cursor-pointer accent-accent disabled:cursor-not-allowed"
+                checked={meshOverlay.value}
+                disabled={meshUnavailable.value}
+                onChange={(e) => {
+                  meshOverlay.value =
+                    (e.currentTarget as HTMLInputElement).checked;
+                }}
+              />
+              Show mesh traffic
+            </label>
           </div>
           <div class="flex items-center gap-3">
             {meshOverlay.value && graph.value.overlay === "mesh" && (
@@ -582,7 +608,12 @@ export default function NamespaceTopology() {
             const src = layoutNodeMap.value.get(edge.source);
             const tgt = layoutNodeMap.value.get(edge.target);
             if (!src || !tgt) return null;
-            const style = EDGE_STYLES[edge.type];
+            // Backend EdgeType is a Go string typedef (open enum); a new
+            // type added server-side would land in the response before
+            // any frontend-side TS update. Fall back to the owner style
+            // so an unknown edge renders as a generic dependency line
+            // rather than crashing on style.dasharray of undefined.
+            const style = EDGE_STYLES[edge.type] ?? EDGE_STYLES.owner;
             const op = edgeOpacity(edge.source, edge.target, style.opacity);
             const stroke = style.stroke ?? "var(--border-primary)";
             const markerId = style.markerId ??

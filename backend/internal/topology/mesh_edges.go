@@ -6,34 +6,48 @@ import (
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
 )
 
+// MeshEdgeStats reports outcomes from a buildMeshEdges call so the caller
+// can surface diagnostic information ("we considered N routes, M sources
+// didn't resolve, K destinations didn't resolve") rather than silently
+// dropping unresolved hosts.
+type MeshEdgeStats struct {
+	Truncated         bool
+	Considered        int
+	UnresolvedSources int
+	UnresolvedDests   int
+}
+
 // buildMeshEdges converts mesh routing CRDs into service-to-service edges
-// against an existing nameIndex of "Kind/Name" -> UID. The function is pure:
-// no I/O, no logging, no RBAC. Callers are responsible for filtering routes
-// they're not allowed to surface.
+// against an existing nameIndex of "Kind/Name" -> UID. The function is
+// pure: no I/O, no logging, no RBAC. Callers are responsible for filtering
+// routes they're not allowed to surface.
 //
-// Routes outside the requested namespace are skipped. The source service of
-// each edge is resolved from route.Hosts[0]; targets come from
-// route.Destinations[].Host. Hosts that don't resolve to a Service node in
-// the index (typically external hosts or cross-namespace targets) are
-// silently dropped — that's a feature, not a bug.
+// Routes outside the requested namespace are skipped. The source service
+// of each edge is resolved by walking r.Hosts in order and taking the
+// first host that resolves to a Service node in the index. Targets come
+// from r.Destinations[].Host. Hosts that don't resolve (cross-namespace
+// targets, external hosts, custom cluster-domain FQDNs) are counted in
+// MeshEdgeStats so a caller can surface "N routes had unresolved hosts"
+// instead of leaving a silent empty graph.
 //
 // Edges are deduplicated by (source, target, type) so multiple VS objects
-// that converge on the same source/target pair only emit one edge. Emission
-// stops at maxEdges with truncated=true; reuse the existing
-// Graph.Truncated flag at the call site.
+// that converge on the same source/target pair only emit one edge. Self
+// edges (source == target) are emitted: Istio canary patterns route a
+// single host to subsets of the same Service via DestinationRule weights.
+// Emission stops at maxEdges with stats.Truncated=true.
 func buildMeshEdges(
 	routes []servicemesh.TrafficRoute,
 	namespace string,
 	nameIndex map[string]string,
 	maxEdges int,
-) (edges []Edge, truncated bool) {
+) (edges []Edge, stats MeshEdgeStats) {
 	if len(routes) == 0 || namespace == "" || nameIndex == nil {
-		return nil, false
+		return nil, stats
 	}
 
 	seen := make(map[string]struct{})
 	add := func(source, target string, t EdgeType) bool {
-		if source == "" || target == "" || source == target {
+		if source == "" || target == "" {
 			return false
 		}
 		key := source + "->" + target + "/" + string(t)
@@ -56,8 +70,8 @@ func buildMeshEdges(
 		var edgeType EdgeType
 		switch r.Mesh {
 		case servicemesh.MeshIstio:
-			// DestinationRule and Gateway don't fit the source->target shape
-			// in D1; only VirtualService routes emit mesh_vs edges.
+			// DestinationRule and Gateway don't fit the source->target
+			// shape in D1; only VirtualService routes emit mesh_vs edges.
 			if r.Kind != "VirtualService" {
 				continue
 			}
@@ -72,6 +86,8 @@ func buildMeshEdges(
 			continue
 		}
 
+		stats.Considered++
+
 		var sourceUID string
 		for _, host := range r.Hosts {
 			if uid, ok := resolveServiceHost(host, namespace, nameIndex); ok {
@@ -80,21 +96,24 @@ func buildMeshEdges(
 			}
 		}
 		if sourceUID == "" {
+			stats.UnresolvedSources++
 			continue
 		}
 
 		for _, dest := range r.Destinations {
 			targetUID, ok := resolveServiceHost(dest.Host, namespace, nameIndex)
 			if !ok {
+				stats.UnresolvedDests++
 				continue
 			}
 			if capped := add(sourceUID, targetUID, edgeType); capped {
-				return edges, true
+				stats.Truncated = true
+				return edges, stats
 			}
 		}
 	}
 
-	return edges, false
+	return edges, stats
 }
 
 // resolveServiceHost looks up a mesh route's host string against the topology
@@ -104,21 +123,30 @@ func buildMeshEdges(
 //	namespaced:       my-svc.foo
 //	fully qualified:  my-svc.foo.svc.cluster.local
 //
-// Only hosts that resolve to a Service node in the requested namespace match.
-// Cross-namespace hosts (my-svc.bar from inside namespace foo) and external
-// hosts (api.example.com) return ok=false.
+// Lookup is case-insensitive: DNS hostnames are case-insensitive and Istio
+// VS hosts are user-supplied free-form text, but Kubernetes Service names
+// are RFC 1123 lowercase. We lowercase the host first so an operator who
+// types "MyService.foo" in a VirtualService still resolves to the
+// corresponding Service.
+//
+// Only hosts that resolve to a Service node in the requested namespace
+// match. Cross-namespace hosts (my-svc.bar from inside namespace foo) and
+// external hosts (api.example.com) return ok=false.
 //
 // Custom cluster domains (clusterDomain != "cluster.local") are a known
-// limitation inherited from Phase B; these hosts won't resolve and the edges
-// will be silently skipped.
+// limitation inherited from Phase B; these FQDN-form hosts won't resolve.
+// The bare and namespaced forms still work because they don't depend on
+// the cluster domain.
 func resolveServiceHost(host, namespace string, nameIndex map[string]string) (string, bool) {
 	if host == "" || namespace == "" {
 		return "", false
 	}
 
+	// Lowercase before any matching so case differences in user-supplied
+	// VS hosts don't silently drop edges.
+	bare := strings.ToLower(host)
 	// Strip the FQDN suffix. We accept .svc.cluster.local and .svc; the
 	// shorter forms still flow through the dot-split below.
-	bare := host
 	for _, suffix := range []string{".svc.cluster.local", ".svc"} {
 		if trimmed, ok := strings.CutSuffix(bare, suffix); ok {
 			bare = trimmed

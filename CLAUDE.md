@@ -142,7 +142,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
-- Topology: `GET /topology/{namespace}` (RBAC-gated resource dependency graph with health)
+- Topology: `GET /topology/{namespace}[?overlay=mesh]` (RBAC-gated resource dependency graph with health; `?overlay=mesh` adds service-to-service `mesh_vs` (Istio VirtualService) and `mesh_sp` (Linkerd ServiceProfile) edges. Response gains `overlay` (`""` omitted when not requested, `"mesh"` when applied, `"unavailable"` when no mesh installed / provider unwired / fetch errored), `edgesTruncated` flagged separately from `truncated` (node cap), and `errors` for per-stage warnings)
 - Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
 - Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
 - Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)

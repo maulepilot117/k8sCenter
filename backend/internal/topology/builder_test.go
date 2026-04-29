@@ -73,15 +73,26 @@ func (f *fakeLister) ListHPAs(_ context.Context, _ string) ([]*autoscalingv2.Hor
 	return nil, nil
 }
 
-// fakeMeshProvider returns canned routes (or an error) so we can drive the
-// overlay path deterministically.
+// fakeMeshProvider returns canned routes (or an error) so we can drive
+// the overlay path deterministically. detected defaults to true so most
+// existing tests don't have to opt in; tests covering the no-mesh path
+// set it explicitly.
 type fakeMeshProvider struct {
-	routes []servicemesh.TrafficRoute
-	err    error
+	routes      []servicemesh.TrafficRoute
+	err         error
+	detectedSet bool
+	detected    bool
 }
 
 func (p *fakeMeshProvider) Routes(_ context.Context) ([]servicemesh.TrafficRoute, error) {
 	return p.routes, p.err
+}
+
+func (p *fakeMeshProvider) MeshDetected(_ context.Context) bool {
+	if p.detectedSet {
+		return p.detected
+	}
+	return true
 }
 
 func svc(namespace, name, uid string) *corev1.Service {
@@ -96,7 +107,7 @@ func testUser() *auth.User {
 }
 
 func newTestBuilder(provider MeshRouteProvider, services ...*corev1.Service) *Builder {
-	return NewBuilderWithMesh(&fakeLister{services: services}, provider, slog.Default())
+	return NewBuilder(&fakeLister{services: services}, provider, slog.Default())
 }
 
 // TestBuilder_DefaultPath_NoOverlayField confirms the byte-level invariant
@@ -144,7 +155,7 @@ func TestBuilder_OverlayMesh_HappyPath(t *testing.T) {
 }
 
 func TestBuilder_OverlayMesh_NilProviderUnavailable(t *testing.T) {
-	b := NewBuilder(&fakeLister{services: []*corev1.Service{svc("foo", "a", "uid-a")}}, slog.Default())
+	b := NewBuilder(&fakeLister{services: []*corev1.Service{svc("foo", "a", "uid-a")}}, nil, slog.Default())
 
 	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker(), "mesh")
 	if err != nil {
@@ -173,10 +184,10 @@ func TestBuilder_OverlayMesh_ProviderErrorUnavailable(t *testing.T) {
 	}
 }
 
-func TestBuilder_OverlayMesh_NoMeshInstalledStillSetsMesh(t *testing.T) {
-	// Provider returns no routes — equivalent to "no mesh installed". The
-	// overlay still reports "mesh" because we successfully asked; we just
-	// have nothing to show. "unavailable" is reserved for "we couldn't ask".
+func TestBuilder_OverlayMesh_DetectedButNoRoutesSetsMesh(t *testing.T) {
+	// Mesh is installed (MeshDetected=true) but no routes have been
+	// declared yet. The overlay reports "mesh" (we asked a real mesh);
+	// the empty-edges case is the user's signal that nothing is configured.
 	b := newTestBuilder(&fakeMeshProvider{routes: nil},
 		svc("foo", "a", "uid-a"), svc("foo", "b", "uid-b"))
 
@@ -184,8 +195,25 @@ func TestBuilder_OverlayMesh_NoMeshInstalledStillSetsMesh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
 	}
-	if graph.Overlay != "mesh" {
-		t.Errorf("Overlay = %q, want %q (empty routes is still 'mesh', not 'unavailable')", graph.Overlay, "mesh")
+	if graph.Overlay != OverlayMesh {
+		t.Errorf("Overlay = %q, want %q (mesh installed, no routes — still 'mesh')", graph.Overlay, OverlayMesh)
+	}
+}
+
+func TestBuilder_OverlayMesh_NotDetectedYieldsUnavailable(t *testing.T) {
+	// No mesh installed in the cluster. The frontend disable path keys
+	// off "unavailable", so this case must NOT report OverlayMesh — that
+	// would leave the user thinking their mesh is silent when in fact
+	// they don't have a mesh at all.
+	b := newTestBuilder(&fakeMeshProvider{detectedSet: true, detected: false},
+		svc("foo", "a", "uid-a"))
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker(), "mesh")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if graph.Overlay != OverlayUnavailable {
+		t.Errorf("Overlay = %q, want %q (no mesh installed must yield unavailable)", graph.Overlay, OverlayUnavailable)
 	}
 }
 
@@ -211,11 +239,9 @@ func TestBuilder_OverlayMesh_RBACDeniedYieldsNoEdges(t *testing.T) {
 }
 
 func TestBuilder_OverlayMesh_OnlyAllowedCRDContributesEdges(t *testing.T) {
-	// Mix Istio + Linkerd routes. Allow-all checker → both contribute. We
-	// don't have a fake that allows one CRD group but not another without
-	// stubbing the underlying clientFactory; this test asserts the
-	// allow-all baseline. Per-CRD denial is exercised by the deny-all test
-	// above, which proves the gate is per-(group, resource).
+	// Mix Istio + Linkerd routes. Allow-all checker → both contribute.
+	// This test asserts the allow-all baseline; the partial-RBAC case
+	// is exercised in TestBuilder_OverlayMesh_PartialRBAC.
 	b := newTestBuilder(&fakeMeshProvider{
 		routes: []servicemesh.TrafficRoute{
 			{Mesh: servicemesh.MeshIstio, Kind: "VirtualService", Namespace: "foo", Hosts: []string{"a"}, Destinations: []servicemesh.RouteDestination{{Host: "b"}}},
@@ -232,6 +258,37 @@ func TestBuilder_OverlayMesh_OnlyAllowedCRDContributesEdges(t *testing.T) {
 	}
 	if !findEdge(graph.Edges, "uid-a", "uid-b", EdgeMeshSP) {
 		t.Error("missing mesh_sp edge")
+	}
+}
+
+func TestBuilder_OverlayMesh_PartialRBAC(t *testing.T) {
+	// User can list networking.istio.io/virtualservices but NOT
+	// linkerd.io/serviceprofiles. The overlay must surface mesh_vs
+	// edges and silently drop mesh_sp edges; the headline guarantee
+	// of Phase D's per-CRD-group RBAC story.
+	checker := resources.NewPredicateAccessChecker(func(_, apiGroup, resource, _ string) bool {
+		return apiGroup == "networking.istio.io" && resource == "virtualservices"
+	})
+
+	b := newTestBuilder(&fakeMeshProvider{
+		routes: []servicemesh.TrafficRoute{
+			{Mesh: servicemesh.MeshIstio, Kind: "VirtualService", Namespace: "foo", Hosts: []string{"a"}, Destinations: []servicemesh.RouteDestination{{Host: "b"}}},
+			{Mesh: servicemesh.MeshLinkerd, Kind: "ServiceProfile", Namespace: "foo", Hosts: []string{"a"}, Destinations: []servicemesh.RouteDestination{{Host: "b"}}},
+		},
+	}, svc("foo", "a", "uid-a"), svc("foo", "b", "uid-b"))
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), checker, "mesh")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if graph.Overlay != OverlayMesh {
+		t.Errorf("Overlay = %q, want %q", graph.Overlay, OverlayMesh)
+	}
+	if !findEdge(graph.Edges, "uid-a", "uid-b", EdgeMeshVS) {
+		t.Error("missing mesh_vs edge — VS group was allowed but no edges emitted")
+	}
+	if findEdge(graph.Edges, "uid-a", "uid-b", EdgeMeshSP) {
+		t.Error("found mesh_sp edge despite SP group denial — RBAC gate is not per-(apiGroup, resource)")
 	}
 }
 
@@ -274,8 +331,13 @@ func TestBuilder_OverlayMesh_TruncationFlagged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
 	}
-	if !graph.Truncated {
-		t.Error("Truncated = false, want true at mesh-edge cap")
+	// Mesh-edge truncation flips EdgesTruncated specifically — the
+	// existing Truncated flag stays reserved for the maxNodes cap.
+	if !graph.EdgesTruncated {
+		t.Error("EdgesTruncated = false, want true at mesh-edge cap")
+	}
+	if graph.Truncated {
+		t.Error("Truncated = true, want false (node cap not hit)")
 	}
 
 	var meshEdges int
