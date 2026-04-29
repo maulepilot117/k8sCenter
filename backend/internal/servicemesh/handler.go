@@ -542,9 +542,10 @@ func (h *Handler) promClient() *monitoring.PrometheusClient {
 // The handler is read-only and degrades gracefully:
 //   - no mesh → empty workloads slice with status.detected == "none"
 //   - Prometheus offline → policy-only results
-//   - cluster-wide request → Prom cross-check is skipped (the template
-//     requires a concrete destination_workload_namespace); posture is
-//     policy-derived only. Revisiting this is tracked as a follow-up.
+//   - cluster-wide request → Prom cross-check fires against an
+//     unfiltered template that aggregates across all namespaces.
+//     queryIstioMTLSRatios picks the scoped vs cluster-wide template
+//     based on the namespace argument.
 //
 // Partial failure policy: pod-list and policy-fetch failures are
 // accumulated into resp.Errors with user-safe messages and internal
@@ -631,20 +632,55 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 		peerAuths = filtered
 	}
 
-	postures := computePodPostures(pods, peerAuths)
+	// rsOwners makes WorkloadKind authoritative for RS-owned pods. The
+	// list call uses the same impersonating client and budget as the
+	// pod list, but degrades silently — RBAC denial, timeout, or any
+	// other failure leaves the map nil and workloadKey falls back to
+	// the alphabet heuristic with WorkloadKindConfident=false. We do
+	// not surface this as a partial-failure error key because the
+	// fallback still produces a usable response; clients can read
+	// WorkloadKindConfident on each row.
+	var rsOwners map[string]rsOwner
+	if rss, rerr := listReplicaSetControllers(r.Context(), cs, namespace); rerr != nil {
+		h.Logger.Debug("rs owner lookup unavailable; workload kinds derived heuristically", "user", user.KubernetesUsername, "namespace", namespace, "error", rerr)
+	} else {
+		rsOwners = rss
+	}
+
+	postures := computePodPostures(pods, peerAuths, rsOwners)
 	workloads := aggregateWorkloads(postures)
 
-	// Prom cross-check is only meaningful when the query template can be
-	// bound to a concrete namespace. Cluster-wide requests skip it by
-	// design; a surfaced follow-up will either aggregate across known
-	// namespaces or rewrite the template to run un-scoped.
-	if pc := h.promClient(); pc != nil && namespace != "" {
+	// Prom cross-check fires for both scoped and cluster-wide requests
+	// when Istio is part of the detected mesh. queryIstioMTLSRatios
+	// switches between the namespace-filtered and cluster-wide PromQL
+	// templates based on the namespace argument; the cross-check still
+	// degrades silently to policy-only when Prometheus is offline.
+	//
+	// Skip conditions:
+	//   - workloads empty: applyMTLSMetricOverrides is a no-op so the
+	//     Prom round-trip would have no consumer (also covers the
+	//     pod-list-failure and zero-meshed-pods cases).
+	//   - mesh is Linkerd-only: the query template targets
+	//     istio_requests_total; Linkerd has no equivalent and
+	//     applyMTLSMetricOverrides already filters by Mesh != MeshIstio,
+	//     so the call would be wasted on a Linkerd-only cluster.
+	istioPresent := status.Detected == MeshIstio || status.Detected == MeshBoth
+	if pc := h.promClient(); pc != nil && len(workloads) > 0 && istioPresent {
 		ratios, perr := queryIstioMTLSRatios(r.Context(), pc, namespace)
 		if perr != nil {
 			h.Logger.Warn("mTLS metric cross-check failed; falling back to policy-only", "user", user.KubernetesUsername, "namespace", namespace, "error", perr)
 			errs["prometheus-cross-check"] = "metric cross-check unavailable; posture derived from policies only"
 		} else {
 			workloads = applyMTLSMetricOverrides(workloads, ratios)
+			// When the pod list was capped AND the Prom cross-check ran
+			// cluster-wide, the metric ratios cover the full cluster but
+			// only the visible pods are in the response. Ratios for
+			// invisible workloads were silently dropped. Surface this so
+			// "Source=metric" rows aren't read as authoritative on a
+			// partial pod set.
+			if truncated && namespace == "" {
+				errs["truncated"] = fmt.Sprintf("result capped at %d pods; metric cross-check covered only visible workloads (pass ?namespace= to scope the request)", meshListCap)
+			}
 		}
 	}
 

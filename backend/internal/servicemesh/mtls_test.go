@@ -2,9 +2,12 @@ package servicemesh
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 )
 
 // --- precedence resolver unit tests ----------------------------------------
@@ -192,9 +196,12 @@ func TestWorkloadKey_DeploymentStrippedFromReplicaSet(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "Deployment" || name != "cart" {
 		t.Errorf("got (%q,%q), want (Deployment, cart)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
 	}
 }
 
@@ -207,17 +214,23 @@ func TestWorkloadKey_StatefulSet(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "StatefulSet" || name != "db" {
 		t.Errorf("got (%q,%q), want (StatefulSet, db)", kind, name)
+	}
+	if !confident {
+		t.Errorf("confident = false, want true (non-RS top-level kind is authoritative)")
 	}
 }
 
 func TestWorkloadKey_OrphanPod(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "solo"}}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "Pod" || name != "solo" {
 		t.Errorf("got (%q,%q), want (Pod, solo)", kind, name)
+	}
+	if !confident {
+		t.Errorf("confident = false, want true (orphan pod kind is authoritative)")
 	}
 }
 
@@ -244,9 +257,12 @@ func TestWorkloadKey_DaemonSetJobCronJob(t *testing.T) {
 					},
 				},
 			}
-			kind, name := workloadKey(pod)
+			kind, name, confident := workloadKey(pod, nil)
 			if kind != c.kind || name != c.ownerKey {
 				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.kind, c.ownerKey)
+			}
+			if !confident {
+				t.Errorf("confident = false, want true (%s is authoritative)", c.kind)
 			}
 		})
 	}
@@ -265,9 +281,67 @@ func TestWorkloadKey_ReplicaSetNoHash(t *testing.T) {
 			},
 		},
 	}
-	kind, name := workloadKey(pod)
+	kind, name, confident := workloadKey(pod, nil)
 	if kind != "ReplicaSet" || name != "frontend" {
 		t.Errorf("got (%q,%q), want (ReplicaSet, frontend)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
+	}
+}
+
+// TestWorkloadKey_ReplicaSetHashSuffixHeuristic exercises the boundary
+// of the "is this RS owned by a Deployment?" heuristic. Only suffixes
+// matching the kube-controller pod-template-hash safe alphabet
+// (bcdfghjklmnpqrstvwxz2456789, length 5-10) are stripped as
+// Deployment-owned. Anything else — orphan RSes, user-named RSes with
+// dashed non-hash suffixes — is reported verbatim as a ReplicaSet so we
+// never fabricate a Deployment that isn't there.
+func TestWorkloadKey_ReplicaSetHashSuffixHeuristic(t *testing.T) {
+	cases := []struct {
+		name     string
+		rsName   string
+		wantKind string
+		wantName string
+	}{
+		// Real Deployment-owned ReplicaSets: 5-10 chars from the safe
+		// alphabet, mix of letters and digits.
+		{"five-char-hash", "cart-6d4b7", "Deployment", "cart"},
+		{"ten-char-hash", "cart-5d4f7c8b9d", "Deployment", "cart"},
+		{"hash-with-multi-segment-base", "my-app-svc-78b8b6c789", "Deployment", "my-app-svc"},
+
+		// Not-a-hash suffixes — the suffix is too short, contains
+		// vowels, or contains digits (0/1/3) that the safe alphabet
+		// excludes. These are typically orphan or user-managed RSes.
+		{"version-suffix", "worker-v1", "ReplicaSet", "worker-v1"},
+		{"vowel-suffix", "my-standalone", "ReplicaSet", "my-standalone"},
+		{"unsafe-digit-suffix", "app-12345", "ReplicaSet", "app-12345"},
+		{"too-short-suffix", "svc-ab12", "ReplicaSet", "svc-ab12"},
+		// Pure-length-short rejection: suffix "bcdf" is 4 chars and
+		// every char is in the safe alphabet, so the only thing
+		// rejecting it is len < 5. Removing or lowering the floor
+		// would silently break here.
+		{"too-short-but-all-valid-chars", "svc-bcdf", "ReplicaSet", "svc-bcdf"},
+		{"too-long-suffix", "svc-bcdfghjklmn", "ReplicaSet", "svc-bcdfghjklmn"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: c.rsName + "-pod",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: "ReplicaSet", Name: c.rsName},
+					},
+				},
+			}
+			kind, name, confident := workloadKey(pod, nil)
+			if kind != c.wantKind || name != c.wantName {
+				t.Errorf("got (%q,%q), want (%q,%q)", kind, name, c.wantKind, c.wantName)
+			}
+			if confident {
+				t.Errorf("confident = true, want false (heuristic-derived without rsOwners)")
+			}
+		})
 	}
 }
 
@@ -355,25 +429,39 @@ func TestPeerAuthsFromPolicies_FiltersNonPeerAuths(t *testing.T) {
 
 // --- cluster-wide handler path --------------------------------------------
 
-// TestHandler_MTLSPosture_ClusterWide exercises the namespace-omitted
-// path: posture should aggregate across every visible namespace and the
-// Prometheus cross-check is intentionally skipped (the template
-// requires a concrete namespace). Gives the cluster-wide code path its
-// first integration-level coverage.
-func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
+// newClusterWideMTLSFixture returns a Handler pre-wired with a
+// mesh-root STRICT PeerAuthentication and two Istio-injected pods
+// across "shop" and "billing" namespaces. Pass nil for promClient to
+// exercise the offline-Prom degradation path; pass a real
+// monitoring.PrometheusClient to exercise the cluster-wide
+// cross-check. Pod fixture names embed real pod-template-hash shapes
+// (5–10 chars from the kube safe alphabet) so workloadKey's heuristic
+// fallback returns Deployment without an authoritative RS-list call.
+func newClusterWideMTLSFixture(t *testing.T, promClient *monitoring.PrometheusClient) *Handler {
+	t.Helper()
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
 	cs := fake.NewClientset(
-		injectedPod("shop", "cart-6d-xyz", map[string]string{"app": "cart"}),
-		injectedPod("billing", "invoice-4a-aa", map[string]string{"app": "invoice"}),
+		injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}),
+		injectedPod("billing", "invoice-7c9d4-aa", map[string]string{"app": "invoice"}),
 	)
-
-	h := &Handler{
-		Discoverer:        seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
-		AccessChecker:     resources.NewAlwaysAllowAccessChecker(),
-		Logger:            slog.Default(),
-		dynOverride:       newIstioFakeDynClient(pa),
-		clientsetOverride: cs,
+	return &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		dynOverride:        newIstioFakeDynClient(pa),
+		clientsetOverride:  cs,
+		promClientOverride: promClient,
 	}
+}
+
+// TestHandler_MTLSPosture_ClusterWide_NoProm exercises the
+// namespace-omitted path with Prometheus offline. Posture should
+// aggregate across every visible namespace and Source stays policy
+// because the cross-check silently degrades when no Prom client is
+// wired. The online-Prom cluster-wide path is covered by
+// TestHandler_MTLSPosture_ClusterWideMetricOverride.
+func TestHandler_MTLSPosture_ClusterWide_NoProm(t *testing.T) {
+	h := newClusterWideMTLSFixture(t, nil)
 
 	// No ?namespace= → cluster-wide.
 	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
@@ -397,12 +485,391 @@ func TestHandler_MTLSPosture_ClusterWide(t *testing.T) {
 	for _, w := range env.Data.Workloads {
 		seen[w.Namespace] = true
 		if w.Source != MTLSSourcePolicy {
-			t.Errorf("workload %s/%s Source = %q, want policy (cluster-wide skips Prom cross-check)",
+			t.Errorf("workload %s/%s Source = %q, want policy (no Prom client wired → cross-check degrades)",
 				w.Namespace, w.Workload, w.Source)
 		}
 	}
 	if !seen["shop"] || !seen["billing"] {
 		t.Errorf("missing namespace coverage: %+v", seen)
+	}
+}
+
+// TestHandler_MTLSPosture_ClusterWideMetricOverride covers the Phase B
+// follow-up: when no namespace is specified and Prometheus is online,
+// the cross-check fires against an unfiltered template and per-namespace
+// ratios still flip individual workloads to source=metric. Without this
+// path the dashboard's most common shape (cluster-wide) silently
+// disagreed with the scoped view.
+//
+// Also asserts the dispatched PromQL: a regression that mistakenly
+// passes a non-empty namespace to queryIstioMTLSRatios (selecting the
+// scoped template instead) would still pass the body assertions
+// because the fake server's payload is namespace-agnostic. Capturing
+// the query closes that gap.
+func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		capturedQuery  string
+	)
+	// Fake Prom returns multi-namespace samples in a single response —
+	// matching the cluster-wide template's shape. Both workloads have
+	// non-trivial overrides (ratio < 1) so the test would fail if the
+	// dispatch silently filtered ratios to a single namespace: cart
+	// sees 90% mTLS (flips to mixed/metric); invoice sees ~83%
+	// (also flips to mixed/metric).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		capturedQuery = r.FormValue("query")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"9"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"1"]},
+					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"mutual_tls"},"value":[1,"5"]},
+					{"metric":{"destination_workload":"invoice","destination_workload_namespace":"billing","connection_security_policy":"none"},"value":[1,"1"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	h := newClusterWideMTLSFixture(t, pc)
+
+	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
+	rec := httptest.NewRecorder()
+	h.HandleMTLSPosture(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var env struct {
+		Data MTLSPostureResponse `json:"data"`
+	}
+	if jerr := json.Unmarshal(rec.Body.Bytes(), &env); jerr != nil {
+		t.Fatalf("decode: %v", jerr)
+	}
+
+	mu.Lock()
+	got := capturedQuery
+	mu.Unlock()
+	if got == "" {
+		t.Fatalf("Prom server received no query; cluster-wide cross-check did not dispatch")
+	}
+	if strings.Contains(got, `destination_workload_namespace="`) {
+		t.Errorf("cluster-wide path dispatched namespace-filtered query (regression to scoped template): %s", got)
+	}
+	if !strings.Contains(got, "topk(") {
+		t.Errorf("cluster-wide query missing topk cap (regression on cardinality bound): %s", got)
+	}
+
+	want := map[string]struct {
+		state  MTLSState
+		source MTLSSource
+	}{
+		"shop/cart":       {state: MTLSMixed, source: MTLSSourceMetric},
+		"billing/invoice": {state: MTLSMixed, source: MTLSSourceMetric},
+	}
+	if len(env.Data.Workloads) != len(want) {
+		t.Fatalf("workloads = %d, want %d", len(env.Data.Workloads), len(want))
+	}
+	for _, wl := range env.Data.Workloads {
+		key := wl.Namespace + "/" + wl.Workload
+		exp, ok := want[key]
+		if !ok {
+			t.Errorf("unexpected workload %s", key)
+			continue
+		}
+		if wl.State != exp.state {
+			t.Errorf("%s State = %q, want %q", key, wl.State, exp.state)
+		}
+		if wl.Source != exp.source {
+			t.Errorf("%s Source = %q, want %q", key, wl.Source, exp.source)
+		}
+	}
+}
+
+// TestHandler_MTLSPosture_LinkerdOnlySkipsPromCrossCheck verifies the
+// mesh-type gate: queryIstioMTLSRatios targets istio_requests_total,
+// so a Linkerd-only cluster has nothing useful to ask Prometheus.
+// applyMTLSMetricOverrides already filters by Mesh != MeshIstio, so
+// without the gate the Prom round-trip is purely wasted. The test
+// wires a fake Prom server that fails the test if it ever receives a
+// request.
+func TestHandler_MTLSPosture_LinkerdOnlySkipsPromCrossCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Prom server received a request from a Linkerd-only cluster: %s %s", r.Method, r.URL.String())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	cs := fake.NewClientset(linkerdPod("shop", "cart-abc", map[string]string{"app": "cart"}))
+	h := &Handler{
+		Discoverer:         seededDiscoverer(MeshStatus{Detected: MeshLinkerd, Linkerd: &MeshInfo{Installed: true, Version: "edge-25"}}),
+		AccessChecker:      resources.NewAlwaysAllowAccessChecker(),
+		Logger:             slog.Default(),
+		clientsetOverride:  cs,
+		promClientOverride: pc,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/mesh/mtls", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), &auth.User{KubernetesUsername: "u"}))
+	rec := httptest.NewRecorder()
+	h.HandleMTLSPosture(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var env struct {
+		Data MTLSPostureResponse `json:"data"`
+	}
+	if jerr := json.Unmarshal(rec.Body.Bytes(), &env); jerr != nil {
+		t.Fatalf("decode: %v", jerr)
+	}
+	if len(env.Data.Workloads) != 1 || env.Data.Workloads[0].Mesh != MeshLinkerd {
+		t.Errorf("workloads = %+v, want one Linkerd entry", env.Data.Workloads)
+	}
+	if env.Data.Workloads[0].Source != MTLSSourcePolicy {
+		t.Errorf("Source = %q, want policy (Linkerd has no metric override)", env.Data.Workloads[0].Source)
+	}
+}
+
+// TestRenderIstioMTLSQuery_ScopeSwitch documents that cluster-wide and
+// scoped requests use different PromQL templates and that the scoped
+// path still validates the namespace through the monitoring template.
+func TestRenderIstioMTLSQuery_ScopeSwitch(t *testing.T) {
+	clusterQ, err := renderIstioMTLSQuery("")
+	if err != nil {
+		t.Fatalf("cluster-wide render: %v", err)
+	}
+	if strings.Contains(clusterQ, "destination_workload_namespace=") {
+		t.Errorf("cluster-wide query carries a namespace filter: %s", clusterQ)
+	}
+	if !strings.Contains(clusterQ, "istio_requests_total") {
+		t.Errorf("cluster-wide query missing istio_requests_total metric: %s", clusterQ)
+	}
+
+	scopedQ, err := renderIstioMTLSQuery("shop")
+	if err != nil {
+		t.Fatalf("scoped render: %v", err)
+	}
+	if !strings.Contains(scopedQ, `destination_workload_namespace="shop"`) {
+		t.Errorf("scoped query missing namespace filter: %s", scopedQ)
+	}
+
+	if _, err := renderIstioMTLSQuery(`bad"ns`); err == nil {
+		t.Error("invalid namespace passed render validation")
+	}
+
+	// Cluster-wide template MUST stay variable-free. The function comment
+	// documents that any future $-variable addition requires routing
+	// through QueryTemplate.Render; this assertion makes the invariant
+	// machine-checkable so a regression fails CI rather than reaching
+	// PromQL with unsanitized input.
+	if strings.Contains(clusterQ, "$") {
+		t.Errorf("cluster-wide query contains $-variable; must route through Render: %s", clusterQ)
+	}
+
+	// Cardinality cap: the cluster-wide template wraps the aggregation in
+	// topk to bound the result vector for federated/high-cardinality
+	// Prometheus installs. The 2s timeout is the only other backstop.
+	if !strings.Contains(clusterQ, "topk(") {
+		t.Errorf("cluster-wide query missing topk cap: %s", clusterQ)
+	}
+}
+
+// TestQueryIstioMTLSRatios_DropsNaNAndInfSamples ensures Prometheus
+// samples with NaN or +/-Inf values never reach the aggregator. Without
+// the guard, "+Inf" bypasses the r.Total == 0 check (+Inf != 0) and a
+// downstream "ratio = MTLS/+Inf = 0" wrongly demotes a STRICT workload
+// to inactive.
+func TestQueryIstioMTLSRatios_DropsNaNAndInfSamples(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"NaN"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"+Inf"]},
+					{"metric":{"destination_workload":"checkout","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"-Inf"]},
+					{"metric":{"destination_workload":"checkout","destination_workload_namespace":"shop","connection_security_policy":"none"},"value":[1,"3"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	ratios, err := queryIstioMTLSRatios(t.Context(), pc, "")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+
+	// cart had every sample dropped by the NaN/Inf guard — must not
+	// appear in the output. checkout had only one finite sample (a
+	// "none" policy entry of 3.0); it should appear with Total=3, MTLS=0.
+	for _, r := range ratios {
+		if r.Workload == "cart" {
+			t.Errorf("cart present in output despite all-NaN/Inf samples: %+v", r)
+		}
+	}
+	var checkout *IstioMTLSRatio
+	for i := range ratios {
+		if ratios[i].Workload == "checkout" {
+			checkout = &ratios[i]
+			break
+		}
+	}
+	if checkout == nil {
+		t.Fatalf("checkout missing from output (its non-NaN sample should survive)")
+	}
+	if checkout.Total != 3 || checkout.MTLS != 0 {
+		t.Errorf("checkout = {MTLS:%v, Total:%v}, want {MTLS:0, Total:3}", checkout.MTLS, checkout.Total)
+	}
+}
+
+// TestQueryIstioMTLSRatios_DropsEmptyNamespaceSample exercises the
+// new "ns == \"\" → drop sample" guard. Without the guard, a Prom
+// sample with empty destination_workload_namespace would aggregate
+// under "/cart" and shadow the real "shop/cart" lookup in
+// applyMTLSMetricOverrides.
+func TestQueryIstioMTLSRatios_DropsEmptyNamespaceSample(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"status": "success",
+			"data": {
+				"resultType": "vector",
+				"result": [
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"","connection_security_policy":"mutual_tls"},"value":[1,"5"]},
+					{"metric":{"destination_workload":"cart","destination_workload_namespace":"shop","connection_security_policy":"mutual_tls"},"value":[1,"10"]}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	if err != nil {
+		t.Fatalf("prom client: %v", err)
+	}
+
+	ratios, err := queryIstioMTLSRatios(t.Context(), pc, "")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(ratios) != 1 {
+		t.Fatalf("len(ratios) = %d, want 1 (empty-namespace sample must be dropped)", len(ratios))
+	}
+	if ratios[0].Namespace != "shop" || ratios[0].Workload != "cart" || ratios[0].Total != 10 {
+		t.Errorf("survivor = %+v, want {Namespace:shop, Workload:cart, Total:10}", ratios[0])
+	}
+}
+
+// TestIstioMTLSRatio_HasTraffic documents the contract: HasTraffic
+// distinguishes "no data" (Total==0) from "all plaintext" (Total>0,
+// MTLS==0), both of which Ratio() collapses to 0.
+func TestIstioMTLSRatio_HasTraffic(t *testing.T) {
+	cases := []struct {
+		name string
+		r    IstioMTLSRatio
+		want bool
+	}{
+		{"no-traffic", IstioMTLSRatio{Total: 0}, false},
+		{"all-plaintext", IstioMTLSRatio{MTLS: 0, Total: 100}, true},
+		{"mixed", IstioMTLSRatio{MTLS: 50, Total: 100}, true},
+		{"all-mtls", IstioMTLSRatio{MTLS: 100, Total: 100}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.r.HasTraffic(); got != c.want {
+				t.Errorf("HasTraffic() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestWorkloadKey_OwnerRefMapAuthoritative covers the rsOwners path:
+// when the orchestrator successfully listed RSes, workloadKey consults
+// the map directly and returns confident=true.
+func TestWorkloadKey_OwnerRefMapAuthoritative(t *testing.T) {
+	cases := []struct {
+		name         string
+		ownerKind    string
+		ownerName    string
+		wantKind     string
+		wantName     string
+		wantConfident bool
+	}{
+		// Real Deployment-owned RS — confident Deployment promotion.
+		{"deployment-owned", "Deployment", "cart", "Deployment", "cart", true},
+		// Bare RS or RS owned by a non-Deployment controller (e.g. Argo
+		// Rollout) is reported verbatim; the heuristic would have
+		// fabricated a Deployment.
+		{"rollout-owned", "Rollout", "cart", "ReplicaSet", "cart-bcdfg", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "shop",
+					Name:      "cart-bcdfg-pod",
+					OwnerReferences: []metav1.OwnerReference{
+						{Kind: "ReplicaSet", Name: "cart-bcdfg"},
+					},
+				},
+			}
+			rsOwners := map[string]rsOwner{
+				"shop/cart-bcdfg": {Kind: c.ownerKind, Name: c.ownerName},
+			}
+			kind, name, confident := workloadKey(pod, rsOwners)
+			if kind != c.wantKind || name != c.wantName || confident != c.wantConfident {
+				t.Errorf("got (%q, %q, confident=%v), want (%q, %q, confident=%v)",
+					kind, name, confident, c.wantKind, c.wantName, c.wantConfident)
+			}
+		})
+	}
+}
+
+// TestWorkloadKey_OwnerRefMapMissingFallsBackToHeuristic: when the RS
+// list call partially succeeded (truncation, race) and a pod's RS
+// isn't in the map, workloadKey falls back to the alphabet heuristic
+// and reports confident=false.
+func TestWorkloadKey_OwnerRefMapMissingFallsBackToHeuristic(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "shop",
+			Name:      "cart-6d4b7-pod",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "ReplicaSet", Name: "cart-6d4b7"},
+			},
+		},
+	}
+	// Map is non-nil but doesn't contain cart-6d4b7.
+	rsOwners := map[string]rsOwner{"shop/other-app": {Kind: "Deployment", Name: "other-app"}}
+	kind, name, confident := workloadKey(pod, rsOwners)
+	if kind != "Deployment" || name != "cart" {
+		t.Errorf("got (%q,%q), want (Deployment, cart)", kind, name)
+	}
+	if confident {
+		t.Errorf("confident = true, want false (RS missing from map → heuristic fallback)")
 	}
 }
 
@@ -549,7 +1016,7 @@ func TestHandler_MTLSPosture_Denied(t *testing.T) {
 // with mesh-root STRICT resolves to active/policy/mesh.
 func TestHandler_MTLSPosture_IstioNamespaceStrict(t *testing.T) {
 	pa := newPeerAuth(istioMeshRootNamespace, "default", IstioMTLSStrict, nil)
-	cs := fake.NewClientset(injectedPod("shop", "cart-6d-xyz", map[string]string{"app": "cart"}))
+	cs := fake.NewClientset(injectedPod("shop", "cart-6d4b7-xyz", map[string]string{"app": "cart"}))
 
 	h := &Handler{
 		Discoverer:        seededDiscoverer(MeshStatus{Detected: MeshIstio, Istio: &MeshInfo{Installed: true, Version: "1.24.0"}}),
@@ -703,9 +1170,10 @@ func linkerdPod(ns, name string, labels map[string]string) *corev1.Pod {
 }
 
 // deriveRSName strips the last "-xxx" suffix of a pod name so that pod
-// "cart-6d-xyz" yields RS "cart-6d" — the workload resolver in turn
-// strips to "cart". Mirrors the Deployment naming convention without
-// recreating the hash algorithm.
+// "cart-6d4b7-xyz" yields RS "cart-6d4b7" — the workload resolver in
+// turn strips the hash-shaped suffix to "cart". Fixture pod names must
+// embed a real pod-template-hash shape (5-10 chars from the kube
+// safe alphabet) or workloadKey will keep the RS name verbatim.
 func deriveRSName(podName string) string {
 	for i := len(podName) - 1; i > 0; i-- {
 		if podName[i] == '-' {
