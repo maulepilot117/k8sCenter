@@ -69,8 +69,10 @@ export function ServiceOverview({ resource }: { resource: K8sResource }) {
         <KeyValueTable title="Selector" data={spec.selector} />
       )}
 
-      {/* Service mesh golden signals — silently absent for unmeshed
-          services, otherwise refreshes on a 30s cadence. */}
+      {
+        /* Service mesh golden signals — silently absent for unmeshed
+          services, otherwise refreshes on a 30s cadence. */
+      }
       {meta?.namespace && meta?.name && (
         <MeshGoldenSignals
           namespace={meta.namespace}
