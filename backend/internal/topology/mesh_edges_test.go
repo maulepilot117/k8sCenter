@@ -327,6 +327,29 @@ func TestBuildMeshEdges_CaseInsensitiveHostResolution(t *testing.T) {
 	}
 }
 
+func TestBuildMeshEdges_CustomClusterDomainResolves(t *testing.T) {
+	// Clusters with --cluster-domain other than the default still produce
+	// canonical "<svc>.<ns>.svc.<domain>" FQDNs in mesh routes. Splitting
+	// at the first ".svc." separator (rather than literal-matching the
+	// trailing domain) makes the resolver work uniformly across cluster
+	// configurations without requiring an external config knob.
+	idx := makeIndex("a", "b")
+	routes := []servicemesh.TrafficRoute{
+		vsRoute("foo", "vs-default", "a", "b.foo.svc.cluster.local"),
+		vsRoute("foo", "vs-custom", "a", "b.foo.svc.k8s.example.com"),
+		vsRoute("foo", "vs-shorter", "a", "b.foo.svc.cluster"),
+	}
+
+	edges, _ := buildMeshEdges(routes, "foo", idx, maxMeshEdges)
+
+	if len(edges) != 1 {
+		t.Fatalf("edges = %d, want 1 (cluster-domain variants must dedup to one edge)", len(edges))
+	}
+	if !findEdge(edges, "uid-a", "uid-b", EdgeMeshVS) {
+		t.Errorf("missing edge uid-a -> uid-b across cluster-domain variants; got %+v", edges)
+	}
+}
+
 func TestBuildMeshEdges_StatsCountsUnresolvedHosts(t *testing.T) {
 	// One route's source host doesn't resolve (external host); two of
 	// another route's destinations don't resolve. Stats should count

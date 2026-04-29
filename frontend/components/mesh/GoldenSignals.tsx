@@ -94,20 +94,18 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
         // service" from "meshed with traffic" by checking whether ANY
         // metric is non-zero. A meshed service with traffic always has
         // at least RPS > 0; a meshed-but-silent service produces no
-        // useful card. Hide both cases.
-        //
-        // Known limitation: the backend reports available=true even
-        // when 5 of 6 PromQL queries failed (partial-success contract,
-        // see internal/servicemesh/metrics.go). A heavily degraded
-        // Prometheus that only answers one query with zeros looks the
-        // same as a silent meshed service here. Surfacing that
-        // distinction requires a backend signal we don't have today.
+        // useful card. Hide both cases — UNLESS the backend signaled
+        // partial success via missingQueries, in which case we render
+        // so operators can see "Prometheus is degraded" rather than
+        // "service is silent". This closes the all-zero ambiguity that
+        // existed before the missingQueries surface was added.
         const hasTraffic = signals.rps > 0 ||
           signals.errorRate > 0 ||
           signals.p50Ms > 0 ||
           signals.p95Ms > 0 ||
           signals.p99Ms > 0;
-        if (!hasTraffic) {
+        const partial = (signals.missingQueries?.length ?? 0) > 0;
+        if (!hasTraffic && !partial) {
           data.value = null;
           offline.value = false;
           return;
@@ -155,16 +153,36 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
   const s = data.value;
   if (!s) return null;
 
+  const missing = s.missingQueries ?? [];
   return (
     <section>
-      <h3 class="mb-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
+      <h3 class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-text-muted">
         Service Mesh — Golden Signals
-        <span class="ml-2 rounded bg-bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
+        <span class="rounded bg-bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
           {s.mesh}
         </span>
+        {missing.length > 0 && (
+          <span
+            class="rounded px-1.5 py-0.5 text-xs font-normal"
+            style={{
+              backgroundColor:
+                "color-mix(in srgb, var(--status-warning) 15%, transparent)",
+              color: "var(--status-warning)",
+            }}
+            title={`Prometheus didn't answer: ${
+              missing.join(", ")
+            }. Values for those queries are missing; the rest are still live.`}
+          >
+            Partial metrics
+          </span>
+        )}
       </h3>
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <Metric label="RPS" value={formatRps(s.rps)} />
+        <Metric
+          label="RPS"
+          value={formatRps(s.rps)}
+          missing={missing.includes("rps")}
+        />
         <Metric
           label="Error rate"
           value={formatErrorRate(s.errorRate)}
@@ -173,22 +191,54 @@ export function MeshGoldenSignals({ namespace, service }: Props) {
             : s.errorRate >= 0.01
             ? "warning"
             : "default"}
+          missing={missing.includes("errorNum") ||
+            missing.includes("errorDen")}
         />
-        <Metric label="p50" value={formatMs(s.p50Ms)} />
-        <Metric label="p95" value={formatMs(s.p95Ms)} />
-        <Metric label="p99" value={formatMs(s.p99Ms)} />
+        <Metric
+          label="p50"
+          value={formatMs(s.p50Ms)}
+          missing={missing.includes("p50")}
+        />
+        <Metric
+          label="p95"
+          value={formatMs(s.p95Ms)}
+          missing={missing.includes("p95")}
+        />
+        <Metric
+          label="p99"
+          value={formatMs(s.p99Ms)}
+          missing={missing.includes("p99")}
+        />
       </div>
     </section>
   );
 }
 
 function Metric(
-  { label, value, tone = "default" }: {
+  { label, value, tone = "default", missing = false }: {
     label: string;
     value: string;
     tone?: "default" | "warning" | "error";
+    missing?: boolean;
   },
 ) {
+  // When the underlying PromQL query failed, render the value muted
+  // with an em dash so operators can tell the displayed zero is "no
+  // data" rather than "no traffic". The card-level "Partial metrics"
+  // badge gives the broader context.
+  if (missing) {
+    return (
+      <div
+        class="rounded-md border border-border-primary bg-bg-surface p-3"
+        title={`${label}: query did not return; value below is unavailable`}
+      >
+        <div class="text-xs text-text-muted">{label}</div>
+        <div class="mt-1 font-mono text-lg font-semibold text-text-muted">
+          —
+        </div>
+      </div>
+    );
+  }
   const valueColor = tone === "error"
     ? "var(--status-error)"
     : tone === "warning"

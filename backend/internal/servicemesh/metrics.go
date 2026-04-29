@@ -27,13 +27,22 @@ const promQueryTimeout = 2 * time.Second
 // single service. All values are zero when no traffic was observed —
 // Available stays true so the UI can distinguish "silent service" from
 // "metrics subsystem offline".
+//
+// MissingQueries names any of the six PromQL fan-out queries that
+// failed (timed out, returned no scalar, or errored). It's omitted on a
+// fully-successful response so callers can treat absence as success.
+// When non-empty AND Available=true the response represents partial
+// data; the UI surfaces this so a heavily-degraded Prometheus answering
+// only one query with zeros isn't indistinguishable from a silent
+// meshed service.
 type GoldenSignals struct {
 	Mesh      MeshType `json:"mesh"`
 	Namespace string   `json:"namespace"`
 	Service   string   `json:"service"`
 
-	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"` // populated only when Available=false
+	Available      bool     `json:"available"`
+	Reason         string   `json:"reason,omitempty"`         // populated only when Available=false
+	MissingQueries []string `json:"missingQueries,omitempty"` // populated when partial-success
 
 	RPS       float64 `json:"rps"`
 	ErrorRate float64 `json:"errorRate"` // fraction 0..1
@@ -219,6 +228,16 @@ func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClien
 	result.P50Ms = nanToZero(results["p50"])
 	result.P95Ms = nanToZero(results["p95"])
 	result.P99Ms = nanToZero(results["p99"])
+
+	// Surface partial success so the UI can flag a degraded Prometheus
+	// (one query answering with zeros vs all six answering) rather than
+	// silently rendering zeros that look like an idle service. Iterate
+	// in stable order so the response shape is deterministic.
+	for _, name := range []string{"rps", "errorNum", "errorDen", "p50", "p95", "p99"} {
+		if _, ok := results[name]; !ok {
+			result.MissingQueries = append(result.MissingQueries, name)
+		}
+	}
 
 	return result, nil
 }
