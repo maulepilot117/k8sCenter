@@ -1,11 +1,13 @@
-/** Badge components for Service Mesh views (mesh, mTLS state, mTLS source, kind). */
+/** Badge components for Service Mesh views (mesh, mTLS state, mTLS source, kind).
+ *
+ *  Color sourcing: `lib/badge-colors.ts` covers the SEVERITY scale
+ *  (`critical`/`high`/`medium`/`low`). The mesh-specific keys below don't fit
+ *  that scale (`active`/`inactive`/`mixed`/`unmeshed` is a posture taxonomy,
+ *  not a severity ranking), so they live here next to the badges that use
+ *  them. All values resolve to the shared `var(--…)` theme tokens. */
 
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
-import type {
-  MeshType,
-  MTLSSource,
-  MTLSState,
-} from "@/lib/mesh-types.ts";
+import type { MeshType, MTLSSource, MTLSState } from "@/lib/mesh-types.ts";
 
 export const MESH_COLORS: Record<string, string> = {
   istio: "var(--accent)",

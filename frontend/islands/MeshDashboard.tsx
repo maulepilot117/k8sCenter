@@ -69,9 +69,7 @@ export default function MeshDashboard() {
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
-      )}
+      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
 
       {/* Mesh cards — one per detected mesh */}
       {!loading.value && !error.value && (istioInstalled || linkerdInstalled) &&
@@ -101,8 +99,8 @@ export default function MeshDashboard() {
             No service mesh detected
           </p>
           <p class="text-sm text-text-muted mb-6">
-            Install Istio or Linkerd to enable service mesh observability,
-            mTLS posture tracking, and traffic routing visibility.
+            Install Istio or Linkerd to enable service mesh observability, mTLS
+            posture tracking, and traffic routing visibility.
           </p>
           <div class="flex justify-center gap-6">
             <a

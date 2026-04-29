@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { meshApi } from "@/lib/mesh-api.ts";
 import {
   MTLSSourceBadge,
@@ -8,13 +8,14 @@ import {
 } from "@/components/ui/MeshBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import type {
-  MTLSPostureResponse,
-  WorkloadMTLS,
-} from "@/lib/mesh-types.ts";
+import type { MTLSPostureResponse, WorkloadMTLS } from "@/lib/mesh-types.ts";
 
 /** Warning-level error keys (metric/truncation issues) vs. error-level (pod/policy fetch failures). */
 const WARN_KEYS = new Set(["prometheus-cross-check", "truncated"]);
+
+/** Debounce window (ms) for namespace-input → re-fetch. Long enough to
+ *  coalesce typing, short enough to feel responsive after the user stops. */
+const NAMESPACE_DEBOUNCE_MS = 300;
 
 /** Per-namespace aggregated card data. */
 interface NamespaceCard {
@@ -208,14 +209,13 @@ function NamespacePostureCard(
               class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
               style={{
                 color: pillColor,
-                backgroundColor: `color-mix(in srgb, ${pillColor} 15%, transparent)`,
+                backgroundColor:
+                  `color-mix(in srgb, ${pillColor} 15%, transparent)`,
               }}
             >
               {pillLabel}
             </span>
-            {subLine && (
-              <span class="text-xs text-text-muted">{subLine}</span>
-            )}
+            {subLine && <span class="text-xs text-text-muted">{subLine}</span>}
           </div>
         </div>
         <span
@@ -256,7 +256,8 @@ function NotInMeshSection(
         <div class="flex flex-col gap-1">
           <span class="font-semibold text-text-muted">Not in mesh</span>
           <span class="text-xs text-text-muted">
-            {totalWorkloads} workload{totalWorkloads !== 1 ? "s" : ""} across{" "}
+            {totalWorkloads} workload{totalWorkloads !== 1 ? "s" : ""} across
+            {" "}
             {cards.length} namespace{cards.length !== 1 ? "s" : ""}
           </span>
         </div>
@@ -307,13 +308,23 @@ export default function MTLSPosture() {
   const expandedNotInMesh = useSignal(false);
   const refreshing = useSignal(false);
 
+  // Sequence counter: every fetch increments and captures a token; a
+  // response is applied only if its token is the latest. Stops slow
+  // earlier responses from overwriting state from later, faster ones.
+  const fetchSeq = useRef(0);
+  // Debounce handle for namespace-input → fetch.
+  const debounceHandle = useRef<number | null>(null);
+
   async function fetchData() {
+    const seq = ++fetchSeq.current;
     try {
       const ns = namespace.value.trim() || undefined;
       const res = await meshApi.mtls({ namespace: ns });
+      if (seq !== fetchSeq.current) return; // stale response — drop
       data.value = res.data ?? null;
       error.value = null;
     } catch {
+      if (seq !== fetchSeq.current) return; // stale error — drop
       error.value = "Failed to load mTLS posture data";
     }
   }
@@ -327,6 +338,12 @@ export default function MTLSPosture() {
     fetchData().then(() => {
       loading.value = false;
     });
+    return () => {
+      if (debounceHandle.current !== null) {
+        clearTimeout(debounceHandle.current);
+        debounceHandle.current = null;
+      }
+    };
   }, []);
 
   function handleNamespaceChange(newNs: string) {
@@ -339,11 +356,24 @@ export default function MTLSPosture() {
       url.searchParams.delete("namespace");
     }
     globalThis.history.replaceState({}, "", url.toString());
-    // Re-fetch with the new namespace scope
-    fetchData();
+    // Debounce the re-fetch so per-keystroke typing doesn't fan out N
+    // concurrent requests. The sequence guard in fetchData also drops
+    // any stragglers that survive the debounce.
+    if (debounceHandle.current !== null) {
+      clearTimeout(debounceHandle.current);
+    }
+    debounceHandle.current = setTimeout(() => {
+      debounceHandle.current = null;
+      fetchData();
+    }, NAMESPACE_DEBOUNCE_MS);
   }
 
   async function handleRefresh() {
+    // Cancel any pending debounced fetch — refresh wins.
+    if (debounceHandle.current !== null) {
+      clearTimeout(debounceHandle.current);
+      debounceHandle.current = null;
+    }
     refreshing.value = true;
     await fetchData();
     refreshing.value = false;
@@ -363,7 +393,9 @@ export default function MTLSPosture() {
   const errorKeys = Object.keys(errors);
 
   const allCards = buildCards(workloads);
-  const meshedCards = allCards.filter((c) => classifyCard(c) !== "unmeshed-only");
+  const meshedCards = allCards.filter((c) =>
+    classifyCard(c) !== "unmeshed-only"
+  );
   const unmeshedOnlyCards = allCards.filter((c) =>
     classifyCard(c) === "unmeshed-only"
   );

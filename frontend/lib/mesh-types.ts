@@ -87,29 +87,6 @@ export interface RoutingResponse {
   errors?: Record<string, string>;
 }
 
-export interface MeshedPolicy {
-  id: string;
-  mesh: MeshType;
-  kind: string;
-  name: string;
-  namespace?: string;
-  /** Mesh-native action (ALLOW / DENY / AUDIT / CUSTOM / ...). */
-  action?: string;
-  /** Computed corner cases: "deny_all" | "allow_all" | "". */
-  effect?: string;
-  /** PeerAuthentication only: STRICT / PERMISSIVE / DISABLE / UNSET. */
-  mtlsMode?: IstioMTLSMode;
-  selector?: string;
-  ruleCount: number;
-  raw?: Record<string, unknown>;
-}
-
-export interface PoliciesResponse {
-  status: MeshStatus;
-  policies: MeshedPolicy[];
-  errors?: Record<string, string>;
-}
-
 export interface WorkloadMTLS {
   namespace: string;
   workload: string;

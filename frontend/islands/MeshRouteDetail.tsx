@@ -1,7 +1,9 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
+import { stringify as yamlStringify } from "yaml";
 import { meshApi } from "@/lib/mesh-api.ts";
+import { ApiError } from "@/lib/api.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { KindBadge, MeshBadge } from "@/components/ui/MeshBadges.tsx";
@@ -13,6 +15,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
   const route = useSignal<TrafficRoute | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
+  const notFound = useSignal(false);
   const yamlExpanded = useSignal(false);
   const refreshing = useSignal(false);
 
@@ -22,8 +25,15 @@ export default function MeshRouteDetail({ id }: { id: string }) {
       const res = await meshApi.route(id);
       route.value = res.data;
       error.value = null;
-    } catch {
-      error.value = "Failed to load route detail";
+      notFound.value = false;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        notFound.value = true;
+        error.value = null;
+        route.value = null;
+      } else {
+        error.value = "Failed to load route detail";
+      }
     }
   }
 
@@ -50,6 +60,22 @@ export default function MeshRouteDetail({ id }: { id: string }) {
     );
   }
 
+  if (notFound.value) {
+    return (
+      <div class="p-6">
+        <a
+          href="/networking/mesh/routing"
+          class="text-sm text-brand hover:underline mb-4 inline-block"
+        >
+          &larr; Back to Routing
+        </a>
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+          <p class="text-text-muted">Resource not found.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (error.value || !route.value) {
     return (
       <div class="p-6">
@@ -61,7 +87,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
         </a>
         <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted mb-4">
-            {error.value ?? "Route not found"}
+            {error.value ?? "Failed to load route detail"}
           </p>
           <Button type="button" variant="ghost" onClick={handleRefresh}>
             Retry
@@ -78,7 +104,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
   const matchers = r.matchers ?? [];
   const destinations = r.destinations ?? [];
 
-  const rawYaml = r.raw ? JSON.stringify(r.raw, null, 2) : "";
+  const rawYaml = r.raw ? yamlStringify(r.raw) : "";
 
   return (
     <div class="p-6">
@@ -221,13 +247,13 @@ export default function MeshRouteDetail({ id }: { id: string }) {
                   </span>
                   {d.subset && (
                     <span class="text-xs text-text-muted">
-                      subset: <span class="text-text-secondary">{d.subset}</span>
+                      subset:{" "}
+                      <span class="text-text-secondary">{d.subset}</span>
                     </span>
                   )}
                   {d.port !== undefined && (
                     <span class="text-xs text-text-muted">
-                      port:{" "}
-                      <span class="text-text-secondary">{d.port}</span>
+                      port: <span class="text-text-secondary">{d.port}</span>
                     </span>
                   )}
                   {d.weight !== undefined && (
@@ -309,7 +335,7 @@ export default function MeshRouteDetail({ id }: { id: string }) {
             <div class="px-4 pb-4">
               <YamlEditor
                 value={rawYaml}
-                readOnly={true}
+                readOnly
                 height="320px"
               />
             </div>

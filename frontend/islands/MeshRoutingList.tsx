@@ -10,6 +10,11 @@ import type { RoutingResponse, TrafficRoute } from "@/lib/mesh-types.ts";
 
 const PAGE_SIZE = 100;
 
+/** Warning-level error keys (metric / truncation issues). All other keys
+ *  (`pods`, `policies`, per-CRD fetch failures like `istio/VirtualService`)
+ *  render as error-level. Mirrors the classification in `MTLSPosture.tsx`. */
+const WARN_KEYS = new Set(["prometheus-cross-check", "truncated"]);
+
 export default function MeshRoutingList() {
   const routes = useSignal<TrafficRoute[]>([]);
   const errors = useSignal<Record<string, string>>({});
@@ -23,6 +28,10 @@ export default function MeshRoutingList() {
 
   async function fetchData() {
     try {
+      // Namespace filter is applied client-side as a substring match below.
+      // Server-side `?namespace=` is exact-match only and would change UX;
+      // upgrading to a hybrid (exact -> server, otherwise client) is tracked
+      // for Phase D alongside the topology overlay.
       const res = await meshApi.routes();
       const data = res.data as RoutingResponse;
       routes.value = Array.isArray(data.routes) ? data.routes : [];
@@ -68,10 +77,13 @@ export default function MeshRoutingList() {
   });
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE) || 1;
-  if (page.value > totalPages) page.value = totalPages;
+  // Clamp on read instead of writing to the signal during render. Filter
+  // changes already reset to page 1; this guard handles the post-refresh
+  // case where data shrinks while page.value is still on a higher page.
+  const currentPage = Math.min(page.value, totalPages);
   const displayed = filtered.slice(
-    (page.value - 1) * PAGE_SIZE,
-    page.value * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE,
+    currentPage * PAGE_SIZE,
   );
 
   const istioCount = routes.value.filter((r) => r.mesh === "istio").length;
@@ -99,14 +111,37 @@ export default function MeshRoutingList() {
         Traffic-routing resources across Istio and Linkerd.
       </p>
 
-      {/* Partial-failure banners — non-dismissible */}
+      {
+        /* Partial-failure banners — non-dismissible. Severity-classified to
+          match the plan and `MTLSPosture.tsx`: prometheus-cross-check /
+          truncated render as warnings; pods / policies / per-CRD fetch
+          failures (`istio/VirtualService`, etc.) render as errors. */
+      }
       {!loading.value && errorKeys.length > 0 && (
-        <div class="mb-4 rounded-lg border border-border-primary bg-bg-elevated p-3 flex flex-col gap-1">
-          {errorKeys.map((key) => (
-            <p key={key} class="text-sm text-warning">
-              <span class="font-medium">{key}:</span> {errors.value[key]}
-            </p>
-          ))}
+        <div class="mb-4 flex flex-col gap-2">
+          {errorKeys.map((key) => {
+            const isWarn = WARN_KEYS.has(key);
+            const color = isWarn ? "var(--warning)" : "var(--danger)";
+            return (
+              <div
+                key={key}
+                class="rounded-lg px-4 py-3 text-sm flex items-start gap-3"
+                style={{
+                  backgroundColor:
+                    `color-mix(in srgb, ${color} 12%, transparent)`,
+                  border:
+                    `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+                }}
+              >
+                <span class="font-medium shrink-0" style={{ color }}>
+                  {isWarn ? "Notice" : "Error"}
+                </span>
+                <span class="text-text-primary">
+                  <span class="font-medium">{key}:</span> {errors.value[key]}
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -167,9 +202,7 @@ export default function MeshRoutingList() {
         </div>
       )}
 
-      {error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
-      )}
+      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
 
       {/* Table */}
       {!loading.value && !error.value && filtered.length > 0 && (
@@ -209,8 +242,7 @@ export default function MeshRoutingList() {
                     key={r.id}
                     class="hover:bg-hover/30 cursor-pointer"
                     onClick={() => {
-                      globalThis.location.href =
-                        "/networking/mesh/routing/" +
+                      globalThis.location.href = "/networking/mesh/routing/" +
                         encodeURIComponent(r.id);
                     }}
                   >
@@ -244,16 +276,16 @@ export default function MeshRoutingList() {
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
         <div class="mt-4 flex items-center justify-between">
           <p class="text-sm text-text-muted">
-            {filtered.length} routes &middot; Page {page.value} of {totalPages}
+            {filtered.length} routes &middot; Page {currentPage} of {totalPages}
           </p>
           <div class="flex gap-2">
             <Button
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value--;
+                if (currentPage > 1) page.value = currentPage - 1;
               }}
-              disabled={page.value <= 1}
+              disabled={currentPage <= 1}
             >
               Previous
             </Button>
@@ -261,9 +293,9 @@ export default function MeshRoutingList() {
               type="button"
               variant="ghost"
               onClick={() => {
-                page.value++;
+                if (currentPage < totalPages) page.value = currentPage + 1;
               }}
-              disabled={page.value >= totalPages}
+              disabled={currentPage >= totalPages}
             >
               Next
             </Button>

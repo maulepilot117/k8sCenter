@@ -14,7 +14,6 @@ import type {
   MeshStatusResponse,
   MTLSPostureResponse,
   NamespaceScope,
-  PoliciesResponse,
   RoutingResponse,
   TrafficRoute,
 } from "@/lib/mesh-types.ts";
@@ -48,12 +47,6 @@ export const meshApi = {
   route: (id: string) =>
     apiGet<TrafficRoute>(
       `/v1/mesh/routing/${encodeURIComponent(id)}`,
-    ),
-
-  /** Mesh security/authz policies (PA / AP / MTLSAuth / Server). */
-  policies: (opts?: NamespaceScope) =>
-    apiGet<PoliciesResponse>(
-      `/v1/mesh/policies${namespaceQueryString(opts)}`,
     ),
 
   /** Per-workload mTLS posture; `?namespace=` narrows scope. */
