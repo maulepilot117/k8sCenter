@@ -1,8 +1,4 @@
-import type {
-  DriftStatus,
-  Status,
-  ThresholdSource,
-} from "@/lib/eso-types.ts";
+import type { DriftStatus, Status, ThresholdSource } from "@/lib/eso-types.ts";
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 
 /** Status enum → CSS custom property color. Six values cover the lifecycle:
@@ -59,7 +55,7 @@ export function DriftBadge({ status }: { status: DriftStatus }) {
 export function SourceBadge({ source }: { source?: ThresholdSource }) {
   if (!source) return null;
   return (
-    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-normal text-text-muted bg-bg-base border border-border-subtle">
+    <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-normal text-text-muted bg-base border border-border-subtle">
       {SOURCE_LABELS[source] ?? source}
     </span>
   );
@@ -71,7 +67,5 @@ export function ProviderBadge({ provider }: { provider: string }) {
   if (!provider) {
     return <span class="text-xs text-text-muted">&mdash;</span>;
   }
-  return (
-    <ColorBadge label={provider} color="var(--accent)" />
-  );
+  return <ColorBadge label={provider} color="var(--accent)" />;
 }

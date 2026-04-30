@@ -3,6 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { SecretStore } from "@/lib/eso-types.ts";
 
@@ -11,6 +12,7 @@ export default function ESOClusterStoresList() {
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const search = useSignal("");
+  const detected = useSignal<boolean | null>(null);
 
   async function fetchData() {
     try {
@@ -24,12 +26,33 @@ export default function ESOClusterStoresList() {
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchData().then(() => {
-      loading.value = false;
-    });
+    (async () => {
+      try {
+        const statusRes = await esoApi.status();
+        const present = statusRes.data?.detected !== false;
+        detected.value = present;
+        if (present) await fetchData();
+      } catch {
+        detected.value = true;
+        await fetchData();
+      } finally {
+        loading.value = false;
+      }
+    })();
   }, []);
 
   if (!IS_BROWSER) return null;
+
+  if (!loading.value && detected.value === false) {
+    return (
+      <div class="p-6">
+        <h1 class="text-2xl font-bold text-text-primary mb-6">
+          ClusterSecretStores
+        </h1>
+        <ESONotDetected />
+      </div>
+    );
+  }
 
   const filtered = items.value.filter((s) => {
     if (!search.value) return true;
@@ -64,7 +87,7 @@ export default function ESOClusterStoresList() {
           <input
             id="eso-cstores-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-bg-base text-text-primary max-w-xs"
+            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
             placeholder="name, provider..."
             value={search.value}
             onInput={(e) => {
@@ -123,7 +146,9 @@ export default function ESOClusterStoresList() {
                 <tr key={s.uid} class="hover:bg-hover/30">
                   <td class="px-3 py-2">
                     <a
-                      href={`/external-secrets/cluster-stores/${s.name}`}
+                      href={`/external-secrets/cluster-stores/${
+                        encodeURIComponent(s.name)
+                      }`}
                       class="font-medium text-brand hover:underline"
                     >
                       {s.name}
@@ -157,7 +182,7 @@ export default function ESOClusterStoresList() {
 
       {!loading.value && !error.value && filtered.length === 0 &&
         items.value.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No ClusterSecretStores match your filters.
           </p>
@@ -165,7 +190,7 @@ export default function ESOClusterStoresList() {
       )}
 
       {!loading.value && !error.value && items.value.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No ClusterSecretStores visible. Your permissions may restrict
             visibility, or no ClusterSecretStores exist.

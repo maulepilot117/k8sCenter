@@ -20,6 +20,7 @@ import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type {
@@ -121,7 +122,7 @@ function SecondaryCard(
 ) {
   const inner = (
     <div
-      class="rounded-lg border border-border-primary p-4 bg-bg-elevated h-full flex flex-col"
+      class="rounded-lg border border-border-primary p-4 bg-elevated h-full flex flex-col"
       aria-label={`${label}: ${count}`}
     >
       <div class="flex items-center justify-between mb-2">
@@ -268,39 +269,22 @@ export default function ESODashboard() {
 
       {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
 
-      {!loading.value && !error.value && !detected && (
-        <div class="rounded-lg border border-border-primary p-8 text-center bg-bg-elevated">
-          <p class="text-lg font-medium text-text-primary mb-2">
-            External Secrets Operator is not installed in this cluster.
-          </p>
-          <p class="text-sm text-text-muted">
-            Install via the{" "}
-            <a
-              class="text-brand hover:underline"
-              href="https://external-secrets.io/latest/introduction/getting-started/"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              ESO Helm chart
-            </a>{" "}
-            to start managing secrets across stores.
-          </p>
-        </div>
-      )}
+      {!loading.value && !error.value && !detected && <ESONotDetected />}
 
       {!loading.value && !error.value && detected && (
         <>
-          {/* Hero — sync health ring */}
-          <div class="rounded-lg border border-border-primary p-6 bg-bg-elevated mb-6 flex flex-col items-center">
-            {total === 0
-              ? (
-                <div class="py-8 text-center">
-                  <p class="text-text-muted">
-                    No ExternalSecrets visible.
-                  </p>
-                </div>
-              )
-              : <SyncHealthRing synced={counts.Synced} total={total} />}
+          {
+            /* Hero — sync health ring. Renders 0/0 when no ExternalSecrets are
+           * visible so the dashboard's vertical rhythm doesn't shift the moment
+           * the first ES appears. */
+          }
+          <div class="rounded-lg border border-border-primary p-6 bg-elevated mb-6 flex flex-col items-center">
+            <SyncHealthRing synced={counts.Synced} total={total} />
+            {total === 0 && (
+              <p class="text-xs text-text-muted mt-3">
+                No ExternalSecrets visible yet.
+              </p>
+            )}
           </div>
 
           {/* Secondary cards row */}
@@ -335,7 +319,7 @@ export default function ESODashboard() {
           {/* Tertiary row — providers + cost stub */}
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
             <div
-              class="rounded-lg border border-border-primary p-4 bg-bg-elevated"
+              class="rounded-lg border border-border-primary p-4 bg-elevated"
               aria-label="Stores by provider"
             >
               <h2 class="text-sm font-medium text-text-primary mb-3">
@@ -365,7 +349,7 @@ export default function ESODashboard() {
             </div>
 
             <div
-              class="rounded-lg border border-border-primary p-4 bg-bg-elevated"
+              class="rounded-lg border border-border-primary p-4 bg-elevated"
               aria-label="Cost estimate"
             >
               <h2 class="text-sm font-medium text-text-primary mb-3">
@@ -393,7 +377,7 @@ export default function ESODashboard() {
           </div>
           {broken.length === 0
             ? (
-              <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
+              <div class="text-center py-8 rounded-lg border border-border-primary bg-elevated">
                 <p class="text-text-muted">
                   No broken ExternalSecrets — everything synced!
                 </p>

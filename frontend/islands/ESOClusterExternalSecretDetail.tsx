@@ -111,7 +111,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
 
       {activeTab.value === "overview" && (
         <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+          <div class="rounded-lg border border-border-primary bg-elevated p-5">
             <h2 class="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
@@ -169,7 +169,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
           </div>
 
           {/* Namespace selectors */}
-          <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+          <div class="rounded-lg border border-border-primary bg-elevated p-5">
             <h2 class="text-sm font-semibold text-text-primary mb-3">
               Namespace selectors
             </h2>
@@ -179,7 +179,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
                   {ces.namespaceSelectors.map((s) => (
                     <span
                       key={s}
-                      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono text-text-primary bg-bg-base border border-border-subtle"
+                      class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono text-text-primary bg-base border border-border-subtle"
                     >
                       {s}
                     </span>
@@ -205,7 +205,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
 
           {/* Provisioned / failed namespaces */}
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+            <div class="rounded-lg border border-border-primary bg-elevated p-5">
               <h2 class="text-sm font-semibold text-text-primary mb-3">
                 Provisioned namespaces ({(ces.provisionedNamespaces ?? [])
                   .length})
@@ -220,7 +220,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
                 )
                 : <p class="text-sm text-text-muted">None.</p>}
             </div>
-            <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+            <div class="rounded-lg border border-border-primary bg-elevated p-5">
               <h2 class="text-sm font-semibold text-text-primary mb-3">
                 Failed namespaces ({(ces.failedNamespaces ?? []).length})
               </h2>
@@ -239,7 +239,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
       {activeTab.value === "yaml" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           YAML editor coming in Phase&nbsp;B.
         </div>
@@ -248,7 +248,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
       {activeTab.value === "events" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Events feed coming in Phase&nbsp;B.
         </div>
@@ -257,7 +257,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
       {activeTab.value === "history" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           History timeline coming in Phase&nbsp;C.
         </div>
@@ -266,7 +266,7 @@ export default function ESOClusterExternalSecretDetail({ name }: Props) {
       {activeTab.value === "chain" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Chain visualization coming in Phase&nbsp;I.
         </div>

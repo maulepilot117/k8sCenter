@@ -3,6 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
@@ -17,6 +18,8 @@ export default function ESOExternalSecretsList() {
   const error = useSignal<string | null>(null);
   const namespace = useSignal("");
   const search = useSignal("");
+  // null = unknown (still loading), true = ESO present, false = render install prompt.
+  const detected = useSignal<boolean | null>(null);
 
   // Sequence counter: every fetch captures a token; a response is applied
   // only if its token is still the latest. Stops slow earlier responses
@@ -41,9 +44,21 @@ export default function ESOExternalSecretsList() {
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchData().then(() => {
-      loading.value = false;
-    });
+    (async () => {
+      try {
+        const statusRes = await esoApi.status();
+        const present = statusRes.data?.detected !== false;
+        detected.value = present;
+        if (present) await fetchData();
+      } catch {
+        // Status probe failed — assume present and let fetchData surface the
+        // real error rather than masking it as "ESO not installed".
+        detected.value = true;
+        await fetchData();
+      } finally {
+        loading.value = false;
+      }
+    })();
     return () => {
       if (debounceHandle.current !== null) {
         clearTimeout(debounceHandle.current);
@@ -64,6 +79,17 @@ export default function ESOExternalSecretsList() {
   }
 
   if (!IS_BROWSER) return null;
+
+  if (!loading.value && detected.value === false) {
+    return (
+      <div class="p-6">
+        <h1 class="text-2xl font-bold text-text-primary mb-6">
+          ExternalSecrets
+        </h1>
+        <ESONotDetected />
+      </div>
+    );
+  }
 
   const filtered = items.value.filter((es) => {
     if (!search.value) return true;
@@ -97,7 +123,7 @@ export default function ESOExternalSecretsList() {
           <input
             id="eso-es-ns"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-bg-base text-text-primary max-w-xs"
+            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
             placeholder="All namespaces"
             value={namespace.value}
             aria-describedby="eso-es-ns-hint"
@@ -118,7 +144,7 @@ export default function ESOExternalSecretsList() {
           <input
             id="eso-es-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-bg-base text-text-primary max-w-xs"
+            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
             placeholder="name, store, target..."
             value={search.value}
             onInput={(e) => {
@@ -189,7 +215,9 @@ export default function ESOExternalSecretsList() {
                 <tr key={es.uid} class="hover:bg-hover/30">
                   <td class="px-3 py-2">
                     <a
-                      href={`/external-secrets/external-secrets/${es.namespace}/${es.name}`}
+                      href={`/external-secrets/external-secrets/${
+                        encodeURIComponent(es.namespace)
+                      }/${encodeURIComponent(es.name)}`}
                       class="font-medium text-brand hover:underline"
                     >
                       {es.name}
@@ -217,7 +245,7 @@ export default function ESOExternalSecretsList() {
 
       {!loading.value && !error.value && filtered.length === 0 &&
         items.value.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No ExternalSecrets match your filters.
           </p>
@@ -225,7 +253,7 @@ export default function ESOExternalSecretsList() {
       )}
 
       {!loading.value && !error.value && items.value.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No ExternalSecrets in this namespace. Create one to start syncing
             secrets from a SecretStore.

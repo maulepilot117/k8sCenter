@@ -5,6 +5,7 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
+import { timeAgo } from "@/lib/timeAgo.ts";
 import type { PushSecret } from "@/lib/eso-types.ts";
 
 interface Props {
@@ -15,21 +16,6 @@ interface Props {
 type TabKey = "overview" | "yaml" | "events" | "history" | "chain";
 
 const EM_DASH = "—";
-
-function formatRelative(iso?: string): string {
-  if (!iso) return EM_DASH;
-  const ts = new Date(iso).getTime();
-  if (Number.isNaN(ts)) return iso;
-  const now = Date.now();
-  const seconds = Math.round((now - ts) / 1000);
-  if (Math.abs(seconds) < 60) return `${seconds}s ago`;
-  const minutes = Math.round(seconds / 60);
-  if (Math.abs(minutes) < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (Math.abs(hours) < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
-}
 
 function storeHref(kind: string, namespace: string, name: string): string {
   if (kind === "ClusterSecretStore") {
@@ -128,7 +114,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
 
       {activeTab.value === "overview" && (
         <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+          <div class="rounded-lg border border-border-primary bg-elevated p-5">
             <h2 class="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
@@ -178,7 +164,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
                   class="text-text-primary"
                   title={ps.lastSyncTime ?? ""}
                 >
-                  {formatRelative(ps.lastSyncTime)}
+                  {ps.lastSyncTime ? timeAgo(ps.lastSyncTime) : EM_DASH}
                 </dd>
               </div>
               {ps.readyReason && (
@@ -196,7 +182,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
             </dl>
           </div>
 
-          <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+          <div class="rounded-lg border border-border-primary bg-elevated p-5">
             <h2 class="text-sm font-semibold text-text-primary mb-3">
               Push targets ({(ps.storeRefs ?? []).length})
             </h2>
@@ -223,7 +209,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
       {activeTab.value === "yaml" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           YAML editor coming in Phase&nbsp;B.
         </div>
@@ -232,7 +218,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
       {activeTab.value === "events" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Events feed coming in Phase&nbsp;B.
         </div>
@@ -241,7 +227,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
       {activeTab.value === "history" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           History timeline coming in Phase&nbsp;C.
         </div>
@@ -250,7 +236,7 @@ export default function ESOPushSecretDetail({ namespace, name }: Props) {
       {activeTab.value === "chain" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Chain visualization coming in Phase&nbsp;I.
         </div>

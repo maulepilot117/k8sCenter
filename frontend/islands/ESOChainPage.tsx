@@ -25,7 +25,7 @@ export default function ESOChainPage() {
         Pods consuming the resulting Secret.
       </p>
 
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-6 max-w-2xl">
+      <div class="rounded-lg border border-border-primary bg-elevated p-6 max-w-2xl">
         <h2 class="text-base font-semibold text-text-primary mb-2">
           Chain overlay coming in Phase I
         </h2>
@@ -45,7 +45,7 @@ export default function ESOChainPage() {
           <input
             id="eso-chain-ns"
             type="text"
-            class="flex-1 rounded border border-border-primary px-3 py-1.5 text-sm bg-bg-base text-text-primary"
+            class="flex-1 rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary"
             placeholder="e.g. payments-prod"
             value={namespace.value}
             aria-describedby="eso-chain-ns-hint"

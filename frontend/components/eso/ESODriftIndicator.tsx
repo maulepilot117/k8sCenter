@@ -13,25 +13,21 @@ const REASON_HINTS: Record<DriftUnknownReason, string> = {
     "The synced Secret has been deleted. ESO should recreate it on the next reconcile.",
   rbac_denied:
     "Drift requires `get secret` on the target namespace. Your role does not include that permission.",
-  transient_error:
-    "Drift check failed transiently — retry the page.",
+  transient_error: "Drift check failed transiently — retry the page.",
   client_error: "Internal error creating the impersonated client.",
 };
 
 interface ESODriftIndicatorProps {
   status: DriftStatus;
   reason?: DriftUnknownReason;
-  /** When provided, the Drifted state renders a "Revert" button stub. The
-   * actual force-sync action lands in Phase E (Unit 14); this Phase B
-   * variant is non-functional and shows an inline note. */
-  onRevert?: () => void;
 }
 
 /** Tri-state drift indicator for the ExternalSecret detail page. Renders the
- * coloured badge inline with explanatory text and (when status=Drifted) a
- * Revert action stub. */
+ * coloured badge inline with explanatory text. When status=Drifted, also
+ * renders a disabled "Revert" stub — Phase E (Unit 14) will replace the stub
+ * with a real force-sync handler. */
 export function ESODriftIndicator(
-  { status, reason, onRevert }: ESODriftIndicatorProps,
+  { status, reason }: ESODriftIndicatorProps,
 ) {
   return (
     <div class="flex flex-col gap-1.5">
@@ -54,12 +50,11 @@ export function ESODriftIndicator(
           </span>
         )}
       </div>
-      {status === "Drifted" && onRevert && (
+      {status === "Drifted" && (
         <div class="flex items-center gap-2">
           <button
             type="button"
-            onClick={onRevert}
-            class="text-xs px-2 py-1 rounded border border-border-primary text-text-muted hover:text-text-primary hover:bg-bg-base transition-colors"
+            class="text-xs px-2 py-1 rounded border border-border-primary text-text-muted hover:text-text-primary hover:bg-base transition-colors"
             disabled
             aria-disabled="true"
             title="Force-sync ships in Phase E"

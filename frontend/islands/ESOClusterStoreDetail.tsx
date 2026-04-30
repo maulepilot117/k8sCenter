@@ -99,7 +99,7 @@ export default function ESOClusterStoreDetail({ name }: Props) {
 
       {activeTab.value === "overview" && (
         <div role="tabpanel" class="space-y-4">
-          <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+          <div class="rounded-lg border border-border-primary bg-elevated p-5">
             <h2 class="text-sm font-semibold text-text-primary mb-4">
               Details
             </h2>
@@ -152,14 +152,14 @@ export default function ESOClusterStoreDetail({ name }: Props) {
           </div>
 
           {store.providerSpec && Object.keys(store.providerSpec).length > 0 && (
-            <div class="rounded-lg border border-border-primary bg-bg-elevated p-5">
+            <div class="rounded-lg border border-border-primary bg-elevated p-5">
               <h2 class="text-sm font-semibold text-text-primary mb-1">
                 Provider spec
               </h2>
               <p class="text-xs text-text-muted mb-3">
                 Read-only infrastructure addressing — never credentials.
               </p>
-              <pre class="text-xs font-mono text-text-primary bg-bg-base border border-border-subtle rounded p-3 overflow-x-auto">
+              <pre class="text-xs font-mono text-text-primary bg-base border border-border-subtle rounded p-3 overflow-x-auto">
 {JSON.stringify(store.providerSpec, null, 2)}
               </pre>
             </div>
@@ -170,7 +170,7 @@ export default function ESOClusterStoreDetail({ name }: Props) {
       {activeTab.value === "yaml" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           YAML editor coming in Phase&nbsp;B.
         </div>
@@ -179,7 +179,7 @@ export default function ESOClusterStoreDetail({ name }: Props) {
       {activeTab.value === "events" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Events feed coming in Phase&nbsp;B.
         </div>
@@ -188,7 +188,7 @@ export default function ESOClusterStoreDetail({ name }: Props) {
       {activeTab.value === "history" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           History timeline coming in Phase&nbsp;C.
         </div>
@@ -197,7 +197,7 @@ export default function ESOClusterStoreDetail({ name }: Props) {
       {activeTab.value === "chain" && (
         <div
           role="tabpanel"
-          class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-sm text-text-muted"
+          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
         >
           Chain visualization coming in Phase&nbsp;I.
         </div>
