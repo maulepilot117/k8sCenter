@@ -693,10 +693,14 @@ func main() {
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
 
-	// External Secrets Operator integration (Phase A — observatory). Poller
-	// + alerting wire in Phase D; persistence + drift history in Phase C.
+	// External Secrets Operator integration (Phase A — observatory; Phase D
+	// — alerting + threshold annotations). DB persistence + drift history
+	// arrive in Phase C, which extends esoPoller.tick with sync-history
+	// inserts.
 	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
 	esoHandler := externalsecrets.NewHandler(k8sClient, esoDisc, accessChecker, auditLogger, notifService, logger)
+	esoPoller := externalsecrets.NewPoller(k8sClient, esoDisc, esoHandler, notifService, logger)
+	go esoPoller.Start(ctx)
 
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
