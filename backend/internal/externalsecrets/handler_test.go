@@ -3,6 +3,7 @@ package externalsecrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -20,6 +22,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/go-chi/chi/v5"
 
@@ -137,6 +140,51 @@ func makeClusterStore(name, uid string) *unstructured.Unstructured {
 			"metadata":   map[string]any{"name": name, "uid": uid},
 			"spec":       map[string]any{"provider": map[string]any{"vault": map[string]any{}}},
 			"status":     map[string]any{},
+		},
+	}
+}
+
+// makeCES builds a ClusterExternalSecret with a minimal Ready=True status.
+func makeCES(name, uid string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1",
+			"kind":       "ClusterExternalSecret",
+			"metadata":   map[string]any{"name": name, "uid": uid},
+			"spec": map[string]any{
+				"externalSecretSpec": map[string]any{
+					"refreshInterval": "1h",
+					"secretStoreRef":  map[string]any{"name": "vault", "kind": "ClusterSecretStore"},
+					"target":          map[string]any{"name": name + "-secret"},
+				},
+			},
+			"status": map[string]any{
+				"conditions": []any{
+					map[string]any{"type": "Ready", "status": "True"},
+				},
+			},
+		},
+	}
+}
+
+// makePushSecret builds a PushSecret with a single store ref and Ready=True.
+func makePushSecret(ns, name, uid string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{
+		Object: map[string]any{
+			"apiVersion": "external-secrets.io/v1",
+			"kind":       "PushSecret",
+			"metadata":   map[string]any{"name": name, "namespace": ns, "uid": uid},
+			"spec": map[string]any{
+				"secretStoreRefs": []any{
+					map[string]any{"name": "vault", "kind": "SecretStore"},
+				},
+				"selector": map[string]any{
+					"secret": map[string]any{"name": name + "-source"},
+				},
+			},
+			"status": map[string]any{
+				"conditions": []any{map[string]any{"type": "Ready", "status": "True"}},
+			},
 		},
 	}
 }
@@ -438,12 +486,15 @@ func TestCacheHit_SingleflightCollapse(t *testing.T) {
 	wg.Wait()
 
 	// 5 list calls per fetchAll. Singleflight collapses N concurrent
-	// HandleList invocations into 1 fetchAll. Allow up to 2 fetchAll cycles
-	// (10 list calls) to tolerate scheduler races where the first request
-	// finishes before another arrives — the requirement is "not 50."
+	// HandleList invocations into 1 fetchAll. The bounds catch two distinct
+	// failure modes:
+	//   - calls < 5: fetchAll never ran (broken cache wiring)
+	//   - calls > 10: singleflight not collapsing (each request fetched)
+	// The 5-floor verifies at least one fetchAll ran (5 CRD lists); the
+	// 10-ceiling allows up to 2 fetchAll cycles for scheduler races.
 	calls := counter.listCalls.Load()
-	if calls > 10 {
-		t.Errorf("dynClient.List invoked %d times across 10 concurrent requests; expected <=10 (5 per fetchAll, 1-2 fetchAlls)", calls)
+	if calls < 5 || calls > 10 {
+		t.Errorf("dynClient.List invoked %d times across 10 concurrent requests; expected 5-10 (5 per fetchAll, 1-2 fetchAlls)", calls)
 	}
 }
 
@@ -661,6 +712,9 @@ func TestHandleGetExternalSecret_DriftUnknownNoSyncedRV(t *testing.T) {
 	if env.Data.DriftStatus != DriftUnknown {
 		t.Errorf("DriftStatus = %q; want %q", env.Data.DriftStatus, DriftUnknown)
 	}
+	if env.Data.DriftUnknownReason != DriftReasonNoSyncedRV {
+		t.Errorf("DriftUnknownReason = %q; want %q", env.Data.DriftUnknownReason, DriftReasonNoSyncedRV)
+	}
 	if env.Data.Status != StatusSynced {
 		t.Errorf("Status = %q; want %q (no overlay when drift unknown)", env.Data.Status, StatusSynced)
 	}
@@ -689,6 +743,9 @@ func TestHandleGetExternalSecret_SyncedSecretDeleted(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &env)
 	if env.Data.DriftStatus != DriftUnknown {
 		t.Errorf("DriftStatus = %q; want %q", env.Data.DriftStatus, DriftUnknown)
+	}
+	if env.Data.DriftUnknownReason != DriftReasonSecretDeleted {
+		t.Errorf("DriftUnknownReason = %q; want %q", env.Data.DriftUnknownReason, DriftReasonSecretDeleted)
 	}
 }
 
@@ -796,4 +853,317 @@ func TestFetchAll_EmptyClusterReturnsEmptyLists(t *testing.T) {
 			t.Errorf("%s len = %d; want 0", name, n)
 		}
 	}
+}
+
+// --- F4: drift resolution when impersonating user lacks `get secret` perm ---
+
+func TestHandleGetExternalSecret_DriftRBACForbiddenOnSecret(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	status, _ := es.Object["status"].(map[string]any)
+	status["syncedResourceVersion"] = "100"
+
+	// AccessChecker permits the ES; the typed-client's CoreV1.Secrets().Get()
+	// returns 403 — modelling a user who has `get externalsecret` but not
+	// `get secret` on the target namespace.
+	dynFake := newEsoFakeDynClient(es)
+	typedFake := kubefake.NewClientset()
+	typedFake.PrependReactor("get", "secrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Resource: "secrets"}, name+"-secret",
+			errors.New("user cannot get secret in this namespace"),
+		)
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
+			return dynFake, nil
+		},
+		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
+			return typedFake, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": ns, "name": name})
+	h.HandleGetExternalSecret(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (ES still returned even when drift can't be resolved); body = %s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data ExternalSecret `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Data.DriftStatus != DriftUnknown {
+		t.Errorf("DriftStatus = %q; want %q", env.Data.DriftStatus, DriftUnknown)
+	}
+	if env.Data.DriftUnknownReason != DriftReasonRBACDenied {
+		t.Errorf("DriftUnknownReason = %q; want %q", env.Data.DriftUnknownReason, DriftReasonRBACDenied)
+	}
+	if env.Data.Name != name {
+		t.Errorf("ES Name = %q; want %q (ES itself should still be returned)", env.Data.Name, name)
+	}
+}
+
+// --- F3: per-CRD list-error isolation ------------------------------------
+
+func TestFetchAll_PerCRDFailureIsolated(t *testing.T) {
+	es := makeES("apps", "es1", "uid-1")
+	cs := makeClusterStore("global-vault", "uid-cs")
+	store := makeStore("apps", "vault", "uid-store")
+	ps := makePushSecret("apps", "ps1", "uid-ps")
+
+	fakeClient := newEsoFakeDynClient(es, cs, store, ps)
+	fakeClient.PrependReactor("list", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("etcd timeout on externalsecrets")
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   fakeClient,
+	}
+
+	data, err := h.getCached(context.Background())
+	if err != nil {
+		t.Fatalf("getCached: %v", err)
+	}
+	if got, ok := data.errors["externalsecrets"]; !ok || got == "" {
+		t.Errorf("errors[externalsecrets] = %q; want non-empty", got)
+	}
+	if len(data.clusterStores) != 1 {
+		t.Errorf("clusterStores len = %d; want 1 (other CRDs should survive)", len(data.clusterStores))
+	}
+	if len(data.stores) != 1 {
+		t.Errorf("stores len = %d; want 1", len(data.stores))
+	}
+	if len(data.pushSecrets) != 1 {
+		t.Errorf("pushSecrets len = %d; want 1", len(data.pushSecrets))
+	}
+	// Failed CRD with no prior cache → empty slice (frontend-safe), not nil.
+	if data.externalSecrets == nil {
+		t.Errorf("externalSecrets is nil; want empty slice (frontend-safe)")
+	}
+	if len(data.externalSecrets) != 0 {
+		t.Errorf("externalSecrets len = %d; want 0 on cold-cache failure", len(data.externalSecrets))
+	}
+}
+
+func TestFetchAll_PerCRDFailurePreservesLastKnownGood(t *testing.T) {
+	es := makeES("apps", "es1", "uid-1")
+
+	// Reactor toggles: first fetch succeeds, second fetch errors. We use an
+	// atomic counter so the state is visible across goroutines.
+	var fetchCount atomic.Int32
+	fakeClient := newEsoFakeDynClient(es)
+	fakeClient.PrependReactor("list", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		if fetchCount.Add(1) > 1 {
+			return true, nil, errors.New("transient API server error")
+		}
+		return false, nil, nil // first call → default reactor (returns es)
+	})
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   fakeClient,
+	}
+
+	// First fetch: success — populates cache.
+	data, err := h.getCached(context.Background())
+	if err != nil {
+		t.Fatalf("first getCached: %v", err)
+	}
+	if len(data.externalSecrets) != 1 {
+		t.Fatalf("first fetch externalSecrets len = %d; want 1", len(data.externalSecrets))
+	}
+
+	// Force expiry so the second getCached re-fetches.
+	h.cacheMu.Lock()
+	h.cache.fetchedAt = time.Now().Add(-2 * cacheTTL)
+	h.cacheMu.Unlock()
+
+	// Second fetch: externalsecrets fails — last-known-good must survive.
+	data, err = h.getCached(context.Background())
+	if err != nil {
+		t.Fatalf("second getCached: %v", err)
+	}
+	if _, ok := data.errors["externalsecrets"]; !ok {
+		t.Errorf("expected errors[externalsecrets] after second fetch")
+	}
+	if len(data.externalSecrets) != 1 {
+		t.Errorf("externalSecrets len = %d; want 1 (last-known-good preserved)", len(data.externalSecrets))
+	}
+}
+
+// --- F1 / F24: context cancellation must NOT poison the cache -----------
+
+func TestFetchAll_ContextCancellation(t *testing.T) {
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   newEsoFakeDynClient(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	_, err := h.getCached(ctx)
+	if err == nil {
+		t.Errorf("expected error from cancelled context")
+	}
+	h.cacheMu.RLock()
+	cached := h.cache
+	h.cacheMu.RUnlock()
+	if cached != nil {
+		t.Errorf("cache should not be populated after cancelled fetch (would cause 30s blackout); got %+v", cached)
+	}
+}
+
+// --- F21: list ClusterExternalSecret RBAC denial -----------------------
+
+func TestHandleListClusterExternalSecrets_PermissiveReadDenied(t *testing.T) {
+	ces := makeCES("global-creds", "uid-ces")
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysDenyAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   newEsoFakeDynClient(ces),
+	}
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil),
+		&auth.User{KubernetesUsername: "u"})
+	h.HandleListClusterExternalSecrets(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d; want 200 (silent empty, not 403)", w.Code)
+	}
+	got := decodeArray[ClusterExternalSecret](t, w)
+	if len(got) != 0 {
+		t.Errorf("got %d ClusterExternalSecrets; want 0 (denied user sees empty list)", len(got))
+	}
+}
+
+// --- F22: detail endpoints for cluster-scoped + push secret ------------
+
+func TestHandleGetClusterExternalSecret_HappyPath(t *testing.T) {
+	ces := makeCES("global-creds", "uid-ces")
+	h := detailHandler([]runtime.Object{ces}, nil, resources.NewAlwaysAllowAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"name": "global-creds"})
+	h.HandleGetClusterExternalSecret(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data ClusterExternalSecret `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	if env.Data.Name != "global-creds" || env.Data.UID != "uid-ces" {
+		t.Errorf("CES = %+v", env.Data)
+	}
+}
+
+func TestHandleGetClusterExternalSecret_RBACDenied(t *testing.T) {
+	ces := makeCES("global-creds", "uid-ces")
+	h := detailHandler([]runtime.Object{ces}, nil, resources.NewAlwaysDenyAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"name": "global-creds"})
+	h.HandleGetClusterExternalSecret(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d; want 403", w.Code)
+	}
+}
+
+func TestHandleGetPushSecret_HappyPath(t *testing.T) {
+	ps := makePushSecret("apps", "ps1", "uid-ps")
+	h := detailHandler([]runtime.Object{ps}, nil, resources.NewAlwaysAllowAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "ps1"})
+	h.HandleGetPushSecret(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data PushSecret `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	if env.Data.Name != "ps1" || env.Data.Namespace != "apps" {
+		t.Errorf("PushSecret = %+v", env.Data)
+	}
+	if env.Data.SourceSecretName != "ps1-source" {
+		t.Errorf("SourceSecretName = %q; want ps1-source", env.Data.SourceSecretName)
+	}
+}
+
+func TestHandleGetPushSecret_RBACDenied(t *testing.T) {
+	ps := makePushSecret("apps", "ps1", "uid-ps")
+	h := detailHandler([]runtime.Object{ps}, nil, resources.NewAlwaysDenyAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "ps1"})
+	h.HandleGetPushSecret(w, r)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("status = %d; want 403", w.Code)
+	}
+}
+
+// --- F23: dynForUser error branch on detail endpoints --------------------
+
+func TestHandleGetExternalSecret_DynForUserError(t *testing.T) {
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynForUserOverride: func(string, []string) (dynamic.Interface, error) {
+			return nil, errors.New("impersonation client init failed")
+		},
+		clientForUserOverride: func(string, []string) (kubernetes.Interface, error) {
+			return kubefake.NewClientset(), nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "x"})
+	h.HandleGetExternalSecret(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d; want 500", w.Code)
+	}
+	if !contains(w.Body.String(), "internal error") {
+		t.Errorf("body = %s; want 'internal error'", w.Body.String())
+	}
+}
+
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }

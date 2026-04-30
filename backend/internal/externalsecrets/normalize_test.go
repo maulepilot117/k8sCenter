@@ -38,6 +38,7 @@ func TestDeriveStatus(t *testing.T) {
 		t := now.Add(-d)
 		return &t
 	}
+	mins := func(n int) *int { return &n }
 
 	cases := []struct {
 		name string
@@ -48,7 +49,7 @@ func TestDeriveStatus(t *testing.T) {
 			name: "fresh-synced",
 			es: ExternalSecret{
 				Status:            StatusSynced,
-				StaleAfterMinutes: 60,
+				StaleAfterMinutes: mins(60),
 				LastSyncTime:      freshly(5 * time.Minute),
 				DriftStatus:       DriftInSync,
 			},
@@ -58,7 +59,7 @@ func TestDeriveStatus(t *testing.T) {
 			name: "stale-overlay",
 			es: ExternalSecret{
 				Status:            StatusSynced,
-				StaleAfterMinutes: 30,
+				StaleAfterMinutes: mins(30),
 				LastSyncTime:      freshly(45 * time.Minute),
 			},
 			want: StatusStale,
@@ -83,7 +84,7 @@ func TestDeriveStatus(t *testing.T) {
 			name: "stale-never-overrides-failure",
 			es: ExternalSecret{
 				Status:            StatusSyncFailed,
-				StaleAfterMinutes: 5,
+				StaleAfterMinutes: mins(5),
 				LastSyncTime:      freshly(60 * time.Minute),
 			},
 			want: StatusSyncFailed,
@@ -92,7 +93,7 @@ func TestDeriveStatus(t *testing.T) {
 			name: "stale-wins-over-drift",
 			es: ExternalSecret{
 				Status:            StatusSynced,
-				StaleAfterMinutes: 30,
+				StaleAfterMinutes: mins(30),
 				LastSyncTime:      freshly(60 * time.Minute),
 				DriftStatus:       DriftDrifted,
 			},
@@ -102,7 +103,16 @@ func TestDeriveStatus(t *testing.T) {
 			name: "no-threshold-no-stale-overlay",
 			es: ExternalSecret{
 				Status:            StatusSynced,
-				StaleAfterMinutes: 0, // resolver hasn't run
+				StaleAfterMinutes: nil, // resolver hasn't run (Phase A)
+				LastSyncTime:      freshly(99 * time.Hour),
+			},
+			want: StatusSynced,
+		},
+		{
+			name: "zero-threshold-no-stale-overlay",
+			es: ExternalSecret{
+				Status:            StatusSynced,
+				StaleAfterMinutes: mins(0), // resolver explicitly resolved zero
 				LastSyncTime:      freshly(99 * time.Hour),
 			},
 			want: StatusSynced,
@@ -111,7 +121,7 @@ func TestDeriveStatus(t *testing.T) {
 			name: "no-lastsync-no-stale-overlay",
 			es: ExternalSecret{
 				Status:            StatusSynced,
-				StaleAfterMinutes: 30,
+				StaleAfterMinutes: mins(30),
 				LastSyncTime:      nil,
 			},
 			want: StatusSynced,

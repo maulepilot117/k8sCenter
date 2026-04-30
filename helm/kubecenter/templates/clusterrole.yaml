@@ -163,18 +163,16 @@ rules:
       - clustersecretstores
       - pushsecrets
     verbs: ["list", "watch"]
-  # core/secrets get/list — required by the Phase C ESO sync-history poller
-  # to compute key-level diff between successive sync attempts. The poller
-  # has no requesting-user context (it runs as the platform SA), so it must
-  # read synced Secret keys via the SA. This expands the SA's cluster-wide
-  # privilege to read every Secret's key-set (values are NEVER stored or
-  # logged — only key names appear in the diff). Operators in stricter
-  # environments can remove this rule; the diff feature degrades to
-  # "outcome only, no key-set" but the timeline + drift detection +
-  # alerting all continue to work.
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get", "list"]
+  # NOTE: cluster-wide get/list on core/secrets is intentionally NOT granted
+  # to the platform service account in Phase A. The Phase C ESO sync-history
+  # poller (Unit 10) needs it to compute key-level diff between successive
+  # sync attempts and will add the grant in that PR. Phase A's drift
+  # resolution path uses an impersonated client (see resolveDriftStatus in
+  # internal/externalsecrets/handler.go), so it doesn't depend on this grant.
+  # Keeping the grant out of Phase A holds the architectural-boundary
+  # comment at line 20 ("secrets are fetched on-demand via impersonated
+  # client, not cached in informer") intact until Phase C's consumer code
+  # actually requires it.
   # CRD discovery — list/watch CustomResourceDefinitions for Extensions Hub
   - apiGroups: ["apiextensions.k8s.io"]
     resources:

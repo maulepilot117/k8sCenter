@@ -247,7 +247,7 @@ Removed during plan review. The metric-name constants live in `cost_tier.go` (Un
 - Modify: `helm/kubecenter/templates/clusterrole.yaml` — append a block after the existing Istio/Linkerd grants (lines 123–146 in current chart per L9 of repo research).
 
 **Approach:**
-- Blocks:
+- Phase A ships ONLY the ESO CRD list/watch grant:
   ```yaml
   - apiGroups: ["external-secrets.io"]
     resources:
@@ -257,12 +257,16 @@ Removed during plan review. The metric-name constants live in `cost_tier.go` (Un
       - clustersecretstores
       - pushsecrets
     verbs: ["list", "watch"]
+  ```
+- The `core/secrets` `get/list` grant is **deferred to Phase C's Unit 10 PR** — that's the unit whose poller actually consumes it. Shipping the grant ahead of its consumer in Phase A would expand the platform SA's cluster-wide privilege without any code that uses it, and would contradict the existing architectural-boundary comment at `clusterrole.yaml:20` ("secrets are fetched on-demand via impersonated client, not cached in informer"). When Unit 10 lands, it adds:
+  ```yaml
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list"]
   ```
-- The `core/secrets` `get/list` grant is required by the poller in Unit 10 to read synced Secret keys for diff-key computation (R21). This is a meaningful expansion of the platform SA's privilege — the SA gains cluster-wide Secret read. Document the trade-off explicitly: a k8sCenter compromise yields cluster-wide synced-Secret read access. Operators in stricter environments can remove this block; the diff feature degrades to "outcome only, no key-set" but the timeline still functions, drift detection still works, and notifications still fire.
-- The existing Helm wildcard catch-all (`apiGroups: ["*"]; verbs: ["list"]`) at `clusterrole.yaml:160-162` already authorizes `list` on every CRD; the explicit ESO block is defense-in-depth documentation, not net-new authorization. The `core/secrets` `get` grant IS net-new (the wildcard is `list`-only).
+  with the same documented trade-off: a k8sCenter compromise yields cluster-wide synced-Secret read access. Operators in stricter environments can remove the block; the diff feature degrades to "outcome only, no key-set" but the timeline still functions, drift detection still works, and notifications still fire.
+- Phase A's drift resolution path (`resolveDriftStatus` in `internal/externalsecrets/handler.go`) uses the impersonated client, so it works without the SA grant.
+- The existing Helm wildcard catch-all (`apiGroups: ["*"]; verbs: ["list"]`) at `clusterrole.yaml` already authorizes `list` on every CRD; the explicit ESO block is defense-in-depth documentation, not net-new authorization. The `core/secrets` `get` grant IS net-new (the wildcard is `list`-only) — that's why it ships in the unit that consumes it.
 - Get verb on ESO CRDs is implicit through the impersonating client for detail endpoints.
 
 **Verification:**
@@ -438,9 +442,16 @@ PostgreSQL migration for `eso_sync_history`. Poller persistence hook. Drift-awar
 - Create: `backend/internal/externalsecrets/poller_test.go` — table-driven attempt-comparison + dedupe tests.
 - Create: `backend/internal/store/eso_history.go` — `Store.AppendESOHistory(ctx, entry)`, `Store.QueryESOHistory(ctx, uid, limit)`, `Store.RunESOHistoryRetention(ctx)`, `Store.EnsureESOHistoryPartitions(ctx)`.
 - Modify: `backend/internal/server/server.go` — start the poller alongside the cert-manager poller; wire the retention goroutine.
+- Modify: `helm/kubecenter/templates/clusterrole.yaml` — add the `core/secrets` `get/list` grant block here (deferred from Phase A's Unit 6 because the poller is its only consumer):
+  ```yaml
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  ```
+  This is the meaningful privilege expansion called out in Unit 6 — Phase C is where it lands.
 
 **Approach:**
-- Diff computation: read the synced k8s Secret's `Data` keys via the platform service account (which has cluster-wide `get/list secrets` per Unit 6's Helm grant addition). The poller has no requesting-user context and cannot impersonate. The Helm grant is documented as a meaningful privilege expansion in Unit 6; operators in stricter environments can remove the grant and the diff feature degrades to "outcome only, no key-set" while the timeline still functions. Compare against the prior history entry's `diff_keys_*` baseline (we store the resolved key-set per attempt; the "baseline" is the prior attempt's resolved key-set). Emit `{added, removed, changed}` arrays of key names. **Values are never stored or logged.**
+- Diff computation: read the synced k8s Secret's `Data` keys via the platform service account (which gains cluster-wide `get/list secrets` in this unit's Helm grant addition). The poller has no requesting-user context and cannot impersonate. The grant is documented as a meaningful privilege expansion; operators in stricter environments can remove it and the diff feature degrades to "outcome only, no key-set" while the timeline still functions. Compare against the prior history entry's `diff_keys_*` baseline (we store the resolved key-set per attempt; the "baseline" is the prior attempt's resolved key-set). Emit `{added, removed, changed}` arrays of key names. **Values are never stored or logged.**
 - `attempt_at` resolution: use `lastRefreshTime` from ESO status when available, else `now()`. Always at second granularity.
 - INSERT pattern: `INSERT INTO eso_sync_history (...) VALUES (...) ON CONFLICT (uid, attempt_at) DO NOTHING` — idempotent under poller restart (L5.3).
 - `cluster_id` provenance: read from the platform's local-cluster registry at poller startup; cached for the poller's lifetime. The poller is local-cluster-only (Phase 11A constraint); cluster_id never changes mid-process.
@@ -1128,7 +1139,7 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [ ] Unit 3 — Detail endpoints + drift resolution (impersonated `get secret`)
 - [ ] Unit 4 — Routes wiring (under authenticated `ar.Group` for CSRF)
 - [ ] ~~Unit 5~~ — DELETED (metric name constants live in `cost_tier.go`)
-- [ ] Unit 6 — Helm ClusterRole grant (ESO list/watch + core/secrets get/list with documented trade-off)
+- [ ] Unit 6 — Helm ClusterRole grant (ESO CRD list/watch only; core/secrets get/list deferred to Unit 10's PR — see Unit 6 body)
 
 ### Phase B — Frontend observatory
 - [ ] Unit 7 — Routes + list islands + new ESO nav-rail domain section + standalone Chain page + per-list empty states

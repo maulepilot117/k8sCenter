@@ -55,6 +55,15 @@ const (
 // distinction between Drifted (operator-edited the Secret) and Unknown (the
 // provider doesn't populate syncedResourceVersion, so we cannot tell) is
 // surfaced to operators rather than collapsed into one boolean.
+//
+// Wire contract: the LIST endpoint OMITS this field entirely (drift
+// resolution requires a per-ES impersonated `get secret` which would N+1
+// the list). Callers must treat the absence of `driftStatus` on a list
+// item as DriftUnknown — never as DriftInSync. The DETAIL endpoint always
+// populates it. Phase C's Unit 11 will add a coarse
+// `lastObservedDriftStatus` to the list response sourced from the
+// poller's persisted history; the contract above still holds (absence ==
+// Unknown) for the detail-vs-list split.
 type DriftStatus string
 
 const (
@@ -63,30 +72,10 @@ const (
 	DriftUnknown DriftStatus = "Unknown"
 )
 
-// Annotation keys honored by the resolver chain (resource > store >
-// clusterstore > default). Values must be positive integers (minutes), with a
-// 5-minute floor for stale-after to prevent self-DoS against the 60s poller
-// cadence. Invalid values are logged and silently fall through to the next
-// layer of the chain. Phase D's resolver populates the resolved values on each
-// ExternalSecret; Phase A leaves the annotation-resolved fields at zero.
-const (
-	AnnotationStaleAfterMinutes = "kubecenter.io/eso-stale-after-minutes"
-	AnnotationAlertOnRecovery   = "kubecenter.io/eso-alert-on-recovery"
-	AnnotationAlertOnLifecycle  = "kubecenter.io/eso-alert-on-lifecycle"
-)
-
-// DefaultStaleFallbackMinutes is the package-default stale threshold used when
-// the resolver chain produces no value AND the ExternalSecret's
-// spec.refreshInterval is unparseable / unset. Matches the 2h fallback in
-// requirement R17.
-const DefaultStaleFallbackMinutes = 120
-
-// MinStaleAfterMinutes is the floor enforced on the eso-stale-after-minutes
-// annotation. Values below this are rejected by the resolver and fall through
-// to the next layer of the chain. The floor exists to prevent operators from
-// accidentally configuring a threshold tighter than the 60s poller cadence,
-// which would mark every ExternalSecret as Stale on every poll.
-const MinStaleAfterMinutes = 5
+// Annotation keys, default thresholds, and the floor for stale-after-minutes
+// are owned by Phase D's `thresholds.go`. Phase A keeps the annotation-resolved
+// fields zero/nil and ships no resolver. The constants live alongside the
+// resolver they parameterize so the package surface here stays minimal.
 
 // ThresholdSource enumerates which layer of the resolution chain supplied an
 // annotation-resolved value. Used by the UI to surface "Stale at: 60m
@@ -134,8 +123,9 @@ type StoreRef struct {
 // ExternalSecret resource.
 //
 // The annotation-resolved fields (StaleAfterMinutes, AlertOnRecovery,
-// AlertOnLifecycle) are zero in Phase A and populated by Phase D's resolver.
-// JSON `omitempty` keeps the response shape clean until then.
+// AlertOnLifecycle, plus the *Source sibling fields) are nil/empty in
+// Phase A and populated by Phase D's resolver. JSON `omitempty` keeps the
+// response shape clean until then.
 type ExternalSecret struct {
 	Namespace             string      `json:"namespace"`
 	Name                  string      `json:"name"`
@@ -151,12 +141,28 @@ type ExternalSecret struct {
 	SyncedResourceVersion string      `json:"syncedResourceVersion,omitempty"`
 
 	// Phase D — annotation-resolved threshold fields. omitempty hides them
-	// until Phase D's resolver populates them.
-	StaleAfterMinutes       int             `json:"staleAfterMinutes,omitempty"`
+	// until Phase D's resolver populates them. Each value carries a
+	// ThresholdSource sibling so the UI can attribute "Stale at 60m
+	// (Store apps/vault-store)" rather than collapsing all sources into one
+	// boolean. StaleAfterMinutes is *int (rather than int) so the wire shape
+	// distinguishes "resolver hasn't run / Phase A" (omitted) from
+	// "resolver ran, no value resolved" (zero) — matches SecretStore's
+	// nullable shape and lets DeriveStatus key on presence rather than
+	// truthiness.
+	StaleAfterMinutes       *int            `json:"staleAfterMinutes,omitempty"`
 	StaleAfterMinutesSource ThresholdSource `json:"staleAfterMinutesSource,omitempty"`
 	AlertOnRecovery         *bool           `json:"alertOnRecovery,omitempty"`
 	AlertOnRecoverySource   ThresholdSource `json:"alertOnRecoverySource,omitempty"`
 	AlertOnLifecycle        *bool           `json:"alertOnLifecycle,omitempty"`
+	AlertOnLifecycleSource  ThresholdSource `json:"alertOnLifecycleSource,omitempty"`
+
+	// DriftUnknownReason disambiguates a DriftStatus=Unknown response. Empty
+	// when DriftStatus is not Unknown. Allowed values: `no_synced_rv`,
+	// `no_target_name`, `secret_deleted`, `rbac_denied`, `transient_error`,
+	// `client_error`, `secret_not_owned`. Frontend renders this as a
+	// hover-tooltip under the drift indicator so an operator can see WHY
+	// drift wasn't resolvable rather than guessing.
+	DriftUnknownReason string `json:"driftUnknownReason,omitempty"`
 }
 
 // ClusterExternalSecret is the API representation of a ClusterExternalSecret —

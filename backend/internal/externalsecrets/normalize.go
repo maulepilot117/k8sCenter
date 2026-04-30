@@ -55,9 +55,10 @@ func DeriveStatus(es ExternalSecret) Status {
 	}
 
 	// Stale overlay: only applies when the base is Synced AND we have both
-	// a resolved threshold and a last-sync anchor.
-	if es.Status == StatusSynced && es.StaleAfterMinutes > 0 && es.LastSyncTime != nil {
-		stale := time.Since(*es.LastSyncTime) >= time.Duration(es.StaleAfterMinutes)*time.Minute
+	// a resolved threshold and a last-sync anchor. StaleAfterMinutes is a
+	// pointer — nil means the resolver hasn't populated it (Phase A pre-D).
+	if es.Status == StatusSynced && es.StaleAfterMinutes != nil && *es.StaleAfterMinutes > 0 && es.LastSyncTime != nil {
+		stale := time.Since(*es.LastSyncTime) >= time.Duration(*es.StaleAfterMinutes)*time.Minute
 		if stale {
 			return StatusStale
 		}
