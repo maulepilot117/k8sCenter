@@ -97,6 +97,26 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create ClusterIssuer",
       href: "/security/certificates/cluster-issuers/new",
     },
+    {
+      label: "External Secrets Dashboard",
+      href: "/external-secrets/dashboard",
+    },
+    {
+      label: "View ExternalSecrets",
+      href: "/external-secrets/external-secrets",
+    },
+    {
+      label: "View SecretStores",
+      href: "/external-secrets/stores",
+    },
+    {
+      label: "View ClusterSecretStores",
+      href: "/external-secrets/cluster-stores",
+    },
+    {
+      label: "View ExternalSecrets Chain",
+      href: "/external-secrets/chain",
+    },
     { label: "View Gateway API", href: "/networking/gateway-api" },
     { label: "View Service Mesh", href: "/networking/mesh" },
     { label: "View Mesh Routing", href: "/networking/mesh/routing" },
