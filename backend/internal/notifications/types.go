@@ -19,6 +19,30 @@ const (
 	SourceExternalSecrets Source = "external_secrets"
 )
 
+// Valid reports whether s is a known Source enum value. Used by the rule
+// editor (HandleCreateRule / HandleUpdateRule) to reject bogus
+// sourceFilter entries before they reach the database. nc_rules.source_filter
+// is TEXT[] with no DB-level CHECK, so the application layer is the only
+// validation surface.
+func (s Source) Valid() bool {
+	switch s {
+	case SourceAlert, SourcePolicy, SourceGitOps, SourceDiagnostic,
+		SourceScan, SourceCluster, SourceAudit, SourceLimits,
+		SourceVelero, SourceCertManager, SourceExternalSecrets:
+		return true
+	}
+	return false
+}
+
+// Valid reports whether sev is a known Severity enum value.
+func (sev Severity) Valid() bool {
+	switch sev {
+	case SeverityInfo, SeverityWarning, SeverityCritical:
+		return true
+	}
+	return false
+}
+
 // Severity indicates how critical a notification is.
 type Severity string
 

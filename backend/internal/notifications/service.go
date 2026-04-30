@@ -507,6 +507,16 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 			continue
 		}
 
+		// Strip resource identity from sources flagged for cross-tenant
+		// suppression (currently ESO). SuppressResourceFields on the runtime
+		// Notification struct is json:"-" and not persisted, so the rows
+		// returned by NotificationsSince above don't carry the flag —
+		// applying it source-side is the simplest cross-tenant defense for
+		// the email path. Slack and webhook dispatch already strip these
+		// fields at send time via the in-flight flag; email digests need
+		// the same treatment one layer earlier in the pipeline.
+		sanitizeForEmailDigest(notifications)
+
 		htmlBody, err := renderDigestEmail(notifications)
 		if err != nil {
 			s.logger.Error("render digest", "channel", ch.Name, "error", err)
@@ -519,6 +529,34 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 		if err := s.emailSender.QueueEmail(recipients, subject, htmlBody); err != nil {
 			s.logger.Error("queue digest email", "channel", ch.Name, "error", err)
 			_ = s.store.UpdateChannelError(ctx, ch.ID, err.Error())
+		}
+	}
+}
+
+// suppressResourceFieldsBySource lists sources whose notifications must have
+// their resource_kind / resource_ns / resource_name stripped before reaching
+// any external dispatch channel (Slack, webhook, email). These sources emit
+// cross-tenant events that the in-app feed RBAC-filters by namespace; shared
+// external channels do not honor that scope and would otherwise leak tenant
+// resource identity.
+//
+// Adding a source here requires also setting SuppressResourceFields=true in
+// the emit path so Slack/webhook honor the policy at send time. The email
+// digest reads this list directly because SuppressResourceFields is not
+// persisted (json:"-").
+var suppressResourceFieldsBySource = map[Source]bool{
+	SourceExternalSecrets: true,
+}
+
+// sanitizeForEmailDigest mutates the slice in place, zeroing resource
+// identity fields for any notification whose Source is configured for
+// cross-tenant suppression. Applied just before template rendering.
+func sanitizeForEmailDigest(ns []Notification) {
+	for i := range ns {
+		if suppressResourceFieldsBySource[ns[i].Source] {
+			ns[i].ResourceKind = ""
+			ns[i].ResourceNS = ""
+			ns[i].ResourceName = ""
 		}
 	}
 }

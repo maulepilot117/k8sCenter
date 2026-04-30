@@ -1,7 +1,13 @@
 package notifications
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -188,6 +194,215 @@ func TestRenderDigestEmail(t *testing.T) {
 	}
 	if !strings.Contains(html, "Notification Digest") {
 		t.Error("digest HTML should contain header")
+	}
+}
+
+// captureWebhookBody starts an httptest server, sends a notification through
+// sendWebhook, and returns the captured request body. Used by the
+// SuppressResourceFields tests below.
+func captureWebhookBody(t *testing.T, n Notification) string {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		body string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		mu.Lock()
+		body = string(b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := &NotificationService{}
+	ch := Channel{
+		ID:     "test-webhook",
+		Name:   "test",
+		Type:   ChannelWebhook,
+		Config: ChannelConfig{"url": srv.URL},
+	}
+	if err := svc.sendWebhook(context.Background(), ch, n); err != nil {
+		t.Fatalf("sendWebhook: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return body
+}
+
+// captureSlackBody starts an httptest server, sends a notification through
+// sendSlack, and returns the captured request body.
+func captureSlackBody(t *testing.T, n Notification) string {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		body string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		mu.Lock()
+		body = string(b)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	svc := &NotificationService{}
+	ch := Channel{
+		ID:     "test-slack",
+		Name:   "test",
+		Type:   ChannelSlack,
+		Config: ChannelConfig{"webhookUrl": srv.URL},
+	}
+	if err := svc.sendSlack(context.Background(), ch, n); err != nil {
+		t.Fatalf("sendSlack: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return body
+}
+
+func TestSendWebhook_SuppressResourceFields(t *testing.T) {
+	cases := []struct {
+		name     string
+		suppress bool
+		wantNS   bool // true if resourceNamespace should appear in payload
+	}{
+		{name: "suppress=true omits namespace+name", suppress: true, wantNS: false},
+		{name: "suppress=false retains namespace+name", suppress: false, wantNS: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := Notification{
+				ID:                     "n1",
+				Source:                 SourceExternalSecrets,
+				Severity:               SeverityCritical,
+				Title:                  "ExternalSecret sync failed",
+				Message:                "An ExternalSecret could not be reconciled.",
+				ResourceKind:           "externalsecret",
+				ResourceNS:             "payments",
+				ResourceName:           "stripe-api-key",
+				CreatedAt:              time.Now().UTC(),
+				SuppressResourceFields: tc.suppress,
+			}
+			body := captureWebhookBody(t, n)
+
+			// resourceKind is always present (it doesn't carry tenant identity).
+			if !strings.Contains(body, `"resourceKind":"externalsecret"`) {
+				t.Errorf("webhook body should contain resourceKind: %s", body)
+			}
+
+			gotNS := strings.Contains(body, `"resourceNamespace":"payments"`)
+			gotName := strings.Contains(body, `"resourceName":"stripe-api-key"`)
+			if gotNS != tc.wantNS {
+				t.Errorf("resourceNamespace presence: got %v want %v\nbody: %s", gotNS, tc.wantNS, body)
+			}
+			if gotName != tc.wantNS {
+				t.Errorf("resourceName presence: got %v want %v\nbody: %s", gotName, tc.wantNS, body)
+			}
+
+			// Sanity: payload parses as JSON.
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(body), &payload); err != nil {
+				t.Fatalf("payload not valid JSON: %v\nbody: %s", err, body)
+			}
+		})
+	}
+}
+
+func TestSendSlack_SuppressResourceFields(t *testing.T) {
+	cases := []struct {
+		name        string
+		suppress    bool
+		wantResLine bool
+	}{
+		{name: "suppress=true omits *Resource:* line", suppress: true, wantResLine: false},
+		{name: "suppress=false retains *Resource:* line", suppress: false, wantResLine: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := Notification{
+				Source:                 SourceExternalSecrets,
+				Severity:               SeverityCritical,
+				Title:                  "ExternalSecret sync failed",
+				Message:                "An ExternalSecret could not be reconciled.",
+				ResourceKind:           "externalsecret",
+				ResourceNS:             "payments",
+				ResourceName:           "stripe-api-key",
+				CreatedAt:              time.Now().UTC(),
+				SuppressResourceFields: tc.suppress,
+			}
+			body := captureSlackBody(t, n)
+
+			gotResLine := strings.Contains(body, "*Resource:*")
+			if gotResLine != tc.wantResLine {
+				t.Errorf("*Resource:* line presence: got %v want %v\nbody: %s", gotResLine, tc.wantResLine, body)
+			}
+			// Slack body must never embed namespace/name in the title — that's
+			// the cross-tenant defense.
+			if strings.Contains(body, "payments") && tc.suppress {
+				t.Errorf("suppressed Slack body should not contain namespace 'payments': %s", body)
+			}
+			if strings.Contains(body, "stripe-api-key") && tc.suppress {
+				t.Errorf("suppressed Slack body should not contain name 'stripe-api-key': %s", body)
+			}
+		})
+	}
+}
+
+func TestSanitizeForEmailDigest_StripsESOResourceFields(t *testing.T) {
+	notifs := []Notification{
+		{Source: SourceExternalSecrets, ResourceKind: "externalsecret", ResourceNS: "payments", ResourceName: "stripe-api-key"},
+		{Source: SourceCertManager, ResourceKind: "certificate", ResourceNS: "ingress", ResourceName: "wildcard-tls"},
+		{Source: SourceAlert, ResourceKind: "pod", ResourceNS: "default", ResourceName: "nginx"},
+	}
+	sanitizeForEmailDigest(notifs)
+
+	// ESO row is sanitized.
+	if notifs[0].ResourceKind != "" || notifs[0].ResourceNS != "" || notifs[0].ResourceName != "" {
+		t.Errorf("ESO row should have resource fields stripped, got %+v", notifs[0])
+	}
+	// cert-manager + alert rows are untouched.
+	if notifs[1].ResourceNS != "ingress" || notifs[1].ResourceName != "wildcard-tls" {
+		t.Errorf("cert-manager row should NOT be stripped, got %+v", notifs[1])
+	}
+	if notifs[2].ResourceNS != "default" || notifs[2].ResourceName != "nginx" {
+		t.Errorf("alert row should NOT be stripped, got %+v", notifs[2])
+	}
+}
+
+func TestRenderDigestEmail_ESOFieldsHiddenAfterSanitize(t *testing.T) {
+	notifs := []Notification{
+		{
+			Source:                 SourceExternalSecrets,
+			Severity:               SeverityCritical,
+			Title:                  "ExternalSecret sync failed",
+			Message:                "An ExternalSecret could not be reconciled.",
+			ResourceKind:           "externalsecret",
+			ResourceNS:             "payments",
+			ResourceName:           "stripe-api-key",
+			CreatedAt:              time.Now().UTC(),
+			SuppressResourceFields: true,
+		},
+	}
+	// Mirror the production path: sendDigests runs sanitize before renderDigestEmail.
+	sanitizeForEmailDigest(notifs)
+
+	html, err := renderDigestEmail(notifs)
+	if err != nil {
+		t.Fatalf("renderDigestEmail: %v", err)
+	}
+	if strings.Contains(html, "payments") {
+		t.Errorf("ESO digest must not leak namespace 'payments' in email HTML: %s", html)
+	}
+	if strings.Contains(html, "stripe-api-key") {
+		t.Errorf("ESO digest must not leak name 'stripe-api-key' in email HTML: %s", html)
 	}
 }
 
