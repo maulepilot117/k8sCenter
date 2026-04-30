@@ -23,7 +23,8 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - RBAC-aware multi-tenancy with user impersonation (OIDC, LDAP, local accounts)
 - Policy engine integration — auto-detects Kyverno and/or OPA/Gatekeeper, compliance scoring with trend tracking
 - Security scanning — Trivy Operator + Kubescape (vulnerability reports, config audits, compliance frameworks)
-- Cert-manager integration — certificate inventory, issuer management, expiry dashboard, one-click renew/re-issue, proactive expiry notifications
+- Cert-manager integration — certificate inventory, issuer management, expiry dashboard, one-click renew/re-issue, proactive expiry notifications, per-cert / per-issuer warning + critical threshold overrides via annotation
+- Service mesh observability (Istio + Linkerd) — auto-detection, traffic-routing CRD inventory, mTLS posture per workload, golden signals (RPS / error rate / p50/p95/p99 latency) on Service detail, opt-in mesh-edge overlay on the topology graph
 - Audit logging with PostgreSQL persistence, filterable viewer, and 90-day retention
 - Frontend permission gating via SelfSubjectRulesReview
 - CSP headers, NetworkPolicy, Pod Security Standards (restricted profile)
@@ -70,7 +71,8 @@ Kubernetes Cluster
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
 | Logs | Loki (LogQL proxy, namespace enforcement) |
-| Certificates | cert-manager (CRD discovery, expiry poller) |
+| Certificates | cert-manager (CRD discovery, expiry poller, per-cert/per-issuer threshold annotations) |
+| Service Mesh | Istio + Linkerd (mTLS posture, golden signals, topology overlay) |
 | Auth | JWT + OIDC / LDAP / local (Argon2id) |
 | Deployment | Helm 3.x, distroless containers |
 
