@@ -37,14 +37,24 @@ func (t threshold) String() string {
 	}
 }
 
-// thresholdBucket maps a days-remaining value to its threshold bucket.
-func thresholdBucket(days int) threshold {
+// thresholdBucket maps a days-remaining value to its threshold bucket
+// using the cert's resolved per-cert thresholds. effectiveWarn /
+// effectiveCrit fall back to package defaults when the cert hasn't
+// been through ApplyThresholds (defense-in-depth for tests and
+// forgotten-resolution paths).
+func thresholdBucket(cert Certificate) threshold {
+	if cert.DaysRemaining == nil {
+		return thresholdNone
+	}
+	days := *cert.DaysRemaining
+	warn := effectiveWarn(cert)
+	crit := effectiveCrit(cert)
 	switch {
 	case days < 0:
 		return thresholdExpired
-	case days <= CriticalThresholdDays:
+	case days <= crit:
 		return thresholdCritical
-	case days <= WarningThresholdDays:
+	case days <= warn:
 		return thresholdWarning
 	default:
 		return thresholdNone
@@ -97,6 +107,19 @@ func newPollerForTest() *Poller {
 // check evaluates a single Certificate against the dedupe state and returns
 // any emitRecord that should be dispatched. The caller is responsible for
 // calling emit() on each returned record.
+//
+// Dedupe semantics:
+//   - Bucket transitions emit one notification each. A cert moving from
+//     warning -> none (e.g. renewal, OR an annotation that loosened the
+//     warning threshold past the cert's days remaining) clears the dedupe
+//     entry. A subsequent move BACK into the warning bucket (annotation
+//     tightened, OR time decay) emits a fresh notification — same shape
+//     as a real renewal-then-decay cycle.
+//   - This means an annotation toggle (tighten -> loosen -> tighten) can
+//     produce two notifications for what's logically one cert state.
+//     Documented behavior; preferred over "stuck dedupe" that would miss
+//     a genuine bucket re-entry. Operators flapping annotations
+//     deliberately are responsible for the noise.
 func (p *Poller) check(c Certificate) []emitRecord {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -105,7 +128,7 @@ func (p *Poller) check(c Certificate) []emitRecord {
 		return nil
 	}
 
-	bucket := thresholdBucket(*c.DaysRemaining)
+	bucket := thresholdBucket(c)
 
 	prev, hasPrev := p.dedupe[c.UID]
 
@@ -227,8 +250,13 @@ func (p *Poller) tick(ctx context.Context) {
 	p.mu.Unlock()
 }
 
-// fetchCertificates returns certificates from the handler cache if available,
-// otherwise falls back to direct API listing.
+// fetchCertificates returns certificates from the handler cache if
+// available, otherwise falls back to direct API listing. The cache
+// path returns thresholds-resolved certs (handler.fetchAll runs
+// ApplyThresholds before storing). The fallback path also lists
+// Issuers + ClusterIssuers and runs ApplyThresholds so it produces
+// the same threshold-resolved view — otherwise tests and degraded
+// startup would skip per-cert overrides entirely.
 func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 	if p.handler != nil {
 		return p.handler.CachedCertificates(ctx)
@@ -254,5 +282,24 @@ func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 		}
 		certs = append(certs, cert)
 	}
+
+	// Best-effort issuer fetches — failures fall through to defaults
+	// rather than erroring the whole poll cycle. The poller already
+	// degrades gracefully when fields are missing (thresholdBucket has
+	// belt-and-suspenders defaults), so this just enriches when
+	// possible.
+	var issuers, clusterIssuers []Issuer
+	if iList, ierr := dyn.Resource(IssuerGVR).Namespace("").List(ctx, metav1.ListOptions{}); ierr == nil {
+		for i := range iList.Items {
+			issuers = append(issuers, normalizeIssuer(&iList.Items[i], "Namespaced"))
+		}
+	}
+	if ciList, cerr := dyn.Resource(ClusterIssuerGVR).Namespace("").List(ctx, metav1.ListOptions{}); cerr == nil {
+		for i := range ciList.Items {
+			clusterIssuers = append(clusterIssuers, normalizeIssuer(&ciList.Items[i], "Cluster"))
+		}
+	}
+
+	ApplyThresholds(certs, issuers, clusterIssuers, p.logger)
 	return certs, nil
 }

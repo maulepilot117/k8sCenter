@@ -9,10 +9,12 @@ import {
   StatusBadge,
 } from "@/components/ui/CertificateBadges.tsx";
 import type {
+  Certificate,
   CertificateDetail,
   CertificateRequest,
   Challenge,
   Order,
+  ThresholdSource,
 } from "@/lib/certmanager-types.ts";
 
 interface Props {
@@ -23,6 +25,33 @@ interface Props {
 function formatDate(iso?: string): string {
   if (!iso) return "\u2014";
   return new Date(iso).toLocaleString();
+}
+
+// keySourceLabel returns the per-key source attribution shown next to
+// each threshold value. e.g. "60d (From Issuer letsencrypt-prod)".
+// When source is undefined (response from a backend that didn't run
+// ApplyThresholds), falls through to Default.
+function keySourceLabel(
+  source: ThresholdSource | undefined,
+  cert: Certificate,
+): string {
+  switch (source) {
+    case "certificate":
+      return "From this certificate";
+    case "issuer":
+      return `From Issuer ${cert.issuerRef.name}`;
+    case "clusterissuer":
+      return `From ClusterIssuer ${cert.issuerRef.name}`;
+    default:
+      return "Default";
+  }
+}
+
+// thresholdResolutionTooltip explains the resolution chain in plain
+// English so an operator unfamiliar with the annotation contract can
+// read the tile without diving into docs.
+function thresholdResolutionTooltip(): string {
+  return "Set kubecenter.io/cert-warn-threshold-days or kubecenter.io/cert-critical-threshold-days on a Certificate, its Issuer, or its ClusterIssuer to override these values. Resolution chain: cert annotation > issuer > clusterissuer > package default. Each key resolves independently — a cert can override warn alone and inherit critical from its issuer.";
 }
 
 export default function CertificateDetailIsland({ namespace, name }: Props) {
@@ -220,6 +249,38 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
             <dt class="text-text-muted">Renewal Time</dt>
             <dd class="text-text-primary">{formatDate(cert.renewalTime)}</dd>
           </div>
+          {cert.warningThresholdDays !== undefined &&
+            cert.warningThresholdDays > 0 && (
+            <div class="sm:col-span-2">
+              <dt class="text-text-muted">Expiry Thresholds</dt>
+              <dd
+                class="text-text-primary"
+                title={thresholdResolutionTooltip()}
+              >
+                Warns at {cert.warningThresholdDays}d{" "}
+                <span class="text-xs text-text-muted">
+                  ({keySourceLabel(cert.warningThresholdSource, cert)})
+                </span>
+                , critical at {cert.criticalThresholdDays ?? "—"}d{" "}
+                <span class="text-xs text-text-muted">
+                  ({keySourceLabel(cert.criticalThresholdSource, cert)})
+                </span>
+                {cert.thresholdConflict && (
+                  <span
+                    class="ml-2 rounded px-1.5 py-0.5 text-xs font-medium"
+                    style={{
+                      backgroundColor:
+                        "color-mix(in srgb, var(--status-warning) 15%, transparent)",
+                      color: "var(--status-warning)",
+                    }}
+                    title="Resolved threshold pair would have violated critical < warning. Using package defaults until you fix one of the annotations."
+                  >
+                    Override conflict — using defaults
+                  </span>
+                )}
+              </dd>
+            </div>
+          )}
           {cert.reason && (
             <div class="sm:col-span-2">
               <dt class="text-text-muted">Reason</dt>

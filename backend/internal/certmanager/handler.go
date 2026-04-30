@@ -238,6 +238,13 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil, err
 	}
 
+	// Resolve per-cert thresholds against the just-fetched issuer set
+	// before caching. Every read path (CachedCertificates, /expiring,
+	// detail) consumes the cache, so doing it once here keeps the
+	// resolution out of the hot path and ensures every consumer sees
+	// the same view.
+	ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
+
 	data := &cachedData{
 		certificates:   certificates,
 		issuers:        issuers,
@@ -345,6 +352,26 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to parse certificate", "")
 		return
 	}
+
+	// Resolve per-cert thresholds for the detail response so it carries
+	// the same WarningThresholdDays / CriticalThresholdDays / source
+	// fields that the list endpoints emit AND so DeriveStatus runs
+	// (without it the response would never show Status="Expiring",
+	// since computeStatus no longer overlays Expiring).
+	//
+	// We always run ApplyThresholds — even on cache miss — so the
+	// response shape stays consistent. Cache miss simply means no
+	// issuer/clusterissuer lookup data; the resolver falls through to
+	// package defaults uniformly. This is safer than skipping
+	// resolution and emitting an inconsistent response.
+	var issuers, clusterIssuers []Issuer
+	if data, derr := h.getCached(ctx); derr == nil && data != nil {
+		issuers = data.issuers
+		clusterIssuers = data.clusterIssuers
+	}
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, clusterIssuers, h.Logger)
+	cert = certs[0]
 
 	// Fetch CertificateRequests for this certificate
 	crSel := labels.Set{"cert-manager.io/certificate-name": name}.String()
@@ -515,11 +542,16 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 
 	expiring := make([]ExpiringCertificate, 0)
 	for _, c := range certs {
-		if c.DaysRemaining == nil || *c.DaysRemaining > WarningThresholdDays {
+		// ApplyThresholds (during the cache fetch) resolved each cert's
+		// effective warn/crit. effectiveWarn / effectiveCrit fall back
+		// to package defaults if the resolution hasn't happened yet.
+		warn := effectiveWarn(c)
+		crit := effectiveCrit(c)
+		if c.DaysRemaining == nil || *c.DaysRemaining > warn {
 			continue
 		}
 		severity := "warning"
-		if *c.DaysRemaining <= CriticalThresholdDays {
+		if *c.DaysRemaining <= crit {
 			severity = "critical"
 		}
 		var notAfter time.Time

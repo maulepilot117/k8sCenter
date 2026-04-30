@@ -7,26 +7,41 @@ import (
 
 func intPtr(i int) *int { return &i }
 
-// TestThresholdBucket verifies thresholdBucket maps day counts to the correct bucket.
+// TestThresholdBucket verifies thresholdBucket maps day counts to the
+// correct bucket using the cert's resolved per-cert thresholds.
 func TestThresholdBucket(t *testing.T) {
 	cases := []struct {
-		days int
+		name string
+		cert Certificate
 		want threshold
 	}{
-		{60, thresholdNone},
-		{30, thresholdWarning},
-		{29, thresholdWarning},
-		{8, thresholdWarning},
-		{7, thresholdCritical},
-		{0, thresholdCritical},
-		{-1, thresholdExpired},
+		// Default thresholds (warn=30, crit=7) — cert has zero values,
+		// thresholdBucket falls back to the package defaults.
+		{"default-runway-60d", Certificate{DaysRemaining: intPtr(60)}, thresholdNone},
+		{"default-warn-30d", Certificate{DaysRemaining: intPtr(30)}, thresholdWarning},
+		{"default-warn-8d", Certificate{DaysRemaining: intPtr(8)}, thresholdWarning},
+		{"default-crit-7d", Certificate{DaysRemaining: intPtr(7)}, thresholdCritical},
+		{"default-crit-0d", Certificate{DaysRemaining: intPtr(0)}, thresholdCritical},
+		{"default-expired", Certificate{DaysRemaining: intPtr(-1)}, thresholdExpired},
+		// Per-cert overrides — ACME-style tight warn means 20d is still
+		// in the safe zone.
+		{"cert-warn-14d-20d-remaining", Certificate{DaysRemaining: intPtr(20), WarningThresholdDays: 14, CriticalThresholdDays: 3}, thresholdNone},
+		{"cert-warn-14d-13d-remaining", Certificate{DaysRemaining: intPtr(13), WarningThresholdDays: 14, CriticalThresholdDays: 3}, thresholdWarning},
+		{"cert-crit-3d-3d-remaining", Certificate{DaysRemaining: intPtr(3), WarningThresholdDays: 14, CriticalThresholdDays: 3}, thresholdCritical},
+		// Per-cert override — long-runway internal CA wants 60d warning.
+		{"cert-warn-60d-50d-remaining", Certificate{DaysRemaining: intPtr(50), WarningThresholdDays: 60, CriticalThresholdDays: 14}, thresholdWarning},
+		// Nil DaysRemaining — bucket is None (treated as healthy /
+		// indeterminate).
+		{"nil-days-remaining", Certificate{DaysRemaining: nil, WarningThresholdDays: 30, CriticalThresholdDays: 7}, thresholdNone},
 	}
 
 	for _, tc := range cases {
-		got := thresholdBucket(tc.days)
-		if got != tc.want {
-			t.Errorf("thresholdBucket(%d) = %v, want %v", tc.days, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got := thresholdBucket(tc.cert)
+			if got != tc.want {
+				t.Errorf("thresholdBucket(%+v) = %v, want %v", tc.cert, got, tc.want)
+			}
+		})
 	}
 }
 

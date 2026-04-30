@@ -14,6 +14,15 @@ export interface IssuerRef {
   group?: string;
 }
 
+/** Layer of the resolution chain that supplied a Certificate's
+ * effective expiry thresholds. Drives the "Warns at: 60d (from
+ * Issuer X)" tooltip on the Certificate detail page. */
+export type ThresholdSource =
+  | "default"
+  | "certificate"
+  | "issuer"
+  | "clusterissuer";
+
 export interface Certificate {
   name: string;
   namespace: string;
@@ -30,6 +39,25 @@ export interface Certificate {
   notAfter?: string;
   renewalTime?: string;
   daysRemaining?: number;
+  /** Effective per-cert thresholds resolved through cert > issuer >
+   * clusterissuer > package-default. omitempty on the wire when the
+   * resolver hasn't run; absent or zero means "not resolved yet". */
+  warningThresholdDays?: number;
+  criticalThresholdDays?: number;
+  /** Aggregate source — strongest layer that contributed a value.
+   * For the per-key attribution use warningThresholdSource /
+   * criticalThresholdSource (each can come from a different layer). */
+  thresholdSource?: ThresholdSource;
+  /** Per-key source attribution. A cert can override warn alone and
+   * inherit crit from its issuer; these fields tell the UI exactly
+   * which layer produced each value. */
+  warningThresholdSource?: ThresholdSource;
+  criticalThresholdSource?: ThresholdSource;
+  /** True when the resolved warn/crit pair would have violated
+   * crit < warn. The resolver fell back to package defaults; the UI
+   * surfaces this so operators see "Conflict — using defaults" rather
+   * than a misleading "Default" badge despite their annotation. */
+  thresholdConflict?: boolean;
   uid: string;
 }
 
@@ -43,6 +71,11 @@ export interface Issuer {
   message?: string;
   acmeEmail?: string;
   acmeServer?: string;
+  /** Annotation-set threshold overrides on this Issuer. Inherited by
+   * Certificates that reference it when those certs don't carry their
+   * own annotation. omitempty when the issuer has no annotation. */
+  warningThresholdDays?: number;
+  criticalThresholdDays?: number;
   uid: string;
   updatedAt: string;
 }

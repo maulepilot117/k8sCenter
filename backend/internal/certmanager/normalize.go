@@ -2,28 +2,29 @@ package certmanager
 
 import (
 	"math"
+	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// computeStatus derives a Certificate Status from the Ready condition and notAfter time.
+// computeStatus derives a Certificate's BASE Status (Ready / Issuing /
+// Failed / Expired / Unknown) from the Ready condition and notAfter
+// time. It deliberately never returns StatusExpiring — the warning-band
+// transition depends on the resolved per-cert threshold, which isn't
+// available here. ApplyThresholds (in thresholds.go) overlays Expiring
+// onto the base status using DeriveStatus.
 func computeStatus(readyStatus, reason string, notAfter *time.Time) Status {
 	now := time.Now()
 
-	// Expired check takes priority regardless of the Ready condition.
+	// Expired is independent of the configurable threshold — past
+	// notAfter is always Expired regardless of operator settings.
 	if notAfter != nil && notAfter.Before(now) {
 		return StatusExpired
 	}
 
 	switch readyStatus {
 	case "True":
-		if notAfter != nil {
-			days := int(math.Floor(time.Until(*notAfter).Hours() / 24))
-			if days <= WarningThresholdDays {
-				return StatusExpiring
-			}
-		}
 		return StatusReady
 	case "False":
 		if reason == "Issuing" || reason == "InProgress" {
@@ -33,6 +34,60 @@ func computeStatus(readyStatus, reason string, notAfter *time.Time) Status {
 	default:
 		return StatusUnknown
 	}
+}
+
+// DeriveStatus returns a Certificate's effective Status given the
+// already-populated base Status and resolved WarningThresholdDays.
+// Caller is responsible for having run ApplyThresholds first so the
+// threshold field is non-zero; if the field is zero (resolution didn't
+// run, or threshold isn't applicable) the package default applies.
+//
+// Status precedence: Expired > Failed > Issuing > Expiring > Ready >
+// Unknown. Expiring only overlays the Ready band — a Failed cert with a
+// near-expiry NotAfter stays Failed (the operator's bigger problem).
+func DeriveStatus(cert Certificate) Status {
+	if cert.Status != StatusReady {
+		return cert.Status
+	}
+	if cert.DaysRemaining == nil {
+		return cert.Status
+	}
+	if *cert.DaysRemaining <= effectiveWarn(cert) {
+		return StatusExpiring
+	}
+	return cert.Status
+}
+
+// parseThresholdAnnotation parses an annotation value as a positive
+// integer (days). Returns (n, true) only when the value is a clean
+// positive integer; empty / malformed / non-positive values return
+// (0, false) so callers can fall through to the next layer of the
+// resolution chain. The strict-positive constraint matches the
+// "thresholds are days, days are >= 1" invariant; a "0" annotation is
+// treated as "not set" rather than "warn instantly," which is the more
+// useful operator semantic.
+func parseThresholdAnnotation(val string) (int, bool) {
+	if val == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// readThresholdAnnotations extracts both threshold annotations from a
+// resource's annotation map. Each key is parsed independently, so a
+// resource can set warn alone or crit alone. Returns (warn, warnOK,
+// crit, critOK).
+func readThresholdAnnotations(annotations map[string]string) (warn int, warnOK bool, crit int, critOK bool) {
+	if annotations == nil {
+		return 0, false, 0, false
+	}
+	warn, warnOK = parseThresholdAnnotation(annotations[AnnotationWarnThreshold])
+	crit, critOK = parseThresholdAnnotation(annotations[AnnotationCriticalThreshold])
+	return
 }
 
 // normalizeCertificate converts an unstructured cert-manager Certificate into our
@@ -76,23 +131,31 @@ func normalizeCertificate(u *unstructured.Unstructured) (Certificate, error) {
 	// Ready condition
 	readyStatus, reason, message := readReadyCondition(status)
 
+	// Cert-level threshold annotations. ApplyThresholds resolves the
+	// final values via the inheritance chain; here we just parse what
+	// the cert itself declares. Zero means "not set at the cert level"
+	// — the resolver fills in the inherited / default value later.
+	warn, _, crit, _ := readThresholdAnnotations(u.GetAnnotations())
+
 	cert := Certificate{
-		Name:          u.GetName(),
-		Namespace:     u.GetNamespace(),
-		Status:        computeStatus(readyStatus, reason, notAfter),
-		Reason:        reason,
-		Message:       message,
-		IssuerRef:     issuerRef,
-		SecretName:    stringFrom(spec, "secretName"),
-		DNSNames:      dnsNames,
-		CommonName:    stringFrom(spec, "commonName"),
-		Duration:      stringFrom(spec, "duration"),
-		RenewBefore:   stringFrom(spec, "renewBefore"),
-		NotBefore:     notBefore,
-		NotAfter:      notAfter,
-		RenewalTime:   renewalTime,
-		DaysRemaining: daysRemaining,
-		UID:           string(u.GetUID()),
+		Name:                  u.GetName(),
+		Namespace:             u.GetNamespace(),
+		Status:                computeStatus(readyStatus, reason, notAfter),
+		Reason:                reason,
+		Message:               message,
+		IssuerRef:             issuerRef,
+		SecretName:            stringFrom(spec, "secretName"),
+		DNSNames:              dnsNames,
+		CommonName:            stringFrom(spec, "commonName"),
+		Duration:              stringFrom(spec, "duration"),
+		RenewBefore:           stringFrom(spec, "renewBefore"),
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		RenewalTime:           renewalTime,
+		DaysRemaining:         daysRemaining,
+		WarningThresholdDays:  warn,
+		CriticalThresholdDays: crit,
+		UID:                   string(u.GetUID()),
 	}
 
 	return cert, nil
@@ -136,18 +199,32 @@ func normalizeIssuer(u *unstructured.Unstructured, scope string) Issuer {
 		}
 	}
 
+	// Issuer-level threshold annotations. Pointer fields so the resolver
+	// can distinguish "issuer didn't set this" (nil) from "issuer set
+	// it to the same value as the default" (non-nil).
+	warn, warnOK, crit, critOK := readThresholdAnnotations(u.GetAnnotations())
+	var warnPtr, critPtr *int
+	if warnOK {
+		warnPtr = &warn
+	}
+	if critOK {
+		critPtr = &crit
+	}
+
 	return Issuer{
-		Name:       u.GetName(),
-		Namespace:  u.GetNamespace(),
-		Scope:      scope,
-		Type:       issuerType,
-		Ready:      readyStatus == "True",
-		Reason:     reason,
-		Message:    message,
-		ACMEEmail:  acmeEmail,
-		ACMEServer: acmeServer,
-		UID:        string(u.GetUID()),
-		UpdatedAt:  updatedAt,
+		Name:                  u.GetName(),
+		Namespace:             u.GetNamespace(),
+		Scope:                 scope,
+		Type:                  issuerType,
+		Ready:                 readyStatus == "True",
+		Reason:                reason,
+		Message:               message,
+		ACMEEmail:             acmeEmail,
+		ACMEServer:            acmeServer,
+		WarningThresholdDays:  warnPtr,
+		CriticalThresholdDays: critPtr,
+		UID:                   string(u.GetUID()),
+		UpdatedAt:             updatedAt,
 	}
 }
 
