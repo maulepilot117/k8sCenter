@@ -29,6 +29,8 @@ const ICONS: Record<string, string> = {
     '<line x1="7" y1="7" x2="7" y2="17"/><circle cx="7" cy="5" r="2"/><circle cx="13" cy="7" r="2"/><path d="M7 7c0 3 6 3 6 0"/>',
   archive:
     '<rect x="3" y="7" width="14" height="10" rx="1"/><path d="M3 10h14"/><path d="M5 4h10v3H5z"/><rect x="8" y="12" width="4" height="2" rx="0.5"/>',
+  key:
+    '<circle cx="6" cy="14" r="3"/><path d="M8 12l9-9M13 7l3 3M15 5l3 3"/>',
   settings:
     '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4"/>',
 };

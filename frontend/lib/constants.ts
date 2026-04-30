@@ -579,6 +579,30 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
     ],
   },
   {
+    id: "external-secrets",
+    label: "External Secrets",
+    icon: "key",
+    href: "/external-secrets",
+    tabs: [
+      { label: "Dashboard", href: "/external-secrets/dashboard" },
+      {
+        label: "ExternalSecrets",
+        href: "/external-secrets/external-secrets",
+      },
+      {
+        label: "ClusterExternalSecrets",
+        href: "/external-secrets/cluster-external-secrets",
+      },
+      { label: "Stores", href: "/external-secrets/stores" },
+      {
+        label: "ClusterStores",
+        href: "/external-secrets/cluster-stores",
+      },
+      { label: "PushSecrets", href: "/external-secrets/push-secrets" },
+      { label: "Chain", href: "/external-secrets/chain" },
+    ],
+  },
+  {
     id: "backup",
     label: "Backup",
     icon: "archive",
