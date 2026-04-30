@@ -11,7 +11,7 @@ import type {
 } from "@/lib/notif-center-types.ts";
 import {
   NOTIF_SEVERITIES,
-  NOTIF_SOURCES,
+  NOTIF_SOURCE_CATEGORIES,
   SOURCE_LABELS,
 } from "@/lib/notif-center-types.ts";
 
@@ -554,26 +554,56 @@ export default function NotificationRules() {
                   (empty = all sources)
                 </span>
               </label>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-                {NOTIF_SOURCES.map((src) => (
-                  <label
-                    key={src}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      fontSize: "13px",
-                      color: "var(--text-primary)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={formSources.value.includes(src)}
-                      onChange={() => toggleSource(src)}
-                    />
-                    {SOURCE_LABELS[src]}
-                  </label>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px",
+                }}
+              >
+                {NOTIF_SOURCE_CATEGORIES.map((cat) => (
+                  <div key={cat.label}>
+                    <div
+                      style={{
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        color: "var(--text-muted)",
+                        marginBottom: "4px",
+                      }}
+                    >
+                      {cat.label}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: "8px 14px",
+                      }}
+                    >
+                      {cat.sources.map((src) => (
+                        <label
+                          key={src}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                            fontSize: "13px",
+                            color: "var(--text-primary)",
+                            cursor: "pointer",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={formSources.value.includes(src)}
+                            onChange={() => toggleSource(src)}
+                          />
+                          {SOURCE_LABELS[src]}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

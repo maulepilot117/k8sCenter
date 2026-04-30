@@ -99,6 +99,15 @@ func normalizeExternalSecret(u *unstructured.Unstructured) ExternalSecret {
 	syncedRV := stringFrom(status, "syncedResourceVersion")
 	lastSync := parseTimeField(status, "refreshTime")
 
+	// Phase D — parse the three threshold annotations off the resource itself.
+	// Resolver later walks ES > Store > ClusterStore > default, but the
+	// pointer fields here represent ONLY what this ES annotates. The
+	// resolver writes back resolved values + per-key sources via
+	// ApplyThresholds.
+	stalePtr, alertRecPtr, alertLifePtr := readThresholdAnnotations(
+		u.GetAnnotations(), u.GetNamespace(), u.GetName(),
+	)
+
 	return ExternalSecret{
 		Namespace:             u.GetNamespace(),
 		Name:                  u.GetName(),
@@ -112,7 +121,30 @@ func normalizeExternalSecret(u *unstructured.Unstructured) ExternalSecret {
 		RefreshInterval:       refreshInterval,
 		LastSyncTime:          lastSync,
 		SyncedResourceVersion: syncedRV,
+		StaleAfterMinutes:     stalePtr,
+		AlertOnRecovery:       alertRecPtr,
+		AlertOnLifecycle:      alertLifePtr,
 	}
+}
+
+// readThresholdAnnotations extracts the three Phase D annotation values off a
+// resource. Returns nil pointers when the annotation is unset or invalid.
+// Below-floor values fall through silently — the resolver's slog warning
+// path runs from the handler/poller, where the logger is in scope.
+func readThresholdAnnotations(annotations map[string]string, namespace, name string) (stale *int, alertRecovery *bool, alertLifecycle *bool) {
+	if annotations == nil {
+		return nil, nil, nil
+	}
+	if v, ok := ParseStaleAfterAnnotation(annotations[AnnotationStaleAfterMinutes], namespace, name, nil); ok {
+		stale = &v
+	}
+	if v, ok := ParseBoolAnnotation(annotations[AnnotationAlertOnRecovery]); ok {
+		alertRecovery = &v
+	}
+	if v, ok := ParseBoolAnnotation(annotations[AnnotationAlertOnLifecycle]); ok {
+		alertLifecycle = &v
+	}
+	return
 }
 
 // normalizeClusterExternalSecret converts a ClusterExternalSecret. Spec
@@ -189,17 +221,23 @@ func normalizeSecretStore(u *unstructured.Unstructured, scope string) SecretStor
 	baseStatus := computeBaseStatus(readyStatus, hasConditions)
 
 	ready := readyStatus == "True"
+	stalePtr, alertRecPtr, alertLifePtr := readThresholdAnnotations(
+		u.GetAnnotations(), u.GetNamespace(), u.GetName(),
+	)
 	return SecretStore{
-		Namespace:    u.GetNamespace(),
-		Name:         u.GetName(),
-		UID:          string(u.GetUID()),
-		Scope:        scope,
-		Status:       baseStatus,
-		Ready:        ready,
-		ReadyReason:  reason,
-		ReadyMessage: message,
-		Provider:     provider,
-		ProviderSpec: providerSpec,
+		Namespace:         u.GetNamespace(),
+		Name:              u.GetName(),
+		UID:               string(u.GetUID()),
+		Scope:             scope,
+		Status:            baseStatus,
+		Ready:             ready,
+		ReadyReason:       reason,
+		ReadyMessage:      message,
+		Provider:          provider,
+		ProviderSpec:      providerSpec,
+		StaleAfterMinutes: stalePtr,
+		AlertOnRecovery:   alertRecPtr,
+		AlertOnLifecycle:  alertLifePtr,
 	}
 }
 

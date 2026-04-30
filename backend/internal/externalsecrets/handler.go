@@ -420,6 +420,13 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		pushSecrets = []PushSecret{}
 	}
 
+	// Resolve annotation-driven thresholds (Phase D). ApplyThresholds runs
+	// the ES > Store > ClusterStore > default chain per ES, writes resolved
+	// values + per-key sources back onto each ES, and re-derives Status so
+	// the stale overlay can fire. Idempotent across cache hits since the
+	// resolver re-reads the same pointer fields each time.
+	ApplyThresholds(externalSecrets, stores, clusterStores, h.Logger)
+
 	data := &cachedData{
 		externalSecrets:        externalSecrets,
 		clusterExternalSecrets: clusterExternalSecrets,
@@ -607,10 +614,32 @@ func (h *Handler) HandleGetExternalSecret(w http.ResponseWriter, r *http.Request
 	}
 
 	es := normalizeExternalSecret(obj)
+	// Resolve annotation thresholds before drift / status. Detail endpoint
+	// pulls store snapshots from the cached fetchAll so the inheritance
+	// chain still works on a single-ES path. ApplyThresholds with a
+	// one-element slice is the simplest way to keep the resolver as the
+	// single source of truth (L3.1 in the plan).
+	ess := []ExternalSecret{es}
+	stores, clusterStores := h.cachedStoresForResolver()
+	ApplyThresholds(ess, stores, clusterStores, h.Logger)
+	es = ess[0]
+
 	es.DriftStatus, es.DriftUnknownReason = h.resolveDriftStatus(r.Context(), user, &es)
 	es.Status = DeriveStatus(es)
 
 	httputil.WriteData(w, es)
+}
+
+// cachedStoresForResolver returns the most recent cached store + cluster-store
+// slices for use by the threshold resolver on detail-endpoint paths. Returns
+// nil/nil when the cache is cold; the resolver falls through to defaults.
+func (h *Handler) cachedStoresForResolver() (stores, clusterStores []SecretStore) {
+	h.cacheMu.RLock()
+	defer h.cacheMu.RUnlock()
+	if h.cache == nil {
+		return nil, nil
+	}
+	return h.cache.stores, h.cache.clusterStores
 }
 
 // HandleGetClusterExternalSecret returns a single ClusterExternalSecret.

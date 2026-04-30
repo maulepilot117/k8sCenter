@@ -296,14 +296,21 @@ func (s *NotificationService) sendSlack(ctx context.Context, ch Channel, n Notif
 	}
 
 	color := severityColor(n.Severity)
+	// Suppress resource fields when the source has flagged the event as
+	// cross-tenant-sensitive (ESO). Slack channels don't honor in-app RBAC,
+	// so leaking namespace/name to a shared channel would defeat the
+	// RBAC-generic title.
+	contextLine := fmt.Sprintf("*Severity:* %s %s\n*Source:* %s", color, n.Severity, n.Source)
+	if !n.SuppressResourceFields {
+		contextLine += fmt.Sprintf("\n*Resource:* %s/%s/%s", n.ResourceKind, n.ResourceNS, n.ResourceName)
+	}
 	payload := map[string]any{
 		"text": fmt.Sprintf("[%s] %s", n.Severity, n.Title),
 		"blocks": []map[string]any{
 			{"type": "header", "text": map[string]string{"type": "plain_text", "text": n.Title}},
 			{"type": "section", "text": map[string]string{
 				"type": "mrkdwn",
-				"text": fmt.Sprintf("*Severity:* %s %s\n*Source:* %s\n*Resource:* %s/%s/%s",
-					color, n.Severity, n.Source, n.ResourceKind, n.ResourceNS, n.ResourceName),
+				"text": contextLine,
 			}},
 		},
 	}
@@ -355,7 +362,9 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 		return fmt.Errorf("webhook channel %q has no url configured", ch.Name)
 	}
 
-	// Build external-facing payload (excludes ClusterID and other internal fields)
+	// Build external-facing payload (excludes ClusterID and other internal fields).
+	// SuppressResourceFields strips namespace/name for cross-tenant-sensitive
+	// events; the omitempty JSON tags drop them from the wire payload.
 	wp := webhookPayload{
 		ID:           n.ID,
 		Source:       n.Source,
@@ -363,9 +372,11 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 		Title:        n.Title,
 		Message:      n.Message,
 		ResourceKind: n.ResourceKind,
-		ResourceNS:   n.ResourceNS,
-		ResourceName: n.ResourceName,
 		CreatedAt:    n.CreatedAt,
+	}
+	if !n.SuppressResourceFields {
+		wp.ResourceNS = n.ResourceNS
+		wp.ResourceName = n.ResourceName
 	}
 	payload, _ := json.Marshal(wp)
 
