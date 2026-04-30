@@ -126,20 +126,26 @@ func resolveIntKey(
 	defaultValue int,
 	extract func(SecretStore) *int,
 ) (int, ThresholdSource) {
-	if esValue != nil && *esValue > 0 {
+	// Production path: ParseStaleAfterAnnotation already rejects values
+	// below MinStaleAfterMinutes before they reach the *int fields. The
+	// floor is re-asserted here as belt-and-suspenders so any future
+	// write path that bypasses the parser (e.g., Phase E force-sync
+	// surface, direct test injection) cannot insert a sub-floor value
+	// that would self-DoS the 60s poller.
+	if esValue != nil && *esValue >= MinStaleAfterMinutes {
 		return *esValue, ThresholdSourceExternalSecret
 	}
 
 	switch ref.Kind {
 	case "SecretStore":
 		if s, ok := storesByNSName[esNamespace+"/"+ref.Name]; ok {
-			if v := extract(s); v != nil && *v > 0 {
+			if v := extract(s); v != nil && *v >= MinStaleAfterMinutes {
 				return *v, ThresholdSourceSecretStore
 			}
 		}
 	case "ClusterSecretStore":
 		if s, ok := clusterStoresByName[ref.Name]; ok {
-			if v := extract(s); v != nil && *v > 0 {
+			if v := extract(s); v != nil && *v >= MinStaleAfterMinutes {
 				return *v, ThresholdSourceClusterSecretStore
 			}
 		}

@@ -1,6 +1,8 @@
 package externalsecrets
 
 import (
+	"context"
+	"sync"
 	"testing"
 )
 
@@ -209,6 +211,110 @@ func TestPoller_LateralFailureTransition(t *testing.T) {
 	stale := pollerES("u1", StatusStale)
 	if got := p.check(stale); len(got) != 1 || got[0].Kind != EventStale {
 		t.Fatalf("failed -> stale: got %v; want 1 stale", kindsOf(got))
+	}
+}
+
+// COR-01: Stale<->Unknown lateral transitions must emit (previously dropped
+// silently — operator monitoring a degraded ES misses further degradation
+// when controller conditions disappear).
+func TestPoller_StaleUnknownLateralTransitions(t *testing.T) {
+	t.Run("stale -> unknown emits unhealthy", func(t *testing.T) {
+		p := newPollerForTest()
+		observe(p, pollerES("u1", StatusStale))
+		got := p.check(pollerES("u1", StatusUnknown))
+		if len(got) != 1 || got[0].Kind != EventUnhealthy {
+			t.Fatalf("stale -> unknown: got %v; want 1 unhealthy", kindsOf(got))
+		}
+	})
+	t.Run("unknown -> stale emits stale", func(t *testing.T) {
+		p := newPollerForTest()
+		observe(p, pollerES("u1", StatusUnknown))
+		got := p.check(pollerES("u1", StatusStale))
+		if len(got) != 1 || got[0].Kind != EventStale {
+			t.Fatalf("unknown -> stale: got %v; want 1 stale", kindsOf(got))
+		}
+	})
+	t.Run("unknown -> failed emits sync_failed", func(t *testing.T) {
+		p := newPollerForTest()
+		observe(p, pollerES("u1", StatusUnknown))
+		got := p.check(pollerES("u1", StatusSyncFailed))
+		if len(got) != 1 || got[0].Kind != EventSyncFailed {
+			t.Fatalf("unknown -> failed: got %v; want 1 sync_failed", kindsOf(got))
+		}
+	})
+}
+
+// dispatchEmits exercises the bounded-concurrency emit path. Confirms
+// every record runs the dispatcher exactly once and ctx cancellation
+// stops further dispatches.
+func TestDispatchEmits_RunsAllRecords(t *testing.T) {
+	records := make([]emitRecord, 50)
+	for i := range records {
+		records[i].Kind = EventSyncFailed
+	}
+	var (
+		mu    sync.Mutex
+		count int
+	)
+	emit := func(_ context.Context, _ emitRecord) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+	}
+	dispatchEmits(context.Background(), records, emit)
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 50 {
+		t.Fatalf("dispatchEmits ran emit %d times; want 50", count)
+	}
+}
+
+func TestDispatchEmits_RecoversFromPanic(t *testing.T) {
+	// One bad record panics; siblings must still complete.
+	var (
+		mu        sync.Mutex
+		completed int
+	)
+	emit := func(_ context.Context, r emitRecord) {
+		if r.Title == "BOOM" {
+			panic("test panic")
+		}
+		mu.Lock()
+		completed++
+		mu.Unlock()
+	}
+	records := []emitRecord{
+		{Kind: EventSyncFailed, Title: "ok-1"},
+		{Kind: EventSyncFailed, Title: "BOOM"},
+		{Kind: EventSyncFailed, Title: "ok-2"},
+	}
+	dispatchEmits(context.Background(), records, emit)
+	mu.Lock()
+	defer mu.Unlock()
+	if completed != 2 {
+		t.Fatalf("dispatchEmits completed %d emits; want 2 (one record panicked)", completed)
+	}
+}
+
+func TestDispatchEmits_AbortsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before dispatch starts
+
+	var (
+		mu        sync.Mutex
+		started   int
+	)
+	emit := func(_ context.Context, _ emitRecord) {
+		mu.Lock()
+		started++
+		mu.Unlock()
+	}
+	records := make([]emitRecord, 100)
+	dispatchEmits(ctx, records, emit)
+	mu.Lock()
+	defer mu.Unlock()
+	if started > 0 {
+		t.Fatalf("cancelled ctx should abort before dispatch; got %d emits", started)
 	}
 }
 

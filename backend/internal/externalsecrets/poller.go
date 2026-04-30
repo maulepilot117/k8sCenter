@@ -37,10 +37,17 @@ const (
 )
 
 // statusBucket collapses the 6-state Status enum into 4 emit-relevant
-// buckets. Drifted folds into healthy here — drift gets its own dedicated
-// event in Phase C and is operationally distinct from "the controller
-// can't reconcile". Refreshing also folds into healthy: it's a transient
-// state ("controller is working") that should not page operators.
+// buckets. Refreshing folds into healthy — it's a transient state
+// ("controller is working") that should not page operators.
+//
+// Drifted also folds into healthy here, but only as a defensive default:
+// the poller reads ESes from handler.fetchAll, which does NOT resolve
+// DriftStatus (that requires a per-ES impersonated `get secret` and runs
+// only on the detail endpoint). So in normal operation an ES observed by
+// the poller never carries StatusDrifted — the case is unreachable. Phase
+// C will surface drift through the persisted history, at which point this
+// bucket mapping should be revisited (e.g., a separate bucketDrifted so a
+// Drifted->Stale->Drifted sequence doesn't emit a misleading recovery).
 type statusBucket int
 
 const (
@@ -73,6 +80,28 @@ func bucketFor(s Status) statusBucket {
 		return bucketStale
 	default:
 		return bucketUnknown
+	}
+}
+
+// isFailureBucket returns true for any bucket the operator should be paged
+// for. Used to identify lateral transitions between failure modes (e.g.,
+// stale -> unknown) so we emit a fresh event for the new mode rather than
+// silently dropping the transition.
+func isFailureBucket(b statusBucket) bool {
+	return b == bucketFailed || b == bucketStale || b == bucketUnknown
+}
+
+// failureEventKind picks the EventKind for a transition INTO a failure
+// bucket. Used by both healthy->failure and lateral failure->failure
+// transitions so the dedupe slot matches the new state.
+func failureEventKind(b statusBucket) EventKind {
+	switch b {
+	case bucketStale:
+		return EventStale
+	case bucketFailed:
+		return EventSyncFailed
+	default:
+		return EventUnhealthy
 	}
 }
 
@@ -189,38 +218,25 @@ func (p *Poller) check(es ExternalSecret) []emitRecord {
 		return nil
 	}
 
-	// Bucket transition.
-	switch {
-	case prev == bucketHealthy && current == bucketFailed:
-		return []emitRecord{failureRecord(es, EventSyncFailed)}
-	case prev == bucketHealthy && current == bucketStale:
-		return []emitRecord{failureRecord(es, EventStale)}
-	case prev == bucketHealthy && current == bucketUnknown:
-		// Healthy -> Unknown is unusual (controller stopped reconciling).
-		// Fold into sync_failed semantics so operators still get paged.
-		return []emitRecord{failureRecord(es, EventSyncFailed)}
-	case (prev == bucketFailed || prev == bucketStale || prev == bucketUnknown) && current == bucketHealthy:
+	// Healthy -> failure: emit the matching failure-class event.
+	if prev == bucketHealthy && isFailureBucket(current) {
+		return []emitRecord{failureRecord(es, failureEventKind(current))}
+	}
+
+	// Failure -> healthy: emit recovery if the operator opted in.
+	if isFailureBucket(prev) && current == bucketHealthy {
 		if alertOnRecovery(es) {
 			return []emitRecord{recoveryRecord(es)}
 		}
 		return nil
-	case prev == bucketFailed && current == bucketStale,
-		prev == bucketStale && current == bucketFailed,
-		prev == bucketFailed && current == bucketUnknown,
-		prev == bucketUnknown && current == bucketFailed:
-		// Lateral transitions between failure-class buckets: dedupe slots
-		// are distinct, so emit the new kind. Operators see "still
-		// degraded but for a different reason now."
-		var kind EventKind
-		switch current {
-		case bucketStale:
-			kind = EventStale
-		case bucketFailed:
-			kind = EventSyncFailed
-		default:
-			kind = EventUnhealthy
-		}
-		return []emitRecord{failureRecord(es, kind)}
+	}
+
+	// Lateral transitions between failure-class buckets: dedupe slots are
+	// distinct per kind, so emit the new kind. Operators see "still
+	// degraded but for a different reason now." Covers all six lateral
+	// pairs: failed<->stale, failed<->unknown, stale<->unknown.
+	if isFailureBucket(prev) && isFailureBucket(current) {
+		return []emitRecord{failureRecord(es, failureEventKind(current))}
 	}
 
 	return nil
@@ -294,19 +310,23 @@ func lifecycleRecord(es ExternalSecret, kind EventKind) emitRecord {
 // SuppressResourceFields=true so Slack/webhook payloads omit
 // namespace/name — defeats the tenant-leakage path that the
 // RBAC-generic title alone doesn't close.
+//
+// ResourceKind is set to a static "externalsecret" string rather than
+// "externalsecret.<EventKind>" so external dispatch payloads don't leak
+// the operational state (sync_failed / stale / etc.) across tenants. The
+// in-app feed reader can derive the EventKind from Title + Severity if
+// needed; the kind suffix was redundant identity information.
 func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 	if p.notifService == nil {
 		return
 	}
-
-	resourceKind := "externalsecret." + string(rec.Kind)
 
 	p.notifService.Emit(ctx, notifications.Notification{
 		Source:                 notifications.SourceExternalSecrets,
 		Severity:               rec.Sev,
 		Title:                  rec.Title,
 		Message:                rec.Msg,
-		ResourceKind:           resourceKind,
+		ResourceKind:           "externalsecret",
 		ResourceNS:             rec.ES.Namespace,
 		ResourceName:           rec.ES.Name,
 		CreatedAt:              time.Now().UTC(),
@@ -314,10 +334,21 @@ func (p *Poller) emit(ctx context.Context, rec emitRecord) {
 	})
 }
 
+// emitConcurrency caps the number of in-flight Emit() calls per tick. The
+// notifications service makes synchronous DB round-trips per call; serial
+// dispatch in a mass-failure scenario (e.g., 100 ESes simultaneously stale
+// after an NTP correction) would block the tick goroutine for several
+// seconds. Bounded concurrency keeps tick latency proportional to
+// max(emit_latency) × ceil(N / emitConcurrency) instead of N × emit_latency,
+// while staying conservative enough to avoid pgxpool exhaustion.
+const emitConcurrency = 10
+
 // Start runs the poller loop. Fires immediately, then on a 60s ticker.
-// Blocks until ctx is cancelled.
+// Blocks until ctx is cancelled. tick() panics are recovered so a single
+// bad cycle doesn't kill the goroutine — silent poller death after a
+// transient driver panic would leave operators unalerted indefinitely.
 func (p *Poller) Start(ctx context.Context) {
-	p.tick(ctx)
+	p.runTickWithRecover(ctx)
 
 	// After the first tick we mark the poller initialized — subsequent
 	// ticks will treat unseen UIDs as genuine creations rather than
@@ -334,15 +365,31 @@ func (p *Poller) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.tick(ctx)
+			p.runTickWithRecover(ctx)
 		}
 	}
+}
+
+// runTickWithRecover wraps tick() with a defer recover() so a panic in
+// dispatch (e.g., pgx pool exhaustion edge case, slog handler defect)
+// doesn't unwind the poller goroutine. The next ticker fire restarts the
+// tick from a clean slate.
+func (p *Poller) runTickWithRecover(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("externalsecrets poller: tick panic recovered",
+				"panic", r,
+			)
+		}
+	}()
+	p.tick(ctx)
 }
 
 // tick performs one polling cycle. Lists ExternalSecrets via the handler
 // cache (which already runs ApplyThresholds, so es.AlertOnRecovery /
 // AlertOnLifecycle / Status are resolved), evaluates each one, dispatches
-// emit records, and prunes deleted UIDs.
+// emit records concurrently (bounded by emitConcurrency), and prunes
+// deleted UIDs.
 func (p *Poller) tick(ctx context.Context) {
 	if p.disc != nil && !p.disc.IsAvailable(ctx) {
 		return
@@ -350,6 +397,10 @@ func (p *Poller) tick(ctx context.Context) {
 
 	ess, err := p.fetchExternalSecrets(ctx)
 	if err != nil {
+		// Don't prune on failed fetch — currentUIDs would be empty and
+		// pruning everything would re-fire all ESes as "new" lifecycle
+		// events on the next successful tick. The next successful fetch
+		// will catch up any genuinely-deleted UIDs.
 		p.logger.Error("externalsecrets poller: list failed", "error", err)
 		return
 	}
@@ -361,17 +412,12 @@ func (p *Poller) tick(ctx context.Context) {
 		records = append(records, p.check(es)...)
 	}
 
-	for _, rec := range records {
-		p.emit(ctx, rec)
-	}
+	dispatchEmits(ctx, records, p.emit)
 
-	// Prune UIDs that vanished — emit deleted lifecycle events for ESes
-	// we'd previously seen and that have AlertOnLifecycle resolved true.
-	// Note: deletion lifecycle events run from the LAST resolved state
-	// of the ES, which we no longer hold (the ES is gone from the
-	// inventory). For Phase D we surface a generic deletion event keyed
-	// by UID alone; Phase C will persist the last-seen state in the
-	// history table and replace this stub with rich payloads.
+	// Prune UIDs that have vanished from the inventory. Phase D drops the
+	// dedupe state silently — Phase C Unit 10 will use the persisted
+	// last-seen state to emit EventDeleted lifecycle events for ESes
+	// whose owning resource opted in via AlertOnLifecycle.
 	p.mu.Lock()
 	for uid := range p.prevBucket {
 		if !currentUIDs[uid] {
@@ -380,6 +426,42 @@ func (p *Poller) tick(ctx context.Context) {
 		}
 	}
 	p.mu.Unlock()
+}
+
+// dispatchEmits runs each emit through a bounded-concurrency worker pool.
+// Extracted so tests can substitute a synchronous emitter without
+// reimplementing the loop. ctx cancellation aborts pending dispatches.
+func dispatchEmits(
+	ctx context.Context,
+	records []emitRecord,
+	emit func(context.Context, emitRecord),
+) {
+	if len(records) == 0 {
+		return
+	}
+	sem := make(chan struct{}, emitConcurrency)
+	var wg sync.WaitGroup
+	for _, rec := range records {
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(r emitRecord) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() {
+				// Per-emit panic recovery — a single bad notification
+				// payload shouldn't kill sibling dispatches in the
+				// same tick. tick() itself has its own recover()
+				// (runTickWithRecover) for everything else.
+				_ = recover()
+			}()
+			emit(ctx, r)
+		}(rec)
+	}
+	wg.Wait()
 }
 
 // fetchExternalSecrets returns the ES inventory from the handler cache when

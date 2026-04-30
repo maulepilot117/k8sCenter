@@ -258,6 +258,77 @@ func TestApplyThresholds_EmptySliceNoOp(t *testing.T) {
 	ApplyThresholds([]ExternalSecret{}, nil, nil, nullLogger)
 }
 
+// ADV-003: ClusterSecretStore annotations propagate to every namespaced ES
+// referencing that ClusterSecretStore. Documented behavior — admin-managed
+// stores opt the entire fanout into lifecycle/recovery alerts. The test
+// asserts the documented inheritance shape so a future refactor can't
+// silently change it.
+func TestApplyThresholds_ClusterSecretStorePropagation(t *testing.T) {
+	cs := newTypedStore("", "platform-vault", "Cluster")
+	cs.AlertOnRecovery = boolPtr(true)
+	cs.AlertOnLifecycle = boolPtr(true)
+
+	// Three ESes in different tenant namespaces, all referencing the same
+	// ClusterSecretStore — none set their own annotations.
+	tenants := []ExternalSecret{
+		newTypedES("team-a", "db-creds", "ClusterSecretStore", "platform-vault"),
+		newTypedES("team-b", "api-key", "ClusterSecretStore", "platform-vault"),
+		newTypedES("team-c", "stripe-key", "ClusterSecretStore", "platform-vault"),
+	}
+
+	ApplyThresholds(tenants, nil, []SecretStore{cs}, nullLogger)
+
+	for i, es := range tenants {
+		if es.AlertOnRecovery == nil || !*es.AlertOnRecovery {
+			t.Errorf("tenant %d AlertOnRecovery: got %v; want true (inherited)", i, es.AlertOnRecovery)
+		}
+		if es.AlertOnRecoverySource != ThresholdSourceClusterSecretStore {
+			t.Errorf("tenant %d AlertOnRecoverySource: got %s; want clustersecretstore", i, es.AlertOnRecoverySource)
+		}
+		if es.AlertOnLifecycle == nil || !*es.AlertOnLifecycle {
+			t.Errorf("tenant %d AlertOnLifecycle: got %v; want true (inherited)", i, es.AlertOnLifecycle)
+		}
+	}
+}
+
+// ES override beats inherited ClusterSecretStore annotation. Tenant can
+// opt OUT of recovery alerts even if the admin set the store-level flag.
+func TestApplyThresholds_ESOverridesClusterStoreInheritance(t *testing.T) {
+	cs := newTypedStore("", "platform-vault", "Cluster")
+	cs.AlertOnRecovery = boolPtr(true)
+
+	es := newTypedES("team-a", "db-creds", "ClusterSecretStore", "platform-vault")
+	es.AlertOnRecovery = boolPtr(false)
+
+	ess := []ExternalSecret{es}
+	ApplyThresholds(ess, nil, []SecretStore{cs}, nullLogger)
+
+	if ess[0].AlertOnRecovery == nil || *ess[0].AlertOnRecovery {
+		t.Errorf("ES override should win over store: got %v; want false", ess[0].AlertOnRecovery)
+	}
+	if ess[0].AlertOnRecoverySource != ThresholdSourceExternalSecret {
+		t.Errorf("source should attribute to externalsecret; got %s", ess[0].AlertOnRecoverySource)
+	}
+}
+
+// COR-05: resolveIntKey enforces the 5-min floor at every layer, not just
+// at the parser boundary. A store with a sub-floor StaleAfterMinutes must
+// be ignored — fall through to default.
+func TestResolveESOThresholds_StoreSubFloorRejected(t *testing.T) {
+	es := newTypedES("apps", "db-creds", "SecretStore", "vault")
+	store := newTypedStore("apps", "vault", "Namespaced")
+	store.StaleAfterMinutes = intPtr(3) // below MinStaleAfterMinutes=5
+
+	stores := indexStoresByNamespacedName([]SecretStore{store})
+	stale, source, _, _, _, _ := ResolveESOThresholds(es, stores, nil, nullLogger)
+	if source != ThresholdSourceDefault {
+		t.Fatalf("sub-floor store value should fall through; got source=%s", source)
+	}
+	if stale != 120 {
+		t.Fatalf("stale=%d; want 120 (2×1h refresh default)", stale)
+	}
+}
+
 func TestSanitizeSource(t *testing.T) {
 	if sanitizeSource(ThresholdSourceExternalSecret) != ThresholdSourceExternalSecret {
 		t.Fatal("legal value should pass through")
