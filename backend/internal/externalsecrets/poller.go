@@ -10,6 +10,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // pollerInterval is the cadence at which the poller scans the ExternalSecret
@@ -129,33 +130,54 @@ type Poller struct {
 	disc         *Discoverer
 	handler      *Handler
 	notifService *notifications.NotificationService
+	notifStore   *notifications.Store // optional; nil disables restart-recovery seeding
+	historyStore *store.ESOHistoryStore
+	clusterID    string // local cluster id for eso_sync_history.cluster_id
 	logger       *slog.Logger
 
-	mu          sync.Mutex
-	prevBucket  map[string]statusBucket // UID -> last-seen bucket
-	seen        map[string]bool         // UIDs observed in any prior tick
-	initialized bool                    // first tick: skip lifecycle events for existing inventory
+	mu            sync.Mutex
+	prevBucket    map[string]statusBucket        // UID -> last-seen bucket
+	seen          map[string]bool                // UIDs observed in any prior tick
+	initialized   bool                           // first tick: skip lifecycle events for existing inventory
+	prevAttemptAt map[string]time.Time           // UID -> last attempt_at processed (skip dup Secret fetches)
+	prevKeys      map[string]map[string][32]byte // UID -> key -> sha256(value); in-memory only, lost across restart
+	seedNSName    map[string]statusBucket        // (ns/name) -> bucket from recent notifications; consumed by check() on first observation
 }
 
 // NewPoller wires the poller against the platform service-account dynamic
 // client (via k8s.ClientFactory). Local cluster only — multi-cluster
 // dispatch is a separate concern (the platform doesn't poll remote
 // clusters; that runs in each cluster's own deployment).
+//
+// historyStore and notifStore are optional. When historyStore is nil, the
+// poller runs Phase D's dispatch-only path with no DB persistence — useful
+// in tests and in deployments where the operator prefers an in-memory-only
+// timeline. When notifStore is nil, restart-recovery seeding is skipped;
+// a recovery transition that crosses a process restart will be silently
+// suppressed instead of firing an event (the original Phase D behavior).
 func NewPoller(
 	cf *k8s.ClientFactory,
 	disc *Discoverer,
 	handler *Handler,
 	notifService *notifications.NotificationService,
+	notifStore *notifications.Store,
+	historyStore *store.ESOHistoryStore,
+	clusterID string,
 	logger *slog.Logger,
 ) *Poller {
 	return &Poller{
-		k8s:          cf,
-		disc:         disc,
-		handler:      handler,
-		notifService: notifService,
-		logger:       logger,
-		prevBucket:   make(map[string]statusBucket),
-		seen:         make(map[string]bool),
+		k8s:           cf,
+		disc:          disc,
+		handler:       handler,
+		notifService:  notifService,
+		notifStore:    notifStore,
+		historyStore:  historyStore,
+		clusterID:     clusterID,
+		logger:        logger,
+		prevBucket:    make(map[string]statusBucket),
+		seen:          make(map[string]bool),
+		prevAttemptAt: make(map[string]time.Time),
+		prevKeys:      make(map[string]map[string][32]byte),
 	}
 }
 
@@ -164,9 +186,12 @@ func NewPoller(
 // state and the default logger.
 func newPollerForTest() *Poller {
 	return &Poller{
-		logger:     slog.Default(),
-		prevBucket: make(map[string]statusBucket),
-		seen:       make(map[string]bool),
+		logger:        slog.Default(),
+		clusterID:     "local",
+		prevBucket:    make(map[string]statusBucket),
+		seen:          make(map[string]bool),
+		prevAttemptAt: make(map[string]time.Time),
+		prevKeys:      make(map[string]map[string][32]byte),
 	}
 }
 
@@ -191,6 +216,23 @@ func (p *Poller) check(es ExternalSecret) []emitRecord {
 	current := bucketFor(es.Status)
 	prev, hadPrev := p.prevBucket[es.UID]
 	wasSeen := p.seen[es.UID]
+
+	// Phase C: consume the (ns, name) -> bucket seed populated from
+	// recently-persisted notifications. The seed exists only on the
+	// first tick after a process restart and lets a recovery transition
+	// that crossed the restart boundary still emit an event. Once an
+	// ES UID claims its seed entry, we delete it — subsequent ticks use
+	// the genuine prevBucket.
+	if !hadPrev && !wasSeen && p.seedNSName != nil {
+		key := es.Namespace + "/" + es.Name
+		if seedBucket, ok := p.seedNSName[key]; ok {
+			prev = seedBucket
+			hadPrev = true
+			wasSeen = true
+			delete(p.seedNSName, key)
+		}
+	}
+
 	p.seen[es.UID] = true
 	p.prevBucket[es.UID] = current
 
@@ -347,7 +389,14 @@ const emitConcurrency = 10
 // Blocks until ctx is cancelled. tick() panics are recovered so a single
 // bad cycle doesn't kill the goroutine — silent poller death after a
 // transient driver panic would leave operators unalerted indefinitely.
+//
+// Before the first tick, Start() seeds prevBucket from recently-persisted
+// notifications so a recovery that happens across a process restart still
+// fires an event. The seed is opt-in (notifStore != nil) and best-effort —
+// failures are logged and execution continues.
 func (p *Poller) Start(ctx context.Context) {
+	p.seedFromNotifications(ctx)
+
 	p.runTickWithRecover(ctx)
 
 	// After the first tick we mark the poller initialized — subsequent
@@ -414,15 +463,23 @@ func (p *Poller) tick(ctx context.Context) {
 
 	dispatchEmits(ctx, records, p.emit)
 
+	p.persistAttempts(ctx, ess)
+
 	// Prune UIDs that have vanished from the inventory. Phase D drops the
-	// dedupe state silently — Phase C Unit 10 will use the persisted
-	// last-seen state to emit EventDeleted lifecycle events for ESes
-	// whose owning resource opted in via AlertOnLifecycle.
+	// dedupe state silently — Phase C Unit 10 retains the prevAttemptAt
+	// row for ~1 tick after deletion so a recreate-with-same-UID (rare
+	// since UID is a fresh GUID per resource) doesn't re-trigger the
+	// "first sync" empty-diff path. EventDeleted lifecycle dispatch on
+	// pruned UIDs is deferred — needs a captured AlertOnLifecycle bool
+	// per UID, which Phase D's emitRecord pipeline doesn't carry through
+	// to prune time. Tracked as a Phase D follow-up.
 	p.mu.Lock()
 	for uid := range p.prevBucket {
 		if !currentUIDs[uid] {
 			delete(p.prevBucket, uid)
 			delete(p.seen, uid)
+			delete(p.prevAttemptAt, uid)
+			delete(p.prevKeys, uid)
 		}
 	}
 	p.mu.Unlock()
@@ -442,6 +499,15 @@ func dispatchEmits(
 	sem := make(chan struct{}, emitConcurrency)
 	var wg sync.WaitGroup
 	for _, rec := range records {
+		// Priority ctx check: Go's select is non-deterministic when
+		// multiple cases are ready (cancelled ctx + empty semaphore).
+		// A non-blocking probe first guarantees we abort promptly when
+		// ctx was cancelled, rather than racing the semaphore send.
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return
