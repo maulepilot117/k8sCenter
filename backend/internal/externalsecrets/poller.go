@@ -483,6 +483,14 @@ func (p *Poller) tick(ctx context.Context) {
 		}
 	}
 	p.mu.Unlock()
+
+	// Prune the handler's drift map for ESes that vanished from the
+	// inventory. Independent of the in-memory bookkeeping above (which
+	// is poller-private state); the drift map is shared with the
+	// handler's list endpoint.
+	if p.handler != nil {
+		p.handler.PruneObservedDrift(currentUIDs)
+	}
 }
 
 // dispatchEmits runs each emit through a bounded-concurrency worker pool.

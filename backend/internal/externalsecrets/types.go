@@ -163,6 +163,15 @@ type ExternalSecret struct {
 	// hover-tooltip under the drift indicator so an operator can see WHY
 	// drift wasn't resolvable rather than guessing.
 	DriftUnknownReason string `json:"driftUnknownReason,omitempty"`
+
+	// LastObservedDriftStatus is the poller's last-observed drift state
+	// for this ES. The list endpoint populates this from the handler's
+	// in-memory map (refreshed every 60s by the poller). The detail
+	// endpoint instead resolves DriftStatus live via an impersonated
+	// `get secret` and leaves this field empty. Operators reading the
+	// list view see a stale-by-up-to-90s drift hint (60s poller +
+	// 30s handler cache); the detail page is the source of truth.
+	LastObservedDriftStatus DriftStatus `json:"lastObservedDriftStatus,omitempty"`
 }
 
 // ClusterExternalSecret is the API representation of a ClusterExternalSecret —

@@ -234,7 +234,12 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 		// IsNotFound and IsForbidden are expected operational states
 		// (Secret was deleted, or operator disabled the core/secrets
 		// grant). Other errors are transient driver failures worth
-		// logging.
+		// logging. Record a drift hint of Unknown so the list view's
+		// dashboard doesn't keep showing a stale Drifted state when
+		// the poller can no longer reach the Secret.
+		if p.handler != nil {
+			p.handler.RecordDrift(es.UID, DriftUnknown)
+		}
 		if !apierrors.IsNotFound(err) && !apierrors.IsForbidden(err) {
 			p.logger.Warn("externalsecrets poller: target secret fetch failed",
 				"uid", es.UID,
@@ -243,6 +248,14 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 				"error", err)
 		}
 		return nil, nil, nil
+	}
+
+	// Drift hint: compare ES's controller-reported syncedResourceVersion
+	// against the live Secret's resourceVersion. This is the same
+	// computation the detail endpoint runs via the impersonated client.
+	// Stash for the list endpoint to surface.
+	if p.handler != nil {
+		p.handler.RecordDrift(es.UID, computeDriftStatus(es.SyncedResourceVersion, sec.ResourceVersion))
 	}
 
 	current := hashSecretData(sec.Data)
