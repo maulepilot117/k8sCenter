@@ -353,8 +353,24 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
 - [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards (PR #180, follow-ups #181–#183)
 - [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation (Phase 13)
-- [ ] **8. External Secrets Operator integration** — view synced secrets, source status, rotation schedule
-- [ ] **9. Saved Views & Custom Dashboards** — pin favorite resources, save filter presets, arrange dashboard widgets
+- [ ] **8. External Secrets Operator integration** — observatory + actions for the ESO CRD family (`external-secrets.io/v1beta1`).
+  - **Why**: secrets in production rarely live in raw `Secret` resources; they're synced from Vault / AWS Secrets Manager / GCP Secret Manager / Azure Key Vault via ESO. Today operators have to `kubectl get externalsecret -A` and decode status conditions by hand to answer "is this secret healthy" or "when did it last sync."
+  - **Likely shape** (mirrors Phase 11A cert-manager pattern):
+    - **Phase A** — `internal/externalsecrets/`: CRD discovery (ExternalSecret, SecretStore, ClusterSecretStore, PushSecret, ClusterExternalSecret), dynamic-client reads with singleflight + 30s cache, RBAC filtering via `CanAccessGroupResource`, normalized types with sync state (`Synced` / `SyncFailed` / `Refreshing`), last-sync time, source-store reference, refresh interval. Endpoints: `GET /externalsecrets/{status,externalsecrets,externalsecrets/:ns/:name,stores,clusterstores}`.
+    - **Phase B** — frontend islands under `/security/external-secrets/*`: list views, source-store health, refresh-now action (impersonated `POST` triggering ESO's force-sync annotation), expiry/staleness alerts via the existing Notification Center.
+  - **Dependencies / precedents**: Phase 11A's CRD-discovery + RBAC + 30s-cache pipeline; Phase 13's annotation-resolution chain if we want per-secret refresh-policy overrides; Notification Center for sync-failed dispatch.
+  - **Open scope questions** (to resolve at brainstorm time): credential reveal flow (ESO never holds the source-store creds; we'd consume them via store auth), multi-tenant store visibility (ClusterSecretStore is admin-only by RBAC, but stores reference Vault auth roles that may themselves leak namespace info), whether to surface the source-system's audit trail or just k8s events.
+
+- [ ] **9. Saved Views & Custom Dashboards** — per-user persistence for filter presets, pinned favorites, and arrangeable dashboard widgets.
+  - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand. Operators tracking a specific incident want to pin a curated set of resources without leaving them in the URL bar.
+  - **Likely shape** (3 phases):
+    - **Phase A — Persistence layer**: PostgreSQL-backed `user_preferences` table (the existing pgx/v5 + `golang-migrate` setup), keyed by user UID. New `internal/preferences/` package: typed CRUD over `SavedView`, `PinnedResource`, `DashboardLayout`. Migration adds the table; existing audit-log + cluster-registry pattern is the precedent.
+    - **Phase B — API surface**: `GET/POST/PUT/DELETE /preferences/{views,pins,dashboards}`, all RBAC-personal (a user can only see/modify their own preferences). Composite IDs scoped by user UID + view name. Audit logging for write operations.
+    - **Phase C — Frontend integration**: ResourceTable gains a "Save view" affordance that captures the current filter / sort / column-set; sidebar "Pinned" section; Dashboard accepts a layout config. Theme-token-only.
+  - **Dependencies / precedents**: PostgreSQL schema pattern from `users` / `clusters` / `audit` tables; multi-cluster context (saved views must namespace by cluster ID); existing Resource Browser filter-state UX (Phase 5 work). The `Notification Center` rules persistence (#1) is the closest existing precedent for per-user preference storage.
+  - **Open scope questions**: cross-cluster vs per-cluster scoping (a saved view "production payment pods" should probably bind to a specific cluster ID), team-shared views (initial cut is per-user only; team-shared adds RBAC complexity), import/export of view bundles, dashboard widget catalog (which widgets are pin-able and how their config serializes).
+
+Both #8 and #9 should start with `/ce:brainstorm` before `/ce:plan` — they each have product-shape questions that benefit from explicit framing before technical planning.
 
 ---
 
