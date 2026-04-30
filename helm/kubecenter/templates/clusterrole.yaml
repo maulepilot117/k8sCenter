@@ -150,6 +150,31 @@ rules:
       - authorizationpolicies
       - meshtlsauthentications
     verbs: ["list", "watch"]
+  # External Secrets Operator (ESO) CRDs — explicit list/watch grants for
+  # the discoverer + 30s cache layer in `internal/externalsecrets`. Detail
+  # reads use the impersonated client (which the API server RBACs against
+  # the requesting user), so no `get` grant is needed here. Write actions
+  # (force-sync, bulk refresh — Phase E) impersonate as well.
+  - apiGroups: ["external-secrets.io"]
+    resources:
+      - externalsecrets
+      - clusterexternalsecrets
+      - secretstores
+      - clustersecretstores
+      - pushsecrets
+    verbs: ["list", "watch"]
+  # core/secrets get/list — required by the Phase C ESO sync-history poller
+  # to compute key-level diff between successive sync attempts. The poller
+  # has no requesting-user context (it runs as the platform SA), so it must
+  # read synced Secret keys via the SA. This expands the SA's cluster-wide
+  # privilege to read every Secret's key-set (values are NEVER stored or
+  # logged — only key names appear in the diff). Operators in stricter
+  # environments can remove this rule; the diff feature degrades to
+  # "outcome only, no key-set" but the timeline + drift detection +
+  # alerting all continue to work.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
   # CRD discovery — list/watch CustomResourceDefinitions for Extensions Hub
   - apiGroups: ["apiextensions.k8s.io"]
     resources:

@@ -171,6 +171,11 @@ func (s *Server) registerRoutes() {
 				s.registerCertManagerRoutes(ar)
 			}
 
+			// External Secrets Operator routes — only registered if ESO handler is available
+			if s.ExternalSecretsHandler != nil {
+				s.registerExternalSecretsRoutes(ar)
+			}
+
 			// Gateway API routes — only registered if gateway handler is available
 			if s.GatewayHandler != nil {
 				s.registerGatewayRoutes(ar)
@@ -613,6 +618,41 @@ func (s *Server) registerCertManagerRoutes(ar chi.Router) {
 			Post("/certificates/{namespace}/{name}/renew", h.HandleRenew)
 		cr.With(middleware.RateLimit(yamlRL), resources.ValidateURLParams).
 			Post("/certificates/{namespace}/{name}/reissue", h.HandleReissue)
+	})
+}
+
+// registerExternalSecretsRoutes wires Phase A observatory endpoints under
+// /externalsecrets. Write actions (force-sync, bulk refresh) ship in Phase E.
+func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
+	h := s.ExternalSecretsHandler
+	ar.Route("/externalsecrets", func(er chi.Router) {
+		// Discovery + status
+		er.Get("/status", h.HandleStatus)
+
+		// ExternalSecret list + detail
+		er.Get("/externalsecrets", h.HandleListExternalSecrets)
+		er.With(resources.ValidateURLParams).
+			Get("/externalsecrets/{namespace}/{name}", h.HandleGetExternalSecret)
+
+		// ClusterExternalSecret list + detail (cluster-scoped — name only)
+		er.Get("/clusterexternalsecrets", h.HandleListClusterExternalSecrets)
+		er.With(resources.ValidateURLParams).
+			Get("/clusterexternalsecrets/{name}", h.HandleGetClusterExternalSecret)
+
+		// SecretStore list + detail
+		er.Get("/stores", h.HandleListStores)
+		er.With(resources.ValidateURLParams).
+			Get("/stores/{namespace}/{name}", h.HandleGetStore)
+
+		// ClusterSecretStore list + detail
+		er.Get("/clusterstores", h.HandleListClusterStores)
+		er.With(resources.ValidateURLParams).
+			Get("/clusterstores/{name}", h.HandleGetClusterStore)
+
+		// PushSecret list + detail (read-only in v1)
+		er.Get("/pushsecrets", h.HandleListPushSecrets)
+		er.With(resources.ValidateURLParams).
+			Get("/pushsecrets/{namespace}/{name}", h.HandleGetPushSecret)
 	})
 }
 
