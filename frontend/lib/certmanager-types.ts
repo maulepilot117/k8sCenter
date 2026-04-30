@@ -44,7 +44,20 @@ export interface Certificate {
    * resolver hasn't run; absent or zero means "not resolved yet". */
   warningThresholdDays?: number;
   criticalThresholdDays?: number;
+  /** Aggregate source — strongest layer that contributed a value.
+   * For the per-key attribution use warningThresholdSource /
+   * criticalThresholdSource (each can come from a different layer). */
   thresholdSource?: ThresholdSource;
+  /** Per-key source attribution. A cert can override warn alone and
+   * inherit crit from its issuer; these fields tell the UI exactly
+   * which layer produced each value. */
+  warningThresholdSource?: ThresholdSource;
+  criticalThresholdSource?: ThresholdSource;
+  /** True when the resolved warn/crit pair would have violated
+   * crit < warn. The resolver fell back to package defaults; the UI
+   * surfaces this so operators see "Conflict — using defaults" rather
+   * than a misleading "Default" badge despite their annotation. */
+  thresholdConflict?: boolean;
   uid: string;
 }
 

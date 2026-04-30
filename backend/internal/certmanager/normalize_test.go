@@ -376,6 +376,128 @@ func TestNormalizeCertificate(t *testing.T) {
 	})
 }
 
+// TestNormalizeCertificate_AnnotationsToTypedFields locks the wiring
+// from u.GetAnnotations() into Certificate.WarningThresholdDays /
+// CriticalThresholdDays. parseThresholdAnnotation has direct unit
+// coverage; this test asserts the annotations actually land on the
+// struct (not just that the parser would return the right value).
+func TestNormalizeCertificate_AnnotationsToTypedFields(t *testing.T) {
+	t.Run("both-annotations", func(t *testing.T) {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{
+				"name":      "annotated",
+				"namespace": "foo",
+				"uid":       "u-1",
+				"annotations": map[string]any{
+					AnnotationWarnThreshold:     "60",
+					AnnotationCriticalThreshold: "14",
+				},
+			},
+			"spec": map[string]any{
+				"secretName": "tls-1",
+				"issuerRef":  map[string]any{"name": "ca", "kind": "Issuer"},
+			},
+		}}
+
+		cert, err := normalizeCertificate(u)
+		if err != nil {
+			t.Fatalf("normalizeCertificate: %v", err)
+		}
+		if cert.WarningThresholdDays != 60 {
+			t.Errorf("WarningThresholdDays = %d, want 60", cert.WarningThresholdDays)
+		}
+		if cert.CriticalThresholdDays != 14 {
+			t.Errorf("CriticalThresholdDays = %d, want 14", cert.CriticalThresholdDays)
+		}
+	})
+
+	t.Run("invalid-annotation-falls-through", func(t *testing.T) {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{
+				"name":      "bad-annotation",
+				"namespace": "foo",
+				"uid":       "u-2",
+				"annotations": map[string]any{
+					AnnotationWarnThreshold: "potato",
+				},
+			},
+			"spec": map[string]any{"secretName": "tls-2", "issuerRef": map[string]any{"name": "ca", "kind": "Issuer"}},
+		}}
+
+		cert, err := normalizeCertificate(u)
+		if err != nil {
+			t.Fatalf("normalizeCertificate: %v", err)
+		}
+		if cert.WarningThresholdDays != 0 {
+			t.Errorf("WarningThresholdDays = %d, want 0 (invalid annotation must fall through)", cert.WarningThresholdDays)
+		}
+	})
+
+	t.Run("no-annotations", func(t *testing.T) {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{"name": "plain", "namespace": "foo", "uid": "u-3"},
+			"spec":     map[string]any{"secretName": "tls-3", "issuerRef": map[string]any{"name": "ca", "kind": "Issuer"}},
+		}}
+
+		cert, err := normalizeCertificate(u)
+		if err != nil {
+			t.Fatalf("normalizeCertificate: %v", err)
+		}
+		if cert.WarningThresholdDays != 0 || cert.CriticalThresholdDays != 0 {
+			t.Errorf("threshold fields = (%d, %d), want (0, 0) without annotations", cert.WarningThresholdDays, cert.CriticalThresholdDays)
+		}
+	})
+}
+
+// TestNormalizeIssuer_AnnotationsToTypedFields locks the wiring for
+// the issuer-side pointer-typed fields. nil pointer means "not set",
+// non-nil means "operator declared this value" — the resolver
+// distinguishes the two when walking the inheritance chain.
+func TestNormalizeIssuer_AnnotationsToTypedFields(t *testing.T) {
+	t.Run("warn-only-annotation-yields-nil-crit", func(t *testing.T) {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{
+				"name":      "ca",
+				"namespace": "foo",
+				"uid":       "iss-1",
+				"annotations": map[string]any{
+					AnnotationWarnThreshold: "45",
+				},
+			},
+			"spec": map[string]any{"selfSigned": map[string]any{}},
+		}}
+
+		iss := normalizeIssuer(u, "Namespaced")
+		if iss.WarningThresholdDays == nil || *iss.WarningThresholdDays != 45 {
+			t.Errorf("WarningThresholdDays = %v, want pointer to 45", iss.WarningThresholdDays)
+		}
+		if iss.CriticalThresholdDays != nil {
+			t.Errorf("CriticalThresholdDays = %v, want nil (no annotation set)", iss.CriticalThresholdDays)
+		}
+	})
+
+	t.Run("invalid-annotation-yields-nil", func(t *testing.T) {
+		u := &unstructured.Unstructured{Object: map[string]any{
+			"metadata": map[string]any{
+				"name": "letsencrypt", "namespace": "", "uid": "iss-2",
+				"annotations": map[string]any{
+					AnnotationWarnThreshold:     "0",  // zero rejected
+					AnnotationCriticalThreshold: "-5", // negative rejected
+				},
+			},
+			"spec": map[string]any{"acme": map[string]any{}},
+		}}
+
+		iss := normalizeIssuer(u, "Cluster")
+		if iss.WarningThresholdDays != nil {
+			t.Errorf("WarningThresholdDays = %v, want nil (zero annotation must fall through)", iss.WarningThresholdDays)
+		}
+		if iss.CriticalThresholdDays != nil {
+			t.Errorf("CriticalThresholdDays = %v, want nil (negative annotation must fall through)", iss.CriticalThresholdDays)
+		}
+	})
+}
+
 // TestNormalizeIssuer covers Issuer type detection and field extraction.
 func TestNormalizeIssuer(t *testing.T) {
 	t.Run("acme-type", func(t *testing.T) {

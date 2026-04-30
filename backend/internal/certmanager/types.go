@@ -78,6 +78,21 @@ const (
 	ThresholdSourceClusterIssuer ThresholdSource = "clusterissuer"
 )
 
+// Valid reports whether s is one of the four enum constants. Used by
+// thresholds.go's sanitizeSource to coerce stray values back to the
+// default rather than letting a future bug emit an out-of-enum string
+// that would break the frontend's exhaustive switch.
+func (s ThresholdSource) Valid() bool {
+	switch s {
+	case ThresholdSourceDefault,
+		ThresholdSourceCertificate,
+		ThresholdSourceIssuer,
+		ThresholdSourceClusterIssuer:
+		return true
+	}
+	return false
+}
+
 // CertManagerStatus is returned by GET /certmanager/status.
 type CertManagerStatus struct {
 	Detected    bool      `json:"detected"`
@@ -95,33 +110,46 @@ type IssuerRef struct {
 
 // Certificate is the API representation of a cert-manager Certificate resource.
 //
-// WarningThresholdDays / CriticalThresholdDays / ThresholdSource carry the
-// resolved per-cert thresholds. After normalizeCertificate runs, the
-// fields hold parsed cert-level annotation values (or zero if absent or
-// invalid). After ApplyThresholds runs, they hold the final resolved
-// values that drive Status, the /expiring filter, and the poller bucket.
-// Status itself is empty until ApplyThresholds runs — earlier callers
-// must not rely on it.
+// Threshold fields:
+//   - After normalizeCertificate runs, Status holds the BASE status
+//     (Ready / Issuing / Failed / Expired / Unknown). The Expiring
+//     overlay is NOT yet applied — that depends on the resolved warn
+//     threshold and is added by ApplyThresholds via DeriveStatus.
+//     WarningThresholdDays / CriticalThresholdDays at this stage hold
+//     parsed cert-level annotation values (or zero if absent/invalid).
+//   - After ApplyThresholds runs, the threshold fields hold the final
+//     resolved values that drive Status, the /expiring filter, and the
+//     poller bucket. WarningThresholdSource / CriticalThresholdSource
+//     identify per-key which layer (cert / issuer / clusterissuer /
+//     default) supplied each value. ThresholdSource carries the strongest
+//     contributing source as a convenience aggregate. ThresholdConflict
+//     is true when the operator's resolved warn/crit pair would have
+//     violated crit < warn — the resolver fell back to defaults but the
+//     UI surfaces the conflict so operators can fix the override rather
+//     than wonder why "Default" appeared despite their annotation.
 type Certificate struct {
-	Name                  string     `json:"name"`
-	Namespace             string     `json:"namespace"`
-	Status                Status     `json:"status"`
-	Reason                string     `json:"reason,omitempty"`
-	Message               string     `json:"message,omitempty"`
-	IssuerRef             IssuerRef  `json:"issuerRef"`
-	SecretName            string     `json:"secretName"`
-	DNSNames              []string   `json:"dnsNames,omitempty"`
-	CommonName            string     `json:"commonName,omitempty"`
-	Duration              string     `json:"duration,omitempty"`
-	RenewBefore           string     `json:"renewBefore,omitempty"`
-	NotBefore             *time.Time `json:"notBefore,omitempty"`
-	NotAfter              *time.Time `json:"notAfter,omitempty"`
-	RenewalTime           *time.Time `json:"renewalTime,omitempty"`
-	DaysRemaining         *int       `json:"daysRemaining,omitempty"`
-	WarningThresholdDays  int        `json:"warningThresholdDays,omitempty"`
-	CriticalThresholdDays int        `json:"criticalThresholdDays,omitempty"`
-	ThresholdSource       ThresholdSource `json:"thresholdSource,omitempty"`
-	UID                   string     `json:"uid"`
+	Name                    string          `json:"name"`
+	Namespace               string          `json:"namespace"`
+	Status                  Status          `json:"status"`
+	Reason                  string          `json:"reason,omitempty"`
+	Message                 string          `json:"message,omitempty"`
+	IssuerRef               IssuerRef       `json:"issuerRef"`
+	SecretName              string          `json:"secretName"`
+	DNSNames                []string        `json:"dnsNames,omitempty"`
+	CommonName              string          `json:"commonName,omitempty"`
+	Duration                string          `json:"duration,omitempty"`
+	RenewBefore             string          `json:"renewBefore,omitempty"`
+	NotBefore               *time.Time      `json:"notBefore,omitempty"`
+	NotAfter                *time.Time      `json:"notAfter,omitempty"`
+	RenewalTime             *time.Time      `json:"renewalTime,omitempty"`
+	DaysRemaining           *int            `json:"daysRemaining,omitempty"`
+	WarningThresholdDays    int             `json:"warningThresholdDays,omitempty"`
+	CriticalThresholdDays   int             `json:"criticalThresholdDays,omitempty"`
+	ThresholdSource         ThresholdSource `json:"thresholdSource,omitempty"`
+	WarningThresholdSource  ThresholdSource `json:"warningThresholdSource,omitempty"`
+	CriticalThresholdSource ThresholdSource `json:"criticalThresholdSource,omitempty"`
+	ThresholdConflict       bool            `json:"thresholdConflict,omitempty"`
+	UID                     string          `json:"uid"`
 }
 
 // Issuer is the API representation of a cert-manager Issuer or ClusterIssuer.

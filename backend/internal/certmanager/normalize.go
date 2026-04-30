@@ -52,11 +52,7 @@ func DeriveStatus(cert Certificate) Status {
 	if cert.DaysRemaining == nil {
 		return cert.Status
 	}
-	warn := cert.WarningThresholdDays
-	if warn <= 0 {
-		warn = WarningThresholdDays
-	}
-	if *cert.DaysRemaining <= warn {
+	if *cert.DaysRemaining <= effectiveWarn(cert) {
 		return StatusExpiring
 	}
 	return cert.Status

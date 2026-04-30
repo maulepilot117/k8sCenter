@@ -243,7 +243,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 	// detail) consumes the cache, so doing it once here keeps the
 	// resolution out of the hot path and ensures every consumer sees
 	// the same view.
-	certificates = ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
+	ApplyThresholds(certificates, issuers, clusterIssuers, h.Logger)
 
 	data := &cachedData{
 		certificates:   certificates,
@@ -353,16 +353,25 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve per-cert thresholds against the cluster-wide issuer cache
-	// so the detail response carries the same WarningThresholdDays /
-	// CriticalThresholdDays / ThresholdSource that the list endpoints
-	// emit. Cache miss falls through to defaults — safe degradation.
+	// Resolve per-cert thresholds for the detail response so it carries
+	// the same WarningThresholdDays / CriticalThresholdDays / source
+	// fields that the list endpoints emit AND so DeriveStatus runs
+	// (without it the response would never show Status="Expiring",
+	// since computeStatus no longer overlays Expiring).
+	//
+	// We always run ApplyThresholds — even on cache miss — so the
+	// response shape stays consistent. Cache miss simply means no
+	// issuer/clusterissuer lookup data; the resolver falls through to
+	// package defaults uniformly. This is safer than skipping
+	// resolution and emitting an inconsistent response.
+	var issuers, clusterIssuers []Issuer
 	if data, derr := h.getCached(ctx); derr == nil && data != nil {
-		applied := ApplyThresholds([]Certificate{cert}, data.issuers, data.clusterIssuers, h.Logger)
-		if len(applied) == 1 {
-			cert = applied[0]
-		}
+		issuers = data.issuers
+		clusterIssuers = data.clusterIssuers
 	}
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, clusterIssuers, h.Logger)
+	cert = certs[0]
 
 	// Fetch CertificateRequests for this certificate
 	crSel := labels.Set{"cert-manager.io/certificate-name": name}.String()
@@ -534,17 +543,10 @@ func (h *Handler) HandleListExpiring(w http.ResponseWriter, r *http.Request) {
 	expiring := make([]ExpiringCertificate, 0)
 	for _, c := range certs {
 		// ApplyThresholds (during the cache fetch) resolved each cert's
-		// effective warn/crit. The /expiring endpoint filters per-cert
-		// rather than against package globals so per-Issuer / per-cert
-		// annotations take effect.
-		warn := c.WarningThresholdDays
-		if warn <= 0 {
-			warn = WarningThresholdDays
-		}
-		crit := c.CriticalThresholdDays
-		if crit <= 0 {
-			crit = CriticalThresholdDays
-		}
+		// effective warn/crit. effectiveWarn / effectiveCrit fall back
+		// to package defaults if the resolution hasn't happened yet.
+		warn := effectiveWarn(c)
+		crit := effectiveCrit(c)
 		if c.DaysRemaining == nil || *c.DaysRemaining > warn {
 			continue
 		}

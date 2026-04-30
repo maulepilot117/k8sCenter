@@ -25,7 +25,7 @@ func makeCert(ns, name string, refKind, refName string, certWarn, certCrit int, 
 
 func TestResolveCertThresholds_DefaultWhenNoOverrides(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "ca", 0, 0, intp(20))
-	warn, crit, source := ResolveCertThresholds(cert, nil, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, nil, nil, slog.Default())
 
 	if warn != WarningThresholdDays || crit != CriticalThresholdDays {
 		t.Errorf("got (%d, %d), want package defaults (%d, %d)", warn, crit, WarningThresholdDays, CriticalThresholdDays)
@@ -39,7 +39,7 @@ func TestResolveCertThresholds_CertAnnotationWins(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "ca", 60, 14, intp(20))
 	issuers := map[string]Issuer{"foo/ca": {Name: "ca", Namespace: "foo", WarningThresholdDays: intp(45), CriticalThresholdDays: intp(7)}}
 
-	warn, crit, source := ResolveCertThresholds(cert, issuers, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, issuers, nil, slog.Default())
 
 	if warn != 60 || crit != 14 {
 		t.Errorf("got (%d, %d), want cert-level (60, 14)", warn, crit)
@@ -53,7 +53,7 @@ func TestResolveCertThresholds_IssuerInheritance(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "ca", 0, 0, intp(20))
 	issuers := map[string]Issuer{"foo/ca": {Name: "ca", Namespace: "foo", WarningThresholdDays: intp(45), CriticalThresholdDays: intp(10)}}
 
-	warn, crit, source := ResolveCertThresholds(cert, issuers, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, issuers, nil, slog.Default())
 
 	if warn != 45 || crit != 10 {
 		t.Errorf("got (%d, %d), want issuer-level (45, 10)", warn, crit)
@@ -67,7 +67,7 @@ func TestResolveCertThresholds_ClusterIssuerInheritance(t *testing.T) {
 	cert := makeCert("foo", "c1", "ClusterIssuer", "letsencrypt-prod", 0, 0, intp(20))
 	clusterIssuers := map[string]Issuer{"letsencrypt-prod": {Name: "letsencrypt-prod", WarningThresholdDays: intp(14), CriticalThresholdDays: intp(3)}}
 
-	warn, crit, source := ResolveCertThresholds(cert, nil, clusterIssuers, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, nil, clusterIssuers, slog.Default())
 
 	if warn != 14 || crit != 3 {
 		t.Errorf("got (%d, %d), want clusterissuer-level (14, 3)", warn, crit)
@@ -84,7 +84,7 @@ func TestResolveCertThresholds_MixedSourcesPickStrongest(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "ca", 60, 0, intp(20))
 	issuers := map[string]Issuer{"foo/ca": {Name: "ca", Namespace: "foo", CriticalThresholdDays: intp(14)}}
 
-	warn, crit, source := ResolveCertThresholds(cert, issuers, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, issuers, nil, slog.Default())
 
 	if warn != 60 || crit != 14 {
 		t.Errorf("got (%d, %d), want (60, 14)", warn, crit)
@@ -97,7 +97,7 @@ func TestResolveCertThresholds_MixedSourcesPickStrongest(t *testing.T) {
 func TestResolveCertThresholds_MissingIssuerFallsThrough(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "missing-ca", 0, 0, intp(20))
 	// Empty issuer map — the named issuer doesn't exist.
-	warn, crit, source := ResolveCertThresholds(cert, nil, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, nil, nil, slog.Default())
 
 	if warn != WarningThresholdDays || crit != CriticalThresholdDays {
 		t.Errorf("got (%d, %d), want defaults", warn, crit)
@@ -114,7 +114,7 @@ func TestResolveCertThresholds_KindMismatchDoesNotCrossPollinate(t *testing.T) {
 	cert := makeCert("foo", "c1", "Issuer", "ca", 0, 0, intp(20))
 	clusterIssuers := map[string]Issuer{"ca": {Name: "ca", WarningThresholdDays: intp(60)}}
 
-	warn, _, source := ResolveCertThresholds(cert, nil, clusterIssuers, slog.Default())
+	warn, _, source, _ := ResolveCertThresholds(cert, nil, clusterIssuers, slog.Default())
 
 	if warn != WarningThresholdDays {
 		t.Errorf("warn = %d, want default %d (must not cross-pollinate from ClusterIssuer of same name)", warn, WarningThresholdDays)
@@ -129,7 +129,7 @@ func TestResolveCertThresholds_CritGteWarnFallsBackToDefaults(t *testing.T) {
 	// to package defaults rather than render a nonsensical state.
 	cert := makeCert("foo", "c1", "Issuer", "ca", 14, 30, intp(20))
 
-	warn, crit, source := ResolveCertThresholds(cert, nil, nil, slog.Default())
+	warn, crit, source, _ := ResolveCertThresholds(cert, nil, nil, slog.Default())
 
 	if warn != WarningThresholdDays || crit != CriticalThresholdDays {
 		t.Errorf("got (%d, %d), want defaults — crit > warn must fall back", warn, crit)
@@ -147,27 +147,32 @@ func TestApplyThresholds_StatusOverlayUsesResolvedWarn(t *testing.T) {
 	cert := makeCert("foo", "long-runway", "Issuer", "internal-ca", 0, 0, intp(50))
 	issuers := []Issuer{{Name: "internal-ca", Namespace: "foo", WarningThresholdDays: intp(60)}}
 
-	out := ApplyThresholds([]Certificate{cert}, issuers, nil, slog.Default())
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, nil, slog.Default())
 
-	if len(out) != 1 {
-		t.Fatalf("ApplyThresholds returned %d certs, want 1", len(out))
+	if certs[0].Status != StatusExpiring {
+		t.Errorf("Status = %q, want %q (50d <= resolved warn 60d should fire Expiring)", certs[0].Status, StatusExpiring)
 	}
-	if out[0].Status != StatusExpiring {
-		t.Errorf("Status = %q, want %q (50d <= resolved warn 60d should fire Expiring)", out[0].Status, StatusExpiring)
+	if certs[0].WarningThresholdDays != 60 {
+		t.Errorf("WarningThresholdDays = %d, want 60 (issuer override)", certs[0].WarningThresholdDays)
 	}
-	if out[0].WarningThresholdDays != 60 {
-		t.Errorf("WarningThresholdDays = %d, want 60 (issuer override)", out[0].WarningThresholdDays)
+	if certs[0].ThresholdSource != ThresholdSourceIssuer {
+		t.Errorf("ThresholdSource = %q, want %q", certs[0].ThresholdSource, ThresholdSourceIssuer)
 	}
-	if out[0].ThresholdSource != ThresholdSourceIssuer {
-		t.Errorf("ThresholdSource = %q, want %q", out[0].ThresholdSource, ThresholdSourceIssuer)
+	if certs[0].WarningThresholdSource != ThresholdSourceIssuer {
+		t.Errorf("WarningThresholdSource = %q, want %q (per-key attribution)", certs[0].WarningThresholdSource, ThresholdSourceIssuer)
+	}
+	if certs[0].CriticalThresholdSource != ThresholdSourceDefault {
+		t.Errorf("CriticalThresholdSource = %q, want %q (issuer didn't set crit)", certs[0].CriticalThresholdSource, ThresholdSourceDefault)
+	}
+	if certs[0].ThresholdConflict {
+		t.Errorf("ThresholdConflict = true, want false (warn=60 > crit=7 default is valid)")
 	}
 }
 
 func TestApplyThresholds_EmptySliceIsNoOp(t *testing.T) {
-	out := ApplyThresholds(nil, nil, nil, slog.Default())
-	if out != nil {
-		t.Errorf("ApplyThresholds(nil) = %v, want nil (no-op)", out)
-	}
+	// nil slice survives unchanged. Don't panic.
+	ApplyThresholds(nil, nil, nil, slog.Default())
 }
 
 func TestApplyThresholds_AcmeShortWarnNotInExpiringYet(t *testing.T) {
@@ -177,10 +182,123 @@ func TestApplyThresholds_AcmeShortWarnNotInExpiringYet(t *testing.T) {
 	cert := makeCert("apps", "ingress", "ClusterIssuer", "letsencrypt-prod", 14, 3, intp(20))
 	clusterIssuers := []Issuer{{Name: "letsencrypt-prod"}}
 
-	out := ApplyThresholds([]Certificate{cert}, nil, clusterIssuers, slog.Default())
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, nil, clusterIssuers, slog.Default())
 
-	if out[0].Status != StatusReady {
-		t.Errorf("Status = %q, want %q (20d > resolved warn 14d should stay Ready)", out[0].Status, StatusReady)
+	if certs[0].Status != StatusReady {
+		t.Errorf("Status = %q, want %q (20d > resolved warn 14d should stay Ready)", certs[0].Status, StatusReady)
+	}
+}
+
+func TestResolveCertThresholds_InverseKindMismatchDoesNotCrossPollinate(t *testing.T) {
+	// Mirror of KindMismatchDoesNotCrossPollinate — cert references
+	// kind=ClusterIssuer named "ca", but only an Issuer of the same
+	// name is in scope. Resolver must NOT pick up the Issuer's
+	// override; symmetry with the Issuer-side test.
+	cert := makeCert("foo", "c1", "ClusterIssuer", "ca", 0, 0, intp(20))
+	issuers := map[string]Issuer{"foo/ca": {Name: "ca", Namespace: "foo", WarningThresholdDays: intp(60)}}
+
+	warn, _, source, _ := ResolveCertThresholds(cert, issuers, nil, slog.Default())
+
+	if warn != WarningThresholdDays {
+		t.Errorf("warn = %d, want default %d (must not cross-pollinate from Issuer of same name)", warn, WarningThresholdDays)
+	}
+	if source != ThresholdSourceDefault {
+		t.Errorf("source = %q, want %q", source, ThresholdSourceDefault)
+	}
+}
+
+func TestApplyThresholds_CertAnnotationWinsThroughPublicAPI(t *testing.T) {
+	// Cert sets warn=14, crit=3 directly (annotation parsed in
+	// normalizeCertificate). Issuer sets warn=60. ApplyThresholds must
+	// honor the cert-level values, surface "certificate" on both
+	// per-key sources, and overlay Status=Expiring at 13d.
+	cert := makeCert("foo", "tight", "Issuer", "internal-ca", 14, 3, intp(13))
+	issuers := []Issuer{{Name: "internal-ca", Namespace: "foo", WarningThresholdDays: intp(60)}}
+
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, nil, slog.Default())
+
+	if certs[0].WarningThresholdDays != 14 {
+		t.Errorf("WarningThresholdDays = %d, want 14 (cert annotation wins)", certs[0].WarningThresholdDays)
+	}
+	if certs[0].CriticalThresholdDays != 3 {
+		t.Errorf("CriticalThresholdDays = %d, want 3 (cert annotation wins)", certs[0].CriticalThresholdDays)
+	}
+	if certs[0].WarningThresholdSource != ThresholdSourceCertificate {
+		t.Errorf("WarningThresholdSource = %q, want %q", certs[0].WarningThresholdSource, ThresholdSourceCertificate)
+	}
+	if certs[0].CriticalThresholdSource != ThresholdSourceCertificate {
+		t.Errorf("CriticalThresholdSource = %q, want %q", certs[0].CriticalThresholdSource, ThresholdSourceCertificate)
+	}
+	if certs[0].Status != StatusExpiring {
+		t.Errorf("Status = %q, want %q (13d <= warn=14)", certs[0].Status, StatusExpiring)
+	}
+}
+
+func TestApplyThresholds_ClusterIssuerInheritanceThroughPublicAPI(t *testing.T) {
+	// Cert in apps namespace, no annotations. ClusterIssuer
+	// letsencrypt-prod has tight warn=14, crit=3. Cert at 10 days
+	// remaining should be Critical (10 <= 3? No, 10 > 3). Wait — 10 > 3
+	// means it's in the warning band (10 <= warn=14). Status should be
+	// Expiring. Source should be clusterissuer.
+	cert := makeCert("apps", "ingress", "ClusterIssuer", "letsencrypt-prod", 0, 0, intp(10))
+	clusterIssuers := []Issuer{{Name: "letsencrypt-prod", WarningThresholdDays: intp(14), CriticalThresholdDays: intp(3)}}
+
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, nil, clusterIssuers, slog.Default())
+
+	if certs[0].WarningThresholdSource != ThresholdSourceClusterIssuer {
+		t.Errorf("WarningThresholdSource = %q, want %q", certs[0].WarningThresholdSource, ThresholdSourceClusterIssuer)
+	}
+	if certs[0].CriticalThresholdSource != ThresholdSourceClusterIssuer {
+		t.Errorf("CriticalThresholdSource = %q, want %q", certs[0].CriticalThresholdSource, ThresholdSourceClusterIssuer)
+	}
+	if certs[0].Status != StatusExpiring {
+		t.Errorf("Status = %q, want %q", certs[0].Status, StatusExpiring)
+	}
+}
+
+func TestApplyThresholds_MixedSourcesPerKey(t *testing.T) {
+	// Cert sets warn=60 only; issuer sets crit=14 only. Per-key sources
+	// must reflect the actual layer that supplied each value.
+	// Aggregate source picks the strongest (certificate).
+	cert := makeCert("foo", "mixed", "Issuer", "ca", 60, 0, intp(50))
+	issuers := []Issuer{{Name: "ca", Namespace: "foo", CriticalThresholdDays: intp(14)}}
+
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, nil, slog.Default())
+
+	if certs[0].WarningThresholdSource != ThresholdSourceCertificate {
+		t.Errorf("WarningThresholdSource = %q, want %q", certs[0].WarningThresholdSource, ThresholdSourceCertificate)
+	}
+	if certs[0].CriticalThresholdSource != ThresholdSourceIssuer {
+		t.Errorf("CriticalThresholdSource = %q, want %q", certs[0].CriticalThresholdSource, ThresholdSourceIssuer)
+	}
+	if certs[0].ThresholdSource != ThresholdSourceCertificate {
+		t.Errorf("aggregate ThresholdSource = %q, want %q (strongest contributor)", certs[0].ThresholdSource, ThresholdSourceCertificate)
+	}
+}
+
+func TestApplyThresholds_ConflictFlaggedAndDefaultsApplied(t *testing.T) {
+	// Cert sets warn=14, issuer sets crit=20. Combined: crit (20) >=
+	// warn (14) — invalid. Resolver must fall back to defaults AND
+	// flag ThresholdConflict=true so the UI can explain rather than
+	// silently show "Default" with no signal.
+	cert := makeCert("foo", "conflicted", "Issuer", "ca", 14, 0, intp(20))
+	issuers := []Issuer{{Name: "ca", Namespace: "foo", CriticalThresholdDays: intp(20)}}
+
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, issuers, nil, slog.Default())
+
+	if !certs[0].ThresholdConflict {
+		t.Error("ThresholdConflict = false, want true (warn=14, crit=20 violates crit < warn)")
+	}
+	if certs[0].WarningThresholdDays != WarningThresholdDays {
+		t.Errorf("WarningThresholdDays = %d, want default %d after conflict fallback", certs[0].WarningThresholdDays, WarningThresholdDays)
+	}
+	if certs[0].ThresholdSource != ThresholdSourceDefault {
+		t.Errorf("ThresholdSource = %q, want %q after conflict fallback", certs[0].ThresholdSource, ThresholdSourceDefault)
 	}
 }
 
@@ -198,10 +316,11 @@ func TestApplyThresholds_ExpiredStaysExpiredRegardlessOfThresholds(t *testing.T)
 		WarningThresholdDays: 9999,
 	}
 
-	out := ApplyThresholds([]Certificate{cert}, nil, nil, slog.Default())
+	certs := []Certificate{cert}
+	ApplyThresholds(certs, nil, nil, slog.Default())
 
-	if out[0].Status != StatusExpired {
-		t.Errorf("Status = %q, want %q", out[0].Status, StatusExpired)
+	if certs[0].Status != StatusExpired {
+		t.Errorf("Status = %q, want %q", certs[0].Status, StatusExpired)
 	}
 }
 

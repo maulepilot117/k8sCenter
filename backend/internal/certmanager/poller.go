@@ -38,24 +38,17 @@ func (t threshold) String() string {
 }
 
 // thresholdBucket maps a days-remaining value to its threshold bucket
-// using the cert's resolved per-cert thresholds. If ApplyThresholds
-// hasn't been run on this cert (zero values), defense-in-depth falls
-// back to the package defaults so a forgotten resolution call still
-// emits sensible (global-default) notifications instead of treating
-// warn=0 as "never warn".
+// using the cert's resolved per-cert thresholds. effectiveWarn /
+// effectiveCrit fall back to package defaults when the cert hasn't
+// been through ApplyThresholds (defense-in-depth for tests and
+// forgotten-resolution paths).
 func thresholdBucket(cert Certificate) threshold {
 	if cert.DaysRemaining == nil {
 		return thresholdNone
 	}
 	days := *cert.DaysRemaining
-	warn := cert.WarningThresholdDays
-	if warn <= 0 {
-		warn = WarningThresholdDays
-	}
-	crit := cert.CriticalThresholdDays
-	if crit <= 0 {
-		crit = CriticalThresholdDays
-	}
+	warn := effectiveWarn(cert)
+	crit := effectiveCrit(cert)
 	switch {
 	case days < 0:
 		return thresholdExpired
@@ -114,6 +107,19 @@ func newPollerForTest() *Poller {
 // check evaluates a single Certificate against the dedupe state and returns
 // any emitRecord that should be dispatched. The caller is responsible for
 // calling emit() on each returned record.
+//
+// Dedupe semantics:
+//   - Bucket transitions emit one notification each. A cert moving from
+//     warning -> none (e.g. renewal, OR an annotation that loosened the
+//     warning threshold past the cert's days remaining) clears the dedupe
+//     entry. A subsequent move BACK into the warning bucket (annotation
+//     tightened, OR time decay) emits a fresh notification — same shape
+//     as a real renewal-then-decay cycle.
+//   - This means an annotation toggle (tighten -> loosen -> tighten) can
+//     produce two notifications for what's logically one cert state.
+//     Documented behavior; preferred over "stuck dedupe" that would miss
+//     a genuine bucket re-entry. Operators flapping annotations
+//     deliberately are responsible for the noise.
 func (p *Poller) check(c Certificate) []emitRecord {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -294,5 +300,6 @@ func (p *Poller) fetchCertificates(ctx context.Context) ([]Certificate, error) {
 		}
 	}
 
-	return ApplyThresholds(certs, issuers, clusterIssuers, p.logger), nil
+	ApplyThresholds(certs, issuers, clusterIssuers, p.logger)
+	return certs, nil
 }

@@ -14,6 +14,7 @@ import type {
   CertificateRequest,
   Challenge,
   Order,
+  ThresholdSource,
 } from "@/lib/certmanager-types.ts";
 
 interface Props {
@@ -26,10 +27,15 @@ function formatDate(iso?: string): string {
   return new Date(iso).toLocaleString();
 }
 
-// thresholdSourceLabel returns the badge text for the threshold-source
-// tile. Mirrors backend ThresholdSource values from certmanager-types.ts.
-function thresholdSourceLabel(cert: Certificate): string {
-  switch (cert.thresholdSource) {
+// keySourceLabel returns the per-key source attribution shown next to
+// each threshold value. e.g. "60d (From Issuer letsencrypt-prod)".
+// When source is undefined (response from a backend that didn't run
+// ApplyThresholds), falls through to Default.
+function keySourceLabel(
+  source: ThresholdSource | undefined,
+  cert: Certificate,
+): string {
+  switch (source) {
     case "certificate":
       return "From this certificate";
     case "issuer":
@@ -41,22 +47,11 @@ function thresholdSourceLabel(cert: Certificate): string {
   }
 }
 
-// thresholdSourceTooltip explains the resolution chain in plain English
-// so an operator unfamiliar with the annotation contract can read the
-// tile without diving into docs.
-function thresholdSourceTooltip(cert: Certificate): string {
-  const base =
-    "Set kubecenter.io/cert-warn-threshold-days or kubecenter.io/cert-critical-threshold-days on a Certificate or its Issuer / ClusterIssuer to override these values.";
-  switch (cert.thresholdSource) {
-    case "certificate":
-      return `Resolved from an annotation on this Certificate. ${base}`;
-    case "issuer":
-      return `Resolved from an annotation on Issuer ${cert.issuerRef.name}. ${base}`;
-    case "clusterissuer":
-      return `Resolved from an annotation on ClusterIssuer ${cert.issuerRef.name}. ${base}`;
-    default:
-      return `Using the package defaults. ${base}`;
-  }
+// thresholdResolutionTooltip explains the resolution chain in plain
+// English so an operator unfamiliar with the annotation contract can
+// read the tile without diving into docs.
+function thresholdResolutionTooltip(): string {
+  return "Set kubecenter.io/cert-warn-threshold-days or kubecenter.io/cert-critical-threshold-days on a Certificate, its Issuer, or its ClusterIssuer to override these values. Resolution chain: cert annotation > issuer > clusterissuer > package default. Each key resolves independently — a cert can override warn alone and inherit critical from its issuer.";
 }
 
 export default function CertificateDetailIsland({ namespace, name }: Props) {
@@ -260,13 +255,29 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
               <dt class="text-text-muted">Expiry Thresholds</dt>
               <dd
                 class="text-text-primary"
-                title={thresholdSourceTooltip(cert)}
+                title={thresholdResolutionTooltip()}
               >
-                Warns at {cert.warningThresholdDays}d, critical at{" "}
-                {cert.criticalThresholdDays ?? "—"}d
-                <span class="ml-2 rounded bg-bg-elevated px-1.5 py-0.5 text-xs font-normal text-text-muted">
-                  {thresholdSourceLabel(cert)}
+                Warns at {cert.warningThresholdDays}d{" "}
+                <span class="text-xs text-text-muted">
+                  ({keySourceLabel(cert.warningThresholdSource, cert)})
                 </span>
+                , critical at {cert.criticalThresholdDays ?? "—"}d{" "}
+                <span class="text-xs text-text-muted">
+                  ({keySourceLabel(cert.criticalThresholdSource, cert)})
+                </span>
+                {cert.thresholdConflict && (
+                  <span
+                    class="ml-2 rounded px-1.5 py-0.5 text-xs font-medium"
+                    style={{
+                      backgroundColor:
+                        "color-mix(in srgb, var(--status-warning) 15%, transparent)",
+                      color: "var(--status-warning)",
+                    }}
+                    title="Resolved threshold pair would have violated critical < warning. Using package defaults until you fix one of the annotations."
+                  >
+                    Override conflict — using defaults
+                  </span>
+                )}
               </dd>
             </div>
           )}
