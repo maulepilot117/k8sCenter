@@ -51,6 +51,18 @@ export function notifActionUrl(
         }/${encodeURIComponent(n.resourceName)}`;
       }
       return "/security/certificates";
+    case "external_secrets":
+      // ESO events set SuppressResourceFields=true for outbound dispatch but
+      // keep namespace/name on the in-app feed (json:"-" only strips
+      // Slack/webhook). The notification's ResourceKind encodes
+      // "externalsecret.<EventKind>"; the navigation only needs the ES
+      // coordinates so we ignore the kind suffix and link to the detail page.
+      if (n.resourceNamespace && n.resourceName) {
+        return `/external-secrets/external-secrets/${
+          encodeURIComponent(n.resourceNamespace)
+        }/${encodeURIComponent(n.resourceName)}`;
+      }
+      return "/external-secrets/dashboard";
     default: {
       const _exhaustive: never = n.source;
       return null;
