@@ -326,6 +326,27 @@ func (h *Handler) HandleListRules(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": rules})
 }
 
+// validateRuleFilters checks that every Source in rule.SourceFilter and
+// every Severity in rule.SeverityFilter is a known enum value. Returns an
+// empty string when valid, or a 400-suitable error message naming the bad
+// value. nc_rules.source_filter is TEXT[] with no DB-level CHECK, so this
+// application-layer guard is the only barrier — without it, a typo'd
+// source string persists silently and matches no notification at dispatch
+// time, leaving the rule a no-op.
+func validateRuleFilters(rule Rule) string {
+	for _, src := range rule.SourceFilter {
+		if !src.Valid() {
+			return "unknown source in sourceFilter: " + string(src)
+		}
+	}
+	for _, sev := range rule.SeverityFilter {
+		if !sev.Valid() {
+			return "unknown severity in severityFilter: " + string(sev)
+		}
+	}
+	return ""
+}
+
 // HandleCreateRule creates a new notification routing rule.
 func (h *Handler) HandleCreateRule(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
@@ -342,6 +363,10 @@ func (h *Handler) HandleCreateRule(w http.ResponseWriter, r *http.Request) {
 
 	if rule.Name == "" || rule.ChannelID == "" {
 		httputil.WriteError(w, http.StatusBadRequest, "name and channelId are required", "")
+		return
+	}
+	if msg := validateRuleFilters(rule); msg != "" {
+		httputil.WriteError(w, http.StatusBadRequest, msg, "")
 		return
 	}
 
@@ -370,6 +395,10 @@ func (h *Handler) HandleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	var rule Rule
 	if err := decodeJSON(r, &rule); err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+	if msg := validateRuleFilters(rule); msg != "" {
+		httputil.WriteError(w, http.StatusBadRequest, msg, "")
 		return
 	}
 

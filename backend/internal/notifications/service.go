@@ -296,14 +296,21 @@ func (s *NotificationService) sendSlack(ctx context.Context, ch Channel, n Notif
 	}
 
 	color := severityColor(n.Severity)
+	// Suppress resource fields when the source has flagged the event as
+	// cross-tenant-sensitive (ESO). Slack channels don't honor in-app RBAC,
+	// so leaking namespace/name to a shared channel would defeat the
+	// RBAC-generic title.
+	contextLine := fmt.Sprintf("*Severity:* %s %s\n*Source:* %s", color, n.Severity, n.Source)
+	if !n.SuppressResourceFields {
+		contextLine += fmt.Sprintf("\n*Resource:* %s/%s/%s", n.ResourceKind, n.ResourceNS, n.ResourceName)
+	}
 	payload := map[string]any{
 		"text": fmt.Sprintf("[%s] %s", n.Severity, n.Title),
 		"blocks": []map[string]any{
 			{"type": "header", "text": map[string]string{"type": "plain_text", "text": n.Title}},
 			{"type": "section", "text": map[string]string{
 				"type": "mrkdwn",
-				"text": fmt.Sprintf("*Severity:* %s %s\n*Source:* %s\n*Resource:* %s/%s/%s",
-					color, n.Severity, n.Source, n.ResourceKind, n.ResourceNS, n.ResourceName),
+				"text": contextLine,
 			}},
 		},
 	}
@@ -355,7 +362,9 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 		return fmt.Errorf("webhook channel %q has no url configured", ch.Name)
 	}
 
-	// Build external-facing payload (excludes ClusterID and other internal fields)
+	// Build external-facing payload (excludes ClusterID and other internal fields).
+	// SuppressResourceFields strips namespace/name for cross-tenant-sensitive
+	// events; the omitempty JSON tags drop them from the wire payload.
 	wp := webhookPayload{
 		ID:           n.ID,
 		Source:       n.Source,
@@ -363,9 +372,11 @@ func (s *NotificationService) sendWebhook(ctx context.Context, ch Channel, n Not
 		Title:        n.Title,
 		Message:      n.Message,
 		ResourceKind: n.ResourceKind,
-		ResourceNS:   n.ResourceNS,
-		ResourceName: n.ResourceName,
 		CreatedAt:    n.CreatedAt,
+	}
+	if !n.SuppressResourceFields {
+		wp.ResourceNS = n.ResourceNS
+		wp.ResourceName = n.ResourceName
 	}
 	payload, _ := json.Marshal(wp)
 
@@ -496,6 +507,16 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 			continue
 		}
 
+		// Strip resource identity from sources flagged for cross-tenant
+		// suppression (currently ESO). SuppressResourceFields on the runtime
+		// Notification struct is json:"-" and not persisted, so the rows
+		// returned by NotificationsSince above don't carry the flag —
+		// applying it source-side is the simplest cross-tenant defense for
+		// the email path. Slack and webhook dispatch already strip these
+		// fields at send time via the in-flight flag; email digests need
+		// the same treatment one layer earlier in the pipeline.
+		sanitizeForEmailDigest(notifications)
+
 		htmlBody, err := renderDigestEmail(notifications)
 		if err != nil {
 			s.logger.Error("render digest", "channel", ch.Name, "error", err)
@@ -508,6 +529,34 @@ func (s *NotificationService) sendDigests(ctx context.Context) {
 		if err := s.emailSender.QueueEmail(recipients, subject, htmlBody); err != nil {
 			s.logger.Error("queue digest email", "channel", ch.Name, "error", err)
 			_ = s.store.UpdateChannelError(ctx, ch.ID, err.Error())
+		}
+	}
+}
+
+// suppressResourceFieldsBySource lists sources whose notifications must have
+// their resource_kind / resource_ns / resource_name stripped before reaching
+// any external dispatch channel (Slack, webhook, email). These sources emit
+// cross-tenant events that the in-app feed RBAC-filters by namespace; shared
+// external channels do not honor that scope and would otherwise leak tenant
+// resource identity.
+//
+// Adding a source here requires also setting SuppressResourceFields=true in
+// the emit path so Slack/webhook honor the policy at send time. The email
+// digest reads this list directly because SuppressResourceFields is not
+// persisted (json:"-").
+var suppressResourceFieldsBySource = map[Source]bool{
+	SourceExternalSecrets: true,
+}
+
+// sanitizeForEmailDigest mutates the slice in place, zeroing resource
+// identity fields for any notification whose Source is configured for
+// cross-tenant suppression. Applied just before template rendering.
+func sanitizeForEmailDigest(ns []Notification) {
+	for i := range ns {
+		if suppressResourceFieldsBySource[ns[i].Source] {
+			ns[i].ResourceKind = ""
+			ns[i].ResourceNS = ""
+			ns[i].ResourceName = ""
 		}
 	}
 }

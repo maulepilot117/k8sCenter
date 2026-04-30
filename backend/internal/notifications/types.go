@@ -16,7 +16,32 @@ const (
 	SourceLimits     Source = "limits"
 	SourceVelero      Source = "velero"
 	SourceCertManager Source = "certmanager"
+	SourceExternalSecrets Source = "external_secrets"
 )
+
+// Valid reports whether s is a known Source enum value. Used by the rule
+// editor (HandleCreateRule / HandleUpdateRule) to reject bogus
+// sourceFilter entries before they reach the database. nc_rules.source_filter
+// is TEXT[] with no DB-level CHECK, so the application layer is the only
+// validation surface.
+func (s Source) Valid() bool {
+	switch s {
+	case SourceAlert, SourcePolicy, SourceGitOps, SourceDiagnostic,
+		SourceScan, SourceCluster, SourceAudit, SourceLimits,
+		SourceVelero, SourceCertManager, SourceExternalSecrets:
+		return true
+	}
+	return false
+}
+
+// Valid reports whether sev is a known Severity enum value.
+func (sev Severity) Valid() bool {
+	switch sev {
+	case SeverityInfo, SeverityWarning, SeverityCritical:
+		return true
+	}
+	return false
+}
 
 // Severity indicates how critical a notification is.
 type Severity string
@@ -37,6 +62,13 @@ const (
 )
 
 // Notification is a single event from any subsystem.
+//
+// SuppressResourceFields, when true, instructs Slack and webhook dispatch to
+// omit the resource namespace/name from outbound payloads. This closes a
+// tenant-leakage path that the RBAC-generic title alone doesn't cover —
+// Slack channels and webhook receivers may not honor the same RBAC scope as
+// the in-app feed. Used by ESO events (R28 cross-tenant scope), opt-in for
+// other sources.
 type Notification struct {
 	ID           string    `json:"id"`
 	Source       Source    `json:"source"`
@@ -49,6 +81,11 @@ type Notification struct {
 	ClusterID    string    `json:"clusterId,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 	Read         bool      `json:"read,omitempty"`
+
+	// SuppressResourceFields strips ResourceNS/ResourceName from external
+	// dispatch payloads (Slack, webhook). Not persisted to the feed —
+	// in-app readers always see the resource fields, RBAC-filtered.
+	SuppressResourceFields bool `json:"-"`
 }
 
 // Channel is an external dispatch target (Slack, email, webhook).

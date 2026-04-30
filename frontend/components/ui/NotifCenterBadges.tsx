@@ -17,6 +17,7 @@ const SOURCE_COLORS: Record<NotifSource, string> = {
   limits: "var(--warning)",
   velero: "var(--accent)",
   certmanager: "var(--success)",
+  external_secrets: "var(--accent-secondary)",
 };
 
 /** Colored dot indicating notification severity. */

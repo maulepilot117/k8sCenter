@@ -435,13 +435,13 @@ PostgreSQL migration for `eso_sync_history`. Poller persistence hook. Drift-awar
 
 **Requirements:** R6, R8, R21
 
-**Dependencies:** Unit 9, Phase A (poller stub).
+**Dependencies:** Unit 9, Phase D Unit 13 (poller skeleton + dispatch pipeline).
 
 **Files:**
-- Create: `backend/internal/externalsecrets/poller.go` — 60s ticker, local cluster only (matches Phase 11A constraint). Calls `Handler.CachedExternalSecrets(ctx)` for the resolved-status snapshot, computes diff vs prior synced data, INSERTs new history rows, emits notifications (Phase D wiring).
-- Create: `backend/internal/externalsecrets/poller_test.go` — table-driven attempt-comparison + dedupe tests.
+- Modify: `backend/internal/externalsecrets/poller.go` — extend the Phase D skeleton with a DB persistence side-effect inside `tick()`. Computes diff vs prior synced data and INSERTs new history rows alongside the existing emit pipeline. **Phase D Unit 13 already created the file** with the dispatch pipeline (60s ticker, local cluster only, in-memory dedupe, notifications.Emit); this unit adds the persistence layer rather than reshaping the dispatch flow.
+- Modify: `backend/internal/externalsecrets/poller_test.go` — extend with attempt-comparison + dedupe tests for the new persistence path. Phase D's poller tests already cover the dispatch state machine.
 - Create: `backend/internal/store/eso_history.go` — `Store.AppendESOHistory(ctx, entry)`, `Store.QueryESOHistory(ctx, uid, limit)`, `Store.RunESOHistoryRetention(ctx)`, `Store.EnsureESOHistoryPartitions(ctx)`.
-- Modify: `backend/internal/server/server.go` — start the poller alongside the cert-manager poller; wire the retention goroutine.
+- Modify: `cmd/kubecenter/main.go` — add the retention goroutine alongside the existing `esoPoller.Start(ctx)` call. (Phase D Unit 13 already wired the poller startup; this is just the retention worker.)
 - Modify: `helm/kubecenter/templates/clusterrole.yaml` — add the `core/secrets` `get/list` grant block here (deferred from Phase A's Unit 6 because the poller is its only consumer):
   ```yaml
   - apiGroups: [""]
@@ -1134,16 +1134,16 @@ Extends Phase 7B topology builder with `?overlay=eso-chain` (L6.1, L6.2). Reuses
 Order is **A → B → D → C → E → F → G → H → I → J**.
 
 ### Phase A — Backend observatory + Helm RBAC
-- [ ] Unit 1 — Package skeleton (discovery + types + normalize, Go-TS hash test)
-- [ ] Unit 2 — Handler (singleflight + cache + permissive-read RBAC + list endpoints)
-- [ ] Unit 3 — Detail endpoints + drift resolution (impersonated `get secret`)
-- [ ] Unit 4 — Routes wiring (under authenticated `ar.Group` for CSRF)
-- [ ] ~~Unit 5~~ — DELETED (metric name constants live in `cost_tier.go`)
-- [ ] Unit 6 — Helm ClusterRole grant (ESO CRD list/watch only; core/secrets get/list deferred to Unit 10's PR — see Unit 6 body)
+- [x] Unit 1 — Package skeleton (discovery + types + normalize, Go-TS hash test)
+- [x] Unit 2 — Handler (singleflight + cache + permissive-read RBAC + list endpoints)
+- [x] Unit 3 — Detail endpoints + drift resolution (impersonated `get secret`)
+- [x] Unit 4 — Routes wiring (under authenticated `ar.Group` for CSRF)
+- [x] ~~Unit 5~~ — DELETED (metric name constants live in `cost_tier.go`)
+- [x] Unit 6 — Helm ClusterRole grant (ESO CRD list/watch only; core/secrets get/list deferred to Unit 10's PR — see Unit 6 body)
 
 ### Phase B — Frontend observatory
-- [ ] Unit 7 — Routes + list islands + new ESO nav-rail domain section + standalone Chain page + per-list empty states
-- [ ] Unit 8 — Detail islands + Dashboard (sync-health hero ring, broken-ESes-with-consumer-counts table)
+- [x] Unit 7 — Routes + list islands + new ESO nav-rail domain section + standalone Chain page + per-list empty states (PR #210)
+- [x] Unit 8 — Detail islands + Dashboard (sync-health hero ring, broken-ESes-with-consumer-counts table) (PR #210)
 
 ### Phase D — Alerting + annotation thresholds (lands BEFORE Phase C)
 - [ ] Unit 12 — Migration 000010 (source enum extension via ALTER) + annotation resolver + `SuppressResourceFields` dispatch flag + notification source grouping

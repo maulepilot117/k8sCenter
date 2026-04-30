@@ -12,7 +12,8 @@ export type NotifSource =
   | "audit"
   | "limits"
   | "velero"
-  | "certmanager";
+  | "certmanager"
+  | "external_secrets";
 
 /** Notification channel types matching backend notifications.ChannelType */
 export type NotifChannelType = "slack" | "email" | "webhook";
@@ -109,6 +110,32 @@ export const NOTIF_SOURCES: NotifSource[] = [
   "limits",
   "velero",
   "certmanager",
+  "external_secrets",
+];
+
+/** Source category labels for grouped UI rendering. The 11-entry source list
+ * is no longer flat-flat-readable; categories let operators scan by domain.
+ * Order within each category is roughly install-base frequency. */
+export const NOTIF_SOURCE_CATEGORIES: ReadonlyArray<{
+  label: string;
+  sources: NotifSource[];
+}> = [
+  {
+    label: "Infrastructure",
+    sources: ["cluster", "limits", "scan"],
+  },
+  {
+    label: "Policy",
+    sources: ["policy", "diagnostic"],
+  },
+  {
+    label: "Secrets",
+    sources: ["certmanager", "external_secrets"],
+  },
+  {
+    label: "Operations",
+    sources: ["alert", "audit", "gitops", "velero"],
+  },
 ];
 
 /** All known notification severities for filter dropdowns. */
@@ -137,4 +164,5 @@ export const SOURCE_LABELS: Record<NotifSource, string> = {
   limits: "Limits",
   velero: "Backup",
   certmanager: "Certificate",
+  external_secrets: "External Secrets",
 };
