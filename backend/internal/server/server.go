@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
+	"github.com/kubecenter/kubecenter/internal/externalsecrets"
 	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -75,6 +76,7 @@ type Server struct {
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
+	ExternalSecretsHandler *externalsecrets.Handler
 	GatewayHandler     *gateway.Handler
 	ServiceMeshHandler *servicemesh.Handler
 	CRDHandler         *resources.GenericCRDHandler
@@ -121,6 +123,7 @@ type Deps struct {
 	LimitsHandler      *limits.Handler
 	VeleroHandler      *velero.Handler
 	CertManagerHandler *certmanager.Handler
+	ExternalSecretsHandler *externalsecrets.Handler
 	GatewayHandler     *gateway.Handler
 	ServiceMeshHandler *servicemesh.Handler
 	CRDHandler         *resources.GenericCRDHandler
@@ -273,6 +276,11 @@ func New(deps Deps) *Server {
 	// Cert-Manager handler
 	if deps.CertManagerHandler != nil {
 		s.CertManagerHandler = deps.CertManagerHandler
+	}
+
+	// External Secrets Operator handler (Phase A — observatory)
+	if deps.ExternalSecretsHandler != nil {
+		s.ExternalSecretsHandler = deps.ExternalSecretsHandler
 	}
 
 	// Gateway API handler

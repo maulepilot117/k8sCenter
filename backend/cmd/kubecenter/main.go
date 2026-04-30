@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
+	"github.com/kubecenter/kubecenter/internal/externalsecrets"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -692,6 +693,11 @@ func main() {
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
 
+	// External Secrets Operator integration (Phase A — observatory). Poller
+	// + alerting wire in Phase D; persistence + drift history in Phase C.
+	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
+	esoHandler := externalsecrets.NewHandler(k8sClient, esoDisc, accessChecker, auditLogger, notifService, logger)
+
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
@@ -736,6 +742,7 @@ func main() {
 		LimitsHandler:      limitsHandler,
 		VeleroHandler:      veleroHandler,
 		CertManagerHandler: cmHandler,
+		ExternalSecretsHandler: esoHandler,
 		GatewayHandler:     gwHandler,
 		ServiceMeshHandler: meshHandler,
 		CRDHandler:         crdHandler,
