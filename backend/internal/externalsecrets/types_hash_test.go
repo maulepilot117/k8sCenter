@@ -57,8 +57,7 @@ func shapeHash(v any) string {
 		return "non-struct"
 	}
 	parts := make([]string, 0, t.NumField())
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		if !f.IsExported() {
 			continue
 		}
