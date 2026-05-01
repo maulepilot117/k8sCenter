@@ -634,6 +634,11 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.With(resources.ValidateURLParams).
 			Get("/externalsecrets/{namespace}/{name}", h.HandleGetExternalSecret)
 
+		// Force-sync action (Phase E Unit 14) — single ExternalSecret
+		// patch via impersonating client. CSRF inherited from ar.Group.
+		er.With(resources.ValidateURLParams).
+			Post("/externalsecrets/{namespace}/{name}/force-sync", h.HandleForceSyncExternalSecret)
+
 		// ClusterExternalSecret list + detail (cluster-scoped — name only)
 		er.Get("/clusterexternalsecrets", h.HandleListClusterExternalSecrets)
 		er.With(resources.ValidateURLParams).

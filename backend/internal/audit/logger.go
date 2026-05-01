@@ -43,6 +43,11 @@ const (
 	// Cert-manager actions
 	ActionCertRenew   Action = "cert_renew"
 	ActionCertReissue Action = "cert_reissue"
+
+	// External Secrets Operator actions (Phase E)
+	ActionESOForceSync             Action = "eso_force_sync"
+	ActionESOBulkRefresh           Action = "eso_bulk_refresh"
+	ActionESOBulkRefreshNamespace  Action = "eso_bulk_refresh_namespace"
 )
 
 // Result represents the outcome of an auditable operation.
