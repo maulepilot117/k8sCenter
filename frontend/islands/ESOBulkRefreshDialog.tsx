@@ -20,7 +20,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { ApiError } from "@/lib/api.ts";
+import { ApiError, errorExtra } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import type {
   BulkRefreshAction,
@@ -52,6 +52,21 @@ export default function ESOBulkRefreshDialog(
   const job = useSignal<BulkRefreshJob | null>(null);
 
   // --- scope load ---------------------------------------------------------
+  // #355 item 10: Esc closes the modal. Destructive bulk-write dialog
+  // without keyboard escape is hostile.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    globalThis.document.addEventListener("keydown", handler);
+    return () => {
+      globalThis.document.removeEventListener("keydown", handler);
+    };
+  }, [onClose]);
+
   useEffect(() => {
     if (!IS_BROWSER) return;
     let cancelled = false;
@@ -109,7 +124,10 @@ export default function ESOBulkRefreshDialog(
   }, [phase.value, jobId.value]);
 
   const submit = async () => {
-    if (!scope.value) return;
+    // #355 item 9: in-flight guard. Fast double-click would otherwise fire
+    // two POSTs; the server's 409 active_job_exists is recovery, not a
+    // safety net the UI should rely on.
+    if (!scope.value || phase.value !== "confirm") return;
     phase.value = "submitting";
     errorMsg.value = null;
     const targetUIDs = scope.value.targets.map((t) => t.uid);
@@ -118,9 +136,8 @@ export default function ESOBulkRefreshDialog(
       jobId.value = res.data?.jobId ?? null;
       phase.value = "progress";
     } catch (err) {
-      if (err instanceof ApiError && err.body?.error) {
-        const reason = err.body.error.reason as string | undefined;
-        if (reason === "scope_changed") {
+      if (err instanceof ApiError) {
+        if (err.reason === "scope_changed") {
           // Re-resolve the scope; show updated counts and re-prompt.
           phase.value = "scope-loading";
           try {
@@ -134,10 +151,10 @@ export default function ESOBulkRefreshDialog(
           }
           return;
         }
-        if (reason === "active_job_exists") {
+        if (err.reason === "active_job_exists") {
           // Attach to the existing job and start polling — saves the operator
           // from confusion when two tabs both hit Confirm.
-          const existing = err.body.error.jobId as string | undefined;
+          const existing = errorExtra(err, "jobId");
           if (existing) {
             jobId.value = existing;
             phase.value = "progress";
@@ -217,7 +234,8 @@ export default function ESOBulkRefreshDialog(
               <button
                 type="button"
                 onClick={submit}
-                class="px-3 py-1.5 text-sm rounded bg-brand text-white hover:opacity-90"
+                disabled={phase.value !== "confirm"}
+                class="px-3 py-1.5 text-sm rounded bg-brand text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Refresh {scope.value.visibleCount}
               </button>

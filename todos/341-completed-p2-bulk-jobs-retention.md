@@ -1,6 +1,6 @@
 ---
 name: eso_bulk_refresh_jobs has no retention sweep — completed rows accumulate forever
-status: pending
+status: completed
 priority: p2
 issue_id: 341
 tags: [code-review, eso, phase-e, retention, dos-mitigation]

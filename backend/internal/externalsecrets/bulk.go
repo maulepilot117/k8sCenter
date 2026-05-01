@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -164,7 +165,8 @@ func (h *Handler) resolveScope(
 	for _, es := range saMatched {
 		allowed, ok := nsAllow[es.Namespace]
 		if !ok {
-			allowed = h.canAccess(ctx, user, "update", "externalsecrets", es.Namespace)
+			// #355 item 3: matches Patch RBAC verb actually used by the worker.
+			allowed = h.canAccess(ctx, user, "patch", "externalsecrets", es.Namespace)
 			nsAllow[es.Namespace] = allowed
 		}
 		if allowed {
@@ -212,14 +214,9 @@ func matchScope(ess []ExternalSecret, action store.BulkRefreshAction, scopeTarge
 	out := make([]ExternalSecret, 0, len(ess))
 	switch action {
 	case store.BulkRefreshActionStore:
-		var ns, name string
-		for i := 0; i < len(scopeTarget); i++ {
-			if scopeTarget[i] == '/' {
-				ns, name = scopeTarget[:i], scopeTarget[i+1:]
-				break
-			}
-		}
-		if ns == "" || name == "" {
+		// #355 item 6: strings.Cut for the ns/name split.
+		ns, name, ok := strings.Cut(scopeTarget, "/")
+		if !ok || ns == "" || name == "" {
 			return out
 		}
 		for _, es := range ess {
@@ -290,6 +287,9 @@ func (h *Handler) handleBulkRefresh(
 	if !ok {
 		return
 	}
+	if !rejectNonLocalClusterWrite(w, r) {
+		return
+	}
 	if h.BulkJobStore == nil || h.BulkWorker == nil {
 		httputil.WriteError(w, http.StatusServiceUnavailable, "bulk refresh unavailable", "")
 		return
@@ -315,30 +315,29 @@ func (h *Handler) handleBulkRefresh(
 		return
 	}
 
-	// Optional client TargetUIDs match check.
-	if r.ContentLength > 0 {
-		var body bulkRefreshRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, "invalid body", "")
-			return
-		}
-		if len(body.TargetUIDs) > 0 {
-			added, removed := compareUIDs(body.TargetUIDs, scope.Targets)
-			if len(added) > 0 || len(removed) > 0 {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusConflict)
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"error": map[string]any{
-						"code":    http.StatusConflict,
-						"message": "scope changed since last resolution",
-						"reason":  string(errBulkScopeChanged.Error()),
-						"added":   added,
-						"removed": removed,
-					},
-				})
-				return
-			}
-		}
+	// Mandatory scope-pin check. Callers MUST POST a body with the
+	// `targetUIDs` array they obtained from the prior GET refresh-scope.
+	// An empty body would let the server re-resolve scope freshly under
+	// the operator without confirmation — defeating the pin contract that
+	// guards against ES create/delete races between scope-resolve and
+	// confirm. See todo #340.
+	var body bulkRefreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"invalid body — expected {\"targetUIDs\":[...]}", "")
+		return
+	}
+	if len(body.TargetUIDs) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest,
+			"targetUIDs required — call GET refresh-scope first and pass the returned UIDs", "")
+		return
+	}
+	added, removed := compareUIDs(body.TargetUIDs, scope.Targets)
+	if len(added) > 0 || len(removed) > 0 {
+		httputil.WriteErrorWithReason(w, http.StatusConflict,
+			"scope changed since last resolution", errBulkScopeChanged.Error(),
+			map[string]any{"added": added, "removed": removed})
+		return
 	}
 
 	// At-most-one-active-per-scope check.
@@ -350,16 +349,9 @@ func (h *Handler) handleBulkRefresh(
 		return
 	}
 	if existing != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"code":    http.StatusConflict,
-				"message": "another bulk refresh is already in flight for this scope",
-				"reason":  "active_job_exists",
-				"jobId":   existing.ID.String(),
-			},
-		})
+		httputil.WriteErrorWithReason(w, http.StatusConflict,
+			"another bulk refresh is already in flight for this scope", "active_job_exists",
+			map[string]any{"jobId": existing.ID.String()})
 		return
 	}
 
@@ -377,6 +369,19 @@ func (h *Handler) handleBulkRefresh(
 		TargetUIDs:  uids,
 	}
 	if err := h.BulkJobStore.Insert(r.Context(), job); err != nil {
+		// Race-loser: a concurrent POST inserted first. Surface the existing
+		// job's id so the caller's recovery path is identical to the
+		// FindActive 409 above. See todo #347.
+		if errors.Is(err, store.ErrBulkJobActiveExists) {
+			existing, _ := h.BulkJobStore.FindActive(r.Context(), clusterID, action, scopeTarget)
+			extra := map[string]any{}
+			if existing != nil {
+				extra["jobId"] = existing.ID.String()
+			}
+			httputil.WriteErrorWithReason(w, http.StatusConflict,
+				"another bulk refresh is already in flight for this scope", "active_job_exists", extra)
+			return
+		}
 		h.Logger.Error("insert bulk job", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create job", "")
 		return
@@ -386,7 +391,7 @@ func (h *Handler) handleBulkRefresh(
 		JobID:      job.ID,
 		ClusterID:  clusterID,
 		Action:     action,
-		ScopeTgt:   scopeTarget,
+		ScopeTarget:   scopeTarget,
 		Targets:    scope.Targets,
 		Username:   user.KubernetesUsername,
 		Groups:     user.KubernetesGroups,
@@ -472,28 +477,40 @@ func (h *Handler) HandleGetBulkRefreshJob(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	httputil.WriteData(w, bulkJobResponse(job))
+	httputil.WriteData(w, toBulkRefreshJobResponse(job))
 }
 
-// bulkJobResponse shapes the wire payload. Mirrors store.ESOBulkRefreshJob
-// minus internal fields.
-func bulkJobResponse(j *store.ESOBulkRefreshJob) map[string]any {
-	out := map[string]any{
-		"jobId":       j.ID.String(),
-		"clusterId":   j.ClusterID,
-		"requestedBy": j.RequestedBy,
-		"action":      string(j.Action),
-		"scopeTarget": j.ScopeTarget,
-		"targetCount": len(j.TargetUIDs),
-		"createdAt":   j.CreatedAt,
-		"succeeded":   j.Succeeded,
-		"failed":      j.Failed,
-		"skipped":     j.Skipped,
+// BulkRefreshJobResponse is the wire shape returned by GET
+// /externalsecrets/bulk-refresh-jobs/{jobId}. Typed (not map[string]any) so
+// the Go-TS hash test catches future drift. See todo #351.
+type BulkRefreshJobResponse struct {
+	JobID       string                     `json:"jobId"`
+	ClusterID   string                     `json:"clusterId"`
+	RequestedBy string                     `json:"requestedBy"`
+	Action      string                     `json:"action"`
+	ScopeTarget string                     `json:"scopeTarget"`
+	TargetCount int                        `json:"targetCount"`
+	CreatedAt   time.Time                  `json:"createdAt"`
+	CompletedAt *time.Time                 `json:"completedAt,omitempty"`
+	Succeeded   []string                   `json:"succeeded"`
+	Failed      []store.BulkRefreshOutcome `json:"failed"`
+	Skipped     []store.BulkRefreshOutcome `json:"skipped"`
+}
+
+func toBulkRefreshJobResponse(j *store.ESOBulkRefreshJob) BulkRefreshJobResponse {
+	return BulkRefreshJobResponse{
+		JobID:       j.ID.String(),
+		ClusterID:   j.ClusterID,
+		RequestedBy: j.RequestedBy,
+		Action:      string(j.Action),
+		ScopeTarget: j.ScopeTarget,
+		TargetCount: len(j.TargetUIDs),
+		CreatedAt:   j.CreatedAt,
+		CompletedAt: j.CompletedAt,
+		Succeeded:   j.Succeeded,
+		Failed:      j.Failed,
+		Skipped:     j.Skipped,
 	}
-	if j.CompletedAt != nil {
-		out["completedAt"] = j.CompletedAt
-	}
-	return out
 }
 
 // auditBulkJob writes the single-row audit entry for a completed bulk job.
@@ -514,9 +531,20 @@ func (h *Handler) auditBulkJob(ctx context.Context, msg BulkJobMessage, job *sto
 		"scope":           job.ScopeTarget,
 		"requestedBy":     job.RequestedBy,
 		"requestedCount":  len(job.TargetUIDs),
-		"succeeded_count": len(job.Succeeded),
-		"failed":          job.Failed,
-		"skipped":         job.Skipped,
+		"succeededCount":  len(job.Succeeded),
+	}
+	// Cluster-scoped actions inherently span tenants. Per-UID enumeration in
+	// the Detail JSON would expose every namespace's ES UIDs to admins
+	// reading audit (and to any future tenant-scoped audit export). Match
+	// Phase D's notification SuppressResourceFields precedent: keep
+	// aggregate counts + reason histograms; redact UIDs. See todo #348.
+	if msg.Action == store.BulkRefreshActionClusterStore {
+		detail["failed"] = anonymizeOutcomes(job.Failed)
+		detail["skipped"] = anonymizeOutcomes(job.Skipped)
+		detail["redacted"] = "cluster_scope_uid_redaction"
+	} else {
+		detail["failed"] = job.Failed
+		detail["skipped"] = job.Skipped
 	}
 	detailJSON, _ := json.Marshal(detail)
 
@@ -539,19 +567,32 @@ func (h *Handler) auditBulkJob(ctx context.Context, msg BulkJobMessage, job *sto
 	})
 }
 
+// anonymizeOutcomes strips the UID field from each outcome and tallies the
+// reason histogram. Used for cluster-scope audit Detail to avoid leaking
+// per-namespace ES identity across tenant boundaries while preserving the
+// aggregate diagnostic value operators need. See todo #348.
+func anonymizeOutcomes(outs []store.BulkRefreshOutcome) map[string]any {
+	if len(outs) == 0 {
+		return map[string]any{"count": 0, "reasons": map[string]int{}}
+	}
+	hist := make(map[string]int, len(outs))
+	for _, o := range outs {
+		hist[o.Reason]++
+	}
+	return map[string]any{"count": len(outs), "reasons": hist}
+}
+
 // bulkAuditNamespace extracts a namespace for the audit row when the action
 // is namespace-scoped or store-scoped (which has ns/name composite). Empty
 // for cluster-store-scoped.
 func bulkAuditNamespace(msg BulkJobMessage) string {
 	switch msg.Action {
 	case store.BulkRefreshActionNamespace:
-		return msg.ScopeTgt
+		return msg.ScopeTarget
 	case store.BulkRefreshActionStore:
-		for i := 0; i < len(msg.ScopeTgt); i++ {
-			if msg.ScopeTgt[i] == '/' {
-				return msg.ScopeTgt[:i]
-			}
-		}
+		// #355 item 6: strings.Cut for the ns/name split.
+		ns, _, _ := strings.Cut(msg.ScopeTarget, "/")
+		return ns
 	}
 	return ""
 }

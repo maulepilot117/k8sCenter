@@ -1,6 +1,6 @@
 ---
 name: Phase E wire types not covered by Go-TS hash test — drift guard incomplete
-status: pending
+status: completed
 priority: p2
 issue_id: 351
 tags: [code-review, eso, phase-e, type-safety]

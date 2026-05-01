@@ -1,6 +1,6 @@
 ---
 name: ESO write handlers ignore X-Cluster-ID — audit/job-storage records header value while patching local cluster
-status: pending
+status: completed
 priority: p1
 issue_id: 339
 tags: [code-review, eso, phase-e, security, audit-integrity, multi-cluster]

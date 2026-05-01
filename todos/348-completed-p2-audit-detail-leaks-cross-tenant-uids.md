@@ -1,6 +1,6 @@
 ---
 name: Audit Detail leaks cross-tenant UIDs on ClusterSecretStore-scoped bulk refresh
-status: pending
+status: completed
 priority: p2
 issue_id: 348
 tags: [code-review, eso, phase-e, security, multi-tenant, audit-redaction]

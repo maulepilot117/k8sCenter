@@ -1,6 +1,6 @@
 ---
 name: FindActive TOCTOU — plain SELECT permits two active jobs for same scope
-status: pending
+status: completed
 priority: p2
 issue_id: 347
 tags: [code-review, eso, phase-e, concurrency, db-design]

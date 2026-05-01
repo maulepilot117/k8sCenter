@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -39,6 +41,17 @@ func newFakeBulkJobStore() *fakeBulkJobStore {
 func (f *fakeBulkJobStore) Insert(_ context.Context, j store.ESOBulkRefreshJob) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Mirror the production UNIQUE partial index — reject if an active row
+	// already exists for the same scope. Without this, fakes would silently
+	// accept duplicates and bypass the race-loser code path.
+	for _, existing := range f.jobs {
+		if existing.CompletedAt == nil &&
+			existing.ClusterID == j.ClusterID &&
+			existing.Action == j.Action &&
+			existing.ScopeTarget == j.ScopeTarget {
+			return store.ErrBulkJobActiveExists
+		}
+	}
 	now := time.Now().UTC()
 	j.CreatedAt = now
 	if j.Succeeded == nil {
@@ -101,6 +114,21 @@ func (f *fakeBulkJobStore) AppendOutcome(
 	return nil
 }
 
+func (f *fakeBulkJobStore) AppendOutcomes(
+	_ context.Context, id uuid.UUID, batch store.BulkOutcomeBatch,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	j, ok := f.jobs[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	j.Succeeded = append(j.Succeeded, batch.Succeeded...)
+	j.Failed = append(j.Failed, batch.Failed...)
+	j.Skipped = append(j.Skipped, batch.Skipped...)
+	return nil
+}
+
 func (f *fakeBulkJobStore) Complete(_ context.Context, id uuid.UUID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -137,13 +165,19 @@ type fakeWorker struct {
 }
 
 func (f *fakeWorker) Enqueue(msg BulkJobMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.full {
 		return errors.New("queue full")
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.enqueued = append(f.enqueued, msg)
 	return nil
+}
+
+func (f *fakeWorker) setFull(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.full = v
 }
 
 // --- scope matching --------------------------------------------------------
@@ -266,9 +300,12 @@ func TestBulkRefresh_StoreHappyPath(t *testing.T) {
 		t.Errorf("scope = %+v; want visible=2/total=2/!restricted", env.Data)
 	}
 
-	// 2. POST refresh-all
+	// 2. POST refresh-all with the pin from step 1
+	pinBody := `{"targetUIDs":["uid-1","uid-2"]}`
 	w = httptest.NewRecorder()
-	r = withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r = withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(pinBody))
 	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
 	h.HandleBulkRefreshStore(w, r)
 	if w.Code != http.StatusAccepted {
@@ -325,9 +362,11 @@ func TestBulkRefresh_ScopeChanged(t *testing.T) {
 	}
 	var body2 struct {
 		Error struct {
-			Reason  string   `json:"reason"`
-			Added   []string `json:"added"`
-			Removed []string `json:"removed"`
+			Reason string `json:"reason"`
+			Extra  struct {
+				Added   []string `json:"added"`
+				Removed []string `json:"removed"`
+			} `json:"extra"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &body2)
@@ -335,13 +374,13 @@ func TestBulkRefresh_ScopeChanged(t *testing.T) {
 		t.Errorf("reason = %q; want scope_changed", body2.Error.Reason)
 	}
 	foundAdded := false
-	for _, u := range body2.Error.Added {
+	for _, u := range body2.Error.Extra.Added {
 		if u == "uid-current" {
 			foundAdded = true
 		}
 	}
 	if !foundAdded {
-		t.Errorf("added = %v; want uid-current present", body2.Error.Added)
+		t.Errorf("added = %v; want uid-current present", body2.Error.Extra.Added)
 	}
 }
 
@@ -353,37 +392,43 @@ func TestBulkRefresh_ConcurrentSameScope(t *testing.T) {
 	}
 	h, jobStore, _, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
 
+	pinBody := `{"targetUIDs":["uid-1"]}`
+	makePostReq := func() *http.Request {
+		req := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+		req.Header.Set("Content-Type", "application/json")
+		req.ContentLength = int64(len(pinBody))
+		return urlWithChiParams(req, map[string]string{"namespace": "apps", "name": "vault"})
+	}
+
 	// First POST creates the job.
 	w := httptest.NewRecorder()
-	r := withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
-	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
-	h.HandleBulkRefreshStore(w, r)
+	h.HandleBulkRefreshStore(w, makePostReq())
 	if w.Code != http.StatusAccepted {
-		t.Fatalf("first POST status = %d", w.Code)
+		t.Fatalf("first POST status = %d; body = %s", w.Code, w.Body.String())
 	}
 
 	// Second POST against same scope — job is still in-flight (CompletedAt nil).
 	w = httptest.NewRecorder()
-	r = withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
-	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
-	h.HandleBulkRefreshStore(w, r)
+	h.HandleBulkRefreshStore(w, makePostReq())
 	if w.Code != http.StatusConflict {
 		t.Fatalf("second POST status = %d; want 409", w.Code)
 	}
 	var body struct {
 		Error struct {
 			Reason string `json:"reason"`
-			JobID  string `json:"jobId"`
+			Extra  struct {
+				JobID string `json:"jobId"`
+			} `json:"extra"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
-	if body.Error.Reason != "active_job_exists" || body.Error.JobID == "" {
+	if body.Error.Reason != "active_job_exists" || body.Error.Extra.JobID == "" {
 		t.Errorf("error = %+v", body.Error)
 	}
 
 	// And the existing job's id round-trips.
-	if _, err := uuid.Parse(body.Error.JobID); err != nil {
-		t.Errorf("jobId = %q; not a uuid", body.Error.JobID)
+	if _, err := uuid.Parse(body.Error.Extra.JobID); err != nil {
+		t.Errorf("jobId = %q; not a uuid", body.Error.Extra.JobID)
 	}
 	if len(jobStore.jobs) != 1 {
 		t.Errorf("expected 1 job; got %d", len(jobStore.jobs))
@@ -398,12 +443,15 @@ func TestBulkRefresh_GetJob_Visibility(t *testing.T) {
 	}
 	h, _, _, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
 
+	pinBody := `{"targetUIDs":["uid-1"]}`
 	w := httptest.NewRecorder()
-	r := withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(pinBody))
 	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
 	h.HandleBulkRefreshStore(w, r)
 	if w.Code != http.StatusAccepted {
-		t.Fatalf("POST status = %d", w.Code)
+		t.Fatalf("POST status = %d; body = %s", w.Code, w.Body.String())
 	}
 	var jobBody struct {
 		Data struct {
@@ -493,7 +541,7 @@ func TestBulkWorker_MixedOutcomes(t *testing.T) {
 		JobID:     jobID,
 		ClusterID: "local",
 		Action:    store.BulkRefreshActionStore,
-		ScopeTgt:  "apps/vault",
+		ScopeTarget:  "apps/vault",
 		Targets: []BulkScopeTarget{
 			{Namespace: "apps", Name: "ok1", UID: "uid-ok1"},
 			{Namespace: "apps", Name: "ok2", UID: "uid-ok2"},
@@ -549,8 +597,8 @@ func TestBulkRefresh_CompleteOrphans(t *testing.T) {
 	jobStore := newFakeBulkJobStore()
 	id1 := uuid.New()
 	id2 := uuid.New()
-	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{ID: id1, ClusterID: "local", Action: store.BulkRefreshActionStore})
-	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{ID: id2, ClusterID: "local", Action: store.BulkRefreshActionStore})
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{ID: id1, ClusterID: "local", Action: store.BulkRefreshActionStore, ScopeTarget: "apps/store-a"})
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{ID: id2, ClusterID: "local", Action: store.BulkRefreshActionStore, ScopeTarget: "apps/store-b"})
 	_ = jobStore.Complete(context.Background(), id1)
 
 	n, err := jobStore.CompleteOrphans(context.Background())
@@ -585,13 +633,13 @@ func TestBulkRefresh_AuditDetailShape(t *testing.T) {
 		Skipped:     []store.BulkRefreshOutcome{{UID: "c", Reason: "already_refreshing"}},
 	}
 	msg := BulkJobMessage{
-		Action: store.BulkRefreshActionStore, ScopeTgt: "apps/vault", ActorName: "alice",
+		Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault", ActorName: "alice",
 	}
 	h.auditBulkJob(context.Background(), msg, final)
 	last := rec.last()
 	var detail struct {
 		JobID          string `json:"jobId"`
-		SucceededCount int    `json:"succeeded_count"`
+		SucceededCount int    `json:"succeededCount"`
 		Failed         []store.BulkRefreshOutcome `json:"failed"`
 		Skipped        []store.BulkRefreshOutcome `json:"skipped"`
 	}
@@ -604,5 +652,392 @@ func TestBulkRefresh_AuditDetailShape(t *testing.T) {
 	}
 	if detail.SucceededCount != 1 || len(detail.Failed) != 1 || len(detail.Skipped) != 1 {
 		t.Errorf("counts = %d/%d/%d", detail.SucceededCount, len(detail.Failed), len(detail.Skipped))
+	}
+}
+
+// Race-loser: a parallel POST inserts the active row first; the slower POST
+// receives store.ErrBulkJobActiveExists from Insert and must surface the
+// existing job's id with the same 409 active_job_exists shape FindActive
+// produces. See todo #347.
+func TestBulkRefresh_RaceLoserSurfacesExistingJob(t *testing.T) {
+	objs := []runtime.Object{
+		makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"}),
+		makeStore("apps", "vault", "uid-store"),
+	}
+	h, jobStore, _, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
+
+	// Pre-seed an active job for the same scope.
+	preID := uuid.New()
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{
+		ID: preID, ClusterID: "local", RequestedBy: "carol",
+		Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault",
+	})
+
+	pinBody := `{"targetUIDs":["uid-1"]}`
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(pinBody))
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d; want 409; body = %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Reason string `json:"reason"`
+			Extra  struct {
+				JobID string `json:"jobId"`
+			} `json:"extra"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body.Error.Reason != "active_job_exists" || body.Error.Extra.JobID != preID.String() {
+		t.Errorf("error = %+v; want active_job_exists / %s", body.Error, preID)
+	}
+}
+
+// Empty body → 400. Phase E requires the operator to pin scope by passing
+// the targetUIDs from the prior GET refresh-scope. Without that pin, a
+// freshly-resolved scope could include resources the operator never saw or
+// confirmed (race against ES create/delete). See todo #340.
+func TestBulkRefresh_EmptyBodyRejected(t *testing.T) {
+	objs := []runtime.Object{
+		makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"}),
+		makeStore("apps", "vault", "uid-store"),
+	}
+	h, jobStore, worker, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invalid body") {
+		t.Errorf("error message = %s", w.Body.String())
+	}
+	if len(jobStore.jobs) != 0 || len(worker.enqueued) != 0 {
+		t.Errorf("guard fired late: jobs=%d enqueued=%d", len(jobStore.jobs), len(worker.enqueued))
+	}
+}
+
+// Empty targetUIDs array → 400. Same rationale as #340: no implicit pin.
+func TestBulkRefresh_EmptyTargetUIDsRejected(t *testing.T) {
+	objs := []runtime.Object{
+		makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"}),
+		makeStore("apps", "vault", "uid-store"),
+	}
+	h, jobStore, _, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
+
+	body := `{"targetUIDs":[]}`
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(body))
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400; body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "targetUIDs required") {
+		t.Errorf("expected targetUIDs-required message; got %s", w.Body.String())
+	}
+	if len(jobStore.jobs) != 0 {
+		t.Errorf("job persisted on rejected pin: %d", len(jobStore.jobs))
+	}
+}
+
+// Bulk-refresh against a non-local X-Cluster-ID returns 501 before scope
+// resolution, job persistence, or worker enqueue. Prevents audit/DB rows
+// from claiming the wrong cluster while the patch runs locally. See #339.
+func TestBulkRefresh_RejectsNonLocalCluster(t *testing.T) {
+	objs := []runtime.Object{
+		makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"}),
+		makeStore("apps", "vault", "uid-store"),
+	}
+	h, jobStore, worker, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", nil), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r = r.WithContext(middleware.WithClusterID(r.Context(), "prod-cluster"))
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d; want 501; body = %s", w.Code, w.Body.String())
+	}
+	if len(jobStore.jobs) != 0 {
+		t.Errorf("job rows = %d; want 0 (guard fires before persistence)", len(jobStore.jobs))
+	}
+	if len(worker.enqueued) != 0 {
+		t.Errorf("worker enqueued = %d; want 0", len(worker.enqueued))
+	}
+}
+
+// Worker-side defense in depth: even if a job row was inserted with a
+// non-local cluster_id (e.g. via direct DB write or a pre-guard race),
+// processJob refuses to patch and reaps the row. See #339.
+func TestBulkWorker_RefusesNonLocalClusterMessage(t *testing.T) {
+	jobStore := newFakeBulkJobStore()
+	id := uuid.New()
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{
+		ID: id, ClusterID: "prod-cluster", Action: store.BulkRefreshActionStore,
+	})
+
+	h := &Handler{Logger: slog.Default()}
+	worker := &BulkWorker{store: jobStore, k8s: nil, handler: h, logger: slog.Default()}
+
+	worker.processJob(context.Background(), BulkJobMessage{
+		JobID:     id,
+		ClusterID: "prod-cluster",
+		Action:    store.BulkRefreshActionStore,
+		ScopeTarget:  "apps/vault",
+		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:  "u",
+	})
+
+	final, err := jobStore.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if final.CompletedAt == nil {
+		t.Errorf("job should be completed (reaped) on non-local guard")
+	}
+	if len(final.Succeeded) != 0 || len(final.Failed) != 0 {
+		t.Errorf("no patches should have run; succeeded=%v failed=%v", final.Succeeded, final.Failed)
+	}
+}
+
+// Cluster-scoped audit Detail must redact per-UID enumeration to avoid
+// cross-tenant leakage. Aggregate counts + reason histograms remain.
+// See todo #348.
+func TestAuditBulkJob_ClusterStoreScope_RedactsUIDs(t *testing.T) {
+	rec := &recordingAudit{}
+	h := &Handler{AuditLogger: rec, Logger: slog.Default()}
+	id := uuid.New()
+	now := time.Now().UTC()
+	final := &store.ESOBulkRefreshJob{
+		ID: id, ClusterID: "local", RequestedBy: "alice",
+		Action:      store.BulkRefreshActionClusterStore,
+		ScopeTarget: "shared-vault",
+		Succeeded:   []string{"uid-tenant-a", "uid-tenant-b"},
+		Failed: []store.BulkRefreshOutcome{
+			{UID: "uid-tenant-a-1", Reason: "rbac_denied"},
+			{UID: "uid-tenant-c-1", Reason: "rbac_denied"},
+			{UID: "uid-tenant-b-1", Reason: "not_found"},
+		},
+		CompletedAt: &now,
+	}
+	msg := BulkJobMessage{
+		JobID: id, Action: store.BulkRefreshActionClusterStore,
+		ScopeTarget: "shared-vault", ActorName: "alice",
+	}
+	h.auditBulkJob(context.Background(), msg, final)
+	last := rec.last()
+
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(last.Detail), &detail); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	failed, ok := detail["failed"].(map[string]any)
+	if !ok {
+		t.Fatalf("failed not redacted to map; got %T = %v", detail["failed"], detail["failed"])
+	}
+	if int(failed["count"].(float64)) != 3 {
+		t.Errorf("failed count = %v; want 3", failed["count"])
+	}
+	reasons := failed["reasons"].(map[string]any)
+	if int(reasons["rbac_denied"].(float64)) != 2 || int(reasons["not_found"].(float64)) != 1 {
+		t.Errorf("reasons = %+v; want rbac_denied:2, not_found:1", reasons)
+	}
+	// UIDs must NOT appear anywhere in the redacted Detail.
+	if strings.Contains(last.Detail, "uid-tenant") {
+		t.Errorf("redacted detail leaks per-UID identity: %s", last.Detail)
+	}
+}
+
+// Namespace and store-scoped audits retain full UID lists — the scope itself
+// already establishes the permissioned context for the reader.
+func TestAuditBulkJob_StoreScope_KeepsUIDs(t *testing.T) {
+	rec := &recordingAudit{}
+	h := &Handler{AuditLogger: rec, Logger: slog.Default()}
+	id := uuid.New()
+	now := time.Now().UTC()
+	final := &store.ESOBulkRefreshJob{
+		ID: id, ClusterID: "local", RequestedBy: "alice",
+		Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault",
+		Failed: []store.BulkRefreshOutcome{
+			{UID: "uid-1", Reason: "rbac_denied"},
+		},
+		CompletedAt: &now,
+	}
+	h.auditBulkJob(context.Background(), BulkJobMessage{JobID: id, Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault"}, final)
+	if !strings.Contains(rec.last().Detail, "uid-1") {
+		t.Errorf("store-scope audit should retain UIDs: %s", rec.last().Detail)
+	}
+}
+
+// Queue-full produces a 503 with synthetic Complete so the orphan row
+// doesn't block the next same-scope POST. See todo #354.
+func TestBulkRefresh_QueueFull(t *testing.T) {
+	objs := []runtime.Object{
+		makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"}),
+		makeStore("apps", "vault", "uid-store"),
+	}
+	h, jobStore, worker, _ := newBulkHandler(objs, resources.NewAlwaysAllowAccessChecker())
+	worker.setFull(true)
+
+	pinBody := `{"targetUIDs":["uid-1"]}`
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(pinBody))
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503; body = %s", w.Code, w.Body.String())
+	}
+	if len(jobStore.jobs) != 1 {
+		t.Fatalf("expected 1 job row even on queue-full")
+	}
+	for _, j := range jobStore.jobs {
+		if j.CompletedAt == nil {
+			t.Errorf("queue-full row should be force-completed; got nil completed_at")
+		}
+	}
+
+	// Subsequent same-scope POST is no longer blocked by FindActive.
+	worker.setFull(false)
+	w = httptest.NewRecorder()
+	r = withUser(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(pinBody)), &auth.User{Username: "alice", KubernetesUsername: "u"})
+	r.Header.Set("Content-Type", "application/json")
+	r.ContentLength = int64(len(pinBody))
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "vault"})
+	h.HandleBulkRefreshStore(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("retry status = %d; want 202 (queue-full row should not block); body = %s", w.Code, w.Body.String())
+	}
+}
+
+// IsConflict from the apiserver becomes a `failed: optimistic_lock` outcome.
+// Drives the real processJob loop via the dynForUser injection seam (#352).
+func TestBulkWorker_OptimisticLockOutcome(t *testing.T) {
+	es := makeESForBulk("apps", "es1", "uid-1", StoreRef{Name: "vault", Kind: "SecretStore"})
+	dynFake := newEsoFakeDynClient(es)
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewConflict(
+			schema.GroupResource{Resource: "externalsecrets"}, "es1", errors.New("rv conflict"),
+		)
+	})
+
+	jobStore := newFakeBulkJobStore()
+	id := uuid.New()
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{
+		ID: id, ClusterID: "local", Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault",
+	})
+
+	h := &Handler{Logger: slog.Default()}
+	worker := &BulkWorker{
+		store:      jobStore,
+		handler:    h,
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		dynForUser: func(_ string, _ []string) (dynamic.Interface, error) { return dynFake, nil },
+	}
+
+	worker.processJob(context.Background(), BulkJobMessage{
+		JobID:     id,
+		ClusterID: "local",
+		Action:    store.BulkRefreshActionStore,
+		ScopeTarget:  "apps/vault",
+		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:  "u",
+	})
+
+	final, _ := jobStore.Get(context.Background(), id)
+	if final.CompletedAt == nil {
+		t.Fatal("expected job completed")
+	}
+	if len(final.Failed) != 1 || final.Failed[0].Reason != "optimistic_lock" {
+		t.Errorf("failed = %+v; want one optimistic_lock entry", final.Failed)
+	}
+}
+
+// Worker panic must mark the job completed and append a synthetic
+// `worker_panic` outcome so the dialog's polling loop terminates and
+// FindActive does not block subsequent same-scope POSTs. See todo #344.
+func TestBulkWorker_PanicCompletesJobWithMarker(t *testing.T) {
+	jobStore := newFakeBulkJobStore()
+	id := uuid.New()
+	_ = jobStore.Insert(context.Background(), store.ESOBulkRefreshJob{
+		ID: id, ClusterID: "local", Action: store.BulkRefreshActionStore, ScopeTarget: "apps/vault",
+	})
+
+	worker := &BulkWorker{
+		jobs:    make(chan BulkJobMessage, 1),
+		store:   jobStore,
+		k8s:     nil,
+		handler: nil, // forces a nil-deref panic inside processJob
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	worker.jobs <- BulkJobMessage{
+		JobID:     id,
+		ClusterID: "local",
+		Action:    store.BulkRefreshActionStore,
+		ScopeTarget:  "apps/vault",
+		Targets:   []BulkScopeTarget{{Namespace: "apps", Name: "es1", UID: "uid-1"}},
+		Username:  "u",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go worker.run(ctx)
+
+	// Wait briefly for the panic + recovery to complete the job.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if final, err := jobStore.Get(context.Background(), id); err == nil && final.CompletedAt != nil {
+			cancel()
+			if len(final.Failed) != 1 || final.Failed[0].Reason != "worker_panic" {
+				t.Errorf("failed = %+v; want one entry with reason=worker_panic", final.Failed)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	t.Fatal("panic recovery did not complete the job within 2s")
+}
+
+// classifyPatchError must produce a meaningful k8s-reason or transient_*
+// prefix instead of the legacy "patch_error:unknown" stub. Operators rely on
+// the reason to distinguish transient (retryable) from permanent failures.
+func TestClassifyPatchError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"timeout", apierrors.NewTimeoutError("upstream timeout", 0), "transient_timeout"},
+		{"server-timeout", apierrors.NewServerTimeout(schema.GroupResource{Resource: "externalsecrets"}, "patch", 1), "transient_timeout"},
+		{"throttled", apierrors.NewTooManyRequests("APF dropped request", 1), "transient_throttled"},
+		{"unavailable", apierrors.NewServiceUnavailable("apiserver rolling restart"), "transient_unavailable"},
+		{"conflict", apierrors.NewConflict(schema.GroupResource{Resource: "externalsecrets"}, "n", errors.New("rv conflict")), "patch_error:conflict"},
+		{"invalid", apierrors.NewBadRequest("bad request"), "patch_error:badrequest"},
+		{"non-status", errors.New("plain old error"), "patch_error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyPatchError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifyPatchError(%v) = %q; want %q", tc.err, got, tc.want)
+			}
+		})
 	}
 }

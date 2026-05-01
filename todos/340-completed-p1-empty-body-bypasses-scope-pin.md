@@ -1,6 +1,6 @@
 ---
 name: Empty POST body bypasses scope-pin — server re-resolves scope freshly without operator confirmation
-status: pending
+status: completed
 priority: p1
 issue_id: 340
 tags: [code-review, eso, phase-e, correctness, design-decision]

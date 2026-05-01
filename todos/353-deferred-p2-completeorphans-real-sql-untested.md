@@ -1,6 +1,7 @@
 ---
 name: CompleteOrphans only tested via in-memory fake — real SQL has no integration coverage
-status: pending
+status: deferred
+defer_reason: "Repo lacks Postgres integration-test harness (testcontainers / dockertest). Adding that scaffolding is out of scope for Phase E follow-up. SQL semantic regressions surface in the E2E suite which exercises bulk-refresh against real Postgres via Helm. Track as future follow-up under test-infrastructure work."
 priority: p2
 issue_id: 353
 tags: [code-review, eso, phase-e, testing, integration]

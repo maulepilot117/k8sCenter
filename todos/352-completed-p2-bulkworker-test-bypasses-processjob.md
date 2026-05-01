@@ -1,6 +1,6 @@
 ---
 name: TestBulkWorker_MixedOutcomes bypasses processJob — worker switch branches untested
-status: pending
+status: completed
 priority: p2
 issue_id: 352
 tags: [code-review, eso, phase-e, testing, false-confidence]

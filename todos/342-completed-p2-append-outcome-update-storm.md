@@ -1,6 +1,6 @@
 ---
 name: AppendOutcome issues 5000 UPDATEs per max-size job; JSONB string concat causes O(n²) rewrites
-status: pending
+status: completed
 priority: p2
 issue_id: 342
 tags: [code-review, eso, phase-e, performance, db-pattern]

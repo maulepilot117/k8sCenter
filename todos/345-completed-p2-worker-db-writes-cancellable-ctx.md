@@ -1,6 +1,6 @@
 ---
 name: Worker DB writes thread cancellable parent ctx — SIGTERM loses outcomes after PATCH already shipped
-status: pending
+status: completed
 priority: p2
 issue_id: 345
 tags: [code-review, eso, phase-e, reliability, safe-auto, audit-integrity]

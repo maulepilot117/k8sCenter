@@ -1,6 +1,6 @@
 ---
 name: Panicking bulk job stays IN-PROGRESS until next-startup CompleteOrphans
-status: pending
+status: completed
 priority: p2
 issue_id: 344
 tags: [code-review, eso, phase-e, reliability, safe-auto]

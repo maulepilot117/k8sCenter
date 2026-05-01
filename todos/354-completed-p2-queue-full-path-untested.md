@@ -1,6 +1,6 @@
 ---
 name: Worker queue-full path (Enqueue→503 + synthetic Complete) has no test coverage
-status: pending
+status: completed
 priority: p2
 issue_id: 354
 tags: [code-review, eso, phase-e, testing]

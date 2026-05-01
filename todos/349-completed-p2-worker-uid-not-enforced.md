@@ -1,6 +1,6 @@
 ---
 name: Worker patches by name; pinned UID never enforced — ES delete/recreate races mis-attribute audit
-status: pending
+status: completed
 priority: p2
 issue_id: 349
 tags: [code-review, eso, phase-e, audit-integrity, race]

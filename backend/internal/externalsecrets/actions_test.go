@@ -22,6 +22,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // recordingAudit captures every audit.Entry written through it. Used by
@@ -314,5 +315,171 @@ func TestForceSync_PatchForbiddenAtAPI(t *testing.T) {
 	entry := rec.last()
 	if entry.Result != audit.ResultDenied {
 		t.Errorf("audit result = %q; want denied", entry.Result)
+	}
+}
+
+// patchForceSyncPinned with a UID that doesn't match the live object returns
+// errUIDDrifted instead of patching. Guards against ES delete/recreate
+// between scope-resolve and worker patch — protects audit honesty.
+// See todo #349.
+func TestPatchForceSyncPinned_UIDDrift(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-LIVE")
+	dynFake := newEsoFakeDynClient(es)
+
+	h := &Handler{Logger: slog.Default()}
+	uid, err := h.patchForceSyncPinned(context.Background(), dynFake, ns, name, "uid-PINNED")
+	if !errors.Is(err, errUIDDrifted) {
+		t.Errorf("error = %v; want errUIDDrifted", err)
+	}
+	if uid != "uid-LIVE" {
+		t.Errorf("returned uid = %q; want live uid", uid)
+	}
+}
+
+// Pinned UID matching live UID succeeds — single-resource happy path.
+func TestPatchForceSyncPinned_UIDMatch(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	h := &Handler{Logger: slog.Default()}
+	_, err := h.patchForceSyncPinned(context.Background(), dynFake, ns, name, "uid-1")
+	if err != nil {
+		t.Errorf("err = %v; want nil", err)
+	}
+}
+
+// patchForceSync retries on transient apiserver errors (timeout, throttle,
+// service unavailable) up to maxPatchRetries times, then returns the final
+// error. The patch is idempotent so retries are safe. See todo #343.
+func TestPatchForceSync_RetriesTransient(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var patchCalls int
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		patchCalls++
+		if patchCalls < 3 {
+			return true, nil, apierrors.NewTooManyRequests("APF throttled", 1)
+		}
+		// 3rd attempt succeeds — return the underlying object so the fake
+		// proceeds normally.
+		return false, nil, nil
+	})
+
+	h := &Handler{Logger: slog.Default()}
+	uid, err := h.patchForceSync(context.Background(), dynFake, ns, name)
+	if err != nil {
+		t.Fatalf("patchForceSync after retries: %v", err)
+	}
+	if uid != "uid-1" {
+		t.Errorf("uid = %q; want uid-1", uid)
+	}
+	if patchCalls != 3 {
+		t.Errorf("patch calls = %d; want 3 (2 transient + 1 success)", patchCalls)
+	}
+}
+
+// Persistent transient errors return the last error after maxPatchRetries.
+func TestPatchForceSync_RetriesExhausted(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var patchCalls int
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		patchCalls++
+		return true, nil, apierrors.NewServiceUnavailable("apiserver rolling restart")
+	})
+
+	h := &Handler{Logger: slog.Default()}
+	_, err := h.patchForceSync(context.Background(), dynFake, ns, name)
+	if !apierrors.IsServiceUnavailable(err) {
+		t.Errorf("error = %v; want service unavailable", err)
+	}
+	if patchCalls != maxPatchRetries {
+		t.Errorf("patch calls = %d; want %d", patchCalls, maxPatchRetries)
+	}
+}
+
+// Non-transient errors do not retry — they short-circuit immediately.
+func TestPatchForceSync_NoRetryOnPermanent(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	dynFake := newEsoFakeDynClient(es)
+
+	var patchCalls int
+	dynFake.PrependReactor("patch", "externalsecrets", func(_ clienttesting.Action) (bool, runtime.Object, error) {
+		patchCalls++
+		return true, nil, apierrors.NewForbidden(
+			schema.GroupResource{Resource: "externalsecrets"}, name, errors.New("denied"),
+		)
+	})
+
+	h := &Handler{Logger: slog.Default()}
+	_, err := h.patchForceSync(context.Background(), dynFake, ns, name)
+	if !apierrors.IsForbidden(err) {
+		t.Errorf("error = %v; want forbidden", err)
+	}
+	if patchCalls != 1 {
+		t.Errorf("patch calls = %d; want 1 (no retry on 403)", patchCalls)
+	}
+}
+
+// Future-dated refreshTime must not collapse `time.Since() < inFlightWindow`
+// into a permanent in-flight false positive. NTP step or malicious controller
+// scenario. See #355 item 2.
+func TestPatchForceSync_FutureRefreshTimeNotInFlight(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	// Set status.refreshTime 5 minutes into the future.
+	es.Object["status"] = map[string]any{
+		"refreshTime": time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339),
+	}
+	dynFake := newEsoFakeDynClient(es)
+
+	h := &Handler{Logger: slog.Default()}
+	_, err := h.patchForceSync(context.Background(), dynFake, ns, name)
+	if errors.Is(err, errAlreadyRefreshing) {
+		t.Errorf("future-dated refreshTime falsely classified in-flight")
+	}
+	if err != nil {
+		t.Fatalf("patch should succeed: %v", err)
+	}
+}
+
+// Force-sync against a non-local X-Cluster-ID returns 501 *before* any patch
+// or audit row is emitted. Phase E writes only the local cluster; honoring
+// the header would silently desync the audit row from reality. See todo #339.
+func TestForceSync_RejectsNonLocalCluster(t *testing.T) {
+	ns, name := "apps", "db-creds"
+	es := makeES(ns, name, "uid-1")
+	h, rec := newForceSyncHandler([]runtime.Object{es}, resources.NewAlwaysAllowAccessChecker())
+
+	w := httptest.NewRecorder()
+	r := withUser(
+		httptest.NewRequest(http.MethodPost, "/", nil),
+		&auth.User{Username: "alice", KubernetesUsername: "u"},
+	)
+	r = r.WithContext(middleware.WithClusterID(r.Context(), "prod-cluster"))
+	r = urlWithChiParams(r, map[string]string{"namespace": ns, "name": name})
+	h.HandleForceSyncExternalSecret(w, r)
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d; want 501", w.Code)
+	}
+	if len(rec.entries) != 0 {
+		t.Errorf("audit entries = %d; want 0 (guard fires before audit)", len(rec.entries))
+	}
+	// Confirm no patch landed on the local object.
+	dyn, _ := h.dynForUser("u", nil)
+	got, err := dyn.Resource(ExternalSecretGVR).Namespace(ns).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if anns := got.GetAnnotations(); anns["force-sync"] != "" {
+		t.Errorf("force-sync annotation present on local ES; guard failed: anns=%v", anns)
 	}
 }

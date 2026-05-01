@@ -1,6 +1,6 @@
 ---
 name: apierrorReason is a no-op stub; every non-typed patch error becomes "patch_error:unknown"
-status: pending
+status: completed
 priority: p1
 issue_id: 338
 tags: [code-review, eso, phase-e, reliability, audit-honesty]

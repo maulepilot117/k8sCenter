@@ -1,6 +1,6 @@
 ---
 name: Per-target patch has no retry — transient API errors become permanent failed[] entries
-status: pending
+status: completed
 priority: p2
 issue_id: 343
 tags: [code-review, eso, phase-e, reliability, design-decision]

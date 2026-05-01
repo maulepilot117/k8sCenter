@@ -1,11 +1,34 @@
 ---
 name: Phase E P3 cleanups — small fixes, naming, a11y, missing test scenarios
-status: pending
+status: completed
 priority: p3
 issue_id: 355
 tags: [code-review, eso, phase-e, cleanup, follow-up]
 dependencies: []
 ---
+
+## Resolution Summary (2026-05-01)
+
+Landed in this sweep:
+- **Item 1** (double WriteHeader): switched force-sync 202 to `httputil.WriteJSON(w, 202, ...)`.
+- **Item 2** (future-skewed refreshTime): clamped to non-negative in `patchForceSyncOnce`.
+- **Item 3** (RBAC verb): pre-check verb now `patch` everywhere.
+- **Item 4** (succeeded_count): renamed to `succeededCount` (camelCase).
+- **Item 5** (ScopeTgt → ScopeTarget): repo-wide rename in BulkJobMessage.
+- **Item 6** (strings.Cut): both byte-walk sites replaced.
+- **Item 7** (InvalidateCache storms): single force-sync no longer invalidates per call (30s TTL).
+- **Item 8** (silent error swallowing): subsumed by #345.
+- **Item 9** (in-flight submit guard): disabled state + early-return guard added.
+- **Item 10** (Esc handler): `keydown` listener calls onClose on Escape.
+- **Item 11** (errorField helper): added `errorExtra(err, key)` in `lib/api.ts`.
+- **Item 13** (empty-body bypass): subsumed by #340.
+- **Item 15** (apierrorReason deletion): subsumed by #338.
+
+Deferred (not in scope for this sweep):
+- **Item 12** (`as never` discriminated union): wire stays the same; would require an overload-based redesign of `bulkRefresh` API client.
+- **Item 14** (BulkWorkerEnqueuer interface): kept as-is per "preserve if you anticipate growth."
+- **Items 16–21** (test scenarios): partially landed via #347/#348/#349/#352/#354. The remaining scenarios (RBAC partial-namespace `Restricted`, 5000-cap, ClusterStore/Namespace handler tests, dialog state machine, 1000-target audit render, audit-detail Reason assertion) need a dedicated test-coverage PR.
+- **Items 22–25** (CLAUDE.md/README updates): track separately; high-volume Phase E doc refresh deserves its own commit so reviewers can scan it.
 
 ## Problem Statement
 

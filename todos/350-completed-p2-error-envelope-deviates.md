@@ -1,6 +1,6 @@
 ---
 name: Phase E 409 responses deviate from canonical error envelope by injecting endpoint-specific keys
-status: pending
+status: completed
 priority: p2
 issue_id: 350
 tags: [code-review, eso, phase-e, api-contract]

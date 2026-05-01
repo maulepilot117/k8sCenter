@@ -128,14 +128,15 @@ export const esoApi = {
 
   /**
    * Trigger a bulk refresh. Returns 202 + jobId. Caller polls
-   * getBulkRefreshJob until completedAt is non-null. Pass `targetUIDs` to
-   * pin the scope from a prior resolveStoreScope; mismatch returns 409
-   * scope_changed and the dialog can re-confirm.
+   * getBulkRefreshJob until completedAt is non-null. `targetUIDs` is REQUIRED
+   * — pass the UIDs from a prior resolveStoreScope to pin scope. Mismatch
+   * returns 409 scope_changed and the dialog can re-confirm. An empty pin
+   * returns 400.
    */
   bulkRefresh: (
     action: BulkRefreshAction,
     target: { namespace?: string; name: string } | { namespace: string },
-    targetUIDs?: string[],
+    targetUIDs: string[],
   ) => {
     let path: string;
     if (action === "refresh_store") {
@@ -154,7 +155,7 @@ export const esoApi = {
     }
     return apiPost<{ jobId: string; targetCount: number }>(
       path,
-      targetUIDs && targetUIDs.length > 0 ? { targetUIDs } : undefined,
+      { targetUIDs },
     );
   },
 

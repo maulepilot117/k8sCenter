@@ -730,6 +730,10 @@ func main() {
 	// dbPool is nil (no jobs table to persist to). On startup, reap any
 	// IN-PROGRESS jobs left behind by an earlier crash so the UI doesn't
 	// show them as forever-running.
+	//
+	// CompleteOrphans is single-replica safe only — it reaps every IN-
+	// PROGRESS row regardless of whether another replica is actively
+	// processing. The Helm chart pins this deployment to one replica.
 	if dbPool != nil {
 		esoBulkStore := appstore.NewESOBulkJobStore(dbPool)
 		if reaped, err := esoBulkStore.CompleteOrphans(ctx); err != nil {
@@ -741,6 +745,38 @@ func main() {
 		esoHandler.BulkJobStore = esoBulkStore
 		esoHandler.BulkWorker = esoBulkWorker
 		esoBulkWorker.Start(ctx)
+
+		// Hourly retention sweep for completed bulk-refresh job rows.
+		// 30-day window — bulk jobs are far less interesting historically
+		// than per-ES sync history (which retains 90d). See todo #341.
+		go func() {
+			runCleanup := func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("eso bulk retention panic recovered", "panic", r)
+					}
+				}()
+				deleted, err := esoBulkStore.Cleanup(ctx, 30)
+				if err != nil {
+					logger.Warn("eso bulk retention sweep failed", "error", err)
+					return
+				}
+				if deleted > 0 {
+					logger.Info("eso bulk retention swept", "deleted", deleted)
+				}
+			}
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			runCleanup()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					runCleanup()
+				}
+			}
+		}()
 	}
 
 	// Gateway API integration

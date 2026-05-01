@@ -1,6 +1,6 @@
 ---
 name: Per-target Patch has no per-call timeout — wedged apiserver pins worker indefinitely
-status: pending
+status: completed
 priority: p2
 issue_id: 346
 tags: [code-review, eso, phase-e, reliability, safe-auto]

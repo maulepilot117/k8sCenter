@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/kubecenter/kubecenter/internal/store"
 )
 
 // TestExportedTypeShapeStability pins a sha256 hash of the exported field
@@ -36,6 +38,12 @@ func TestExportedTypeShapeStability(t *testing.T) {
 		{ClusterExternalSecret{}, "ClusterExternalSecret", "40ae7c0a5334702fc888b7a6e86f2018d6d670b8ab9b07a67004ca682e51caf5"},
 		{SecretStore{}, "SecretStore", "a6aa435026eda8cf349a40867c54515ae641a671a1f3da063da58485919943cb"},
 		{PushSecret{}, "PushSecret", "55992ade35cc28828ec5b7a0a58dddbb8a98c52ad3c174ed31cbda2c17b57abb"},
+		// Phase E wire types — see todo #351.
+		{BulkScopeTarget{}, "BulkScopeTarget", "3216d5c9999e07cde88e2f1a1e196154611a2d557e1f4a8037929bb3cfc26bd5"},
+		{BulkNamespaceCount{}, "BulkNamespaceCount", "66b7c39f5bb9dc80d766c2d466143853b5946a08563a40708dc79265803b4a89"},
+		{BulkScopeResponse{}, "BulkScopeResponse", "df9615c3129e1314015ae3bc408ad41ca90548f8ffa90b67800bead66ba4378f"},
+		{BulkRefreshJobResponse{}, "BulkRefreshJobResponse", "9cdb15ebcd1e724d8cd727e2ec7fb1f7f17bbc00a11674a259399290b5c41b26"},
+		{store.BulkRefreshOutcome{}, "BulkRefreshOutcome", "33ad0d9d04a1ddd97596a7821bb839696cb42b345ee256c1373755a352b149af"},
 	}
 
 	for _, tc := range cases {
