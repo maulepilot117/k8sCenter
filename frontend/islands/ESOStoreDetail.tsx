@@ -3,6 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
 
@@ -20,6 +21,7 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
   const error = useSignal<string | null>(null);
   const data = useSignal<SecretStore | null>(null);
   const activeTab = useSignal<TabKey>("overview");
+  const showRefreshDialog = useSignal(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -65,7 +67,22 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
         <h1 class="text-2xl font-bold text-text-primary">{store.name}</h1>
         <StatusBadge status={store.status} />
         <ProviderBadge provider={store.provider} />
+        <button
+          type="button"
+          onClick={() => (showRefreshDialog.value = true)}
+          class="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+        >
+          Refresh dependent ExternalSecrets
+        </button>
       </div>
+
+      {showRefreshDialog.value && (
+        <ESOBulkRefreshDialog
+          action="refresh_store"
+          target={{ namespace, name }}
+          onClose={() => (showRefreshDialog.value = false)}
+        />
+      )}
 
       <div role="tablist" class="flex gap-1 border-b border-border-primary">
         {(

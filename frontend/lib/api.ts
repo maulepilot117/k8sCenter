@@ -44,13 +44,23 @@ export function getAccessToken(): string | null {
 
 /** Typed API error class. */
 export class ApiError extends Error {
+  /**
+   * Raw error response body when present. Carries the full error envelope —
+   * `error.code`, `error.message`, plus any endpoint-specific fields like
+   * `error.reason` or `error.added/removed` from the bulk-refresh
+   * scope-changed flow. Consumers should narrow with type guards.
+   */
+  body?: { error?: Record<string, unknown> };
+
   constructor(
     public status: number,
     public code: number,
     public detail?: string,
+    body?: { error?: Record<string, unknown> },
   ) {
     super(`API error ${code}: ${detail ?? "Unknown error"}`);
     this.name = "ApiError";
+    this.body = body;
   }
 }
 
@@ -152,6 +162,7 @@ export async function api<T>(
       res.status,
       errorBody?.error?.code ?? res.status,
       errorBody?.error?.message ?? res.statusText,
+      errorBody as { error?: Record<string, unknown> } | undefined,
     );
   }
 

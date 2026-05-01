@@ -5,6 +5,7 @@ import { esoApi } from "@/lib/eso-api.ts";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
 
@@ -20,6 +21,7 @@ export default function ESOExternalSecretsList() {
   const search = useSignal("");
   // null = unknown (still loading), true = ESO present, false = render install prompt.
   const detected = useSignal<boolean | null>(null);
+  const showRefreshDialog = useSignal(false);
 
   // Sequence counter: every fetch captures a token; a response is applied
   // only if its token is still the latest. Stops slow earlier responses
@@ -106,7 +108,24 @@ export default function ESOExternalSecretsList() {
     <div class="p-6">
       <div class="flex items-start justify-between mb-1">
         <h1 class="text-2xl font-bold text-text-primary">ExternalSecrets</h1>
+        {namespace.value.trim() !== "" && (
+          <button
+            type="button"
+            onClick={() => (showRefreshDialog.value = true)}
+            class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+          >
+            Refresh namespace
+          </button>
+        )}
       </div>
+
+      {showRefreshDialog.value && (
+        <ESOBulkRefreshDialog
+          action="refresh_namespace"
+          target={{ namespace: namespace.value.trim() }}
+          onClose={() => (showRefreshDialog.value = false)}
+        />
+      )}
       <p class="text-sm text-text-muted mb-6">
         ExternalSecrets sync data from a SecretStore into a Kubernetes Secret.
       </p>

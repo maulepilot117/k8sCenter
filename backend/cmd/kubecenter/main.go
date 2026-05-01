@@ -726,6 +726,23 @@ func main() {
 		}()
 	}
 
+	// Phase E Unit 15 — bulk refresh job model. Bulk endpoints are 503 when
+	// dbPool is nil (no jobs table to persist to). On startup, reap any
+	// IN-PROGRESS jobs left behind by an earlier crash so the UI doesn't
+	// show them as forever-running.
+	if dbPool != nil {
+		esoBulkStore := appstore.NewESOBulkJobStore(dbPool)
+		if reaped, err := esoBulkStore.CompleteOrphans(ctx); err != nil {
+			logger.Warn("eso bulk: orphan-reap failed", "error", err)
+		} else if reaped > 0 {
+			logger.Info("eso bulk: completed orphan jobs from prior run", "count", reaped)
+		}
+		esoBulkWorker := externalsecrets.NewBulkWorker(esoBulkStore, k8sClient, esoHandler, logger)
+		esoHandler.BulkJobStore = esoBulkStore
+		esoHandler.BulkWorker = esoBulkWorker
+		esoBulkWorker.Start(ctx)
+	}
+
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
