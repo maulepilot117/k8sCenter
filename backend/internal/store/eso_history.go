@@ -2,11 +2,20 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// cleanupTimeout caps the retention DELETE so a wedged connection or
+// runaway predicate can't pin a pgxpool slot indefinitely. 5 minutes is
+// generous: a 10M-row delete on an indexed column should finish in under
+// a minute under normal load. If retention legitimately needs longer,
+// the next 1h tick will pick up the residue.
+const cleanupTimeout = 5 * time.Minute
 
 // ESOSyncHistoryEntry is one row in eso_sync_history. Mirrors the schema
 // added by migration 000011. UID is the ExternalSecret's metadata.uid; the
@@ -62,8 +71,16 @@ func (s *ESOHistoryStore) Insert(ctx context.Context, e ESOSyncHistoryEntry) err
 }
 
 // QueryByUID returns up to limit history entries for an ExternalSecret UID,
-// most recent first. Caller is responsible for RBAC: this method does no
-// filtering — the handler must verify the requesting user can read the ES.
+// most recent first.
+//
+// RBAC contract for callers: the diff_keys_* columns leak k8s Secret KEY
+// NAMES (per the Phase C scope boundary that values are never persisted).
+// Key names alone can be operationally sensitive — a key named
+// "PROD_DB_PASSWORD" reveals credential structure. Future history
+// endpoints MUST verify the requesting user holds `get` on `core/secrets`
+// in the ES namespace, not merely `get externalsecret`. A user with ES
+// read but not Secret read should receive a response with diff_keys_*
+// stripped (or be denied entirely).
 func (s *ESOHistoryStore) QueryByUID(ctx context.Context, uid string, limit int) ([]ESOSyncHistoryEntry, error) {
 	if limit < 1 || limit > 500 {
 		limit = 50
@@ -99,10 +116,15 @@ func (s *ESOHistoryStore) QueryByUID(ctx context.Context, uid string, limit int)
 	return entries, rows.Err()
 }
 
-// LatestByUID returns the most-recent history entry for a UID, or nil if
-// none exists. Used by the handler's list endpoint to populate
-// LastObservedDriftStatus without an N+1 impersonated `get secret` per
-// row.
+// LatestByUID returns the most-recent history entry for a UID. Returns
+// (nil, nil) when no rows exist for the UID; returns (nil, err) for any
+// real query or scan failure. Callers must distinguish these cases so a
+// transient DB fault doesn't render as "no history yet" — a subtle
+// silent-failure mode caught by the Phase C review.
+//
+// Currently no caller is wired in this branch. Phase E or a follow-up
+// will use this for cold-start drift hints (when the in-memory
+// observedDrift map on Handler doesn't yet have an entry).
 func (s *ESOHistoryStore) LatestByUID(ctx context.Context, uid string) (*ESOSyncHistoryEntry, error) {
 	row := s.pool.QueryRow(ctx, `
 		SELECT id, cluster_id, uid, namespace, name, attempt_at, outcome,
@@ -121,9 +143,10 @@ func (s *ESOHistoryStore) LatestByUID(ctx context.Context, uid string) (*ESOSync
 		&e.DiffKeysAdded, &e.DiffKeysRemoved, &e.DiffKeysChanged,
 		&e.SyncedResourceVersion,
 	); err != nil {
-		// pgx returns ErrNoRows on no match; surface as nil so the caller
-		// can distinguish "no history yet" from a real query error.
-		return nil, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("latest eso_sync_history for uid %s: %w", uid, err)
 	}
 	return &e, nil
 }
@@ -131,11 +154,18 @@ func (s *ESOHistoryStore) LatestByUID(ctx context.Context, uid string) (*ESOSync
 // Cleanup deletes entries older than retentionDays. Returns the row count
 // for logging / metrics. The poller's retention goroutine calls this on a
 // 1h tick.
+//
+// A bounded ctx (cleanupTimeout) is wrapped around the parent ctx so a
+// runaway DELETE on a multi-million-row table can't pin a pgxpool slot
+// for the platform's lifetime. If the operation is genuinely longer
+// than that, the next 1h tick picks up the residue.
 func (s *ESOHistoryStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
 	if retentionDays < 1 {
 		return 0, fmt.Errorf("retention days must be at least 1, got %d", retentionDays)
 	}
-	tag, err := s.pool.Exec(ctx,
+	cleanupCtx, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+	tag, err := s.pool.Exec(cleanupCtx,
 		"DELETE FROM eso_sync_history WHERE attempt_at < NOW() - $1 * INTERVAL '1 day'",
 		retentionDays)
 	if err != nil {

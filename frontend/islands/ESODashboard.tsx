@@ -306,7 +306,7 @@ export default function ESODashboard() {
               label="Drifted"
               count={counts.Drifted}
               color="var(--accent-secondary)"
-              subText="Drift only resolves on detail pages."
+              subText="Cached hint refreshed every ~90s; detail page is source of truth."
             />
             <SecondaryCard
               label="Unknown"

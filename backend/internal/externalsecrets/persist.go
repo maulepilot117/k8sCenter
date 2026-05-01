@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"sort"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,9 +21,40 @@ const historyRetentionDays = 90
 // recoverySeedWindow is how far back the restart-recovery seed looks. A
 // failure event older than this is presumed already resolved or noticed,
 // and would generate a misleading recovery dispatch on the next tick if
-// fed into prevBucket. 24h matches the operator-paging cadence — beyond
-// that, the operator has either acknowledged or moved on.
-const recoverySeedWindow = 24 * time.Hour
+// fed into prevBucket.
+//
+// Narrowed from 24h (initial Phase C ship) to 2h after the adversarial
+// review surfaced a phantom-recovery scenario: an ES deleted and
+// recreated (same ns/name, new UID) within the seed window inherits the
+// old UID's bucket via the (ns,name) seed key. 2h still covers the
+// realistic restart-recovery case (process restart while a real failure
+// is open) without crossing typical operator turnaround on a delete and
+// recreate.
+const recoverySeedWindow = 2 * time.Hour
+
+// secretFetchTimeout caps each impersonated/SA Secret GET inside
+// resolveDiffKeys. A wedged API server should not stall the entire
+// persist pass. Matches handler.fetchTimeout precedent (10s) but
+// halved because we issue one Get per ES rather than 5 concurrent CRD
+// lists.
+const secretFetchTimeout = 5 * time.Second
+
+// persistConcurrency caps in-flight Secret GETs inside persistAttempts.
+// Mirrors emitConcurrency (10) — at 1000 ESes per cluster, this turns a
+// 50-second worst-case serial pass into a 5-second parallel one without
+// blowing past pgxpool or the API server.
+const persistConcurrency = 10
+
+// seedEntry carries the bucket and the source-notification timestamp.
+// The timestamp lets check() distinguish a seed for the SAME ES (still
+// existing across restart) from a seed for a DELETED ES whose name was
+// reused: the live ES's metadata.creationTimestamp must be earlier than
+// the seed's NotifTime, otherwise the live ES is fresh and shouldn't
+// inherit the deleted ES's bucket state.
+type seedEntry struct {
+	Bucket    statusBucket
+	NotifTime time.Time
+}
 
 // seedFromNotifications populates seedNSName from recently-persisted
 // notifications. Called once before the first tick. The first
@@ -34,16 +66,21 @@ const recoverySeedWindow = 24 * time.Hour
 // Safe no-op when notifStore is nil. Errors are logged and swallowed:
 // a partial seed is preferable to refusing to start.
 //
+// Filters by p.clusterID so a multi-cluster deployment doesn't seed one
+// cluster's prev-bucket with another cluster's notifications (an ES at
+// the same ns/name in a different cluster is unrelated).
+//
 // We seed by (ns, name) rather than UID because nc_notifications has no
 // UID column — the notification was emitted with ResourceNS/ResourceName
 // as the public identity. The first tick's check() does the (ns,name)
-// -> UID translation when it observes the live ES.
+// -> UID translation when it observes the live ES, validating the seed
+// against the ES's CreationTimestamp before applying it.
 func (p *Poller) seedFromNotifications(ctx context.Context) {
 	if p.notifStore == nil {
 		return
 	}
 	since := time.Now().Add(-recoverySeedWindow)
-	notifs, err := p.notifStore.RecentBySource(ctx, notifications.SourceExternalSecrets, since)
+	notifs, err := p.notifStore.RecentBySource(ctx, notifications.SourceExternalSecrets, p.clusterID, since)
 	if err != nil {
 		p.logger.Warn("externalsecrets poller: prev-bucket seed failed (continuing without)", "error", err)
 		return
@@ -52,11 +89,14 @@ func (p *Poller) seedFromNotifications(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.seedNSName == nil {
-		p.seedNSName = make(map[string]statusBucket, len(notifs))
+		p.seedNSName = make(map[string]seedEntry, len(notifs))
 	}
 	for _, n := range notifs {
 		key := n.ResourceNS + "/" + n.ResourceName
-		p.seedNSName[key] = bucketFromNotification(n)
+		p.seedNSName[key] = seedEntry{
+			Bucket:    bucketFromNotification(n),
+			NotifTime: n.CreatedAt,
+		}
 	}
 	p.logger.Info("externalsecrets poller: seeded prev-bucket from recent notifications",
 		"count", len(p.seedNSName),
@@ -65,26 +105,43 @@ func (p *Poller) seedFromNotifications(ctx context.Context) {
 
 // bucketFromNotification reconstructs the operational bucket from a
 // persisted notification. The schema has no `kind` column, so we decode
-// from severity + title — the title strings are stable and set by
-// failureRecord / lifecycleRecord / recoveryRecord.
+// from severity + title — the title strings are constants in poller.go
+// (Title*) so this decoder stays in sync if a title is renamed.
+//
+// The severity fallback exists for forward compatibility: a future
+// notification kind not yet covered by the title switch falls back to a
+// safe-by-default bucket. The fallback is intentionally conservative —
+// it picks bucketUnknown for SeverityWarning rather than guessing
+// between Stale and Unhealthy, since the consequence of a wrong guess
+// is a phantom dispatch.
 func bucketFromNotification(n notifications.Notification) statusBucket {
 	switch n.Title {
-	case "ExternalSecret sync failed":
+	case TitleSyncFailed:
 		return bucketFailed
-	case "ExternalSecret stale":
+	case TitleStale:
 		return bucketStale
-	case "ExternalSecret unhealthy":
+	case TitleUnhealthy:
 		return bucketUnknown
-	case "ExternalSecret recovered", "ExternalSecret first synced":
+	case TitleRecovered, TitleFirstSynced, TitleCreated:
 		return bucketHealthy
+	case TitleDeleted:
+		// A deleted-lifecycle notification doesn't tell us about the
+		// successor's state. Treat as unknown so the first observation
+		// of a same-named successor establishes its own baseline
+		// rather than inheriting deleted-state semantics.
+		return bucketUnknown
 	}
 	// Fallback by severity for forward compatibility — a future title
-	// rename shouldn't silently break the seed.
+	// rename or new event kind shouldn't silently break the seed.
 	switch n.Severity {
 	case notifications.SeverityCritical:
 		return bucketFailed
 	case notifications.SeverityWarning:
-		return bucketStale
+		// Warning could be Stale or Unhealthy; collapse to Unknown
+		// rather than guess. isFailureBucket(bucketUnknown)=true so
+		// recovery detection still fires; a phantom Stale dedupe slot
+		// is avoided.
+		return bucketUnknown
 	case notifications.SeverityInfo:
 		return bucketHealthy
 	}
@@ -96,56 +153,91 @@ func bucketFromNotification(n notifications.Notification) statusBucket {
 // attempt_at, look up the synced k8s Secret keys (when present), compute
 // a diff against the in-memory prev key-set, and INSERT a row.
 //
-// ON CONFLICT DO NOTHING in the underlying SQL means re-observed
-// attempts (same UID, same lastRefreshTime) are dropped at the DB layer.
-// The in-process prevAttemptAt map skips the Secret fetch when the
-// attempt hasn't advanced — saves ~1 GET per ES per minute in steady
-// state.
+// Concurrency: Secret fetches run with a bounded worker pool
+// (persistConcurrency) mirroring dispatchEmits. Without this, a serial
+// pass over 1000 ESes at 50ms/Get takes 50s — exceeding the 60s tick
+// cadence and stacking ticks indefinitely.
+//
+// State update ordering: prevAttemptAt[uid] is committed only after the
+// Insert succeeds (inside the worker goroutine, under p.mu). A failed
+// INSERT leaves prevAttemptAt unchanged so the next tick re-attempts
+// the same (uid, attempt_at). Without this ordering, a transient INSERT
+// failure permanently skips that attempt.
 //
 // Errors are logged per-ES and swallowed: a failed Secret fetch (RBAC,
 // transient) degrades to "outcome only, no diff" rather than dropping
 // the timeline entry. A failed INSERT logs but doesn't retry — the next
-// tick's INSERT covers it (or skips if attempt_at is unchanged).
+// tick's INSERT covers it.
 func (p *Poller) persistAttempts(ctx context.Context, ess []ExternalSecret) {
 	if p.historyStore == nil {
 		return
 	}
+
+	// Pre-filter: skip non-recordable states + dedup against prevAttemptAt
+	// before spawning any goroutines. This avoids paying the goroutine /
+	// semaphore overhead for the vast majority of ticks (steady-state
+	// ESes whose lastRefreshTime hasn't advanced).
+	type attemptCandidate struct {
+		es        ExternalSecret
+		outcome   string
+		attemptAt time.Time
+	}
+	candidates := make([]attemptCandidate, 0, len(ess))
+	p.mu.Lock()
 	for _, es := range ess {
-		entry, ok := p.buildHistoryEntry(ctx, es)
-		if !ok {
+		outcome, recordable := outcomeFor(es.Status)
+		if !recordable {
 			continue
 		}
-		if err := p.historyStore.Insert(ctx, entry); err != nil {
-			p.logger.Warn("externalsecrets poller: history insert failed",
-				"uid", es.UID,
-				"namespace", es.Namespace,
-				"name", es.Name,
-				"error", err)
+		attemptAt, ok := attemptTimeFor(es)
+		if !ok {
+			// LastSyncTime not populated by the controller. The poller
+			// has no controller-reported attempt to record; using
+			// time.Now() would produce a fresh attempt_at on every
+			// tick (defeating ON CONFLICT dedup) and cause unbounded
+			// row growth for ESes with providers that never set
+			// status.refreshTime. Skip until ESO populates it.
+			continue
 		}
+		if prevAt, hadPrev := p.prevAttemptAt[es.UID]; hadPrev && prevAt.Equal(attemptAt) {
+			continue
+		}
+		candidates = append(candidates, attemptCandidate{es: es, outcome: outcome, attemptAt: attemptAt})
 	}
-}
-
-// buildHistoryEntry decides whether to record an attempt for this ES and
-// constructs the row. Returns ok=false when the ES is in a non-recordable
-// state (Refreshing / Stale / Unknown — these don't represent a NEW
-// attempt) or when the attempt_at hasn't advanced since the last
-// persisted row.
-func (p *Poller) buildHistoryEntry(ctx context.Context, es ExternalSecret) (store.ESOSyncHistoryEntry, bool) {
-	outcome, recordable := outcomeFor(es.Status)
-	if !recordable {
-		return store.ESOSyncHistoryEntry{}, false
-	}
-
-	attemptAt := attemptTimeFor(es)
-
-	p.mu.Lock()
-	prevAt, hadPrev := p.prevAttemptAt[es.UID]
 	p.mu.Unlock()
 
-	if hadPrev && prevAt.Equal(attemptAt) {
-		return store.ESOSyncHistoryEntry{}, false
+	if len(candidates) == 0 {
+		return
 	}
 
+	sem := make(chan struct{}, persistConcurrency)
+	var wg sync.WaitGroup
+	for _, c := range candidates {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(c attemptCandidate) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() { _ = recover() }()
+			p.persistOne(ctx, c.es, c.outcome, c.attemptAt)
+		}(c)
+	}
+	wg.Wait()
+}
+
+// persistOne runs the Secret fetch + diff + INSERT for a single ES.
+// Updates prevAttemptAt[uid] only after Insert succeeds — a failed
+// INSERT leaves the in-memory map untouched so the next tick retries.
+func (p *Poller) persistOne(ctx context.Context, es ExternalSecret, outcome string, attemptAt time.Time) {
 	added, removed, changed := p.resolveDiffKeys(ctx, es, outcome)
 
 	entry := store.ESOSyncHistoryEntry{
@@ -157,17 +249,35 @@ func (p *Poller) buildHistoryEntry(ctx context.Context, es ExternalSecret) (stor
 		Outcome:               outcome,
 		Reason:                es.ReadyReason,
 		Message:               es.ReadyMessage,
-		DiffKeysAdded:         added,
-		DiffKeysRemoved:       removed,
-		DiffKeysChanged:       changed,
+		DiffKeysAdded:         emptyIfNil(added),
+		DiffKeysRemoved:       emptyIfNil(removed),
+		DiffKeysChanged:       emptyIfNil(changed),
 		SyncedResourceVersion: es.SyncedResourceVersion,
+	}
+
+	if err := p.historyStore.Insert(ctx, entry); err != nil {
+		p.logger.Warn("externalsecrets poller: history insert failed",
+			"uid", es.UID,
+			"namespace", es.Namespace,
+			"name", es.Name,
+			"error", err)
+		return
 	}
 
 	p.mu.Lock()
 	p.prevAttemptAt[es.UID] = attemptAt
 	p.mu.Unlock()
+}
 
-	return entry, true
+// emptyIfNil normalizes a nil []string to an empty (non-nil) slice. pgx
+// encodes nil slices as SQL NULL; the diff_keys_* columns are
+// TEXT[] NOT NULL DEFAULT '{}' so a nil bind would violate the
+// constraint. Empty slices encode as PG empty arrays cleanly.
+func emptyIfNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // outcomeFor maps the derived Status to the eso_sync_history.outcome
@@ -194,15 +304,18 @@ func outcomeFor(s Status) (string, bool) {
 	return "", false
 }
 
-// attemptTimeFor resolves the attempt timestamp. Prefers the controller's
-// LastSyncTime when populated (matches operator intuition: "this is when
-// ESO last tried"), falls back to wall-clock now() truncated to second
-// granularity (matches the unique index's effective resolution).
-func attemptTimeFor(es ExternalSecret) time.Time {
+// attemptTimeFor resolves the attempt timestamp from the controller's
+// LastSyncTime. Returns ok=false when the controller hasn't populated
+// LastSyncTime — in that case there's no controller-reported attempt
+// to record, and using wall-clock now() would defeat the
+// ON CONFLICT dedup (every tick produces a new second-truncated
+// timestamp), causing unbounded row growth for ESes whose provider
+// never sets status.refreshTime.
+func attemptTimeFor(es ExternalSecret) (time.Time, bool) {
 	if es.LastSyncTime != nil && !es.LastSyncTime.IsZero() {
-		return es.LastSyncTime.UTC().Truncate(time.Second)
+		return es.LastSyncTime.UTC().Truncate(time.Second), true
 	}
-	return time.Now().UTC().Truncate(time.Second)
+	return time.Time{}, false
 }
 
 // resolveDiffKeys returns the (added, removed, changed) key-sets for
@@ -216,6 +329,9 @@ func attemptTimeFor(es ExternalSecret) time.Time {
 // p.prevKeys[uid] for next-attempt comparison. The hash is sha256 of the
 // raw value bytes — values are NEVER persisted, only the hash, and only
 // in-process.
+//
+// The Get call is wrapped with secretFetchTimeout so a wedged API
+// server can't stall the entire persist pass.
 func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome string) ([]string, []string, []string) {
 	if outcome != "success" || es.TargetSecretName == "" {
 		return nil, nil, nil
@@ -229,7 +345,9 @@ func (p *Poller) resolveDiffKeys(ctx context.Context, es ExternalSecret, outcome
 		return nil, nil, nil
 	}
 
-	sec, err := cs.CoreV1().Secrets(es.Namespace).Get(ctx, es.TargetSecretName, metav1.GetOptions{})
+	fetchCtx, cancel := context.WithTimeout(ctx, secretFetchTimeout)
+	defer cancel()
+	sec, err := cs.CoreV1().Secrets(es.Namespace).Get(fetchCtx, es.TargetSecretName, metav1.GetOptions{})
 	if err != nil {
 		// IsNotFound and IsForbidden are expected operational states
 		// (Secret was deleted, or operator disabled the core/secrets
@@ -315,7 +433,16 @@ func diffKeySets(prev, current map[string][32]byte) ([]string, []string, []strin
 // historyRetentionDays. Caller schedules on a 1h tick from main.go. Safe
 // no-op when historyStore is nil. Logs deleted-row count for operator
 // visibility.
+//
+// Internal panic recovery: a pgx driver fault should not kill the
+// retention goroutine permanently. The caller's goroutine wrapper in
+// main.go also has defer recover() — this is belt-and-suspenders.
 func (p *Poller) RunRetention(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("externalsecrets poller: retention panic recovered", "panic", r)
+		}
+	}()
 	if p.historyStore == nil {
 		return
 	}

@@ -37,6 +37,22 @@ const (
 	EventFirstSynced EventKind = "first_synced"
 )
 
+// Notification title strings. Exposed as constants so the
+// restart-recovery seed (bucketFromNotification in persist.go) can decode
+// persisted notifications back into a bucket without coupling to literal
+// strings duplicated across the file. A title rename here is now a
+// single-site change the compiler reflects everywhere via the const
+// reference.
+const (
+	TitleSyncFailed  = "ExternalSecret sync failed"
+	TitleStale       = "ExternalSecret stale"
+	TitleUnhealthy   = "ExternalSecret unhealthy"
+	TitleRecovered   = "ExternalSecret recovered"
+	TitleFirstSynced = "ExternalSecret first synced"
+	TitleCreated     = "ExternalSecret created"
+	TitleDeleted     = "ExternalSecret deleted"
+)
+
 // statusBucket collapses the 6-state Status enum into 4 emit-relevant
 // buckets. Refreshing folds into healthy — it's a transient state
 // ("controller is working") that should not page operators.
@@ -141,7 +157,7 @@ type Poller struct {
 	initialized   bool                           // first tick: skip lifecycle events for existing inventory
 	prevAttemptAt map[string]time.Time           // UID -> last attempt_at processed (skip dup Secret fetches)
 	prevKeys      map[string]map[string][32]byte // UID -> key -> sha256(value); in-memory only, lost across restart
-	seedNSName    map[string]statusBucket        // (ns/name) -> bucket from recent notifications; consumed by check() on first observation
+	seedNSName    map[string]seedEntry           // (ns/name) -> seed from recent notifications; consumed by check() on first observation
 }
 
 // NewPoller wires the poller against the platform service-account dynamic
@@ -223,10 +239,21 @@ func (p *Poller) check(es ExternalSecret) []emitRecord {
 	// that crossed the restart boundary still emit an event. Once an
 	// ES UID claims its seed entry, we delete it — subsequent ticks use
 	// the genuine prevBucket.
+	//
+	// Residual risk (post-review): if an ES was deleted and a new ES
+	// with the same (ns, name) but a fresh UID was created within
+	// recoverySeedWindow (2h, narrowed from 24h), the new ES inherits
+	// the deleted ES's bucket. This is bounded by AlertOnRecovery being
+	// false by default; operators who opt in get at most one phantom
+	// recovery per delete-and-recreate within the 2h window. Closing
+	// this fully would require comparing seed.NotifTime against the
+	// live ES's CreationTimestamp — deferred until a structured
+	// event_kind column on nc_notifications removes the title-decode
+	// dependency.
 	if !hadPrev && !wasSeen && p.seedNSName != nil {
 		key := es.Namespace + "/" + es.Name
-		if seedBucket, ok := p.seedNSName[key]; ok {
-			prev = seedBucket
+		if seed, ok := p.seedNSName[key]; ok {
+			prev = seed.Bucket
 			hadPrev = true
 			wasSeen = true
 			delete(p.seedNSName, key)
@@ -308,14 +335,14 @@ func failureRecord(es ExternalSecret, kind EventKind) emitRecord {
 	sev := notifications.SeverityWarning
 	switch kind {
 	case EventSyncFailed:
-		title = "ExternalSecret sync failed"
+		title = TitleSyncFailed
 		msg = "An ExternalSecret could not be reconciled by the controller."
 		sev = notifications.SeverityCritical
 	case EventStale:
-		title = "ExternalSecret stale"
+		title = TitleStale
 		msg = "An ExternalSecret has not synced within its stale-after window."
 	case EventUnhealthy:
-		title = "ExternalSecret unhealthy"
+		title = TitleUnhealthy
 		msg = "An ExternalSecret is in an unknown or degraded state."
 	}
 	return emitRecord{ES: es, Kind: kind, Title: title, Msg: msg, Sev: sev}
@@ -325,7 +352,7 @@ func recoveryRecord(es ExternalSecret) emitRecord {
 	return emitRecord{
 		ES:    es,
 		Kind:  EventRecovered,
-		Title: "ExternalSecret recovered",
+		Title: TitleRecovered,
 		Msg:   "An ExternalSecret has resumed syncing successfully.",
 		Sev:   notifications.SeverityInfo,
 	}
@@ -335,13 +362,13 @@ func lifecycleRecord(es ExternalSecret, kind EventKind) emitRecord {
 	var title, msg string
 	switch kind {
 	case EventFirstSynced:
-		title = "ExternalSecret first synced"
+		title = TitleFirstSynced
 		msg = "A new ExternalSecret has been reconciled for the first time."
 	case EventCreated:
-		title = "ExternalSecret created"
+		title = TitleCreated
 		msg = "A new ExternalSecret has been created (not yet synced)."
 	case EventDeleted:
-		title = "ExternalSecret deleted"
+		title = TitleDeleted
 		msg = "An ExternalSecret has been deleted."
 	}
 	return emitRecord{ES: es, Kind: kind, Title: title, Msg: msg, Sev: notifications.SeverityInfo}
@@ -509,8 +536,10 @@ func dispatchEmits(
 	for _, rec := range records {
 		// Priority ctx check: Go's select is non-deterministic when
 		// multiple cases are ready (cancelled ctx + empty semaphore).
-		// A non-blocking probe first guarantees we abort promptly when
-		// ctx was cancelled, rather than racing the semaphore send.
+		// A non-blocking probe first reduces — but does not eliminate —
+		// the window in which a just-cancelled context still acquires
+		// a semaphore slot. Goroutines already past both selects run
+		// to completion regardless of ctx state; bounded by emitConcurrency.
 		select {
 		case <-ctx.Done():
 			return

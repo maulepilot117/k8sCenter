@@ -1173,9 +1173,9 @@ func contains(haystack, needle string) bool {
 func TestHandler_ObservedDriftRoundTrip(t *testing.T) {
 	h := &Handler{Logger: slog.Default()}
 
-	// No record yet -> Unknown.
-	if got := h.observedDriftFor("u1"); got != DriftUnknown {
-		t.Errorf("missing key: got %q; want Unknown", got)
+	// No record yet -> empty (so omitempty fires on the wire).
+	if got := h.observedDriftFor("u1"); got != "" {
+		t.Errorf("missing key: got %q; want empty", got)
 	}
 
 	h.RecordDrift("u1", DriftDrifted)
@@ -1196,14 +1196,19 @@ func TestHandler_ObservedDriftRoundTrip(t *testing.T) {
 	if got := h.observedDriftFor("u1"); got != DriftDrifted {
 		t.Errorf("u1 retained: got %q; want Drifted", got)
 	}
-	if got := h.observedDriftFor("u2"); got != DriftUnknown {
-		t.Errorf("u2 pruned: got %q; want Unknown", got)
+	if got := h.observedDriftFor("u2"); got != "" {
+		t.Errorf("u2 pruned: got %q; want empty", got)
 	}
 }
 
-// List endpoint surfaces the poller's recorded DriftStatus through
-// LastObservedDriftStatus, and the existing Status enum transitions to
-// Drifted when DriftStatus=Drifted overlays a Synced base.
+// List endpoint surfaces the poller's observed drift via
+// LastObservedDriftStatus. When the observation is Drifted on a Synced
+// base, Status overlays to Drifted (so the dashboard count works).
+//
+// Wire-shape contract: list NEVER sets DriftStatus; that's reserved for
+// the detail endpoint's live impersonated read. This separation gives
+// API consumers a way to distinguish "live drift" (DriftStatus, detail)
+// from "cached hint" (LastObservedDriftStatus, list).
 func TestHandleListExternalSecrets_SurfacesObservedDrift(t *testing.T) {
 	es1 := makeES("apps", "es1", "uid-1")
 	es2 := makeES("apps", "es2", "uid-2")
@@ -1235,9 +1240,13 @@ func TestHandleListExternalSecrets_SurfacesObservedDrift(t *testing.T) {
 			if es.LastObservedDriftStatus != DriftDrifted {
 				t.Errorf("uid-1 LastObservedDriftStatus: got %q; want Drifted", es.LastObservedDriftStatus)
 			}
-			// DeriveStatus must overlay Drifted onto the base Synced.
 			if es.Status != StatusDrifted {
 				t.Errorf("uid-1 Status: got %q; want Drifted (overlay)", es.Status)
+			}
+			// DriftStatus stays absent on list — it's reserved for
+			// the detail endpoint's live read.
+			if es.DriftStatus != "" {
+				t.Errorf("uid-1 DriftStatus on list: got %q; list endpoint must leave it empty", es.DriftStatus)
 			}
 		case "uid-2":
 			if es.LastObservedDriftStatus != DriftInSync {
@@ -1246,6 +1255,9 @@ func TestHandleListExternalSecrets_SurfacesObservedDrift(t *testing.T) {
 			if es.Status != StatusSynced {
 				t.Errorf("uid-2 Status: got %q; want Synced (no overlay)", es.Status)
 			}
+			if es.DriftStatus != "" {
+				t.Errorf("uid-2 DriftStatus on list: got %q; want empty", es.DriftStatus)
+			}
 		default:
 			t.Errorf("unexpected uid %q", es.UID)
 		}
@@ -1253,7 +1265,8 @@ func TestHandleListExternalSecrets_SurfacesObservedDrift(t *testing.T) {
 }
 
 // When the poller hasn't observed an ES yet, the list response carries
-// LastObservedDriftStatus=Unknown and the base Status is preserved.
+// LastObservedDriftStatus="" so omitempty omits the field. The base
+// Status is preserved.
 func TestHandleListExternalSecrets_NoObservedDrift(t *testing.T) {
 	es := makeES("apps", "fresh", "uid-fresh")
 	h := &Handler{
@@ -1272,8 +1285,8 @@ func TestHandleListExternalSecrets_NoObservedDrift(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d ESes; want 1", len(got))
 	}
-	if got[0].LastObservedDriftStatus != DriftUnknown {
-		t.Errorf("no observation: got %q; want Unknown", got[0].LastObservedDriftStatus)
+	if got[0].LastObservedDriftStatus != "" {
+		t.Errorf("no observation: got %q; want empty (omitempty)", got[0].LastObservedDriftStatus)
 	}
 	if got[0].Status != StatusSynced {
 		t.Errorf("Status: got %q; want Synced", got[0].Status)
