@@ -163,16 +163,25 @@ rules:
       - clustersecretstores
       - pushsecrets
     verbs: ["list", "watch"]
-  # NOTE: cluster-wide get/list on core/secrets is intentionally NOT granted
-  # to the platform service account in Phase A. The Phase C ESO sync-history
-  # poller (Unit 10) needs it to compute key-level diff between successive
-  # sync attempts and will add the grant in that PR. Phase A's drift
-  # resolution path uses an impersonated client (see resolveDriftStatus in
-  # internal/externalsecrets/handler.go), so it doesn't depend on this grant.
-  # Keeping the grant out of Phase A holds the architectural-boundary
-  # comment at line 20 ("secrets are fetched on-demand via impersonated
-  # client, not cached in informer") intact until Phase C's consumer code
-  # actually requires it.
+  # ESO sync-history poller (Phase C Unit 10) — cluster-wide get/list on
+  # core/secrets is needed by `internal/externalsecrets/persist.go` to
+  # fetch the synced k8s Secret per ExternalSecret and compute the
+  # key-level diff (added/removed/changed) recorded in eso_sync_history.
+  # The poller has no requesting-user context (it runs as the platform
+  # service account), so the diff cannot use the impersonated client.
+  #
+  # Operators in stricter environments can REMOVE this grant block. The
+  # diff feature degrades gracefully — diff_keys_* columns end up empty
+  # in every row, but the timeline (outcome / reason / message / attempt_at)
+  # remains fully functional. The poller logs IsForbidden silently rather
+  # than treating it as a transient error.
+  #
+  # The drift-resolution path on the detail endpoint (resolveDriftStatus
+  # in handler.go) uses an impersonated client and does NOT depend on
+  # this grant.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
   # CRD discovery — list/watch CustomResourceDefinitions for Extensions Hub
   - apiGroups: ["apiextensions.k8s.io"]
     resources:

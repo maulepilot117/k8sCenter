@@ -1167,3 +1167,128 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// --- Phase C Unit 11: drift-map plumbing on the list endpoint -----------
+
+func TestHandler_ObservedDriftRoundTrip(t *testing.T) {
+	h := &Handler{Logger: slog.Default()}
+
+	// No record yet -> empty (so omitempty fires on the wire).
+	if got := h.observedDriftFor("u1"); got != "" {
+		t.Errorf("missing key: got %q; want empty", got)
+	}
+
+	h.RecordDrift("u1", DriftDrifted)
+	h.RecordDrift("u2", DriftInSync)
+
+	if got := h.observedDriftFor("u1"); got != DriftDrifted {
+		t.Errorf("u1: got %q; want Drifted", got)
+	}
+	if got := h.observedDriftFor("u2"); got != DriftInSync {
+		t.Errorf("u2: got %q; want InSync", got)
+	}
+
+	// Empty UID is a no-op.
+	h.RecordDrift("", DriftDrifted)
+
+	// Prune drops keys not in currentUIDs.
+	h.PruneObservedDrift(map[string]bool{"u1": true})
+	if got := h.observedDriftFor("u1"); got != DriftDrifted {
+		t.Errorf("u1 retained: got %q; want Drifted", got)
+	}
+	if got := h.observedDriftFor("u2"); got != "" {
+		t.Errorf("u2 pruned: got %q; want empty", got)
+	}
+}
+
+// List endpoint surfaces the poller's observed drift via
+// LastObservedDriftStatus. When the observation is Drifted on a Synced
+// base, Status overlays to Drifted (so the dashboard count works).
+//
+// Wire-shape contract: list NEVER sets DriftStatus; that's reserved for
+// the detail endpoint's live impersonated read. This separation gives
+// API consumers a way to distinguish "live drift" (DriftStatus, detail)
+// from "cached hint" (LastObservedDriftStatus, list).
+func TestHandleListExternalSecrets_SurfacesObservedDrift(t *testing.T) {
+	es1 := makeES("apps", "es1", "uid-1")
+	es2 := makeES("apps", "es2", "uid-2")
+
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   newEsoFakeDynClient(es1, es2),
+	}
+
+	// Simulate poller observations: es1 drifted, es2 in-sync.
+	h.RecordDrift("uid-1", DriftDrifted)
+	h.RecordDrift("uid-2", DriftInSync)
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil),
+		&auth.User{KubernetesUsername: "u"})
+	h.HandleListExternalSecrets(w, r)
+
+	got := decodeArray[ExternalSecret](t, w)
+	if len(got) != 2 {
+		t.Fatalf("got %d ESes; want 2", len(got))
+	}
+
+	for _, es := range got {
+		switch es.UID {
+		case "uid-1":
+			if es.LastObservedDriftStatus != DriftDrifted {
+				t.Errorf("uid-1 LastObservedDriftStatus: got %q; want Drifted", es.LastObservedDriftStatus)
+			}
+			if es.Status != StatusDrifted {
+				t.Errorf("uid-1 Status: got %q; want Drifted (overlay)", es.Status)
+			}
+			// DriftStatus stays absent on list — it's reserved for
+			// the detail endpoint's live read.
+			if es.DriftStatus != "" {
+				t.Errorf("uid-1 DriftStatus on list: got %q; list endpoint must leave it empty", es.DriftStatus)
+			}
+		case "uid-2":
+			if es.LastObservedDriftStatus != DriftInSync {
+				t.Errorf("uid-2 LastObservedDriftStatus: got %q; want InSync", es.LastObservedDriftStatus)
+			}
+			if es.Status != StatusSynced {
+				t.Errorf("uid-2 Status: got %q; want Synced (no overlay)", es.Status)
+			}
+			if es.DriftStatus != "" {
+				t.Errorf("uid-2 DriftStatus on list: got %q; want empty", es.DriftStatus)
+			}
+		default:
+			t.Errorf("unexpected uid %q", es.UID)
+		}
+	}
+}
+
+// When the poller hasn't observed an ES yet, the list response carries
+// LastObservedDriftStatus="" so omitempty omits the field. The base
+// Status is preserved.
+func TestHandleListExternalSecrets_NoObservedDrift(t *testing.T) {
+	es := makeES("apps", "fresh", "uid-fresh")
+	h := &Handler{
+		Discoverer:    detectedDiscoverer(),
+		AccessChecker: resources.NewAlwaysAllowAccessChecker(),
+		Logger:        slog.Default(),
+		dynOverride:   newEsoFakeDynClient(es),
+	}
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil),
+		&auth.User{KubernetesUsername: "u"})
+	h.HandleListExternalSecrets(w, r)
+
+	got := decodeArray[ExternalSecret](t, w)
+	if len(got) != 1 {
+		t.Fatalf("got %d ESes; want 1", len(got))
+	}
+	if got[0].LastObservedDriftStatus != "" {
+		t.Errorf("no observation: got %q; want empty (omitempty)", got[0].LastObservedDriftStatus)
+	}
+	if got[0].Status != StatusSynced {
+		t.Errorf("Status: got %q; want Synced", got[0].Status)
+	}
+}

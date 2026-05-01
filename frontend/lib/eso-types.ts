@@ -77,6 +77,13 @@ export interface ExternalSecret {
   alertOnRecoverySource?: ThresholdSource;
   alertOnLifecycle?: boolean | null;
   alertOnLifecycleSource?: ThresholdSource;
+  /**
+   * Phase C: poller's last-observed drift state, populated on the list
+   * response only (the detail endpoint resolves DriftStatus live and
+   * leaves this field undefined). Stale by up to 90s — 60s poller
+   * cycle + 30s handler cache. The detail page is source of truth.
+   */
+  lastObservedDriftStatus?: DriftStatus;
 }
 
 export interface ClusterExternalSecret {

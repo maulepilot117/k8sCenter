@@ -56,14 +56,17 @@ const (
 // provider doesn't populate syncedResourceVersion, so we cannot tell) is
 // surfaced to operators rather than collapsed into one boolean.
 //
-// Wire contract: the LIST endpoint OMITS this field entirely (drift
-// resolution requires a per-ES impersonated `get secret` which would N+1
-// the list). Callers must treat the absence of `driftStatus` on a list
-// item as DriftUnknown — never as DriftInSync. The DETAIL endpoint always
-// populates it. Phase C's Unit 11 will add a coarse
-// `lastObservedDriftStatus` to the list response sourced from the
-// poller's persisted history; the contract above still holds (absence ==
-// Unknown) for the detail-vs-list split.
+// Wire contract: the LIST endpoint OMITS this field entirely. Drift
+// resolution requires a per-ES impersonated `get secret` which would
+// N+1 the list. Callers must treat the absence of `driftStatus` on a
+// list item as "drift not resolved live for this row" — never as
+// DriftInSync. The DETAIL endpoint always populates it.
+//
+// Phase C surfaces a coarse cached drift hint on list responses via the
+// separate `lastObservedDriftStatus` field, sourced from the poller's
+// in-memory drift map. That field has its own absence contract (omitted
+// when no observation has been recorded yet — see LastObservedDriftStatus).
+// `driftStatus` itself remains detail-only.
 type DriftStatus string
 
 const (
@@ -157,12 +160,26 @@ type ExternalSecret struct {
 	AlertOnLifecycleSource  ThresholdSource `json:"alertOnLifecycleSource,omitempty"`
 
 	// DriftUnknownReason disambiguates a DriftStatus=Unknown response. Empty
-	// when DriftStatus is not Unknown. Allowed values: `no_synced_rv`,
+	// when DriftStatus is not Unknown. Allowed values match the
+	// DriftReason* constants in handler.go: `no_synced_rv`,
 	// `no_target_name`, `secret_deleted`, `rbac_denied`, `transient_error`,
-	// `client_error`, `secret_not_owned`. Frontend renders this as a
-	// hover-tooltip under the drift indicator so an operator can see WHY
-	// drift wasn't resolvable rather than guessing.
+	// `client_error`. Frontend renders this as a hover-tooltip under
+	// the drift indicator so an operator can see WHY drift wasn't
+	// resolvable rather than guessing.
 	DriftUnknownReason string `json:"driftUnknownReason,omitempty"`
+
+	// LastObservedDriftStatus is the poller's last-observed drift state
+	// for this ES, surfaced ONLY on the list endpoint. The detail
+	// endpoint instead resolves DriftStatus live via an impersonated
+	// `get secret` and leaves this field empty.
+	//
+	// Wire contract: omitempty fires when no observation has been
+	// recorded (poller hasn't run for this UID yet, or PruneObservedDrift
+	// removed it). Callers should treat absence as "no cached drift
+	// hint available" — neither InSync nor Drifted. Operators reading
+	// the list view see a stale-by-up-to-90s hint (60s poller cycle
+	// + 30s handler cache); the detail page is source of truth.
+	LastObservedDriftStatus DriftStatus `json:"lastObservedDriftStatus,omitempty"`
 }
 
 // ClusterExternalSecret is the API representation of a ClusterExternalSecret —

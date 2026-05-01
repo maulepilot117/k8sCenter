@@ -642,10 +642,11 @@ func main() {
 
 	// Notification center — aggregates events from all subsystems
 	var notifService *notifications.NotificationService
+	var notifStore *notifications.Store
 	var notifCenterHandler *notifications.Handler
 	var limitsChecker *limits.Checker
 	if dbPool != nil {
-		notifStore := notifications.NewStore(dbPool, dbEncKey)
+		notifStore = notifications.NewStore(dbPool, dbEncKey)
 		notifService = notifications.NewService(notifStore, hub, alertNotifier, logger)
 		notifService.Start(ctx)
 
@@ -694,13 +695,36 @@ func main() {
 	go cmPoller.Start(ctx)
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D
-	// — alerting + threshold annotations). DB persistence + drift history
-	// arrive in Phase C, which extends esoPoller.tick with sync-history
-	// inserts.
+	// — alerting + threshold annotations; Phase C — DB persistence + drift
+	// history). esoHistoryStore is nil when no DB is configured, in which
+	// case the poller runs Phase D's dispatch-only path with no timeline.
+	var esoHistoryStore *appstore.ESOHistoryStore
+	if dbPool != nil {
+		esoHistoryStore = appstore.NewESOHistoryStore(dbPool)
+	}
 	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
 	esoHandler := externalsecrets.NewHandler(k8sClient, esoDisc, accessChecker, auditLogger, notifService, logger)
-	esoPoller := externalsecrets.NewPoller(k8sClient, esoDisc, esoHandler, notifService, logger)
+	esoPoller := externalsecrets.NewPoller(
+		k8sClient, esoDisc, esoHandler,
+		notifService, notifStore, esoHistoryStore, cfg.ClusterID,
+		logger,
+	)
 	go esoPoller.Start(ctx)
+	if esoHistoryStore != nil {
+		go func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			esoPoller.RunRetention(ctx)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					esoPoller.RunRetention(ctx)
+				}
+			}
+		}()
+	}
 
 	// Gateway API integration
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)

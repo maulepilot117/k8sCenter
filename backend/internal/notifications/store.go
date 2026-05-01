@@ -212,6 +212,62 @@ func (s *Store) PruneOlderThan(ctx context.Context, age time.Duration) (int64, e
 	return tag.RowsAffected(), nil
 }
 
+// RecentBySource returns the most-recent persisted notification per
+// (resource_kind, resource_ns, resource_name) tuple for the given source,
+// optionally scoped to clusterID, created on or after `since`. Used by
+// pollers (notably ESO) to seed in-memory dedupe state at startup so a
+// recovery transition that happened across a process restart still
+// fires an event — without seeding, the post-restart first tick
+// observes Healthy, has no prior bucket recorded, and silently swallows
+// the recovery.
+//
+// clusterID is matched as: empty-string in the parameter selects rows
+// regardless of cluster_id (single-cluster install or callers that want
+// the whole catalog). A non-empty parameter restricts to rows whose
+// cluster_id matches OR whose cluster_id is empty (legacy rows from
+// before cluster_id was populated). This avoids a multi-cluster phantom
+// where cluster B inherits cluster A's prev-bucket via the (ns, name)
+// seed key.
+//
+// The schema has no `kind` column, so callers reconstruct the event
+// class (failure / stale / recovery) from severity + title.
+func (s *Store) RecentBySource(ctx context.Context, source Source, clusterID string, since time.Time) ([]Notification, error) {
+	query := `
+		SELECT DISTINCT ON (resource_kind, resource_ns, resource_name)
+		       id, source, severity, title, message,
+		       resource_kind, resource_ns, resource_name, cluster_id, created_at
+		FROM nc_notifications
+		WHERE source = $1
+		  AND created_at >= $2
+		  AND resource_kind <> ''
+		  AND resource_name <> ''`
+	args := []any{source, since}
+	if clusterID != "" {
+		query += " AND (cluster_id = $3 OR cluster_id = '')"
+		args = append(args, clusterID)
+	}
+	query += " ORDER BY resource_kind, resource_ns, resource_name, created_at DESC"
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("recent notifications by source: %w", err)
+	}
+	defer rows.Close()
+
+	var notifications []Notification
+	for rows.Next() {
+		var n Notification
+		if err := rows.Scan(
+			&n.ID, &n.Source, &n.Severity, &n.Title, &n.Message,
+			&n.ResourceKind, &n.ResourceNS, &n.ResourceName, &n.ClusterID, &n.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent notification: %w", err)
+		}
+		notifications = append(notifications, n)
+	}
+	return notifications, rows.Err()
+}
+
 // NotificationsSince returns notifications matching filters created after the given time.
 // Includes namespace filtering for RBAC compliance.
 func (s *Store) NotificationsSince(ctx context.Context, since time.Time, namespaces []string, sourceFilter []string, severityFilter []string) ([]Notification, error) {

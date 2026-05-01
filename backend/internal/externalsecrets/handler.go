@@ -58,6 +58,15 @@ type Handler struct {
 	cache      *cachedData
 	cacheGen   uint64
 
+	// observedDrift is the poller's last-observed DriftStatus per ES UID,
+	// populated by RecordDrift on every successful Secret fetch. The list
+	// endpoint reads from this map to surface a coarse drift hint without
+	// an N+1 impersonated `get secret`. Detail endpoint bypasses this and
+	// resolves drift live for source-of-truth accuracy. Pruned at the end
+	// of each poller tick via PruneObservedDrift to drop UIDs that have
+	// vanished from the inventory.
+	observedDrift sync.Map // map[string]DriftStatus
+
 	// dynOverride / dynForUserOverride / clientForUserOverride are test-only
 	// seams. Production wiring leaves them nil — the real handler delegates
 	// to K8sClient. They live as struct fields rather than constructor
@@ -173,6 +182,55 @@ func (h *Handler) InvalidateCache() {
 	h.cacheGen++
 	h.cache = nil
 	h.cacheMu.Unlock()
+}
+
+// RecordDrift stashes the poller's drift observation for an ES UID. Called
+// from the poller's secret-fetch path each tick. Subsequent list responses
+// will surface this state via LastObservedDriftStatus until a newer value
+// overwrites it or PruneObservedDrift removes it.
+func (h *Handler) RecordDrift(uid string, status DriftStatus) {
+	if uid == "" {
+		return
+	}
+	h.observedDrift.Store(uid, status)
+}
+
+// observedDriftFor returns the last-observed drift state for a UID, or
+// the empty string if no observation has been recorded yet (poller hasn't
+// run, or this UID is brand-new). The empty return is what makes
+// `LastObservedDriftStatus` omitempty actually fire on list responses —
+// returning DriftUnknown ("Unknown") would always serialize as a non-empty
+// string and the field would be present on every row, contradicting the
+// json:"omitempty" tag.
+//
+// Callers distinguish "no observation" (empty) from "observed Unknown"
+// (rare; only set on Secret-fetch error paths in resolveDiffKeys). Both
+// surface to operators identically — the dashboard counts only the
+// Drifted bucket — but the wire shape is honest about what we know.
+func (h *Handler) observedDriftFor(uid string) DriftStatus {
+	if v, ok := h.observedDrift.Load(uid); ok {
+		if d, ok := v.(DriftStatus); ok {
+			return d
+		}
+	}
+	return ""
+}
+
+// PruneObservedDrift drops drift observations for UIDs no longer in the
+// poller's currentUIDs set. Called by the poller at the end of each tick
+// so deleted ESes don't accumulate stale drift state in the map.
+func (h *Handler) PruneObservedDrift(currentUIDs map[string]bool) {
+	h.observedDrift.Range(func(key, _ any) bool {
+		uid, ok := key.(string)
+		if !ok {
+			h.observedDrift.Delete(key)
+			return true
+		}
+		if !currentUIDs[uid] {
+			h.observedDrift.Delete(uid)
+		}
+		return true
+	})
 }
 
 // canAccess checks a single (verb, resource, namespace) tuple via the
@@ -497,7 +555,37 @@ func (h *Handler) HandleListExternalSecrets(w http.ResponseWriter, r *http.Reque
 		filtered = nsFiltered
 	}
 
-	httputil.WriteData(w, filtered)
+	// Phase C: surface the poller's last-observed drift state so the
+	// dashboard's Drifted count and the list view's status badge reflect
+	// drift without an N+1 impersonated `get secret`. Operates on a fresh
+	// copy of each ES so the cached snapshot (shared across users) is
+	// not mutated.
+	//
+	// Wire-shape contract: the list response sets ONLY
+	// LastObservedDriftStatus; DriftStatus is reserved for the detail
+	// endpoint's live impersonated read and stays absent here. The
+	// Status field is overlaid to "Drifted" so the existing dashboard
+	// count (which checks `it.status === 'Drifted'`) works without
+	// frontend changes — but the live-vs-cached distinction is
+	// preserved by keeping DriftStatus empty on the list path.
+	out := make([]ExternalSecret, len(filtered))
+	for i, es := range filtered {
+		// Clear any DriftStatus the cached normalize step may have set
+		// (DriftUnknown is the zero-value default in Phase A normalize).
+		// On the list path, DriftStatus is always absent on the wire.
+		es.DriftStatus = ""
+		es.DriftUnknownReason = ""
+		drift := h.observedDriftFor(es.UID)
+		if drift != "" {
+			es.LastObservedDriftStatus = drift
+			if drift == DriftDrifted && es.Status == StatusSynced {
+				es.Status = StatusDrifted
+			}
+		}
+		out[i] = es
+	}
+
+	httputil.WriteData(w, out)
 }
 
 // HandleListClusterExternalSecrets returns cluster-scoped ClusterExternalSecrets.
