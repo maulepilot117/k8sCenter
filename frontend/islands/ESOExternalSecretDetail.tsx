@@ -4,6 +4,7 @@ import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
+import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
@@ -32,6 +33,32 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
   const error = useSignal<string | null>(null);
   const data = useSignal<ExternalSecret | null>(null);
   const activeTab = useSignal<TabKey>("overview");
+  const forceSyncing = useSignal(false);
+  const forceSyncMsg = useSignal<string | null>(null);
+
+  const onForceSync = async () => {
+    forceSyncing.value = true;
+    forceSyncMsg.value = null;
+    try {
+      await esoApi.forceSyncExternalSecret(namespace, name);
+      forceSyncMsg.value = "Force-sync requested.";
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const reason = err.body?.error?.reason as string | undefined;
+        if (err.status === 409 && reason === "already_refreshing") {
+          forceSyncMsg.value = "Already refreshing — try again in a minute.";
+        } else if (err.status === 403) {
+          forceSyncMsg.value = "Access denied.";
+        } else {
+          forceSyncMsg.value = err.detail ?? "Force-sync failed.";
+        }
+      } else {
+        forceSyncMsg.value = "Force-sync failed.";
+      }
+    } finally {
+      forceSyncing.value = false;
+    }
+  };
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -88,7 +115,21 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
             reason={es.driftUnknownReason}
           />
         )}
+        <button
+          type="button"
+          onClick={onForceSync}
+          disabled={forceSyncing.value}
+          class="ml-auto px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base disabled:opacity-50"
+        >
+          {forceSyncing.value ? "Force-syncing…" : "Force sync"}
+        </button>
       </div>
+
+      {forceSyncMsg.value && (
+        <p class="text-sm text-text-muted bg-base border border-border-subtle rounded px-3 py-2">
+          {forceSyncMsg.value}
+        </p>
+      )}
 
       {/* Tab strip */}
       <div role="tablist" class="flex gap-1 border-b border-border-primary">

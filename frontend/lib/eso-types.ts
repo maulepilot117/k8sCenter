@@ -137,3 +137,58 @@ export interface PushSecret {
   refreshInterval?: string;
   lastSyncTime?: string;
 }
+
+// --- Phase E bulk refresh types --------------------------------------------
+
+export type BulkRefreshAction =
+  | "refresh_store"
+  | "refresh_cluster_store"
+  | "refresh_namespace";
+
+export interface BulkScopeTarget {
+  namespace: string;
+  name: string;
+  uid: string;
+}
+
+export interface BulkNamespaceCount {
+  namespace: string;
+  count: number;
+}
+
+/**
+ * GET refresh-scope payload. The dialog uses totalCount/visibleCount to render
+ * the "Showing only resources you can refresh" RBAC notice.
+ */
+export interface BulkScopeResponse {
+  action: BulkRefreshAction;
+  scopeTarget: string;
+  totalCount: number;
+  totalNamespaces: number;
+  visibleCount: number;
+  /** True when the SA-view total exceeds what the user can refresh. */
+  restricted: boolean;
+  targets: BulkScopeTarget[];
+  byNamespace: BulkNamespaceCount[];
+}
+
+export interface BulkRefreshOutcome {
+  uid: string;
+  reason: string;
+}
+
+/** GET /externalsecrets/bulk-refresh-jobs/{jobId} payload. */
+export interface BulkRefreshJob {
+  jobId: string;
+  clusterId: string;
+  requestedBy: string;
+  action: BulkRefreshAction;
+  scopeTarget: string;
+  targetCount: number;
+  createdAt: string;
+  /** When non-null, the worker has finished processing the job. */
+  completedAt?: string;
+  succeeded: string[];
+  failed: BulkRefreshOutcome[];
+  skipped: BulkRefreshOutcome[];
+}

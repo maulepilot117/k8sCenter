@@ -44,14 +44,54 @@ export function getAccessToken(): string | null {
 
 /** Typed API error class. */
 export class ApiError extends Error {
+  /**
+   * Raw error response body when present. Carries the full error envelope —
+   * `error.code`, `error.message`, `error.reason`, `error.extra`. Consumers
+   * should prefer the typed `reason` field on this class and the
+   * `errorExtra(err, key)` helper instead of reading `body.error` directly.
+   */
+  body?: {
+    error?: {
+      code?: number;
+      message?: string;
+      detail?: string;
+      reason?: string;
+      extra?: Record<string, unknown>;
+    };
+  };
+
+  /** Endpoint-specific reason code (e.g. "active_job_exists", "scope_changed"). */
+  reason?: string;
+
   constructor(
     public status: number,
     public code: number,
     public detail?: string,
+    body?: {
+      error?: {
+        code?: number;
+        message?: string;
+        detail?: string;
+        reason?: string;
+        extra?: Record<string, unknown>;
+      };
+    },
   ) {
     super(`API error ${code}: ${detail ?? "Unknown error"}`);
     this.name = "ApiError";
+    this.body = body;
+    this.reason = body?.error?.reason;
   }
+}
+
+/**
+ * Typed accessor for endpoint-specific error extras carried in `error.extra`.
+ * Returns the stringified value or undefined. Avoids `as string` casts at
+ * call sites. Pair with ApiError.reason for the full canonical envelope.
+ */
+export function errorExtra(err: ApiError, key: string): string | undefined {
+  const v = err.body?.error?.extra?.[key];
+  return typeof v === "string" ? v : undefined;
 }
 
 /**
@@ -152,6 +192,7 @@ export async function api<T>(
       res.status,
       errorBody?.error?.code ?? res.status,
       errorBody?.error?.message ?? res.statusText,
+      errorBody as { error?: Record<string, unknown> } | undefined,
     );
   }
 

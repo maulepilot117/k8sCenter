@@ -634,6 +634,29 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.With(resources.ValidateURLParams).
 			Get("/externalsecrets/{namespace}/{name}", h.HandleGetExternalSecret)
 
+		// Force-sync action (Phase E Unit 14) — single ExternalSecret
+		// patch via impersonating client. CSRF inherited from ar.Group.
+		er.With(resources.ValidateURLParams).
+			Post("/externalsecrets/{namespace}/{name}/force-sync", h.HandleForceSyncExternalSecret)
+
+		// Bulk refresh actions (Phase E Unit 15). Async job model:
+		// scope GET resolves targets the user can refresh; POST creates a
+		// job + returns 202+jobId; client polls bulk-refresh-jobs/{jobId}
+		// for progress.
+		er.With(resources.ValidateURLParams).
+			Get("/stores/{namespace}/{name}/refresh-scope", h.HandleResolveStoreScope)
+		er.With(resources.ValidateURLParams).
+			Get("/clusterstores/{name}/refresh-scope", h.HandleResolveClusterStoreScope)
+		er.With(resources.ValidateURLParams).
+			Get("/refresh-namespace/{namespace}/refresh-scope", h.HandleResolveNamespaceScope)
+		er.With(resources.ValidateURLParams).
+			Post("/stores/{namespace}/{name}/refresh-all", h.HandleBulkRefreshStore)
+		er.With(resources.ValidateURLParams).
+			Post("/clusterstores/{name}/refresh-all", h.HandleBulkRefreshClusterStore)
+		er.With(resources.ValidateURLParams).
+			Post("/refresh-namespace/{namespace}", h.HandleBulkRefreshNamespace)
+		er.Get("/bulk-refresh-jobs/{jobId}", h.HandleGetBulkRefreshJob)
+
 		// ClusterExternalSecret list + detail (cluster-scoped — name only)
 		er.Get("/clusterexternalsecrets", h.HandleListClusterExternalSecrets)
 		er.With(resources.ValidateURLParams).

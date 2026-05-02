@@ -53,6 +53,12 @@ type Handler struct {
 	NotifService  *notifications.NotificationService
 	Logger        *slog.Logger
 
+	// BulkJobStore + BulkWorker drive Phase E Unit 15 bulk refresh. Both are
+	// optional: when either is nil the bulk-refresh endpoints respond 503
+	// rather than panicking. Wired in main.go alongside the poller.
+	BulkJobStore BulkJobReadWriter
+	BulkWorker   BulkWorkerEnqueuer
+
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
 	cache      *cachedData

@@ -42,6 +42,21 @@ func WriteData(w http.ResponseWriter, data any) {
 	WriteJSON(w, http.StatusOK, api.Response{Data: data})
 }
 
+// WriteErrorWithReason writes a JSON error response carrying an endpoint-
+// specific reason code and optional extras. Used for 409 responses that
+// need to convey machine-readable disambiguation (e.g. "active_job_exists"
+// + jobId, "scope_changed" + added/removed). See todo #350.
+func WriteErrorWithReason(w http.ResponseWriter, status int, message, reason string, extra map[string]any) {
+	WriteJSON(w, status, api.Response{
+		Error: &api.APIError{
+			Code:    status,
+			Message: message,
+			Reason:  reason,
+			Extra:   extra,
+		},
+	})
+}
+
 // RequireUser extracts the authenticated user from the request context.
 // Returns the user and true if found; otherwise writes a 401 and returns false.
 func RequireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {

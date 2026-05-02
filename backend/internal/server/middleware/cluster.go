@@ -48,3 +48,10 @@ func ClusterIDFromContext(ctx context.Context) string {
 	}
 	return "local"
 }
+
+// WithClusterID returns a derived context carrying the given cluster ID.
+// Intended for tests and code paths that bypass the ClusterContext HTTP
+// middleware (e.g. background goroutines reconstructing a request scope).
+func WithClusterID(ctx context.Context, clusterID string) context.Context {
+	return context.WithValue(ctx, clusterIDCtxKey, clusterID)
+}
