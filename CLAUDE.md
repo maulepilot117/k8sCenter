@@ -79,29 +79,31 @@ k8scenter/
 │       ├── k8s/              # ClientFactory, ClusterRouter, InformerManager, resources/ (33 handler files)
 │       ├── store/            # PostgreSQL persistence (users, settings, clusters, audit, encrypt)
 │       ├── certmanager/      # cert-manager CRD discovery, certificate/issuer inventory, renew/reissue, expiry poller
+│       ├── externalsecrets/  # ESO CRD discovery, observatory, alerting poller, sync-history persistence
 │       ├── diagnostics/      # Diagnostic rules engine, blast radius BFS, resolver
 │       ├── loki/             # Loki discovery, LogQL proxy, namespace enforcement, WebSocket tail
 │       ├── policy/           # Kyverno + Gatekeeper discovery, adapters, compliance scoring
 │       ├── monitoring/       # Prometheus/Grafana discovery, PromQL proxy, dashboard provisioning
-│       ├── topology/         # Resource dependency graph builder, health propagation, RBAC
+│       ├── topology/         # Resource dependency graph builder, health propagation, RBAC, mesh overlay
 │       ├── networking/       # CNI detection, Cilium, Hubble gRPC client
+│       ├── servicemesh/      # Istio + Linkerd CRD discovery, routing, mTLS, golden signals
+│       ├── gitops/           # Argo CD + Flux CD CRD discovery, applications, sync actions
 │       ├── alerting/         # Alertmanager webhook, SMTP notifier, rules
+│       ├── notifications/    # In-app feed + Slack/email/webhook channels, rule-based dispatch
 │       ├── storage/          # CSI/StorageClass handler, snapshots
-│       ├── wizard/           # 17 wizard input types (generic WizardInput → YAML pipeline)
+│       ├── wizard/           # Wizard input types (generic WizardInput → YAML pipeline)
 │       ├── yaml/             # YAML validate, apply (SSA), diff, export
 │       ├── audit/            # PostgreSQL audit logger
 │       └── websocket/        # Hub + Client (fan-out, RBAC revalidation)
 ├── frontend/                 # Deno 2.x + Fresh 2.x
 │   ├── routes/               # File-system routing (50+ pages)
-│   ├── islands/              # 57 interactive islands (ResourceTable, wizards, etc.)
+│   ├── islands/              # Interactive islands (ResourceTable, wizards, etc.)
 │   ├── components/           # UI components, wizard steps, k8s detail overviews
 │   └── lib/                  # API client, auth, WebSocket, constants, hooks
-├── helm/kubecenter/          # Helm chart
-│   ├── templates/            # Deployments, services, NetworkPolicy, monitoring ConfigMaps
-│   └── dashboards/           # 7 Grafana dashboard JSONs (synced with backend embed)
-├── e2e/                      # Playwright E2E tests (Node.js project, 95 tests)
+├── helm/kubecenter/          # Helm chart (templates, monitoring ConfigMaps, dashboards)
+├── e2e/                      # Playwright E2E tests
 ├── plans/                    # Implementation plans (per-step markdown)
-└── .github/workflows/        # ci.yml (lint/test/build/Trivy), e2e.yml (Playwright + kind)
+└── .github/workflows/        # ci.yml, e2e.yml
 ```
 
 ---
@@ -115,12 +117,13 @@ k8scenter/
 - **WebSocket hub pattern.** Central goroutine fans out informer events to subscribed clients.
 - **Structured logging with slog.** JSON output, request ID, user identity, resource kind.
 - **Never expose internal errors.** Wrap k8s API errors into user-friendly messages.
+- **CRD-discovered features** (policy, gitops, certmanager, servicemesh, externalsecrets) follow a common pattern: 5min discovery cache → singleflight + 30s read cache → per-user RBAC filtering via `CanAccessGroupResource`.
 
 ### Frontend (Deno/Fresh)
 - **Islands architecture strictly enforced.** Only interactive components are islands. Everything else is SSR HTML.
 - **All API calls through `lib/api.ts`.** Handles auth token injection, error parsing, X-Cluster-ID header.
 - **Wizard pattern:** WizardStepper shell → steps → YAML preview → server-side apply.
-- **Tailwind CSS utility-only.** No custom CSS class names.
+- **Tailwind CSS utility-only.** No custom CSS class names. Theme via CSS custom properties (`var(--accent)`, `var(--success)`, etc.) — no hardcoded color classes.
 
 ### Security
 - **JWT: 15 min access + 7 day refresh.** Refresh tokens server-side (httpOnly cookie).
@@ -138,24 +141,32 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 **Key patterns:**
 - Resource CRUD: `GET/POST/PUT/DELETE /resources/:kind[/:namespace[/:name]]`
 - Resource actions: `POST /resources/:kind/:ns/:name/{scale,restart,rollback,suspend,trigger}`
-- Wizard previews: `POST /wizards/:type/preview` (18 wizard types)
+- Wizard previews: `POST /wizards/:type/preview`
 - YAML tools: `POST /yaml/{validate,apply,diff,export}`
 - Monitoring: `GET /monitoring/{status,query,query_range,dashboards}`, `GET /monitoring/grafana/proxy/*`
 - Logs (Loki): `GET /logs/{status,query,labels,labels/:name/values,volume}` (RBAC namespace-scoped)
-- Topology: `GET /topology/{namespace}[?overlay=mesh]` (RBAC-gated resource dependency graph with health; `?overlay=mesh` adds service-to-service `mesh_vs` (Istio VirtualService) and `mesh_sp` (Linkerd ServiceProfile) edges. Response gains `overlay` (`""` omitted when not requested, `"mesh"` when applied, `"unavailable"` when no mesh installed / provider unwired / fetch errored), `edgesTruncated` flagged separately from `truncated` (node cap), and `errors` for per-stage warnings)
-- Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary` (automated checks + blast radius)
-- Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper, RBAC-filtered)
-- Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange dashboard, RBAC-filtered)
-- Certificates: `GET /certificates/{status,certificates,certificates/:ns/:name,issuers,clusterissuers,expiring}`, `POST /certificates/certificates/:ns/:name/{renew,reissue}` (cert-manager, RBAC-filtered)
-- Service mesh: `GET /mesh/{status,routing,routing/:id,policies,mtls,golden-signals}` (Istio + Linkerd, RBAC-filtered; mtls and golden-signals require ?namespace=; golden-signals also needs ?service= and optional ?mesh=istio|linkerd; Prometheus cross-check is best-effort, endpoint degrades to policy-only when Prom is offline)
-- Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization, RBAC-filtered)
-- Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache, RBAC-filtered)
+- Topology: `GET /topology/{namespace}[?overlay=mesh]` (RBAC-gated, with optional Istio/Linkerd mesh edge overlay)
+- Diagnostics: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary`
+- Policy: `GET /policy/{status,policies,violations,compliance}` (Kyverno + Gatekeeper)
+- Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange)
+- Certificates: `GET /certificates/{status,certificates,certificates/:ns/:name,issuers,clusterissuers,expiring}`, `POST /certificates/certificates/:ns/:name/{renew,reissue}` (cert-manager)
+- Service mesh: `GET /mesh/{status,routing,routing/:id,policies,mtls,golden-signals}` (Istio + Linkerd; mtls/golden-signals require ?namespace=, golden-signals also needs ?service= and optional ?mesh=istio|linkerd)
+- GitOps: `GET /gitops/{status,applications,applications/:id}` (Argo CD + Flux CD)
+- External Secrets: `GET /externalsecrets/{status,externalsecrets,externalsecrets/:ns/:name,clusterexternalsecrets,clusterexternalsecrets/:name,stores,stores/:ns/:name,clusterstores,clusterstores/:name,pushsecrets,pushsecrets/:ns/:name}`
+- Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization)
+- Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache)
 - Multi-cluster: `GET/POST/DELETE /clusters`
 - WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows,logs-search}`
 
 **Auth flow:** `POST /auth/login` → JWT access token + httpOnly refresh cookie → `POST /auth/refresh` on 401.
 
 **CSRF:** All state-changing endpoints require `X-Requested-With: XMLHttpRequest` header.
+
+**Response shape:**
+```json
+{ "data": {...}, "metadata": {"total": 42} }
+{ "error": {"code": 403, "message": "...", "detail": "..."} }
+```
 
 ---
 
@@ -206,183 +217,55 @@ make check-dashboards                             # Verify Grafana JSON sync
 - TypeScript: PascalCase components (`DeploymentWizard.tsx`), camelCase utilities (`api.ts`)
 - API: kebab-case routes (`/query-range`), Helm values camelCase (`monitoring.enabled`)
 
-### Response Format
-```json
-{ "data": {...}, "metadata": {"total": 42} }
-{ "error": {"code": 403, "message": "...", "detail": "..."} }
-```
+### Composite IDs (CRD-discovered features)
+- Policy: `engine:namespace:kind:name` (Kyverno/Gatekeeper)
+- GitOps: `tool:namespace:name` (Argo CD / Flux CD)
+- Service mesh: `mesh:namespace:kindCode:name`
+
+### Annotation contracts
+Operator-facing annotations are honored on specific CRD kinds. **Resolution chain** generally walks from the leaf resource up to its referenced parent (cert → issuer → clusterissuer; ES → store → clusterstore). **Each key resolves independently**; invalid values silently fall through to defaults; cache TTL means edits take up to 30s to apply.
+
+- **cert-manager** (`Certificate`, `Issuer`, `ClusterIssuer`):
+  - `kubecenter.io/cert-warn-threshold-days` (default 30)
+  - `kubecenter.io/cert-critical-threshold-days` (default 7)
+  - When `crit >= warn` after resolution, response carries `thresholdConflict: true` and falls back to defaults.
+- **External Secrets Operator** (`ExternalSecret`, `SecretStore`, `ClusterSecretStore`):
+  - `kubecenter.io/eso-stale-after-minutes` (positive int, **min 5** to defend the 60s poller)
+  - `kubecenter.io/eso-alert-on-recovery` (default false)
+  - `kubecenter.io/eso-alert-on-lifecycle` (default false)
+  - **ClusterSecretStore propagation**: annotations on a shared ClusterSecretStore apply to every namespaced ES referencing it; tenants can override at the ES level.
 
 ---
 
 ## Build Progress
 
-- **Phase 1 (MVP):** COMPLETE — Steps 1-15
-- **Phase 2 (Multi-Cluster):** COMPLETE — Steps 16-23
-- **Phase 3 (Enhancements):** COMPLETE — 7 items (Pod Exec, User Mgmt, Cilium, Hubble, CSP, Alerts WS, RBAC gating)
-- **Phase 4 (Wizards):** COMPLETE — 4A-4D (18 wizard types total)
-- **Phase 5 (Production Polish):** COMPLETE — Steps 24-30
-  - Step 24: E2E Tests (95 tests, Playwright)
-  - Step 25: Production Hardening (Trivy, automaxprocs, probes, NetworkPolicy)
-  - Step 26: UX Polish (breadcrumbs, owner refs, toast cleanup)
-  - Step 27: Grafana Dashboards (7 JSONs, Helm ConfigMap, provision-once)
-  - Step 28: Multi-Cluster UX (routing, health probing, SSRF protection)
-  - Step 29: RBAC Visualization (relationship table, cross-links, effective permissions)
-  - Step 30: Cost Analysis (utilization cards, resource display, request-vs-actual)
-- **Phase 6 (Frontend Redesign):** COMPLETE — 14 tasks
-  - Theme system: 7 named dark themes (Nexus, Dracula, Tokyo Night, Catppuccin, Nord, One Dark, Gruvbox)
-  - Navigation: 56px icon rail replacing 240px sidebar, 8 domain sections
-  - Dashboard-first: Health score ring, metric cards, utilization gauges, cluster topology
-  - Command Palette: Cmd+K fuzzy search across resources and actions
-  - Split Pane: Resizable side-by-side resource views
-  - Quick Actions FAB: Floating action button for common operations
-  - Sub-navigation tabs with live resource counts per domain
-  - Typography: Geist Sans (UI) + Geist Mono (data/code)
-  - 174 files migrated from Tailwind dark: classes to CSS custom properties
-- **Phase 6B (API Optimization):** COMPLETE — 4 tasks
-  - Dashboard summary endpoint: `GET /cluster/dashboard-summary` (16 API calls → 3)
-  - Batch resource counts: `GET /resources/counts` (7 SubNav calls → 1)
-  - Theme FOUC fix: CSS `[data-theme]` attribute selectors for instant theme on page load
-  - Health score simplified: removed meaningless services sub-score (always 100%)
-  - RBAC-filtered: both endpoints check per-resource permissions, return partial responses
-  - UtilizationProvider interface decouples resources from monitoring package
-  - Async Prometheus with 1s timeout via sync.WaitGroup (never blocks informer data)
-- **Phase 6C (Design Normalization):** COMPLETE
-  - 100+ hardcoded Tailwind color classes replaced with CSS custom property tokens across 40+ files
-  - Dashboard heading styles unified from inline styles to Tailwind classes
-  - Zero non-theme color classes remain in frontend codebase
-- **Phase 7 (Advanced Observability):** COMPLETE — 3 sub-phases (7A-7C)
-  - **Phase 7A (Loki Integration):** COMPLETE
-    - New `internal/loki/` package: service discovery, HTTP client, LogQL namespace enforcement tokenizer
-    - 5 HTTP endpoints: `/logs/status`, `/logs/query`, `/logs/labels`, `/logs/labels/{name}/values`, `/logs/volume`
-    - WebSocket `/ws/logs-search` for Loki tail streaming (Pattern B direct pipe)
-    - 5 frontend islands: LogFilterBar, LogResults, LogLiveTail, LogVolumeHistogram, LogExplorer
-    - Route: `/observability/logs` with Loki availability check and graceful degradation
-    - 19 security tests for LogQL namespace enforcement
-    - Observability nav section updated with new tabs (Log Explorer, Topology, Investigate)
-  - **Phase 7B (Topology Graph):** COMPLETE
-    - New `internal/topology/` package: ResourceLister interface, graph builder with RBAC, health propagation
-    - 1 HTTP endpoint: `GET /topology/{namespace}` (RBAC-gated, rate-limited, 2000-node cap)
-    - NamespaceTopology island: custom LR layout, SVG viewBox zoom/pan, health coloring, slide-out panel
-    - Route: `/observability/topology`
-  - **Phase 7C (Diagnostics):** COMPLETE
-    - New `internal/diagnostics/` package: 6 diagnostic rules, blast radius BFS, resolver
-    - 2 HTTP endpoints: `GET /diagnostics/{ns}/{kind}/{name}`, `GET /diagnostics/{ns}/summary`
-    - 3 frontend islands: DiagnosticChecklist, BlastRadiusPanel, DiagnosticWorkspace
-    - Route: `/observability/investigate` with URL-driven resource picker
-    - "Investigate" entry points: resource detail pages, command palette
-    - 8 unit tests covering all 6 rules
-- **Phase 8 (Policy & Governance):** COMPLETE — 2 sub-phases (8A-8B)
-  - **Phase 8A (Policy Backend):** COMPLETE
-    - New `internal/policy/` package: PolicyDiscoverer (CRD-based auto-detection of Kyverno + Gatekeeper)
-    - Kyverno adapter: ClusterPolicy, Policy, PolicyReport reading via dynamic client
-    - Gatekeeper adapter: ConstraintTemplate + dynamic constraint enumeration (semaphore(5), 5s timeout, 100 cap)
-    - Unified types: NormalizedPolicy, NormalizedViolation with Blocking field, composite IDs
-    - Handler: singleflight + 30s cache (service account fetch, per-user RBAC filtering), inline compliance scoring
-    - 4 HTTP endpoints: `GET /policy/{status,policies,violations,compliance}`
-    - Extended `AccessChecker.CanAccessGroupResource` for CRD RBAC checks
-  - **Phase 8B (Policy Frontend):** COMPLETE
-    - 3 islands: PolicyDashboard (engine status, policy table), ViolationBrowser (violation table, resource links), ComplianceDashboard (GaugeRing score, severity bars, per-namespace table)
-    - 4 routes: `/security/{index,policies,violations,compliance}` (index redirects to policies)
-    - Shared modules: `lib/policy-types.ts` (TS interfaces), `components/ui/PolicyBadges.tsx` (ColorBadge, SeverityBadge, EngineBadge, BlockingBadge, ActionBadge)
-    - Nav: 3 tabs in Security section, 2 command palette quick actions
-    - Theme-compliant: CSS custom properties for all colors (var(--success), var(--accent))
-- **Phase 9 (GitOps):** COMPLETE — 2 sub-phases (9A-9B)
-  - **Phase 9A (GitOps Backend):** COMPLETE
-    - New `internal/gitops/` package: CRD-based auto-detection of Argo CD + Flux CD
-    - Argo CD adapter: Application listing, sync/health status normalization, managed resources, revision history
-    - Flux CD adapter: Kustomization + HelmRelease listing, condition-to-status mapping, inventory parsing
-    - Handler: singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`, user impersonation for detail endpoint
-    - 3 HTTP endpoints: `GET /gitops/{status,applications,applications/:id}`
-    - Composite ID scheme: colon-delimited `tool:namespace:name`
-    - 35 unit tests (status normalization + composite ID parsing)
-  - **Phase 9B (GitOps Frontend):** COMPLETE
-    - 2 islands: GitOpsApplications (tool status, inline summary counts, filterable table), GitOpsAppDetail (managed resources, revision history, source panel)
-    - 3 routes: `/gitops/{index,applications,applications/[id]}` with SubNav
-    - Shared modules: `lib/gitops-types.ts`, `components/ui/GitOpsBadges.tsx`, `lib/k8s-links.ts` (extracted shared resourceHref)
-    - Nav: GitOps section with Applications tab, command palette quick action
-- **Phase 10 (Security Scanning):** COMPLETE
-  - Trivy Operator + Kubescape integration (vulnerability reports, config audits, compliance frameworks)
-- **Post-Phase Enhancements:** COMPLETE — 7 items
-  - GitOps actions: sync, suspend/resume, rollback for Argo CD + Flux CD (#147)
-  - Real-time WebSocket updates: watch GitOps & Policy CRDs for live sync status (#148)
-  - White flash fix: eliminated FOUC on page navigation (#146)
-  - Policy creation wizards: 8 Kyverno/Gatekeeper templates with dual-engine support (#149)
-  - Compliance trend storage: daily PostgreSQL snapshots + SVG trend chart (#150)
-  - Argo CD ApplicationSet support: list, detail, CRUD actions (#151)
-  - Flux Notification Controller support: Provider, Alert & Receiver CRUD (#152, #153)
-- **Phase 11A (Cert-Manager Observatory):** COMPLETE
-  - New `internal/certmanager/` package: CRD discovery, normalized types, dynamic client reads, singleflight + 30s cache, RBAC filtering via `CanAccessGroupResource`
-  - 8 HTTP endpoints: `GET /certificates/{status,certificates,certificates/{ns}/{name},issuers,clusterissuers,expiring}`, `POST /certificates/certificates/{ns}/{name}/{renew,reissue}`
-  - Background expiry poller (60s tick, local cluster only) emits `certificate.expiring`/`expired`/`failed` events to Notification Center with `(uid, threshold)` dedupe
-  - 3 frontend islands: CertificatesList, CertificateDetail (with Renew/Re-issue actions), IssuersList
-  - 4 routes under `/security/certificates/*` with SubNav tab and command palette quick actions
-  - Theme-compliant: Tailwind semantic token classes for all colors
-- **Phase 11B (Cert-Manager Wizards):** COMPLETE
-  - Three wizards in `internal/wizard/`: `certificate.go`, `issuer.go`, `cert_helpers.go` with full table-driven validation tests
-  - 3 HTTP endpoints: `POST /wizards/{certificate,issuer,cluster-issuer}/preview`
-  - 2 frontend islands: `CertificateWizard.tsx`, `IssuerWizard.tsx` (Issuer/ClusterIssuer share one island via `scope` prop)
-  - Routes: `/security/certificates/{new,issuers/new,cluster-issuers/new}` plus entry buttons on list pages and command palette quick actions
-  - v1 ACME scope: SelfSigned + HTTP01 ingress only (CA/Vault/DNS01 deferred to YAML editor)
-  - Ships via PR #180 with cleanup follow-ups in #181, #182, #183
-- **Phase 13 (Cert-Manager Configurable Thresholds):** COMPLETE
-  - **Annotation contract** (operator-facing). Two keys are honored on `cert-manager.io/v1` `Certificate`, `Issuer`, and `ClusterIssuer`:
-    - `kubecenter.io/cert-warn-threshold-days` — days before expiry at which a cert transitions to `Status: Expiring`
-    - `kubecenter.io/cert-critical-threshold-days` — days at which the poller emits the critical-severity notification
-    Values must be positive integers. **Resolution chain**: cert annotation > issuer annotation > clusterissuer annotation > package default (30 / 7). **Each key resolves independently** — a cert can set `warn=14` and inherit `crit` from its issuer. **Invalid values** (non-integer, non-positive, `crit >= warn` after resolution) log and silently fall through; the cert response carries `thresholdConflict: true` when the conflict path triggered. **Cache TTL**: annotation edits take up to 30s to apply (handler cache TTL).
-  - New `internal/certmanager/thresholds.go` houses `ResolveCertThresholds` (per-cert chain walk) and `ApplyThresholds` (in-place slice mutator that resolves + computes Status). Single source of truth — handler `fetchAll` and poller fallback both call it.
-  - `Certificate` response gains `warningThresholdDays`, `criticalThresholdDays`, `thresholdSource` (aggregate enum, `"default" | "certificate" | "issuer" | "clusterissuer"`), `warningThresholdSource` + `criticalThresholdSource` (per-key attribution so the UI can show "Warns at 60d (Issuer letsencrypt-prod), critical at 14d (Default)" rather than misattributing the whole pair), and `thresholdConflict` (true when the resolver fell back to defaults due to a `crit >= warn` violation). `Issuer` response gains pointer-typed `warningThresholdDays` / `criticalThresholdDays` to distinguish "not set" from "set".
-  - `Status` derivation moved out of `normalizeCertificate` into a new `DeriveStatus(cert)` so the threshold-aware Expiring overlay runs after `ApplyThresholds`. Base statuses (Ready / Issuing / Failed / Expired / Unknown) still come from the unstructured-only path. The detail endpoint always runs `ApplyThresholds` (even on cache miss, with nil issuer maps falling through to defaults) so the response shape stays consistent across endpoints.
-  - Frontend `CertificateDetail` page renders a per-key threshold row with source attribution and an inline "Override conflict — using defaults" badge when `thresholdConflict` is true.
-  - Helper `ThresholdSource.Valid()` + `sanitizeSource` belt-and-suspenders guard at write sites prevents a future Go-side bug from emitting an out-of-enum string that would break the frontend's exhaustive switch.
-- **Phase 12 (Service Mesh Observability):** COMPLETE — 4 sub-phases (A–D)
-  - **Phase A (Inventory):** New `internal/servicemesh/` package — CRD-based auto-detection of Istio + Linkerd with 5min discovery cache, dynamic-client reads via singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`. Endpoints: `GET /mesh/{status,routing,policies,routing/:id}`. Composite-ID scheme `mesh:namespace:kindCode:name`. Mesh CRDs covered: Istio VirtualService/DestinationRule/Gateway/PeerAuthentication/AuthorizationPolicy, Linkerd ServiceProfile/Server/HTTPRoute/AuthorizationPolicy/MeshTLSAuthentication. Ships via PR #199.
-  - **Phase B (mTLS posture + golden signals):** Per-workload mTLS state (`active`/`inactive`/`mixed`/`unmeshed`) with policy + Prometheus metric cross-check, three-source attribution (`policy`/`metric`/`default`). Per-service golden signals (RPS, error rate, p50/p95/p99 latency) via templated PromQL with `monitoring.QueryTemplate.Render` k8s-name guard. Endpoints: `GET /mesh/{mtls,golden-signals}`. Partial-failure surface via response `errors` map; ReplicaSet pod-template-hash heuristic for workload-kind attribution with `workloadKindConfident` flag. Ships via PR #200; follow-ups #203 (RS heuristic + cluster-wide PromQL cross-check).
-  - **Phase C (Frontend dashboard / routing / mTLS):** 3 islands — `MeshDashboard`, `RoutingTable`, `MTLSPosture` — under `/networking/mesh/*`. `lib/mesh-types.ts` mirrors backend types; `lib/mesh-api.ts` typed client. Theme tokens only. Ships via PR #204.
-  - **Phase D (Topology overlay + golden signals on Service detail):** Backend (D1) extends topology builder with `?overlay=mesh`: new `MeshRouteProvider` interface, pure `buildMeshEdges` emitter (mesh_vs / mesh_sp service-to-service edges with name/namespaced/FQDN host resolution + `(source, target, type)` dedup + 2000-edge cap), per-CRD-group RBAC fail-closed via `CanAccessGroupResource`, `Graph.Overlay` field omitempty so default response is byte-identical. Frontend (D2) adds toolbar toggle on `/observability/topology` with themed mesh edges (`var(--accent)` for Istio, `var(--accent-secondary)` for Linkerd) and disabled state when backend reports `overlay: "unavailable"`. Frontend (D3) adds inline `MeshGoldenSignals` card on Service detail — silently absent for unmeshed services or zero-traffic baselines, renders "Metrics unavailable" when Prometheus is offline, refreshes every 30s. Helm (D4) declares explicit ClusterRole grants for mesh CRD groups (Istio + Linkerd) so the discoverer + cache layer doesn't depend on the Extensions Hub catch-all `*/*` wildcard.
-- **Phase 14 (External Secrets Operator integration):** IN PROGRESS — Phases A, B, C, D shipped; E/F/G/H/I/J pending. Plan: `plans/external-secrets-operator-integration.md`. Phase order: A → B → D → C → E → F → G → H → I → J (alerting ships before persistent history per plan §Phases).
-  - **Phase A (Backend observatory + Helm RBAC):** COMPLETE — Units 1–4, 6.
-    - New `internal/externalsecrets/` package: CRD-based auto-detection of `external-secrets.io/v1` (and `v1beta1` served-but-not-stored), dynamic-client reads via singleflight + 30s cache, per-user RBAC filtering via `CanAccessGroupResource`. Five normalized CRD types: `ExternalSecret`, `ClusterExternalSecret`, `SecretStore`, `ClusterSecretStore`, `PushSecret`.
-    - 11 HTTP endpoints: `GET /externalsecrets/{status,externalsecrets,externalsecrets/{ns}/{name},clusterexternalsecrets,clusterexternalsecrets/{name},stores,stores/{ns}/{name},clusterstores,clusterstores/{name},pushsecrets,pushsecrets/{ns}/{name}}`.
-    - Detail endpoint resolves `liveResourceVersion` for the synced k8s Secret (impersonated client) to populate tri-state `DriftStatus` (`InSync` / `Drifted` / `Unknown` + `DriftUnknownReason` enum: `no_synced_rv` / `no_target_name` / `secret_deleted` / `rbac_denied` / `transient_error` / `client_error`).
-    - Go-TS hash test (`types_hash_test.go`) pins exported field set of each backend type — failure forces a TS update, prevents Go-TS drift.
-    - Helm ClusterRole grant: ESO CRD list/watch only at this phase. The `core/secrets` `get/list` grant is deferred to Phase C Unit 10 (the poller is its only consumer).
-    - Permissive-read RBAC for cluster-scoped resources matches the pattern set in Phase 8B (Policy) and Phase 11A (Cert-Manager).
-  - **Phase B (Frontend observatory):** COMPLETE — Units 7, 8 (PR #210).
-    - Domain entry: new "External Secrets" nav-rail section with own `SubNav` (Dashboard / ExternalSecrets / ClusterExternalSecrets / Stores / ClusterStores / PushSecrets / Chain).
-    - Six list islands: `ESOExternalSecretsList`, `ESOClusterExternalSecretsList`, `ESOStoresList`, `ESOClusterStoresList`, `ESOPushSecretsList`, plus `ESOChainPage` (placeholder for Phase I overlay; namespace selector → topology jump).
-    - Four detail islands with Overview / YAML / Events / History / Chain tab strip (later tabs render placeholders until Phases C/I ship): `ESOExternalSecretDetail`, `ESOStoreDetail`, `ESOClusterStoreDetail`, `ESOPushSecretDetail`. ClusterExternalSecret detail surfaces selector chains + provisioned/failed namespace tables.
-    - `ESODashboard`: sync-health hero ring (synced/total fraction with smoothed SVG transition), secondary cards (SyncFailed / Stale / Drifted / Unknown), provider-distribution donut, cost-tier stub (Phase F), broken-ES table sorted by severity (SyncFailed > Stale > Drifted > Unknown).
-    - Shared components: `ESOBadges` (StatusBadge / DriftBadge / ProviderBadge / SourceBadge), `ESODriftIndicator` (tri-state with reason hints + disabled Phase-E Revert stub), `ESONotDetected` (R2 install-prompt tile shared between dashboard and lists).
-    - `lib/eso-types.ts` mirrors backend types; `lib/eso-api.ts` typed client. Command Palette quick actions wired (5 entries). Theme tokens only.
-    - List filters: namespace + free-text search with 300ms debounce + sequence-guard (`apiGet` doesn't expose `AbortSignal`, so seq-counter is the canonical guard).
-  - **Phase D (Alerting + annotation thresholds):** COMPLETE — Units 12, 13.
-    - **Annotation contract** (operator-facing). Three keys are honored on `external-secrets.io/v1` `ExternalSecret`, `SecretStore`, and `ClusterSecretStore`:
-      - `kubecenter.io/eso-stale-after-minutes` — minutes between successful syncs after which an otherwise-Synced ExternalSecret is overlaid as `Stale`. Positive integer; **minimum 5** (defends the 60s poller against self-DoS).
-      - `kubecenter.io/eso-alert-on-recovery` — boolean; when true, the poller emits `externalsecret.recovered` events on failure→healthy transitions. Default false (operators opt in).
-      - `kubecenter.io/eso-alert-on-lifecycle` — boolean; when true, the poller emits `externalsecret.created` / `first_synced` / `deleted` events. Default false.
-      Values are positive integers (stale-after) or `true`/`false` (alert-on-*). **Resolution chain**: ES annotation > referenced SecretStore annotation > referenced ClusterSecretStore annotation > package default. **Each key resolves independently** — an ES can set `stale-after-minutes` and inherit `alert-on-recovery` from its store. **Invalid values** (non-integer, non-positive, below 5-minute floor for stale-after) log and silently fall through to the next layer; there is no `thresholdConflict` flag (no warn-vs-crit ordering exists for these keys). **Cache TTL**: annotation edits take up to 30s to apply (handler cache TTL).
-    - **ClusterSecretStore propagation note**: ClusterSecretStore annotations apply to every ExternalSecret that references that ClusterSecretStore cluster-wide. Admins setting `eso-alert-on-lifecycle: "true"` on a shared ClusterSecretStore opt every namespaced ES referencing it into lifecycle alerts. Tenants can override at the ES level by setting their own annotation.
-    - New `internal/externalsecrets/thresholds.go` houses `ResolveESOThresholds` (per-ES chain walk returning per-key sources) and `ApplyThresholds` (in-place slice mutator that resolves + re-derives `Status` so the stale overlay can fire). Single source of truth — handler `fetchAll` and poller fallback both call it. Resolver enforces the 5-min floor at every layer (belt-and-suspenders).
-    - `ExternalSecret` response gains `staleAfterMinutes`, `staleAfterMinutesSource`, `alertOnRecovery`, `alertOnRecoverySource`, `alertOnLifecycle`, `alertOnLifecycleSource` (per-key source attribution: `default` / `externalsecret` / `secretstore` / `clustersecretstore`). `SecretStore` response gains pointer-typed `staleAfterMinutes` / `alertOnRecovery` / `alertOnLifecycle` fields surfacing the store-level annotation values.
-    - New `internal/externalsecrets/poller.go` — 60s ticker, local cluster only. Bucket-transition state machine (`bucketHealthy` / `bucketFailed` / `bucketStale` / `bucketUnknown` via `bucketFor`). Dedupe key is `(UID, EventKind)` so failure and recovery occupy distinct slots — recovery emit is NOT suppressed by a recently-cleared failure. First-tick observations seed `prevBucket` but don't emit (operators don't get paged for the existing inventory at startup). Bounded-concurrency emit (semaphore=10) so mass-failure storms don't block the tick goroutine on synchronous DB I/O. `defer recover()` in `Start()`'s tick wrapper catches dispatch panics so a transient driver fault doesn't kill the goroutine silently.
-    - **Cross-tenant suppression**: `notifications.Notification` gains a `SuppressResourceFields bool` field (json:"-", not persisted). When set, `sendSlack` and `sendWebhook` strip `ResourceNS` / `ResourceName` from outbound payloads. ESO events set this true by default — Slack channels and webhook receivers don't honor in-app RBAC, so leaking namespace/name there would defeat the RBAC-generic title. The email digest path applies the same filter via `sanitizeForEmailDigest` (the runtime flag isn't persisted, so the digest reads the source-allowlist directly). The in-app feed retains full resource fields RBAC-filtered by namespace.
-    - **`ResourceKind` is set to a static `"externalsecret"`** for all ESO events — the EventKind suffix (sync_failed/stale/...) is dropped to avoid leaking partial operational state across tenants in shared external channels.
-    - Migration `000010_extend_nc_source_enum` extends the `nc_notifications.source` CHECK from the original 7 values (000007) to the full 11-value Go enum, fixing pre-existing drift (`velero` / `certmanager` / `limits` had been silently rejected at INSERT) and adding `external_secrets`. Down migration includes a safety guard that aborts if blocking rows exist and scrubs the new sources from `nc_rules.source_filter` arrays so a rolled-back binary doesn't accidentally retain no-op rules.
-    - `nc_rules.source_filter` is `TEXT[]` with no DB-level CHECK; `HandleCreateRule` / `HandleUpdateRule` now validate every Source via `Source.Valid()` before persisting, so unknown source strings return 400 rather than silently persisting as no-op rules.
-    - Frontend `NotificationRules` island groups the now-11 sources by category (Infrastructure / Policy / Secrets / Operations) so the source selector stays scannable. New `NOTIF_SOURCE_CATEGORIES` const in `lib/notif-center-types.ts`.
-    - Note: source enum value uses `"external_secrets"` (snake_case) rather than the no-underscore convention of other sources (`"certmanager"`, `"limits"`). Deliberate exception — the display label is "External Secrets" and the snake_case form aligns with the `internal/externalsecrets` package name. Future sources should follow the no-underscore pattern unless they're similarly multi-word at the operator-facing label.
-  - **Phase C (Persistence + drift detection):** COMPLETE — Units 9, 10, 11.
-    - **Migration 000011** creates `eso_sync_history` (flat table, UID-keyed per R8). Three `text[]` columns (`diff_keys_added`, `diff_keys_removed`, `diff_keys_changed`) hold per-attempt diffs of the synced k8s Secret's KEY NAMES — values are sha256-hashed in-process and never persisted. UNIQUE `(uid, attempt_at)` enables `INSERT ON CONFLICT DO NOTHING` for restart-safe idempotent writes. **Migration 000012** adds a standalone `(attempt_at)` index so the hourly retention DELETE doesn't sequential-scan as the table grows. Plan §389 specified `cluster_id UUID`; deviated to `TEXT NOT NULL DEFAULT 'local'` to match `clusters.id`, `audit_logs.cluster_id`, `nc_notifications.cluster_id` precedent.
-    - **Helm grant**: cluster-wide `core/secrets get/list` to the platform service account (deferred from Phase A Unit 6). The poller has no requesting-user context, so the diff-key fetch cannot use the impersonated client. Operators in stricter environments can REMOVE the rule block — diff_keys_* columns end up empty, but outcome/reason/message/attempt_at remain functional. The drift-resolution path on the detail endpoint uses the impersonated client and does NOT depend on this grant.
-    - **`internal/externalsecrets/persist.go`** — extends `Poller.tick()` with a per-tick persistence pass. Pre-filter (`outcomeFor` + `attemptTimeFor` + `prevAttemptAt` dedup) runs under `p.mu`; eligible candidates fan out through a bounded worker pool (`persistConcurrency=10`) so 1000 ESes don't serially block the tick on Secret GETs. Each Secret GET wraps a 5s timeout (`secretFetchTimeout`). `prevAttemptAt[uid]` is committed only AFTER `Insert` succeeds — a transient INSERT failure leaves the map untouched so the next tick retries.
-    - **Unbounded-rows guard**: `attemptTimeFor` returns `(time.Time, false)` when the controller's `LastSyncTime` is nil (some providers don't populate it). Without this, falling back to wall-clock `now()` advances every tick → ON CONFLICT never fires → row inserted every 60s per nil-LastSyncTime ES. The poller skips persistence for those ESes until ESO populates the timestamp.
-    - **Restart-recovery seed**: `seedFromNotifications` queries `nc_notifications` for recent `external_secrets`-source rows (window narrowed from 24h to 2h to reduce phantom-recovery risk on delete-and-recreate within the seed window). `bucketFromNotification` decodes severity+title back into a bucket using the `Title*` constants in `poller.go` (no raw string literals; rename in `failureRecord` propagates via the constant). Severity fallback collapses Warning → bucketUnknown rather than Stale to avoid Stale/Unhealthy disambiguation gaps.
-    - **`notifications.Store.RecentBySource`** gains a `clusterID` parameter; SQL filters on `cluster_id = $N OR cluster_id = ''` so multi-cluster deployments don't seed cluster B's prev-bucket from cluster A's notifications.
-    - **`Handler.observedDrift sync.Map`** — populated by the poller's Secret-fetch path on every successful read; cleared via `RecordDrift(uid, DriftUnknown)` on RBAC/transient failures; pruned via `PruneObservedDrift` at the end of each tick. List endpoint reads from this map and surfaces it as `LastObservedDriftStatus` (omitempty fires when no observation; the field is reserved for the list endpoint and stays absent on detail). The list endpoint clears `DriftStatus` and `DriftUnknownReason` from the cached snapshot copy — those are reserved for the detail endpoint's live impersonated read. Status field overlays `Drifted` when `LastObservedDriftStatus == Drifted` so the existing dashboard count works.
-    - **Retention goroutine** in `main.go` runs `RunRetention` immediately on startup then every 1h. `RunRetention` and `ESOHistoryStore.Cleanup` both wrap their own panic recovery / 5-minute timeout (cleanupTimeout) so a wedged DELETE on a multi-million-row table can't pin a pgxpool slot indefinitely.
-    - **Phase B "Revert drift" stub remains** disabled awaiting Phase E's force-sync action; no Unit 11 frontend changes were needed beyond the existing scaffolding.
+All foundational phases (1–13) are COMPLETE. High-level inventory:
 
-## Future Features (Roadmap)
+- **Phase 1–5 (MVP → Production Polish):** Resource CRUD, multi-cluster, RBAC gating, 18 wizard types, E2E tests (95), Trivy scanning, NetworkPolicy, breadcrumbs, Grafana dashboard provisioning, multi-cluster routing + SSRF protection, RBAC visualization, cost analysis.
+- **Phase 6 (Frontend Redesign + 6B/6C optimization):** 7 dark themes, 56px icon nav rail, dashboard-first layout, Cmd+K command palette, split pane, FAB, Geist Sans/Mono. Dashboard summary endpoint (16 calls → 3), batch resource counts (7 calls → 1), 100+ hardcoded color classes replaced with theme tokens.
+- **Phase 7 (Advanced Observability):** Loki integration (5 endpoints + WebSocket tail, LogQL namespace enforcement), Topology graph (RBAC-gated, 2000-node cap, custom LR layout), Diagnostics (6 rules, blast radius BFS, 3 islands).
+- **Phase 8 (Policy & Governance):** Kyverno + Gatekeeper discovery, 4 endpoints, dashboards (engine status, violations, compliance scoring with GaugeRing).
+- **Phase 9 (GitOps):** Argo CD + Flux CD discovery, applications list/detail, sync/suspend/rollback actions, ApplicationSet support, Flux Notification Controller (Provider/Alert/Receiver CRUD), real-time WS updates, diff view, git commit display.
+- **Phase 10 (Security Scanning):** Trivy Operator + Kubescape (vuln reports, config audits, compliance frameworks).
+- **Phase 11A (Cert-Manager Observatory):** 8 endpoints, expiry poller (60s tick, dedupe by `(uid, threshold)`), 3 islands, renew/reissue actions.
+- **Phase 11B (Cert-Manager Wizards):** Certificate/Issuer/ClusterIssuer wizards (v1: SelfSigned + HTTP01 ACME; CA/Vault/DNS01 deferred to YAML editor).
+- **Phase 12 (Service Mesh — Istio/Linkerd):** Inventory (5 mesh CRD groups), mTLS posture with three-source attribution (`policy`/`metric`/`default`), golden signals (RPS, error rate, p50/p95/p99 via templated PromQL), topology overlay (`?overlay=mesh` adds `mesh_vs`/`mesh_sp` edges, fail-closed RBAC, themed edges), inline `MeshGoldenSignals` on Service detail.
+- **Phase 13 (Cert-Manager Configurable Thresholds):** Per-cert/issuer warn/critical days via annotations; `ResolveCertThresholds` + `ApplyThresholds` is single source of truth (handler + poller); response includes per-key source attribution; `ThresholdSource.Valid()` + `sanitizeSource` guards against out-of-enum strings.
+
+### Phase 14 (External Secrets Operator) — IN PROGRESS
+
+Plan: `plans/external-secrets-operator-integration.md`. Phase order: A → B → D → C → E → F → G → H → I → J. Phases A/B/C/D shipped; E/F/G/H/I/J pending.
+
+- **Phase A — Backend observatory:** `internal/externalsecrets/` package with CRD-based discovery for 5 normalized types (ExternalSecret, ClusterExternalSecret, SecretStore, ClusterSecretStore, PushSecret). 11 endpoints. Detail endpoint resolves `liveResourceVersion` for the synced k8s Secret to populate tri-state `DriftStatus` (`InSync` / `Drifted` / `Unknown`) with `DriftUnknownReason` enum. Go-TS hash test pins exported field set to prevent drift. Helm grants ESO CRD list/watch only at this phase.
+- **Phase B — Frontend observatory (PR #210):** New nav-rail section + SubNav (Dashboard / ExternalSecrets / ClusterExternalSecrets / Stores / ClusterStores / PushSecrets / Chain). 6 list islands, 4 detail islands with Overview/YAML/Events/History/Chain tabs. `ESODashboard` (sync-health hero ring, provider donut, broken-ES table). Shared components: `ESOBadges`, `ESODriftIndicator`, `ESONotDetected`. Filters use 300ms debounce + sequence-guard.
+- **Phase D — Alerting + annotation thresholds:** `internal/externalsecrets/thresholds.go` (`ResolveESOThresholds` + `ApplyThresholds` mirroring Phase 13). Resolver enforces 5-min stale-after floor at every layer. Response gains per-key source attribution. `internal/externalsecrets/poller.go`: 60s tick, bucket-transition state machine, dedupe key `(UID, EventKind)` so failure and recovery occupy distinct slots, first-tick observations seed but don't emit, bounded-concurrency emit (sem=10), `defer recover()` catches dispatch panics. **Cross-tenant suppression:** `notifications.Notification.SuppressResourceFields bool` strips `ResourceNS`/`ResourceName` from Slack/webhook/email-digest payloads (in-app feed retains full fields, RBAC-filtered). `ResourceKind` static `"externalsecret"`. Migration `000010` extends `nc_notifications.source` CHECK to all 11 Go enum values (fixes pre-existing drift) and adds `external_secrets`. Source filter on `nc_rules` validated server-side via `Source.Valid()`. Frontend rules island groups sources by category. Source value `"external_secrets"` (snake_case) is a deliberate exception for multi-word naming.
+- **Phase C — Persistence + drift detection:** Migrations `000011` + `000012` create `eso_sync_history` (UID-keyed flat table; `text[]` diff-key columns hold sha256-hashed key names only — values never persisted; UNIQUE `(uid, attempt_at)` for idempotent INSERT ON CONFLICT; `cluster_id TEXT NOT NULL DEFAULT 'local'` matches existing tables; `(attempt_at)` index for retention). Helm grant: cluster-wide `core/secrets get/list` to platform SA (poller has no requesting-user context). `persist.go`: per-tick persistence pass with bounded worker pool (sem=10), 5s Secret-fetch timeout, `prevAttemptAt[uid]` committed only after INSERT success. **Unbounded-rows guard:** `attemptTimeFor` returns `(_, false)` when controller's `LastSyncTime` is nil — without this, wall-clock fallback would advance every tick → ON CONFLICT never fires → row inserted every 60s. **Restart-recovery seed:** `seedFromNotifications` queries `nc_notifications` for recent `external_secrets` rows (window 2h, narrowed from 24h to reduce phantom-recovery on delete-and-recreate); `bucketFromNotification` uses `Title*` constants so renames propagate; severity fallback collapses Warning → bucketUnknown. `notifications.Store.RecentBySource` gains `clusterID` filter (`cluster_id = $N OR cluster_id = ''`). `Handler.observedDrift sync.Map` populated by poller's Secret-fetch path; surfaced as `LastObservedDriftStatus` (omitempty) on list endpoint; detail endpoint clears these from cached snapshot copy and does live impersonated read. Retention goroutine in `main.go` runs immediately + every 1h with panic recovery + 5min timeout.
+
+Pending units: E (force-sync action — including Phase B's "Revert drift" stub), F (cost-tier classification), G (events surfacing), H (PushSecret targets), I (Chain topology overlay), J (additional polish).
+
+---
+
+## Roadmap
 
 Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges to main.
 
@@ -391,28 +274,20 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **3. Diff view** — compare manifests between GitOps revisions (PR #156)
 - [x] **4. Resource Quota & LimitRange Management** — namespace quota wizards, utilization vs. quota visualization, overage warnings (PR #164)
 - [x] **5. Backup & Restore (Velero)** — schedule backups, browse snapshots, one-click restore
-- [x] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing visualization, mTLS posture, golden signals, topology overlay (Phase 12)
-- [x] **7. Cert-Manager integration** — certificate inventory, expiry warnings, issuers management (Phase 11A)
-- [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation wizards (PR #180, follow-ups #181–#183)
-- [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer warn/critical thresholds via annotation (Phase 13)
-- [ ] **8. External Secrets Operator integration** — observatory + actions for the ESO CRD family (`external-secrets.io/v1beta1`).
-  - **Why**: secrets in production rarely live in raw `Secret` resources; they're synced from Vault / AWS Secrets Manager / GCP Secret Manager / Azure Key Vault via ESO. Today operators have to `kubectl get externalsecret -A` and decode status conditions by hand to answer "is this secret healthy" or "when did it last sync."
-  - **Likely shape** (mirrors Phase 11A cert-manager pattern):
-    - **Phase A** — `internal/externalsecrets/`: CRD discovery (ExternalSecret, SecretStore, ClusterSecretStore, PushSecret, ClusterExternalSecret), dynamic-client reads with singleflight + 30s cache, RBAC filtering via `CanAccessGroupResource`, normalized types with sync state (`Synced` / `SyncFailed` / `Refreshing`), last-sync time, source-store reference, refresh interval. Endpoints: `GET /externalsecrets/{status,externalsecrets,externalsecrets/:ns/:name,stores,clusterstores}`.
-    - **Phase B** — frontend islands under `/security/external-secrets/*`: list views, source-store health, refresh-now action (impersonated `POST` triggering ESO's force-sync annotation), expiry/staleness alerts via the existing Notification Center.
-  - **Dependencies / precedents**: Phase 11A's CRD-discovery + RBAC + 30s-cache pipeline; Phase 13's annotation-resolution chain if we want per-secret refresh-policy overrides; Notification Center for sync-failed dispatch.
-  - **Open scope questions** (to resolve at brainstorm time): credential reveal flow (ESO never holds the source-store creds; we'd consume them via store auth), multi-tenant store visibility (ClusterSecretStore is admin-only by RBAC, but stores reference Vault auth roles that may themselves leak namespace info), whether to surface the source-system's audit trail or just k8s events.
+- [x] **6. Service Mesh Observability (Istio/Linkerd)** — traffic routing, mTLS posture, golden signals, topology overlay (Phase 12)
+- [x] **7. Cert-Manager integration** — inventory, expiry warnings, issuer management (Phase 11A)
+- [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation (PR #180, follow-ups #181–#183)
+- [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer annotation overrides (Phase 13)
+- [ ] **8. External Secrets Operator integration** — observatory + actions (Phase 14, in progress; see above).
+- [ ] **9. Saved Views & Custom Dashboards** — per-user persistence for filter presets, pinned favorites, arrangeable dashboard widgets.
+  - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand.
+  - **Likely shape**:
+    - **Phase A — Persistence**: PostgreSQL `user_preferences` table; new `internal/preferences/` package with typed CRUD over `SavedView`, `PinnedResource`, `DashboardLayout`.
+    - **Phase B — API**: `GET/POST/PUT/DELETE /preferences/{views,pins,dashboards}`, RBAC-personal, audit-logged.
+    - **Phase C — Frontend**: ResourceTable "Save view" affordance, sidebar "Pinned" section, dashboard layout config.
+  - **Open questions**: cross-cluster vs per-cluster scoping, team-shared views, dashboard widget catalog.
 
-- [ ] **9. Saved Views & Custom Dashboards** — per-user persistence for filter presets, pinned favorites, and arrangeable dashboard widgets.
-  - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand. Operators tracking a specific incident want to pin a curated set of resources without leaving them in the URL bar.
-  - **Likely shape** (3 phases):
-    - **Phase A — Persistence layer**: PostgreSQL-backed `user_preferences` table (the existing pgx/v5 + `golang-migrate` setup), keyed by user UID. New `internal/preferences/` package: typed CRUD over `SavedView`, `PinnedResource`, `DashboardLayout`. Migration adds the table; existing audit-log + cluster-registry pattern is the precedent.
-    - **Phase B — API surface**: `GET/POST/PUT/DELETE /preferences/{views,pins,dashboards}`, all RBAC-personal (a user can only see/modify their own preferences). Composite IDs scoped by user UID + view name. Audit logging for write operations.
-    - **Phase C — Frontend integration**: ResourceTable gains a "Save view" affordance that captures the current filter / sort / column-set; sidebar "Pinned" section; Dashboard accepts a layout config. Theme-token-only.
-  - **Dependencies / precedents**: PostgreSQL schema pattern from `users` / `clusters` / `audit` tables; multi-cluster context (saved views must namespace by cluster ID); existing Resource Browser filter-state UX (Phase 5 work). The `Notification Center` rules persistence (#1) is the closest existing precedent for per-user preference storage.
-  - **Open scope questions**: cross-cluster vs per-cluster scoping (a saved view "production payment pods" should probably bind to a specific cluster ID), team-shared views (initial cut is per-user only; team-shared adds RBAC complexity), import/export of view bundles, dashboard widget catalog (which widgets are pin-able and how their config serializes).
-
-Both #8 and #9 should start with `/ce:brainstorm` before `/ce:plan` — they each have product-shape questions that benefit from explicit framing before technical planning.
+Both #8 (already in motion) and #9 should start with `/ce:brainstorm` before `/ce:plan` for product-shape framing.
 
 ---
 
@@ -422,7 +297,7 @@ Both #8 and #9 should start with `/ce:brainstorm` before `/ce:plan` — they eac
 - **ClusterContext middleware** (`middleware/cluster.go`): Extracts X-Cluster-ID header, admin gate for non-local.
 - **Cluster registry**: PostgreSQL-backed, AES-256-GCM encrypted credentials, SSRF-validated URLs.
 - **Remote clusters use direct API calls only** — no informers, no WebSocket events. Local cluster uses informers.
-- **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). Connection tested before registration. `POST /clusters/:id/test` for on-demand probing.
+- **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). `POST /clusters/:id/test` for on-demand probing.
 - **Known limitation:** AccessChecker queries local cluster RBAC, not remote. Kubernetes API enforces real permissions.
 
 ---
