@@ -1159,7 +1159,7 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [x] Unit 15 — Migrations 000013 (`eso_bulk_refresh_jobs`) + 000014 (unique active jobs) + async job model + scope-pinned execution + dialog + progress polling (PR #213)
 
 ### Phase F — Per-store rate + cost-tier panel
-- [ ] Unit 16 — Per-store rate panel + cost-tier card (Go map literal rate cards with `LastUpdated`)
+- [x] Unit 16 — Per-store rate panel + cost-tier card (Go map literal rate cards with `LastUpdated`)
 
 ### Phase G — Universal ExternalSecret wizard
 - [ ] Unit 17 — ExternalSecret wizard (Kubernetes-provider-only path-discovery) + regex parity test
