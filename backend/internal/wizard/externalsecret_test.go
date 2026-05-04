@@ -235,6 +235,80 @@ func TestExternalSecretToYAML_OmitsZeroFields(t *testing.T) {
 	}
 }
 
+func TestExternalSecretToYAML_DataFromFind(t *testing.T) {
+	e := validExternalSecretInput()
+	e.Data = nil
+	e.DataFrom = []ExternalSecretDataFromInput{
+		{Find: &ExternalSecretFindInput{Name: &ExternalSecretFindBy{RegExp: "^db-"}}},
+	}
+	y, err := e.ToYAML()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"dataFrom:", "find:", "regexp: ^db-"} {
+		if !strings.Contains(y, want) {
+			t.Errorf("expected YAML to contain %q\n%s", want, y)
+		}
+	}
+	if strings.Contains(y, "extract:") {
+		t.Errorf("expected extract absent in find-only YAML\n%s", y)
+	}
+}
+
+func TestExternalSecretToYAML_OmitsEmptyProperty(t *testing.T) {
+	e := validExternalSecretInput()
+	// Property is empty (zero value) — must be omitted from the rendered YAML.
+	e.Data = []ExternalSecretDataItemInput{
+		{SecretKey: "DB_PASSWORD", RemoteRef: ExternalSecretRemoteRefInput{Key: "secret/data/myapp", Property: ""}},
+	}
+	y, err := e.ToYAML()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(y, "property:") {
+		t.Errorf("expected property omitted when empty\n%s", y)
+	}
+}
+
+func TestExternalSecretToYAML_DataAndDataFromCoexist(t *testing.T) {
+	e := validExternalSecretInput()
+	e.DataFrom = []ExternalSecretDataFromInput{
+		{Extract: &ExternalSecretRemoteRefInput{Key: "secret/data/common"}},
+	}
+	y, err := e.ToYAML()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(y, "data:") {
+		t.Errorf("expected data section present\n%s", y)
+	}
+	if !strings.Contains(y, "dataFrom:") {
+		t.Errorf("expected dataFrom section present\n%s", y)
+	}
+}
+
+func TestExternalSecretValidate_DataItemMissingFields_FieldChecks(t *testing.T) {
+	e := validExternalSecretInput()
+	e.Data = []ExternalSecretDataItemInput{
+		{},                                                        // missing secretKey + remoteRef.key
+		{SecretKey: "ok"},                                         // missing remoteRef.key
+		{RemoteRef: ExternalSecretRemoteRefInput{Key: "k"}},       // missing secretKey
+	}
+	errs := e.Validate()
+	if !hasField(errs, "data[0].secretKey") {
+		t.Error("expected data[0].secretKey error")
+	}
+	if !hasField(errs, "data[0].remoteRef.key") {
+		t.Error("expected data[0].remoteRef.key error")
+	}
+	if !hasField(errs, "data[1].remoteRef.key") {
+		t.Error("expected data[1].remoteRef.key error")
+	}
+	if !hasField(errs, "data[2].secretKey") {
+		t.Error("expected data[2].secretKey error")
+	}
+}
+
 func hasField(errs []FieldError, field string) bool {
 	for _, e := range errs {
 		if e.Field == field {

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useSignal } from "@preact/signals";
+import { useEffect, useRef } from "preact/hooks";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -51,10 +52,11 @@ export function ExternalSecretForm({
   onRemoveDataItem,
   onPathFieldTouched,
 }: ExternalSecretFormProps) {
-  // Path-discovery state — keyed by data-item index. The Kubernetes provider
-  // typeahead populates `paths`; other providers leave `supported` false so
-  // the row renders a free-text input with helper text.
-  const [discovery, setDiscovery] = useState<PathDiscoveryState>({
+  // Path-discovery state. The Kubernetes provider typeahead populates `paths`;
+  // other providers leave `supported` false so the row renders a free-text
+  // input with helper text. Signal avoids re-rendering the whole form on every
+  // loading-state tick.
+  const discovery = useSignal<PathDiscoveryState>({
     supported: false,
     provider: "",
     paths: [],
@@ -75,6 +77,49 @@ export function ExternalSecretForm({
   const abortRef = useRef<AbortController | null>(null);
   const debounceHandle = useRef<number | null>(null);
 
+  // Shared fetch helper used by both the store-change probe and the debounced
+  // typeahead. Cancels any in-flight request via abortRef, increments fetchSeq
+  // for stale-response guards, and always drives the same discovery state.
+  function fetchPaths(prefix?: string) {
+    if (!selectedStore || selectedStore.kind !== "SecretStore") return;
+
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    const seq = ++fetchSeq.current;
+    const signal = abortRef.current.signal;
+
+    discovery.value = { ...discovery.value, loading: true, error: null };
+    esoApi
+      .listStorePaths(
+        selectedStore.namespace ?? "",
+        selectedStore.name,
+        prefix,
+        signal,
+      )
+      .then((resp) => {
+        if (seq !== fetchSeq.current) return;
+        discovery.value = {
+          supported: !!resp.data.supported,
+          provider: resp.data.provider ?? "",
+          paths: resp.data.paths ?? [],
+          loading: false,
+          error: null,
+        };
+      })
+      .catch((err) => {
+        if (seq !== fetchSeq.current) return;
+        // Ignore abort errors — they're caused by our own cancellation.
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        discovery.value = {
+          supported: false,
+          provider: selectedStore.provider,
+          paths: [],
+          loading: false,
+          error: "Couldn't load paths — enter manually",
+        };
+      });
+  }
+
   // Probe path-discovery support whenever the selected store changes. A
   // kubernetes-provider store flips `supported=true` and seeds an initial
   // (prefix-empty) listing; other providers report `supported=false`.
@@ -83,43 +128,19 @@ export function ExternalSecretForm({
       // ClusterSecretStore + missing store: typeahead off until the user picks
       // a namespaced store. ClusterSecretStores can't be probed by this
       // endpoint (it requires a namespace).
-      setDiscovery({
+      discovery.value = {
         supported: false,
         provider: selectedStore?.provider ?? "",
         paths: [],
         loading: false,
         error: null,
-      });
+      };
       return;
     }
-    let cancelled = false;
-    setDiscovery((d) => ({ ...d, loading: true, error: null }));
-    esoApi
-      .listStorePaths(selectedStore.namespace ?? "", selectedStore.name)
-      .then((resp) => {
-        if (cancelled) return;
-        setDiscovery({
-          supported: !!resp.data.supported,
-          provider: resp.data.provider ?? "",
-          paths: resp.data.paths ?? [],
-          loading: false,
-          error: null,
-        });
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // Degrade to free-text on error — surface a notice so the user knows
-        // why the typeahead isn't kicking in.
-        setDiscovery({
-          supported: false,
-          provider: selectedStore.provider,
-          paths: [],
-          loading: false,
-          error: "Couldn't load paths — enter manually",
-        });
-      });
+    fetchPaths();
     return () => {
-      cancelled = true;
+      // Cancel in-flight store probe on cleanup (store change or unmount).
+      if (abortRef.current) abortRef.current.abort();
     };
   }, [selectedStore?.name, selectedStore?.namespace, selectedStore?.kind]);
 
@@ -130,7 +151,7 @@ export function ExternalSecretForm({
     onPathFieldTouched(index);
 
     if (
-      !discovery.supported || !selectedStore ||
+      !discovery.value.supported || !selectedStore ||
       selectedStore.kind !== "SecretStore"
     ) {
       return;
@@ -141,39 +162,7 @@ export function ExternalSecretForm({
     }
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
-
-      // Cancel previous in-flight fetch.
-      if (abortRef.current) abortRef.current.abort();
-      abortRef.current = new AbortController();
-      const seq = ++fetchSeq.current;
-
-      setDiscovery((d) => ({ ...d, loading: true, error: null }));
-      esoApi
-        .listStorePaths(
-          selectedStore.namespace ?? "",
-          selectedStore.name,
-          value,
-        )
-        .then((resp) => {
-          if (seq !== fetchSeq.current) return;
-          setDiscovery({
-            supported: !!resp.data.supported,
-            provider: resp.data.provider ?? "",
-            paths: resp.data.paths ?? [],
-            loading: false,
-            error: null,
-          });
-        })
-        .catch(() => {
-          if (seq !== fetchSeq.current) return;
-          setDiscovery({
-            supported: false,
-            provider: selectedStore.provider,
-            paths: [],
-            loading: false,
-            error: "Couldn't load paths — enter manually",
-          });
-        });
+      fetchPaths(value);
     }, PATH_DEBOUNCE_MS);
   }
 
@@ -383,11 +372,13 @@ export function ExternalSecretForm({
               <input
                 id={`es-data-${idx}-key`}
                 type="text"
-                list={discovery.supported ? `es-data-${idx}-paths` : undefined}
+                list={discovery.value.supported
+                  ? `es-data-${idx}-paths`
+                  : undefined}
                 value={item.key}
                 onInput={(e) =>
                   handlePathInput(idx, (e.target as HTMLInputElement).value)}
-                placeholder={discovery.supported
+                placeholder={discovery.value.supported
                   ? "Start typing to search…"
                   : "secret/data/myapp"}
                 class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/50"
@@ -396,21 +387,23 @@ export function ExternalSecretForm({
                   : undefined}
                 aria-describedby={`es-data-${idx}-hint`}
               />
-              {discovery.supported && (
+              {discovery.value.supported && (
                 <datalist id={`es-data-${idx}-paths`}>
-                  {discovery.paths.map((p) => <option key={p} value={p} />)}
+                  {discovery.value.paths.map((p) => (
+                    <option key={p} value={p} />
+                  ))}
                 </datalist>
               )}
               <p id={`es-data-${idx}-hint`} class="text-xs text-text-muted">
-                {discovery.loading
+                {discovery.value.loading
                   ? "Loading paths…"
-                  : discovery.error
-                  ? discovery.error
-                  : discovery.supported
-                  ? discovery.paths.length === 0
+                  : discovery.value.error
+                  ? discovery.value.error
+                  : discovery.value.supported
+                  ? discovery.value.paths.length === 0
                     ? "No paths found in this namespace"
-                    : `${discovery.paths.length} path${
-                      discovery.paths.length === 1 ? "" : "s"
+                    : `${discovery.value.paths.length} path${
+                      discovery.value.paths.length === 1 ? "" : "s"
                     } available`
                   : FREE_TEXT_HELPER}
               </p>

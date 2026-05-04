@@ -2,6 +2,7 @@ package externalsecrets
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,10 +22,11 @@ import (
 
 // makeKubernetesProviderStore builds a SecretStore configured for the
 // kubernetes provider with the given source namespace.
+// ESO v1 KubernetesProvider uses `remoteNamespace` at the provider-spec level.
 func makeKubernetesProviderStore(ns, name, sourceNS string) *unstructured.Unstructured {
 	provider := map[string]any{}
 	if sourceNS != "" {
-		provider["remoteRef"] = map[string]any{"namespace": sourceNS}
+		provider["remoteNamespace"] = sourceNS
 	}
 	return &unstructured.Unstructured{
 		Object: map[string]any{
@@ -166,7 +168,71 @@ func TestHandleListPaths_RBACDeniedOnStore(t *testing.T) {
 	}
 }
 
+// TestHandleListPaths_PartialRBACDeny verifies that when the user can read the
+// SecretStore (get secretstores) but is denied listing Secrets, the endpoint
+// returns HTTP 200 with supported=true and an empty path list — the UI degrades
+// to free-text rather than surfacing a 403.
+func TestHandleListPaths_PartialRBACDeny(t *testing.T) {
+	store := makeKubernetesProviderStore("apps", "k8s-store", "source")
+	h := pathDiscoveryHandler([]runtime.Object{store})
+	// Allow `get secretstores` but deny `list secrets` (and everything else).
+	h.AccessChecker = resources.NewPredicateAccessChecker(func(verb, _, resource, _ string) bool {
+		return verb == "get" && resource == "secretstores"
+	})
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "k8s-store"})
+	h.HandleListPaths(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	got := decodePathDiscovery(t, w)
+	if !got.Supported {
+		t.Error("expected supported=true (kubernetes provider recognised)")
+	}
+	if len(got.Paths) != 0 {
+		t.Errorf("expected empty paths on RBAC deny, got %v", got.Paths)
+	}
+}
+
+// TestHandleListPaths_LimitCap verifies that when the source namespace contains
+// more than pathDiscoveryLimit Secrets the response is capped and Truncated=true.
+func TestHandleListPaths_LimitCap(t *testing.T) {
+	store := makeKubernetesProviderStore("apps", "k8s-store", "source")
+	secrets := make([]runtime.Object, pathDiscoveryLimit+5)
+	for i := range secrets {
+		secrets[i] = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("secret-%04d", i),
+				Namespace: "source",
+			},
+		}
+	}
+	h := pathDiscoveryHandler([]runtime.Object{store}, secrets...)
+
+	w := httptest.NewRecorder()
+	r := withUser(httptest.NewRequest(http.MethodGet, "/", nil), &auth.User{KubernetesUsername: "u"})
+	r = urlWithChiParams(r, map[string]string{"namespace": "apps", "name": "k8s-store"})
+	h.HandleListPaths(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	got := decodePathDiscovery(t, w)
+	if len(got.Paths) != pathDiscoveryLimit {
+		t.Errorf("expected %d paths (cap), got %d", pathDiscoveryLimit, len(got.Paths))
+	}
+	if !got.Truncated {
+		t.Error("expected truncated=true when result exceeds cap")
+	}
+}
+
 func TestKubernetesProviderSourceNamespace(t *testing.T) {
+	// ESO v1 KubernetesProvider only supports `remoteNamespace` at the
+	// provider-spec level. The `remoteRef` key lives on ExternalSecret data
+	// items, not on the SecretStore provider config.
 	cases := []struct {
 		name string
 		spec map[string]any
@@ -175,22 +241,14 @@ func TestKubernetesProviderSourceNamespace(t *testing.T) {
 		{"nil", nil, ""},
 		{"empty", map[string]any{}, ""},
 		{
-			"remoteRef.namespace",
-			map[string]any{"remoteRef": map[string]any{"namespace": "apps"}},
+			"remoteNamespace",
+			map[string]any{"remoteNamespace": "apps"},
 			"apps",
 		},
 		{
-			"legacy remoteNamespace",
-			map[string]any{"remoteNamespace": "legacy"},
-			"legacy",
-		},
-		{
-			"remoteRef wins over legacy",
-			map[string]any{
-				"remoteRef":       map[string]any{"namespace": "new"},
-				"remoteNamespace": "old",
-			},
-			"new",
+			"remoteRef.namespace ignored (not a valid KubernetesProvider field)",
+			map[string]any{"remoteRef": map[string]any{"namespace": "apps"}},
+			"",
 		},
 	}
 	for _, c := range cases {

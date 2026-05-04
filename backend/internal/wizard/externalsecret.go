@@ -31,9 +31,10 @@ type ExternalSecretDataItemInput struct {
 }
 
 // ExternalSecretDataFromInput pulls every key from a single remote path
-// into the target Secret. Either Extract or Find may be set; Extract takes
-// the verbatim remote object and copies its keys, Find performs a name
-// match against the source store.
+// into the target Secret. Exactly one of Extract or Find must be set —
+// having both or neither is a validation error returned by Validate().
+// Extract takes the verbatim remote object and copies its keys; Find
+// performs a name match against the source store.
 type ExternalSecretDataFromInput struct {
 	Extract *ExternalSecretRemoteRefInput `json:"extract,omitempty"`
 	Find    *ExternalSecretFindInput      `json:"find,omitempty"`

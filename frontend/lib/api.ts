@@ -127,10 +127,12 @@ async function refreshAccessToken(): Promise<boolean> {
  * - Injects Bearer token and X-Cluster-ID header
  * - Auto-refreshes on 401 (single concurrent refresh, replays queued requests)
  * - Parses error responses into ApiError
+ * - Accepts an optional `signal` for cooperative cancellation; pass
+ *   `AbortController.signal` from the caller to cancel in-flight requests.
  */
 export async function api<T>(
   path: string,
-  options: RequestInit = {},
+  options: RequestInit & { signal?: AbortSignal } = {},
 ): Promise<APIResponse<T>> {
   const doFetch = (): Promise<Response> => {
     const headers = new Headers(options.headers);
@@ -150,6 +152,7 @@ export async function api<T>(
       ...options,
       headers,
       credentials: "include",
+      signal: options.signal,
     });
   };
 
@@ -205,7 +208,8 @@ export async function api<T>(
 }
 
 /** Convenience methods. */
-export const apiGet = <T>(path: string) => api<T>(path, { method: "GET" });
+export const apiGet = <T>(path: string, signal?: AbortSignal) =>
+  api<T>(path, { method: "GET", signal });
 
 export const apiPost = <T>(path: string, body?: unknown) =>
   api<T>(path, {

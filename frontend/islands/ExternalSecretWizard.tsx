@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
@@ -74,39 +74,52 @@ export default function ExternalSecretWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewSeq = useRef(0);
 
   useDirtyGuard(dirty);
 
   // Load both Namespaced and Cluster stores once so the dropdown can switch
-  // between them without an extra round-trip.
+  // between them without an extra round-trip. allSettled ensures a single
+  // failure (e.g. user lacks ClusterSecretStore permission) doesn't discard
+  // the other slice.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    Promise.all([esoApi.listStores(), esoApi.listClusterStores()])
-      .then(([nsResp, clResp]) => {
+    let cancelled = false;
+    Promise.allSettled([esoApi.listStores(), esoApi.listClusterStores()])
+      .then(([nsResult, clResult]) => {
+        if (cancelled) return;
         const list: ExternalSecretWizardStoreOption[] = [];
-        for (const s of nsResp.data ?? []) {
-          list.push({
-            name: s.name,
-            namespace: s.namespace ?? "",
-            kind: "SecretStore",
-            provider: s.provider ?? "",
-          });
+        if (nsResult.status === "fulfilled") {
+          for (const s of nsResult.value.data ?? []) {
+            list.push({
+              name: s.name,
+              namespace: s.namespace ?? "",
+              kind: "SecretStore",
+              provider: s.provider ?? "",
+            });
+          }
+        } else {
+          console.warn("Failed to load SecretStores:", nsResult.reason);
         }
-        for (const s of clResp.data ?? []) {
-          list.push({
-            name: s.name,
-            kind: "ClusterSecretStore",
-            provider: s.provider ?? "",
-          });
+        if (clResult.status === "fulfilled") {
+          for (const s of clResult.value.data ?? []) {
+            list.push({
+              name: s.name,
+              kind: "ClusterSecretStore",
+              provider: s.provider ?? "",
+            });
+          }
+        } else {
+          console.warn("Failed to load ClusterSecretStores:", clResult.reason);
         }
         stores.value = list;
       })
-      .catch(() => {
-        stores.value = [];
-      })
       .finally(() => {
-        storesLoading.value = false;
+        if (!cancelled) storesLoading.value = false;
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function updateField(field: keyof ExternalSecretWizardForm, value: unknown) {
@@ -177,9 +190,9 @@ export default function ExternalSecretWizard() {
     }
     if (
       f.refreshInterval &&
-      !/^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)?$/i.test(f.refreshInterval)
+      !/^(0|([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$/i.test(f.refreshInterval)
     ) {
-      errs.refreshInterval = "Must be a Go duration (e.g. 1h, 30m)";
+      errs.refreshInterval = "Must be a Go duration (e.g. 1h, 30m, 1h30m)";
     }
     if (!f.data.length) {
       errs.data = "At least one data item is required";
@@ -198,6 +211,7 @@ export default function ExternalSecretWizard() {
   }
 
   async function fetchPreview() {
+    const seq = ++previewSeq.current;
     previewLoading.value = true;
     previewError.value = null;
     const f = form.value;
@@ -222,13 +236,15 @@ export default function ExternalSecretWizard() {
 
     try {
       const resp = await esoApi.previewExternalSecret(payload);
+      if (seq !== previewSeq.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (seq !== previewSeq.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (seq === previewSeq.current) previewLoading.value = false;
     }
   }
 
