@@ -177,6 +177,30 @@ export interface BulkRefreshOutcome {
   reason: string;
 }
 
+/** Phase F — per-store rate + cost-tier metrics. */
+export interface CostEstimate {
+  billingProvider: string;
+  currency?: string;
+  usdPerMillion?: number;
+  estimated24h?: number;
+  /** ISO8601 — date the rate-card snapshot was last hand-revised. */
+  lastUpdated?: string;
+}
+
+export interface StoreMetrics {
+  /** sum(rate(externalsecret_sync_calls_total[5m])) projected to per-minute.
+   *  Null when Prometheus has no series yet OR is offline (see `error`). */
+  ratePerMin: number | null;
+  /** Total requests in the last 24h. Same null semantics as ratePerMin. */
+  last24h: number | null;
+  /** Suppressed for self-hosted / unknown providers. */
+  cost?: CostEstimate | null;
+  /** Populated on degradation; HTTP is still 200 in that case. */
+  error?: string;
+  /** ISO8601 sample timestamp; "" when degraded. */
+  windowEnd?: string;
+}
+
 /** GET /externalsecrets/bulk-refresh-jobs/{jobId} payload. */
 export interface BulkRefreshJob {
   jobId: string;

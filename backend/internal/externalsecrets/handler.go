@@ -21,6 +21,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 )
 
@@ -58,6 +59,12 @@ type Handler struct {
 	// rather than panicking. Wired in main.go alongside the poller.
 	BulkJobStore BulkJobReadWriter
 	BulkWorker   BulkWorkerEnqueuer
+
+	// MonitoringDisc is optional; when set, Phase F endpoints query
+	// Prometheus for per-store request-rate metrics. Nil is supported —
+	// the metrics endpoint returns `{rate: nil, error: "rate metrics
+	// offline"}` rather than 500. Wired in main.go after monDiscoverer.
+	MonitoringDisc *monitoring.Discoverer
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex
@@ -97,6 +104,12 @@ type Handler struct {
 	// clientForUserOverride, when non-nil, replaces K8sClient.ClientForUser
 	// for impersonated typed client lookups (synced-Secret RV check).
 	clientForUserOverride func(username string, groups []string) (kubernetes.Interface, error)
+
+	// promQuerierOverride, when non-nil, replaces the live Prometheus
+	// client returned by MonitoringDisc for the metrics endpoints. Tests
+	// inject a fake here so we don't have to spin up a full
+	// monitoring.Discoverer.
+	promQuerierOverride promQuerier
 }
 
 // dynClient returns the dynamic client to use for service-account-scoped

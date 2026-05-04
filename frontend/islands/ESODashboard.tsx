@@ -165,6 +165,85 @@ function aggregateProviders(stores: SecretStore[]): Array<[string, number]> {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 
+/** Mirror of backend's ResolveBillingProvider — Phase F Unit 16. Returns
+ * an empty string for self-hosted / unknown providers so callers can filter
+ * the cost card to paid-tier stores only. AWS disambiguation reads
+ * spec.service the same way the backend does. */
+function resolveBillingProvider(s: SecretStore): string {
+  switch (s.provider) {
+    case "aws": {
+      const svc = s.providerSpec?.service;
+      if (typeof svc === "string" && svc.toLowerCase() === "parameterstore") {
+        return "aws-parameter-store-advanced";
+      }
+      return "aws-secrets-manager";
+    }
+    case "gcpsm":
+      return "gcp-secret-manager";
+    case "azurekv":
+      return "azure-key-vault";
+    default:
+      return "";
+  }
+}
+
+/** Static rate-card snapshot date — must be kept in sync with the backend's
+ * `cost_tier.go` rate-card `LastUpdated` values. Surfaced on the dashboard
+ * caveat so operators know how fresh the estimate is without drilling into a
+ * single store.
+ *
+ * Drift risk: if a single rate card's date diverges from the others, this
+ * constant becomes a lie for that provider. Switch to a backend-derived
+ * snapshot endpoint when more than one card moves independently. */
+const RATE_CARD_SNAPSHOT_DATE = "2026-04-30";
+
+function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
+  const counts = new Map<string, number>();
+  for (const s of stores) {
+    const key = resolveBillingProvider(s);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const billingProviders = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div
+      class="rounded-lg border border-border-primary p-4 bg-elevated"
+      aria-label="Cost estimate"
+    >
+      <h2 class="text-sm font-medium text-text-primary mb-3">
+        Per-provider cost estimate
+      </h2>
+      {billingProviders.length === 0
+        ? (
+          <p class="text-xs text-text-muted">
+            No paid-tier stores visible — self-hosted providers (Vault,
+            Kubernetes) carry no per-request charge.
+          </p>
+        )
+        : (
+          <ul class="space-y-2">
+            {billingProviders.map(([key, n]) => (
+              <li
+                key={key}
+                class="flex items-center justify-between gap-3 text-sm"
+              >
+                <span class="text-text-primary font-mono text-xs">{key}</span>
+                <span class="text-xs text-text-muted">
+                  {n} {n === 1 ? "store" : "stores"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      <p class="text-xs text-text-muted mt-3 leading-snug">
+        Per-store dollar estimates render on each store's detail page. Rates as
+        of {RATE_CARD_SNAPSHOT_DATE}; not connected to live billing.
+      </p>
+    </div>
+  );
+}
+
 export default function ESODashboard() {
   const status = useSignal<ESOStatus | null>(null);
   const externalSecrets = useSignal<ExternalSecret[]>([]);
@@ -348,21 +427,7 @@ export default function ESODashboard() {
                 )}
             </div>
 
-            <div
-              class="rounded-lg border border-border-primary p-4 bg-elevated"
-              aria-label="Cost estimate"
-            >
-              <h2 class="text-sm font-medium text-text-primary mb-3">
-                Per-provider cost estimate
-              </h2>
-              <p class="text-xs text-text-muted">
-                Per-provider cost estimates ship in Phase F.
-              </p>
-              <p class="text-xs text-text-muted mt-2">
-                Rate-card snapshot date:{" "}
-                <span class="font-mono">— pending —</span>
-              </p>
-            </div>
+            <ProviderCostCard stores={allStores} />
           </div>
 
           {/* Failure table */}

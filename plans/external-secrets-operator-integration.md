@@ -1155,11 +1155,11 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [ ] Unit 11 — Drift detection wiring on detail + Revert button + dashboard counts
 
 ### Phase E — Bulk refresh actions
-- [ ] Unit 14 — Force-sync action + impersonation + audit (`lastRefreshTime` heuristic for in-flight detection)
-- [ ] Unit 15 — Migration 000012 (`eso_bulk_refresh_jobs`) + async job model + scope-pinned execution + dialog + progress polling
+- [x] Unit 14 — Force-sync action + impersonation + audit (`lastRefreshTime` heuristic for in-flight detection) (PR #213)
+- [x] Unit 15 — Migrations 000013 (`eso_bulk_refresh_jobs`) + 000014 (unique active jobs) + async job model + scope-pinned execution + dialog + progress polling (PR #213)
 
 ### Phase F — Per-store rate + cost-tier panel
-- [ ] Unit 16 — Per-store rate panel + cost-tier card (Go map literal rate cards with `LastUpdated`)
+- [x] Unit 16 — Per-store rate panel + cost-tier card (Go map literal rate cards with `LastUpdated`)
 
 ### Phase G — Universal ExternalSecret wizard
 - [ ] Unit 17 — ExternalSecret wizard (Kubernetes-provider-only path-discovery) + regex parity test

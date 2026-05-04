@@ -667,10 +667,19 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.With(resources.ValidateURLParams).
 			Get("/stores/{namespace}/{name}", h.HandleGetStore)
 
+		// Per-store rate + cost-tier metrics (Phase F Unit 16). Returns
+		// `{rate, last24h, cost, error}`; degrades to `{error: "rate
+		// metrics offline"}` when monitoring isn't wired or Prometheus
+		// is unreachable. RBAC mirrors the detail endpoint.
+		er.With(resources.ValidateURLParams).
+			Get("/stores/{namespace}/{name}/metrics", h.HandleGetStoreMetrics)
+
 		// ClusterSecretStore list + detail
 		er.Get("/clusterstores", h.HandleListClusterStores)
 		er.With(resources.ValidateURLParams).
 			Get("/clusterstores/{name}", h.HandleGetClusterStore)
+		er.With(resources.ValidateURLParams).
+			Get("/clusterstores/{name}/metrics", h.HandleGetClusterStoreMetrics)
 
 		// PushSecret list + detail (read-only in v1)
 		er.Get("/pushsecrets", h.HandleListPushSecrets)
