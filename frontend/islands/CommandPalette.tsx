@@ -114,8 +114,16 @@ function buildSearchIndex(): SearchItem[] {
       href: "/external-secrets/stores",
     },
     {
+      label: "Create SecretStore",
+      href: "/external-secrets/stores/new",
+    },
+    {
       label: "View ClusterSecretStores",
       href: "/external-secrets/cluster-stores",
+    },
+    {
+      label: "Create ClusterSecretStore",
+      href: "/external-secrets/cluster-stores/new",
     },
     {
       label: "View ExternalSecrets Chain",
