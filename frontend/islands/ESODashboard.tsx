@@ -187,9 +187,14 @@ function resolveBillingProvider(s: SecretStore): string {
   }
 }
 
-/** Static rate-card snapshot date — kept in sync with backend's cost_tier.go.
- * Surfaced on the dashboard caveat so operators know how fresh the estimate
- * is without drilling into a single store. */
+/** Static rate-card snapshot date — must be kept in sync with the backend's
+ * `cost_tier.go` rate-card `LastUpdated` values. Surfaced on the dashboard
+ * caveat so operators know how fresh the estimate is without drilling into a
+ * single store.
+ *
+ * Drift risk: if a single rate card's date diverges from the others, this
+ * constant becomes a lie for that provider. Switch to a backend-derived
+ * snapshot endpoint when more than one card moves independently. */
 const RATE_CARD_SNAPSHOT_DATE = "2026-04-30";
 
 function ProviderCostCard({ stores }: { stores: SecretStore[] }) {

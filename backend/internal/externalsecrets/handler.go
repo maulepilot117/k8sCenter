@@ -104,6 +104,12 @@ type Handler struct {
 	// clientForUserOverride, when non-nil, replaces K8sClient.ClientForUser
 	// for impersonated typed client lookups (synced-Secret RV check).
 	clientForUserOverride func(username string, groups []string) (kubernetes.Interface, error)
+
+	// promQuerierOverride, when non-nil, replaces the live Prometheus
+	// client returned by MonitoringDisc for the metrics endpoints. Tests
+	// inject a fake here so we don't have to spin up a full
+	// monitoring.Discoverer.
+	promQuerierOverride promQuerier
 }
 
 // dynClient returns the dynamic client to use for service-account-scoped

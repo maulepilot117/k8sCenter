@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,8 +18,14 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
-	"github.com/kubecenter/kubecenter/internal/monitoring"
 )
+
+// promQuerier is the minimum subset of *monitoring.PrometheusClient this
+// package needs. Declared as an interface so tests inject a fake without
+// standing up a full Prometheus client.
+type promQuerier interface {
+	Query(ctx context.Context, query string, ts time.Time) (model.Value, v1.Warnings, error)
+}
 
 // metricsResponse is the JSON shape returned by the per-store metrics
 // endpoints. RatePerMin and Last24h are pointers so the frontend can
@@ -84,13 +93,37 @@ func (h *Handler) handleGetStoreMetrics(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	pc := h.promClient()
+	pc := h.promQuerierClient()
 	if pc == nil {
 		httputil.WriteData(w, metricsResponse{Error: "rate metrics offline"})
 		return
 	}
 
-	rate, last24h, sampleAt, err := queryStoreMetrics(r.Context(), pc, store)
+	// Resolve dependent ExternalSecrets via the service-account cache.
+	// ESO emits sync metrics keyed by (namespace, name) of the
+	// ExternalSecret — there is no `store` label — so per-store rates
+	// aggregate the metric across every ES that references this store.
+	// Using the cache (vs an impersonated list) is intentional: the rate
+	// is a property of the store itself, and the caller has already
+	// passed the get-secretstore RBAC check.
+	depMatchers, err := h.dependentMatchers(r.Context(), store)
+	if err != nil {
+		h.Logger.Error("resolve dependent ESes for metrics", "scope", scope, "namespace", ns, "name", name, "error", err)
+		httputil.WriteData(w, metricsResponse{Error: "rate metrics offline"})
+		return
+	}
+	if len(depMatchers) == 0 {
+		// No dependent ESes — surface zero deterministically. Cost is
+		// suppressed via the last24h-nil branch below.
+		httputil.WriteData(w, metricsResponse{
+			RatePerMin: nil,
+			Last24h:    nil,
+			WindowEnd:  time.Now(),
+		})
+		return
+	}
+
+	rate, last24h, sampleAt, err := queryStoreMetrics(r.Context(), pc, depMatchers)
 	if err != nil {
 		// Prometheus reachable but query failed (parse error, no such
 		// metric yet, etc.). Caller gets the error string, not a 500.
@@ -98,12 +131,15 @@ func (h *Handler) handleGetStoreMetrics(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	billing := ResolveBillingProvider(store.Provider, store.ProviderSpec)
-	var requestVolume float64
+	// Suppress the cost block when we have no usage data — paid-tier stores
+	// otherwise render "$0.00" indistinguishable from "actually free".
+	// Frontend treats nil cost as "no card"; explicit zero with samples
+	// still renders correctly.
+	var cost *CostEstimate
 	if last24h != nil {
-		requestVolume = *last24h
+		billing := ResolveBillingProvider(store.Provider, store.ProviderSpec)
+		cost = EstimateCost(billing, *last24h, 24*time.Hour)
 	}
-	cost := EstimateCost(billing, requestVolume, 24*time.Hour)
 
 	httputil.WriteData(w, metricsResponse{
 		RatePerMin: rate,
@@ -113,32 +149,85 @@ func (h *Handler) handleGetStoreMetrics(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
-// promClient returns the active Prometheus client, or nil when monitoring is
-// not wired or hasn't discovered Prometheus yet.
-func (h *Handler) promClient() *monitoring.PrometheusClient {
+// promQuerierClient returns the active Prometheus querier, or nil when
+// monitoring is not wired or hasn't discovered Prometheus yet. Honors
+// promQuerierOverride so tests don't have to construct a real client.
+func (h *Handler) promQuerierClient() promQuerier {
+	if h.promQuerierOverride != nil {
+		return h.promQuerierOverride
+	}
 	if h.MonitoringDisc == nil {
 		return nil
 	}
-	return h.MonitoringDisc.PrometheusClient()
+	pc := h.MonitoringDisc.PrometheusClient()
+	if pc == nil {
+		return nil
+	}
+	return pc
 }
 
-// queryStoreMetrics runs the per-store PromQL pair and returns rate-per-minute
-// and 24h count. Either may be nil if Prometheus has no series yet for this
-// store; the caller treats nil as "no data" and EstimateCost returns
-// cost-zero (still a valid card with the rate-card snapshot date).
-func queryStoreMetrics(ctx context.Context, pc *monitoring.PrometheusClient, store SecretStore) (rate, last24h *float64, sampleAt time.Time, err error) {
-	// store.Name + store.Namespace already gated by isMetricLabelSafe in
-	// the handler, so direct interpolation is safe. The metric name is a
-	// constant. ClusterSecretStores have empty namespace; ESO still emits
-	// the label, so we pass the empty string and the matcher behaves
-	// correctly.
+// dependentMatcher describes one ExternalSecret that contributes to a
+// store's aggregated metric. Both fields are pre-validated as DNS-label safe
+// (k8s API rejects non-conforming names on admission, and we additionally
+// run them through `isMetricLabelSafe` before interpolation).
+type dependentMatcher struct {
+	Namespace string // empty for cross-namespace aggregation (ClusterSecretStore)
+	Name      string
+}
+
+// dependentMatchers returns the (namespace, name) pairs of every
+// ExternalSecret that references the given store. For namespaced
+// SecretStores the result is constrained to the store's namespace
+// (k8s scope rules forbid cross-namespace references). For
+// ClusterSecretStores any namespace is fair game.
+func (h *Handler) dependentMatchers(ctx context.Context, store SecretStore) ([]dependentMatcher, error) {
+	data, err := h.getCached(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wantKind := "SecretStore"
+	if store.Scope == "Cluster" {
+		wantKind = "ClusterSecretStore"
+	}
+
+	out := make([]dependentMatcher, 0, 16)
+	for _, es := range data.externalSecrets {
+		if es.StoreRef.Name != store.Name || es.StoreRef.Kind != wantKind {
+			continue
+		}
+		if store.Scope == "Namespaced" && es.Namespace != store.Namespace {
+			continue
+		}
+		// Defensive: skip names that wouldn't survive PromQL escaping.
+		// In practice these never make it past k8s admission.
+		if !isMetricLabelSafe(es.Name) || (es.Namespace != "" && !isMetricLabelSafe(es.Namespace)) {
+			continue
+		}
+		out = append(out, dependentMatcher{Namespace: es.Namespace, Name: es.Name})
+	}
+	return out, nil
+}
+
+// queryStoreMetrics runs PromQL aggregating the per-ExternalSecret sync metric
+// across the given dependent set. Returns rate-per-minute and 24h count.
+// Either may be nil if Prometheus has no series yet for the dependent set;
+// the caller treats nil as "no data" and suppresses the cost block.
+func queryStoreMetrics(ctx context.Context, pc promQuerier, deps []dependentMatcher) (rate, last24h *float64, sampleAt time.Time, err error) {
+	// Build a single matcher set: namespace=~"ns1|ns2",name=~"es1|es2".
+	// PromQL evaluates this as the cross-product, which would over-match
+	// when two ESes in different namespaces share a name. Acceptable for
+	// v1: ESO already constrains namespaced-store dependents to a single
+	// namespace, and ClusterSecretStore name-collisions across namespaces
+	// are rare in practice. A future revision can switch to the explicit
+	// `or`-of-vectors form if collisions surface.
+	nsRegex, nameRegex := buildDepRegexes(deps)
 	rateQuery := fmt.Sprintf(
-		`sum(rate(%s{store=%q,namespace=%q}[5m]))`,
-		MetricSyncCallsTotal, store.Name, store.Namespace,
+		`sum(rate(%s{namespace=~%q,name=~%q}[5m]))`,
+		MetricSyncCallsTotal, nsRegex, nameRegex,
 	)
 	countQuery := fmt.Sprintf(
-		`sum(increase(%s{store=%q,namespace=%q}[24h]))`,
-		MetricSyncCallsTotal, store.Name, store.Namespace,
+		`sum(increase(%s{namespace=~%q,name=~%q}[24h]))`,
+		MetricSyncCallsTotal, nsRegex, nameRegex,
 	)
 
 	now := time.Now()
@@ -160,6 +249,36 @@ func queryStoreMetrics(ctx context.Context, pc *monitoring.PrometheusClient, sto
 		last24h = c
 	}
 	return rate, last24h, now, nil
+}
+
+// buildDepRegexes returns the namespace and name regex strings that match
+// the dependent-ES set. Names are quoted with regexp.QuoteMeta so DNS-safe
+// characters that have regex meaning ('.' and '-') match literally.
+// Duplicate namespaces are deduped to keep the regex compact.
+func buildDepRegexes(deps []dependentMatcher) (nsRegex, nameRegex string) {
+	if len(deps) == 0 {
+		return "", ""
+	}
+	nsSet := make(map[string]struct{}, len(deps))
+	names := make([]string, 0, len(deps))
+	for _, d := range deps {
+		if d.Namespace != "" {
+			nsSet[d.Namespace] = struct{}{}
+		}
+		names = append(names, regexp.QuoteMeta(d.Name))
+	}
+	if len(nsSet) == 0 {
+		// Cross-namespace ClusterSecretStore aggregation — match any.
+		nsRegex = ".+"
+	} else {
+		ns := make([]string, 0, len(nsSet))
+		for k := range nsSet {
+			ns = append(ns, regexp.QuoteMeta(k))
+		}
+		nsRegex = strings.Join(ns, "|")
+	}
+	nameRegex = strings.Join(names, "|")
+	return nsRegex, nameRegex
 }
 
 // scalarFromVector pulls the single-sample value out of a Prometheus
