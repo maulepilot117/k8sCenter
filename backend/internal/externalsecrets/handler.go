@@ -21,6 +21,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 )
 
@@ -58,6 +59,12 @@ type Handler struct {
 	// rather than panicking. Wired in main.go alongside the poller.
 	BulkJobStore BulkJobReadWriter
 	BulkWorker   BulkWorkerEnqueuer
+
+	// MonitoringDisc is optional; when set, Phase F endpoints query
+	// Prometheus for per-store request-rate metrics. Nil is supported —
+	// the metrics endpoint returns `{rate: nil, error: "rate metrics
+	// offline"}` rather than 500. Wired in main.go after monDiscoverer.
+	MonitoringDisc *monitoring.Discoverer
 
 	fetchGroup singleflight.Group
 	cacheMu    sync.RWMutex

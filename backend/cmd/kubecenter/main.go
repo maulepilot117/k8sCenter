@@ -704,6 +704,10 @@ func main() {
 	}
 	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
 	esoHandler := externalsecrets.NewHandler(k8sClient, esoDisc, accessChecker, auditLogger, notifService, logger)
+	// Phase F Unit 16 — per-store rate + cost panels query Prometheus
+	// through the shared monitoring discoverer. Optional: handler degrades
+	// to `{error: "rate metrics offline"}` when nil.
+	esoHandler.MonitoringDisc = monDiscoverer
 	esoPoller := externalsecrets.NewPoller(
 		k8sClient, esoDisc, esoHandler,
 		notifService, notifStore, esoHistoryStore, cfg.ClusterID,
