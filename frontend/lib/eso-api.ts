@@ -17,6 +17,7 @@ import type {
   ExternalSecret,
   PushSecret,
   SecretStore,
+  StoreMetrics,
 } from "@/lib/eso-types.ts";
 
 function nsQueryString(namespace?: string): string {
@@ -163,5 +164,20 @@ export const esoApi = {
   getBulkRefreshJob: (jobId: string) =>
     apiGet<BulkRefreshJob>(
       `/v1/externalsecrets/bulk-refresh-jobs/${pathParam(jobId)}`,
+    ),
+
+  /** Per-store rate + cost-tier metrics (Phase F). Always HTTP 200; the
+   *  `error` field carries degradation messages so callers branch on payload
+   *  shape rather than status code. */
+  getStoreMetrics: (namespace: string, name: string) =>
+    apiGet<StoreMetrics>(
+      `/v1/externalsecrets/stores/${pathParam(namespace)}/${
+        pathParam(name)
+      }/metrics`,
+    ),
+
+  getClusterStoreMetrics: (name: string) =>
+    apiGet<StoreMetrics>(
+      `/v1/externalsecrets/clusterstores/${pathParam(name)}/metrics`,
     ),
 };
