@@ -305,6 +305,7 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/cluster-issuer/preview", h.HandlePreview(func() wizard.WizardInput {
 			return &wizard.IssuerInput{Scope: wizard.IssuerScopeCluster}
 		}))
+		wr.Post("/externalsecret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ExternalSecretInput{} }))
 	})
 }
 
@@ -666,6 +667,13 @@ func (s *Server) registerExternalSecretsRoutes(ar chi.Router) {
 		er.Get("/stores", h.HandleListStores)
 		er.With(resources.ValidateURLParams).
 			Get("/stores/{namespace}/{name}", h.HandleGetStore)
+
+		// Path-discovery for ExternalSecret wizard (Phase G Unit 17).
+		// Kubernetes-provider stores list Secrets in their source namespace
+		// via the impersonating client; other providers respond with
+		// `{supported: false}` so the wizard renders a free-text path field.
+		er.With(resources.ValidateURLParams).
+			Get("/stores/{namespace}/{name}/paths", h.HandleListPaths)
 
 		// Per-store rate + cost-tier metrics (Phase F Unit 16). Returns
 		// `{rate, last24h, cost, error}`; degrades to `{error: "rate

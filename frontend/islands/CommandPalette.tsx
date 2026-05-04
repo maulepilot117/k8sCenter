@@ -106,6 +106,10 @@ function buildSearchIndex(): SearchItem[] {
       href: "/external-secrets/external-secrets",
     },
     {
+      label: "Create ExternalSecret",
+      href: "/external-secrets/external-secrets/new",
+    },
+    {
       label: "View SecretStores",
       href: "/external-secrets/stores",
     },
