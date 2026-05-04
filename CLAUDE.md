@@ -45,6 +45,15 @@ Scoped checks (single file or directory) MISS pre-existing issues in sibling fil
     - Test files and mocks
     Do not assume a single grep caught everything.
 
+## Model Routing (subagents)
+
+When dispatching subagents (per Rule 5 SUB-AGENT SWARMING):
+- **Haiku** (`claude-haiku-4-5`): pure data-gathering — file reads, Grep, Glob, log inspection, "find all callers of X" sweeps. ~20x cheaper than Opus per input token.
+- **Sonnet** (`claude-sonnet-4-6`): code generation in well-scoped files, test writing, single-file refactors with clear contracts.
+- **Opus** (parent only by default): synthesis, architecture decisions, multi-file refactors with cross-cutting impact, code review, plan authoring.
+
+Default: do not spawn an Opus subagent unless the task explicitly requires synthesis across >3 files. The `Explore` agent type already runs on Haiku — use it for "where is X" lookups instead of dispatching general-purpose Opus.
+
 
 ## Project Vision
 
@@ -237,6 +246,76 @@ Operator-facing annotations are honored on specific CRD kinds. **Resolution chai
 
 ---
 
+## Multi-Cluster Architecture
+
+- **ClusterRouter** (`k8s/cluster_router.go`): Routes client requests to correct cluster based on X-Cluster-ID context. Local → ClientFactory, remote → decrypt stored creds, build rest.Config, impersonate.
+- **ClusterContext middleware** (`middleware/cluster.go`): Extracts X-Cluster-ID header, admin gate for non-local.
+- **Cluster registry**: PostgreSQL-backed, AES-256-GCM encrypted credentials, SSRF-validated URLs.
+- **Remote clusters use direct API calls only** — no informers, no WebSocket events. Local cluster uses informers.
+- **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). `POST /clusters/:id/test` for on-demand probing.
+- **Known limitation:** AccessChecker queries local cluster RBAC, not remote. Kubernetes API enforces real permissions.
+
+---
+
+## Branching Strategy
+
+GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
+
+**Branch:** `main` (protected, always deployable) ← short-lived feature branches
+
+**Image tags:** `vX.Y.Z` (release) + `sha-<hash>` (every merge) + `latest` (floating)
+
+**Rules:**
+- NEVER commit directly to `main` — all changes via PR
+- Feature branches: `feat/description`, `fix/description`, `refactor/description`
+- CI + E2E must pass before merge
+- On merge to main: images built, tagged, pushed to GHCR (public), GitHub Release created
+
+**After every push:** Watch CI (`gh run list --limit 1` / `gh run view`), review any failures, and fix before moving on. Do not assume CI passes — verify it.
+
+**Before any merge:** Run `/ce:review` first. No exceptions. Smoke test against homelab when backend/frontend changes are in scope.
+
+**After successful merge:** Delete the local and remote feature branch. Use `gh api -X DELETE` if SSH times out. Clean up stale tracking refs with `git branch -dr`.
+
+Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
+
+---
+
+## Security Checklist
+
+- [ ] All endpoints require auth (except login, healthz, readyz)
+- [ ] All k8s operations use impersonation (never service account)
+- [ ] Secrets masked in API responses and audit logs
+- [ ] CSRF on all state-changing endpoints (X-Requested-With)
+- [ ] Rate limiting on auth endpoints (5/min per IP)
+- [ ] Container images non-root, read-only rootfs, distroless, drop ALL capabilities
+- [ ] NetworkPolicy restricts pod traffic
+- [ ] Audit log captures all writes and secret accesses
+- [ ] CSP headers prevent XSS
+- [ ] Trivy scans images before GHCR push
+
+---
+
+## Compaction Survival
+
+When compacting this conversation, always preserve:
+- Active phase + which units have shipped vs are pending (see "Build Progress" / "Phase 14" below)
+- Annotation contracts from Key Conventions (cert-manager + ESO threshold keys, ClusterSecretStore propagation rule)
+- Agent Directives 1–10 (Pre-Work, Code Quality, Context Management, Edit Safety) and the Model Routing block
+- The current task's modified file paths and any in-flight test results / verification command output
+- User preferences expressed in this session (e.g., scope confirmations, explicit "skip X" decisions)
+
+Drop freely: historical Build Progress phase descriptions (1–13 are reference, not active state); Roadmap items already checked off; verbose tool-result transcripts that have been summarised.
+
+---
+
+<!--
+=========================================================================
+VOLATILE SECTIONS BELOW — these change on every PR merge.
+Keep below the static sections so the prompt cache prefix stays warm.
+=========================================================================
+-->
+
 ## Build Progress
 
 All foundational phases (1–13) are COMPLETE. High-level inventory:
@@ -254,12 +333,9 @@ All foundational phases (1–13) are COMPLETE. High-level inventory:
 
 ### Phase 14 (External Secrets Operator) — IN PROGRESS
 
-Plan: `plans/external-secrets-operator-integration.md`. Phase order: A → B → D → C → E → F → G → H → I → J. Phases A/B/C/D shipped; E/F/G/H/I/J pending.
+Status (2026-05-02): Phases A → B → D → C shipped (PRs #210–#213). Phases E → F → G → H → I → J pending.
 
-- **Phase A — Backend observatory:** `internal/externalsecrets/` package with CRD-based discovery for 5 normalized types (ExternalSecret, ClusterExternalSecret, SecretStore, ClusterSecretStore, PushSecret). 11 endpoints. Detail endpoint resolves `liveResourceVersion` for the synced k8s Secret to populate tri-state `DriftStatus` (`InSync` / `Drifted` / `Unknown`) with `DriftUnknownReason` enum. Go-TS hash test pins exported field set to prevent drift. Helm grants ESO CRD list/watch only at this phase.
-- **Phase B — Frontend observatory (PR #210):** New nav-rail section + SubNav (Dashboard / ExternalSecrets / ClusterExternalSecrets / Stores / ClusterStores / PushSecrets / Chain). 6 list islands, 4 detail islands with Overview/YAML/Events/History/Chain tabs. `ESODashboard` (sync-health hero ring, provider donut, broken-ES table). Shared components: `ESOBadges`, `ESODriftIndicator`, `ESONotDetected`. Filters use 300ms debounce + sequence-guard.
-- **Phase D — Alerting + annotation thresholds:** `internal/externalsecrets/thresholds.go` (`ResolveESOThresholds` + `ApplyThresholds` mirroring Phase 13). Resolver enforces 5-min stale-after floor at every layer. Response gains per-key source attribution. `internal/externalsecrets/poller.go`: 60s tick, bucket-transition state machine, dedupe key `(UID, EventKind)` so failure and recovery occupy distinct slots, first-tick observations seed but don't emit, bounded-concurrency emit (sem=10), `defer recover()` catches dispatch panics. **Cross-tenant suppression:** `notifications.Notification.SuppressResourceFields bool` strips `ResourceNS`/`ResourceName` from Slack/webhook/email-digest payloads (in-app feed retains full fields, RBAC-filtered). `ResourceKind` static `"externalsecret"`. Migration `000010` extends `nc_notifications.source` CHECK to all 11 Go enum values (fixes pre-existing drift) and adds `external_secrets`. Source filter on `nc_rules` validated server-side via `Source.Valid()`. Frontend rules island groups sources by category. Source value `"external_secrets"` (snake_case) is a deliberate exception for multi-word naming.
-- **Phase C — Persistence + drift detection:** Migrations `000011` + `000012` create `eso_sync_history` (UID-keyed flat table; `text[]` diff-key columns hold sha256-hashed key names only — values never persisted; UNIQUE `(uid, attempt_at)` for idempotent INSERT ON CONFLICT; `cluster_id TEXT NOT NULL DEFAULT 'local'` matches existing tables; `(attempt_at)` index for retention). Helm grant: cluster-wide `core/secrets get/list` to platform SA (poller has no requesting-user context). `persist.go`: per-tick persistence pass with bounded worker pool (sem=10), 5s Secret-fetch timeout, `prevAttemptAt[uid]` committed only after INSERT success. **Unbounded-rows guard:** `attemptTimeFor` returns `(_, false)` when controller's `LastSyncTime` is nil — without this, wall-clock fallback would advance every tick → ON CONFLICT never fires → row inserted every 60s. **Restart-recovery seed:** `seedFromNotifications` queries `nc_notifications` for recent `external_secrets` rows (window 2h, narrowed from 24h to reduce phantom-recovery on delete-and-recreate); `bucketFromNotification` uses `Title*` constants so renames propagate; severity fallback collapses Warning → bucketUnknown. `notifications.Store.RecentBySource` gains `clusterID` filter (`cluster_id = $N OR cluster_id = ''`). `Handler.observedDrift sync.Map` populated by poller's Secret-fetch path; surfaced as `LastObservedDriftStatus` (omitempty) on list endpoint; detail endpoint clears these from cached snapshot copy and does live impersonated read. Retention goroutine in `main.go` runs immediately + every 1h with panic recovery + 5min timeout.
+Authoritative plan + per-phase technical detail: `plans/external-secrets-operator-integration.md`. Read that file before starting any Phase 14 work — annotation thresholds, cross-tenant suppression, and persistence schema are all spelled out there.
 
 Pending units: E (force-sync action — including Phase B's "Revert drift" stub), F (cost-tier classification), G (events surfacing), H (PushSecret targets), I (Chain topology overlay), J (additional polish).
 
@@ -288,53 +364,3 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
   - **Open questions**: cross-cluster vs per-cluster scoping, team-shared views, dashboard widget catalog.
 
 Both #8 (already in motion) and #9 should start with `/ce:brainstorm` before `/ce:plan` for product-shape framing.
-
----
-
-## Multi-Cluster Architecture
-
-- **ClusterRouter** (`k8s/cluster_router.go`): Routes client requests to correct cluster based on X-Cluster-ID context. Local → ClientFactory, remote → decrypt stored creds, build rest.Config, impersonate.
-- **ClusterContext middleware** (`middleware/cluster.go`): Extracts X-Cluster-ID header, admin gate for non-local.
-- **Cluster registry**: PostgreSQL-backed, AES-256-GCM encrypted credentials, SSRF-validated URLs.
-- **Remote clusters use direct API calls only** — no informers, no WebSocket events. Local cluster uses informers.
-- **ClusterProber** (`k8s/cluster_prober.go`): Background goroutine probes remote clusters every 60s (10s timeout). `POST /clusters/:id/test` for on-demand probing.
-- **Known limitation:** AccessChecker queries local cluster RBAC, not remote. Kubernetes API enforces real permissions.
-
----
-
-## Branching Strategy
-
-GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
-
-**Branch:** `main` (protected, always deployable) ← short-lived feature branches
-
-**Image tags:** `vX.Y.Z` (release) + `sha-<hash>` (every merge) + `latest` (floating)
-
-**Rules:**
-- NEVER commit directly to `main` — all changes via PR
-- Feature branches: `feat/description`, `fix/description`, `refactor/description`
-- CI + E2E must pass before merge
-- On merge to main: images built, tagged, pushed to GHCR (public), GitHub Release created
-
-**After every push:** Watch CI (`gh run list --limit 1` / `gh run view`), review any failures, and fix before moving on. Do not assume CI passes — verify it.
-
-**Before any merge:** Run `/compounding-engineering:workflows:review` first. No exceptions. Smoke test against homelab when backend/frontend changes are in scope.
-
-**After successful merge:** Delete the local and remote feature branch. Use `gh api -X DELETE` if SSH times out. Clean up stale tracking refs with `git branch -dr`.
-
-Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
-
----
-
-## Security Checklist
-
-- [ ] All endpoints require auth (except login, healthz, readyz)
-- [ ] All k8s operations use impersonation (never service account)
-- [ ] Secrets masked in API responses and audit logs
-- [ ] CSRF on all state-changing endpoints (X-Requested-With)
-- [ ] Rate limiting on auth endpoints (5/min per IP)
-- [ ] Container images non-root, read-only rootfs, distroless, drop ALL capabilities
-- [ ] NetworkPolicy restricts pod traffic
-- [ ] Audit log captures all writes and secret accesses
-- [ ] CSP headers prevent XSS
-- [ ] Trivy scans images before GHCR push

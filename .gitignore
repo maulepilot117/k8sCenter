@@ -81,3 +81,5 @@ e2e/test-results/
 
 # Compound-engineering ephemeral review artifacts
 .context/
+/.gitnexus
+/node_modules
