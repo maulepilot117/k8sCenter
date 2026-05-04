@@ -108,15 +108,23 @@ export default function ESOExternalSecretsList() {
     <div class="p-6">
       <div class="flex items-start justify-between mb-1">
         <h1 class="text-2xl font-bold text-text-primary">ExternalSecrets</h1>
-        {namespace.value.trim() !== "" && (
-          <button
-            type="button"
-            onClick={() => (showRefreshDialog.value = true)}
-            class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+        <div class="flex items-center gap-2">
+          {namespace.value.trim() !== "" && (
+            <button
+              type="button"
+              onClick={() => (showRefreshDialog.value = true)}
+              class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+            >
+              Refresh namespace
+            </button>
+          )}
+          <a
+            href="/external-secrets/external-secrets/new"
+            class="px-3 py-1.5 text-sm rounded border border-brand text-brand hover:bg-brand/10"
           >
-            Refresh namespace
-          </button>
-        )}
+            + New ExternalSecret
+          </a>
+        </div>
       </div>
 
       {showRefreshDialog.value && (
@@ -273,10 +281,16 @@ export default function ESOExternalSecretsList() {
 
       {!loading.value && !error.value && items.value.length === 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+          <p class="text-text-muted mb-3">
             No ExternalSecrets in this namespace. Create one to start syncing
             secrets from a SecretStore.
           </p>
+          <a
+            href="/external-secrets/external-secrets/new"
+            class="inline-block px-4 py-2 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+          >
+            New ExternalSecret
+          </a>
         </div>
       )}
     </div>

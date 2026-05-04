@@ -180,4 +180,26 @@ export const esoApi = {
     apiGet<StoreMetrics>(
       `/v1/externalsecrets/clusterstores/${pathParam(name)}/metrics`,
     ),
+
+  // --- Phase G ExternalSecret wizard --------------------------------------
+
+  /** Discover candidate remote-key paths for a SecretStore. Kubernetes
+   *  provider returns Secret names from the source namespace; other providers
+   *  return `{supported: false}` so the UI degrades to a free-text input. */
+  listStorePaths: (namespace: string, name: string, prefix?: string) => {
+    const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
+    return apiGet<{
+      supported: boolean;
+      provider?: string;
+      paths?: string[];
+    }>(
+      `/v1/externalsecrets/stores/${pathParam(namespace)}/${
+        pathParam(name)
+      }/paths${qs}`,
+    );
+  },
+
+  /** ExternalSecret wizard preview — returns rendered YAML. */
+  previewExternalSecret: (input: unknown) =>
+    apiPost<{ yaml: string }>("/v1/wizards/externalsecret/preview", input),
 };
