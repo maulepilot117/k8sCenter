@@ -305,7 +305,7 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 		wr.Post("/cluster-issuer/preview", h.HandlePreview(func() wizard.WizardInput {
 			return &wizard.IssuerInput{Scope: wizard.IssuerScopeCluster}
 		}))
-		wr.Post("/externalsecret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ExternalSecretInput{} }))
+		wr.Post("/external-secret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ExternalSecretInput{} }))
 	})
 }
 

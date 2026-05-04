@@ -201,6 +201,23 @@ export interface StoreMetrics {
   windowEnd?: string;
 }
 
+// --- Phase G path-discovery types ------------------------------------------
+
+/**
+ * Response shape for GET /externalsecrets/stores/{ns}/{name}/paths.
+ * - `supported=false` → frontend renders a free-text path field.
+ * - `paths` may be absent (RBAC denied) or empty (namespace has no Secrets).
+ *   Callers must treat absent and [] identically.
+ * - `truncated=true` → result capped at the server-side limit; user should
+ *   narrow the prefix to see more results.
+ */
+export interface PathDiscoveryResponse {
+  supported: boolean;
+  provider?: string;
+  paths?: string[];
+  truncated?: boolean;
+}
+
 /** GET /externalsecrets/bulk-refresh-jobs/{jobId} payload. */
 export interface BulkRefreshJob {
   jobId: string;

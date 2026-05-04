@@ -15,6 +15,7 @@ import type {
   ClusterExternalSecret,
   ESOStatus,
   ExternalSecret,
+  PathDiscoveryResponse,
   PushSecret,
   SecretStore,
   StoreMetrics,
@@ -185,21 +186,25 @@ export const esoApi = {
 
   /** Discover candidate remote-key paths for a SecretStore. Kubernetes
    *  provider returns Secret names from the source namespace; other providers
-   *  return `{supported: false}` so the UI degrades to a free-text input. */
-  listStorePaths: (namespace: string, name: string, prefix?: string) => {
+   *  return `{supported: false}` so the UI degrades to a free-text input.
+   *  Pass `signal` to cancel the in-flight request (e.g. on store change or
+   *  component unmount). */
+  listStorePaths: (
+    namespace: string,
+    name: string,
+    prefix?: string,
+    signal?: AbortSignal,
+  ) => {
     const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
-    return apiGet<{
-      supported: boolean;
-      provider?: string;
-      paths?: string[];
-    }>(
+    return apiGet<PathDiscoveryResponse>(
       `/v1/externalsecrets/stores/${pathParam(namespace)}/${
         pathParam(name)
       }/paths${qs}`,
+      signal,
     );
   },
 
   /** ExternalSecret wizard preview — returns rendered YAML. */
   previewExternalSecret: (input: unknown) =>
-    apiPost<{ yaml: string }>("/v1/wizards/externalsecret/preview", input),
+    apiPost<{ yaml: string }>("/v1/wizards/external-secret/preview", input),
 };

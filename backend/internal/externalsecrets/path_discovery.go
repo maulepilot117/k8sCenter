@@ -18,13 +18,20 @@ import (
 const pathDiscoveryLimit = 200
 
 // pathDiscoveryResponse is the shape returned by the path-discovery endpoint.
-// `Supported` is the contract — when false, the frontend renders a free-text
-// path field instead of typeahead. `Provider` echoes the resolved provider
-// name (e.g. "kubernetes", "vault") so the UI can tailor helper text.
+//
+//   - Supported=false → frontend renders a free-text path field.
+//   - Paths may be nil (RBAC denied, non-Kubernetes provider) or an empty slice
+//     (namespace is empty). Callers must treat nil and [] identically.
+//   - Truncated=true means the result was capped at pathDiscoveryLimit; the
+//     complete list is larger. The user should narrow the prefix.
+//
+// Provider echoes the resolved provider name (e.g. "kubernetes", "vault") so
+// the UI can tailor helper text.
 type pathDiscoveryResponse struct {
 	Supported bool     `json:"supported"`
 	Provider  string   `json:"provider,omitempty"`
 	Paths     []string `json:"paths,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
 }
 
 // HandleListPaths discovers candidate remote-key paths for a SecretStore in
@@ -38,9 +45,8 @@ type pathDiscoveryResponse struct {
 //	GET /externalsecrets/stores/{namespace}/{name}/paths?prefix=<>
 //
 // The Kubernetes provider's source namespace is read from
-// `spec.provider.kubernetes.remoteRef.namespace` (the v1 schema), with a
-// fallback to `spec.provider.kubernetes.remoteNamespace` (older stores).
-// Empty / missing → caller's namespace per ESO defaults.
+// `spec.provider.kubernetes.remoteNamespace` (v1 schema). Empty / missing →
+// caller's namespace per ESO defaults.
 func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
@@ -127,7 +133,11 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secrets, err := kubeClient.CoreV1().Secrets(sourceNS).List(r.Context(), metav1.ListOptions{})
+	// Use a server-side Limit to avoid pulling huge lists across the wire.
+	// The limit is set higher than pathDiscoveryLimit to give prefix-filtering
+	// headroom. We do not page via Continue because we cap immediately after;
+	// this is a typeahead, not an exhaustive enumeration.
+	secrets, err := kubeClient.CoreV1().Secrets(sourceNS).List(r.Context(), metav1.ListOptions{Limit: 500})
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			// Apiserver said no — surface as supported-but-empty so the UI
@@ -148,31 +158,33 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		paths = append(paths, s.Name)
-		if len(paths) >= pathDiscoveryLimit {
-			break
-		}
 	}
+
+	// Sort first so truncation is deterministic (alphabetically earliest set).
 	sort.Strings(paths)
+	truncated := len(paths) > pathDiscoveryLimit
+	if truncated {
+		paths = paths[:pathDiscoveryLimit]
+	}
 
 	httputil.WriteData(w, pathDiscoveryResponse{
 		Supported: true,
 		Provider:  provider,
 		Paths:     paths,
+		Truncated: truncated,
 	})
 }
 
 // kubernetesProviderSourceNamespace reads the source namespace from a
-// kubernetes-provider spec block. The v1 schema places the namespace under
-// `remoteRef.namespace`; older stores use `remoteNamespace`. Empty when
-// neither is present.
+// kubernetes-provider spec block.
+//
+// ESO v1 KubernetesProvider uses `remoteNamespace` at the provider-spec level
+// (`spec.provider.kubernetes.remoteNamespace`). The `remoteRef` key lives on
+// individual ExternalSecret data items, not on the SecretStore provider config,
+// so only `remoteNamespace` is read here. Empty when not present.
 func kubernetesProviderSourceNamespace(providerSpec map[string]any) string {
 	if providerSpec == nil {
 		return ""
-	}
-	if remoteRef, ok := providerSpec["remoteRef"].(map[string]any); ok {
-		if ns, ok := remoteRef["namespace"].(string); ok && ns != "" {
-			return ns
-		}
 	}
 	if ns, ok := providerSpec["remoteNamespace"].(string); ok && ns != "" {
 		return ns
