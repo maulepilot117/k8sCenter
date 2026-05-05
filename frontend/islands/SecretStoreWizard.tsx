@@ -8,11 +8,15 @@ import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
+import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { useRef } from "preact/hooks";
-import type { SecretStoreProvider } from "@/lib/eso-types.ts";
+import {
+  READY_SECRET_STORE_PROVIDERS,
+  type SecretStoreProvider,
+} from "@/lib/eso-types.ts";
 
 // Re-export for any downstream consumers that imported from this island.
 export type { SecretStoreProvider };
@@ -32,14 +36,34 @@ export interface SecretStoreWizardProps {
   scope: "namespaced" | "cluster";
 }
 
-// U18: 3-step wizard — Identity / Provider / Review.
-// The Configure step (per-provider forms) re-appears as step 2 in the U19
-// PR that ships the first real provider validator.
-const STEPS = [
+// Steps shown when no per-provider form ships yet (or the user picks a
+// "coming soon" provider). The Configure step is interleaved at index 2
+// only when the selected provider's form is ready.
+const STEPS_WITHOUT_CONFIGURE = [
   { title: "Identity" },
   { title: "Provider" },
   { title: "Review" },
 ];
+
+const STEPS_WITH_CONFIGURE = [
+  { title: "Identity" },
+  { title: "Provider" },
+  { title: "Configure" },
+  { title: "Review" },
+];
+
+/** Resolve the active step list based on the currently-selected provider.
+ *  Provider readiness is the single edit point as U19 sub-PRs ship — adding
+ *  a provider to READY_SECRET_STORE_PROVIDERS in lib/eso-types.ts surfaces
+ *  the Configure step automatically. */
+function stepsFor(
+  provider: SecretStoreProvider | "",
+): typeof STEPS_WITHOUT_CONFIGURE {
+  if (provider && READY_SECRET_STORE_PROVIDERS.has(provider)) {
+    return STEPS_WITH_CONFIGURE;
+  }
+  return STEPS_WITHOUT_CONFIGURE;
+}
 
 function initialForm(scope: "namespaced" | "cluster"): SecretStoreWizardForm {
   return {
@@ -151,8 +175,9 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
 
   async function goNext() {
     if (!validateStep(currentStep.value)) return;
-    if (currentStep.value === STEPS.length - 2) {
-      currentStep.value = STEPS.length - 1;
+    const steps = stepsFor(form.value.provider);
+    if (currentStep.value === steps.length - 2) {
+      currentStep.value = steps.length - 1;
       await fetchPreview();
     } else {
       currentStep.value = currentStep.value + 1;
@@ -186,7 +211,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       </div>
 
       <WizardStepper
-        steps={STEPS}
+        steps={stepsFor(form.value.provider)}
         currentStep={currentStep.value}
         onStepClick={(step) => {
           if (step < currentStep.value) currentStep.value = step;
@@ -246,7 +271,16 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
           </div>
         )}
 
-        {currentStep.value === STEPS.length - 1 && (
+        {currentStep.value === 2 &&
+          form.value.provider === "vault" && (
+          <VaultForm
+            spec={form.value.providerSpec}
+            errors={errors.value}
+            onUpdateSpec={(spec) => update("providerSpec", spec)}
+          />
+        )}
+
+        {currentStep.value === stepsFor(form.value.provider).length - 1 && (
           <WizardReviewStep
             yaml={previewYaml.value}
             onYamlChange={(v) => {
@@ -259,7 +293,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
         )}
       </div>
 
-      {currentStep.value < STEPS.length - 1 && (
+      {currentStep.value < stepsFor(form.value.provider).length - 1 && (
         <div class="flex justify-between mt-8">
           <Button
             variant="ghost"
@@ -269,12 +303,15 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
             Back
           </Button>
           <Button variant="primary" onClick={goNext}>
-            {currentStep.value === STEPS.length - 2 ? "Preview YAML" : "Next"}
+            {currentStep.value === stepsFor(form.value.provider).length - 2
+              ? "Preview YAML"
+              : "Next"}
           </Button>
         </div>
       )}
 
-      {currentStep.value === STEPS.length - 1 && !previewLoading.value &&
+      {currentStep.value === stepsFor(form.value.provider).length - 1 &&
+        !previewLoading.value &&
         previewError.value === null && (
         <div class="flex justify-start mt-4">
           <Button variant="ghost" onClick={goBack}>Back</Button>
