@@ -23,7 +23,7 @@ export default function ESOChainPage() {
       </p>
 
       <div class="space-y-4">
-        <div class="flex max-w-2xl items-center gap-3">
+        <div class="flex items-center gap-3">
           <label
             class="text-sm font-medium text-text-secondary shrink-0"
             htmlFor="eso-chain-ns"
@@ -42,23 +42,18 @@ export default function ESOChainPage() {
             }}
           />
         </div>
-        <p id="eso-chain-ns-hint" class="text-xs text-text-muted">
-          Type a namespace to render the External Secrets chain overlay.
-        </p>
+        <p id="eso-chain-ns-hint" class="sr-only">Namespace</p>
 
         {ns
           ? (
             <NamespaceTopology
               namespace={ns}
-              initialOverlay="eso-chain"
-              viewTopologyHref={`/observability/topology?namespace=${
-                encodeURIComponent(ns)
-              }&overlay=eso-chain`}
+              defaultOverlay="eso-chain"
             />
           )
           : (
-            <div class="flex min-h-[400px] items-center justify-center rounded-lg border border-border-primary bg-elevated p-6 text-sm text-text-muted">
-              Select a namespace to view ESO chain edges.
+            <div class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted">
+              Select a namespace
             </div>
           )}
       </div>

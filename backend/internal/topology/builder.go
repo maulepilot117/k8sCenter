@@ -36,6 +36,11 @@ const maxNodes = 2000
 // node-cap truncation.
 const maxMeshEdges = 2000
 
+// maxESOChainEdges caps ESO-chain overlay edges separately from the base
+// graph's node cap. A shared ClusterSecretStore can fan out to thousands of
+// ExternalSecrets and consumers, so the overlay needs its own truncation bit.
+const maxESOChainEdges = 2000
+
 // MeshRouteProvider returns cached, cluster-wide mesh traffic routes
 // and a coarse "is a mesh installed" signal. Implemented by
 // *servicemesh.Handler. The returned routes slice is not RBAC-filtered —
@@ -49,6 +54,14 @@ const maxMeshEdges = 2000
 type MeshRouteProvider interface {
 	Routes(ctx context.Context) ([]servicemesh.TrafficRoute, error)
 	MeshDetected(ctx context.Context) bool
+}
+
+// ESOChainProvider returns cached External Secrets Operator inventory for the
+// topology overlay. The returned snapshot is not RBAC-filtered; Builder applies
+// per-resource checks before adding nodes or edges.
+type ESOChainProvider interface {
+	ESOChainSnapshot(ctx context.Context) (ESOChainSnapshot, error)
+	ESOChainDetected(ctx context.Context) bool
 }
 
 // ResourceLister abstracts resource listing for the graph builder.
@@ -72,9 +85,10 @@ type ResourceLister interface {
 // meshProvider is optional; pass nil to disable the mesh-overlay path
 // (the overlay then resolves to OverlayUnavailable).
 type Builder struct {
-	lister       ResourceLister
-	meshProvider MeshRouteProvider
-	logger       *slog.Logger
+	lister           ResourceLister
+	meshProvider     MeshRouteProvider
+	esoChainProvider ESOChainProvider
+	logger           *slog.Logger
 }
 
 // NewBuilder creates a topology graph builder. meshProvider may be nil;
@@ -82,6 +96,13 @@ type Builder struct {
 // nil here without affecting any other behavior.
 func NewBuilder(lister ResourceLister, meshProvider MeshRouteProvider, logger *slog.Logger) *Builder {
 	return &Builder{lister: lister, meshProvider: meshProvider, logger: logger}
+}
+
+// SetESOChainProvider wires the optional External Secrets Operator topology
+// provider after construction. Main initializes topology before ESO, so a
+// setter keeps startup order simple without making mesh wiring nil-prone.
+func (b *Builder) SetESOChainProvider(provider ESOChainProvider) {
+	b.esoChainProvider = provider
 }
 
 // resourceMeta is a normalized representation of a k8s resource for generic node building.
@@ -116,6 +137,8 @@ func (b *Builder) BuildNamespaceGraph(ctx context.Context, namespace string, use
 //   - ""      — no overlay (response is byte-identical to the no-overlay path)
 //   - "mesh"  — emit mesh-overlay edges between Service nodes when the
 //     caller has list permission on the underlying CRD groups
+//   - "eso-chain" — emit ESO Store/ExternalSecret/Secret/Pod chain edges when
+//     ESO is installed and the caller has the relevant RBAC grants
 //
 // Unknown overlay values return an error so the handler can emit a 400.
 func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace string, user *auth.User, checker *resources.AccessChecker, overlay string) (*Graph, error) {
@@ -340,7 +363,7 @@ func (b *Builder) BuildNamespaceGraphWithOverlay(ctx context.Context, namespace 
 	// Apply optional overlay last so health propagation is unaffected by
 	// mesh edges. Overlay errors are logged and downgraded to "unavailable"
 	// — never fail the base graph because the overlay couldn't load.
-	if err := b.applyOverlay(ctx, graph, namespace, user, checker, overlay, nameIndex); err != nil {
+	if err := b.applyOverlay(ctx, graph, namespace, user, checker, overlay, nameIndex, pods); err != nil {
 		return nil, err
 	}
 
@@ -360,6 +383,7 @@ func (b *Builder) applyOverlay(
 	checker *resources.AccessChecker,
 	overlay string,
 	nameIndex map[string]string,
+	pods []*corev1.Pod,
 ) error {
 	switch overlay {
 	case "":
@@ -367,9 +391,66 @@ func (b *Builder) applyOverlay(
 	case string(OverlayMesh):
 		b.applyMeshOverlay(ctx, graph, namespace, user, checker, nameIndex)
 		return nil
+	case string(OverlayESOChain):
+		b.applyESOChainOverlay(ctx, graph, namespace, user, checker, nameIndex, pods)
+		return nil
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedOverlay, overlay)
 	}
+}
+
+// applyESOChainOverlay folds ESO chain nodes and edges into the namespace graph.
+// Runtime failures degrade to OverlayUnavailable; RBAC denials fail closed by
+// emitting no ESO edges rather than returning authorization errors.
+func (b *Builder) applyESOChainOverlay(
+	ctx context.Context,
+	graph *Graph,
+	namespace string,
+	user *auth.User,
+	checker *resources.AccessChecker,
+	nameIndex map[string]string,
+	pods []*corev1.Pod,
+) {
+	if b.esoChainProvider == nil {
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+	if !b.esoChainProvider.ESOChainDetected(ctx) {
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+
+	snapshot, err := b.esoChainProvider.ESOChainSnapshot(ctx)
+	if err != nil {
+		b.logger.Warn("eso chain overlay: snapshot fetch failed", "namespace", namespace, "error", err)
+		graph.Overlay = OverlayUnavailable
+		return
+	}
+
+	graph.Overlay = OverlayESOChain
+
+	if !canAccessESOGroup(ctx, user, checker, "externalsecrets", namespace) {
+		return
+	}
+
+	access := esoChainAccess{
+		stores:        canAccessESOGroup(ctx, user, checker, "secretstores", namespace),
+		clusterStores: canAccessESOGroup(ctx, user, checker, "clustersecretstores", ""),
+		secrets:       canAccess(ctx, user, checker, "secrets", namespace),
+		pods:          canAccess(ctx, user, checker, "pods", namespace),
+	}
+
+	esoEdges, truncated := buildESOChainEdges(snapshot, namespace, nameIndex, pods, access, maxESOChainEdges)
+	if truncated {
+		graph.EdgesTruncated = true
+	}
+	appendESOChainNodes(graph, snapshot, namespace, nameIndex, access)
+	graph.Edges = append(graph.Edges, esoEdges...)
+}
+
+func canAccessESOGroup(ctx context.Context, user *auth.User, checker *resources.AccessChecker, resource, namespace string) bool {
+	allowed, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "external-secrets.io", resource, namespace)
+	return err == nil && allowed
 }
 
 // applyMeshOverlay fetches mesh routes via the configured provider,

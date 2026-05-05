@@ -28,10 +28,11 @@ import (
 // Service nodes in the nameIndex.
 type fakeLister struct {
 	services []*corev1.Service
+	pods     []*corev1.Pod
 }
 
 func (f *fakeLister) ListPods(_ context.Context, _ string) ([]*corev1.Pod, error) {
-	return nil, nil
+	return f.pods, nil
 }
 func (f *fakeLister) ListServices(_ context.Context, namespace string) ([]*corev1.Service, error) {
 	out := make([]*corev1.Service, 0, len(f.services))
@@ -95,10 +96,42 @@ func (p *fakeMeshProvider) MeshDetected(_ context.Context) bool {
 	return true
 }
 
+type fakeESOChainProvider struct {
+	snapshot    ESOChainSnapshot
+	err         error
+	detectedSet bool
+	detected    bool
+}
+
+func (p *fakeESOChainProvider) ESOChainSnapshot(_ context.Context) (ESOChainSnapshot, error) {
+	return p.snapshot, p.err
+}
+
+func (p *fakeESOChainProvider) ESOChainDetected(_ context.Context) bool {
+	if p.detectedSet {
+		return p.detected
+	}
+	return true
+}
+
 func svc(namespace, name, uid string) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: types.UID(uid)},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP},
+	}
+}
+
+func pod(namespace, name, uid, secretName string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: types.UID(uid)},
+		Spec: corev1.PodSpec{
+			Volumes: []corev1.Volume{{
+				Name: "secret",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{SecretName: secretName},
+				},
+			}},
+		},
 	}
 }
 
@@ -108,6 +141,12 @@ func testUser() *auth.User {
 
 func newTestBuilder(provider MeshRouteProvider, services ...*corev1.Service) *Builder {
 	return NewBuilder(&fakeLister{services: services}, provider, slog.Default())
+}
+
+func newESOTestBuilder(provider ESOChainProvider, pods ...*corev1.Pod) *Builder {
+	b := NewBuilder(&fakeLister{pods: pods}, nil, slog.Default())
+	b.SetESOChainProvider(provider)
+	return b
 }
 
 // TestBuilder_DefaultPath_NoOverlayField confirms the byte-level invariant
@@ -360,6 +399,112 @@ func TestBuilder_OverlayInvalidValueReturnsError(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "unsupported overlay") {
 		t.Errorf("error = %q, want prefix \"unsupported overlay\" (handler dispatches on this)", err.Error())
+	}
+}
+
+func TestBuilder_OverlayESOChain_HappyPath(t *testing.T) {
+	b := newESOTestBuilder(&fakeESOChainProvider{
+		snapshot: ESOChainSnapshot{
+			ExternalSecrets: []ESOChainExternalSecret{{
+				Namespace:        "foo",
+				Name:             "db-creds",
+				UID:              "uid-es",
+				StoreRefName:     "vault",
+				StoreRefKind:     "SecretStore",
+				TargetSecretName: "db-secret",
+				Status:           "Synced",
+			}},
+			Stores: []ESOChainStore{{
+				Namespace: "foo",
+				Name:      "vault",
+				UID:       "uid-store",
+				Provider:  "vault",
+				Status:    "Synced",
+				ProviderSpec: map[string]any{
+					"auth": map[string]any{
+						"tokenSecretRef": map[string]any{"name": "vault-token", "key": "token"},
+					},
+				},
+			}},
+		},
+	}, pod("foo", "api", "uid-pod", "db-secret"))
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker(), "eso-chain")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if graph.Overlay != OverlayESOChain {
+		t.Errorf("Overlay = %q, want %q", graph.Overlay, OverlayESOChain)
+	}
+	if !findEdge(graph.Edges, "core/Secret/foo/vault-token", "uid-store", EdgeESOAuth) {
+		t.Errorf("missing auth secret -> store edge; edges=%+v", graph.Edges)
+	}
+	if !findEdge(graph.Edges, "uid-store", "uid-es", EdgeESOSync) {
+		t.Errorf("missing store -> ExternalSecret edge; edges=%+v", graph.Edges)
+	}
+	if !findEdge(graph.Edges, "uid-es", "core/Secret/foo/db-secret", EdgeESOSync) {
+		t.Errorf("missing ExternalSecret -> synced Secret edge; edges=%+v", graph.Edges)
+	}
+	if !findEdge(graph.Edges, "core/Secret/foo/db-secret", "uid-pod", EdgeESOConsumer) {
+		t.Errorf("missing synced Secret -> Pod edge; edges=%+v", graph.Edges)
+	}
+}
+
+func TestBuilder_OverlayESOChain_NotDetectedUnavailable(t *testing.T) {
+	b := newESOTestBuilder(&fakeESOChainProvider{detectedSet: true, detected: false})
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker(), "eso-chain")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if graph.Overlay != OverlayUnavailable {
+		t.Errorf("Overlay = %q, want %q", graph.Overlay, OverlayUnavailable)
+	}
+}
+
+func TestBuilder_OverlayESOChain_RBACDeniedExternalsecretsYieldsNoEdges(t *testing.T) {
+	b := newESOTestBuilder(&fakeESOChainProvider{
+		snapshot: ESOChainSnapshot{
+			ExternalSecrets: []ESOChainExternalSecret{{
+				Namespace: "foo", Name: "db-creds", UID: "uid-es", StoreRefName: "vault", StoreRefKind: "SecretStore", TargetSecretName: "db-secret",
+			}},
+			Stores: []ESOChainStore{{Namespace: "foo", Name: "vault", UID: "uid-store"}},
+		},
+	})
+	checker := resources.NewPredicateAccessChecker(func(_, apiGroup, resource, _ string) bool {
+		return !(apiGroup == "external-secrets.io" && resource == "externalsecrets")
+	})
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), checker, "eso-chain")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if graph.Overlay != OverlayESOChain {
+		t.Errorf("Overlay = %q, want %q", graph.Overlay, OverlayESOChain)
+	}
+	for _, e := range graph.Edges {
+		if e.Type == EdgeESOAuth || e.Type == EdgeESOSync || e.Type == EdgeESOConsumer {
+			t.Fatalf("found ESO edge despite externalsecrets RBAC denial: %+v", e)
+		}
+	}
+}
+
+func TestBuilder_OverlayESOChain_ClusterSecretStore(t *testing.T) {
+	b := newESOTestBuilder(&fakeESOChainProvider{
+		snapshot: ESOChainSnapshot{
+			ExternalSecrets: []ESOChainExternalSecret{{
+				Namespace: "foo", Name: "db-creds", UID: "uid-es", StoreRefName: "global", StoreRefKind: "ClusterSecretStore", TargetSecretName: "db-secret",
+			}},
+			ClusterStores: []ESOChainStore{{Name: "global", UID: "uid-cluster-store", Provider: "vault"}},
+		},
+	})
+
+	graph, err := b.BuildNamespaceGraphWithOverlay(context.Background(), "foo", testUser(), resources.NewAlwaysAllowAccessChecker(), "eso-chain")
+	if err != nil {
+		t.Fatalf("BuildNamespaceGraphWithOverlay: %v", err)
+	}
+	if !findEdge(graph.Edges, "uid-cluster-store", "uid-es", EdgeESOSync) {
+		t.Errorf("missing ClusterSecretStore -> ExternalSecret edge; edges=%+v", graph.Edges)
 	}
 }
 

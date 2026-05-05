@@ -17,11 +17,10 @@ interface TopoGraph {
   // "graph complete, only some mesh edges capped".
   truncated?: boolean;
   edgesTruncated?: boolean;
-  // Set by the backend when an overlay query is requested.
-  // "mesh" — mesh overlay applied.
-  // "eso-chain" — External Secrets chain overlay applied.
+  // Set by the backend when ?overlay=... is requested.
+  // "mesh" / "eso-chain" — overlay applied (edges may or may not be present).
   // "unavailable" — overlay was requested but couldn't be applied
-  //                  (provider unwired, CRDs absent, fetch errored).
+  //                  (no backing CRDs installed, provider unwired, fetch errored).
   overlay?: "mesh" | "eso-chain" | "unavailable";
   // Per-stage warnings; currently used for mesh-overlay host-resolution
   // drops so a custom-cluster-domain namespace doesn't return a silent
@@ -42,7 +41,16 @@ interface TopoNode {
 interface TopoEdge {
   source: string;
   target: string;
-  type: string;
+  type:
+    | "owner"
+    | "selector"
+    | "mount"
+    | "ingress"
+    | "mesh_vs"
+    | "mesh_sp"
+    | "eso_auth"
+    | "eso_sync"
+    | "eso_consumer";
 }
 
 // ── Layout types ──
@@ -50,23 +58,6 @@ interface TopoEdge {
 interface LayoutNode extends TopoNode {
   x: number;
   y: number;
-}
-
-type TopologyOverlay = "none" | "mesh" | "eso-chain";
-
-interface FocusedTopologyNode {
-  kind: string;
-  namespace?: string;
-  name: string;
-}
-
-interface NamespaceTopologyProps {
-  namespace?: string;
-  initialOverlay?: TopologyOverlay;
-  focusedNode?: FocusedTopologyNode;
-  embedded?: boolean;
-  minHeight?: number;
-  viewTopologyHref?: string;
 }
 
 // ── Constants ──
@@ -78,6 +69,16 @@ const BASE_HEIGHT = 800;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
 const PANEL_WIDTH = 320;
+
+type OverlayMode = "none" | "mesh" | "eso-chain";
+
+interface NamespaceTopologyProps {
+  namespace?: string;
+  defaultOverlay?: OverlayMode;
+  focusedNodeId?: string;
+  embedded?: boolean;
+  minHeight?: number;
+}
 
 const HEALTH_COLORS: Record<TopoNode["health"], string> = {
   healthy: "var(--status-success)",
@@ -91,7 +92,7 @@ const HEALTH_COLORS: Record<TopoNode["health"], string> = {
 // property here is consulted only when present, keeping base behavior
 // untouched.
 const EDGE_STYLES: Record<
-  string,
+  TopoEdge["type"],
   { dasharray: string; opacity: number; stroke?: string; markerId?: string }
 > = {
   owner: { dasharray: "", opacity: 0.7 },
@@ -114,39 +115,21 @@ const EDGE_STYLES: Record<
     markerId: "arrow-mesh-sp",
   },
   eso_auth: {
-    dasharray: "3,2",
-    opacity: 0.9,
+    dasharray: "2,2",
+    opacity: 0.8,
     stroke: "var(--accent)",
     markerId: "arrow-eso-auth",
   },
   eso_sync: {
-    dasharray: "",
-    opacity: 0.9,
+    dasharray: "5,2",
+    opacity: 0.85,
     stroke: "var(--accent-secondary)",
     markerId: "arrow-eso-sync",
   },
   eso_consumer: {
-    dasharray: "2,2",
-    opacity: 0.75,
-    stroke: "var(--muted)",
-    markerId: "arrow-eso-consumer",
-  },
-  EdgeESOAuth: {
-    dasharray: "3,2",
-    opacity: 0.9,
-    stroke: "var(--accent)",
-    markerId: "arrow-eso-auth",
-  },
-  EdgeESOSync: {
     dasharray: "",
-    opacity: 0.9,
-    stroke: "var(--accent-secondary)",
-    markerId: "arrow-eso-sync",
-  },
-  EdgeESOConsumer: {
-    dasharray: "2,2",
-    opacity: 0.75,
-    stroke: "var(--muted)",
+    opacity: 0.65,
+    stroke: "var(--text-muted)",
     markerId: "arrow-eso-consumer",
   },
 };
@@ -155,9 +138,11 @@ function isMeshEdge(t: TopoEdge["type"]): boolean {
   return t === "mesh_vs" || t === "mesh_sp";
 }
 
-function isESOChainEdge(t: TopoEdge["type"]): boolean {
-  return t === "eso_auth" || t === "eso_sync" || t === "eso_consumer" ||
-    t === "EdgeESOAuth" || t === "EdgeESOSync" || t === "EdgeESOConsumer";
+function isOverlayEdge(t: TopoEdge["type"]): boolean {
+  return isMeshEdge(t) ||
+    t === "eso_auth" ||
+    t === "eso_sync" ||
+    t === "eso_consumer";
 }
 
 // ── Kind abbreviations ──
@@ -191,6 +176,9 @@ function getResourceHref(kind: string, ns: string, name: string): string {
     Ingress: `/networking/ingresses/${eNs}/${eName}`,
     ConfigMap: `/config/configmaps/${eNs}/${eName}`,
     Secret: `/config/secrets/${eNs}/${eName}`,
+    ExternalSecret: `/external-secrets/externalsecrets/${eNs}/${eName}`,
+    SecretStore: `/external-secrets/stores/${eNs}/${eName}`,
+    ClusterSecretStore: `/external-secrets/cluster-stores/${eName}`,
     PersistentVolumeClaim: `/storage/pvcs/${eNs}/${eName}`,
     Job: `/workloads/jobs/${eNs}/${eName}`,
     CronJob: `/workloads/cronjobs/${eNs}/${eName}`,
@@ -202,69 +190,39 @@ function getResourceHref(kind: string, ns: string, name: string): string {
     }`;
 }
 
-function overlayFromQuery(): TopologyOverlay {
-  if (!IS_BROWSER) return "none";
-  const overlay = new URLSearchParams(globalThis.location.search).get(
-    "overlay",
-  );
-  return overlay === "mesh" || overlay === "eso-chain" ? overlay : "none";
-}
-
-function topologyNamespaceFromQuery(): string | null {
-  if (!IS_BROWSER) return null;
-  return new URLSearchParams(globalThis.location.search).get("namespace");
-}
-
-function findFocusedNode(
-  nodes: TopoNode[],
-  focus: FocusedTopologyNode,
-): TopoNode | null {
-  return nodes.find((node) =>
-    node.kind === focus.kind &&
-    node.name === focus.name &&
-    (!focus.namespace || node.namespace === focus.namespace ||
-      (focus.kind === "ClusterSecretStore" && node.namespace === ""))
-  ) ?? null;
-}
-
-function filterGraphToNeighborhood(
-  graph: TopoGraph,
-  focus?: FocusedTopologyNode,
-): TopoGraph {
-  if (!focus) return graph;
-  const focal = findFocusedNode(graph.nodes, focus);
-  if (!focal) return { ...graph, nodes: [], edges: [] };
-
-  const adjacent = new Map<string, Set<string>>();
-  for (const node of graph.nodes) adjacent.set(node.id, new Set());
-  for (const edge of graph.edges) {
-    if (!adjacent.has(edge.source) || !adjacent.has(edge.target)) continue;
-    adjacent.get(edge.source)!.add(edge.target);
-    adjacent.get(edge.target)!.add(edge.source);
+function focusedSubgraph(graph: TopoGraph, focusedNodeId?: string): TopoGraph {
+  if (!focusedNodeId) return graph;
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  if (!nodeIds.has(focusedNodeId)) {
+    return { ...graph, nodes: [], edges: [] };
   }
-
-  const visited = new Set<string>([focal.id]);
-  const queue = [focal.id];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  const adjacent = new Map<string, string[]>();
+  for (const node of graph.nodes) adjacent.set(node.id, []);
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+    adjacent.get(edge.source)!.push(edge.target);
+    adjacent.get(edge.target)!.push(edge.source);
+  }
+  const keep = new Set<string>([focusedNodeId]);
+  const queue = [focusedNodeId];
+  for (let i = 0; i < queue.length; i++) {
+    const current = queue[i];
     for (const next of adjacent.get(current) ?? []) {
-      if (visited.has(next)) continue;
-      visited.add(next);
+      if (keep.has(next)) continue;
+      keep.add(next);
       queue.push(next);
     }
   }
-
-  const filteredEdges = graph.edges.filter((edge) =>
-    visited.has(edge.source) && visited.has(edge.target)
+  const edges = graph.edges.filter((e) =>
+    keep.has(e.source) && keep.has(e.target)
   );
-  if (filteredEdges.length === 0) {
+  if (edges.length === 0) {
     return { ...graph, nodes: [], edges: [] };
   }
-
   return {
     ...graph,
-    nodes: graph.nodes.filter((node) => visited.has(node.id)),
-    edges: filteredEdges,
+    nodes: graph.nodes.filter((n) => keep.has(n.id)),
+    edges,
   };
 }
 
@@ -272,12 +230,11 @@ function filterGraphToNeighborhood(
 
 export default function NamespaceTopology({
   namespace,
-  initialOverlay,
-  focusedNode,
+  defaultOverlay = "none",
+  focusedNodeId,
   embedded = false,
   minHeight,
-  viewTopologyHref,
-}: NamespaceTopologyProps = {}) {
+}: NamespaceTopologyProps) {
   const graph = useSignal<TopoGraph | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
@@ -290,19 +247,13 @@ export default function NamespaceTopology({
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  const requestedOverlay = useSignal<TopologyOverlay>(
-    initialOverlay ?? overlayFromQuery(),
-  );
-  // Latches the specific overlay that returned overlay=unavailable. This keeps
-  // mesh and ESO-chain availability independent while still letting the user
-  // switch back to the base graph or another overlay.
-  const unavailableOverlay = useSignal<Exclude<TopologyOverlay, "none"> | null>(
-    null,
-  );
+  const overlayMode = useSignal<OverlayMode>(defaultOverlay);
+  const unavailableOverlay = useSignal<OverlayMode | null>(null);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
   const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
+  const panelMinHeight = minHeight ?? (embedded ? 400 : 500);
 
   // ── Data fetching ──
 
@@ -312,14 +263,15 @@ export default function NamespaceTopology({
     loading.value = true;
     error.value = null;
     try {
-      const overlay = requestedOverlay.value;
-      const overlayParam = overlay === "none" ? "" : `?overlay=${overlay}`;
+      const overlayParam = overlayMode.value === "none"
+        ? ""
+        : `?overlay=${overlayMode.value}`;
       const res = await apiGet<TopoGraph>(`/v1/topology/${ns}${overlayParam}`);
-      graph.value = res.data;
-      if (res.data.overlay === "unavailable" && overlay !== "none") {
-        unavailableOverlay.value = overlay;
-        requestedOverlay.value = "none";
-      } else if (overlay !== "none" && res.data.overlay === overlay) {
+      graph.value = focusedSubgraph(res.data, focusedNodeId);
+      if (res.data.overlay === "unavailable") {
+        unavailableOverlay.value = overlayMode.value;
+        overlayMode.value = "none";
+      } else if (res.data.overlay === overlayMode.value) {
         unavailableOverlay.value = null;
       }
     } catch (err) {
@@ -334,30 +286,21 @@ export default function NamespaceTopology({
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    const queryNamespace = namespace ? null : topologyNamespaceFromQuery();
-    if (queryNamespace) selectedNamespace.value = queryNamespace;
-  }, [namespace]);
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-    const activeNamespace = namespace ?? selectedNamespace.value;
-    if (activeNamespace === "all") {
+    const ns = namespace ?? selectedNamespace.value;
+    if (ns === "all") {
       loading.value = false;
       return;
     }
-    // A different namespace means a different cluster slice.
     unavailableOverlay.value = null;
     fetchGraph();
-  }, [namespace ?? selectedNamespace.value]);
+  }, [namespace, selectedNamespace.value, focusedNodeId]);
 
-  // Re-fetch when the user changes overlays. Separate effect so the
-  // namespace-change reset above doesn't fight a same-tick overlay change.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    const activeNamespace = namespace ?? selectedNamespace.value;
-    if (activeNamespace === "all") return;
+    const ns = namespace ?? selectedNamespace.value;
+    if (ns === "all") return;
     fetchGraph();
-  }, [requestedOverlay.value]);
+  }, [overlayMode.value]);
 
   // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
 
@@ -367,9 +310,8 @@ export default function NamespaceTopology({
       return;
     }
 
-    const focusedGraph = filterGraphToNeighborhood(graph.value, focusedNode);
-    const nodes = focusedGraph.nodes;
-    const edges = focusedGraph.edges;
+    const nodes = graph.value.nodes;
+    const edges = graph.value.edges;
     const nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
     // Build adjacency: children[parentId] = [childIds], parents[childId] = [parentIds]
@@ -431,20 +373,14 @@ export default function NamespaceTopology({
 
     layoutNodes.value = positioned;
     layoutNodeMap.value = new Map(positioned.map((n) => [n.id, n]));
-  }, [
-    graph.value,
-    focusedNode?.kind,
-    focusedNode?.namespace,
-    focusedNode?.name,
-  ]);
+  }, [graph.value]);
 
   // ── Connectivity sets for hover highlight ──
 
   function getConnectedIds(nodeId: string): Set<string> {
     const connected = new Set<string>([nodeId]);
     if (!graph.value) return connected;
-    const focusedGraph = filterGraphToNeighborhood(graph.value, focusedNode);
-    for (const edge of focusedGraph.edges) {
+    for (const edge of graph.value.edges) {
       if (edge.source === nodeId) connected.add(edge.target);
       if (edge.target === nodeId) connected.add(edge.source);
     }
@@ -528,14 +464,9 @@ export default function NamespaceTopology({
     return connectedSet.has(source) && connectedSet.has(target) ? base : 0.08;
   }
 
-  const activeNamespace = namespace ?? selectedNamespace.value;
-  const renderedGraph = graph.value
-    ? filterGraphToNeighborhood(graph.value, focusedNode)
-    : null;
-
   // ── No namespace selected ──
 
-  if (activeNamespace === "all") {
+  if ((namespace ?? selectedNamespace.value) === "all") {
     return (
       <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
         <p class="text-text-secondary">
@@ -575,13 +506,11 @@ export default function NamespaceTopology({
 
   // ── Empty state ──
 
-  if (!renderedGraph || renderedGraph.nodes.length === 0) {
+  if (!graph.value || graph.value.nodes.length === 0) {
     return (
       <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
         <p class="text-text-secondary">
-          {focusedNode
-            ? "No chain edges - this resource has no synced consumers yet."
-            : "No resources found in this namespace."}
+          No resources found in this namespace.
         </p>
       </div>
     );
@@ -590,30 +519,21 @@ export default function NamespaceTopology({
   // ── Selected node data ──
 
   const selected = selectedNode.value
-    ? renderedGraph.nodes.find((n) => n.id === selectedNode.value) ?? null
+    ? graph.value.nodes.find((n) => n.id === selectedNode.value) ?? null
     : null;
 
   // ── Main render ──
 
-  const graphMinHeight = minHeight ?? (embedded ? 400 : 500);
-  const svgMinHeight = Math.max(320, graphMinHeight - 40);
-  const meshUnavailable = unavailableOverlay.value === "mesh";
-  const esoChainUnavailable = unavailableOverlay.value === "eso-chain";
-  const topologyHref = viewTopologyHref ??
-    `/observability/topology?namespace=${
-      encodeURIComponent(activeNamespace)
-    }&overlay=${encodeURIComponent(requestedOverlay.value)}`;
-
   return (
-    <div class={`relative ${embedded ? "block" : "flex"} gap-0`}>
+    <div class="relative flex gap-0">
       {/* Graph area */}
       <div
         class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-bg-surface"
-        style={{ minHeight: `${graphMinHeight}px` }}
+        style={{ minHeight: `${panelMinHeight}px` }}
       >
         {/* Toolbar */}
-        <div class="flex flex-col gap-2 border-b border-border-primary px-4 py-2 md:flex-row md:items-center md:justify-between">
-          <div class="flex flex-wrap items-center gap-2">
+        <div class="flex items-center justify-between border-b border-border-primary px-4 py-2">
+          <div class="flex items-center gap-2">
             <button
               type="button"
               class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
@@ -631,47 +551,34 @@ export default function NamespaceTopology({
             <div
               role="radiogroup"
               aria-label="Topology overlay"
-              class="ml-0 inline-flex overflow-hidden rounded border border-border-primary bg-bg-surface md:ml-2"
+              class="ml-2 inline-flex overflow-hidden rounded border border-border-primary"
             >
-              {(
-                [
-                  ["none", "Base", false, "Show base resource dependencies"],
-                  [
-                    "mesh",
-                    "Mesh",
-                    meshUnavailable,
-                    meshUnavailable
-                      ? "No service mesh detected in this cluster"
-                      : "Show Istio VirtualService and Linkerd ServiceProfile traffic edges",
-                  ],
-                  [
-                    "eso-chain",
-                    "ESO chain",
-                    esoChainUnavailable,
-                    esoChainUnavailable
-                      ? "ESO not installed in this cluster"
-                      : "Show External Secrets chain edges",
-                  ],
-                ] as Array<[TopologyOverlay, string, boolean, string]>
-              ).map(([value, label, disabled, title]) => {
-                const active = requestedOverlay.value === value;
+              {([
+                ["none", "Base"],
+                ["mesh", "Mesh"],
+                ["eso-chain", "ESO chain"],
+              ] as Array<[OverlayMode, string]>).map(([mode, label]) => {
+                const disabled = unavailableOverlay.value === mode;
+                const active = overlayMode.value === mode;
                 return (
                   <button
-                    key={value}
+                    key={mode}
                     type="button"
                     role="radio"
                     aria-checked={active}
                     disabled={disabled}
-                    title={title}
-                    class={`px-2.5 py-1 text-xs transition-colors ${
+                    title={disabled
+                      ? (mode === "eso-chain"
+                        ? "ESO not installed in this cluster"
+                        : "No service mesh detected in this cluster")
+                      : label}
+                    class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
-                        ? "bg-brand text-white"
-                        : disabled
-                        ? "cursor-not-allowed text-text-muted opacity-60"
-                        : "text-text-secondary hover:bg-bg-elevated hover:text-text-primary"
+                        ? "bg-accent-primary text-white"
+                        : "bg-bg-surface text-text-secondary hover:text-text-primary"
                     }`}
                     onClick={() => {
-                      requestedOverlay.value = value;
+                      overlayMode.value = mode;
                     }}
                   >
                     {label}
@@ -681,8 +588,7 @@ export default function NamespaceTopology({
             </div>
           </div>
           <div class="flex items-center gap-3">
-            {requestedOverlay.value === "mesh" &&
-              renderedGraph.overlay === "mesh" && (
+            {overlayMode.value === "mesh" && graph.value.overlay === "mesh" && (
               <div class="flex items-center gap-3 text-xs text-text-muted">
                 <span class="flex items-center gap-1.5">
                   <span
@@ -702,8 +608,8 @@ export default function NamespaceTopology({
                 </span>
               </div>
             )}
-            {requestedOverlay.value === "eso-chain" &&
-              renderedGraph.overlay === "eso-chain" && (
+            {overlayMode.value === "eso-chain" &&
+              graph.value.overlay === "eso-chain" && (
               <div class="flex items-center gap-3 text-xs text-text-muted">
                 <span class="flex items-center gap-1.5">
                   <span
@@ -724,24 +630,16 @@ export default function NamespaceTopology({
                 <span class="flex items-center gap-1.5">
                   <span
                     class="inline-block h-0.5 w-4"
-                    style={{ backgroundColor: "var(--muted)" }}
+                    style={{ backgroundColor: "var(--text-muted)" }}
                     aria-hidden="true"
                   />
                   Consumer
                 </span>
               </div>
             )}
-            {embedded && (
-              <a
-                href={topologyHref}
-                class="rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs text-text-secondary hover:text-text-primary"
-              >
-                View in Topology
-              </a>
-            )}
-            {renderedGraph.computedAt && (
+            {graph.value.computedAt && (
               <span class="text-xs text-text-muted">
-                Updated {timeAgo(renderedGraph.computedAt)}
+                Updated {timeAgo(graph.value.computedAt)}
               </span>
             )}
           </div>
@@ -757,7 +655,7 @@ export default function NamespaceTopology({
           aria-label="Namespace resource topology graph"
           style={{
             cursor: dragging.value ? "grabbing" : "grab",
-            minHeight: `${svgMinHeight}px`,
+            minHeight: "460px",
           }}
           onWheel={handleWheel}
           onMouseDown={handleMouseDown}
@@ -855,12 +753,12 @@ export default function NamespaceTopology({
               markerHeight="6"
               orient="auto"
             >
-              <path d="M0,0 L10,3 L0,6 Z" fill="var(--muted)" />
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--text-muted)" />
             </marker>
           </defs>
 
           {/* Edges */}
-          {renderedGraph.edges.map((edge, i) => {
+          {graph.value.edges.map((edge, i) => {
             const src = layoutNodeMap.value.get(edge.source);
             const tgt = layoutNodeMap.value.get(edge.target);
             if (!src || !tgt) return null;
@@ -882,9 +780,7 @@ export default function NamespaceTopology({
                 x2={tgt.x}
                 y2={tgt.y}
                 stroke={stroke}
-                stroke-width={isMeshEdge(edge.type) || isESOChainEdge(edge.type)
-                  ? 2
-                  : 1.5}
+                stroke-width={isOverlayEdge(edge.type) ? 2 : 1.5}
                 stroke-dasharray={style.dasharray}
                 opacity={op}
                 marker-end={`url(#${markerId})`}
@@ -956,10 +852,13 @@ export default function NamespaceTopology({
       </div>
 
       {/* Slide-out detail panel */}
-      {selected && !embedded && (
+      {selected && (
         <div
           class="shrink-0 overflow-y-auto border-l border-border-primary bg-bg-surface"
-          style={{ width: `${PANEL_WIDTH}px`, minHeight: "500px" }}
+          style={{
+            width: `${PANEL_WIDTH}px`,
+            minHeight: `${panelMinHeight}px`,
+          }}
         >
           {/* Panel header */}
           <div class="flex items-center justify-between border-b border-border-primary px-4 py-3">

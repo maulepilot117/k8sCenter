@@ -4,7 +4,7 @@ import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
-import ESOChainTopologyPanel from "@/islands/ESOChainTopologyPanel.tsx";
+import ESOChainPanel from "@/islands/ESOChainPanel.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
@@ -285,13 +285,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
       )}
 
       {activeTab.value === "chain" && (
-        <div role="tabpanel">
-          <ESOChainTopologyPanel
-            kind="ExternalSecret"
-            namespace={namespace}
-            name={name}
-          />
-        </div>
+        <ESOChainPanel namespace={es.namespace} focusedNodeId={es.uid} />
       )}
     </div>
   );

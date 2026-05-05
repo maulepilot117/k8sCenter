@@ -14,13 +14,13 @@ import "time"
 // per-stage warnings the build accumulated (currently: mesh-overlay
 // host-resolution drops); never holds raw Kubernetes error bodies.
 type Graph struct {
-	Nodes           []Node            `json:"nodes"`
-	Edges           []Edge            `json:"edges"`
-	Truncated       bool              `json:"truncated,omitempty"`
-	EdgesTruncated  bool              `json:"edgesTruncated,omitempty"`
-	Overlay         Overlay           `json:"overlay,omitempty"`
-	Errors          map[string]string `json:"errors,omitempty"`
-	ComputedAt      string            `json:"computedAt"`
+	Nodes          []Node            `json:"nodes"`
+	Edges          []Edge            `json:"edges"`
+	Truncated      bool              `json:"truncated,omitempty"`
+	EdgesTruncated bool              `json:"edgesTruncated,omitempty"`
+	Overlay        Overlay           `json:"overlay,omitempty"`
+	Errors         map[string]string `json:"errors,omitempty"`
+	ComputedAt     string            `json:"computedAt"`
 }
 
 // Node represents a Kubernetes resource in the graph.
@@ -58,13 +58,15 @@ const (
 //	OverlayMesh        — overlay requested AND a mesh is installed; edges
 //	                     reflect the routes the user has CRD list permission
 //	                     for (may be empty)
-//	OverlayUnavailable — overlay requested but couldn't be applied: provider
-//	                     unwired, fetch errored, or no mesh is installed
+//	OverlayESOChain     — External Secrets Operator chain overlay requested
+//	OverlayUnavailable  — overlay requested but couldn't be applied: provider
+//	                     unwired, fetch errored, or no backing CRDs are installed
 type Overlay string
 
 const (
 	OverlayNone        Overlay = ""
 	OverlayMesh        Overlay = "mesh"
+	OverlayESOChain    Overlay = "eso-chain"
 	OverlayUnavailable Overlay = "unavailable"
 )
 
@@ -83,6 +85,14 @@ const (
 	// CRD group.
 	EdgeMeshVS EdgeType = "mesh_vs"
 	EdgeMeshSP EdgeType = "mesh_sp"
+
+	// ESO-chain overlay edge types. EdgeESOAuth connects an auth Secret to
+	// the Store that references it. EdgeESOSync connects a Store to an
+	// ExternalSecret and an ExternalSecret to its synced Secret. EdgeESOConsumer
+	// connects a synced Secret to Pods that consume it.
+	EdgeESOAuth     EdgeType = "eso_auth"
+	EdgeESOSync     EdgeType = "eso_sync"
+	EdgeESOConsumer EdgeType = "eso_consumer"
 )
 
 // NewGraph creates a new empty graph with the current timestamp.
