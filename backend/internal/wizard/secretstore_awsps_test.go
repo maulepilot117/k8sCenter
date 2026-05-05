@@ -13,12 +13,14 @@ import (
 func validAWSPSSpec() map[string]any {
 	return map[string]any{
 		"region": "us-east-1",
+		// role is a top-level field on AWSProvider (spec.provider.aws.role),
+		// not inside auth.jwt. AWSJWTAuth has only serviceAccountRef.
+		"role": "arn:aws:iam::123456789012:role/my-role",
 		"auth": map[string]any{
 			"jwt": map[string]any{
 				"serviceAccountRef": map[string]any{
 					"name": "my-service-account",
 				},
-				"role": "arn:aws:iam::123456789012:role/my-role",
 			},
 		},
 	}
@@ -87,7 +89,6 @@ func TestValidateAWSPSSpec_AuthMultipleMethods(t *testing.T) {
 	spec["auth"] = map[string]any{
 		"jwt": map[string]any{
 			"serviceAccountRef": map[string]any{"name": "sa"},
-			"role":              "arn:aws:iam::123:role/r",
 		},
 		"secretRef": map[string]any{},
 	}
@@ -118,9 +119,7 @@ func TestValidateAWSPSSpec_JWTAuth_Valid(t *testing.T) {
 func TestValidateAWSPSSpec_JWTAuth_MissingServiceAccountRef(t *testing.T) {
 	spec := validAWSPSSpec()
 	spec["auth"] = map[string]any{
-		"jwt": map[string]any{
-			"role": "arn:aws:iam::123:role/r",
-		},
+		"jwt": map[string]any{},
 	}
 	if !hasField(validateAWSPSSpec(spec), "auth.jwt.serviceAccountRef") {
 		t.Error("expected serviceAccountRef required error")
@@ -132,7 +131,6 @@ func TestValidateAWSPSSpec_JWTAuth_BlankServiceAccountName(t *testing.T) {
 	spec["auth"] = map[string]any{
 		"jwt": map[string]any{
 			"serviceAccountRef": map[string]any{"name": ""},
-			"role":              "arn:aws:iam::123:role/r",
 		},
 	}
 	if !hasField(validateAWSPSSpec(spec), "auth.jwt.serviceAccountRef.name") {
@@ -145,7 +143,6 @@ func TestValidateAWSPSSpec_JWTAuth_BadServiceAccountName(t *testing.T) {
 	spec["auth"] = map[string]any{
 		"jwt": map[string]any{
 			"serviceAccountRef": map[string]any{"name": "BadName"},
-			"role":              "arn:aws:iam::123:role/r",
 		},
 	}
 	if !hasField(validateAWSPSSpec(spec), "auth.jwt.serviceAccountRef.name") {
@@ -154,14 +151,12 @@ func TestValidateAWSPSSpec_JWTAuth_BadServiceAccountName(t *testing.T) {
 }
 
 func TestValidateAWSPSSpec_JWTAuth_MissingRole(t *testing.T) {
+	// role is a top-level AWSProvider field; deleting it when jwt auth is
+	// selected should produce an error on the top-level "role" field.
 	spec := validAWSPSSpec()
-	spec["auth"] = map[string]any{
-		"jwt": map[string]any{
-			"serviceAccountRef": map[string]any{"name": "my-sa"},
-		},
-	}
-	if !hasField(validateAWSPSSpec(spec), "auth.jwt.role") {
-		t.Error("expected role required error")
+	delete(spec, "role")
+	if !hasField(validateAWSPSSpec(spec), "role") {
+		t.Error("expected top-level role required error when jwt auth selected")
 	}
 }
 

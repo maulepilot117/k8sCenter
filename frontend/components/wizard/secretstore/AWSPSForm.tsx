@@ -35,8 +35,9 @@ interface SecretKeyRef {
 /** Typed sub-shapes for each AWSPS auth method block. */
 interface AWSPSAuthSpec {
   jwt?: {
+    // Note: AWSJWTAuth has only serviceAccountRef. The IAM role ARN lives at
+    // the top-level AWSProvider.role field (spec.provider.aws.role), not here.
     serviceAccountRef?: { name?: string };
-    role?: string;
   };
   secretRef?: {
     accessKeyIDSecretRef?: SecretKeyRef;
@@ -134,14 +135,12 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
   }
 
   function patchSecretKeyRef(
-    refPath: string[],
+    leafKey: string,
     patch: SecretKeyRef,
   ) {
-    // refPath is ["secretRef", "accessKeyIDSecretRef"] or similar.
-    // Walk the auth block and merge the patch at the leaf.
+    // leafKey is "accessKeyIDSecretRef" or "secretAccessKeySecretRef".
     const auth = (spec.auth as Record<string, unknown>) ?? {};
     const topBlock = (auth["secretRef"] as Record<string, unknown>) ?? {};
-    const [, leafKey] = refPath;
     const existing = (topBlock[leafKey] as SecretKeyRef) ?? {};
     onUpdateSpec({
       ...spec,
@@ -177,12 +176,17 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
         />
         <Input
           id="awsps-role"
-          label="Assume-role ARN (optional)"
+          label={method.value === "jwt"
+            ? "IAM role ARN"
+            : "Assume-role ARN (optional)"}
+          required={method.value === "jwt"}
           value={getStr(spec, "role")}
           onInput={(e) =>
             patchTop("role", (e.target as HTMLInputElement).value)}
           placeholder="arn:aws:iam::123456789012:role/my-role"
-          description="IAM role to assume before reading parameters. Leave blank to use the pod's identity directly."
+          description={method.value === "jwt"
+            ? "Role ARN bound to the service account via IRSA annotation."
+            : "IAM role to assume before reading parameters. Leave blank to use the pod's identity directly."}
           error={errors["role"]}
         />
       </div>
@@ -230,12 +234,9 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
           onPatchAccessKey={(patch) =>
-            patchSecretKeyRef(["secretRef", "accessKeyIDSecretRef"], patch)}
+            patchSecretKeyRef("accessKeyIDSecretRef", patch)}
           onPatchSecretKey={(patch) =>
-            patchSecretKeyRef(
-              ["secretRef", "secretAccessKeySecretRef"],
-              patch,
-            )}
+            patchSecretKeyRef("secretAccessKeySecretRef", patch)}
         />
       )}
     </div>
@@ -247,7 +248,8 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
 function emptyMethodSpec(m: AWSPSAuthMethod): Record<string, unknown> {
   switch (m) {
     case "jwt":
-      return { serviceAccountRef: {}, role: "" };
+      // role lives at top-level spec (patchTop), not inside this auth block.
+      return { serviceAccountRef: {} };
     case "secretRef":
       return { accessKeyIDSecretRef: {}, secretAccessKeySecretRef: {} };
   }
@@ -263,12 +265,12 @@ interface JWTAuthFieldsProps {
 
 function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
   // Typed reads via AWSPSAuthSpec.jwt shape.
+  // Note: role ARN is a top-level AWSProvider field edited in the region/role
+  // row above — AWSJWTAuth has only serviceAccountRef.
   const jwtBlock = block as {
     serviceAccountRef?: { name?: string };
-    role?: string;
   };
   const saName = jwtBlock.serviceAccountRef?.name ?? "";
-  const role = jwtBlock.role ?? "";
 
   function patchSARef(name: string) {
     const existing = (block.serviceAccountRef as Record<string, unknown>) ?? {};
@@ -280,29 +282,16 @@ function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
       <h4 class="text-sm font-medium text-text-primary">
         IAM workload identity (IRSA)
       </h4>
-      <div class="grid grid-cols-2 gap-3">
-        <Input
-          id="awsps-jwt-sa-name"
-          label="Service account name"
-          required
-          value={saName}
-          onInput={(e) => patchSARef((e.target as HTMLInputElement).value)}
-          placeholder="my-app"
-          description="Kubernetes ServiceAccount annotated with the IAM role ARN."
-          error={errors["auth.jwt.serviceAccountRef.name"]}
-        />
-        <Input
-          id="awsps-jwt-role"
-          label="IAM role ARN"
-          required
-          value={role}
-          onInput={(e) =>
-            onPatch({ role: (e.target as HTMLInputElement).value })}
-          placeholder="arn:aws:iam::123456789012:role/my-role"
-          description="Role ARN bound to the service account via IRSA annotation."
-          error={errors["auth.jwt.role"]}
-        />
-      </div>
+      <Input
+        id="awsps-jwt-sa-name"
+        label="Service account name"
+        required
+        value={saName}
+        onInput={(e) => patchSARef((e.target as HTMLInputElement).value)}
+        placeholder="my-app"
+        description="Kubernetes ServiceAccount annotated with the IAM role ARN (set above)."
+        error={errors["auth.jwt.serviceAccountRef.name"]}
+      />
     </div>
   );
 }

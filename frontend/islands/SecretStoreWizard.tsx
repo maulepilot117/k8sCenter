@@ -214,6 +214,13 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       if (!auth || Object.keys(auth).length === 0) {
         errs.auth = "Select an authentication method";
       }
+      // role is a top-level AWSProvider field; required when using jwt (IRSA).
+      if (auth && "jwt" in auth) {
+        const role = typeof ps.role === "string" ? ps.role.trim() : "";
+        if (!role) {
+          errs.role = "IAM role ARN is required for IRSA";
+        }
+      }
     }
 
     errors.value = errs;
