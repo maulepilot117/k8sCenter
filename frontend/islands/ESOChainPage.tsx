@@ -1,13 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
+import NamespaceTopology from "@/islands/NamespaceTopology.tsx";
 
-/** Chain page (Phase B placeholder).
- *
- * The cross-resource overlay (ExternalSecret → SecretStore → target Secret →
- * consuming Pods) ships in Phase I as a `?overlay=eso-chain` query on the
- * existing `/observability/topology` view. Until then this page exists so the
- * "Chain" tab in the External Secrets nav has a real landing surface and a
- * one-click jump into the namespaced topology view. */
 export default function ESOChainPage() {
   const namespace = useSignal("");
 
@@ -25,17 +19,8 @@ export default function ESOChainPage() {
         Pods consuming the resulting Secret.
       </p>
 
-      <div class="rounded-lg border border-border-primary bg-elevated p-6 max-w-2xl">
-        <h2 class="text-base font-semibold text-text-primary mb-2">
-          Chain overlay coming in Phase I
-        </h2>
-        <p class="text-sm text-text-muted mb-4">
-          The dedicated overlay is part of a later phase. In the meantime, the
-          existing namespace topology view shows the same resources — pick a
-          namespace below to jump into it.
-        </p>
-
-        <div class="flex items-center gap-3 mb-4">
+      <div class="space-y-4">
+        <div class="flex items-center gap-3">
           <label
             class="text-sm font-medium text-text-secondary shrink-0"
             htmlFor="eso-chain-ns"
@@ -54,31 +39,19 @@ export default function ESOChainPage() {
             }}
           />
         </div>
-        <p id="eso-chain-ns-hint" class="text-xs text-text-muted mb-4">
-          Type a namespace, then click "Open in Topology" to view its
-          ExternalSecrets in context.
-        </p>
+        <p id="eso-chain-ns-hint" class="sr-only">Namespace</p>
 
         {ns
           ? (
-            <a
-              href={`/observability/topology?namespace=${
-                encodeURIComponent(ns)
-              }`}
-              class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90"
-            >
-              Open in Topology →
-            </a>
+            <NamespaceTopology
+              namespace={ns}
+              defaultOverlay="eso-chain"
+            />
           )
           : (
-            <button
-              type="button"
-              class="inline-flex items-center gap-2 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-muted cursor-not-allowed opacity-60"
-              disabled
-              aria-disabled="true"
-            >
+            <div class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted">
               Select a namespace
-            </button>
+            </div>
           )}
       </div>
     </div>

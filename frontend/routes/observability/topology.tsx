@@ -6,6 +6,13 @@ import NamespaceTopology from "@/islands/NamespaceTopology.tsx";
 const section = DOMAIN_SECTIONS.find((s) => s.id === "observability")!;
 
 export default define.page(function TopologyPage(ctx) {
+  const namespace = ctx.url.searchParams.get("namespace") ?? undefined;
+  const overlayParam = ctx.url.searchParams.get("overlay");
+  const defaultOverlay = overlayParam === "mesh" || overlayParam === "eso-chain"
+    ? overlayParam
+    : "none";
+  const focusedNodeId = ctx.url.searchParams.get("focus") ?? undefined;
+
   return (
     <>
       <SubNav tabs={section.tabs ?? []} currentPath={ctx.url.pathname} />
@@ -18,7 +25,11 @@ export default define.page(function TopologyPage(ctx) {
             Dependency graph showing resource relationships and health
           </p>
         </div>
-        <NamespaceTopology />
+        <NamespaceTopology
+          namespace={namespace}
+          defaultOverlay={defaultOverlay}
+          focusedNodeId={focusedNodeId}
+        />
       </div>
     </>
   );
