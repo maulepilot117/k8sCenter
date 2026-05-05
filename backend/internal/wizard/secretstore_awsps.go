@@ -43,12 +43,8 @@ func validateAWSPSSpec(spec map[string]any) []FieldError {
 		errs = append(errs, FieldError{Field: "region", Message: "is required"})
 	}
 
-	if role, ok := spec["role"]; ok {
-		r, _ := role.(string)
-		if strings.TrimSpace(r) == "" {
-			errs = append(errs, FieldError{Field: "role", Message: "must not be empty when set"})
-		}
-	}
+	// role is validated after auth method is determined (required for jwt,
+	// optional for secretRef — assume-role with static creds is valid without it).
 
 	authRaw, hasAuth := spec["auth"].(map[string]any)
 	if !hasAuth {
@@ -64,8 +60,21 @@ func validateAWSPSSpec(spec map[string]any) []FieldError {
 
 	switch method {
 	case "jwt":
+		// role is required at the top-level AWSProvider when using workload
+		// identity (IRSA). AWSJWTAuth has only serviceAccountRef — no role field.
+		role, _ := spec["role"].(string)
+		if strings.TrimSpace(role) == "" {
+			errs = append(errs, FieldError{Field: "role", Message: "is required when using jwt auth (IAM role ARN for IRSA)"})
+		}
 		errs = append(errs, validateAWSPSAuthJWT(authRaw)...)
 	case "secretRef":
+		// role is optional for secretRef (assume-role with static creds is valid).
+		if role, ok := spec["role"]; ok {
+			r, _ := role.(string)
+			if strings.TrimSpace(r) == "" {
+				errs = append(errs, FieldError{Field: "role", Message: "must not be empty when set"})
+			}
+		}
 		errs = append(errs, validateAWSPSAuthSecretRef(authRaw)...)
 	}
 
@@ -97,7 +106,8 @@ func pickAWSPSAuthMethod(auth map[string]any) (string, []FieldError) {
 
 // validateAWSPSAuthJWT validates IAM workload identity auth via a Kubernetes
 // service account JWT. ESO maps this to IRSA (IAM Roles for Service Accounts).
-// The auth.jwt block requires serviceAccountRef.name + role.
+// Per the ESO API, AWSJWTAuth contains only serviceAccountRef — the role ARN
+// lives at spec.provider.aws.role (top-level on AWSProvider), not here.
 func validateAWSPSAuthJWT(auth map[string]any) []FieldError {
 	var errs []FieldError
 	j, _ := auth["jwt"].(map[string]any)
@@ -114,10 +124,6 @@ func validateAWSPSAuthJWT(auth map[string]any) []FieldError {
 		} else if !dnsLabelRegex.MatchString(name) {
 			errs = append(errs, FieldError{Field: "auth.jwt.serviceAccountRef.name", Message: "must be a valid DNS label"})
 		}
-	}
-
-	if role, _ := j["role"].(string); strings.TrimSpace(role) == "" {
-		errs = append(errs, FieldError{Field: "auth.jwt.role", Message: "is required (IAM role ARN)"})
 	}
 
 	return errs
