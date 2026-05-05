@@ -54,8 +54,7 @@ const AUTH_METHODS: {
   {
     id: "serviceAccount",
     label: "ServiceAccount",
-    description:
-      "Impersonate a named ServiceAccount in the source namespace.",
+    description: "Impersonate a named ServiceAccount in the source namespace.",
   },
   {
     id: "token",
@@ -71,7 +70,9 @@ const AUTH_METHODS: {
 ];
 
 /** Determine which auth method the spec currently encodes, or "" when none. */
-function detectMethod(spec: Record<string, unknown>): KubernetesAuthMethod | "" {
+function detectMethod(
+  spec: Record<string, unknown>,
+): KubernetesAuthMethod | "" {
   const auth = spec.auth as Record<string, unknown> | undefined;
   if (!auth) return "";
   for (const m of AUTH_METHODS.map((x) => x.id)) {
@@ -85,7 +86,9 @@ function getStr(spec: Record<string, unknown>, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
-function getServerBlock(spec: Record<string, unknown>): Record<string, unknown> {
+function getServerBlock(
+  spec: Record<string, unknown>,
+): Record<string, unknown> {
   return (spec.server as Record<string, unknown>) ?? {};
 }
 
@@ -177,10 +180,12 @@ export function KubernetesForm(
       {/* Contextual banner — explains what this provider does */}
       <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         The Kubernetes provider reads Secrets from{" "}
-        <span class="font-medium text-text-secondary">another namespace</span>{" "}
+        <span class="font-medium text-text-secondary">another namespace</span>
+        {" "}
         (or cluster) via service-account impersonation. Set{" "}
-        <span class="font-mono text-xs">Remote namespace</span> to the source
-        namespace, then choose how ESO authenticates to that apiserver.
+        <span class="font-mono text-xs">Remote namespace</span>{" "}
+        to the source namespace, then choose how ESO authenticates to that
+        apiserver.
       </div>
 
       {/* Remote namespace — most important field, shown prominently */}
@@ -269,8 +274,7 @@ export function KubernetesForm(
         <TokenAuthFields
           block={getAuthBlock(spec, "token")}
           errors={errors}
-          onPatchRef={(patch) =>
-            patchSecretRef("token", "bearerToken", patch)}
+          onPatchRef={(patch) => patchSecretRef("token", "bearerToken", patch)}
         />
       )}
       {method.value === "cert" && (
