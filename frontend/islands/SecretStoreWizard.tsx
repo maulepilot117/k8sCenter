@@ -10,7 +10,6 @@ import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
-import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
 import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
 import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
 import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
@@ -22,13 +21,12 @@ import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { useRef } from "preact/hooks";
 import {
+  type ProviderFormProps,
   READY_SECRET_STORE_PROVIDERS,
   type SecretStoreProvider,
 } from "@/lib/eso-types.ts";
 
-/** Common props contract for all per-provider Configure forms.
- *  VaultFormProps satisfies this; future provider forms must match. */
-export type ProviderFormProps = VaultFormProps;
+export type { ProviderFormProps };
 
 /** Registry mapping provider keys to their Configure-step form component.
  *  Single edit point as U19 sub-PRs ship additional providers. */
@@ -248,6 +246,8 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       }
     }
 
+    // Intentionally lighter than vault's gate: remoteNamespace is optional in
+    // ESO (defaults to "default") so we don't require it client-side.
     if (step === 2 && f.provider === "kubernetes") {
       const ps = f.providerSpec;
       const auth = ps.auth as Record<string, unknown> | undefined;
