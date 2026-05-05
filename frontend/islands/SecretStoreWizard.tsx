@@ -16,6 +16,7 @@ import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
 import { AWSPSForm } from "@/components/wizard/secretstore/AWSPSForm.tsx";
 import { GCPSMForm } from "@/components/wizard/secretstore/GCPSMForm.tsx";
 import { KubernetesForm } from "@/components/wizard/secretstore/KubernetesForm.tsx";
+import { DopplerForm } from "@/components/wizard/secretstore/DopplerForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -40,6 +41,7 @@ const PROVIDER_FORMS: Partial<
   awsps: AWSPSForm,
   gcpsm: GCPSMForm,
   kubernetes: KubernetesForm,
+  doppler: DopplerForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -250,6 +252,20 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
     // ESO (defaults to "default") so we don't require it client-side.
     if (step === 2 && f.provider === "kubernetes") {
       const ps = f.providerSpec;
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (!auth || Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
+      }
+    }
+
+    if (step === 2 && f.provider === "doppler") {
+      const ps = f.providerSpec;
+      if (!ps.project || (ps.project as string).trim() === "") {
+        errs.project = "Project is required";
+      }
+      if (!ps.config || (ps.config as string).trim() === "") {
+        errs.config = "Config is required";
+      }
       const auth = ps.auth as Record<string, unknown> | undefined;
       if (!auth || Object.keys(auth).length === 0) {
         errs.auth = "Select an authentication method";

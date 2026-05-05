@@ -242,6 +242,7 @@ export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "awsps",
   "gcpsm",
   "kubernetes",
+  "doppler",
 ]);
 
 /**
