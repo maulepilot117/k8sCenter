@@ -233,6 +233,17 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       if (!projectID) {
         errs.projectID = "Project ID is required";
       }
+      // Gate on auth only when an auth block is present but empty — a degenerate
+      // state that should not occur via the normal picker UI but could happen if
+      // providerSpec is mutated externally. When auth is absent the form encodes
+      // the "Default Credentials" method, which is a valid ESO configuration
+      // (GKE metadata server / Application Default Credentials) and must not be
+      // blocked. This mirrors the Vault auth gate but accounts for GCP's
+      // first-class default-credentials path.
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (auth !== undefined && Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
+      }
     }
 
     errors.value = errs;
