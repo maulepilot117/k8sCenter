@@ -3,7 +3,10 @@ import { IS_BROWSER } from "fresh/runtime";
 import NamespaceTopology from "@/islands/NamespaceTopology.tsx";
 
 export default function ESOChainPage() {
-  const namespace = useSignal("");
+  const initialNamespace = IS_BROWSER
+    ? new URLSearchParams(globalThis.location.search).get("namespace") ?? ""
+    : "";
+  const namespace = useSignal(initialNamespace);
 
   if (!IS_BROWSER) return null;
 

@@ -213,10 +213,16 @@ function focusedSubgraph(graph: TopoGraph, focusedNodeId?: string): TopoGraph {
       queue.push(next);
     }
   }
+  const edges = graph.edges.filter((e) =>
+    keep.has(e.source) && keep.has(e.target)
+  );
+  if (edges.length === 0) {
+    return { ...graph, nodes: [], edges: [] };
+  }
   return {
     ...graph,
     nodes: graph.nodes.filter((n) => keep.has(n.id)),
-    edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    edges,
   };
 }
 
