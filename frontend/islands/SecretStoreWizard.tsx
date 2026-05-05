@@ -267,7 +267,10 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
         errs.config = "Config is required";
       }
       const auth = ps.auth as Record<string, unknown> | undefined;
-      if (!auth || Object.keys(auth).length === 0) {
+      if (
+        !auth ||
+        !Object.keys(auth).some((k) => ["secretRef", "oidcConfig"].includes(k))
+      ) {
         errs.auth = "Select an authentication method";
       }
     }

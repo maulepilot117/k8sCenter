@@ -42,7 +42,8 @@ interface DopplerAuthSpec {
   oidcConfig?: {
     identity?: string;
     serviceAccountRef?: { name?: string };
-    expirationSeconds?: number;
+    // Note: ESO's ServiceAccountSelector also accepts optional `namespace` and
+    // `audiences` fields — intentionally omitted for v1 (accessible via YAML editor).
   };
 }
 

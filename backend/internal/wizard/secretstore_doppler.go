@@ -20,10 +20,9 @@ func init() {
 //   - secretRef: a DopplerToken SecretRef pointing to a Kubernetes Secret.
 //   - oidcConfig: OIDC via Kubernetes ServiceAccount token (identity + serviceAccountRef).
 //
-// project and config are required when using oidcConfig auth. With secretRef
-// (service token), they are optional — the service token encodes the
-// project/config scope — but the wizard requires them to produce explicit,
-// self-documenting YAML.
+// project and config are required for both auth methods. With secretRef the
+// service token already encodes the scope, but the wizard requires explicit
+// values to produce self-documenting, reviewable YAML regardless of auth method.
 //
 // Each FieldError's Field is rooted at the provider-spec level (no
 // "providerSpec." prefix) so the dispatcher's caller can prefix uniformly
