@@ -4,6 +4,7 @@ import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
+import ESOChainTopologyPanel from "@/islands/ESOChainTopologyPanel.tsx";
 import ESOStoreMetricsPanel from "@/islands/ESOStoreMetricsPanel.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
@@ -219,11 +220,12 @@ export default function ESOStoreDetail({ namespace, name }: Props) {
       )}
 
       {activeTab.value === "chain" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          Chain visualization coming in Phase&nbsp;I.
+        <div role="tabpanel">
+          <ESOChainTopologyPanel
+            kind="SecretStore"
+            namespace={namespace}
+            name={name}
+          />
         </div>
       )}
     </div>
