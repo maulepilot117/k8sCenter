@@ -69,6 +69,12 @@ export default function ESOClusterStoresList() {
         <h1 class="text-2xl font-bold text-text-primary">
           ClusterSecretStores
         </h1>
+        <a
+          href="/external-secrets/cluster-stores/new"
+          class="px-3 py-1.5 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+        >
+          + New ClusterSecretStore
+        </a>
       </div>
       <p class="text-sm text-text-muted mb-6">
         Cluster-scoped SecretStores accessible to ExternalSecrets in any

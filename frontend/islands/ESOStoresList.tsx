@@ -93,6 +93,12 @@ export default function ESOStoresList() {
     <div class="p-6">
       <div class="flex items-start justify-between mb-1">
         <h1 class="text-2xl font-bold text-text-primary">SecretStores</h1>
+        <a
+          href="/external-secrets/stores/new"
+          class="px-3 py-1.5 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+        >
+          + New SecretStore
+        </a>
       </div>
       <p class="text-sm text-text-muted mb-6">
         Namespaced SecretStores describe how ESO talks to a secret backend.

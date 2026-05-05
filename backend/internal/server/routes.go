@@ -306,6 +306,12 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 			return &wizard.IssuerInput{Scope: wizard.IssuerScopeCluster}
 		}))
 		wr.Post("/external-secret/preview", h.HandlePreview(func() wizard.WizardInput { return &wizard.ExternalSecretInput{} }))
+		wr.Post("/secret-store/preview", h.HandlePreview(func() wizard.WizardInput {
+			return &wizard.SecretStoreInput{Scope: wizard.StoreScopeNamespaced}
+		}))
+		wr.Post("/cluster-secret-store/preview", h.HandlePreview(func() wizard.WizardInput {
+			return &wizard.SecretStoreInput{Scope: wizard.StoreScopeCluster}
+		}))
 	})
 }
 
