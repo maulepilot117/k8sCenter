@@ -13,6 +13,7 @@ import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
 import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
 import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
 import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
+import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -34,6 +35,7 @@ const PROVIDER_FORMS: Partial<
   vault: VaultForm,
   onepassword: OnePasswordForm,
   aws: AWSForm,
+  azurekv: AzureKVForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -165,6 +167,19 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       const auth = ps.auth as Record<string, unknown> | undefined;
       if (!auth || Object.keys(auth).length === 0) {
         errs.auth = "Select an authentication method";
+      }
+    }
+    if (step === 2 && f.provider === "azurekv") {
+      const ps = f.providerSpec;
+      const vaultUrl = typeof ps.vaultUrl === "string"
+        ? ps.vaultUrl.trim()
+        : "";
+      if (!vaultUrl) {
+        errs.vaultUrl = "Vault URL is required";
+      }
+      const authType = typeof ps.authType === "string" ? ps.authType : "";
+      if (!authType) {
+        errs.authType = "Select an authentication type";
       }
     }
 
