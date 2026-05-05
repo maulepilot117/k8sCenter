@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { Input } from "@/components/ui/Input.tsx";
+import type { ProviderFormProps } from "@/lib/eso-types.ts";
 
 /**
  * Vault provider form for SecretStoreWizard. Writes into the wizard's
@@ -19,11 +20,9 @@ export type VaultAuthMethod =
   | "jwt"
   | "cert";
 
-export interface VaultFormProps {
-  spec: Record<string, unknown>;
-  errors: Record<string, string>;
-  onUpdateSpec: (spec: Record<string, unknown>) => void;
-}
+/** VaultFormProps is the canonical ProviderFormProps — re-exported for
+ *  consumers that imported it directly before the canonical type landed. */
+export type VaultFormProps = ProviderFormProps;
 
 interface SecretRef {
   name?: string;

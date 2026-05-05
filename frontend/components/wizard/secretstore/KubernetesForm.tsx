@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { Input } from "@/components/ui/Input.tsx";
+import type { ProviderFormProps } from "@/lib/eso-types.ts";
 
 /**
  * Kubernetes (cross-namespace) provider form for SecretStoreWizard.
@@ -28,11 +29,9 @@ import { Input } from "@/components/ui/Input.tsx";
 
 export type KubernetesAuthMethod = "serviceAccount" | "token" | "cert";
 
-export interface KubernetesFormProps {
-  spec: Record<string, unknown>;
-  errors: Record<string, string>;
-  onUpdateSpec: (spec: Record<string, unknown>) => void;
-}
+/** KubernetesFormProps is the canonical ProviderFormProps — re-exported for
+ *  consumers that imported it directly before the canonical type landed. */
+export type KubernetesFormProps = ProviderFormProps;
 
 interface SecretRef {
   name?: string;

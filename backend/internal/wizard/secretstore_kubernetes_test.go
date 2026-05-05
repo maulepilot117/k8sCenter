@@ -73,6 +73,14 @@ func TestValidateKubernetesSpec_Server_NonHTTPS(t *testing.T) {
 	}
 }
 
+func TestValidateKubernetesSpec_Server_NoHost(t *testing.T) {
+	spec := validKubernetesSpec()
+	spec["server"] = map[string]any{"url": "https://"}
+	if !hasField(validateKubernetesSpec(spec), "server.url") {
+		t.Error("expected server.url error for empty host")
+	}
+}
+
 func TestValidateKubernetesSpec_Server_BlankURL(t *testing.T) {
 	spec := validKubernetesSpec()
 	spec["server"] = map[string]any{"url": ""}
@@ -322,6 +330,19 @@ func TestValidateKubernetesSpec_CertAuth_NilBlock(t *testing.T) {
 	spec["auth"] = map[string]any{"cert": nil}
 	if !hasField(validateKubernetesSpec(spec), "auth.cert") {
 		t.Error("expected cert required error when nil")
+	}
+}
+
+func TestValidateKubernetesSpec_CertAuth_BadSecretName(t *testing.T) {
+	spec := validKubernetesSpec()
+	spec["auth"] = map[string]any{
+		"cert": map[string]any{
+			"clientCert": map[string]any{"name": "BadSecret", "key": "tls.crt"},
+			"clientKey":  map[string]any{"name": "tls-cert", "key": "tls.key"},
+		},
+	}
+	if !hasField(validateKubernetesSpec(spec), "auth.cert.clientCert.name") {
+		t.Error("expected clientCert.name DNS-label error for invalid secret name")
 	}
 }
 

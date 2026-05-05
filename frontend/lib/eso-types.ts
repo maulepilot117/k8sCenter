@@ -244,6 +244,18 @@ export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "kubernetes",
 ]);
 
+/**
+ * Canonical props contract for all per-provider Configure-step forms used in
+ * SecretStoreWizard. Every provider form (VaultForm, KubernetesForm, …) must
+ * satisfy this type so the PROVIDER_FORMS registry is type-safe and future
+ * providers cannot silently diverge from the expected shape.
+ */
+export type ProviderFormProps = {
+  spec: Record<string, unknown>;
+  errors: Record<string, string>;
+  onUpdateSpec: (spec: Record<string, unknown>) => void;
+};
+
 // --- Phase G path-discovery types ------------------------------------------
 
 /**

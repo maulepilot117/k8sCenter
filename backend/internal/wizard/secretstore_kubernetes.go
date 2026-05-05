@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"net/url"
 	"strings"
 )
 
@@ -86,12 +87,14 @@ func validateKubernetesSpec(spec map[string]any) []FieldError {
 // caBundle is optional base64 — we only reject blank-when-set.
 func validateKubernetesServer(srv map[string]any) []FieldError {
 	var errs []FieldError
-	if url, ok := srv["url"]; ok {
-		u, _ := url.(string)
+	if rawURL, ok := srv["url"]; ok {
+		u, _ := rawURL.(string)
 		if strings.TrimSpace(u) == "" {
 			errs = append(errs, FieldError{Field: "server.url", Message: "must not be empty when set"})
 		} else if !strings.HasPrefix(strings.ToLower(u), "https://") {
 			errs = append(errs, FieldError{Field: "server.url", Message: "must use https scheme"})
+		} else if parsed, err := url.Parse(u); err != nil || parsed.Host == "" {
+			errs = append(errs, FieldError{Field: "server.url", Message: "must be a valid URL with a non-empty host"})
 		}
 	}
 	if cab, ok := srv["caBundle"]; ok {
