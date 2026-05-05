@@ -234,7 +234,9 @@ export type SecretStoreProvider =
  * Single edit point as Unit 19 sub-PRs ship per-provider forms.
  * A provider NOT in this set is shown as "coming soon" in the picker.
  */
-export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>();
+export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
+  "vault",
+]);
 
 // --- Phase G path-discovery types ------------------------------------------
 

@@ -382,15 +382,28 @@ func TestRegisterSecretStoreProvider_OverridesPriorRegistration(t *testing.T) {
 
 // --- HTTP handler tests (#7) ---
 
+// TestHandleSecretStorePreview_NamespacedScope verifies the route factory
+// bakes Scope=Namespaced and the request body cannot override it. Uses Vault
+// (registered in U19) so the preview produces YAML rather than the
+// fall-through error from U18; the absence of an "auth required" error
+// proves the validator dispatched correctly.
 func TestHandleSecretStorePreview_NamespacedScope(t *testing.T) {
 	h := testHandler()
 	input := map[string]any{
-		"name":        "my-store",
-		"namespace":   "apps",
-		"provider":    "vault",
-		"providerSpec": map[string]any{"server": "https://vault.example.com"},
-		// Attempt to override scope via body — must be ignored (scope is
-		// baked in by the route factory, not decoded from the request).
+		"name":      "my-store",
+		"namespace": "apps",
+		"provider":  "vault",
+		"providerSpec": map[string]any{
+			"server": "https://vault.example.com",
+			"auth": map[string]any{
+				"token": map[string]any{
+					"tokenSecretRef": map[string]any{
+						"name": "vault-token",
+						"key":  "token",
+					},
+				},
+			},
+		},
 	}
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/secret-store/preview", bytes.NewReader(body))
@@ -403,24 +416,73 @@ func TestHandleSecretStorePreview_NamespacedScope(t *testing.T) {
 		return &SecretStoreInput{Scope: StoreScopeNamespaced}
 	})(rr, req)
 
-	// U18: no provider validator registered → 422 with "not yet implemented".
-	if rr.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422 (no validator registered), got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (valid Vault input), got %d: %s", rr.Code, rr.Body.String())
 	}
 
 	respBody := rr.Body.String()
-	if !strings.Contains(respBody, "not yet implemented") {
-		t.Errorf("expected error message to contain 'not yet implemented'; got %s", respBody)
+	if !strings.Contains(respBody, "kind: SecretStore") {
+		t.Errorf("expected YAML to contain SecretStore kind (scope baked from factory); got %s", respBody)
+	}
+	if strings.Contains(respBody, "ClusterSecretStore") {
+		t.Errorf("scope must be Namespaced (factory wins over body), got ClusterSecretStore in response")
+	}
+}
+
+// TestHandleSecretStorePreview_NoValidatorRegistered verifies the dispatcher
+// fall-through path for a recognized provider with no registered validator —
+// the contract that U18 introduced so the wizard surface is honest about
+// what U19 has yet to ship. Uses a synthetic test-only provider key.
+func TestHandleSecretStorePreview_NoValidatorRegistered(t *testing.T) {
+	const syntheticKey SecretStoreProvider = "test-only-fall-through"
+	validSecretStoreProviders[syntheticKey] = true
+	t.Cleanup(func() { delete(validSecretStoreProviders, syntheticKey) })
+
+	h := testHandler()
+	input := map[string]any{
+		"name":         "my-store",
+		"namespace":    "apps",
+		"provider":     string(syntheticKey),
+		"providerSpec": map[string]any{"any": "value"},
+	}
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/secret-store/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = addAuthContext(req)
+
+	rr := httptest.NewRecorder()
+	h.HandlePreview(func() WizardInput {
+		return &SecretStoreInput{Scope: StoreScopeNamespaced}
+	})(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (no validator registered), got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "not yet implemented") {
+		t.Errorf("expected fall-through message to contain 'not yet implemented'; got %s", rr.Body.String())
 	}
 }
 
 func TestHandleSecretStorePreview_ClusterScope(t *testing.T) {
 	h := testHandler()
+	// Use a complete valid Vault spec so the only error is the cluster-scope
+	// namespace rejection. A minimal spec would produce auth-required errors
+	// that could accidentally satisfy the "namespace" substring check.
 	input := map[string]any{
-		"name":        "shared-store",
-		"namespace":   "should-be-ignored", // cluster scope — must be rejected now
-		"provider":    "vault",
-		"providerSpec": map[string]any{"server": "https://vault.example.com"},
+		"name":      "shared-store",
+		"namespace": "should-be-ignored", // cluster scope — must be rejected
+		"provider":  "vault",
+		"providerSpec": map[string]any{
+			"server": "https://vault.example.com",
+			"auth": map[string]any{
+				"token": map[string]any{
+					"tokenSecretRef": map[string]any{
+						"name": "vault-token",
+						"key":  "token",
+					},
+				},
+			},
+		},
 	}
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/cluster-secret-store/preview", bytes.NewReader(body))
@@ -438,9 +500,11 @@ func TestHandleSecretStorePreview_ClusterScope(t *testing.T) {
 		t.Fatalf("expected 422 (namespace must be empty for cluster scope), got %d: %s", rr.Code, rr.Body.String())
 	}
 
+	// Assert specifically on the cluster-scope rejection message, not just any
+	// "namespace" string that might appear in an auth error.
 	respBody := rr.Body.String()
-	if !strings.Contains(respBody, "namespace") {
-		t.Errorf("expected error to reference namespace field; got %s", respBody)
+	if !strings.Contains(respBody, "must be empty for cluster scope") {
+		t.Errorf("expected error to contain 'must be empty for cluster scope'; got %s", respBody)
 	}
 }
 
