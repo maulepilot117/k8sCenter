@@ -201,6 +201,41 @@ export interface StoreMetrics {
   windowEnd?: string;
 }
 
+// --- Phase H wizard types ---------------------------------------------------
+
+/**
+ * The 12 SecretStore provider keys the wizard recognizes. Mirrors the Go
+ * `SecretStoreProvider` enum in `backend/internal/wizard/secretstore.go`.
+ *
+ * "awsps" is a synthetic UX discriminator — ESO v1 has no such provider key.
+ * Both AWS Secrets Manager and AWS Parameter Store live under spec.provider.aws;
+ * the backend injects service: ParameterStore when the wizard sends "awsps".
+ *
+ * Niche providers (Pulumi ESC, Passbolt, Keeper, Onboardbase, Oracle Cloud
+ * Vault, Alibaba KMS, custom webhook) ship as YAML templates only (Phase H
+ * Unit 20) and are not in this set.
+ */
+export type SecretStoreProvider =
+  | "vault"
+  | "aws"
+  | "awsps"
+  | "azurekv"
+  | "gcpsm"
+  | "kubernetes"
+  | "akeyless"
+  | "doppler"
+  | "onepasswordsdk"
+  | "bitwardensecretsmanager"
+  | "conjur"
+  | "infisical";
+
+/**
+ * Set of provider keys that have a fully-implemented guided form.
+ * Single edit point as Unit 19 sub-PRs ship per-provider forms.
+ * A provider NOT in this set is shown as "coming soon" in the picker.
+ */
+export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>();
+
 // --- Phase G path-discovery types ------------------------------------------
 
 /**

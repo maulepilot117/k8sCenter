@@ -12,28 +12,10 @@ import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { useRef } from "preact/hooks";
+import type { SecretStoreProvider } from "@/lib/eso-types.ts";
 
-/**
- * The 12 SecretStore provider keys the wizard recognizes. Mirrors the Go
- * `SecretStoreProvider` enum in `backend/internal/wizard/secretstore.go`.
- *
- * Niche providers (Pulumi ESC, Passbolt, Keeper, Onboardbase, Oracle Cloud
- * Vault, Alibaba KMS, custom webhook) ship as YAML templates only (Phase H
- * Unit 20) and are not in this set.
- */
-export type SecretStoreProvider =
-  | "vault"
-  | "aws"
-  | "awsps"
-  | "azurekv"
-  | "gcpsm"
-  | "kubernetes"
-  | "akeyless"
-  | "doppler"
-  | "onepasswordsdk"
-  | "bitwardensecretsmanager"
-  | "conjur"
-  | "infisical";
+// Re-export for any downstream consumers that imported from this island.
+export type { SecretStoreProvider };
 
 export interface SecretStoreWizardForm {
   name: string;
@@ -50,10 +32,12 @@ export interface SecretStoreWizardProps {
   scope: "namespaced" | "cluster";
 }
 
+// U18: 3-step wizard — Identity / Provider / Review.
+// The Configure step (per-provider forms) re-appears as step 2 in the U19
+// PR that ships the first real provider validator.
 const STEPS = [
   { title: "Identity" },
   { title: "Provider" },
-  { title: "Configure" },
   { title: "Review" },
 ];
 
@@ -185,10 +169,6 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
     ? "Create ClusterSecretStore"
     : "Create SecretStore";
 
-  const cancelHref = scope === "cluster"
-    ? "/external-secrets/cluster-stores"
-    : "/external-secrets/stores";
-
   const detailBasePath = scope === "cluster"
     ? "/external-secrets/cluster-stores"
     : "/external-secrets/stores";
@@ -198,7 +178,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-bold text-text-primary">{heading}</h1>
         <a
-          href={cancelHref}
+          href={detailBasePath}
           class="text-sm text-text-muted hover:text-text-primary"
         >
           Cancel
@@ -263,25 +243,6 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
             {errors.value.provider && (
               <p class="text-sm text-danger">{errors.value.provider}</p>
             )}
-          </div>
-        )}
-
-        {currentStep.value === 2 && (
-          <div class="rounded-md border border-border-primary bg-surface/50 p-6 text-sm text-text-muted">
-            <p class="font-medium text-text-primary mb-2">
-              Provider configuration
-            </p>
-            <p>
-              Per-provider configuration lands in a follow-up. Click{" "}
-              <span class="font-medium text-text-primary">Preview YAML</span>
-              {" "}
-              to see the scaffold the backend will produce — the wizard rejects
-              the preview until a provider validator is registered for{" "}
-              <code class="rounded bg-base px-1 py-0.5 text-xs">
-                {form.value.provider}
-              </code>, surfacing what the YAML editor still needs you to fill
-              in.
-            </p>
           </div>
         )}
 

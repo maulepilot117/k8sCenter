@@ -1,8 +1,14 @@
 package wizard
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // withTestProviderValidator registers a stub validator for the duration of a
@@ -18,14 +24,10 @@ func withTestProviderValidator(t *testing.T, p SecretStoreProvider, v providerVa
 			RegisterSecretStoreProvider(p, prev)
 			return
 		}
-		// No prior validator — best-effort delete by registering a nil
-		// sentinel and accepting the leftover map entry. Nothing else in the
-		// scaffold reads this map after the test ends, so a leftover key is
-		// harmless. Real providers in Unit 19 will register their own
-		// validators in init() before any test runs.
-		providerValidatorsMu.Lock()
+		// No prior validator — delete the map entry entirely so the test
+		// cannot pollute sibling tests. providerValidators is written
+		// sequentially (tests run -count=N not concurrently) so no lock needed.
 		delete(providerValidators, p)
-		providerValidatorsMu.Unlock()
 	})
 }
 
@@ -41,9 +43,9 @@ func validNamespacedStoreInput(provider SecretStoreProvider) SecretStoreInput {
 
 func validClusterStoreInput(provider SecretStoreProvider) SecretStoreInput {
 	return SecretStoreInput{
-		Scope:        StoreScopeCluster,
-		Name:         "shared-vault-store",
-		Provider:     provider,
+		Scope:    StoreScopeCluster,
+		Name:     "shared-vault-store",
+		Provider: provider,
 		ProviderSpec: map[string]any{"server": "https://vault.example.com"},
 	}
 }
@@ -85,12 +87,18 @@ func TestSecretStoreValidate_NamespacedRequiresNamespace(t *testing.T) {
 	}
 }
 
-func TestSecretStoreValidate_ClusterIgnoresNamespace(t *testing.T) {
+// TestSecretStoreValidate_ClusterRejectsNamespace asserts that a non-empty
+// Namespace field is rejected for cluster-scoped stores. Previously the wizard
+// silently ignored the field; now it returns a validation error so the frontend
+// can surface the problem rather than emit a misleading ClusterSecretStore with
+// a namespace set in metadata.
+func TestSecretStoreValidate_ClusterRejectsNamespace(t *testing.T) {
 	withTestProviderValidator(t, SecretStoreProviderVault, allowAllValidator)
 	s := validClusterStoreInput(SecretStoreProviderVault)
 	s.Namespace = "leaked-namespace"
-	if errs := s.Validate(); len(errs) != 0 {
-		t.Errorf("namespace should be ignored for cluster scope; got errors %v", errs)
+	errs := s.Validate()
+	if !hasField(errs, "namespace") {
+		t.Errorf("expected namespace error for cluster scope with non-empty namespace; got errors %v", errs)
 	}
 }
 
@@ -132,18 +140,39 @@ func TestSecretStoreValidate_UnknownProvider(t *testing.T) {
 	}
 }
 
+// TestSecretStoreValidate_NoValidatorRegistered_FallsThrough uses
+// withTestProviderValidator with a synthetic test-only provider key so the
+// test doesn't side-effect the real provider registry. The test verifies that
+// a recognized but unregistered provider key is rejected cleanly rather than
+// silently emitting a half-formed YAML.
 func TestSecretStoreValidate_NoValidatorRegistered_FallsThrough(t *testing.T) {
-	// Vault is a valid provider key, but with no registered validator the
-	// dispatcher should reject the input rather than silently emit YAML.
-	// Use a provider that the per-test cleanup will not have registered.
-	providerValidatorsMu.Lock()
-	delete(providerValidators, SecretStoreProviderInfisical)
-	providerValidatorsMu.Unlock()
+	const syntheticKey SecretStoreProvider = "test-only-unregistered"
 
-	s := validNamespacedStoreInput(SecretStoreProviderInfisical)
+	// Temporarily register the synthetic key as a valid (but unimplemented)
+	// provider so validSecretStoreProviders lets it through to the dispatcher.
+	validSecretStoreProviders[syntheticKey] = true
+	t.Cleanup(func() { delete(validSecretStoreProviders, syntheticKey) })
+
+	// No validator registered for syntheticKey — dispatcher must fall through.
+	s := SecretStoreInput{
+		Scope:        StoreScopeNamespaced,
+		Name:         "test-store",
+		Namespace:    "apps",
+		Provider:     syntheticKey,
+		ProviderSpec: map[string]any{"dummy": "value"},
+	}
 	errs := s.Validate()
 	if !hasField(errs, "provider") {
 		t.Fatalf("expected provider error when no validator registered; got %v", errs)
+	}
+	found := false
+	for _, e := range errs {
+		if e.Field == "provider" && strings.Contains(e.Message, "not yet implemented") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected fall-through message to say 'not yet implemented'; got %v", errs)
 	}
 }
 
@@ -184,24 +213,55 @@ func TestSecretStoreValidate_MissingProviderSpec(t *testing.T) {
 	}
 }
 
+// TestSecretStoreToYAML_Namespaced uses parsed YAML assertions for structural
+// fields to avoid false positives from serialization order or whitespace.
 func TestSecretStoreToYAML_Namespaced(t *testing.T) {
 	s := validNamespacedStoreInput(SecretStoreProviderVault)
 	y, err := s.ToYAML()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, want := range []string{
-		"apiVersion: external-secrets.io/v1",
-		"kind: SecretStore",
-		"name: vault-store",
-		"namespace: apps",
-		"provider:",
-		"vault:",
-		"server: https://vault.example.com",
-	} {
-		if !strings.Contains(y, want) {
-			t.Errorf("expected YAML to contain %q\n%s", want, y)
-		}
+
+	// Smoke-check the apiVersion line with substring (cheap + readable).
+	if !strings.Contains(y, "apiVersion: external-secrets.io/v1") {
+		t.Errorf("expected YAML to contain apiVersion line; got\n%s", y)
+	}
+
+	// Parse and walk the structure for the real assertions.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(y), &doc); err != nil {
+		t.Fatalf("failed to parse YAML: %v\n%s", err, y)
+	}
+
+	if doc["kind"] != "SecretStore" {
+		t.Errorf("expected kind SecretStore, got %v", doc["kind"])
+	}
+
+	meta, _ := doc["metadata"].(map[string]any)
+	if meta == nil {
+		t.Fatal("missing metadata")
+	}
+	if meta["name"] != "vault-store" {
+		t.Errorf("expected name vault-store, got %v", meta["name"])
+	}
+	if meta["namespace"] != "apps" {
+		t.Errorf("expected namespace apps, got %v", meta["namespace"])
+	}
+
+	spec, _ := doc["spec"].(map[string]any)
+	if spec == nil {
+		t.Fatal("missing spec")
+	}
+	provider, _ := spec["provider"].(map[string]any)
+	if provider == nil {
+		t.Fatal("missing spec.provider")
+	}
+	vaultSpec, _ := provider["vault"].(map[string]any)
+	if vaultSpec == nil {
+		t.Fatalf("expected spec.provider.vault, got keys: %v", keys(provider))
+	}
+	if vaultSpec["server"] != "https://vault.example.com" {
+		t.Errorf("expected spec.provider.vault.server=https://vault.example.com, got %v", vaultSpec["server"])
 	}
 }
 
@@ -242,8 +302,53 @@ func TestSecretStoreToYAML_IncludesRefreshIntervalWhenSet(t *testing.T) {
 	}
 }
 
+// TestSecretStoreToYAML_AWSPSTranslatesToAWS verifies that the synthetic
+// "awsps" UX discriminator is correctly translated to a real ESO v1
+// spec.provider.aws block with service: ParameterStore injected.
+// ESO v1 has no "awsps" provider key — both SM and PS live under spec.provider.aws;
+// the `service` field (SecretsManager|ParameterStore) distinguishes them.
+// (Verified via external-secrets/external-secrets main@apis/externalsecrets/v1/secretstore_types.go)
+func TestSecretStoreToYAML_AWSPSTranslatesToAWS(t *testing.T) {
+	s := SecretStoreInput{
+		Scope:        StoreScopeNamespaced,
+		Name:         "ps-store",
+		Namespace:    "apps",
+		Provider:     SecretStoreProviderAWSPS,
+		ProviderSpec: map[string]any{"region": "us-east-1"},
+	}
+	y, err := s.ToYAML()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(y, "awsps:") {
+		t.Errorf("YAML must not contain synthetic 'awsps' key; got\n%s", y)
+	}
+
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(y), &doc); err != nil {
+		t.Fatalf("failed to parse YAML: %v\n%s", err, y)
+	}
+
+	spec, _ := doc["spec"].(map[string]any)
+	provider, _ := spec["provider"].(map[string]any)
+	awsSpec, _ := provider["aws"].(map[string]any)
+	if awsSpec == nil {
+		t.Fatalf("expected spec.provider.aws, got provider keys: %v", keys(provider))
+	}
+	if awsSpec["service"] != "ParameterStore" {
+		t.Errorf("expected service=ParameterStore, got %v", awsSpec["service"])
+	}
+	if awsSpec["region"] != "us-east-1" {
+		t.Errorf("expected region=us-east-1 preserved; got %v", awsSpec["region"])
+	}
+}
+
+// TestRegisterSecretStoreProvider_OverridesPriorRegistration verifies the
+// registry replaces existing entries rather than appending. Uses positive
+// assertions: exactly one error has Field=="x" and Message=="second"; no
+// error has Message=="first".
 func TestRegisterSecretStoreProvider_OverridesPriorRegistration(t *testing.T) {
-	// Verify the registry replaces existing entries rather than appending.
 	first := func(_ map[string]any) []FieldError {
 		return []FieldError{{Field: "x", Message: "first"}}
 	}
@@ -255,9 +360,95 @@ func TestRegisterSecretStoreProvider_OverridesPriorRegistration(t *testing.T) {
 
 	s := validNamespacedStoreInput(SecretStoreProviderAzure)
 	errs := s.Validate()
+
+	var xErrors []FieldError
 	for _, e := range errs {
-		if e.Field == "x" && e.Message != "second" {
-			t.Errorf("expected second validator to win; got %q", e.Message)
+		if e.Field == "x" {
+			xErrors = append(xErrors, e)
 		}
 	}
+	if len(xErrors) != 1 {
+		t.Fatalf("expected exactly 1 error with Field==x, got %d: %v", len(xErrors), xErrors)
+	}
+	if xErrors[0].Message != "second" {
+		t.Errorf("expected Message=second (second validator wins); got %q", xErrors[0].Message)
+	}
+	for _, e := range errs {
+		if e.Message == "first" {
+			t.Errorf("first validator must not appear in results; got %v", errs)
+		}
+	}
+}
+
+// --- HTTP handler tests (#7) ---
+
+func TestHandleSecretStorePreview_NamespacedScope(t *testing.T) {
+	h := testHandler()
+	input := map[string]any{
+		"name":        "my-store",
+		"namespace":   "apps",
+		"provider":    "vault",
+		"providerSpec": map[string]any{"server": "https://vault.example.com"},
+		// Attempt to override scope via body — must be ignored (scope is
+		// baked in by the route factory, not decoded from the request).
+	}
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/secret-store/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = addAuthContext(req)
+
+	rr := httptest.NewRecorder()
+	// Route factory bakes in StoreScopeNamespaced — mirrors routes.go.
+	h.HandlePreview(func() WizardInput {
+		return &SecretStoreInput{Scope: StoreScopeNamespaced}
+	})(rr, req)
+
+	// U18: no provider validator registered → 422 with "not yet implemented".
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (no validator registered), got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	respBody := rr.Body.String()
+	if !strings.Contains(respBody, "not yet implemented") {
+		t.Errorf("expected error message to contain 'not yet implemented'; got %s", respBody)
+	}
+}
+
+func TestHandleSecretStorePreview_ClusterScope(t *testing.T) {
+	h := testHandler()
+	input := map[string]any{
+		"name":        "shared-store",
+		"namespace":   "should-be-ignored", // cluster scope — must be rejected now
+		"provider":    "vault",
+		"providerSpec": map[string]any{"server": "https://vault.example.com"},
+	}
+	body, _ := json.Marshal(input)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/cluster-secret-store/preview", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = addAuthContext(req)
+
+	rr := httptest.NewRecorder()
+	// Route factory bakes in StoreScopeCluster — mirrors routes.go.
+	h.HandlePreview(func() WizardInput {
+		return &SecretStoreInput{Scope: StoreScopeCluster}
+	})(rr, req)
+
+	// Namespace is set but scope is cluster → validation must reject it (422).
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 (namespace must be empty for cluster scope), got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	respBody := rr.Body.String()
+	if !strings.Contains(respBody, "namespace") {
+		t.Errorf("expected error to reference namespace field; got %s", respBody)
+	}
+}
+
+// keys is a test-local helper returning the keys of a map[string]any.
+func keys(m map[string]any) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }

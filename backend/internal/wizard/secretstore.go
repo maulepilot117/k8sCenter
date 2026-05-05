@@ -2,7 +2,6 @@ package wizard
 
 import (
 	"fmt"
-	"sync"
 
 	sigsyaml "sigs.k8s.io/yaml"
 )
@@ -64,26 +63,23 @@ type SecretStoreInput struct {
 // in init().
 type providerValidator func(spec map[string]any) []FieldError
 
-var (
-	providerValidatorsMu sync.RWMutex
-	providerValidators   = map[SecretStoreProvider]providerValidator{}
-)
+// providerValidators maps provider keys to their registered validators.
+// Written only during init() (provider packages) and sequentially in tests via
+// withTestProviderValidator. No mutex required — no concurrent writes occur at
+// runtime (init() runs single-threaded before main(); tests are sequential
+// per -count=N).
+var providerValidators = map[SecretStoreProvider]providerValidator{}
 
 // RegisterSecretStoreProvider wires a validator for a provider key. Called
-// from per-provider init() functions; safe under concurrent registration.
-// Re-registering a provider replaces the prior validator — useful for tests
-// that swap in stubs.
+// from per-provider init() functions. Re-registering a provider replaces the
+// prior validator — useful for tests that swap in stubs.
 func RegisterSecretStoreProvider(p SecretStoreProvider, v providerValidator) {
-	providerValidatorsMu.Lock()
-	defer providerValidatorsMu.Unlock()
 	providerValidators[p] = v
 }
 
 // lookupProviderValidator returns the registered validator (if any) for a
 // provider. Exposed for testing the dispatcher fall-through.
 func lookupProviderValidator(p SecretStoreProvider) (providerValidator, bool) {
-	providerValidatorsMu.RLock()
-	defer providerValidatorsMu.RUnlock()
 	v, ok := providerValidators[p]
 	return v, ok
 }
@@ -132,6 +128,9 @@ func (s *SecretStoreInput) Validate() []FieldError {
 			errs = append(errs, FieldError{Field: "namespace", Message: "must be a valid DNS label"})
 		}
 	}
+	if s.Scope == StoreScopeCluster && s.Namespace != "" {
+		errs = append(errs, FieldError{Field: "namespace", Message: "must be empty for cluster scope"})
+	}
 
 	if s.Provider == "" {
 		errs = append(errs, FieldError{Field: "provider", Message: "is required"})
@@ -165,6 +164,14 @@ func (s *SecretStoreInput) Validate() []FieldError {
 
 // ToSecretStore returns a map representation suitable for YAML marshaling.
 // kind is SecretStore or ClusterSecretStore based on Scope.
+//
+// Special case: SecretStoreProviderAWSPS is a synthetic UX discriminator —
+// ESO v1 has no "awsps" provider key. Both AWS Secrets Manager and AWS
+// Parameter Store are emitted under spec.provider.aws; the service field
+// distinguishes them. When the provider is AWSPS we inject
+// service: ParameterStore into the merged spec. When the provider is plain
+// AWS (Secrets Manager) we leave the spec untouched — ESO defaults to
+// SecretsManager when service is omitted.
 func (s *SecretStoreInput) ToSecretStore() map[string]any {
 	kind := "SecretStore"
 	if s.Scope == StoreScopeCluster {
@@ -178,9 +185,24 @@ func (s *SecretStoreInput) ToSecretStore() map[string]any {
 		metadata["namespace"] = s.Namespace
 	}
 
+	// Resolve the real ESO provider key and build the provider sub-object.
+	providerKey := string(s.Provider)
+	providerSpec := s.ProviderSpec
+	if s.Provider == SecretStoreProviderAWSPS {
+		// awsps is a synthetic key — emit as spec.provider.aws with the
+		// service discriminator injected.
+		providerKey = string(SecretStoreProviderAWS)
+		merged := make(map[string]any, len(providerSpec)+1)
+		for k, v := range providerSpec {
+			merged[k] = v
+		}
+		merged["service"] = "ParameterStore"
+		providerSpec = merged
+	}
+
 	spec := map[string]any{
 		"provider": map[string]any{
-			string(s.Provider): s.ProviderSpec,
+			providerKey: providerSpec,
 		},
 	}
 	if s.RefreshInterval != "" {
