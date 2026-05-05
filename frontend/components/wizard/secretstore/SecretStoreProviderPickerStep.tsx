@@ -58,9 +58,9 @@ const PROVIDERS: ProviderEntry[] = [
     description: "Service token. Project + config selectors.",
   },
   {
-    id: "onepasswordsdk",
+    id: "onepassword",
     title: "1Password Connect",
-    description: "Connect token. Vault + item picker.",
+    description: "Connect token + host URL. Vault name → priority mapping.",
   },
   {
     id: "bitwardensecretsmanager",

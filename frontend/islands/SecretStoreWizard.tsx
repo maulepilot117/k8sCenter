@@ -11,6 +11,7 @@ import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
 import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
+import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -30,6 +31,7 @@ const PROVIDER_FORMS: Partial<
   Record<SecretStoreProvider, ComponentType<ProviderFormProps>>
 > = {
   vault: VaultForm,
+  onepassword: OnePasswordForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.

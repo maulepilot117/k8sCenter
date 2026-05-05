@@ -33,7 +33,13 @@ const (
 	SecretStoreProviderKubernetes  SecretStoreProvider = "kubernetes"
 	SecretStoreProviderAkeyless    SecretStoreProvider = "akeyless"
 	SecretStoreProviderDoppler     SecretStoreProvider = "doppler"
-	SecretStoreProviderOnePassword SecretStoreProvider = "onepasswordsdk"
+	// SecretStoreProviderOnePassword maps to the ESO "onepassword" provider key
+	// (1Password Connect — auth via Connect token + connectHost + vaults map).
+	// NOTE: U18 shipped this constant as "onepasswordsdk" which does not match
+	// any real ESO provider key. The correct key is "onepassword". Corrected
+	// in U19 (Phase H Unit 19). The frontend enum in lib/eso-types.ts and the
+	// provider picker are updated in the same PR.
+	SecretStoreProviderOnePassword SecretStoreProvider = "onepassword"
 	SecretStoreProviderBitwarden   SecretStoreProvider = "bitwardensecretsmanager"
 	SecretStoreProviderConjur      SecretStoreProvider = "conjur"
 	SecretStoreProviderInfisical   SecretStoreProvider = "infisical"
