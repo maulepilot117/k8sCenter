@@ -12,6 +12,7 @@ import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/S
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
 import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
 import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
+import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -32,6 +33,7 @@ const PROVIDER_FORMS: Partial<
 > = {
   vault: VaultForm,
   onepassword: OnePasswordForm,
+  aws: AWSForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.

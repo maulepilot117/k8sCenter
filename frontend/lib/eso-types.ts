@@ -237,6 +237,7 @@ export type SecretStoreProvider =
 export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "vault",
   "onepassword",
+  "aws",
 ]);
 
 // --- Phase G path-discovery types ------------------------------------------
