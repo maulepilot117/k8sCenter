@@ -1146,13 +1146,13 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [x] Unit 8 — Detail islands + Dashboard (sync-health hero ring, broken-ESes-with-consumer-counts table) (PR #210)
 
 ### Phase D — Alerting + annotation thresholds (lands BEFORE Phase C)
-- [ ] Unit 12 — Migration 000010 (source enum extension via ALTER) + annotation resolver + `SuppressResourceFields` dispatch flag + notification source grouping
-- [ ] Unit 13 — Notification dispatch (failure + recovery + lifecycle, separate dedupe keys)
+- [x] Unit 12 — Migration 000010 (source enum extension via ALTER) + annotation resolver + `SuppressResourceFields` dispatch flag + notification source grouping
+- [x] Unit 13 — Notification dispatch (failure + recovery + lifecycle, separate dedupe keys)
 
 ### Phase C — Persistence + drift
-- [ ] Unit 9 — Migration 000011 (`eso_sync_history` flat table, three text[] diff columns, partition-candidate comment)
-- [ ] Unit 10 — Sync-history persistence in poller (with restart-recovery prev-bucket seeding)
-- [ ] Unit 11 — Drift detection wiring on detail + Revert button + dashboard counts
+- [x] Unit 9 — Migration 000011 (`eso_sync_history` flat table, three text[] diff columns, partition-candidate comment)
+- [x] Unit 10 — Sync-history persistence in poller (with restart-recovery prev-bucket seeding)
+- [x] Unit 11 — Drift detection wiring on detail + Revert button + dashboard counts
 
 ### Phase E — Bulk refresh actions
 - [x] Unit 14 — Force-sync action + impersonation + audit (`lastRefreshTime` heuristic for in-flight detection) (PR #213)
@@ -1162,12 +1162,12 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [x] Unit 16 — Per-store rate panel + cost-tier card (Go map literal rate cards with `LastUpdated`)
 
 ### Phase G — Universal ExternalSecret wizard
-- [ ] Unit 17 — ExternalSecret wizard (Kubernetes-provider-only path-discovery) + regex parity test
+- [x] Unit 17 — ExternalSecret wizard (Kubernetes-provider-only path-discovery) + regex parity test
 
 ### Phase H — Per-provider SecretStore wizards (split into per-provider sub-PRs)
-- [ ] Unit 18 — SecretStore wizard scaffold + StoreScope discriminator
-- [ ] Unit 19 — Per-provider validators + form components (one sub-PR per provider; ~36 form variants total)
-- [ ] Unit 20 — Niche-provider YAML templates
+- [x] Unit 18 — SecretStore wizard scaffold + StoreScope discriminator
+- [x] Unit 19 — Per-provider validators + form components (one sub-PR per provider; ~36 form variants total)
+- [x] Unit 20 — Niche-provider YAML templates
 
 ### Phase I — Chain visualization
 - [ ] Unit 21 — Backend ESOChainProvider + applyESOChainOverlay

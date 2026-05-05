@@ -83,3 +83,6 @@ e2e/test-results/
 .context/
 /.gitnexus
 /node_modules
+
+# Local project dashboard
+/dashboard/

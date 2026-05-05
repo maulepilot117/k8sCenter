@@ -333,11 +333,11 @@ All foundational phases (1–13) are COMPLETE. High-level inventory:
 
 ### Phase 14 (External Secrets Operator) — IN PROGRESS
 
-Status (2026-05-02): Phases A → B → D → C shipped (PRs #210–#213). Phases E → F → G → H → I → J pending.
+Status (2026-05-05): Phases A → B → D → C → E → F → G → H shipped (through PR #217). Phases I → J pending.
 
 Authoritative plan + per-phase technical detail: `plans/external-secrets-operator-integration.md`. Read that file before starting any Phase 14 work — annotation thresholds, cross-tenant suppression, and persistence schema are all spelled out there.
 
-Pending units: E (force-sync action — including Phase B's "Revert drift" stub), F (cost-tier classification), G (events surfacing), H (PushSecret targets), I (Chain topology overlay), J (additional polish).
+Pending units: I (Chain topology overlay), J (additional polish/docs flip).
 
 ---
 
