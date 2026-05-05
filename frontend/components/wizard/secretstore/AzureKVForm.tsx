@@ -5,20 +5,20 @@ import { Input } from "@/components/ui/Input.tsx";
  * Azure Key Vault provider form for SecretStoreWizard. Writes into the
  * wizard's `providerSpec: Record<string, unknown>` slot under the shape
  * `{ vaultUrl, authType, tenantId?, authSecretRef?, serviceAccountRef?,
- *    identityId?, clientId? }`.
+ *    identityId? }`.
  *
  * Azure's auth discriminator is a top-level `authType` string, NOT a nested
  * auth sub-block like Vault. Three auth types are supported:
  *
  * - ManagedIdentity: no required credentials; optional identityId.
  * - ServicePrincipal: tenantId + authSecretRef.{clientId, clientSecret}.
- * - WorkloadIdentity: tenantId + serviceAccountRef.name; optional clientId.
+ * - WorkloadIdentity: tenantId + serviceAccountRef.name.
  *
  * Switching authType clears the auth-related fields so stale values from the
  * prior selection can't leak into the preview.
  */
 
-export type AzureKVAuthType =
+type AzureKVAuthType =
   | "ManagedIdentity"
   | "ServicePrincipal"
   | "WorkloadIdentity";
@@ -50,8 +50,6 @@ interface AzureKVSpec {
   serviceAccountRef?: { name?: string };
   /** ManagedIdentity: optional client ID when multiple MIs are assigned to the pod. */
   identityId?: string;
-  /** WorkloadIdentity: optional clientId override (takes precedence over SA annotation). */
-  clientId?: string;
 }
 
 const AUTH_TYPES: {
@@ -106,7 +104,6 @@ const AUTH_TYPE_OWNED_FIELDS: ReadonlyArray<keyof AzureKVSpec> = [
   "authSecretRef",
   "serviceAccountRef",
   "identityId",
-  "clientId",
 ];
 
 export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
@@ -234,11 +231,9 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
         <WorkloadIdentityFields
           tenantId={getStr(spec, "tenantId")}
           saName={saRef.name ?? ""}
-          clientId={getStr(spec, "clientId")}
           errors={errors}
           onPatchTenantId={(v) => patchTop("tenantId", v)}
           onPatchSaName={(name) => patchServiceAccountRef({ name })}
-          onPatchClientId={(v) => patchTop("clientId", v)}
         />
       )}
     </div>
@@ -379,22 +374,18 @@ function ServicePrincipalFields(
 interface WorkloadIdentityFieldsProps {
   tenantId: string;
   saName: string;
-  clientId: string;
   errors: Record<string, string>;
   onPatchTenantId: (v: string) => void;
   onPatchSaName: (name: string) => void;
-  onPatchClientId: (v: string) => void;
 }
 
 function WorkloadIdentityFields(
   {
     tenantId,
     saName,
-    clientId,
     errors,
     onPatchTenantId,
     onPatchSaName,
-    onPatchClientId,
   }: WorkloadIdentityFieldsProps,
 ) {
   return (
@@ -420,15 +411,6 @@ function WorkloadIdentityFields(
         placeholder="eso-workload-sa"
         description="The K8s ServiceAccount annotated with the Azure federated identity."
         error={errors["serviceAccountRef.name"]}
-      />
-      <Input
-        id="azurekv-wi-client-id"
-        label="Client ID override (optional)"
-        value={clientId}
-        onInput={(e) => onPatchClientId((e.target as HTMLInputElement).value)}
-        placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-        description="Overrides the clientId annotation on the service account when set."
-        error={errors["clientId"]}
       />
     </div>
   );

@@ -139,6 +139,14 @@ func TestValidateAzureKVSpec_MI_WithOptionalIdentityId(t *testing.T) {
 	}
 }
 
+func TestValidateAzureKVSpec_MI_BlankIdentityIdIsRejected(t *testing.T) {
+	spec := validAzureKVSpecMI()
+	spec["identityId"] = "   " // present but whitespace-only
+	if !hasField(validateAzureKVSpec(spec), "identityId") {
+		t.Error("expected identityId error for whitespace-only value when key is present")
+	}
+}
+
 // ManagedIdentity: tenantId is truly optional (not required like SP/WI).
 func TestValidateAzureKVSpec_MI_NoTenantIdIsOk(t *testing.T) {
 	spec := validAzureKVSpecMI()
@@ -272,11 +280,16 @@ func TestValidateAzureKVSpec_WI_BadServiceAccountName(t *testing.T) {
 	}
 }
 
-func TestValidateAzureKVSpec_WI_WithOptionalClientId(t *testing.T) {
+// WI YAML must NOT emit a top-level clientId — that field doesn't exist on
+// ESO's AzureKVProvider spec root. Regression guard for the fabricated field.
+func TestValidateAzureKVSpec_WI_NoTopLevelClientId(t *testing.T) {
 	spec := validAzureKVSpecWI()
-	spec["clientId"] = "override-client-id"
 	if errs := validateAzureKVSpec(spec); len(errs) != 0 {
-		t.Errorf("expected no errors with optional clientId; got %v", errs)
+		t.Errorf("expected no errors for valid WI spec; got %v", errs)
+	}
+	// Confirm the spec itself contains no clientId at the root level.
+	if _, ok := spec["clientId"]; ok {
+		t.Error("WI spec must not have a top-level clientId field")
 	}
 }
 
@@ -353,6 +366,71 @@ func TestSecretStoreInput_AzureKVIntegration_ToYAML(t *testing.T) {
 	}
 	if azureSpec["authType"] == nil {
 		t.Errorf("expected spec.provider.azurekv.authType to be present; got %v", azureSpec)
+	}
+}
+
+// TestSecretStoreInput_AzureKVIntegration_ToYAML_AuthSecretRefNesting verifies
+// that for ServicePrincipal the authSecretRef.clientId and
+// authSecretRef.clientSecret blocks nest correctly under spec.provider.azurekv,
+// and that WorkloadIdentity YAML does NOT include any top-level clientId field.
+func TestSecretStoreInput_AzureKVIntegration_ToYAML_AuthSecretRefNesting(t *testing.T) {
+	// --- ServicePrincipal: authSecretRef must contain nested clientId + clientSecret ---
+	spStore := SecretStoreInput{
+		Scope:        StoreScopeNamespaced,
+		Name:         "azure-sp-store",
+		Namespace:    "apps",
+		Provider:     SecretStoreProviderAzure,
+		ProviderSpec: validAzureKVSpecSP(),
+	}
+	spYAML, err := spStore.ToYAML()
+	if err != nil {
+		t.Fatalf("SP ToYAML error: %v", err)
+	}
+	var spDoc map[string]any
+	if err := yaml.Unmarshal([]byte(spYAML), &spDoc); err != nil {
+		t.Fatalf("SP YAML parse error: %v\n%s", err, spYAML)
+	}
+	spKVSpec := func() map[string]any {
+		spec, _ := spDoc["spec"].(map[string]any)
+		provider, _ := spec["provider"].(map[string]any)
+		az, _ := provider["azurekv"].(map[string]any)
+		return az
+	}()
+	authSecretRef, _ := spKVSpec["authSecretRef"].(map[string]any)
+	if authSecretRef == nil {
+		t.Fatalf("SP: expected authSecretRef under spec.provider.azurekv, got keys: %v", keys(spKVSpec))
+	}
+	if authSecretRef["clientId"] == nil {
+		t.Errorf("SP: expected authSecretRef.clientId to be present; got %v", authSecretRef)
+	}
+	if authSecretRef["clientSecret"] == nil {
+		t.Errorf("SP: expected authSecretRef.clientSecret to be present; got %v", authSecretRef)
+	}
+
+	// --- WorkloadIdentity: NO top-level clientId in emitted YAML ---
+	wiStore := SecretStoreInput{
+		Scope:        StoreScopeNamespaced,
+		Name:         "azure-wi-store",
+		Namespace:    "apps",
+		Provider:     SecretStoreProviderAzure,
+		ProviderSpec: validAzureKVSpecWI(),
+	}
+	wiYAML, err := wiStore.ToYAML()
+	if err != nil {
+		t.Fatalf("WI ToYAML error: %v", err)
+	}
+	var wiDoc map[string]any
+	if err := yaml.Unmarshal([]byte(wiYAML), &wiDoc); err != nil {
+		t.Fatalf("WI YAML parse error: %v\n%s", err, wiYAML)
+	}
+	wiKVSpec := func() map[string]any {
+		spec, _ := wiDoc["spec"].(map[string]any)
+		provider, _ := spec["provider"].(map[string]any)
+		az, _ := provider["azurekv"].(map[string]any)
+		return az
+	}()
+	if _, ok := wiKVSpec["clientId"]; ok {
+		t.Errorf("WI: spec.provider.azurekv must NOT contain a top-level clientId; got %v", wiKVSpec)
 	}
 }
 
