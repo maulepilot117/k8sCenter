@@ -16,6 +16,7 @@ import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
 import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
 import { AWSPSForm } from "@/components/wizard/secretstore/AWSPSForm.tsx";
 import { GCPSMForm } from "@/components/wizard/secretstore/GCPSMForm.tsx";
+import { KubernetesForm } from "@/components/wizard/secretstore/KubernetesForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -40,6 +41,7 @@ const PROVIDER_FORMS: Partial<
   azurekv: AzureKVForm,
   awsps: AWSPSForm,
   gcpsm: GCPSMForm,
+  kubernetes: KubernetesForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -242,6 +244,14 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       // first-class default-credentials path.
       const auth = ps.auth as Record<string, unknown> | undefined;
       if (auth !== undefined && Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
+      }
+    }
+
+    if (step === 2 && f.provider === "kubernetes") {
+      const ps = f.providerSpec;
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (!auth || Object.keys(auth).length === 0) {
         errs.auth = "Select an authentication method";
       }
     }
