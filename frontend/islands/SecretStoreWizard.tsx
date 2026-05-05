@@ -166,6 +166,16 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       }
     }
 
+    if (step === 2 && f.provider === "onepassword") {
+      const ps = f.providerSpec;
+      const connectHost = typeof ps.connectHost === "string"
+        ? ps.connectHost.trim()
+        : "";
+      if (!connectHost) {
+        errs.connectHost = "is required";
+      }
+    }
+
     errors.value = errs;
     return Object.keys(errs).length === 0;
   }
