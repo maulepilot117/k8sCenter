@@ -239,6 +239,7 @@ export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "onepassword",
   "aws",
   "azurekv",
+  "awsps",
 ]);
 
 // --- Phase G path-discovery types ------------------------------------------

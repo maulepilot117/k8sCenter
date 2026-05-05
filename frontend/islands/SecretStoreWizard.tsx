@@ -14,6 +14,7 @@ import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.t
 import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
 import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
 import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
+import { AWSPSForm } from "@/components/wizard/secretstore/AWSPSForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -36,6 +37,7 @@ const PROVIDER_FORMS: Partial<
   onepassword: OnePasswordForm,
   aws: AWSForm,
   azurekv: AzureKVForm,
+  awsps: AWSPSForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -199,6 +201,18 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
         : "";
       if (!connectHost) {
         errs.connectHost = "is required";
+      }
+    }
+
+    if (step === 2 && f.provider === "awsps") {
+      const ps = f.providerSpec;
+      const region = typeof ps.region === "string" ? ps.region.trim() : "";
+      if (!region) {
+        errs.region = "AWS Region is required";
+      }
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (!auth || Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
       }
     }
 
