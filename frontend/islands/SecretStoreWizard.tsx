@@ -11,6 +11,7 @@ import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
 import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
+import { DopplerForm } from "@/components/wizard/secretstore/DopplerForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -30,6 +31,7 @@ const PROVIDER_FORMS: Partial<
   Record<SecretStoreProvider, ComponentType<ProviderFormProps>>
 > = {
   vault: VaultForm,
+  doppler: DopplerForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -157,6 +159,20 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       const server = typeof ps.server === "string" ? ps.server.trim() : "";
       if (!server) {
         errs.server = "Server URL is required";
+      }
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (!auth || Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
+      }
+    }
+
+    if (step === 2 && f.provider === "doppler") {
+      const ps = f.providerSpec;
+      if (!ps.project || (ps.project as string).trim() === "") {
+        errs.project = "Project is required";
+      }
+      if (!ps.config || (ps.config as string).trim() === "") {
+        errs.config = "Config is required";
       }
       const auth = ps.auth as Record<string, unknown> | undefined;
       if (!auth || Object.keys(auth).length === 0) {
