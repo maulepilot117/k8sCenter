@@ -317,6 +317,22 @@ func TestSecretStoreInput_AWSIntegration_PropagatesProviderError(t *testing.T) {
 	}
 }
 
+func TestSecretStoreInput_AWSIntegration_PropagatesRoleWhitespaceError(t *testing.T) {
+	spec := validAWSSpec()
+	spec["role"] = "   "
+	s := SecretStoreInput{
+		Scope:        StoreScopeNamespaced,
+		Name:         "aws-store",
+		Namespace:    "apps",
+		Provider:     SecretStoreProviderAWS,
+		ProviderSpec: spec,
+	}
+	errs := s.Validate()
+	if !hasField(errs, "role") {
+		t.Errorf("expected provider-level role error for whitespace-only value, got %v", errs)
+	}
+}
+
 // TestSecretStoreInput_AWSIntegration_ToYAML asserts the wizard preview's
 // emitted YAML places the spec under spec.provider.aws and does not leak the
 // wizard's transport keys at the wrong nesting level.
