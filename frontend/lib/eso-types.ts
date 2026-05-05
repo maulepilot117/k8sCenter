@@ -240,6 +240,7 @@ export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "aws",
   "azurekv",
   "awsps",
+  "gcpsm",
 ]);
 
 // --- Phase G path-discovery types ------------------------------------------
