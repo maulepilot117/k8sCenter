@@ -86,3 +86,6 @@ e2e/test-results/
 
 # Local project dashboard
 /dashboard/
+
+#ArgoCD Directory
+/argocd/
