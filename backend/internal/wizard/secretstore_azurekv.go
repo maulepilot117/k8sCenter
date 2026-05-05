@@ -93,12 +93,16 @@ func isValidAzureAuthType(s string) bool {
 //     "use the AKS-bound managed identity".
 //
 // Neither field is required — ESO defaults both from the pod's MI binding.
-// We validate format when provided.
-func validateAzureKVManagedIdentity(_ map[string]any) []FieldError {
-	// ManagedIdentity has no required sub-fields in ESO v1. tenantId and
-	// identityId are both optional and carry no format constraint beyond
-	// "non-empty when set" — which the wizard enforces client-side only.
-	return nil
+// identityId is rejected when present but whitespace-only.
+func validateAzureKVManagedIdentity(spec map[string]any) []FieldError {
+	var errs []FieldError
+	if identityID, ok := spec["identityId"].(string); ok {
+		// Key is present; reject whitespace-only values.
+		if strings.TrimSpace(identityID) == "" {
+			errs = append(errs, FieldError{Field: "identityId", Message: "must not be empty when set"})
+		}
+	}
+	return errs
 }
 
 // validateAzureKVServicePrincipal validates fields specific to the
@@ -148,9 +152,9 @@ func validateAzureKVServicePrincipal(spec map[string]any) []FieldError {
 //   - tenantId (string at spec root)
 //   - serviceAccountRef.name (string)
 //
-// Optional:
-//   - clientId (string override at spec root — takes precedence over the SA
-//     annotation when set)
+// ESO's AzureKVProvider has no plain-string clientId field at the spec root
+// for WorkloadIdentity — the only clientId is inside authSecretRef (a
+// SecretKeySelector used by ServicePrincipal). Do not add clientId here.
 func validateAzureKVWorkloadIdentity(spec map[string]any) []FieldError {
 	var errs []FieldError
 

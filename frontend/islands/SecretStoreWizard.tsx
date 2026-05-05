@@ -181,6 +181,15 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       if (!authType) {
         errs.authType = "Select an authentication type";
       }
+      // tenantId is required for ServicePrincipal and WorkloadIdentity.
+      if (authType === "ServicePrincipal" || authType === "WorkloadIdentity") {
+        const tenantId = typeof ps.tenantId === "string"
+          ? ps.tenantId.trim()
+          : "";
+        if (!tenantId) {
+          errs.tenantId = "Tenant ID is required";
+        }
+      }
     }
 
     if (step === 2 && f.provider === "onepassword") {
