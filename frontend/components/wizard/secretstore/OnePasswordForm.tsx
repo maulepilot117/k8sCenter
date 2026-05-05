@@ -87,10 +87,9 @@ export function OnePasswordForm(
   // Vault rows managed locally as strings to preserve the in-progress input
   // before it's converted to a number. Initialised once from spec; subsequent
   // spec changes come back through onUpdateSpec.
+  const initialRows = vaultsToRows(spec);
   const rows = useSignal<VaultEntry[]>(
-    vaultsToRows(spec).length > 0
-      ? vaultsToRows(spec)
-      : [{ name: "", priority: "1" }],
+    initialRows.length > 0 ? initialRows : [{ name: "", priority: "1" }],
   );
 
   function patchTop(field: string, value: string) {
