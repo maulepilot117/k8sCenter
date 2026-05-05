@@ -17,11 +17,11 @@ interface TopoGraph {
   // "graph complete, only some mesh edges capped".
   truncated?: boolean;
   edgesTruncated?: boolean;
-  // Set by the backend when ?overlay=mesh is requested.
-  // "mesh" — overlay applied (mesh edges may or may not be present).
+  // Set by the backend when ?overlay=... is requested.
+  // "mesh" / "eso-chain" — overlay applied (edges may or may not be present).
   // "unavailable" — overlay was requested but couldn't be applied
-  //                  (no mesh installed, provider unwired, fetch errored).
-  overlay?: "mesh" | "unavailable";
+  //                  (no backing CRDs installed, provider unwired, fetch errored).
+  overlay?: "mesh" | "eso-chain" | "unavailable";
   // Per-stage warnings; currently used for mesh-overlay host-resolution
   // drops so a custom-cluster-domain namespace doesn't return a silent
   // empty overlay.
@@ -41,7 +41,16 @@ interface TopoNode {
 interface TopoEdge {
   source: string;
   target: string;
-  type: "owner" | "selector" | "mount" | "ingress" | "mesh_vs" | "mesh_sp";
+  type:
+    | "owner"
+    | "selector"
+    | "mount"
+    | "ingress"
+    | "mesh_vs"
+    | "mesh_sp"
+    | "eso_auth"
+    | "eso_sync"
+    | "eso_consumer";
 }
 
 // ── Layout types ──
@@ -60,6 +69,16 @@ const BASE_HEIGHT = 800;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3;
 const PANEL_WIDTH = 320;
+
+type OverlayMode = "none" | "mesh" | "eso-chain";
+
+interface NamespaceTopologyProps {
+  namespace?: string;
+  defaultOverlay?: OverlayMode;
+  focusedNodeId?: string;
+  embedded?: boolean;
+  minHeight?: number;
+}
 
 const HEALTH_COLORS: Record<TopoNode["health"], string> = {
   healthy: "var(--status-success)",
@@ -95,10 +114,35 @@ const EDGE_STYLES: Record<
     stroke: "var(--accent-secondary)",
     markerId: "arrow-mesh-sp",
   },
+  eso_auth: {
+    dasharray: "2,2",
+    opacity: 0.8,
+    stroke: "var(--accent)",
+    markerId: "arrow-eso-auth",
+  },
+  eso_sync: {
+    dasharray: "5,2",
+    opacity: 0.85,
+    stroke: "var(--accent-secondary)",
+    markerId: "arrow-eso-sync",
+  },
+  eso_consumer: {
+    dasharray: "",
+    opacity: 0.65,
+    stroke: "var(--text-muted)",
+    markerId: "arrow-eso-consumer",
+  },
 };
 
 function isMeshEdge(t: TopoEdge["type"]): boolean {
   return t === "mesh_vs" || t === "mesh_sp";
+}
+
+function isOverlayEdge(t: TopoEdge["type"]): boolean {
+  return isMeshEdge(t) ||
+    t === "eso_auth" ||
+    t === "eso_sync" ||
+    t === "eso_consumer";
 }
 
 // ── Kind abbreviations ──
@@ -132,6 +176,9 @@ function getResourceHref(kind: string, ns: string, name: string): string {
     Ingress: `/networking/ingresses/${eNs}/${eName}`,
     ConfigMap: `/config/configmaps/${eNs}/${eName}`,
     Secret: `/config/secrets/${eNs}/${eName}`,
+    ExternalSecret: `/external-secrets/externalsecrets/${eNs}/${eName}`,
+    SecretStore: `/external-secrets/stores/${eNs}/${eName}`,
+    ClusterSecretStore: `/external-secrets/cluster-stores/${eName}`,
     PersistentVolumeClaim: `/storage/pvcs/${eNs}/${eName}`,
     Job: `/workloads/jobs/${eNs}/${eName}`,
     CronJob: `/workloads/cronjobs/${eNs}/${eName}`,
@@ -143,9 +190,45 @@ function getResourceHref(kind: string, ns: string, name: string): string {
     }`;
 }
 
+function focusedSubgraph(graph: TopoGraph, focusedNodeId?: string): TopoGraph {
+  if (!focusedNodeId) return graph;
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  if (!nodeIds.has(focusedNodeId)) {
+    return { ...graph, nodes: [], edges: [] };
+  }
+  const adjacent = new Map<string, string[]>();
+  for (const node of graph.nodes) adjacent.set(node.id, []);
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+    adjacent.get(edge.source)!.push(edge.target);
+    adjacent.get(edge.target)!.push(edge.source);
+  }
+  const keep = new Set<string>([focusedNodeId]);
+  const queue = [focusedNodeId];
+  for (let i = 0; i < queue.length; i++) {
+    const current = queue[i];
+    for (const next of adjacent.get(current) ?? []) {
+      if (keep.has(next)) continue;
+      keep.add(next);
+      queue.push(next);
+    }
+  }
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((n) => keep.has(n.id)),
+    edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+  };
+}
+
 // ── Component ──
 
-export default function NamespaceTopology() {
+export default function NamespaceTopology({
+  namespace,
+  defaultOverlay = "none",
+  focusedNodeId,
+  embedded = false,
+  minHeight,
+}: NamespaceTopologyProps) {
   const graph = useSignal<TopoGraph | null>(null);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
@@ -158,43 +241,32 @@ export default function NamespaceTopology() {
   const dragStart = useSignal({ x: 0, y: 0 });
   const panStart = useSignal({ x: 0, y: 0 });
 
-  // meshOverlay drives the "Show mesh traffic" toggle. When true, the
-  // next graph fetch appends ?overlay=mesh; the response's `overlay`
-  // field then tells us whether the backend could honor it.
-  const meshOverlay = useSignal(false);
-  // meshUnavailable latches once the backend reports overlay=unavailable
-  // for this namespace. While latched, the toggle renders disabled +
-  // unchecked and the explanatory tooltip explains why. Resetting the
-  // namespace (or any new graph response that comes back with
-  // overlay !== "unavailable") clears the latch.
-  const meshUnavailable = useSignal(false);
+  const overlayMode = useSignal<OverlayMode>(defaultOverlay);
+  const unavailableOverlay = useSignal<OverlayMode | null>(null);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const layoutNodes = useSignal<LayoutNode[]>([]);
   const layoutNodeMap = useSignal<Map<string, LayoutNode>>(new Map());
+  const panelMinHeight = minHeight ?? (embedded ? 400 : 500);
 
   // ── Data fetching ──
 
   const fetchGraph = async () => {
-    const ns = selectedNamespace.value;
+    const ns = namespace ?? selectedNamespace.value;
     if (ns === "all") return;
     loading.value = true;
     error.value = null;
     try {
-      const overlayParam = meshOverlay.value ? "?overlay=mesh" : "";
+      const overlayParam = overlayMode.value === "none"
+        ? ""
+        : `?overlay=${overlayMode.value}`;
       const res = await apiGet<TopoGraph>(`/v1/topology/${ns}${overlayParam}`);
-      graph.value = res.data;
-      // Latch / unlatch the unavailable state so the toggle renders
-      // disabled+unchecked once we know there's no mesh, and frees up
-      // again when conditions change. Force the user-visible toggle off
-      // whenever we latch — leaving it checked while disabled is the
-      // bug that prompted this latch (browsers ignore clicks on
-      // disabled inputs, so the user couldn't un-check).
+      graph.value = focusedSubgraph(res.data, focusedNodeId);
       if (res.data.overlay === "unavailable") {
-        meshUnavailable.value = true;
-        meshOverlay.value = false;
-      } else if (res.data.overlay === "mesh") {
-        meshUnavailable.value = false;
+        unavailableOverlay.value = overlayMode.value;
+        overlayMode.value = "none";
+      } else if (res.data.overlay === overlayMode.value) {
+        unavailableOverlay.value = null;
       }
     } catch (err) {
       error.value = err instanceof Error
@@ -208,23 +280,21 @@ export default function NamespaceTopology() {
 
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (selectedNamespace.value === "all") {
+    const ns = namespace ?? selectedNamespace.value;
+    if (ns === "all") {
       loading.value = false;
       return;
     }
-    // A different namespace means a different cluster slice — clear the
-    // unavailable latch so the user can probe again.
-    meshUnavailable.value = false;
+    unavailableOverlay.value = null;
     fetchGraph();
-  }, [selectedNamespace.value]);
+  }, [namespace, selectedNamespace.value, focusedNodeId]);
 
-  // Re-fetch when the user flips the toggle. Separate effect so the
-  // namespace-change reset above doesn't fight a same-tick toggle change.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    if (selectedNamespace.value === "all") return;
+    const ns = namespace ?? selectedNamespace.value;
+    if (ns === "all") return;
     fetchGraph();
-  }, [meshOverlay.value]);
+  }, [overlayMode.value]);
 
   // ── Layout: custom LR topological sort (no dagre — it uses Node.js builtins) ──
 
@@ -390,7 +460,7 @@ export default function NamespaceTopology() {
 
   // ── No namespace selected ──
 
-  if (selectedNamespace.value === "all") {
+  if ((namespace ?? selectedNamespace.value) === "all") {
     return (
       <div class="flex items-center justify-center rounded-lg border border-border-primary bg-bg-surface p-12">
         <p class="text-text-secondary">
@@ -453,7 +523,7 @@ export default function NamespaceTopology() {
       {/* Graph area */}
       <div
         class="flex-1 overflow-hidden rounded-lg border border-border-primary bg-bg-surface"
-        style={{ minHeight: "500px" }}
+        style={{ minHeight: `${panelMinHeight}px` }}
       >
         {/* Toolbar */}
         <div class="flex items-center justify-between border-b border-border-primary px-4 py-2">
@@ -472,31 +542,47 @@ export default function NamespaceTopology() {
             >
               Refresh
             </button>
-            <label
-              class={`ml-2 flex items-center gap-1.5 rounded border border-border-primary bg-bg-surface px-2.5 py-1 text-xs ${
-                meshUnavailable.value
-                  ? "cursor-not-allowed text-text-muted opacity-60"
-                  : "cursor-pointer text-text-secondary hover:text-text-primary"
-              }`}
-              title={meshUnavailable.value
-                ? "No service mesh detected in this cluster"
-                : "Show Istio VirtualService and Linkerd ServiceProfile traffic edges"}
+            <div
+              role="radiogroup"
+              aria-label="Topology overlay"
+              class="ml-2 inline-flex overflow-hidden rounded border border-border-primary"
             >
-              <input
-                type="checkbox"
-                class="h-3 w-3 cursor-pointer accent-accent disabled:cursor-not-allowed"
-                checked={meshOverlay.value}
-                disabled={meshUnavailable.value}
-                onChange={(e) => {
-                  meshOverlay.value =
-                    (e.currentTarget as HTMLInputElement).checked;
-                }}
-              />
-              Show mesh traffic
-            </label>
+              {([
+                ["none", "Base"],
+                ["mesh", "Mesh"],
+                ["eso-chain", "ESO chain"],
+              ] as Array<[OverlayMode, string]>).map(([mode, label]) => {
+                const disabled = unavailableOverlay.value === mode;
+                const active = overlayMode.value === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    disabled={disabled}
+                    title={disabled
+                      ? (mode === "eso-chain"
+                        ? "ESO not installed in this cluster"
+                        : "No service mesh detected in this cluster")
+                      : label}
+                    class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      active
+                        ? "bg-accent-primary text-white"
+                        : "bg-bg-surface text-text-secondary hover:text-text-primary"
+                    }`}
+                    onClick={() => {
+                      overlayMode.value = mode;
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div class="flex items-center gap-3">
-            {meshOverlay.value && graph.value.overlay === "mesh" && (
+            {overlayMode.value === "mesh" && graph.value.overlay === "mesh" && (
               <div class="flex items-center gap-3 text-xs text-text-muted">
                 <span class="flex items-center gap-1.5">
                   <span
@@ -513,6 +599,35 @@ export default function NamespaceTopology() {
                     aria-hidden="true"
                   />
                   Linkerd
+                </span>
+              </div>
+            )}
+            {overlayMode.value === "eso-chain" &&
+              graph.value.overlay === "eso-chain" && (
+              <div class="flex items-center gap-3 text-xs text-text-muted">
+                <span class="flex items-center gap-1.5">
+                  <span
+                    class="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent)" }}
+                    aria-hidden="true"
+                  />
+                  Auth
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span
+                    class="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--accent-secondary)" }}
+                    aria-hidden="true"
+                  />
+                  Sync
+                </span>
+                <span class="flex items-center gap-1.5">
+                  <span
+                    class="inline-block h-0.5 w-4"
+                    style={{ backgroundColor: "var(--text-muted)" }}
+                    aria-hidden="true"
+                  />
+                  Consumer
                 </span>
               </div>
             )}
@@ -601,6 +716,39 @@ export default function NamespaceTopology() {
             >
               <path d="M0,0 L10,3 L0,6 Z" fill="var(--accent-secondary)" />
             </marker>
+            <marker
+              id="arrow-eso-auth"
+              viewBox="0 0 10 6"
+              refX="10"
+              refY="3"
+              markerWidth="8"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--accent)" />
+            </marker>
+            <marker
+              id="arrow-eso-sync"
+              viewBox="0 0 10 6"
+              refX="10"
+              refY="3"
+              markerWidth="8"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--accent-secondary)" />
+            </marker>
+            <marker
+              id="arrow-eso-consumer"
+              viewBox="0 0 10 6"
+              refX="10"
+              refY="3"
+              markerWidth="8"
+              markerHeight="6"
+              orient="auto"
+            >
+              <path d="M0,0 L10,3 L0,6 Z" fill="var(--text-muted)" />
+            </marker>
           </defs>
 
           {/* Edges */}
@@ -626,7 +774,7 @@ export default function NamespaceTopology() {
                 x2={tgt.x}
                 y2={tgt.y}
                 stroke={stroke}
-                stroke-width={isMeshEdge(edge.type) ? 2 : 1.5}
+                stroke-width={isOverlayEdge(edge.type) ? 2 : 1.5}
                 stroke-dasharray={style.dasharray}
                 opacity={op}
                 marker-end={`url(#${markerId})`}
@@ -701,7 +849,10 @@ export default function NamespaceTopology() {
       {selected && (
         <div
           class="shrink-0 overflow-y-auto border-l border-border-primary bg-bg-surface"
-          style={{ width: `${PANEL_WIDTH}px`, minHeight: "500px" }}
+          style={{
+            width: `${PANEL_WIDTH}px`,
+            minHeight: `${panelMinHeight}px`,
+          }}
         >
           {/* Panel header */}
           <div class="flex items-center justify-between border-b border-border-primary px-4 py-3">

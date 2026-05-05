@@ -21,12 +21,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kubecenter/kubecenter/internal/alerting"
 	"github.com/kubecenter/kubecenter/internal/audit"
-	"github.com/kubecenter/kubecenter/internal/certmanager"
-	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/certmanager"
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/diagnostics"
 	"github.com/kubecenter/kubecenter/internal/externalsecrets"
+	"github.com/kubecenter/kubecenter/internal/gateway"
 	"github.com/kubecenter/kubecenter/internal/gitops"
 	"github.com/kubecenter/kubecenter/internal/gitprovider"
 	"github.com/kubecenter/kubecenter/internal/k8s"
@@ -704,6 +704,7 @@ func main() {
 	}
 	esoDisc := externalsecrets.NewDiscoverer(k8sClient, logger)
 	esoHandler := externalsecrets.NewHandler(k8sClient, esoDisc, accessChecker, auditLogger, notifService, logger)
+	topoBuilder.SetESOChainProvider(esoHandler)
 	// Phase F Unit 16 — per-store rate + cost panels query Prometheus
 	// through the shared monitoring discoverer. Optional: handler degrades
 	// to `{error: "rate metrics offline"}` when nil.
@@ -793,49 +794,49 @@ func main() {
 
 	// Create HTTP server
 	srv := server.New(server.Deps{
-		Config:             cfg,
-		K8sClient:          k8sClient,
-		Informers:          informerMgr,
-		Logger:             logger,
-		TokenManager:       tokenManager,
-		LocalAuth:          localAuth,
-		AuthRegistry:       authRegistry,
-		OIDCStateStore:     oidcStateStore,
-		Sessions:           sessions,
-		RBACChecker:        rbacChecker,
-		AuditLogger:        auditLogger,
-		ClusterStore:       clusterStore,
-		ClusterRouter:      clusterRouter,
-		ClusterProber:      clusterProber,
-		SettingsService:    settingsService,
-		RateLimiter:        rateLimiter,
-		YAMLRateLimiter:    yamlRateLimiter,
-		Hub:                hub,
-		MonitoringHandler:  monHandler,
-		LokiHandler:        lokiHandler,
-		TopologyHandler:    topoHandler,
-		StorageHandler:     storageHandler,
-		NetworkingHandler:  networkingHandler,
-		AlertingHandler:    alertHandler,
-		DiagnosticsHandler: diagHandler,
-		PolicyHandler:      policyHandler,
-		GitOpsHandler:      gitopsHandler,
-		FluxNotifHandler:   fluxNotifHandler,
-		NotifCenterHandler: notifCenterHandler,
-		NotifCenterService: notifService,
-		ScanningHandler:    scanHandler,
-		LimitsHandler:      limitsHandler,
-		VeleroHandler:      veleroHandler,
-		CertManagerHandler: cmHandler,
+		Config:                 cfg,
+		K8sClient:              k8sClient,
+		Informers:              informerMgr,
+		Logger:                 logger,
+		TokenManager:           tokenManager,
+		LocalAuth:              localAuth,
+		AuthRegistry:           authRegistry,
+		OIDCStateStore:         oidcStateStore,
+		Sessions:               sessions,
+		RBACChecker:            rbacChecker,
+		AuditLogger:            auditLogger,
+		ClusterStore:           clusterStore,
+		ClusterRouter:          clusterRouter,
+		ClusterProber:          clusterProber,
+		SettingsService:        settingsService,
+		RateLimiter:            rateLimiter,
+		YAMLRateLimiter:        yamlRateLimiter,
+		Hub:                    hub,
+		MonitoringHandler:      monHandler,
+		LokiHandler:            lokiHandler,
+		TopologyHandler:        topoHandler,
+		StorageHandler:         storageHandler,
+		NetworkingHandler:      networkingHandler,
+		AlertingHandler:        alertHandler,
+		DiagnosticsHandler:     diagHandler,
+		PolicyHandler:          policyHandler,
+		GitOpsHandler:          gitopsHandler,
+		FluxNotifHandler:       fluxNotifHandler,
+		NotifCenterHandler:     notifCenterHandler,
+		NotifCenterService:     notifService,
+		ScanningHandler:        scanHandler,
+		LimitsHandler:          limitsHandler,
+		VeleroHandler:          veleroHandler,
+		CertManagerHandler:     cmHandler,
 		ExternalSecretsHandler: esoHandler,
-		GatewayHandler:     gwHandler,
-		ServiceMeshHandler: meshHandler,
-		CRDHandler:         crdHandler,
-		LogQueryLimiter:    logQueryLimiter,
-		WebhookRateLimiter: webhookRateLimiter,
-		AccessChecker:      accessChecker,
-		ReadyFn:            ready.Load,
-		DBPing:             dbPing,
+		GatewayHandler:         gwHandler,
+		ServiceMeshHandler:     meshHandler,
+		CRDHandler:             crdHandler,
+		LogQueryLimiter:        logQueryLimiter,
+		WebhookRateLimiter:     webhookRateLimiter,
+		AccessChecker:          accessChecker,
+		ReadyFn:                ready.Load,
+		DBPing:                 dbPing,
 	})
 	httpServer := srv.HTTPServer()
 

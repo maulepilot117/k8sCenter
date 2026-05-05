@@ -4,6 +4,7 @@ import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESODriftIndicator } from "@/components/eso/ESODriftIndicator.tsx";
+import ESOChainPanel from "@/islands/ESOChainPanel.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { esoApi } from "@/lib/eso-api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
@@ -284,12 +285,7 @@ export default function ESOExternalSecretDetail({ namespace, name }: Props) {
       )}
 
       {activeTab.value === "chain" && (
-        <div
-          role="tabpanel"
-          class="rounded-lg border border-border-primary bg-elevated p-5 text-sm text-text-muted"
-        >
-          Chain visualization coming in Phase&nbsp;I.
-        </div>
+        <ESOChainPanel namespace={es.namespace} focusedNodeId={es.uid} />
       )}
     </div>
   );
