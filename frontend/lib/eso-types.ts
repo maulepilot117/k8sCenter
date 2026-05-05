@@ -224,7 +224,7 @@ export type SecretStoreProvider =
   | "kubernetes"
   | "akeyless"
   | "doppler"
-  | "onepasswordsdk"
+  | "onepassword"
   | "bitwardensecretsmanager"
   | "conjur"
   | "infisical";
@@ -236,6 +236,7 @@ export type SecretStoreProvider =
  */
 export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "vault",
+  "onepassword",
 ]);
 
 // --- Phase G path-discovery types ------------------------------------------
