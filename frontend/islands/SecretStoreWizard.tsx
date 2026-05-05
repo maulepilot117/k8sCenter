@@ -15,6 +15,7 @@ import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm
 import { AWSForm } from "@/components/wizard/secretstore/AWSForm.tsx";
 import { AzureKVForm } from "@/components/wizard/secretstore/AzureKVForm.tsx";
 import { AWSPSForm } from "@/components/wizard/secretstore/AWSPSForm.tsx";
+import { GCPSMForm } from "@/components/wizard/secretstore/GCPSMForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -38,6 +39,7 @@ const PROVIDER_FORMS: Partial<
   aws: AWSForm,
   azurekv: AzureKVForm,
   awsps: AWSPSForm,
+  gcpsm: GCPSMForm,
 };
 
 // Re-export for any downstream consumers that imported from this island.
@@ -220,6 +222,16 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
         if (!role) {
           errs.role = "IAM role ARN is required for IRSA";
         }
+      }
+    }
+
+    if (step === 2 && f.provider === "gcpsm") {
+      const ps = f.providerSpec;
+      const projectID = typeof ps.projectID === "string"
+        ? ps.projectID.trim()
+        : "";
+      if (!projectID) {
+        errs.projectID = "Project ID is required";
       }
     }
 
