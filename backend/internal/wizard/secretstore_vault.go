@@ -13,17 +13,15 @@ func init() {
 	RegisterSecretStoreProvider(SecretStoreProviderVault, validateVaultSpec)
 }
 
-// validVaultAuthMethods enumerates the auth methods the wizard surface
-// supports in v1. ESO additionally supports userPass, ldap, iam, and gcp on
-// Vault — those are accessible via the YAML editor but not driven by guided
-// fields here (per the plan's L7.2 culling pass).
-var validVaultAuthMethods = map[string]bool{
-	"token":      true,
-	"kubernetes": true,
-	"appRole":    true,
-	"jwt":        true,
-	"cert":       true,
-}
+// orderedVaultAuthMethods is the canonical ordered list of auth methods the
+// wizard surface supports in v1. ESO additionally supports userPass, ldap,
+// iam, and gcp on Vault — those are accessible via the YAML editor but not
+// driven by guided fields here (per the plan's L7.2 culling pass).
+//
+// Ordering matters: pickVaultAuthMethod iterates this slice to build the
+// "present" list so the multi-method error message is deterministic rather
+// than random-map-order.
+var orderedVaultAuthMethods = []string{"token", "kubernetes", "appRole", "jwt", "cert"}
 
 // validVaultKVVersions lists the spec.provider.vault.version values ESO accepts.
 // "v2" is the upstream default; the wizard emits whatever the user picks
@@ -48,12 +46,9 @@ func validateVaultSpec(spec map[string]any) []FieldError {
 	server, _ := spec["server"].(string)
 	if strings.TrimSpace(server) == "" {
 		errs = append(errs, FieldError{Field: "server", Message: "is required"})
-	} else if err := validateHTTPSPublicURL(server); err != nil {
-		// Vault may legitimately run on a non-public address (homelab,
-		// in-cluster), so reject only obviously-malformed URLs and the
-		// non-https scheme. We accept private addresses for Vault since
-		// the credential-handling boundary lives on the cluster, not the
-		// wizard preview.
+	} else {
+		// validateVaultServerURL accepts private and in-cluster addresses —
+		// only non-HTTPS schemes are rejected (homelab Vault is common).
 		errs = append(errs, validateVaultServerURL(server)...)
 	}
 
@@ -121,9 +116,12 @@ func validateVaultServerURL(raw string) []FieldError {
 // pickVaultAuthMethod returns the single auth method present in the auth
 // block. Multiple methods or no method both produce errors so the wizard
 // rejects ambiguity rather than letting the controller pick silently.
+//
+// Iterates orderedVaultAuthMethods (not a map) so the multi-method error
+// message lists methods in a deterministic, readable order.
 func pickVaultAuthMethod(auth map[string]any) (string, []FieldError) {
 	var present []string
-	for method := range validVaultAuthMethods {
+	for _, method := range orderedVaultAuthMethods {
 		if _, ok := auth[method]; ok {
 			present = append(present, method)
 		}
@@ -167,9 +165,8 @@ func validateVaultAuthToken(auth map[string]any) []FieldError {
 	ref, _ := auth["token"].(map[string]any)
 	tokenRef, _ := ref["tokenSecretRef"].(map[string]any)
 	if tokenRef == nil {
-		// Allow flat shape {token: {name, key}} for wizard-friendly input;
-		// ToYAML hooks (Phase H Unit 19 follow-up) will normalize. For now
-		// require the canonical tokenSecretRef nesting.
+		// ESO requires the canonical nesting: auth.token.tokenSecretRef.{name,key}.
+		// Flat shapes ({token: {name, key}}) are not accepted.
 		return []FieldError{{Field: "auth.token.tokenSecretRef", Message: "is required"}}
 	}
 	return validateVaultSecretRef(tokenRef, "auth.token.tokenSecretRef")
@@ -192,6 +189,11 @@ func validateVaultAuthKubernetes(auth map[string]any) []FieldError {
 	return errs
 }
 
+// validateVaultAuthAppRole validates the AppRole auth block.
+//
+// v1 API/UI gap: auth.appRole.roleRef.* is accepted and validated by this
+// function, but the wizard form only surfaces the roleId field. Direct API
+// callers (YAML editor, curl) may use roleRef; the guided form does not.
 func validateVaultAuthAppRole(auth map[string]any) []FieldError {
 	var errs []FieldError
 	ar, _ := auth["appRole"].(map[string]any)
@@ -222,6 +224,12 @@ func validateVaultAuthAppRole(auth map[string]any) []FieldError {
 	return errs
 }
 
+// validateVaultAuthJWT validates the JWT/OIDC auth block.
+//
+// v1 API/UI gap: auth.jwt.kubernetesServiceAccountToken.* is accepted and
+// validated via the hasKsat path, but the wizard form only surfaces the
+// secretRef path. Direct API callers (YAML editor, curl) may use the SA token
+// approach; the guided form does not surface it.
 func validateVaultAuthJWT(auth map[string]any) []FieldError {
 	var errs []FieldError
 	j, _ := auth["jwt"].(map[string]any)

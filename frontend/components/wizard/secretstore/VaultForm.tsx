@@ -30,6 +30,29 @@ interface SecretRef {
   key?: string;
 }
 
+/** Typed sub-shapes for each Vault auth method block. */
+interface VaultAuthSpec {
+  token?: { tokenSecretRef?: SecretRef };
+  kubernetes?: { mountPath?: string; role?: string };
+  appRole?: {
+    path?: string;
+    roleId?: string;
+    roleRef?: SecretRef;
+    secretRef?: SecretRef;
+  };
+  jwt?: { path?: string; role?: string; secretRef?: SecretRef };
+  cert?: { clientCert?: SecretRef; secretRef?: SecretRef };
+}
+
+/** Typed shape for a Vault provider spec block (spec.provider.vault). */
+interface VaultSpec {
+  server?: string;
+  path?: string;
+  version?: string;
+  namespace?: string;
+  auth?: VaultAuthSpec;
+}
+
 const AUTH_METHODS: {
   id: VaultAuthMethod;
   label: string;
@@ -69,7 +92,8 @@ const AUTH_METHODS: {
 function detectMethod(spec: Record<string, unknown>): VaultAuthMethod | "" {
   const auth = spec.auth as Record<string, unknown> | undefined;
   if (!auth) return "";
-  for (const m of ["token", "kubernetes", "appRole", "jwt", "cert"] as const) {
+  // Iterate AUTH_METHODS (single source of truth) instead of a separate array.
+  for (const m of AUTH_METHODS.map((x) => x.id)) {
     if (m in auth) return m;
   }
   return "";
@@ -90,6 +114,10 @@ function getAuthBlock(
 }
 
 export function VaultForm({ spec, errors, onUpdateSpec }: VaultFormProps) {
+  // VaultSpec / VaultAuthSpec interfaces above document the shape; field
+  // reads go through getStr() and getAuthBlock() helpers which narrow at
+  // each access site rather than via a single top-level cast.
+
   // Track which auth method's fields are currently shown. Persisted in the
   // spec itself (via detectMethod) so the form survives Back/Next navigation.
   const method = useSignal<VaultAuthMethod | "">(detectMethod(spec));
@@ -111,23 +139,26 @@ export function VaultForm({ spec, errors, onUpdateSpec }: VaultFormProps) {
     });
   }
 
-  function patchAuth(method: VaultAuthMethod, patch: Record<string, unknown>) {
+  function patchAuth(
+    authMethod: VaultAuthMethod,
+    patch: Record<string, unknown>,
+  ) {
     const auth = (spec.auth as Record<string, unknown>) ?? {};
-    const block = (auth[method] as Record<string, unknown>) ?? {};
+    const block = (auth[authMethod] as Record<string, unknown>) ?? {};
     onUpdateSpec({
       ...spec,
-      auth: { ...auth, [method]: { ...block, ...patch } },
+      auth: { ...auth, [authMethod]: { ...block, ...patch } },
     });
   }
 
   function patchSecretRef(
-    method: VaultAuthMethod,
+    authMethod: VaultAuthMethod,
     refField: string,
     patch: SecretRef,
   ) {
-    const block = getAuthBlock(spec, method);
+    const block = getAuthBlock(spec, authMethod);
     const existing = (block[refField] as SecretRef) ?? {};
-    patchAuth(method, { [refField]: { ...existing, ...patch } });
+    patchAuth(authMethod, { [refField]: { ...existing, ...patch } });
   }
 
   return (

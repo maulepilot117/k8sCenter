@@ -465,11 +465,24 @@ func TestHandleSecretStorePreview_NoValidatorRegistered(t *testing.T) {
 
 func TestHandleSecretStorePreview_ClusterScope(t *testing.T) {
 	h := testHandler()
+	// Use a complete valid Vault spec so the only error is the cluster-scope
+	// namespace rejection. A minimal spec would produce auth-required errors
+	// that could accidentally satisfy the "namespace" substring check.
 	input := map[string]any{
-		"name":        "shared-store",
-		"namespace":   "should-be-ignored", // cluster scope — must be rejected now
-		"provider":    "vault",
-		"providerSpec": map[string]any{"server": "https://vault.example.com"},
+		"name":      "shared-store",
+		"namespace": "should-be-ignored", // cluster scope — must be rejected
+		"provider":  "vault",
+		"providerSpec": map[string]any{
+			"server": "https://vault.example.com",
+			"auth": map[string]any{
+				"token": map[string]any{
+					"tokenSecretRef": map[string]any{
+						"name": "vault-token",
+						"key":  "token",
+					},
+				},
+			},
+		},
 	}
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/wizards/cluster-secret-store/preview", bytes.NewReader(body))
@@ -487,9 +500,11 @@ func TestHandleSecretStorePreview_ClusterScope(t *testing.T) {
 		t.Fatalf("expected 422 (namespace must be empty for cluster scope), got %d: %s", rr.Code, rr.Body.String())
 	}
 
+	// Assert specifically on the cluster-scope rejection message, not just any
+	// "namespace" string that might appear in an auth error.
 	respBody := rr.Body.String()
-	if !strings.Contains(respBody, "namespace") {
-		t.Errorf("expected error to reference namespace field; got %s", respBody)
+	if !strings.Contains(respBody, "must be empty for cluster scope") {
+		t.Errorf("expected error to contain 'must be empty for cluster scope'; got %s", respBody)
 	}
 }
 

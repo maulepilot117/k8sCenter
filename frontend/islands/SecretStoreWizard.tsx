@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiPost } from "@/lib/api.ts";
+import type { ComponentType } from "preact";
+import { ApiError, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
@@ -9,6 +10,7 @@ import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
+import type { VaultFormProps } from "@/components/wizard/secretstore/VaultForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Button } from "@/components/ui/Button.tsx";
@@ -17,6 +19,18 @@ import {
   READY_SECRET_STORE_PROVIDERS,
   type SecretStoreProvider,
 } from "@/lib/eso-types.ts";
+
+/** Common props contract for all per-provider Configure forms.
+ *  VaultFormProps satisfies this; future provider forms must match. */
+export type ProviderFormProps = VaultFormProps;
+
+/** Registry mapping provider keys to their Configure-step form component.
+ *  Single edit point as U19 sub-PRs ship additional providers. */
+const PROVIDER_FORMS: Partial<
+  Record<SecretStoreProvider, ComponentType<ProviderFormProps>>
+> = {
+  vault: VaultForm,
+};
 
 // Re-export for any downstream consumers that imported from this island.
 export type { SecretStoreProvider };
@@ -135,6 +149,21 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       errs.provider = "Select a provider";
     }
 
+    // Light client-side gate for the Configure step — only catches obviously
+    // empty inputs. The server-side validator (surfaced via #1's 422 handler)
+    // catches everything else and routes field errors back here on preview.
+    if (step === 2 && f.provider === "vault") {
+      const ps = f.providerSpec;
+      const server = typeof ps.server === "string" ? ps.server.trim() : "";
+      if (!server) {
+        errs.server = "Server URL is required";
+      }
+      const auth = ps.auth as Record<string, unknown> | undefined;
+      if (!auth || Object.keys(auth).length === 0) {
+        errs.auth = "Select an authentication method";
+      }
+    }
+
     errors.value = errs;
     return Object.keys(errs).length === 0;
   }
@@ -163,6 +192,37 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       previewYaml.value = resp.data.yaml;
     } catch (err) {
       if (seq !== previewSeq.current) return;
+      // On 422 the backend encodes FieldError[] as JSON in error.detail.
+      // Parse it and route field errors back to the Configure step so users
+      // can fix them in context rather than seeing a raw error string.
+      if (err instanceof ApiError && err.status === 422) {
+        const detail = err.body?.error?.detail;
+        if (typeof detail === "string") {
+          try {
+            const fieldErrors = JSON.parse(detail) as Array<
+              { field: string; message: string }
+            >;
+            if (Array.isArray(fieldErrors) && fieldErrors.length > 0) {
+              const errsMap: Record<string, string> = {};
+              for (const fe of fieldErrors) {
+                errsMap[fe.field] = fe.message;
+              }
+              errors.value = errsMap;
+              // Navigate back to Configure step so field errors are visible.
+              const steps = stepsFor(form.value.provider);
+              const configureIdx = steps.findIndex((s) =>
+                s.title === "Configure"
+              );
+              if (configureIdx >= 0) {
+                currentStep.value = configureIdx;
+              }
+              return;
+            }
+          } catch {
+            // detail was not JSON — fall through to generic error display
+          }
+        }
+      }
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
@@ -190,6 +250,10 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
 
   if (!IS_BROWSER) return <div class="p-6">Loading wizard...</div>;
 
+  // Resolve step list once per render; all step-count references use this
+  // local rather than re-calling stepsFor(form.value.provider) six times.
+  const steps = stepsFor(form.value.provider);
+
   const heading = scope === "cluster"
     ? "Create ClusterSecretStore"
     : "Create SecretStore";
@@ -197,6 +261,13 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
   const detailBasePath = scope === "cluster"
     ? "/external-secrets/cluster-stores"
     : "/external-secrets/stores";
+
+  // Resolve the Configure-step form component from the registry (or undefined
+  // when the selected provider has no guided form yet). This is the single
+  // edit point for adding new provider forms — no scattered if/else branches.
+  const ProviderForm = form.value.provider
+    ? PROVIDER_FORMS[form.value.provider]
+    : undefined;
 
   return (
     <div class="p-6 max-w-4xl mx-auto">
@@ -211,7 +282,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
       </div>
 
       <WizardStepper
-        steps={stepsFor(form.value.provider)}
+        steps={steps}
         currentStep={currentStep.value}
         onStepClick={(step) => {
           if (step < currentStep.value) currentStep.value = step;
@@ -271,16 +342,15 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
           </div>
         )}
 
-        {currentStep.value === 2 &&
-          form.value.provider === "vault" && (
-          <VaultForm
+        {currentStep.value === 2 && ProviderForm && (
+          <ProviderForm
             spec={form.value.providerSpec}
             errors={errors.value}
             onUpdateSpec={(spec) => update("providerSpec", spec)}
           />
         )}
 
-        {currentStep.value === stepsFor(form.value.provider).length - 1 && (
+        {currentStep.value === steps.length - 1 && (
           <WizardReviewStep
             yaml={previewYaml.value}
             onYamlChange={(v) => {
@@ -293,7 +363,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
         )}
       </div>
 
-      {currentStep.value < stepsFor(form.value.provider).length - 1 && (
+      {currentStep.value < steps.length - 1 && (
         <div class="flex justify-between mt-8">
           <Button
             variant="ghost"
@@ -303,14 +373,12 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
             Back
           </Button>
           <Button variant="primary" onClick={goNext}>
-            {currentStep.value === stepsFor(form.value.provider).length - 2
-              ? "Preview YAML"
-              : "Next"}
+            {currentStep.value === steps.length - 2 ? "Preview YAML" : "Next"}
           </Button>
         </div>
       )}
 
-      {currentStep.value === stepsFor(form.value.provider).length - 1 &&
+      {currentStep.value === steps.length - 1 &&
         !previewLoading.value &&
         previewError.value === null && (
         <div class="flex justify-start mt-4">

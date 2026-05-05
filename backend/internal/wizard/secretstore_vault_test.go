@@ -3,6 +3,8 @@ package wizard
 import (
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // validVaultSpec returns a minimal valid Vault provider spec with token auth
@@ -430,20 +432,38 @@ func TestSecretStoreInput_VaultIntegration_ToYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// Cheap substring check for top-level shape markers.
 	for _, want := range []string{
 		"apiVersion: external-secrets.io/v1",
 		"kind: SecretStore",
-		"vault:",
-		"server: https://vault.example.com",
-		"tokenSecretRef:",
 	} {
 		if !strings.Contains(y, want) {
 			t.Errorf("expected YAML to contain %q\n%s", want, y)
 		}
 	}
-	if strings.Contains(y, "auth:\n  token:") && !strings.Contains(y, "    vault:") {
-		// Only a coarse smoke check — TestSecretStoreToYAML_Namespaced
-		// does the structural parsing.
-		_ = y
+
+	// Structural assertion: walk spec.provider.vault.auth.token.tokenSecretRef
+	// and verify the required name+key keys are present.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(y), &doc); err != nil {
+		t.Fatalf("failed to parse YAML: %v\n%s", err, y)
+	}
+	spec, _ := doc["spec"].(map[string]any)
+	provider, _ := spec["provider"].(map[string]any)
+	vaultSpec, _ := provider["vault"].(map[string]any)
+	if vaultSpec == nil {
+		t.Fatalf("expected spec.provider.vault, got provider keys: %v", keys(provider))
+	}
+	auth, _ := vaultSpec["auth"].(map[string]any)
+	token, _ := auth["token"].(map[string]any)
+	tokenSecretRef, _ := token["tokenSecretRef"].(map[string]any)
+	if tokenSecretRef == nil {
+		t.Fatalf("expected spec.provider.vault.auth.token.tokenSecretRef to be non-nil; auth=%v", auth)
+	}
+	if tokenSecretRef["name"] == nil {
+		t.Errorf("expected tokenSecretRef.name to be present; got %v", tokenSecretRef)
+	}
+	if tokenSecretRef["key"] == nil {
+		t.Errorf("expected tokenSecretRef.key to be present; got %v", tokenSecretRef)
 	}
 }
