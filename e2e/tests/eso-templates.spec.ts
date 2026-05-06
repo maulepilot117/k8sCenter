@@ -16,27 +16,33 @@ test.describe("eso template gallery and editor", () => {
       "Create SecretStore from template",
     );
 
-    // Gallery tiles use display names; verify a known sample appears and that
-    // an alphabetically-earlier name renders before an alphabetically-later
-    // one. (Full equality on the 11-entry order is brittle; sample-pair
-    // ordering is enough to catch a sort regression.)
-    await expect(page.getByText("Akeyless")).toBeVisible();
-    await expect(page.getByText("Pulumi ESC")).toBeVisible();
+    // Gallery tiles each carry the provider's display name in a title span.
+    // Scope to those titles via the link's href to avoid colliding with the
+    // tile's description paragraph (which often repeats the display name)
+    // and the nav-rail entry that points at this same route.
+    const akeylessTile = page.locator(
+      "a[href='/external-secrets/stores/new-from-template?template=akeyless']",
+    );
+    const pulumiTile = page.locator(
+      "a[href='/external-secrets/stores/new-from-template?template=pulumi']",
+    );
+    await expect(akeylessTile).toBeVisible();
+    await expect(pulumiTile).toBeVisible();
 
-    const akeylessIndex = await page.locator("a", { hasText: "Akeyless" })
-      .first().evaluate((el) => {
-        const anchors = Array.from(
-          el.closest("div.grid")?.querySelectorAll("a") ?? [],
-        );
-        return anchors.indexOf(el as HTMLAnchorElement);
-      });
-    const pulumiIndex = await page.locator("a", { hasText: "Pulumi ESC" })
-      .first().evaluate((el) => {
-        const anchors = Array.from(
-          el.closest("div.grid")?.querySelectorAll("a") ?? [],
-        );
-        return anchors.indexOf(el as HTMLAnchorElement);
-      });
+    // Sort regression check: alphabetically Akeyless precedes Pulumi ESC.
+    // Compute each tile's index within the gallery grid; akeyless < pulumi.
+    const akeylessIndex = await akeylessTile.evaluate((el) => {
+      const anchors = Array.from(
+        el.closest("div.grid")?.querySelectorAll("a") ?? [],
+      );
+      return anchors.indexOf(el as HTMLAnchorElement);
+    });
+    const pulumiIndex = await pulumiTile.evaluate((el) => {
+      const anchors = Array.from(
+        el.closest("div.grid")?.querySelectorAll("a") ?? [],
+      );
+      return anchors.indexOf(el as HTMLAnchorElement);
+    });
     expect(akeylessIndex).toBeGreaterThanOrEqual(0);
     expect(pulumiIndex).toBeGreaterThan(akeylessIndex);
   });
@@ -45,7 +51,9 @@ test.describe("eso template gallery and editor", () => {
     await page.goto("/external-secrets/stores/new-from-template");
     await page.waitForLoadState("networkidle");
 
-    await page.locator("a", { hasText: "Akeyless" }).first().click();
+    await page.locator(
+      "a[href='/external-secrets/stores/new-from-template?template=akeyless']",
+    ).click();
     await page.waitForLoadState("networkidle");
 
     await expect(page).toHaveURL(/\?template=akeyless/);
@@ -66,14 +74,14 @@ test.describe("eso template gallery and editor", () => {
     );
     await page.waitForLoadState("networkidle");
 
-    // Empty state surfaces a link back to the gallery.
+    // Empty state surfaces a link back to the gallery. The same href appears
+    // in the nav-rail's "Create from template" entry, so scope to the empty-
+    // state container by anchor text rather than href alone.
     await expect(
       page.getByText("No template selected"),
     ).toBeVisible();
     await expect(
-      page.locator(
-        "a[href='/external-secrets/stores/new-from-template']",
-      ),
+      page.getByRole("link", { name: "template gallery" }),
     ).toBeVisible();
   });
 });
