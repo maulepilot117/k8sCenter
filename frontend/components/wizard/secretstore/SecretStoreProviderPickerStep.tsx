@@ -1,5 +1,8 @@
 import type { SecretStoreProvider } from "@/lib/eso-types.ts";
-import { READY_SECRET_STORE_PROVIDERS } from "@/lib/eso-types.ts";
+import {
+  isTemplateOnlyProvider,
+  READY_SECRET_STORE_PROVIDERS,
+} from "@/lib/eso-types.ts";
 
 interface SecretStoreProviderPickerStepProps {
   selected: SecretStoreProvider | "";
@@ -77,6 +80,47 @@ const PROVIDERS: ProviderEntry[] = [
     title: "Infisical",
     description: "Universal-auth (machine identity). Project + environment.",
   },
+  {
+    id: "pulumi",
+    title: "Pulumi ESC",
+    description:
+      "Pulumi Environments, Secrets & Configuration. Org + project + environment.",
+  },
+  {
+    id: "passbolt",
+    title: "Passbolt",
+    description:
+      "Passbolt CE / Pro. GPG private key + passphrase. Resource UUID references.",
+  },
+  {
+    id: "keepersecurity",
+    title: "Keeper Secrets Manager",
+    description:
+      "KSM config blob (base64). Records by record UID; folder-scoped.",
+  },
+  {
+    id: "onboardbase",
+    title: "Onboardbase",
+    description: "API key + passcode. Project + environment binding.",
+  },
+  {
+    id: "oracle",
+    title: "Oracle Cloud Vault",
+    description:
+      "OCI Vault. Workload / instance principal (preferred) or API-key creds.",
+  },
+  {
+    id: "alibaba",
+    title: "Alibaba Cloud KMS",
+    description:
+      "Region-scoped KMS Secret. AccessKey ID + secret in a Kubernetes Secret.",
+  },
+  {
+    id: "webhook",
+    title: "Generic webhook",
+    description:
+      "Any HTTP/JSON backend. URL templating + jsonPath response selector.",
+  },
 ];
 
 export function SecretStoreProviderPickerStep({
@@ -86,29 +130,43 @@ export function SecretStoreProviderPickerStep({
   return (
     <div class="space-y-4">
       <p class="text-sm text-text-muted">
-        Select the source-store backend. Providers marked{" "}
-        <span class="font-medium">coming soon</span>{" "}
-        are recognized but their guided form ships in a follow-up; use the YAML
-        editor for those today.
+        Select the source-store backend. Providers without a guided form open a
+        pre-filled YAML template instead — fill the placeholders and apply.
       </p>
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {PROVIDERS.map((p) => {
           const active = selected === p.id;
           const ready = READY_SECRET_STORE_PROVIDERS.has(p.id);
+          const templateOnly = isTemplateOnlyProvider(p.id);
+          // Tri-state:
+          //   ready        → click triggers wizard onSelect (current behavior)
+          //   templateOnly → click navigates to the template editor
+          //   neither      → defensive disabled state; should not occur after
+          //                  Phase K but kept so a future split-PR doesn't
+          //                  silently render a dead button.
+          const clickable = ready || templateOnly;
+          const handleClick = () => {
+            if (ready) {
+              onSelect(p.id);
+              return;
+            }
+            if (templateOnly) {
+              globalThis.location.href =
+                `/external-secrets/stores/new-from-template?template=${p.id}`;
+            }
+          };
           return (
             <button
               key={p.id}
               type="button"
-              onClick={() => {
-                if (!ready) return;
-                onSelect(p.id);
-              }}
+              onClick={handleClick}
+              disabled={!clickable}
               aria-pressed={active}
-              aria-disabled={!ready || undefined}
+              aria-disabled={!clickable || undefined}
               class={`text-left rounded-lg border p-4 transition-colors ${
                 active
                   ? "border-brand bg-brand/5"
-                  : ready
+                  : clickable
                   ? "border-border-primary bg-surface hover:border-border-emphasis"
                   : "border-border-primary bg-surface opacity-60 cursor-not-allowed"
               }`}
@@ -119,6 +177,12 @@ export function SecretStoreProviderPickerStep({
                   ? (
                     <span class="text-xs font-medium text-brand whitespace-nowrap">
                       Selected
+                    </span>
+                  )
+                  : templateOnly
+                  ? (
+                    <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                      template
                     </span>
                   )
                   : !ready

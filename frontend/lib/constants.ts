@@ -598,6 +598,10 @@ export const DOMAIN_SECTIONS: DomainSection[] = [
         label: "ClusterStores",
         href: "/external-secrets/cluster-stores",
       },
+      {
+        label: "Create from template",
+        href: "/external-secrets/stores/new-from-template",
+      },
       { label: "PushSecrets", href: "/external-secrets/push-secrets" },
       { label: "Chain", href: "/external-secrets/chain" },
     ],

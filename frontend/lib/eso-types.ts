@@ -204,16 +204,15 @@ export interface StoreMetrics {
 // --- Phase H wizard types ---------------------------------------------------
 
 /**
- * The 12 SecretStore provider keys the wizard recognizes. Mirrors the Go
- * `SecretStoreProvider` enum in `backend/internal/wizard/secretstore.go`.
+ * SecretStore provider keys the UI recognizes. The first 12 mirror the Go
+ * `SecretStoreProvider` enum in `backend/internal/wizard/secretstore.go`. The
+ * remaining 7 (`pulumi`..`webhook`) are template-only providers added in
+ * Phase K — they have no Go-side validators because the YAML-template path
+ * relies on the existing `/yaml/apply` server-side validation.
  *
  * "awsps" is a synthetic UX discriminator — ESO v1 has no such provider key.
  * Both AWS Secrets Manager and AWS Parameter Store live under spec.provider.aws;
  * the backend injects service: ParameterStore when the wizard sends "awsps".
- *
- * Niche providers (Pulumi ESC, Passbolt, Keeper, Onboardbase, Oracle Cloud
- * Vault, Alibaba KMS, custom webhook) ship as YAML templates only (Phase H
- * Unit 20) and are not in this set.
  */
 export type SecretStoreProvider =
   | "vault"
@@ -227,12 +226,20 @@ export type SecretStoreProvider =
   | "onepassword"
   | "bitwardensecretsmanager"
   | "conjur"
-  | "infisical";
+  | "infisical"
+  | "pulumi"
+  | "passbolt"
+  | "keepersecurity"
+  | "onboardbase"
+  | "oracle"
+  | "alibaba"
+  | "webhook";
 
 /**
  * Set of provider keys that have a fully-implemented guided form.
  * Single edit point as Unit 19 sub-PRs ship per-provider forms.
- * A provider NOT in this set is shown as "coming soon" in the picker.
+ * A provider NOT in this set is shown as a template option (if it appears in
+ * TEMPLATE_ONLY_PROVIDERS) or hidden / disabled otherwise.
  */
 export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "vault",
@@ -244,6 +251,59 @@ export const READY_SECRET_STORE_PROVIDERS = new Set<SecretStoreProvider>([
   "kubernetes",
   "doppler",
 ]);
+
+/**
+ * String-literal subtype of SecretStoreProvider for the 11 providers that
+ * ship as YAML templates only (no guided form). Lets the template registry be
+ * a total `Record<TemplateOnlyProvider, ESOTemplate>` instead of a Partial,
+ * so call sites get exhaustive completeness from the type system rather than
+ * runtime non-null assertions.
+ *
+ * Invariant: TemplateOnlyProvider and the wizard-ready set are disjoint —
+ * `deno test` enforces this in `eso-yaml-templates_test.ts`.
+ */
+export type TemplateOnlyProvider =
+  | "akeyless"
+  | "bitwardensecretsmanager"
+  | "conjur"
+  | "infisical"
+  | "pulumi"
+  | "passbolt"
+  | "keepersecurity"
+  | "onboardbase"
+  | "oracle"
+  | "alibaba"
+  | "webhook";
+
+/**
+ * Set of provider keys that have a YAML template only. Picker rows for these
+ * providers navigate to the Create-from-template route instead of triggering
+ * onSelect. Phase K closes the original parent-plan gap for these 11
+ * providers (4 culled wizard candidates + 7 niche providers).
+ */
+export const TEMPLATE_ONLY_PROVIDERS = new Set<TemplateOnlyProvider>([
+  "akeyless",
+  "bitwardensecretsmanager",
+  "conjur",
+  "infisical",
+  "pulumi",
+  "passbolt",
+  "keepersecurity",
+  "onboardbase",
+  "oracle",
+  "alibaba",
+  "webhook",
+]);
+
+/**
+ * Type predicate that narrows an arbitrary string to TemplateOnlyProvider
+ * when the registry recognizes it. Safe for boundary code (URL query params,
+ * external input) — narrowing happens via the runtime Set membership check
+ * rather than an unchecked `as` cast.
+ */
+export function isTemplateOnlyProvider(p: string): p is TemplateOnlyProvider {
+  return TEMPLATE_ONLY_PROVIDERS.has(p as TemplateOnlyProvider);
+}
 
 /**
  * Canonical props contract for all per-provider Configure-step forms used in

@@ -1,30 +1,10 @@
 import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiPostRaw } from "@/lib/api.ts";
 import YamlEditor from "@/islands/YamlEditor.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
-
-interface ApplyResult {
-  index: number;
-  kind: string;
-  name: string;
-  namespace?: string;
-  action: string; //"created" |"configured" |"unchanged" |"failed"
-  error?: string;
-}
-
-interface ApplyResponse {
-  results: ApplyResult[];
-  summary: {
-    total: number;
-    created: number;
-    configured: number;
-    unchanged: number;
-    failed: number;
-  };
-}
+import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
 # Multi-document YAML (separated by ---) is supported.
@@ -40,12 +20,16 @@ const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.
 `;
 
 export default function YamlApplyPage() {
-  const yamlContent = useSignal(PLACEHOLDER_YAML);
-  const applying = useSignal(false);
-  const validating = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const results = useSignal<ApplyResponse | null>(null);
   const forceConflicts = useSignal(false);
+  const {
+    yamlContent,
+    applying,
+    validating,
+    error,
+    result: results,
+    handleValidate,
+    handleApply,
+  } = useYamlApply(PLACEHOLDER_YAML, { forceConflicts });
 
   // Set document title
   useEffect(() => {
@@ -54,43 +38,6 @@ export default function YamlApplyPage() {
     return () => {
       document.title = "k8sCenter";
     };
-  }, []);
-
-  const handleValidate = useCallback(async () => {
-    if (applying.value || validating.value) return;
-    validating.value = true;
-    error.value = null;
-    results.value = null;
-    try {
-      const res = await apiPostRaw<ApplyResponse>(
-        "/v1/yaml/validate",
-        yamlContent.value,
-      );
-      results.value = res.data;
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "Validation failed";
-    } finally {
-      validating.value = false;
-    }
-  }, []);
-
-  const handleApply = useCallback(async () => {
-    if (applying.value || validating.value) return;
-    applying.value = true;
-    error.value = null;
-    results.value = null;
-    try {
-      const queryStr = forceConflicts.value ? "?force=true" : "";
-      const res = await apiPostRaw<ApplyResponse>(
-        `/v1/yaml/apply${queryStr}`,
-        yamlContent.value,
-      );
-      results.value = res.data;
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "Apply failed";
-    } finally {
-      applying.value = false;
-    }
   }, []);
 
   const handleFileUpload = useCallback(() => {

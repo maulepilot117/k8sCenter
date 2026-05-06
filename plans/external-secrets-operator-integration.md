@@ -1167,7 +1167,7 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 ### Phase H — Per-provider SecretStore wizards (split into per-provider sub-PRs)
 - [x] Unit 18 — SecretStore wizard scaffold + StoreScope discriminator
 - [x] Unit 19 — Per-provider validators + form components (one sub-PR per provider; ~36 form variants total)
-- [x] Unit 20 — Niche-provider YAML templates
+- [x] ~~Unit 20~~ — Was prematurely ticked but the niche-template registry (`frontend/lib/eso-yaml-templates.ts`) and `new-from-template.tsx` route never shipped on the parent plan branches. The work was completed under Phase K Unit K1; see `plans/external-secrets-operator-phase-k-providers.md`.
 
 ### Phase I — Chain visualization
 - [x] Unit 21 — Backend ESOChainProvider + applyESOChainOverlay (PR #226)
@@ -1175,3 +1175,14 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 
 ### Phase J — Final docs flip
 - [x] Unit 23 — CLAUDE.md (Phase 14 ESO entry), README.md, roadmap (#8 → [x]), plan status → complete
+
+### Phase K — Remaining provider creation paths (post-completion follow-up)
+
+Phase K landed after the parent plan flipped to `status: complete`. It closes the
+operator-facing gap surfaced in post-J review: 4 culled-from-Unit-19 wizard
+candidates (Akeyless, Bitwarden Secrets Manager, CyberArk Conjur, Infisical) had
+no creation path, and the Unit 20 niche-template registry was never actually
+shipped despite the checklist tick. Phase K delivers a single template-driven
+path for all 11 providers via `/external-secrets/stores/new-from-template`.
+
+Authoritative plan: `plans/external-secrets-operator-phase-k-providers.md`.
