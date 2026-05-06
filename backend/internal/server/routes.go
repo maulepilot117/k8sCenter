@@ -797,6 +797,14 @@ func (s *Server) registerNotifCenterRoutes(ar chi.Router) {
 		r.Post("/read-all", h.HandleMarkAllRead)
 		r.Get("/unread-count", h.HandleUnreadCount)
 
+		// Mobile push device registry — per-user, no admin required.
+		// All reads and writes are scoped to the calling user inside the handler.
+		r.Route("/devices", func(dr chi.Router) {
+			dr.Get("/", h.HandleListDevices)
+			dr.Post("/", h.HandleRegisterDevice)
+			dr.Delete("/{id}", h.HandleUnregisterDevice)
+		})
+
 		// Channels — admin only
 		r.Route("/channels", func(cr chi.Router) {
 			cr.Use(middleware.RequireAdmin)

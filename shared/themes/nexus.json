@@ -1,0 +1,27 @@
+{
+  "id": "nexus",
+  "name": "Nexus",
+  "default": true,
+  "colors": {
+    "bgBase": "#0B0E14",
+    "bgSurface": "#131720",
+    "bgElevated": "#1A1F2B",
+    "bgHover": "#212735",
+    "borderPrimary": "#252B37",
+    "borderSubtle": "#1E2330",
+    "textPrimary": "#E0E4EB",
+    "textSecondary": "#8B95A5",
+    "textMuted": "#5A6478",
+    "accent": "#00C2FF",
+    "accentGlow": "rgba(0, 194, 255, 0.15)",
+    "accentDim": "rgba(0, 194, 255, 0.08)",
+    "accentSecondary": "#7C5CFC",
+    "success": "#00E676",
+    "successDim": "rgba(0, 230, 118, 0.12)",
+    "warning": "#FFB300",
+    "warningDim": "rgba(255, 179, 0, 0.12)",
+    "error": "#FF5252",
+    "errorDim": "rgba(255, 82, 82, 0.12)",
+    "info": "#40C4FF"
+  }
+}

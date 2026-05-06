@@ -349,6 +349,104 @@ func TestHandleRefresh_NoCookie(t *testing.T) {
 	}
 }
 
+// TestHandleRefresh_BodyMode covers the mobile flow: no cookie present, the
+// raw refresh token arrives in the JSON body, and the response echoes the
+// rotated refresh token back so the mobile client can persist it.
+func TestHandleRefresh_BodyMode(t *testing.T) {
+	srv := testServer(t)
+	_, cookies := loginAdmin(t, srv)
+
+	var refreshToken string
+	for _, c := range cookies {
+		if c.Name == "refresh_token" {
+			refreshToken = c.Value
+		}
+	}
+	if refreshToken == "" {
+		t.Fatalf("login did not return refresh_token cookie")
+	}
+
+	body := `{"refreshToken":"` + refreshToken + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Data.AccessToken == "" {
+		t.Error("expected new access token")
+	}
+	if resp.Data.RefreshToken == "" {
+		t.Error("expected rotated refresh token in body-mode response")
+	}
+	if resp.Data.RefreshToken == refreshToken {
+		t.Error("rotated refresh token should differ from original")
+	}
+}
+
+// TestHandleRefresh_BodyMode_BadToken verifies an unknown body-mode token
+// returns 401 the same way an unknown cookie does.
+func TestHandleRefresh_BodyMode_BadToken(t *testing.T) {
+	srv := testServer(t)
+
+	body := `{"refreshToken":"definitely-not-a-real-token"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestHandleRefresh_CookieResponseHasNoRefreshToken confirms web behaviour
+// is unchanged: cookie-mode refresh responses do not echo the refresh token
+// in the JSON body.
+func TestHandleRefresh_CookieResponseHasNoRefreshToken(t *testing.T) {
+	srv := testServer(t)
+	_, cookies := loginAdmin(t, srv)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := resp.Data["refreshToken"]; ok {
+		t.Error("cookie-mode refresh must not echo refreshToken in body")
+	}
+}
+
 // --- Logout Tests ---
 
 func TestHandleLogout(t *testing.T) {

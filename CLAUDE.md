@@ -348,7 +348,8 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation (PR #180, follow-ups #181–#183)
 - [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer annotation overrides (Phase 13)
 - [x] **8. External Secrets Operator integration** — observatory + per-provider wizards + chain topology overlay + drift detection + persistent sync history + bulk refresh + per-store rate/cost-tier panel (Phase 14)
-- [ ] **9. Saved Views & Custom Dashboards** — per-user persistence for filter presets, pinned favorites, arrangeable dashboard widgets.
+- [ ] **9. k8sCenter Mobile App (Flutter, iOS + Android)** — full-parity native app shipped over five milestones (M1 read-only oncall companion → M5 public store launch). PR-0 lands the prerequisites: `shared/themes/*.json` + `tools/theme-gen/` (single-source theme tokens for both web and mobile), `POST /v1/auth/refresh` JSON-body fallback, new `ChannelMobilePush` + FCM HTTP v1 dispatch + `mobile_push_devices` migration + `/v1/notifications/devices` endpoints, `mobile/` skeleton. See `plans/mobile-app.md`.
+- [ ] **10. Saved Views & Custom Dashboards** *(deferred behind the mobile app)* — per-user persistence for filter presets, pinned favorites, arrangeable dashboard widgets.
   - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand.
   - **Likely shape**:
     - **Phase A — Persistence**: PostgreSQL `user_preferences` table; new `internal/preferences/` package with typed CRUD over `SavedView`, `PinnedResource`, `DashboardLayout`.
@@ -356,4 +357,4 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
     - **Phase C — Frontend**: ResourceTable "Save view" affordance, sidebar "Pinned" section, dashboard layout config.
   - **Open questions**: cross-cluster vs per-cluster scoping, team-shared views, dashboard widget catalog.
 
-Both #8 (already in motion) and #9 should start with `/ce:brainstorm` before `/ce:plan` for product-shape framing.
+#9 and #10 should both start with `/ce:brainstorm` before `/ce:plan` for product-shape framing.

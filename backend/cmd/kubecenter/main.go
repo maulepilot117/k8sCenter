@@ -647,7 +647,17 @@ func main() {
 	var limitsChecker *limits.Checker
 	if dbPool != nil {
 		notifStore = notifications.NewStore(dbPool, dbEncKey)
-		notifService = notifications.NewService(notifStore, hub, alertNotifier, logger)
+
+		// Optional FCM client for mobile push. Absent credentials => nil
+		// client => mobile-push channel dispatch logs a warning. This keeps
+		// non-mobile deployments booting cleanly.
+		fcmClient, err := notifications.LoadFCMClient(os.Getenv("KUBECENTER_FCM_CREDENTIALS_PATH"))
+		if err != nil {
+			logger.Warn("failed to load FCM credentials; mobile push disabled", "error", err)
+			fcmClient = nil
+		}
+
+		notifService = notifications.NewService(notifStore, hub, alertNotifier, fcmClient, logger)
 		notifService.Start(ctx)
 
 		notifCenterHandler = &notifications.Handler{

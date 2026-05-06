@@ -84,6 +84,7 @@ type NotificationService struct {
 	store       *Store
 	hub         *websocket.Hub
 	emailSender EmailSender
+	fcm         *FCMClient
 	queue       chan Notification
 	sem         chan struct{} // dispatch semaphore
 	rules       []Rule
@@ -92,12 +93,15 @@ type NotificationService struct {
 	logger      *slog.Logger
 }
 
-// NewService creates a notification service.
-func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, logger *slog.Logger) *NotificationService {
+// NewService creates a notification service. fcm may be nil — when nil, the
+// mobile-push dispatch arm logs a warning and returns "not configured" so
+// non-mobile deployments boot without FCM credentials.
+func NewService(store *Store, hub *websocket.Hub, emailSender EmailSender, fcm *FCMClient, logger *slog.Logger) *NotificationService {
 	return &NotificationService{
 		store:       store,
 		hub:         hub,
 		emailSender: emailSender,
+		fcm:         fcm,
 		queue:       make(chan Notification, queueSize),
 		sem:         make(chan struct{}, semaphoreSize),
 		logger:      logger,
@@ -262,6 +266,8 @@ func (s *NotificationService) dispatch(ctx context.Context, ch Channel, n Notifi
 		return s.sendSlack(ctx, ch, n)
 	case ChannelWebhook:
 		return s.sendWebhook(ctx, ch, n)
+	case ChannelMobilePush:
+		return s.sendMobilePush(ctx, ch, n)
 	default:
 		return fmt.Errorf("unsupported channel type: %s", ch.Type)
 	}
@@ -282,6 +288,8 @@ func (s *NotificationService) TestChannel(ctx context.Context, ch Channel) error
 		return s.sendWebhook(ctx, ch, test)
 	case ChannelEmail:
 		return s.sendTestEmail(ch)
+	case ChannelMobilePush:
+		return s.sendMobilePush(ctx, ch, test)
 	default:
 		return fmt.Errorf("unsupported channel type: %s", ch.Type)
 	}

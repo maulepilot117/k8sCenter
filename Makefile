@@ -11,7 +11,7 @@ LDFLAGS := -s -w \
        test test-backend test-frontend test-e2e test-e2e-ui \
        lint lint-backend lint-frontend \
        clean docker-build docker-build-backend docker-build-frontend \
-       helm-lint helm-template
+       helm-lint helm-template check-themes theme-gen
 
 # Development
 dev: dev-backend
@@ -53,8 +53,19 @@ test-e2e:
 test-e2e-ui:
 	cd e2e && npx playwright test --ui
 
+# Theme generator — emits frontend/assets/themes.generated.css and
+# mobile/lib/theme/themes.g.dart from shared/themes/*.json. The canonical
+# source for both web and mobile colour tokens.
+theme-gen:
+	deno run --allow-read --allow-write tools/theme-gen/main.ts
+
+# Fail if the committed generated theme files don't match what the generator
+# would emit from shared/themes/*.json. Run as part of CI lint.
+check-themes:
+	deno run --allow-read tools/theme-gen/main.ts --check
+
 # Linting
-lint: lint-backend lint-frontend
+lint: lint-backend lint-frontend check-themes
 
 lint-backend:
 	cd backend && go vet ./...

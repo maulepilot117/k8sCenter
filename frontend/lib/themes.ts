@@ -1,5 +1,11 @@
 // CLIENT-ONLY MODULE — Do NOT import in server-rendered components.
 // This module uses browser APIs (document, localStorage) and Preact signals.
+//
+// COLOR TOKENS: kept in lockstep with shared/themes/*.json (the canonical
+// source consumed by tools/theme-gen/main.ts). When you edit a theme,
+// change the JSON file under shared/themes/ and run `make check-themes` —
+// the same tokens are re-emitted into frontend/assets/themes.generated.css
+// and mobile/lib/theme/themes.g.dart, and CI fails on drift.
 
 import { signal } from "@preact/signals";
 

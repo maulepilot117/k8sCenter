@@ -52,17 +52,23 @@ func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Ac
 	}
 }
 
-// issueTokenPair creates a new access + refresh token pair, stores the session,
-// and sets the refresh cookie. Returns the access token or an error.
-func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string, error) {
+// issueTokenPair creates a new access + refresh token pair, stores the
+// session, and sets the refresh cookie. Returns the access token and the
+// raw refresh token.
+//
+// The raw refresh token is returned alongside so body-mode clients (mobile,
+// where cookies don't carry cleanly across native HTTP stacks) can echo it
+// back in JSON. Web callers ignore the second return value and rely on the
+// httpOnly cookie this function also sets — behaviour for them is unchanged.
+func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string, string, error) {
 	accessToken, err := s.TokenManager.IssueAccessToken(user)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	refreshToken, err := auth.GenerateRefreshToken()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	session := auth.RefreshSession{
@@ -81,5 +87,5 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string,
 
 	s.setRefreshCookie(w, refreshToken, int(auth.RefreshTokenLifetime.Seconds()))
 
-	return accessToken, nil
+	return accessToken, refreshToken, nil
 }

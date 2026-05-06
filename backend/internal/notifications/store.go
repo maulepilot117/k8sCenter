@@ -567,3 +567,67 @@ func (s *Store) decryptConfig(encrypted []byte) (ChannelConfig, error) {
 	}
 	return cfg, nil
 }
+
+// --- Mobile push devices ---
+
+// RegisterDevice upserts a mobile push device for the user. Re-registering
+// the same device_token preserves the original id and registered_at while
+// bumping last_seen_at — which keeps the FCM token stable across app
+// restarts and lets us drop stale devices via a periodic sweep on
+// last_seen_at age.
+func (s *Store) RegisterDevice(ctx context.Context, userID, deviceToken, platform string) (MobilePushDevice, error) {
+	var d MobilePushDevice
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO mobile_push_devices (user_id, device_token, platform)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (device_token) DO UPDATE
+			SET user_id = EXCLUDED.user_id,
+			    platform = EXCLUDED.platform,
+			    last_seen_at = now()
+		RETURNING id, user_id, device_token, platform, registered_at, last_seen_at`,
+		userID, deviceToken, platform,
+	).Scan(&d.ID, &d.UserID, &d.DeviceToken, &d.Platform, &d.RegisteredAt, &d.LastSeenAt)
+	if err != nil {
+		return MobilePushDevice{}, fmt.Errorf("register device: %w", err)
+	}
+	return d, nil
+}
+
+// UnregisterDevice deletes a device by id, scoped to the calling user so
+// admins on shared deployments can't accidentally remove peers' devices via
+// a guessed UUID.
+func (s *Store) UnregisterDevice(ctx context.Context, userID, id string) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM mobile_push_devices WHERE id = $1 AND user_id = $2`,
+		id, userID)
+	if err != nil {
+		return fmt.Errorf("unregister device: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListDevicesForUser returns all registered devices for the user, ordered by
+// most-recently-seen first.
+func (s *Store) ListDevicesForUser(ctx context.Context, userID string) ([]MobilePushDevice, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, user_id, device_token, platform, registered_at, last_seen_at
+		FROM mobile_push_devices WHERE user_id = $1
+		ORDER BY last_seen_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list devices: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MobilePushDevice
+	for rows.Next() {
+		var d MobilePushDevice
+		if err := rows.Scan(&d.ID, &d.UserID, &d.DeviceToken, &d.Platform, &d.RegisteredAt, &d.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("scan device: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
