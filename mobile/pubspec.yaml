@@ -1,0 +1,69 @@
+name: kubecenter
+description: "k8sCenter mobile — cross-platform Flutter app for the k8sCenter Kubernetes management platform."
+publish_to: 'none'
+
+# build-number is bumped from CI via --build-number=$(git rev-list --count HEAD)
+# so every push to main produces a unique TestFlight + Play Internal build.
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.0
+  flutter: ^3.41.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # State management — Riverpod 2.x with code generation.
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Routing — declarative, deep-link friendly.
+  go_router: ^14.6.2
+
+  # HTTP — Dio with interceptors for auth refresh, X-Cluster-ID injection, error parsing.
+  dio: ^5.7.0
+
+  # WebSocket — for /ws/resources, /ws/logs/..., /ws/alerts.
+  web_socket_channel: ^3.0.1
+
+  # Secure refresh-token storage — iOS Keychain / Android EncryptedSharedPreferences.
+  flutter_secure_storage: ^9.2.2
+
+  # User-preference persistence (active theme id, etc.).
+  shared_preferences: ^2.3.3
+
+  # Push notifications — FCM unifies APNS + Android.
+  firebase_core: ^3.8.0
+  firebase_messaging: ^15.1.5
+  flutter_local_notifications: ^18.0.1
+
+  # Charts (PR-1f+ Prometheus integration). Listed early so deps resolve consistently.
+  fl_chart: ^0.69.0
+
+  # In-app browser for OIDC (PR-1g).
+  flutter_custom_tabs: ^2.2.0
+
+  # Internationalization scaffolding (English only through M5).
+  intl: ^0.19.0
+
+  # Immutable data classes + JSON.
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+  # Code generation for Riverpod, Freezed, JSON.
+  build_runner: ^2.4.13
+  riverpod_generator: ^2.6.3
+  freezed: ^2.5.7
+  json_serializable: ^6.9.0
+  custom_lint: ^0.7.0
+  riverpod_lint: ^2.6.3
+
+flutter:
+  uses-material-design: true

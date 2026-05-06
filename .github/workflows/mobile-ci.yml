@@ -1,0 +1,60 @@
+name: Mobile CI
+
+# PR-1a scope: analyze + test only. Signing + TestFlight + Play Internal
+# upload land in PR-1g (the `mobile-deploy` job). Runs only when mobile/
+# or shared/themes/ changes — keeps PRs that don't touch the app fast.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "shared/themes/**"
+      - "tools/theme-gen/**"
+      - ".github/workflows/mobile-ci.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "shared/themes/**"
+      - "tools/theme-gen/**"
+      - ".github/workflows/mobile-ci.yml"
+
+jobs:
+  analyze:
+    name: Flutter analyze + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin Flutter to the version listed in mobile/pubspec.yaml's
+      # environment.flutter constraint (3.41.x stable channel).
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+          cache: true
+
+      - name: flutter pub get
+        working-directory: mobile
+        run: flutter pub get
+
+      - name: flutter analyze
+        working-directory: mobile
+        run: flutter analyze
+
+      - name: flutter test
+        working-directory: mobile
+        run: flutter test
+
+  themes-parity:
+    name: Theme generator parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: "2.x"
+
+      - name: Verify themes are in sync
+        run: deno run --allow-read tools/theme-gen/main.ts --check
