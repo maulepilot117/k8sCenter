@@ -333,11 +333,11 @@ All foundational phases (1–13) are COMPLETE. High-level inventory:
 
 ### Phase 14 (External Secrets Operator) — IN PROGRESS
 
-Status (2026-05-05): Phases A → B → D → C → E → F → G → H shipped (through PR #217). Phases I → J pending.
+Status (2026-05-06): Phases A → B → D → C → E → F → G → H → I shipped (through PRs #226 + #227). Phase J pending.
 
 Authoritative plan + per-phase technical detail: `plans/external-secrets-operator-integration.md`. Read that file before starting any Phase 14 work — annotation thresholds, cross-tenant suppression, and persistence schema are all spelled out there.
 
-Pending units: I (Chain topology overlay), J (additional polish/docs flip).
+Pending units: J (CLAUDE.md Phase 14 entry, README.md, roadmap #8 → [x], plan status → complete).
 
 ---
 

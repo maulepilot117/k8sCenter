@@ -1170,8 +1170,8 @@ Order is **A → B → D → C → E → F → G → H → I → J**.
 - [x] Unit 20 — Niche-provider YAML templates
 
 ### Phase I — Chain visualization
-- [ ] Unit 21 — Backend ESOChainProvider + applyESOChainOverlay
-- [ ] Unit 22 — Frontend chain overlay toggle (mutually exclusive with mesh) + chain tab on detail (with `focusedNode` BFS prerequisite refactor)
+- [x] Unit 21 — Backend ESOChainProvider + applyESOChainOverlay (PR #226)
+- [x] Unit 22 — Frontend chain overlay toggle (mutually exclusive with mesh) + chain tab on detail (with `focusedNode` BFS prerequisite refactor) (PRs #226, #227)
 
 ### Phase J — Final docs flip
 - [ ] Unit 23 — CLAUDE.md (Phase 14 ESO entry), README.md, roadmap (#8 → [x]), plan status → complete
