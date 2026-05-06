@@ -160,6 +160,7 @@ export function SecretStoreProviderPickerStep({
               key={p.id}
               type="button"
               onClick={handleClick}
+              disabled={!clickable}
               aria-pressed={active}
               aria-disabled={!clickable || undefined}
               class={`text-left rounded-lg border p-4 transition-colors ${

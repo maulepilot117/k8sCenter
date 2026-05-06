@@ -95,10 +95,13 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         yamlContent.value,
       );
       result.value = res.data;
-      // Navigate to the created Store's detail page on success — but only
-      // when exactly one Store was created and no resources failed. Multi-doc
-      // applies or partial failures keep the operator on this page so they
-      // can read the result table.
+      // Navigate to the resulting Store's detail page on success — but only
+      // when exactly one Store was processed and no resources failed. Multi-
+      // doc applies or partial failures keep the operator on this page so
+      // they can read the result table.
+      // "unchanged" counts: the apply succeeded, the live state matched the
+      // submitted spec. The operator's intent ("get me to this Store's page")
+      // is the same as for "created" / "configured".
       const r = res.data;
       if (
         IS_BROWSER &&
@@ -106,15 +109,17 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
         r.summary.total === 1 &&
         r.results.length === 1
       ) {
-        const created = r.results[0];
+        const finished = r.results[0];
         if (
-          (created.action === "created" || created.action === "configured") &&
-          created.kind === "SecretStore" &&
-          created.namespace &&
-          created.name
+          (finished.action === "created" ||
+            finished.action === "configured" ||
+            finished.action === "unchanged") &&
+          finished.kind === "SecretStore" &&
+          finished.namespace &&
+          finished.name
         ) {
           globalThis.location.href =
-            `/external-secrets/stores/${created.namespace}/${created.name}`;
+            `/external-secrets/stores/${finished.namespace}/${finished.name}`;
         }
       }
     } catch (err) {
