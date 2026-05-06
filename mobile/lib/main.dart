@@ -1,23 +1,39 @@
-// Entry point. Initializes SharedPreferences before runApp so the theme
-// controller can read the stored theme synchronously on first build.
+// Entry point. Hydrates SharedPreferences before runApp so the theme
+// controller reads synchronously, then triggers the auth bootstrap so
+// the redirect guard sees Authenticated/Unauthenticated by the time the
+// first frame paints.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
+import 'auth/auth_repository.dart';
 import 'theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
 
+  final container = ProviderContainer(
+    overrides: [
+      sharedPreferencesProvider.overrideWithValue(prefs),
+    ],
+  );
+
+  // Bootstrap auth in the background — the router renders the splash
+  // (AuthInitializing) until this resolves.
+  unawaited(container.read(authRepositoryProvider.notifier).bootstrap());
+
   runApp(
-    ProviderScope(
-      overrides: [
-        sharedPreferencesProvider.overrideWithValue(prefs),
-      ],
+    UncontrolledProviderScope(
+      container: container,
       child: const KubeCenterApp(),
     ),
   );
+}
+
+void unawaited(Future<void> future) {
+  // Intentionally not awaited; mirrors `package:async`'s helper without
+  // pulling the dep in just for one call site.
 }
