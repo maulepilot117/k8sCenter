@@ -330,14 +330,7 @@ All foundational phases (1–13) are COMPLETE. High-level inventory:
 - **Phase 11B (Cert-Manager Wizards):** Certificate/Issuer/ClusterIssuer wizards (v1: SelfSigned + HTTP01 ACME; CA/Vault/DNS01 deferred to YAML editor).
 - **Phase 12 (Service Mesh — Istio/Linkerd):** Inventory (5 mesh CRD groups), mTLS posture with three-source attribution (`policy`/`metric`/`default`), golden signals (RPS, error rate, p50/p95/p99 via templated PromQL), topology overlay (`?overlay=mesh` adds `mesh_vs`/`mesh_sp` edges, fail-closed RBAC, themed edges), inline `MeshGoldenSignals` on Service detail.
 - **Phase 13 (Cert-Manager Configurable Thresholds):** Per-cert/issuer warn/critical days via annotations; `ResolveCertThresholds` + `ApplyThresholds` is single source of truth (handler + poller); response includes per-key source attribution; `ThresholdSource.Valid()` + `sanitizeSource` guards against out-of-enum strings.
-
-### Phase 14 (External Secrets Operator) — IN PROGRESS
-
-Status (2026-05-06): Phases A → B → D → C → E → F → G → H → I shipped (through PRs #226 + #227). Phase J pending.
-
-Authoritative plan + per-phase technical detail: `plans/external-secrets-operator-integration.md`. Read that file before starting any Phase 14 work — annotation thresholds, cross-tenant suppression, and persistence schema are all spelled out there.
-
-Pending units: J (CLAUDE.md Phase 14 entry, README.md, roadmap #8 → [x], plan status → complete).
+- **Phase 14 (External Secrets Operator):** New `internal/externalsecrets/` package — CRD discovery (5min cache → singleflight + 30s read cache), 9 endpoints under `/externalsecrets/*` (status, externalsecrets, clusterexternalsecrets, stores, clusterstores, pushsecrets), per-user RBAC filtering via `CanAccessGroupResource`. Four operational lenses: (1) **drift detection** (tri-state `InSync`/`Drifted`/`Unknown` via `syncedResourceVersion` compare, 30s cache, Revert button); (2) **persistent sync history** (`eso_sync_history` flat table, three text[] diff columns, 90-day retention sweep, restart-recovery prev-bucket seeding); (3) **bulk refresh actions** (`eso_bulk_refresh_jobs` table, scope-pinned async execution, 409 on scope drift with `{added, removed}` diff, partial failure reporting per-target, 30-day retention); (4) **per-store rate + cost-tier panel** (Go map literal rate cards with `LastUpdated`). Annotation thresholds (`kubecenter.io/eso-stale-after-minutes` ≥5, `eso-alert-on-recovery`, `eso-alert-on-lifecycle`) resolve through ES → SecretStore → ClusterSecretStore chain with per-key source attribution; ClusterSecretStore annotations propagate to namespaced ESes with tenant override. Notification dispatch gains `SuppressResourceFields` flag for cross-tenant suppression. Topology `?overlay=eso-chain` adds chain edges (cap 2000, `EdgesTruncated` flag, `Overlay: "unavailable"` when ESO not installed). Wizards: universal ExternalSecret + per-provider SecretStore wizards (Vault, AWS Secrets Manager, AWS Parameter Store, Azure Key Vault, GCP Secret Manager, Kubernetes, Doppler, 1Password Connect — 8 providers via `map[string]any` ProviderSpec, hand-rolled validators) plus YAML templates for niche providers. Helm grant adds ESO CRD list/watch + core/secrets get/list.
 
 ---
 
@@ -354,7 +347,7 @@ Priority order from 2026-04-09 brainstorm. Check off each item as its PR merges 
 - [x] **7. Cert-Manager integration** — inventory, expiry warnings, issuer management (Phase 11A)
 - [x] **7b. Cert-Manager wizards (Phase 11B)** — Certificate/Issuer/ClusterIssuer creation (PR #180, follow-ups #181–#183)
 - [x] **7c. Cert-Manager configurable expiry thresholds** — per-cert/per-issuer annotation overrides (Phase 13)
-- [ ] **8. External Secrets Operator integration** — observatory + actions (Phase 14, in progress; see above).
+- [x] **8. External Secrets Operator integration** — observatory + per-provider wizards + chain topology overlay + drift detection + persistent sync history + bulk refresh + per-store rate/cost-tier panel (Phase 14)
 - [ ] **9. Saved Views & Custom Dashboards** — per-user persistence for filter presets, pinned favorites, arrangeable dashboard widgets.
   - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand.
   - **Likely shape**:
