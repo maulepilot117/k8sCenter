@@ -1,7 +1,7 @@
 ---
 title: "External Secrets Operator — Phase K: remaining provider creation paths"
 type: feat
-status: active
+status: complete
 date: 2026-05-06
 parent: plans/external-secrets-operator-integration.md
 ---
@@ -156,6 +156,6 @@ Total: ~5 new files, ~5 modified files. All frontend; no backend code changes.
 ## Checklist
 
 ### Phase K — Remaining provider creation paths
-- [ ] Unit K1 — Template registry + Create-from-template route + picker tri-state
-- [ ] Unit K2 — Picker copy + nav-rail entry + no-template grid view
-- [ ] Unit K3 — Parent plan reconciliation + CLAUDE.md / README update + plan status → complete
+- [x] Unit K1 — Template registry + Create-from-template route + picker tri-state
+- [x] Unit K2 — Picker copy + nav-rail entry + no-template grid view
+- [x] Unit K3 — Parent plan reconciliation + CLAUDE.md / README update + plan status → complete
