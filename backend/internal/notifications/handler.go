@@ -453,7 +453,88 @@ func decodeJSON(r *http.Request, v any) error {
 
 // isValidChannelType checks if the channel type is one of the known types.
 func isValidChannelType(t ChannelType) bool {
-	return t == ChannelSlack || t == ChannelEmail || t == ChannelWebhook
+	return t == ChannelSlack || t == ChannelEmail || t == ChannelWebhook || t == ChannelMobilePush
+}
+
+// --- Mobile push device endpoints ---
+
+// HandleRegisterDevice upserts a mobile push device for the calling user.
+// Body: {"deviceToken": "<fcm token>", "platform": "ios" | "android"}.
+// Re-registering the same token bumps last_seen_at without creating a row.
+func (h *Handler) HandleRegisterDevice(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	var body struct {
+		DeviceToken string `json:"deviceToken"`
+		Platform    string `json:"platform"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid request body", "")
+		return
+	}
+	if body.DeviceToken == "" {
+		httputil.WriteError(w, http.StatusBadRequest, "deviceToken required", "")
+		return
+	}
+	if body.Platform != "ios" && body.Platform != "android" {
+		httputil.WriteError(w, http.StatusBadRequest, "platform must be ios or android", "")
+		return
+	}
+	// Cap token length defensively — FCM tokens are <300 chars; APNS <200.
+	if len(body.DeviceToken) > 4096 {
+		httputil.WriteError(w, http.StatusBadRequest, "deviceToken too long", "")
+		return
+	}
+
+	d, err := h.Service.store.RegisterDevice(r.Context(), user.KubernetesUsername, body.DeviceToken, body.Platform)
+	if err != nil {
+		h.Logger.Error("register device failed", "user", user.KubernetesUsername, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to register device", "")
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusCreated, map[string]any{"data": d})
+}
+
+// HandleUnregisterDevice deletes a device by id. Scoped to the calling user.
+func (h *Handler) HandleUnregisterDevice(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	if err := h.Service.store.UnregisterDevice(r.Context(), user.KubernetesUsername, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httputil.WriteError(w, http.StatusNotFound, "device not found", "")
+			return
+		}
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to unregister device", "")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleListDevices returns all devices for the calling user.
+func (h *Handler) HandleListDevices(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "")
+		return
+	}
+
+	devices, err := h.Service.store.ListDevicesForUser(r.Context(), user.KubernetesUsername)
+	if err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, "failed to list devices", "")
+		return
+	}
+	httputil.WriteJSON(w, http.StatusOK, map[string]any{"data": devices})
 }
 
 // accessibleNamespaces returns the list of namespaces the user can access.

@@ -56,10 +56,23 @@ const (
 type ChannelType string
 
 const (
-	ChannelSlack   ChannelType = "slack"
-	ChannelEmail   ChannelType = "email"
-	ChannelWebhook ChannelType = "webhook"
+	ChannelSlack      ChannelType = "slack"
+	ChannelEmail      ChannelType = "email"
+	ChannelWebhook    ChannelType = "webhook"
+	ChannelMobilePush ChannelType = "mobile_push"
 )
+
+// MobilePushDevice is a registered mobile device that receives push
+// notifications via the ChannelMobilePush dispatch path. One row per
+// (user, device) — re-registration upserts onto last_seen_at.
+type MobilePushDevice struct {
+	ID           string    `json:"id"`
+	UserID       string    `json:"userId"`
+	DeviceToken  string    `json:"deviceToken"`
+	Platform     string    `json:"platform"`
+	RegisteredAt time.Time `json:"registeredAt"`
+	LastSeenAt   time.Time `json:"lastSeenAt"`
+}
 
 // Notification is a single event from any subsystem.
 //

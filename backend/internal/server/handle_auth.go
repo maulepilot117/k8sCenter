@@ -63,7 +63,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, err := s.issueTokenPair(w, user)
+	accessToken, _, err := s.issueTokenPair(w, user)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -85,16 +85,33 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 // handleRefresh exchanges a valid refresh token for a new access token.
 // Implements refresh token rotation — the old token is invalidated.
 // Works across all provider types (local, OIDC, LDAP).
+//
+// The token is read from the refresh_token httpOnly cookie when present
+// (web flow). When the cookie is absent, the body is decoded as JSON and
+// the "refreshToken" field is used (mobile flow). Body-mode responses
+// include the new refresh token in JSON; cookie-mode responses do not.
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("refresh_token")
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "missing refresh token"},
-		})
-		return
+	var refreshTokenIn string
+	bodyMode := false
+
+	if cookie, cerr := r.Cookie("refresh_token"); cerr == nil {
+		refreshTokenIn = cookie.Value
+	} else {
+		var body struct {
+			RefreshToken string `json:"refreshToken"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
+		if jerr := json.NewDecoder(r.Body).Decode(&body); jerr != nil || body.RefreshToken == "" {
+			writeJSON(w, http.StatusUnauthorized, api.Response{
+				Error: &api.APIError{Code: 401, Message: "missing refresh token"},
+			})
+			return
+		}
+		refreshTokenIn = body.RefreshToken
+		bodyMode = true
 	}
 
-	session, err := s.Sessions.Validate(cookie.Value)
+	session, err := s.Sessions.Validate(refreshTokenIn)
 	if err != nil {
 		entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
 		entry.Detail = "invalid or expired refresh token"
@@ -120,7 +137,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	accessToken, err := s.issueTokenPair(w, user)
+	accessToken, newRefreshToken, err := s.issueTokenPair(w, user)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -131,12 +148,14 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 	s.AuditLogger.Log(r.Context(), s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess))
 
-	writeJSON(w, http.StatusOK, api.Response{
-		Data: map[string]any{
-			"accessToken": accessToken,
-			"expiresIn":   int(auth.AccessTokenLifetime.Seconds()),
-		},
-	})
+	respData := map[string]any{
+		"accessToken": accessToken,
+		"expiresIn":   int(auth.AccessTokenLifetime.Seconds()),
+	}
+	if bodyMode {
+		respData["refreshToken"] = newRefreshToken
+	}
+	writeJSON(w, http.StatusOK, api.Response{Data: respData})
 }
 
 // handleLogout invalidates the user's refresh token.
@@ -247,7 +266,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Issue k8sCenter JWT + refresh cookie
-	accessToken, err := s.issueTokenPair(w, user)
+	accessToken, _, err := s.issueTokenPair(w, user)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens after OIDC callback", "error", err)
 		http.Redirect(w, r, "/login?error=token_failed", http.StatusFound)

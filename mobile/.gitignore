@@ -1,0 +1,40 @@
+# Standard Flutter ignores. Most entries kick in once `flutter create mobile/`
+# runs in PR-1; the rest survive across platforms.
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# iOS
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Pods/
+ios/.symlinks/
+ios/build/
+ios/Runner.xcworkspace/xcuserdata/
+ios/Runner.xcodeproj/xcuserdata/
+
+# Android
+android/.gradle/
+android/captures/
+android/gradlew
+android/gradlew.bat
+android/local.properties
+android/key.properties
+android/app/build/
+
+# Generated localization
+lib/l10n/*.g.dart
+
+# Local FCM credentials — never commit
+fcm-credentials.json
