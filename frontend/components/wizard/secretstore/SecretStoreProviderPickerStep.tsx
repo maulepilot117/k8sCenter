@@ -1,7 +1,7 @@
 import type { SecretStoreProvider } from "@/lib/eso-types.ts";
 import {
+  isTemplateOnlyProvider,
   READY_SECRET_STORE_PROVIDERS,
-  TEMPLATE_ONLY_PROVIDERS,
 } from "@/lib/eso-types.ts";
 
 interface SecretStoreProviderPickerStepProps {
@@ -93,7 +93,7 @@ const PROVIDERS: ProviderEntry[] = [
       "Passbolt CE / Pro. GPG private key + passphrase. Resource UUID references.",
   },
   {
-    id: "keeper",
+    id: "keepersecurity",
     title: "Keeper Secrets Manager",
     description:
       "KSM config blob (base64). Records by record UID; folder-scoped.",
@@ -104,7 +104,7 @@ const PROVIDERS: ProviderEntry[] = [
     description: "API key + passcode. Project + environment binding.",
   },
   {
-    id: "oraclevault",
+    id: "oracle",
     title: "Oracle Cloud Vault",
     description:
       "OCI Vault. Workload / instance principal (preferred) or API-key creds.",
@@ -137,7 +137,7 @@ export function SecretStoreProviderPickerStep({
         {PROVIDERS.map((p) => {
           const active = selected === p.id;
           const ready = READY_SECRET_STORE_PROVIDERS.has(p.id);
-          const templateOnly = TEMPLATE_ONLY_PROVIDERS.has(p.id);
+          const templateOnly = isTemplateOnlyProvider(p.id);
           // Tri-state:
           //   ready        → click triggers wizard onSelect (current behavior)
           //   templateOnly → click navigates to the template editor

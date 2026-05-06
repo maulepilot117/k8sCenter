@@ -1,7 +1,5 @@
-import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiPostRaw } from "@/lib/api.ts";
 import YamlEditor from "@/islands/YamlEditor.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
@@ -9,52 +7,38 @@ import {
   ESO_YAML_TEMPLATES,
   type ESOTemplate,
 } from "@/lib/eso-yaml-templates.ts";
-import {
-  type SecretStoreProvider,
-  TEMPLATE_ONLY_PROVIDERS,
-} from "@/lib/eso-types.ts";
-
-interface ApplyResult {
-  index: number;
-  kind: string;
-  name: string;
-  namespace?: string;
-  action: string;
-  error?: string;
-}
-
-interface ApplyResponse {
-  results: ApplyResult[];
-  summary: {
-    total: number;
-    created: number;
-    configured: number;
-    unchanged: number;
-    failed: number;
-  };
-}
+import type { TemplateOnlyProvider } from "@/lib/eso-types.ts";
+import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
+import { singleSecretStoreHref } from "@/lib/secretstore-template-nav.ts";
 
 interface Props {
-  /** Provider key from the ?template= query param. May be unknown. */
-  provider: string | null;
+  /**
+   * Validated provider key, or null when the URL `?template=` query param was
+   * absent or did not match a known template. The route narrows the boundary
+   * string via `isTemplateOnlyProvider` before passing it down, so the island
+   * receives a precisely-typed value.
+   */
+  provider: TemplateOnlyProvider | null;
 }
 
 export default function SecretStoreFromTemplateEditor({ provider }: Props) {
-  // Validate the provider key against the template-only set on render.
-  // An unknown / invalid key surfaces an empty state with a link back to the
-  // grid view rather than rendering an empty Monaco that would 404 on apply.
-  const isKnown = provider !== null &&
-    TEMPLATE_ONLY_PROVIDERS.has(provider as SecretStoreProvider) &&
-    Boolean(ESO_YAML_TEMPLATES[provider as SecretStoreProvider]);
-  const template: ESOTemplate | null = isKnown
-    ? ESO_YAML_TEMPLATES[provider as SecretStoreProvider]!
+  // Registry is total over TemplateOnlyProvider, so the lookup is null only
+  // when the route already classified the URL as unknown.
+  const template: ESOTemplate | null = provider !== null
+    ? ESO_YAML_TEMPLATES[provider]
     : null;
 
-  const yamlContent = useSignal(template?.yaml ?? "");
-  const applying = useSignal(false);
-  const validating = useSignal(false);
-  const error = useSignal<string | null>(null);
-  const result = useSignal<ApplyResponse | null>(null);
+  const {
+    yamlContent,
+    applying,
+    validating,
+    error,
+    result,
+    handleValidate,
+    handleApply,
+  } = useYamlApply(template?.yaml ?? "", {
+    onApplySuccess: (res) => navigateOnSingleSecretStore(res),
+  });
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -65,69 +49,6 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
       document.title = "k8sCenter";
     };
   }, [template]);
-
-  const handleValidate = useCallback(async () => {
-    if (applying.value || validating.value) return;
-    validating.value = true;
-    error.value = null;
-    result.value = null;
-    try {
-      const res = await apiPostRaw<ApplyResponse>(
-        "/v1/yaml/validate",
-        yamlContent.value,
-      );
-      result.value = res.data;
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "Validation failed";
-    } finally {
-      validating.value = false;
-    }
-  }, []);
-
-  const handleApply = useCallback(async () => {
-    if (applying.value || validating.value) return;
-    applying.value = true;
-    error.value = null;
-    result.value = null;
-    try {
-      const res = await apiPostRaw<ApplyResponse>(
-        "/v1/yaml/apply",
-        yamlContent.value,
-      );
-      result.value = res.data;
-      // Navigate to the resulting Store's detail page on success — but only
-      // when exactly one Store was processed and no resources failed. Multi-
-      // doc applies or partial failures keep the operator on this page so
-      // they can read the result table.
-      // "unchanged" counts: the apply succeeded, the live state matched the
-      // submitted spec. The operator's intent ("get me to this Store's page")
-      // is the same as for "created" / "configured".
-      const r = res.data;
-      if (
-        IS_BROWSER &&
-        r.summary.failed === 0 &&
-        r.summary.total === 1 &&
-        r.results.length === 1
-      ) {
-        const finished = r.results[0];
-        if (
-          (finished.action === "created" ||
-            finished.action === "configured" ||
-            finished.action === "unchanged") &&
-          finished.kind === "SecretStore" &&
-          finished.namespace &&
-          finished.name
-        ) {
-          globalThis.location.href =
-            `/external-secrets/stores/${finished.namespace}/${finished.name}`;
-        }
-      }
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : "Apply failed";
-    } finally {
-      applying.value = false;
-    }
-  }, []);
 
   if (!template) {
     return (
@@ -233,6 +154,20 @@ export default function SecretStoreFromTemplateEditor({ provider }: Props) {
       {result.value && <ApplyResultPanel response={result.value} />}
     </div>
   );
+}
+
+/**
+ * Side-effecting wrapper around `singleSecretStoreHref`. Bound to the
+ * `useYamlApply` hook's `onApplySuccess` callback in the editor render.
+ * The pure decision lives in `lib/secretstore-template-nav.ts` so the unit
+ * tests can exercise every branch without React-DOM or Fresh-runtime types.
+ */
+function navigateOnSingleSecretStore(res: ApplyResponse): void {
+  if (!IS_BROWSER) return;
+  const href = singleSecretStoreHref(res);
+  if (href !== null) {
+    globalThis.location.href = href;
+  }
 }
 
 function ApplyResultPanel({ response }: { response: ApplyResponse }) {

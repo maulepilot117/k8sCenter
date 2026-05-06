@@ -7,8 +7,8 @@ import {
   type ESOTemplate,
 } from "@/lib/eso-yaml-templates.ts";
 import {
-  type SecretStoreProvider,
-  TEMPLATE_ONLY_PROVIDERS,
+  isTemplateOnlyProvider,
+  type TemplateOnlyProvider,
 } from "@/lib/eso-types.ts";
 
 const section = DOMAIN_SECTIONS.find((s) => s.id === "external-secrets")!;
@@ -17,28 +17,34 @@ export default define.page(function SecretStoreFromTemplatePage(ctx) {
   const url = new URL(ctx.req.url);
   const templateParam = url.searchParams.get("template");
 
-  // ?template=<provider> — render the editor for that provider.
+  // ?template=<provider> — narrow the URL string to TemplateOnlyProvider at
+  // the boundary so the island sees a precise type. The island still handles
+  // an unknown key gracefully (empty state with a link to the gallery).
   if (templateParam !== null) {
+    const provider = isTemplateOnlyProvider(templateParam)
+      ? templateParam
+      : null;
     return (
       <>
         <SubNav
           tabs={section.tabs ?? []}
           currentPath="/external-secrets/stores"
         />
-        <SecretStoreFromTemplateEditor provider={templateParam} />
+        <SecretStoreFromTemplateEditor provider={provider} />
       </>
     );
   }
 
   // No query param — render the gallery of all template-only providers.
+  // The registry is a total Record over TemplateOnlyProvider, so iteration
+  // produces every key without runtime null checks.
   const galleryEntries: Array<{
-    provider: SecretStoreProvider;
+    provider: TemplateOnlyProvider;
     template: ESOTemplate;
-  }> = [];
-  for (const p of TEMPLATE_ONLY_PROVIDERS) {
-    const tpl = ESO_YAML_TEMPLATES[p];
-    if (tpl) galleryEntries.push({ provider: p, template: tpl });
-  }
+  }> = (Object.keys(ESO_YAML_TEMPLATES) as TemplateOnlyProvider[]).map((p) => ({
+    provider: p,
+    template: ESO_YAML_TEMPLATES[p],
+  }));
   // Stable display order: alphabetical by display name so the operator's
   // muscle memory is preserved across releases as new templates land.
   galleryEntries.sort((a, b) =>

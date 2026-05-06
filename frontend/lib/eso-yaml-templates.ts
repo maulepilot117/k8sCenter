@@ -21,7 +21,7 @@
  *   4. The registry-coverage test will fail loudly if step 2 is forgotten.
  */
 
-import type { SecretStoreProvider } from "./eso-types.ts";
+import type { TemplateOnlyProvider } from "./eso-types.ts";
 
 export interface ESOTemplate {
   /** Display name shown in the route header and the template grid. */
@@ -121,8 +121,12 @@ spec:
         -----BEGIN CERTIFICATE-----
         ...
         -----END CERTIFICATE-----
+      # IMPORTANT: spec.provider.conjur.auth is a oneOf — populate exactly
+      # one of apikey or jwt and DELETE the other block entirely. ESO's
+      # admission webhook rejects auth blocks with both methods set, and the
+      # rejection error does not always make the duplicate-method case
+      # obvious to read.
       auth:
-        # Pick exactly one of apikey or jwt below and delete the other.
         apikey:
           account: myaccount # REPLACE: Conjur organization account name
           userRef:
@@ -131,7 +135,7 @@ spec:
           apiKeyRef:
             name: conjur-creds
             key: apikey
-        # jwt:
+        # jwt:                                    # uncomment + delete apikey block to use JWT
         #   account: myaccount
         #   serviceAccountRef:
         #     name: default # workload SA whose JWT will be sent to Conjur
@@ -367,22 +371,23 @@ spec:
 };
 
 /**
- * Single source of truth for Phase K templates. Keys must match the
- * `TEMPLATE_ONLY_PROVIDERS` set in `eso-types.ts` exactly — the
- * registry-coverage test in `eso-yaml-templates.test.ts` enforces this.
+ * Single source of truth for Phase K templates. Total over the
+ * `TemplateOnlyProvider` subtype, so adding a key to the union without an
+ * entry here is a compile-time error — no Partial, no `!` non-null assertions
+ * at call sites. The registry-shape tests in `eso-yaml-templates_test.ts` add
+ * runtime invariants (parse, kind/apiVersion, REPLACE markers, provider key
+ * matches registry key) on top of the structural typing.
  */
-export const ESO_YAML_TEMPLATES: Partial<
-  Record<SecretStoreProvider, ESOTemplate>
-> = {
+export const ESO_YAML_TEMPLATES: Record<TemplateOnlyProvider, ESOTemplate> = {
   akeyless: akeylessTemplate,
   bitwardensecretsmanager: bitwardenTemplate,
   conjur: conjurTemplate,
   infisical: infisicalTemplate,
   pulumi: pulumiTemplate,
   passbolt: passboltTemplate,
-  keeper: keeperTemplate,
+  keepersecurity: keeperTemplate,
   onboardbase: onboardbaseTemplate,
-  oraclevault: oracleVaultTemplate,
+  oracle: oracleVaultTemplate,
   alibaba: alibabaTemplate,
   webhook: webhookTemplate,
 };
