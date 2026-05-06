@@ -11,7 +11,8 @@ LDFLAGS := -s -w \
        test test-backend test-frontend test-e2e test-e2e-ui \
        lint lint-backend lint-frontend \
        clean docker-build docker-build-backend docker-build-frontend \
-       helm-lint helm-template check-themes theme-gen
+       helm-lint helm-template check-themes theme-gen \
+       mobile-analyze mobile-test
 
 # Development
 dev: dev-backend
@@ -39,13 +40,24 @@ build-frontend:
 	cd frontend && deno task build
 
 # Testing
-test: test-backend test-frontend
+test: test-backend test-frontend mobile-test
 
 test-backend:
 	cd backend && go test ./... -race -cover -count=1
 
 test-frontend:
 	cd frontend && deno task test
+
+# Mobile (Flutter) — analyze + test. Skipped silently when the Flutter SDK
+# is not on PATH so backend/frontend devs without Flutter can still run
+# the rest of the suite.
+mobile-analyze:
+	@command -v flutter >/dev/null 2>&1 || { echo "flutter not installed; skipping mobile-analyze"; exit 0; }
+	cd mobile && flutter analyze
+
+mobile-test:
+	@command -v flutter >/dev/null 2>&1 || { echo "flutter not installed; skipping mobile-test"; exit 0; }
+	cd mobile && flutter test
 
 test-e2e:
 	cd e2e && npx playwright test
@@ -65,7 +77,7 @@ check-themes:
 	deno run --allow-read tools/theme-gen/main.ts --check
 
 # Linting
-lint: lint-backend lint-frontend check-themes
+lint: lint-backend lint-frontend mobile-analyze check-themes
 
 lint-backend:
 	cd backend && go vet ./...
