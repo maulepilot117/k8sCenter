@@ -12,7 +12,9 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../api/auth_token_holder.dart';
 import '../../../api/websocket_client.dart';
+import '../../../auth/auth_repository.dart';
 
 const int _logBufferLimit = 5000;
 
@@ -113,6 +115,14 @@ class LogTailController
         'tailLines': key.tailLines,
         'previous': key.previous,
         'timestamps': key.timestamps,
+      },
+      // Long-lived log tails outlive the 15min access-token TTL. On
+      // reconnect, refresh the token via the same body-mode flow the
+      // AuthRepository bootstrap uses; tokenHolder picks up the new
+      // value before the next auth handshake fires.
+      refreshAccessToken: () async {
+        await ref.read(authRepositoryProvider.notifier).bootstrap();
+        return ref.read(authTokenHolderProvider).accessToken != null;
       },
     );
 

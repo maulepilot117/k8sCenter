@@ -43,13 +43,24 @@ class _LogTailScreenState extends ConsumerState<LogTailScreen> {
     // scroll up to inspect older lines.
     if (state.paused) return;
     if (state.lines.length == _lastLineCount) return;
+    final wasAtBottom = _scroll.hasClients
+        ? _scroll.position.pixels >=
+            _scroll.position.maxScrollExtent - _autoScrollThreshold
+        : true;
     _lastLineCount = state.lines.length;
-    if (!_scroll.hasClients) return;
+    if (!_scroll.hasClients || !wasAtBottom) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scroll.hasClients) return;
       _scroll.jumpTo(_scroll.position.maxScrollExtent);
     });
   }
+
+  /// Pixels from the bottom that still count as "at the tail" for the
+  /// auto-scroll heuristic. Roughly two log lines tall — small enough
+  /// that scrolling up by even a single line stops the auto-jump, but
+  /// large enough that streaming-line bursts don't lose the tail to
+  /// rounding.
+  static const double _autoScrollThreshold = 32;
 
   @override
   Widget build(BuildContext context) {

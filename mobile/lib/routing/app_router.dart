@@ -15,6 +15,8 @@ import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
 import '../features/observability/logs/log_tail_screen.dart';
+import '../notifications/deep_link_handler.dart';
+import '../notifications/fcm_registration.dart';
 import '../features/resources/configmap_screens.dart';
 import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
@@ -266,6 +268,26 @@ class _RootScreen extends ConsumerWidget {
     if (authState is AuthInitializing) {
       return const Scaffold(body: LoadingState(message: 'Starting up'));
     }
+
+    // Drain pending deep links captured by FCM listeners. The link is
+    // queued before the router was ready (cold-start tap or background
+    // resume); now that we've reached the dashboard, parse it and push
+    // onto the navigation stack so the targeted resource opens.
+    ref.listen<Uri?>(pendingDeepLinkProvider, (prev, next) {
+      if (next == null) return;
+      const handler = DeepLinkHandler();
+      final parsed = handler.parse(next);
+      if (parsed.isValid) {
+        // Defer push to next frame so the AdaptiveScaffold has mounted
+        // and go_router has a stable route stack to push onto.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          context.push(parsed.path!);
+        });
+      }
+      // Clear regardless — invalid links must not leak to next launch.
+      ref.read(pendingDeepLinkProvider.notifier).state = null;
+    });
 
     return AdaptiveScaffold(
       title: 'k8sCenter',

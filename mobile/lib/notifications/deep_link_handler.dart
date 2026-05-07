@@ -3,6 +3,13 @@
 // configuration already serves, so deep-link routing reuses the same
 // detail screens the drawer/notification-feed taps use.
 //
+// **Wiring status (M1):** the parser is exercised by tests but is not
+// yet hooked into a runtime URI source. PR-1f-time call sites — FCM
+// `getInitialMessage`/`onMessageOpenedApp` and `app_links` for
+// system-level cold-start URIs — land alongside operator FCM setup in
+// PR-1g. Until then, in-app navigation (notification feed taps) routes
+// directly via `kindDetailPath` without going through this parser.
+//
 // Custom scheme:
 //   k8scenter://cluster/<clusterId>/<Kind>/<namespace>/<name>
 //   k8scenter://cluster/<clusterId>/<Kind>/<name>           — cluster-scoped
@@ -69,12 +76,30 @@ class DeepLinkHandler {
         // pluralizations, against domain_sections' registered kinds.
         final kindRaw = rest[1];
         final kind = _canonicalRouteKind(kindRaw);
-        // 3-arg form: cluster/<id>/<Kind>/<name> (cluster-scoped)
+        final isThreeArg = rest.length == 3;
+        // 3-arg form: cluster/<id>/<Kind>/<name> (cluster-scoped only)
         // 4-arg form: cluster/<id>/<Kind>/<namespace>/<name>
-        final namespace = rest.length >= 4 ? rest[2] : '';
-        final name = rest.length >= 4 ? rest[3] : rest[2];
+        final namespace = isThreeArg ? '' : rest[2];
+        final name = isThreeArg ? rest[2] : rest[3];
         if (clusterId.isEmpty || kind.isEmpty || name.isEmpty) {
           return const ParsedDeepLink._(null, null);
+        }
+        // Defensive: a 3-arg link for a known **namespaced** kind is
+        // malformed (would generate `/clusters/.../pods//<name>`).
+        // Reject rather than emit a double-slash route. Unknown kinds
+        // fall through to the generic-detail catch-all where an empty
+        // namespace is signaled by the cluster-scoped sentinel `_`.
+        if (isThreeArg) {
+          final section = findDomainSection(kind);
+          if (section != null) {
+            final domainKind = section.kinds.firstWhere(
+              (k) => k.kind == kind,
+              orElse: () => section.kinds.first,
+            );
+            if (domainKind.namespaced) {
+              return const ParsedDeepLink._(null, null);
+            }
+          }
         }
         final path = kindDetailPath(
           clusterId: clusterId,

@@ -35,6 +35,16 @@ void main() {
       expect(p.path, '/notifications');
     });
 
+    test('rejects 3-arg form for namespaced kind (would double-slash)', () {
+      // Pod is namespaced; `cluster/local/Pod/web-7d4f` is missing
+      // the namespace and would otherwise produce
+      // `/clusters/local/workloads/pods//web-7d4f`. Reject as invalid.
+      final p = handler.parse(
+        Uri.parse('k8scenter://cluster/local/Pod/web-7d4f'),
+      );
+      expect(p.isValid, isFalse);
+    });
+
     test('unknown kind falls through to generic detail', () {
       final p = handler.parse(
         Uri.parse('k8scenter://cluster/local/CustomResource/ns/name'),

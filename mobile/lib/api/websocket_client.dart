@@ -19,6 +19,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../api/auth_token_holder.dart';
@@ -60,12 +61,19 @@ class KubeWebSocketClient {
     Duration initialBackoff = const Duration(seconds: 1),
     Duration maxBackoff = const Duration(seconds: 30),
     int maxRetries = -1,
-    WebSocketChannel Function(Uri)? channelFactory,
+    Future<bool> Function()? refreshAccessToken,
+    WebSocketChannel Function(Uri, Map<String, String>)? channelFactory,
   })  : _backendUrl = backendUrl,
+        _refreshAccessToken = refreshAccessToken,
         _initialBackoff = initialBackoff,
         _maxBackoff = maxBackoff,
         _maxRetries = maxRetries,
-        _channelFactory = channelFactory ?? WebSocketChannel.connect {
+        _channelFactory = channelFactory ??
+            ((uri, headers) => IOWebSocketChannel.connect(
+                  uri,
+                  headers: headers,
+                )),
+        _backoff = initialBackoff {
     _connect();
   }
 
@@ -84,12 +92,13 @@ class KubeWebSocketClient {
   final Duration _initialBackoff;
   final Duration _maxBackoff;
   final int _maxRetries;
-  final WebSocketChannel Function(Uri) _channelFactory;
+  final Future<bool> Function()? _refreshAccessToken;
+  final WebSocketChannel Function(Uri, Map<String, String>) _channelFactory;
 
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _channelSub;
   Timer? _reconnectTimer;
-  Duration _backoff = const Duration(seconds: 1);
+  Duration _backoff;
   int _retryCount = 0;
   bool _closed = false;
 
@@ -109,20 +118,25 @@ class KubeWebSocketClient {
     _state.add(_retryCount == 0
         ? WebSocketState.connecting
         : WebSocketState.reconnecting);
-    _backoff = _initialBackoff;
 
     final wsUrl = _wsUrl();
     try {
-      final channel = _channelFactory(wsUrl);
-      _channel = channel;
-
-      // Auth handshake — send JWT first thing on open. The channel
-      // sink accepts JSON strings; backend parses {type, token}.
       final token = tokenHolder.accessToken;
       if (token == null) {
         _emitFatal('no access token');
         return;
       }
+      // Pass cluster id as a request header on the WS upgrade — the
+      // backend's cluster-context middleware reads X-Cluster-ID, not a
+      // query param. dart:io supports custom WS upgrade headers via
+      // IOWebSocketChannel.connect.
+      final channel = _channelFactory(wsUrl, {
+        'X-Cluster-ID': clusterId,
+      });
+      _channel = channel;
+
+      // Auth handshake — send JWT first thing on open. The channel
+      // sink accepts JSON strings; backend parses {type, token}.
       channel.sink.add(jsonEncode({'type': 'auth', 'token': token}));
 
       // Optional subscribe message (e.g., log filter).
@@ -130,8 +144,12 @@ class KubeWebSocketClient {
         channel.sink.add(jsonEncode(subscribeMessage));
       }
 
+      // Reset backoff only after a successful connect attempt — moving
+      // this from the top of _connect ensures consecutive failures
+      // climb the curve instead of bouncing between 1s and 2s.
       _state.add(WebSocketState.open);
       _retryCount = 0;
+      _backoff = _initialBackoff;
 
       _channelSub = channel.stream.listen(
         _onData,
@@ -145,7 +163,9 @@ class KubeWebSocketClient {
   }
 
   Uri _wsUrl() {
-    // dio_client uses http(s); WebSocket uses ws(s).
+    // dio_client uses http(s); WebSocket uses ws(s). Cluster id is
+    // injected via the X-Cluster-ID upgrade header (see _connect),
+    // matching the REST cluster-context middleware on the backend.
     final base = Uri.parse(_backendUrl);
     final scheme = base.scheme == 'https' ? 'wss' : 'ws';
     final cleanPath = path.startsWith('/') ? path : '/$path';
@@ -155,10 +175,6 @@ class KubeWebSocketClient {
       host: base.host,
       port: base.hasPort ? base.port : null,
       path: fullPath,
-      // Cluster context — handlers read this from the URL when present;
-      // primary mechanism is the X-Cluster-ID header on REST, but WS
-      // upgrade requests in browsers can't easily set custom headers.
-      queryParameters: {'cluster': clusterId},
     );
   }
 
@@ -215,7 +231,28 @@ class KubeWebSocketClient {
     );
 
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(delay, _connect);
+    _reconnectTimer = Timer(delay, _maybeRefreshThenConnect);
+  }
+
+  /// Wraps `_connect` with an optional access-token refresh attempt.
+  /// On a long-lived WS (log tail open >15min), the next reconnect
+  /// after token expiry needs a fresh token or the auth handshake will
+  /// fail. The injected refresher (typically `AuthRepository.refresh`)
+  /// returns true on success; on failure or when no refresher is wired,
+  /// we proceed with whatever token is in the holder.
+  Future<void> _maybeRefreshThenConnect() async {
+    if (_closed) return;
+    final refresh = _refreshAccessToken;
+    if (refresh != null) {
+      try {
+        await refresh();
+      } catch (_) {
+        // Refresh failure surfaces as an auth error during the next
+        // _connect handshake — let the existing fatal-error path
+        // handle it rather than racing here.
+      }
+    }
+    _connect();
   }
 
   void _emitFatal(String message) {
@@ -225,6 +262,12 @@ class KubeWebSocketClient {
     _state.add(WebSocketState.failed);
     _messages.addError(WebSocketError(message, fatal: true));
     _closed = true;
+    // Close the broadcast streams so subscribers see `done` and
+    // their resources release. Without this, subscribers wait forever
+    // and the StreamControllers leak until the parent provider tears
+    // down. Errors are queued before close so addError still surfaces.
+    _messages.close();
+    _state.close();
   }
 
   /// Send a JSON message to the server. Used by callers that need to
@@ -257,6 +300,7 @@ KubeWebSocketClient buildKubeWebSocket(
   Ref ref, {
   required String path,
   Map<String, dynamic>? subscribeMessage,
+  Future<bool> Function()? refreshAccessToken,
 }) {
   final client = KubeWebSocketClient(
     path: path,
@@ -264,6 +308,7 @@ KubeWebSocketClient buildKubeWebSocket(
     tokenHolder: ref.read(authTokenHolderProvider),
     clusterId: ref.read(activeClusterProvider),
     subscribeMessage: subscribeMessage,
+    refreshAccessToken: refreshAccessToken,
   );
   ref.onDispose(client.close);
   return client;

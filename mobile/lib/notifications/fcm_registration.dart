@@ -22,13 +22,23 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_error.dart';
 import '../api/dio_client.dart';
+import 'deep_link_handler.dart';
+
+/// Holds a parsed deep-link URI captured from a notification tap that
+/// arrived before the router was ready (cold-start tap on a terminated
+/// app, or background-resume before bootstrap completes). The router's
+/// post-auth consumer drains this once `AuthAuthenticated` lands.
+final pendingDeepLinkProvider = StateProvider<Uri?>((ref) => null);
 
 class FcmRegistration {
-  FcmRegistration(this._dio);
+  FcmRegistration(this._dio, this._ref);
 
   final Dio _dio;
+  final Ref _ref;
   StreamSubscription<String>? _tokenRefreshSub;
+  StreamSubscription<RemoteMessage>? _openedAppSub;
   bool _initialized = false;
+  static const _handler = DeepLinkHandler();
 
   /// Called once after auth completes. Returns silently when Firebase
   /// init fails (missing platform config, sandboxed CI run, etc.).
@@ -67,7 +77,55 @@ class FcmRegistration {
       await _registerWithBackend(newToken);
     });
 
+    // Cold-start: app launched by tapping a notification while
+    // terminated. Capture the link target into pendingDeepLinkProvider;
+    // the router's post-auth consumer drains it.
+    final initialMessage = await messaging.getInitialMessage();
+    if (initialMessage != null) {
+      _capturePendingLink(initialMessage);
+    }
+
+    // Background-resume: app already running in background, tapped.
+    _openedAppSub?.cancel();
+    _openedAppSub =
+        FirebaseMessaging.onMessageOpenedApp.listen(_capturePendingLink);
+
     _initialized = true;
+  }
+
+  /// Extract a deep link from a push message and stash it in the
+  /// pending-link state. FCM payload contract:
+  ///   data: {
+  ///     "deeplink": "k8scenter://cluster/local/Pod/default/web-7d4f"
+  ///     // OR resourceKind/resourceNamespace/resourceName triple
+  ///   }
+  /// Both shapes are supported so the backend dispatcher can pick
+  /// whichever matches the channel template.
+  void _capturePendingLink(RemoteMessage msg) {
+    final data = msg.data;
+    final raw = data['deeplink'] as String?;
+    Uri? candidate;
+    if (raw != null && raw.isNotEmpty) {
+      candidate = Uri.tryParse(raw);
+    } else {
+      final kind = data['resourceKind'] as String?;
+      final ns = data['resourceNamespace'] as String? ?? '';
+      final name = data['resourceName'] as String?;
+      final cluster = data['clusterId'] as String? ?? 'local';
+      if (kind != null && name != null && kind.isNotEmpty && name.isNotEmpty) {
+        final segments = ns.isEmpty
+            ? '$cluster/$kind/$name'
+            : '$cluster/$kind/$ns/$name';
+        candidate = Uri.parse('k8scenter://cluster/$segments');
+      }
+    }
+    if (candidate == null) return;
+    final parsed = _handler.parse(candidate);
+    if (!parsed.isValid) {
+      debugPrint('[fcm] pending link rejected: $candidate');
+      return;
+    }
+    _ref.read(pendingDeepLinkProvider.notifier).state = candidate;
   }
 
   Future<void> _registerWithBackend(String deviceToken) async {
@@ -96,13 +154,15 @@ class FcmRegistration {
 
   Future<void> dispose() async {
     await _tokenRefreshSub?.cancel();
+    await _openedAppSub?.cancel();
     _tokenRefreshSub = null;
+    _openedAppSub = null;
     _initialized = false;
   }
 }
 
 final fcmRegistrationProvider = Provider<FcmRegistration>((ref) {
-  final fcm = FcmRegistration(ref.watch(dioProvider));
+  final fcm = FcmRegistration(ref.watch(dioProvider), ref);
   ref.onDispose(fcm.dispose);
   return fcm;
 });

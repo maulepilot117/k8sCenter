@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
@@ -136,6 +137,16 @@ class _NotificationTile extends ConsumerWidget {
           final clusterId = item.clusterId ?? 'local';
           final ns = item.resourceNamespace ?? '';
           final canonicalKind = item.resourceKind ?? '';
+          // If the notification points at a different cluster than the
+          // active one, switch clusters before navigating — otherwise
+          // the X-Cluster-ID header on the detail fetch would carry
+          // the active cluster and silently 404. Cross-cluster
+          // notifications normally don't appear in the feed (the
+          // backend filters server-side), so this is defensive.
+          final activeCluster = ref.read(activeClusterProvider);
+          if (clusterId != activeCluster) {
+            ref.read(activeClusterProvider.notifier).setCluster(clusterId);
+          }
           // Use the kind segment as-is; kindDetailPath() falls back to
           // the generic-detail catch-all when the canonical Kind isn't
           // a registered specialized screen.
