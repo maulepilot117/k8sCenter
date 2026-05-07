@@ -26,11 +26,19 @@ on:
       - ".github/workflows/mobile-ci.yml"
   workflow_dispatch:
 
+# Deny-by-default GITHUB_TOKEN permissions, mirroring ci.yml. Each
+# job below grants only the minimum it needs (typically contents:read
+# for checkout). Read-only is sufficient — none of these jobs commit,
+# push, or comment on PRs.
+permissions: {}
+
 jobs:
   analyze:
     name: Flutter analyze + test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +66,8 @@ jobs:
     name: Theme generator parity
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -81,6 +91,8 @@ jobs:
     needs: [analyze, themes-parity]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       ios_ready: ${{ steps.probe.outputs.ios_ready }}
       android_ready: ${{ steps.probe.outputs.android_ready }}
@@ -130,6 +142,8 @@ jobs:
     needs: deploy_check
     runs-on: macos-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -202,6 +216,8 @@ jobs:
     needs: deploy_check
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 

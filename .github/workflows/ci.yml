@@ -120,6 +120,13 @@ jobs:
       - name: helm lint
         run: helm lint helm/kubecenter
 
+      # Add subchart repos before `helm dependency build` (the OCI
+      # bitnamicharts registry doesn't need an explicit `repo add`).
+      - name: helm repo add
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
       # Render the chart with Universal Link wiring enabled so the
       # well-known.yaml template's fail-fast guards and resource
       # outputs are exercised. helm dependency build pulls subcharts
