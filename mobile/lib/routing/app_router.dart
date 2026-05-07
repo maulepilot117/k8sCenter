@@ -37,6 +37,7 @@ import '../widgets/cluster_pill.dart';
 import '../widgets/domain_navigation_drawer.dart';
 import '../widgets/empty_states.dart';
 import 'domain_sections.dart';
+import 'wizard_routes.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   // Listening to authRepositoryProvider rebuilds the router on transitions.
@@ -247,6 +248,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
         ],
       ),
+
+      // --- M3 PR-3a: wizard routes (ConfigMap, Secret, Service; later
+      //     PRs replace the ComingSoon placeholder with concrete screens
+      //     for the rest of the registry).
+      ...wizardRoutes,
 
       // --- Generic detail fallback for any unspecialized kind ---
       // Path shape: /clusters/<id>/generic/<kind>/<namespace>/<name>

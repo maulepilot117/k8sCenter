@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../auth/auth_repository.dart';
+import '../auth/auth_state.dart';
 import '../cluster/cluster_provider.dart';
 import '../features/notifications_center/feed_repository.dart';
 import '../routing/domain_sections.dart';
 import '../theme/kube_theme_builder.dart';
+import '../wizards/wizard_registry.dart';
 
 class DomainNavigationDrawer extends ConsumerWidget {
   const DomainNavigationDrawer({super.key});
@@ -61,6 +64,11 @@ class DomainNavigationDrawer extends ConsumerWidget {
               context.go('/notifications');
             },
           ),
+          // --- M3 PR-3a: "Create" submenu — RBAC-gated wizard launcher.
+          // Renders only when the operator has at least one wizard
+          // entry permitted by their RBAC summary. PR-3a registers
+          // ConfigMap/Secret/Service; later PRs add the rest.
+          _CreateSubmenu(clusterId: clusterId),
           for (final section in domainSections) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
@@ -90,6 +98,51 @@ class DomainNavigationDrawer extends ConsumerWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// "Create" submenu — expandable list of wizards the operator's RBAC
+/// summary permits. Hides itself entirely when no wizards are
+/// reachable so unauthorized operators don't see a phantom menu
+/// they can't open.
+///
+/// RBAC source: `AuthState.authenticated.rbac` populated by PR-1b's
+/// `/v1/auth/me` call. Empty namespace falls through to "any namespace
+/// where I have create" via [visibleWizards] so the submenu is
+/// reachable even before the operator picks a namespace.
+class _CreateSubmenu extends ConsumerWidget {
+  const _CreateSubmenu({required this.clusterId});
+
+  final String clusterId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final auth = ref.watch(authRepositoryProvider);
+    final rbac = auth is AuthAuthenticated ? auth.rbac : null;
+    final entries = visibleWizards(rbac: rbac, namespace: '');
+    if (entries.isEmpty) return const SizedBox.shrink();
+
+    return ExpansionTile(
+      leading: Icon(Icons.add_circle_outline, color: colors.accent),
+      title: const Text('Create'),
+      childrenPadding: const EdgeInsets.only(left: 16),
+      children: [
+        for (final entry in entries)
+          ListTile(
+            key: ValueKey('drawer-wizard-${entry.type}'),
+            leading: Icon(entry.icon, color: colors.textSecondary, size: 20),
+            title: Text(entry.label),
+            dense: true,
+            onTap: () {
+              Navigator.of(context).pop();
+              context.go(
+                '/clusters/$clusterId/wizards/${entry.type}/new',
+              );
+            },
+          ),
+      ],
     );
   }
 }
