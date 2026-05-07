@@ -182,6 +182,7 @@ class ResourceDetailScaffold extends StatelessWidget {
               YamlEditorPanel(
                 applyKey: applyKey!,
                 resource: resource,
+                stripSensitiveDataFields: isSensitive,
                 headerWarning: isSensitive
                     ? Padding(
                         padding: const EdgeInsets.only(bottom: 12),
@@ -201,8 +202,9 @@ class ResourceDetailScaffold extends StatelessWidget {
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  'Secret data is base64. Edits go through '
-                                  '/v1/yaml/apply server-side-apply.',
+                                  'Secret data and stringData are stripped '
+                                  'from the editor — server-side apply leaves '
+                                  'existing credential values untouched.',
                                   style: TextStyle(
                                     color: colors.warning,
                                     fontSize: 12,

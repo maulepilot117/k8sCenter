@@ -123,9 +123,23 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
           ? owners.first as Map
           : null;
       final kind = (resource['kind'] as String?) ?? 'resource';
-      final msg = owner != null
-          ? 'This $kind is managed by ${owner['kind']}/${owner['name']} and will be recreated after deletion.'
-          : 'This will permanently delete "$name".';
+      // Namespace delete cascades to every resource in the namespace —
+      // pods, services, configmaps, secrets, ingresses, etc. The
+      // type-to-confirm gate is meaningful only when the operator
+      // actually understands the blast radius, so the message says it
+      // explicitly.
+      final isNamespace = kind == 'Namespace' || kind == 'namespaces';
+      final String msg;
+      if (isNamespace) {
+        msg = 'This will delete namespace "$name" AND every resource '
+            'inside it (pods, services, configmaps, secrets, etc.). '
+            'This cannot be undone.';
+      } else if (owner != null) {
+        msg =
+            'This $kind is managed by ${owner['kind']}/${owner['name']} and will be recreated after deletion.';
+      } else {
+        msg = 'This will permanently delete "$name".';
+      }
       return ActionMeta(
         label: 'Delete',
         danger: true,

@@ -28,6 +28,7 @@ class YamlEditorPanel extends ConsumerStatefulWidget {
     required this.applyKey,
     required this.resource,
     this.headerWarning,
+    this.stripSensitiveDataFields = false,
   });
 
   final YamlApplyKey applyKey;
@@ -37,6 +38,15 @@ class YamlEditorPanel extends ConsumerStatefulWidget {
   /// remind operators that `data` values are base64.
   final Widget? headerWarning;
 
+  /// **Critical for Secrets:** the GET response masks `data` /
+  /// `stringData` values to the literal string `"****"`. Without
+  /// stripping these fields from the editor seed, an operator who edits
+  /// a label and applies will SSA-write `"****"` over every credential
+  /// entry — destroying the actual secret data. Set this true for
+  /// Secrets so the editor seed omits those fields entirely; SSA then
+  /// leaves them untouched.
+  final bool stripSensitiveDataFields;
+
   @override
   ConsumerState<YamlEditorPanel> createState() => _YamlEditorPanelState();
 }
@@ -45,8 +55,28 @@ class _YamlEditorPanelState extends ConsumerState<YamlEditorPanel> {
   bool _editing = false;
   TextEditingController? _textController;
 
-  String get _initialText =>
-      const JsonEncoder.withIndent('  ').convert(widget.resource);
+  String get _initialText {
+    final source = widget.stripSensitiveDataFields
+        ? _withoutSensitiveData(widget.resource)
+        : widget.resource;
+    return const JsonEncoder.withIndent('  ').convert(source);
+  }
+
+  /// Returns a shallow copy of [input] with `data` and `stringData`
+  /// removed. The Secret GET response carries those fields with values
+  /// already masked to `"****"` by the backend; including them in the
+  /// editor seed means SSA would persist the mask back over real
+  /// credential bytes. Omitting them entirely lets SSA leave existing
+  /// values untouched while the operator edits anything else.
+  static Map<String, dynamic> _withoutSensitiveData(
+      Map<String, dynamic> input) {
+    final out = <String, dynamic>{};
+    for (final entry in input.entries) {
+      if (entry.key == 'data' || entry.key == 'stringData') continue;
+      out[entry.key] = entry.value;
+    }
+    return out;
+  }
 
   void _enterEditMode() {
     final text = _initialText;
@@ -77,7 +107,9 @@ class _YamlEditorPanelState extends ConsumerState<YamlEditorPanel> {
     final colors = Theme.of(context).extension<KubeColors>()!;
     if (!_editing) {
       return _ReadOnlyView(
-        resource: widget.resource,
+        resource: widget.stripSensitiveDataFields
+            ? _withoutSensitiveData(widget.resource)
+            : widget.resource,
         headerWarning: widget.headerWarning,
         onEdit: _enterEditMode,
       );

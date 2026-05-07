@@ -37,22 +37,45 @@ const _getKey = ResourceGetKey(
   name: 'cfg',
 );
 
-final _successBody = {
-  'results': [
-    {
-      'index': 0,
-      'kind': 'ConfigMap',
-      'name': 'cfg',
-      'namespace': 'default',
-      'action': 'configured',
+// Backend wraps every success body in `{"data": ...}` via
+// `httputil.WriteData`. Apply returns `{results, summary}`; validate
+// returns `{documents, valid}` (different shape — see
+// `backend/internal/yaml/handler.go`).
+
+final _applySuccessBody = {
+  'data': {
+    'results': [
+      {
+        'index': 0,
+        'kind': 'ConfigMap',
+        'name': 'cfg',
+        'namespace': 'default',
+        'action': 'configured',
+      },
+    ],
+    'summary': {
+      'total': 1,
+      'created': 0,
+      'configured': 1,
+      'unchanged': 0,
+      'failed': 0,
     },
-  ],
-  'summary': {
-    'total': 1,
-    'created': 0,
-    'configured': 1,
-    'unchanged': 0,
-    'failed': 0,
+  },
+};
+
+final _validateSuccessBody = {
+  'data': {
+    'documents': [
+      {
+        'index': 0,
+        'kind': 'ConfigMap',
+        'name': 'cfg',
+        'namespace': 'default',
+        'valid': true,
+        'errors': <Map<String, dynamic>>[],
+      },
+    ],
+    'valid': true,
   },
 };
 
@@ -130,7 +153,7 @@ void main() {
       mock.onJson(
         'POST',
         '/api/v1/yaml/validate',
-        body: _successBody,
+        body: _validateSuccessBody,
       );
 
       final notifier =
@@ -144,12 +167,15 @@ void main() {
       final req = mock.requests.first;
       expect(req.contentType, contains('application/yaml'));
 
-      // Check final state.
+      // Check final state. Validate adapts {documents, valid} into the
+      // shared ApplyResponse shape — a valid doc shows up as
+      // action='valid' under summary.unchanged.
       final state = container.read(yamlApplyControllerProvider(_testKey));
       expect(state.status, YamlApplyStatus.validated);
       expect(state.result, isNotNull);
-      expect(state.result!.summary.configured, 1);
-      expect(state.result!.results.first.action, 'configured');
+      expect(state.result!.summary.unchanged, 1);
+      expect(state.result!.summary.failed, 0);
+      expect(state.result!.results.first.action, 'valid');
       expect(state.error, isNull);
     });
 
@@ -191,7 +217,7 @@ void main() {
       );
 
       // Apply mock.
-      mock.onJson('POST', '/api/v1/yaml/apply', body: _successBody);
+      mock.onJson('POST', '/api/v1/yaml/apply', body: _applySuccessBody);
 
       final notifier =
           container.read(yamlApplyControllerProvider(_testKey).notifier);
@@ -253,7 +279,7 @@ void main() {
       );
       addTearDown(sub.close);
 
-      mock.onJson('POST', '/api/v1/yaml/validate', body: _successBody);
+      mock.onJson('POST', '/api/v1/yaml/validate', body: _validateSuccessBody);
 
       final notifier =
           container.read(yamlApplyControllerProvider(_testKey).notifier);

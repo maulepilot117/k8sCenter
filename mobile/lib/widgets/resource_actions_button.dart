@@ -105,12 +105,12 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
         await _runScale(pinnedCluster);
         return;
       case ActionId.rollback:
-        // Push the revision-picker route. Cluster-scoped resources don't
-        // have rollback in actionsByKind (only deployments), so widget.namespace
-        // is always non-empty here.
-        final clusterId = ref.read(activeClusterProvider);
+        // Push the revision-picker route using the cluster pinned at
+        // sheet-open. Reading activeClusterProvider freshly here would
+        // race against a mid-flow cluster switch — same bug class
+        // PR-2a's pinning fix targets.
         context.push(
-          '/clusters/$clusterId/workloads/deployments/'
+          '/clusters/$pinnedCluster/workloads/deployments/'
           '${widget.namespace}/${widget.name}/rollback',
         );
         return;

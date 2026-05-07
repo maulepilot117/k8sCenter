@@ -15,6 +15,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../cluster/cluster_provider.dart';
 import 'api_error.dart';
 import 'dio_client.dart';
 import 'resource_repository.dart';
@@ -41,12 +42,35 @@ class ApplyResult {
     );
   }
 
+  /// Adapts `/yaml/validate`'s `docResult` shape into the same model the
+  /// apply path uses, so the editor's result panel can render both.
+  /// Validate's `errors: [{field, message}]` collapse into a single
+  /// joined `error` string for display.
+  factory ApplyResult.fromValidateDoc(Map<String, dynamic> json) {
+    final errors = (json['errors'] as List?) ?? const [];
+    final messages = errors
+        .whereType<Map<dynamic, dynamic>>()
+        .map((e) => e['message'] as String? ?? '')
+        .where((m) => m.isNotEmpty)
+        .toList();
+    final valid = json['valid'] as bool? ?? false;
+    return ApplyResult(
+      index: (json['index'] as num?)?.toInt() ?? 0,
+      kind: json['kind'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      namespace: json['namespace'] as String?,
+      action: valid ? 'valid' : 'invalid',
+      error: messages.isEmpty ? null : messages.join('; '),
+    );
+  }
+
   final int index;
   final String kind;
   final String name;
   final String? namespace;
 
-  /// One of "created" | "configured" | "unchanged" | "failed".
+  /// One of "created" | "configured" | "unchanged" | "failed" (apply) or
+  /// "valid" | "invalid" (validate dry-run, adapted).
   final String action;
   final String? error;
 }
@@ -80,7 +104,10 @@ class ApplySummary {
 class ApplyResponse {
   const ApplyResponse({required this.results, required this.summary});
 
-  factory ApplyResponse.fromJson(Map<String, dynamic> json) {
+  /// Parses an `/api/v1/yaml/apply` response. Backend wraps every
+  /// success body in `{"data": {...}}` via `httputil.WriteData`; this
+  /// factory expects the *unwrapped* inner map.
+  factory ApplyResponse.fromApply(Map<String, dynamic> json) {
     final rawResults = (json['results'] as List?) ?? const <dynamic>[];
     final results = rawResults
         .whereType<Map<dynamic, dynamic>>()
@@ -92,6 +119,38 @@ class ApplyResponse {
     return ApplyResponse(
       results: results,
       summary: ApplySummary.fromJson(rawSummary),
+    );
+  }
+
+  /// Parses an `/api/v1/yaml/validate` response — `{documents: [...],
+  /// valid: bool}`. We adapt each doc into an [ApplyResult] (action is
+  /// "valid"/"invalid" with errors joined) and synthesize a summary so
+  /// the result panel can render both responses uniformly.
+  factory ApplyResponse.fromValidate(Map<String, dynamic> json) {
+    final rawDocs = (json['documents'] as List?) ?? const <dynamic>[];
+    final results = rawDocs
+        .whereType<Map<dynamic, dynamic>>()
+        .map<ApplyResult>((m) =>
+            ApplyResult.fromValidateDoc(Map<String, dynamic>.from(m)))
+        .toList();
+    var failed = 0;
+    var unchanged = 0;
+    for (final r in results) {
+      if (r.action == 'invalid') {
+        failed++;
+      } else {
+        unchanged++;
+      }
+    }
+    return ApplyResponse(
+      results: results,
+      summary: ApplySummary(
+        total: results.length,
+        created: 0,
+        configured: 0,
+        unchanged: unchanged,
+        failed: failed,
+      ),
     );
   }
 
@@ -169,7 +228,10 @@ class YamlApplyController
     return const YamlApplyState.idle('');
   }
 
-  /// Replace the editor content. Resets any prior result/error.
+  /// Replace the editor content. Resets any prior result/error so the
+  /// dry-run preview from a previous Validate doesn't stay visible
+  /// against now-stale content (the operator otherwise believes they
+  /// applied what they validated).
   void setContent(String yaml) {
     state = state.copyWith(
       yamlContent: yaml,
@@ -179,21 +241,23 @@ class YamlApplyController
     );
   }
 
-  /// Hit /v1/yaml/validate. Server returns the dry-run preview (same
-  /// shape as apply) so the operator can see what will change before
-  /// committing.
+  /// Hit /v1/yaml/validate. Server returns a dry-run preview shaped as
+  /// `{documents, valid}` (different from apply's `{results, summary}`);
+  /// [_post] adapts it into [ApplyResponse] so the result panel renders
+  /// both responses uniformly.
   Future<void> validate() async {
     if (state.status == YamlApplyStatus.validating ||
         state.status == YamlApplyStatus.applying) {
       return;
     }
+    if (!_clusterStillPinned()) return;
     state = state.copyWith(
       status: YamlApplyStatus.validating,
       clearResult: true,
       clearError: true,
     );
     try {
-      final res = await _post('/api/v1/yaml/validate');
+      final res = await _post('/api/v1/yaml/validate', isApply: false);
       state = state.copyWith(
         status: YamlApplyStatus.validated,
         result: res,
@@ -213,18 +277,26 @@ class YamlApplyController
 
   /// Hit /v1/yaml/apply. On success, invalidates the resource's GET so
   /// the Overview/YAML tab refetches with the new state.
+  ///
+  /// **Cluster pinning:** the controller's family key carries the
+  /// cluster id captured at parent-build time. If the operator switched
+  /// clusters between editor open and Apply, [_clusterStillPinned]
+  /// returns false and we abort with a clear error rather than firing
+  /// the write at the wrong cluster (the same defense PR-2a added to
+  /// `ResourceActionsButton`).
   Future<void> apply() async {
     if (state.status == YamlApplyStatus.validating ||
         state.status == YamlApplyStatus.applying) {
       return;
     }
+    if (!_clusterStillPinned()) return;
     state = state.copyWith(
       status: YamlApplyStatus.applying,
       clearResult: true,
       clearError: true,
     );
     try {
-      final res = await _post('/api/v1/yaml/apply');
+      final res = await _post('/api/v1/yaml/apply', isApply: true);
       state = state.copyWith(
         status: YamlApplyStatus.applied,
         result: res,
@@ -249,6 +321,21 @@ class YamlApplyController
     }
   }
 
+  /// Verify the active cluster is still the one this controller was
+  /// keyed against. Sets state to failed with an explanatory message if
+  /// it isn't.
+  bool _clusterStillPinned() {
+    final active = ref.read(activeClusterProvider);
+    if (active == arg.clusterId) return true;
+    state = state.copyWith(
+      status: YamlApplyStatus.failed,
+      error:
+          'Cluster changed during this edit. Aborted to avoid mutating '
+          'the wrong cluster. Re-open the editor.',
+    );
+    return false;
+  }
+
   /// Reset to idle preserving the current editor content. Used by the
   /// "Done" button in the result panel and by Reload.
   void reset() {
@@ -259,7 +346,10 @@ class YamlApplyController
     );
   }
 
-  Future<ApplyResponse> _post(String path) async {
+  /// POSTs YAML content and unwraps the canonical `{data: ...}` envelope
+  /// before deserializing. [isApply] picks the response shape: apply
+  /// returns `{results, summary}`, validate returns `{documents, valid}`.
+  Future<ApplyResponse> _post(String path, {required bool isApply}) async {
     final dio = ref.read(dioProvider);
     try {
       final res = await dio.post<Map<String, dynamic>>(
@@ -270,8 +360,12 @@ class YamlApplyController
           headers: {'Accept': 'application/json'},
         ),
       );
-      final body = res.data ?? const <String, dynamic>{};
-      return ApplyResponse.fromJson(body);
+      final outer = res.data ?? const <String, dynamic>{};
+      final inner =
+          (outer['data'] as Map<String, dynamic>?) ?? const <String, dynamic>{};
+      return isApply
+          ? ApplyResponse.fromApply(inner)
+          : ApplyResponse.fromValidate(inner);
     } on DioException catch (e) {
       final err = e.error;
       throw err is ApiError ? err : ApiError.fromDio(e);

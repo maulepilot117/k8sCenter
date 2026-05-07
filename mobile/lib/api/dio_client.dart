@@ -46,11 +46,24 @@ final refreshDioProvider = Provider<Dio>((ref) {
 });
 
 /// Primary Dio. Interceptors run in registration order.
+///
+/// Three timeouts matter for the YAML editor + delete paths added in
+/// PR-2b:
+///   * `connectTimeout` (10s) — TCP handshake, fine on any network.
+///   * `sendTimeout` (30s) — protects YAML uploads from stalling
+///     forever on flaky mobile connections. ConfigMaps with multi-MB
+///     embedded JSON would otherwise hang the Apply button with no
+///     error.
+///   * `receiveTimeout` (30s) — default for non-delete responses.
+///     `executeAction` overrides this to 90s for `ActionId.delete`
+///     because pods with `terminationGracePeriodSeconds > 30` legally
+///     keep the backend's k8s call open longer.
 final dioProvider = Provider<Dio>((ref) {
   final base = ref.watch(backendUrlProvider);
   final dio = Dio(BaseOptions(
     baseUrl: base,
     connectTimeout: const Duration(seconds: 10),
+    sendTimeout: const Duration(seconds: 30),
     receiveTimeout: const Duration(seconds: 30),
     contentType: 'application/json',
   ));

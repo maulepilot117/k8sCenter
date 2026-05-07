@@ -136,25 +136,24 @@ void main() {
     final (:container, :mock) = _makeContainer();
     addTearDown(container.dispose);
 
+    // Backend wraps response in {data: ...}; validate returns
+    // {documents, valid} (different shape from apply).
     mock.onJson(
       'POST',
       '/api/v1/yaml/validate',
       body: {
-        'results': [
-          {
-            'index': 0,
-            'kind': 'ConfigMap',
-            'name': 'cfg',
-            'namespace': 'default',
-            'action': 'unchanged',
-          },
-        ],
-        'summary': {
-          'total': 1,
-          'created': 0,
-          'configured': 0,
-          'unchanged': 1,
-          'failed': 0,
+        'data': {
+          'documents': [
+            {
+              'index': 0,
+              'kind': 'ConfigMap',
+              'name': 'cfg',
+              'namespace': 'default',
+              'valid': true,
+              'errors': <Map<String, dynamic>>[],
+            },
+          ],
+          'valid': true,
         },
       },
     );
