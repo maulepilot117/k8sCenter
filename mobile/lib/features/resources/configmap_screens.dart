@@ -14,6 +14,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
@@ -138,6 +139,12 @@ class ConfigMapDetailScreen extends ConsumerWidget {
           statusLabel: '${cm.keyCount} keys',
           statusColor: colors.accent,
           resource: raw,
+          trailingAction: ResourceActionsButton(
+            kind: 'configmaps',
+            namespace: cm.meta.namespace,
+            name: cm.meta.name,
+            resource: raw,
+          ),
           overviewScrollable: false,
           overview: CustomScrollView(
             slivers: [

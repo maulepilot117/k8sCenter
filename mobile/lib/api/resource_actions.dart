@@ -172,6 +172,23 @@ class ActionResult {
 const Duration _defaultActionTimeout = Duration(seconds: 30);
 const Duration _deleteActionTimeout = Duration(seconds: 90);
 
+/// Build the `/api/v1/resources/...` base path. Skips the namespace
+/// segment for cluster-scoped resources (namespace is empty), so an
+/// action on a Namespace produces `/api/v1/resources/namespaces/<name>`
+/// not `/api/v1/resources/namespaces//<name>`. Matches the backend
+/// router's split between cluster-scoped and namespaced action routes.
+String _resourceBase(String kind, String namespace, String name) {
+  final segs = <String>[
+    'api',
+    'v1',
+    'resources',
+    Uri.encodeComponent(kind),
+    if (namespace.isNotEmpty) Uri.encodeComponent(namespace),
+    Uri.encodeComponent(name),
+  ];
+  return '/${segs.join('/')}';
+}
+
 /// Execute an action against the backend. Throws [ApiError] on failure.
 /// Mirrors the executeAction switch in action-handlers.ts.
 Future<ActionResult> executeAction({
@@ -182,7 +199,7 @@ Future<ActionResult> executeAction({
   required String name,
   Map<String, dynamic>? params,
 }) async {
-  final base = '/api/v1/resources/$kind/$namespace/$name';
+  final base = _resourceBase(kind, namespace, name);
   final opts = Options(
     receiveTimeout:
         id == ActionId.delete ? _deleteActionTimeout : _defaultActionTimeout,
