@@ -31,16 +31,17 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="k8scenter"/>
             </intent-filter>
-            <!-- Universal Links (HTTPS App Links). Host is wired in via
-                 the `universalLinkHost` Gradle property (see
-                 build.gradle.kts) so operators set their own domain at
-                 build time. autoVerify="true" pairs with the
-                 .well-known/assetlinks.json hosted by the Helm template
-                 (helm/kubecenter/templates/well-known.yaml). When the
-                 property is empty the filter still parses but nothing
-                 matches; the custom-scheme filter above handles deep
-                 links in that case. -->
-            <intent-filter android:autoVerify="true">
+            <!-- Universal Links (HTTPS App Links). Host + autoVerify
+                 come from manifest placeholders set in build.gradle.kts:
+                 - `universalLinkHost` resolves the domain
+                 - `universalLinkEnabled` toggles autoVerify so when no
+                   host is configured (homelab default), autoVerify is
+                   "false" and Android's verifier ignores the empty
+                   host instead of flooding logcat with verification
+                   failures and tripping Play Console App Links warnings.
+                 The filter pairs with the .well-known/assetlinks.json
+                 hosted by helm/kubecenter/templates/well-known.yaml. -->
+            <intent-filter android:autoVerify="${universalLinkEnabled}">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>

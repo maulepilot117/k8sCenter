@@ -32,8 +32,17 @@ they just need the .well-known paths to resolve.
 {{- if not .Values.mobile.iosTeamId }}
 {{- fail "mobile.universalLinkDomain is set but mobile.iosTeamId is empty — set both or unset universalLinkDomain" }}
 {{- end }}
+{{- if not .Values.mobile.iosBundleId }}
+{{- fail "mobile.universalLinkDomain is set but mobile.iosBundleId is empty — Apple AASA payload would emit appID 'TeamID.' with a trailing dot and silently fail verification" }}
+{{- end }}
+{{- if not .Values.mobile.androidPackageName }}
+{{- fail "mobile.universalLinkDomain is set but mobile.androidPackageName is empty — assetlinks.json payload would be missing package_name and silently fail Play App Links verification" }}
+{{- end }}
 {{- if not .Values.mobile.androidSha256CertFingerprint }}
 {{- fail "mobile.universalLinkDomain is set but mobile.androidSha256CertFingerprint is empty — set both or unset universalLinkDomain" }}
+{{- end }}
+{{- if not .Values.ingress.tls }}
+{{- fail "mobile.universalLinkDomain is set but ingress.tls is empty — Apple AASA verification refuses HTTP, set ingress.tls or unset universalLinkDomain" }}
 {{- end }}
 ---
 apiVersion: v1
@@ -88,16 +97,33 @@ spec:
       labels:
         {{- include "kubecenter.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: well-known
+      annotations:
+        # Hash the four values that fully determine the ConfigMap
+        # content so a `helm upgrade` that changes any of them rolls
+        # the Pod (and reloads the served AASA/assetlinks content).
+        # nginx caches file descriptors at startup, so without this
+        # the running Pod keeps serving stale JSON after a ConfigMap
+        # update. Hashing the values directly (vs. the rendered
+        # ConfigMap manifest) avoids template self-include recursion
+        # since the ConfigMap is in the same file as the Deployment.
+        checksum/config: {{ printf "%s|%s|%s|%s" .Values.mobile.iosTeamId .Values.mobile.iosBundleId .Values.mobile.androidPackageName .Values.mobile.androidSha256CertFingerprint | sha256sum }}
     spec:
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 101
+        runAsUser: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: nginx
-          image: nginxinc/nginx-unprivileged:1.27-alpine
+          # Chainguard's distroless nginx. CLAUDE.md Tech Stack +
+          # Security Checklist call for distroless containers; this
+          # image is non-root by default, has no shell, no package
+          # manager, and only the nginx binary + minimal libs.
+          # Free public image. Operators with their own distroless
+          # registry mirror can swap this via `helm upgrade --set
+          # mobile.wellKnownImage=<registry>/<name>:<tag>`.
+          image: {{ .Values.mobile.wellKnownImage | default "cgr.dev/chainguard/nginx:latest" }}
           ports:
             - name: http
               containerPort: 8080

@@ -275,8 +275,7 @@ class _RootScreen extends ConsumerWidget {
     // onto the navigation stack so the targeted resource opens.
     ref.listen<Uri?>(pendingDeepLinkProvider, (prev, next) {
       if (next == null) return;
-      const handler = DeepLinkHandler();
-      final parsed = handler.parse(next);
+      final parsed = kDeepLinkHandler.parse(next);
       if (parsed.isValid) {
         // Defer push to next frame so the AdaptiveScaffold has mounted
         // and go_router has a stable route stack to push onto.

@@ -4,6 +4,8 @@
 # MATCH_PASSWORD); operators may switch to S3 by adjusting the workflow.
 
 storage_mode("git")
-type("appstore")
+# `type` intentionally not set here — Fastfile passes `type:` per lane
+# so a future development/adhoc lane can request its own cert type
+# without the Matchfile default fighting the call site.
 app_identifier(["io.kubecenter.kubecenter"])
 readonly(true)

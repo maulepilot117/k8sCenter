@@ -3,12 +3,13 @@
 // configuration already serves, so deep-link routing reuses the same
 // detail screens the drawer/notification-feed taps use.
 //
-// **Wiring status (M1):** the parser is exercised by tests but is not
-// yet hooked into a runtime URI source. PR-1f-time call sites — FCM
-// `getInitialMessage`/`onMessageOpenedApp` and `app_links` for
-// system-level cold-start URIs — land alongside operator FCM setup in
-// PR-1g. Until then, in-app navigation (notification feed taps) routes
-// directly via `kindDetailPath` without going through this parser.
+// **Wiring status (PR-1g):** runtime call sites in `fcm_registration.dart`
+// (FCM `getInitialMessage`/`onMessageOpenedApp`) and `app_router.dart`
+// (pendingDeepLinkProvider drain) consume the singleton `kDeepLinkHandler`
+// below, which is built once from the `UNIVERSAL_LINK_HOST` dart-define.
+// Empty in homelab → only k8scenter:// custom-scheme links resolve;
+// CI release builds substitute the operator's host so HTTPS Universal
+// Links route into the app.
 //
 // Custom scheme:
 //   k8scenter://cluster/<clusterId>/<Kind>/<namespace>/<name>
@@ -135,3 +136,19 @@ class DeepLinkHandler {
     context.push(parsed.path!);
   }
 }
+
+/// Universal Link host wired in at compile time via
+/// `--dart-define=UNIVERSAL_LINK_HOST=<domain>`. Empty in homelab
+/// builds; CI release builds substitute the operator's host. Single
+/// source of truth consumed by `kDeepLinkHandler` below.
+const String _kUniversalLinkHost = String.fromEnvironment(
+  'UNIVERSAL_LINK_HOST',
+);
+
+/// Process-wide DeepLinkHandler used by FCM listeners and the router's
+/// pendingDeepLinkProvider drain. Both call sites share this instance
+/// so the Universal Link host is configured once.
+final DeepLinkHandler kDeepLinkHandler = DeepLinkHandler(
+  universalLinkHosts:
+      _kUniversalLinkHost.isEmpty ? const {} : {_kUniversalLinkHost},
+);

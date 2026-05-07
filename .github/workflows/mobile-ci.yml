@@ -6,7 +6,9 @@ name: Mobile CI
 # Both jobs gate on the analyze job and short-circuit when their
 # required secrets are absent — operators who haven't enrolled in the
 # Apple Developer Program or set up Play Console see a clear "secrets
-# missing" skip rather than a hard failure.
+# missing" skip rather than a hard failure. `workflow_dispatch` lets
+# operators manually re-trigger a release after a transient upload
+# failure without forcing a dummy commit.
 
 on:
   push:
@@ -22,11 +24,13 @@ on:
       - "shared/themes/**"
       - "tools/theme-gen/**"
       - ".github/workflows/mobile-ci.yml"
+  workflow_dispatch:
 
 jobs:
   analyze:
     name: Flutter analyze + test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +57,7 @@ jobs:
   themes-parity:
     name: Theme generator parity
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -64,16 +69,18 @@ jobs:
         run: deno run --allow-read tools/theme-gen/main.ts --check
 
   # ---------------------------------------------------------------------
-  # Release uploads — only run on push-to-main, gated on analyze.
-  # Each job auto-skips with a clear status when its required secrets
-  # are absent, so operators bring up the pipeline incrementally.
+  # Release uploads — only run on push-to-main or workflow_dispatch,
+  # gated on analyze. Each job auto-skips with a clear status when its
+  # required secrets are absent, so operators bring up the pipeline
+  # incrementally.
   # ---------------------------------------------------------------------
 
   deploy_check:
     name: Check deploy secrets
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     needs: [analyze, themes-parity]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       ios_ready: ${{ steps.probe.outputs.ios_ready }}
       android_ready: ${{ steps.probe.outputs.android_ready }}
@@ -84,6 +91,7 @@ jobs:
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           APPSTORE_CONNECT_API_KEY: ${{ secrets.APPSTORE_CONNECT_API_KEY }}
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
         run: |
           set -e
           ios_ready=false
@@ -96,8 +104,24 @@ jobs:
           fi
           echo "ios_ready=$ios_ready" >> "$GITHUB_OUTPUT"
           echo "android_ready=$android_ready" >> "$GITHUB_OUTPUT"
-          if [ "$ios_ready" = "false" ] && [ "$android_ready" = "false" ]; then
-            echo "::notice::No deploy secrets configured — skipping iOS + Android upload. See mobile/docs/RELEASE.md."
+          # Per-platform notices: surface partial-config cases so an
+          # operator with iOS configured and Android pending (or vice
+          # versa) sees a clear log message rather than silent skip.
+          if [ "$ios_ready" = "false" ]; then
+            echo "::notice::iOS deploy secrets not configured — deploy_ios skipped. See mobile/docs/RELEASE.md."
+          fi
+          if [ "$android_ready" = "false" ]; then
+            echo "::notice::Android deploy secrets not configured — deploy_android skipped. See mobile/docs/RELEASE.md."
+          fi
+          # Universal Link host is independent of the per-platform
+          # secrets — flag when the platform is configured but the
+          # host is missing, since the resulting build will silently
+          # ship without working Universal Links.
+          if [ "$android_ready" = "true" ] && [ -z "$UNIVERSAL_LINK_HOST" ]; then
+            echo "::notice::android_ready but UNIVERSAL_LINK_HOST is empty — Android App Links will not work; only k8scenter:// custom-scheme links resolve."
+          fi
+          if [ "$ios_ready" = "true" ] && [ -z "$UNIVERSAL_LINK_HOST" ]; then
+            echo "::notice::ios_ready but UNIVERSAL_LINK_HOST is empty — iOS Universal Links will not work; only k8scenter:// custom-scheme links resolve."
           fi
 
   deploy_ios:
@@ -105,6 +129,7 @@ jobs:
     if: needs.deploy_check.outputs.ios_ready == 'true'
     needs: deploy_check
     runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -114,39 +139,58 @@ jobs:
           channel: stable
           cache: true
 
+      # Bundler-cache pulls Fastlane from mobile/fastlane/Gemfile so
+      # versions are pinned and reproducible across runs.
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
-          bundler-cache: false
-
-      - name: Install Fastlane
-        run: gem install fastlane bundler --no-document
+          bundler-cache: true
+          working-directory: mobile/fastlane
 
       - name: flutter pub get
         working-directory: mobile
         run: flutter pub get
 
-      - name: flutter build ios
-        working-directory: mobile
+      # Substitute the operator's Universal Link host into the iOS
+      # entitlements file before Fastlane archives. Runner.entitlements
+      # ships with an empty applinks array; this step replaces it with
+      # `applinks:<host>` when UNIVERSAL_LINK_HOST is set, so every
+      # CI-built IPA carries the operator's own associated-domain.
+      - name: Substitute Universal Link host into entitlements
+        if: ${{ env.UNIVERSAL_LINK_HOST != '' }}
         env:
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
-        run: flutter build ios --release --no-codesign
-
-      - name: Write App Store Connect API key
         run: |
-          mkdir -p $RUNNER_TEMP/keys
-          printf '%s' "${{ secrets.APPSTORE_CONNECT_API_KEY }}" > "$RUNNER_TEMP/keys/asc_api_key.json"
+          plutil -replace com.apple.developer.associated-domains \
+            -json "[\"applinks:${UNIVERSAL_LINK_HOST}\"]" \
+            mobile/ios/Runner/Runner.entitlements
+
+      # Write the App Store Connect API key from a step env block —
+      # passing the secret via env (not via ${{ secrets.X }} in the
+      # `run:` body) avoids inlining secret material into the bash
+      # command line where shell metacharacters could parse oddly.
+      # Restrictive perms (chmod 600) defend the on-disk artifact.
+      - name: Write App Store Connect API key
+        env:
+          ASC_KEY: ${{ secrets.APPSTORE_CONNECT_API_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          chmod 700 "$RUNNER_TEMP/keys"
+          printf '%s' "$ASC_KEY" > "$RUNNER_TEMP/keys/asc_api_key.json"
+          chmod 600 "$RUNNER_TEMP/keys/asc_api_key.json"
           echo "APP_STORE_CONNECT_API_KEY_PATH=$RUNNER_TEMP/keys/asc_api_key.json" >> "$GITHUB_ENV"
 
       - name: TestFlight upload
-        working-directory: mobile
+        working-directory: mobile/fastlane
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: fastlane beta_ios
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: bundle exec fastlane beta_ios
 
       - name: Cleanup secrets
         if: always()
@@ -157,6 +201,7 @@ jobs:
     if: needs.deploy_check.outputs.android_ready == 'true'
     needs: deploy_check
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -169,32 +214,55 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
-          bundler-cache: false
+          bundler-cache: true
+          working-directory: mobile/fastlane
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Fastlane
-        run: gem install fastlane bundler --no-document
-
       - name: flutter pub get
         working-directory: mobile
         run: flutter pub get
 
-      - name: Write Play service account key
-        run: |
-          mkdir -p $RUNNER_TEMP/keys
-          printf '%s' "${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}" > "$RUNNER_TEMP/keys/play_sa.json"
-          echo "PLAY_SERVICE_ACCOUNT_JSON_PATH=$RUNNER_TEMP/keys/play_sa.json" >> "$GITHUB_ENV"
-
-      - name: Play Internal upload
+      # Discrete flutter build step (mirrors deploy_ios) so build
+      # failures surface in their own log section rather than buried
+      # inside Fastlane's gradle() output. The dart-define plumbs the
+      # Universal Link host into the DeepLinkHandler at compile time.
+      - name: flutter build appbundle
         working-directory: mobile
         env:
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: fastlane beta_android
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # versionCode = run_number * 10 + (run_attempt - 1) so
+          # re-runs on the same commit produce unique versionCodes.
+          # Play rejects duplicate versionCodes unconditionally.
+          version_code=$(( GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT - 1 ))
+          flutter build appbundle --release \
+            --dart-define=UNIVERSAL_LINK_HOST="$UNIVERSAL_LINK_HOST" \
+            -- -PversionCode="$version_code" \
+               -PuniversalLinkHost="$UNIVERSAL_LINK_HOST"
+
+      - name: Write Play service account key
+        env:
+          PLAY_SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          chmod 700 "$RUNNER_TEMP/keys"
+          printf '%s' "$PLAY_SA" > "$RUNNER_TEMP/keys/play_sa.json"
+          chmod 600 "$RUNNER_TEMP/keys/play_sa.json"
+          echo "PLAY_SERVICE_ACCOUNT_JSON_PATH=$RUNNER_TEMP/keys/play_sa.json" >> "$GITHUB_ENV"
+
+      - name: Play Internal upload
+        working-directory: mobile/fastlane
+        env:
+          UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: bundle exec fastlane beta_android
 
       - name: Cleanup secrets
         if: always()

@@ -223,3 +223,8 @@ mobile:
   # the cert used to sign the AAB Fastlane uploads.
   androidPackageName: "io.kubecenter.kubecenter"
   androidSha256CertFingerprint: ""  # e.g., "AB:CD:EF:..."
+  # Distroless nginx image for the well-known pod. Defaults to
+  # Chainguard's free public distroless build. Operators behind
+  # air-gapped registries should mirror to their own internal
+  # registry and override this value.
+  wellKnownImage: ""  # empty → cgr.dev/chainguard/nginx:latest

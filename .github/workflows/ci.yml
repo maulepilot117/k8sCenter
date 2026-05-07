@@ -16,6 +16,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      helm: ${{ steps.filter.outputs.helm }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -26,6 +27,8 @@ jobs:
               - 'backend/**'
             frontend:
               - 'frontend/**'
+            helm:
+              - 'helm/**'
 
   backend:
     name: Backend
@@ -82,3 +85,60 @@ jobs:
 
       - name: Build
         run: deno task build
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        # actionlint catches workflow YAML syntax errors and
+        # expression-language mistakes (typos in needs.<job>.outputs,
+        # unknown contexts, etc.) before push-to-main. Runs on every
+        # PR — not gated on path filters since workflow changes can
+        # land in any PR.
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.5
+          ./actionlint -color
+
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [changes]
+    if: needs.changes.outputs.helm == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.2"
+
+      - name: helm lint
+        run: helm lint helm/kubecenter
+
+      # Render the chart with Universal Link wiring enabled so the
+      # well-known.yaml template's fail-fast guards and resource
+      # outputs are exercised. helm dependency build pulls subcharts
+      # so template render doesn't fail on missing deps.
+      - name: helm dependency build
+        run: helm dependency build helm/kubecenter
+
+      - name: helm template — Universal Links enabled
+        run: |
+          helm template kubecenter helm/kubecenter \
+            --set mobile.universalLinkDomain=test.example.com \
+            --set mobile.iosTeamId=ABCDE12345 \
+            --set mobile.androidSha256CertFingerprint=AB:CD:EF \
+            --set ingress.enabled=true \
+            --set 'ingress.tls[0].secretName=kubecenter-tls' \
+            --set 'ingress.tls[0].hosts[0]=test.example.com' \
+            > /dev/null
+
+      # Default render (Universal Links disabled) must also succeed —
+      # well-known.yaml should emit nothing in this branch.
+      - name: helm template — defaults
+        run: helm template kubecenter helm/kubecenter > /dev/null

@@ -107,9 +107,17 @@ Upload `build/app/outputs/bundle/release/app-release.aab` to Play Console → In
 
 Optional. Without these, deep links use the `k8scenter://` custom scheme — works fine, just less polished than tapping a real HTTPS URL and having it open the app directly.
 
+> **Single source of truth.** When enabling Universal Links, the same domain must be set in **all four** of:
+> 1. `mobile.universalLinkDomain` (Helm values, this section step 2) — chooses where the well-known files are served
+> 2. `UNIVERSAL_LINK_HOST` (GitHub Actions secret, used by both `deploy_ios` and `deploy_android`) — substituted into the iOS entitlement and Android manifest at build time
+> 3. iOS Xcode entitlement (this section step 4) — required for the Apple AASA verification round-trip
+> 4. Apple Developer Portal → App ID → Capabilities → Associated Domains
+>
+> Mismatches silently break Universal Link verification. The mobile-ci.yml `deploy_check` job emits a `::notice::` when one of (1)/(2) is set but the other is empty.
+
 ### 1. Choose a host
 
-Operators typically use the same domain that hosts the k8sCenter web frontend (`kubecenter.example.com`). The host must be HTTPS-served and reachable from the public internet — Apple and Google both fetch the well-known files from outside your cluster.
+Operators typically use the same domain that hosts the k8sCenter web frontend (`kubecenter.example.com`). The host must be **HTTPS-served** and reachable from the public internet — Apple and Google both fetch the well-known files from outside your cluster. The Helm chart fail-fasts when `mobile.universalLinkDomain` is set without `ingress.tls`.
 
 ### 2. Set Helm values
 
@@ -134,7 +142,15 @@ The chart renders an Ingress route at `<domain>/.well-known/apple-app-site-assoc
 
 ### 4. Wire the iOS entitlement
 
-In Xcode, open `mobile/ios/Runner.xcworkspace` → Runner target → Signing & Capabilities → + Capability → Associated Domains. Add `applinks:<your-domain>`. Commit the resulting changes to `Runner.entitlements` and `Runner.xcodeproj/project.pbxproj`.
+The repo ships `mobile/ios/Runner/Runner.entitlements` already wired into `Runner.xcodeproj`'s `CODE_SIGN_ENTITLEMENTS` build setting (Debug, Release, and Profile). The default file ships with an **empty** `com.apple.developer.associated-domains` array — the CI's `deploy_ios` job substitutes the operator's domain at build time via:
+
+```bash
+plutil -replace com.apple.developer.associated-domains \
+  -json '["applinks:'"$UNIVERSAL_LINK_HOST"'"]' \
+  mobile/ios/Runner/Runner.entitlements
+```
+
+For local Xcode archives without CI, open `mobile/ios/Runner.xcworkspace` → Runner target → Signing & Capabilities → Associated Domains and add `applinks:<your-domain>` directly. Don't commit your domain back to the repo — keep the empty array as the default.
 
 ### 5. Set the Android Gradle property
 
@@ -159,6 +175,45 @@ PR-1f's FCM registration is a no-op when the operator hasn't dropped in `google-
 3. Generate an APNs auth key in Apple Developer → Keys → +. Upload it to Firebase → Project settings → Cloud Messaging → Apple app config.
 4. Set the backend's `KUBECENTER_FCM_CREDENTIALS_PATH` env var to a service-account JSON downloaded from Firebase → Project settings → Service accounts.
 5. Restart the backend; the next push channel test (`POST /api/v1/notifications/channels/<id>/test`) delivers to registered devices.
+
+## Rotating secrets
+
+The pipeline depends on several long-lived secrets that operators rotate periodically. The order matters for two of them:
+
+### `MATCH_PASSWORD` (iOS cert encryption)
+
+This password decrypts the cert + provisioning-profile bundle in your private `match` repo. Rotating it requires re-encrypting the bundle **before** updating the GitHub Actions secret, otherwise CI's `deploy_ios` permanently fails to decrypt:
+
+1. From a developer Mac with the team's Apple ID logged in:
+   ```bash
+   cd mobile/fastlane
+   bundle exec fastlane match change_password
+   ```
+   Enter the old password, then the new one. Fastlane re-encrypts every cert in the match repo and pushes back to git.
+2. Verify the updated commit appears in the match repo on GitHub.
+3. Update the `MATCH_PASSWORD` secret in GitHub Actions Settings → Secrets and variables → Actions.
+4. Re-run `deploy_ios` to confirm CI can decrypt with the new password.
+
+If you update the secret first, every CI run fails with `OpenSSL::Cipher::CipherError` until you complete step 1 + 2.
+
+### `APPSTORE_CONNECT_API_KEY` (TestFlight upload auth)
+
+App Store Connect API keys are revocable from Users and Access → Integrations. When rotating:
+
+1. Generate a new key with the App Manager role.
+2. Update the `APPSTORE_CONNECT_API_KEY` secret with the new JSON blob (same shape as initial setup).
+3. Revoke the old key in App Store Connect.
+4. The next push to `main` uses the new key.
+
+If the old key expires or is revoked before step 2, `deploy_ios` fails with HTTP 401 from App Store Connect.
+
+### `PLAY_SERVICE_ACCOUNT_JSON` (Play Internal upload auth)
+
+Service-account JSON keys can be rotated in Google Cloud Console → IAM & Admin → Service Accounts → Keys. Update the GitHub secret with the new key JSON; the old key continues to work until you delete it. Rotation is non-blocking.
+
+### `MATCH_GIT_URL`
+
+Changing the cert-storage repo URL is a one-time migration: clone the old repo, push to the new one (preserving encrypted blobs), then update the secret. There's no rotation friction for this one.
 
 ## Smoke checklist
 

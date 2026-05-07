@@ -38,7 +38,10 @@ class FcmRegistration {
   StreamSubscription<String>? _tokenRefreshSub;
   StreamSubscription<RemoteMessage>? _openedAppSub;
   bool _initialized = false;
-  static const _handler = DeepLinkHandler();
+  // Shared with the router's pendingDeepLinkProvider drain — single
+  // source of truth for the Universal Link host (see
+  // deep_link_handler.dart's `kDeepLinkHandler`).
+  static final DeepLinkHandler _handler = kDeepLinkHandler;
 
   /// Called once after auth completes. Returns silently when Firebase
   /// init fails (missing platform config, sandboxed CI run, etc.).

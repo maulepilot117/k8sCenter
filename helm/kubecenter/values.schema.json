@@ -95,6 +95,36 @@
       "properties": {
         "enabled": { "type": "boolean" }
       }
+    },
+    "mobile": {
+      "type": "object",
+      "description": "Mobile app Universal Link domain hosting — opt-in.",
+      "properties": {
+        "universalLinkDomain": {
+          "type": "string",
+          "description": "Public host serving Universal Link well-known files. Empty = disabled."
+        },
+        "iosTeamId": {
+          "type": "string",
+          "description": "Apple Developer Team ID. Required when universalLinkDomain is set."
+        },
+        "iosBundleId": {
+          "type": "string",
+          "description": "iOS bundle identifier."
+        },
+        "androidPackageName": {
+          "type": "string",
+          "description": "Android application package name."
+        },
+        "androidSha256CertFingerprint": {
+          "type": "string",
+          "description": "SHA-256 fingerprint of the Android upload signing certificate (colon-separated hex). Required when universalLinkDomain is set."
+        },
+        "wellKnownImage": {
+          "type": "string",
+          "description": "Distroless nginx image for the well-known Pod. Empty = cgr.dev/chainguard/nginx:latest."
+        }
+      }
     }
   }
 }

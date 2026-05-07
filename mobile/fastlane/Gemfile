@@ -1,0 +1,10 @@
+source "https://rubygems.org"
+
+# Pin Fastlane to a 2.225+ patch series. Without this the workflow's
+# `gem install fastlane` floats to whatever release is current on each
+# CI run, and a breaking Fastlane release silently breaks deploys.
+gem "fastlane", "~> 2.225"
+
+# Optional: Fastlane plugins go here. None used at PR-1g time.
+plugins_path = File.expand_path("Pluginfile", __dir__)
+eval_gemfile(plugins_path) if File.exist?(plugins_path)

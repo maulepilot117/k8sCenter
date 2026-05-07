@@ -1,11 +1,12 @@
 # Fastlane lanes for k8sCenter mobile release uploads. Invoked from the
-# `mobile-deploy` job in `.github/workflows/mobile-ci.yml` on push-to-main.
+# `mobile-deploy` jobs in `.github/workflows/mobile-ci.yml` on push-to-
+# main and on workflow_dispatch.
 #
-# Both lanes are no-ops in CI when their required secrets are absent —
-# the workflow's secret-presence checks short-circuit before invoking
-# Fastlane. When a secret was set on a prior run and is later removed,
-# the lane still fails gracefully with a clear error pointing at
-# `mobile/docs/RELEASE.md`.
+# The workflow is responsible for the actual flutter build (Android via
+# `flutter build appbundle --release`, iOS via Fastlane's `build_app`).
+# These lanes only own the upload step plus iOS code-signing material
+# fetched via `match`. That avoids the double-build wasted work the
+# earlier draft did and keeps each lane focused.
 #
 # Operator setup is documented in `mobile/docs/RELEASE.md`. The TL;DR:
 # enroll in Apple Developer Program, set up Play Console, create an
@@ -13,35 +14,61 @@
 # provisioning profiles in a private GitHub repo accessible to
 # `fastlane match`, and set the GitHub Actions secrets the workflow
 # expects.
+#
+# Working directory: lanes are invoked from `mobile/fastlane/`. Paths
+# relative to that directory point at:
+#   ../ios/Runner.xcworkspace
+#   ../android (for the AAB output path)
+#   ../android/app/build/outputs/bundle/release/app-release.aab
 
 default_platform(:ios)
+
+# Helper: derive a unique build number from CI env so re-runs on the
+# same commit produce distinct values. Play and TestFlight both reject
+# duplicate version/build numbers, so RUN_ATTEMPT must contribute.
+def ci_build_number
+  run = ENV["GITHUB_RUN_NUMBER"]&.to_i ||
+    `git rev-list --count HEAD`.strip.to_i
+  attempt = ENV["GITHUB_RUN_ATTEMPT"]&.to_i || 1
+  (run * 10) + (attempt - 1)
+end
+
+# Helper: assert an env var is set and abort with a clean Fastlane
+# error (no Ruby stack trace) when it's missing. UI.user_error! aborts
+# the lane with exit code 1 and a single-line message — much friendlier
+# than `ENV["X"] || raise(...)` in a keyword arg.
+def required_env(name)
+  value = ENV[name]
+  if value.nil? || value.empty?
+    UI.user_error!("#{name} not set — see mobile/docs/RELEASE.md")
+  end
+  value
+end
 
 # -----------------------------------------------------------------------
 # iOS — TestFlight upload
 # -----------------------------------------------------------------------
 platform :ios do
-  desc "Build the IPA and upload to TestFlight"
+  desc "Build the IPA via Fastlane and upload to TestFlight"
   lane :beta_ios do
     setup_ci if is_ci
+
+    api_key_path = required_env("APP_STORE_CONNECT_API_KEY_PATH")
+    match_git_url = required_env("MATCH_GIT_URL")
 
     # Pull production certs + provisioning profile from the private
     # `match` repo. Read-only; CI never writes to that repo.
     match(
       type: "appstore",
       readonly: true,
-      git_url: ENV["MATCH_GIT_URL"] || raise(
-        "MATCH_GIT_URL not set — see mobile/docs/RELEASE.md"
-      ),
+      git_url: match_git_url,
       app_identifier: "io.kubecenter.kubecenter"
     )
 
-    # Build number from CI run id keeps each TestFlight build unique
-    # without bumping the version string. Falls back to git rev-list
-    # count for local invocation.
-    build_number = ENV["GITHUB_RUN_NUMBER"] ||
-      `git rev-list --count HEAD`.strip
+    # Unique build number per CI run + attempt; TestFlight rejects
+    # duplicate CFBundleVersion within the same CFBundleShortVersion.
     increment_build_number(
-      build_number: build_number,
+      build_number: ci_build_number.to_s,
       xcodeproj: "../ios/Runner.xcodeproj"
     )
 
@@ -54,8 +81,7 @@ platform :ios do
     )
 
     upload_to_testflight(
-      api_key_path: ENV["APP_STORE_CONNECT_API_KEY_PATH"] ||
-        raise("APP_STORE_CONNECT_API_KEY_PATH not set"),
+      api_key_path: api_key_path,
       skip_waiting_for_build_processing: true,
       ipa: "build/ios/kubecenter.ipa"
     )
@@ -66,41 +92,43 @@ end
 # Android — Play Internal track upload
 # -----------------------------------------------------------------------
 platform :android do
-  desc "Build the AAB and upload to Play Internal"
+  desc "Upload the workflow-built AAB to Play Internal"
   lane :beta_android do
-    # Decode the Play service-account JSON from the GitHub Actions
-    # secret. The file is created by the workflow before invoking
-    # Fastlane and removed after the lane completes (see workflow).
-    json_key = ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"] ||
-      raise("PLAY_SERVICE_ACCOUNT_JSON_PATH not set")
+    json_key = required_env("PLAY_SERVICE_ACCOUNT_JSON_PATH")
+    aab_path = "../android/app/build/outputs/bundle/release/app-release.aab"
 
-    # Bump the versionCode from the CI run number so every push to main
-    # produces a unique Play upload. versionName is left to the
-    # operator's tag/release flow.
-    build_number = ENV["GITHUB_RUN_NUMBER"] ||
-      `git rev-list --count HEAD`.strip
+    unless File.exist?(aab_path)
+      UI.user_error!(
+        "AAB not found at #{aab_path} — workflow's flutter build " \
+        "appbundle step must run first. See mobile-ci.yml deploy_android."
+      )
+    end
 
-    gradle(
-      task: "bundleRelease",
-      project_dir: "../android",
-      properties: {
-        "versionCode" => build_number,
-        # Plumb the Universal Link host through to Gradle so the
-        # release manifest gets the correct App Links host.
-        "universalLinkHost" => ENV["UNIVERSAL_LINK_HOST"] || ""
-      }
-    )
-
-    upload_to_play_store(
-      track: "internal",
-      json_key: json_key,
-      package_name: "io.kubecenter.kubecenter",
-      aab: "../android/app/build/outputs/bundle/release/app-release.aab",
-      skip_upload_apk: true,
-      skip_upload_metadata: true,
-      skip_upload_changelogs: true,
-      skip_upload_images: true,
-      skip_upload_screenshots: true
-    )
+    begin
+      upload_to_play_store(
+        track: "internal",
+        json_key: json_key,
+        aab: aab_path,
+        skip_upload_apk: true,
+        skip_upload_metadata: true,
+        skip_upload_changelogs: true,
+        skip_upload_images: true,
+        skip_upload_screenshots: true
+      )
+    rescue => e
+      # Play API returns 404 until an operator does the FIRST manual
+      # AAB upload via Play Console (Play won't accept programmatic
+      # uploads before that). Surface a clear pointer at the doc
+      # rather than a Fastlane stack trace.
+      if e.message.include?("404") || e.message.include?("Error 404")
+        UI.user_error!(
+          "Play Console rejected the upload (HTTP 404). This usually " \
+          "means the first manual AAB upload hasn't been done yet — " \
+          "see mobile/docs/RELEASE.md 'Android setup → step 5 First " \
+          "manual upload' for the bring-up procedure."
+        )
+      end
+      raise
+    end
   end
 end

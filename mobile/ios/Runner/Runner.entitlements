@@ -13,16 +13,18 @@
   `helm/kubecenter/templates/well-known.yaml` template hosts the
   matching apple-app-site-association at the same domain.
 
-  When operators don't have a Universal Link domain set up, leave this
-  file unwired in Xcode — the app still works via the `k8scenter://`
-  custom scheme registered in Info.plist.
+  When operators have no Universal Link domain set up, the empty
+  array below makes this entitlement a no-op — the app still works via
+  the `k8scenter://` custom scheme registered in Info.plist. To enable
+  Universal Links, either set `UNIVERSAL_LINK_HOST` as a GitHub Actions
+  secret (CI substitutes it at build time via the `plutil -replace`
+  step in mobile-ci.yml's deploy_ios job) or edit this file directly
+  in Xcode (Signing & Capabilities → Associated Domains).
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>com.apple.developer.associated-domains</key>
-	<array>
-		<string>applinks:kubecenter.example.com</string>
-	</array>
+	<array/>
 </dict>
 </plist>
