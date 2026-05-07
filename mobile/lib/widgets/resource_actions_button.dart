@@ -18,6 +18,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../api/api_error.dart';
 import '../api/dio_client.dart';
@@ -104,8 +105,14 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
         await _runScale(pinnedCluster);
         return;
       case ActionId.rollback:
-        // Rollback ships in PR-2b. Filtered out of `actionsByKind` so this
-        // case is unreachable; kept for enum exhaustiveness.
+        // Push the revision-picker route. Cluster-scoped resources don't
+        // have rollback in actionsByKind (only deployments), so widget.namespace
+        // is always non-empty here.
+        final clusterId = ref.read(activeClusterProvider);
+        context.push(
+          '/clusters/$clusterId/workloads/deployments/'
+          '${widget.namespace}/${widget.name}/rollback',
+        );
         return;
       case ActionId.restart:
       case ActionId.delete:

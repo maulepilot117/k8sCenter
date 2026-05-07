@@ -27,6 +27,7 @@ import '../features/resources/node_screens.dart';
 import '../features/resources/pod_screens.dart';
 import '../features/resources/pvc_screens.dart';
 import '../features/resources/replicaset_screens.dart';
+import '../features/resources/rollback_picker_screen.dart';
 import '../features/resources/secret_screens.dart';
 import '../features/resources/service_screens.dart';
 import '../features/resources/statefulset_screens.dart';
@@ -102,6 +103,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               namespace: state.pathParameters['namespace']!,
               name: state.pathParameters['name']!,
             ),
+            routes: [
+              GoRoute(
+                path: 'rollback',
+                builder: (context, state) => RollbackPickerScreen(
+                  namespace: state.pathParameters['namespace']!,
+                  name: state.pathParameters['name']!,
+                ),
+              ),
+            ],
           ),
         ],
       ),
