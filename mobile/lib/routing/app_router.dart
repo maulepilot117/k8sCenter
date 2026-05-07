@@ -13,6 +13,8 @@ import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
+import '../features/notifications_center/feed_screen.dart';
+import '../features/observability/logs/log_tail_screen.dart';
 import '../features/resources/configmap_screens.dart';
 import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
@@ -58,6 +60,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/',
         builder: (context, state) => const _RootScreen(),
+      ),
+
+      // --- PR-1f: notification feed + pod log tail ---
+      GoRoute(
+        path: '/notifications',
+        builder: (context, state) => const NotificationFeedScreen(),
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/pods/:namespace/:name/logs/:container',
+        builder: (context, state) => LogTailScreen(
+          namespace: state.pathParameters['namespace']!,
+          pod: state.pathParameters['name']!,
+          container: state.pathParameters['container']!,
+        ),
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---

@@ -90,6 +90,28 @@ class _PodRow {
 
   String get podIP => readPath(raw, 'status.podIP') as String? ?? '—';
   String get nodeName => readPath(raw, 'spec.nodeName') as String? ?? '—';
+
+  /// Names of regular + init + ephemeral containers, in declaration
+  /// order. Used by the detail screen to render per-container "View
+  /// logs" tiles. kubectl semantics: every container can have its own
+  /// log stream, so the pod detail surfaces them all.
+  List<String> get containerNames {
+    final names = <String>[];
+    for (final field in const [
+      'spec.containers',
+      'spec.initContainers',
+      'spec.ephemeralContainers',
+    ]) {
+      final list = (readPath(raw, field) as List?) ?? const [];
+      for (final c in list) {
+        if (c is Map) {
+          final n = c['name'] as String?;
+          if (n != null && n.isNotEmpty) names.add(n);
+        }
+      }
+    }
+    return names;
+  }
 }
 
 class PodListScreen extends ConsumerWidget {
@@ -250,6 +272,35 @@ class PodDetailScreen extends ConsumerWidget {
                   ],
                 ),
               ),
+              if (pod.containerNames.isNotEmpty)
+                DetailSection(
+                  title: 'LOGS',
+                  child: Column(
+                    children: [
+                      for (final c in pod.containerNames)
+                        ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            Icons.terminal_outlined,
+                            color: colors.accent,
+                            size: 18,
+                          ),
+                          title: Text(c,
+                              style:
+                                  TextStyle(color: colors.textPrimary, fontSize: 13)),
+                          trailing: Icon(Icons.chevron_right,
+                              color: colors.textMuted, size: 18),
+                          onTap: () => context.push(
+                            '/clusters/$clusterId/workloads/pods/'
+                            '${Uri.encodeComponent(pod.meta.namespace)}/'
+                            '${Uri.encodeComponent(pod.meta.name)}/logs/'
+                            '${Uri.encodeComponent(c)}',
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               if (pod.meta.labels.isNotEmpty)
                 DetailSection(
                   title: 'LABELS',

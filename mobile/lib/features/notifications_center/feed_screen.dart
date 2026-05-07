@@ -1,0 +1,256 @@
+// Notification feed list. Pull-to-refresh, severity-tinted rows, tap to
+// mark read + deep-link to the affected resource (when carried). Filter
+// chips for severity and source live in a top sliver so they survive
+// rebuilds — read state changes only invalidate the list query.
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../routing/domain_sections.dart';
+import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
+import 'feed_repository.dart';
+
+class NotificationFeedScreen extends ConsumerWidget {
+  const NotificationFeedScreen({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final feed = ref.watch(notificationsFeedProvider);
+    final unread = ref.watch(unreadCountProvider).asData?.value ?? 0;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const Text('Notifications'),
+            const SizedBox(width: 8),
+            if (unread > 0)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 2,
+                ),
+                decoration: BoxDecoration(
+                  color: colors.accent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '$unread',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          if (unread > 0)
+            TextButton(
+              onPressed: () async {
+                await ref
+                    .read(notificationsRepositoryProvider)
+                    .markAllRead();
+                ref.invalidate(notificationsFeedProvider);
+                ref.invalidate(unreadCountProvider);
+              },
+              child: const Text('Mark all read'),
+            ),
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          ref.invalidate(notificationsFeedProvider);
+          ref.invalidate(unreadCountProvider);
+          await ref.read(notificationsFeedProvider.future);
+        },
+        child: feed.when(
+          loading: () => const Center(child: LoadingState()),
+          error: (e, _) => ErrorStateView(
+            message: e.toString(),
+            onRetry: () => ref.invalidate(notificationsFeedProvider),
+          ),
+          data: (page) {
+            if (page.items.isEmpty) {
+              return ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 200),
+                  Center(child: Text('No notifications')),
+                ],
+              );
+            }
+            return ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              itemCount: page.items.length,
+              separatorBuilder: (_, _) =>
+                  Divider(height: 1, color: colors.borderSubtle),
+              itemBuilder: (context, i) =>
+                  _NotificationTile(item: page.items[i]),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _NotificationTile extends ConsumerWidget {
+  const _NotificationTile({required this.item});
+  final NotificationItem item;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final severityColor = switch (item.severity.toLowerCase()) {
+      'critical' || 'error' => colors.error,
+      'warning' => colors.warning,
+      'info' => colors.accent,
+      _ => colors.textMuted,
+    };
+    final unreadDot = item.read
+        ? const SizedBox(width: 8)
+        : Container(
+            width: 8,
+            height: 8,
+            margin: const EdgeInsets.only(right: 4),
+            decoration: BoxDecoration(
+              color: colors.accent,
+              shape: BoxShape.circle,
+            ),
+          );
+
+    return InkWell(
+      onTap: () async {
+        if (!item.read) {
+          await ref.read(notificationsRepositoryProvider).markRead(item.id);
+          ref.invalidate(notificationsFeedProvider);
+          ref.invalidate(unreadCountProvider);
+        }
+        if (!context.mounted) return;
+        if (item.hasResourceTarget) {
+          final clusterId = item.clusterId ?? 'local';
+          final ns = item.resourceNamespace ?? '';
+          final canonicalKind = item.resourceKind ?? '';
+          // Use the kind segment as-is; kindDetailPath() falls back to
+          // the generic-detail catch-all when the canonical Kind isn't
+          // a registered specialized screen.
+          final path = kindDetailPath(
+            clusterId: clusterId,
+            kind: canonicalKind.toLowerCase(),
+            namespace: ns,
+            name: item.resourceName ?? '',
+          );
+          context.push(path);
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        color: item.read ? null : colors.bgElevated,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            unreadDot,
+            const SizedBox(width: 8),
+            _SeverityChip(label: item.severity, color: severityColor),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          item.title,
+                          style: TextStyle(
+                            color: colors.textPrimary,
+                            fontSize: 14,
+                            fontWeight: item.read
+                                ? FontWeight.w400
+                                : FontWeight.w600,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Text(
+                        _shortAge(item.createdAt),
+                        style: TextStyle(
+                          color: colors.textMuted,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (item.message.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      item.message,
+                      style:
+                          TextStyle(color: colors.textSecondary, fontSize: 12),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                  if (item.hasResourceTarget) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '${item.resourceKind} · '
+                      '${item.resourceNamespace?.isEmpty ?? true ? "<cluster>" : item.resourceNamespace} · '
+                      '${item.resourceName}',
+                      style: TextStyle(
+                        color: colors.textMuted,
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (item.hasResourceTarget)
+              Icon(Icons.chevron_right, color: colors.textMuted, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SeverityChip extends StatelessWidget {
+  const _SeverityChip({required this.label, required this.color});
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label.toLowerCase(),
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+String _shortAge(DateTime t) {
+  final delta = DateTime.now().difference(t);
+  if (delta.inDays >= 1) return '${delta.inDays}d';
+  if (delta.inHours >= 1) return '${delta.inHours}h';
+  if (delta.inMinutes >= 1) return '${delta.inMinutes}m';
+  return 'now';
+}
