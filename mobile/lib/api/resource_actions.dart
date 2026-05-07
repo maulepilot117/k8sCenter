@@ -8,25 +8,29 @@
 // `DELETE` for delete) — see `backend/internal/server/routes.go:758-762`.
 
 import 'package:dio/dio.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/permissions.dart';
 import '../auth/user.dart';
 import 'api_error.dart';
-import 'dio_client.dart';
 
 /// Valid action identifiers. Mirrors `ActionId` in action-handlers.ts.
 enum ActionId { scale, restart, delete, suspend, trigger, rollback }
 
-/// Actions available per resource kind. Source of truth lives in
-/// `frontend/lib/action-handlers.ts:ACTIONS_BY_KIND` — this map is its
-/// Dart twin and must stay in sync. Rollback is M2 PR-2b; declared here
-/// (deployments only) so the enum + maps don't churn between PRs.
+/// Kind → action map. Mirrors `frontend/lib/action-handlers.ts:ACTIONS_BY_KIND`
+// 1:1 except where M2 PR-2a intentionally defers an action to PR-2b. Drift
+// between this map and the TS source is the bug class type-to-confirm exists
+// to prevent — keep them isomorphic.
+//
+// Deferred this PR (will re-appear in PR-2b):
+//   - deployments rollback (revision picker + execution land in PR-2b)
+//   - rolebindings / clusterrolebindings delete (cluster-scoped URL routing
+//     not yet implemented; current `executeAction` URL builder assumes
+//     namespaced resources, which produces a malformed `/.../<kind>//<name>`
+//     for cluster-scoped delete. Tracked for PR-2b.)
 const Map<String, List<ActionId>> actionsByKind = {
   'deployments': [
     ActionId.scale,
     ActionId.restart,
-    ActionId.rollback,
     ActionId.delete,
   ],
   'statefulsets': [ActionId.scale, ActionId.restart, ActionId.delete],
@@ -34,8 +38,6 @@ const Map<String, List<ActionId>> actionsByKind = {
   'pods': [ActionId.delete],
   'jobs': [ActionId.suspend, ActionId.delete],
   'cronjobs': [ActionId.suspend, ActionId.trigger, ActionId.delete],
-  'rolebindings': [ActionId.delete],
-  'clusterrolebindings': [ActionId.delete],
 };
 
 /// Maps action IDs to the k8s verb required to perform them. Used by
@@ -66,21 +68,22 @@ List<ActionId> getVisibleActions(
 }
 
 /// Display metadata for an action.
+///
+/// The destructive-vs-simple confirm distinction is encoded entirely by
+/// `typeToConfirm`: non-null means destructive (ConfirmSheet renders a
+/// type-to-confirm input gating the confirm button), null means simple
+/// OK/Cancel. The TS source's `confirm: 'confirm' | 'destructive'`
+/// discriminator was redundant in Dart and has been dropped.
 class ActionMeta {
   const ActionMeta({
     required this.label,
     this.danger = false,
-    this.confirm,
     this.confirmMessage,
     this.typeToConfirm,
   });
 
   final String label;
   final bool danger;
-
-  /// `'confirm'` = simple OK/Cancel. `'destructive'` = require typing the
-  /// resource name to enable the confirm button.
-  final String? confirm;
   final String? confirmMessage;
 
   /// When non-null, [ConfirmSheet] renders an input gated on `text == typeToConfirm`.
@@ -99,7 +102,6 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
     case ActionId.restart:
       return const ActionMeta(
         label: 'Restart',
-        confirm: 'confirm',
         confirmMessage:
             'This will perform a rolling restart, cycling all pods.',
       );
@@ -114,7 +116,6 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
       return ActionMeta(
         label: 'Delete',
         danger: true,
-        confirm: 'destructive',
         confirmMessage: msg,
         typeToConfirm: name,
       );
@@ -123,7 +124,6 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
       final suspended = spec['suspend'] == true;
       return ActionMeta(
         label: suspended ? 'Resume' : 'Suspend',
-        confirm: 'confirm',
         confirmMessage: suspended
             ? 'Resume scheduling/execution?'
             : 'Suspend scheduling/execution?',
@@ -131,13 +131,11 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
     case ActionId.trigger:
       return const ActionMeta(
         label: 'Trigger Job',
-        confirm: 'confirm',
         confirmMessage: 'Create a new Job from this CronJob\'s template?',
       );
     case ActionId.rollback:
       return const ActionMeta(
         label: 'Rollback',
-        confirm: 'confirm',
         confirmMessage: 'Pick a revision to roll back to.',
       );
   }
@@ -229,21 +227,3 @@ Future<ActionResult> executeAction({
   }
 }
 
-/// Convenience: read the active dio + run an action.
-Future<ActionResult> runAction(
-  Ref ref, {
-  required ActionId id,
-  required String kind,
-  required String namespace,
-  required String name,
-  Map<String, dynamic>? params,
-}) {
-  return executeAction(
-    dio: ref.read(dioProvider),
-    id: id,
-    kind: kind,
-    namespace: namespace,
-    name: name,
-    params: params,
-  );
-}

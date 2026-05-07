@@ -48,12 +48,11 @@ class _ScaleSheetState extends State<ScaleSheet> {
   void _submit() {
     final text = _controller.text.trim();
     final parsed = int.tryParse(text);
+    // FilteringTextInputFormatter.digitsOnly on the field makes negative
+    // input unreachable through normal typing, so the only failure path
+    // here is empty input (or an int.tryParse overflow on absurd lengths).
     if (parsed == null) {
       setState(() => _error = 'Enter a whole number');
-      return;
-    }
-    if (parsed < 0) {
-      setState(() => _error = 'Replicas cannot be negative');
       return;
     }
     Navigator.of(context).pop(parsed);

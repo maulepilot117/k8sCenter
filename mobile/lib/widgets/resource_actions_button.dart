@@ -4,9 +4,17 @@
 // resource's resourceGetProvider so the detail screen refetches.
 //
 // Detail screens compose this into [ResourceDetailScaffold.trailingAction].
-// Rollback is declared in [ActionId] for stability across PRs but its UI
-// (revision picker) ships in PR-2b — selecting it here surfaces a
-// "ships in PR-2b" snackbar rather than firing the POST.
+//
+// Safety invariants:
+//   1. Cluster context is pinned at sheet open. If the operator switches
+//      clusters mid-flow (via the cluster pill), the action aborts at
+//      execute time with an explanatory snackbar — without this, the
+//      type-to-confirm gate is meaningless across cluster boundaries
+//      (a confirmed Delete on cluster A could hit a same-named resource
+//      on cluster B because ClusterInterceptor reads the active cluster
+//      at request-send time, not at sheet-open).
+//   2. The button is disabled while an action is in flight. A double-tap
+//      cannot fire two parallel destructive POSTs.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,11 +26,11 @@ import '../api/resource_repository.dart';
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
 import '../cluster/cluster_provider.dart';
-import '../features/resources/scale_sheet.dart';
 import 'action_sheet.dart';
 import 'confirm_sheet.dart';
+import 'scale_sheet.dart';
 
-class ResourceActionsButton extends ConsumerWidget {
+class ResourceActionsButton extends ConsumerStatefulWidget {
   const ResourceActionsButton({
     super.key,
     required this.kind,
@@ -39,141 +47,180 @@ class ResourceActionsButton extends ConsumerWidget {
   final Map<String, dynamic> resource;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    // Hide entirely when no actions are available for this kind. The
-    // FAB-on-empty case is acceptable but cosmetic; suppressing the icon
-    // avoids the dead-tap UX.
-    if ((actionsByKind[kind] ?? const []).isEmpty) {
+  ConsumerState<ResourceActionsButton> createState() =>
+      _ResourceActionsButtonState();
+}
+
+class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
+  bool _executing = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if ((actionsByKind[widget.kind] ?? const []).isEmpty) {
       return const SizedBox.shrink();
     }
-
     return IconButton(
       tooltip: 'Actions',
       icon: const Icon(Icons.bolt_outlined),
-      onPressed: () => _onTap(context, ref),
+      onPressed: _executing ? null : _onTap,
     );
   }
 
-  Future<void> _onTap(BuildContext context, WidgetRef ref) async {
+  Future<void> _onTap() async {
+    if (_executing) return;
+    setState(() => _executing = true);
+    try {
+      await _runFlow();
+    } finally {
+      if (mounted) setState(() => _executing = false);
+    }
+  }
+
+  Future<void> _runFlow() async {
+    // Pin the cluster at sheet-open. If the operator switches clusters
+    // before confirming, _execute aborts rather than firing the write
+    // against the new cluster.
+    final pinnedCluster = ref.read(activeClusterProvider);
     final auth = ref.read(authRepositoryProvider);
     final rbac = auth is AuthAuthenticated ? auth.rbac : null;
-    if (!context.mounted) return;
+    if (!mounted) return;
+
     final id = await showActionSheet(
       context: context,
-      kind: kind,
-      namespace: namespace,
-      resource: resource,
+      kind: widget.kind,
+      namespace: widget.namespace,
+      resource: widget.resource,
       rbac: rbac,
     );
-    if (id == null || !context.mounted) return;
+    if (id == null || !mounted) return;
 
     switch (id) {
       case ActionId.scale:
-        await _runScale(context, ref);
+        await _runScale(pinnedCluster);
         return;
       case ActionId.rollback:
-        // Rollback's revision picker lands in PR-2b. Telling the operator
-        // is friendlier than firing a partial flow.
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Rollback ships in M2 PR-2b.')),
-        );
+        // Rollback ships in PR-2b. Filtered out of `actionsByKind` so this
+        // case is unreachable; kept for enum exhaustiveness.
         return;
       case ActionId.restart:
       case ActionId.delete:
       case ActionId.suspend:
       case ActionId.trigger:
-        await _runConfirmThenAct(context, ref, id);
+        await _runConfirmThenAct(id, pinnedCluster);
         return;
     }
   }
 
-  Future<void> _runScale(BuildContext context, WidgetRef ref) async {
+  Future<void> _runScale(String pinnedCluster) async {
     final current =
-        ((resource['spec'] as Map?)?['replicas'] as num?)?.toInt() ?? 0;
+        ((widget.resource['spec'] as Map?)?['replicas'] as num?)?.toInt() ?? 0;
     final replicas = await showScaleSheet(
       context: context,
-      name: name,
+      name: widget.name,
       currentReplicas: current,
     );
-    if (replicas == null || !context.mounted) return;
+    if (replicas == null || !mounted) return;
     await _execute(
-      context,
-      ref,
       ActionId.scale,
+      pinnedCluster,
       params: {'replicas': replicas},
     );
   }
 
-  Future<void> _runConfirmThenAct(
-    BuildContext context,
-    WidgetRef ref,
-    ActionId id,
-  ) async {
-    final meta = getActionMeta(id, resource);
+  Future<void> _runConfirmThenAct(ActionId id, String pinnedCluster) async {
+    final meta = getActionMeta(id, widget.resource);
     final ok = await showConfirmSheet(
       context: context,
-      title: '${meta.label} $name',
+      title: '${meta.label} ${widget.name}',
       message: meta.confirmMessage,
       confirmLabel: meta.label,
       danger: meta.danger,
       typeToConfirm: meta.typeToConfirm,
     );
-    if (ok != true || !context.mounted) return;
+    if (ok != true || !mounted) return;
 
     Map<String, dynamic>? params;
     if (id == ActionId.suspend) {
-      // Toggle current state. getActionMeta's label is the *next* action;
-      // the request body needs the *target* boolean.
-      final spec = resource['spec'] as Map<String, dynamic>? ?? const {};
+      // Toggle from the snapshot the operator confirmed against. A small
+      // race exists if another oncall mutated the resource between detail
+      // load and this confirm — backend is idempotent (suspend twice is a
+      // no-op; resume twice is a no-op) so the worst case is a wasted PUT,
+      // not state corruption. Surfacing a confirmation against fresh state
+      // would add a network round-trip per suspend tap; not worth it.
+      final spec =
+          widget.resource['spec'] as Map<String, dynamic>? ?? const {};
       final currentlySuspended = spec['suspend'] == true;
       params = {'suspend': !currentlySuspended};
     }
 
-    await _execute(context, ref, id, params: params);
+    await _execute(id, pinnedCluster, params: params);
   }
 
   Future<void> _execute(
-    BuildContext context,
-    WidgetRef ref,
-    ActionId id, {
+    ActionId id,
+    String pinnedCluster, {
     Map<String, dynamic>? params,
   }) async {
     final messenger = ScaffoldMessenger.of(context);
+
+    // Cluster-drift check: if the operator switched clusters between
+    // sheet-open and now, abort. The type-to-confirm name only identifies
+    // the resource within the cluster it was viewed from.
+    final activeCluster = ref.read(activeClusterProvider);
+    if (activeCluster != pinnedCluster) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Cluster changed during this action. Aborted to avoid '
+            'mutating the wrong cluster. Re-run the action.',
+          ),
+        ),
+      );
+      return;
+    }
+
     try {
       final result = await executeAction(
         dio: ref.read(dioProvider),
         id: id,
-        kind: kind,
-        namespace: namespace,
-        name: name,
+        kind: widget.kind,
+        namespace: widget.namespace,
+        name: widget.name,
         params: params,
       );
-      if (!context.mounted) return;
+      if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(result.message)));
 
       // Invalidate the detail's GET so Overview/YAML/status refetch.
-      // For delete, the screen typically pops; the invalidation is
-      // harmless in either case.
-      final clusterId = ref.read(activeClusterProvider);
       ref.invalidate(resourceGetProvider(ResourceGetKey(
-        clusterId: clusterId,
-        kind: kind,
-        namespace: namespace,
-        name: name,
+        clusterId: pinnedCluster,
+        kind: widget.kind,
+        namespace: widget.namespace,
+        name: widget.name,
       )));
-      // List views (e.g., the workloads/pods table) auto-dispose, so a
-      // hot list also picks up the change next render via its own
-      // FutureProvider lifecycle. No global invalidation needed.
+      // Also invalidate the family of list providers — the list screen
+      // upstream of this detail keeps its listener under the nav stack and
+      // doesn't auto-refetch otherwise. Family-wide invalidation is broad
+      // but cheap; the autoDispose families re-fetch only when listened.
+      ref.invalidate(resourceListProvider);
 
-      if (id == ActionId.delete && context.mounted) {
+      if (id == ActionId.delete && mounted) {
         Navigator.of(context).maybePop();
       }
     } on ApiError catch (e) {
-      if (!context.mounted) return;
+      if (!mounted) return;
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
-    } catch (e) {
-      if (!context.mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+    } catch (_) {
+      // Don't leak raw exception toString() to the operator — it can carry
+      // type names, partial stack info, or unexpected payload structure.
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Action failed unexpectedly. Check the backend logs.',
+          ),
+        ),
+      );
     }
   }
 }

@@ -16,6 +16,7 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kubecenter/api/api_error.dart';
 import 'package:kubecenter/api/resource_actions.dart';
 import 'package:kubecenter/auth/user.dart';
 
@@ -79,7 +80,10 @@ void main() {
       expect(mock.requests.last.data, {'replicas': 5});
     });
 
-    test('scale rejects negative replicas before hitting network', () async {
+    test('scale rejects negative replicas at the API boundary', () async {
+      // Defensive guard — the ScaleSheet's FilteringTextInputFormatter
+      // prevents negative input via the keyboard, but executeAction is
+      // also reachable from non-UI callers so it validates independently.
       final mock = MockDioAdapter();
       await expectLater(
         () => executeAction(
@@ -223,11 +227,11 @@ void main() {
       expect(running.label, 'Suspend');
     });
 
-    test('restart uses simple confirm, not destructive', () {
+    test('restart is non-destructive: no typeToConfirm, danger=false', () {
       final meta = getActionMeta(ActionId.restart, _resource());
-      expect(meta.confirm, 'confirm');
       expect(meta.danger, isFalse);
       expect(meta.typeToConfirm, isNull);
+      expect(meta.confirmMessage, contains('rolling restart'));
     });
   });
 
@@ -267,9 +271,10 @@ void main() {
           ActionId.scale,
           ActionId.restart,
           ActionId.delete,
-          ActionId.rollback,
         ]),
       );
+      // Rollback ships in PR-2b — filtered from actionsByKind for now.
+      expect(visible, isNot(contains(ActionId.rollback)));
     });
 
     test('read-only RBAC hides every write action', () {
@@ -278,12 +283,11 @@ void main() {
       expect(visible, isEmpty);
     });
 
-    test('update-only RBAC shows scale/restart/rollback but not delete', () {
+    test('update-only RBAC shows scale/restart but not delete', () {
       final visible =
           getVisibleActions('deployments', 'default', updateOnlyRbac);
       expect(visible, contains(ActionId.scale));
       expect(visible, contains(ActionId.restart));
-      expect(visible, contains(ActionId.rollback));
       expect(visible, isNot(contains(ActionId.delete)));
     });
 
@@ -296,6 +300,72 @@ void main() {
       final visible =
           getVisibleActions('mysteries', 'default', adminRbac);
       expect(visible, isEmpty);
+    });
+  });
+
+  group('executeAction error paths', () {
+    // Helpers mirrored from the top of the file.
+    ResponseBody errorBody(int status, String message) {
+      return ResponseBody.fromBytes(
+        Uint8List.fromList(
+          utf8.encode(
+            jsonEncode({
+              'error': {'code': status, 'message': message},
+            }),
+          ),
+        ),
+        status,
+        headers: {
+          Headers.contentTypeHeader: ['application/json'],
+        },
+      );
+    }
+
+    test('scale returns 403 → throws ApiError with backend message', () async {
+      final mock = MockDioAdapter();
+      mock.on(
+        'POST',
+        '/api/v1/resources/deployments/default/app/scale',
+        (_) => errorBody(403, 'forbidden'),
+      );
+      await expectLater(
+        () => executeAction(
+          dio: _dio(mock),
+          id: ActionId.scale,
+          kind: 'deployments',
+          namespace: 'default',
+          name: 'app',
+          params: const {'replicas': 5},
+        ),
+        throwsA(
+          isA<ApiError>()
+              .having((e) => e.statusCode, 'statusCode', 403)
+              .having((e) => e.message, 'message', 'forbidden'),
+        ),
+      );
+    });
+
+    test('restart returns 500 → throws ApiError', () async {
+      final mock = MockDioAdapter();
+      mock.on(
+        'POST',
+        '/api/v1/resources/deployments/default/app/restart',
+        (_) => errorBody(500, 'internal server error'),
+      );
+      await expectLater(
+        () => executeAction(
+          dio: _dio(mock),
+          id: ActionId.restart,
+          kind: 'deployments',
+          namespace: 'default',
+          name: 'app',
+        ),
+        throwsA(
+          isA<ApiError>()
+              .having((e) => e.statusCode, 'statusCode', 500)
+              .having((e) => e.message, 'message', 'internal server error'),
+        ),
+      );
     });
   });
 }

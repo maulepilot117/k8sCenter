@@ -29,10 +29,24 @@ Widget _host(Widget Function(BuildContext) builder) {
 
 void main() {
   testWidgets('simple confirm: tap Confirm pops true', (tester) async {
-    await tester.pumpWidget(_host(
-      (_) => const ConfirmSheet(
-        title: 'Restart deploy',
-        confirmLabel: 'Restart',
+    bool? returned;
+    await tester.pumpWidget(MaterialApp(
+      theme: buildKubeTheme('nexus'),
+      home: Scaffold(
+        body: Builder(builder: (ctx) {
+          return Center(
+            child: ElevatedButton(
+              onPressed: () async {
+                returned = await showConfirmSheet(
+                  context: ctx,
+                  title: 'Restart deploy',
+                  confirmLabel: 'Restart',
+                );
+              },
+              child: const Text('Open'),
+            ),
+          );
+        }),
       ),
     ));
     await tester.tap(find.text('Open'));
@@ -40,7 +54,7 @@ void main() {
     expect(find.text('Restart deploy'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, 'Restart'));
     await tester.pumpAndSettle();
-    expect(find.byType(ConfirmSheet), findsNothing);
+    expect(returned, isTrue);
   });
 
   testWidgets('typeToConfirm: confirm disabled until exact match',
