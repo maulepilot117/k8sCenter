@@ -50,3 +50,6 @@ PR-1 begins the Flutter project: `flutter create mobile/`, pubspec deps, theme/a
 - **Apple Watch / Wear OS** — out of scope.
 - **Saved Views & Custom Dashboards** (previous roadmap #9) — still on the roadmap, post-mobile.
 - **Phone-side exec terminal** — tablets only by default. Revisit on operator demand.
+- **Secret-screen screenshot suppression** — `FLAG_SECURE` (Android) + iOS background-blur cover for `SecretDetailScreen`, so revealed plaintext doesn't appear in OS app-switcher snapshots or screen recordings. Surfaced by PR-1d code review (#17). Routed to **M5 polish** — fits naturally with the accessibility + perf pass.
+
+Per-PR carryovers (smaller follow-ups tracked at the M1 plan level rather than here): see the **Carried-Over Issues** section in `plans/mobile-app-m1-pr-sequence.md`.
