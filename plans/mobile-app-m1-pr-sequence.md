@@ -530,10 +530,10 @@ Surfaced by `/ce:code-review` on PR-1d (#235) and explicitly deferred at fix-up 
 
 | Origin | Issue | Target | Notes |
 |---|---|---|---|
-| PR-1d #10 | Tablet `DataTable` has no virtualization; nested `SingleChildScrollView`s materialize every row eagerly. | **PR-1e** | Add `data_table_2: ^2.x` dep and replace `DataTable` with `DataTable2` / `PaginatedDataTable2` in `mobile/lib/widgets/resource_table.dart`. PR-1e adds 6 more kinds and wires Events tab — pulling in DataTable2 at the same time amortizes the dep churn. |
-| PR-1d #11 | ConfigMap key list builds every key as an `ExpansionTile` inside a non-virtualized `Column`. | **PR-1e** | Replace the Column with `SliverList` / `ListView.builder` inside the detail scaffold. 8 KB inline cap shipped in PR-1d's fix-up; full-key viewer already opens a `MaterialPageRoute`. |
+| PR-1d #10 | Tablet `DataTable` has no virtualization; nested `SingleChildScrollView`s materialize every row eagerly. | ~~PR-1e~~ **resolved in PR-1e** | `data_table_2 ^2.5.16` added; `resource_table.dart` now uses `DataTable2`. |
+| PR-1d #11 | ConfigMap key list builds every key as an `ExpansionTile` inside a non-virtualized `Column`. | ~~PR-1e~~ **resolved in PR-1e** | ConfigMap detail rebuilt as `CustomScrollView` with `SliverList.builder`; `ResourceDetailScaffold.overviewScrollable=false` allows opt-out from the scaffold's own scroll wrap. |
 | PR-1d #17 | No `FLAG_SECURE` (Android) or background-blur (iOS) on Secret detail — plaintext visible in app-switcher snapshot when revealed. | **M5 polish** (per master plan) | Master plan's M5 already covers "accessibility audit + perf pass + polish". Add `flutter_windowmanager` for Android FLAG_SECURE and an `AppLifecycleState`-driven blur cover for iOS at that point. |
-| PR-1b carryover | `AuthInterceptor` refresh dedupe `Completer` can leak on synchronous throw inside `_attemptRefresh`. | **PR-1f or PR-1g** | Surfaced as pre-existing in PR-1c and PR-1d reviews. Wrap the `_attemptRefresh` body in try/finally that clears `_refreshing` regardless of outcome. Low-confidence finding — keep an eye on it during PR-1f WS auth integration where the interceptor sees more traffic. |
+| PR-1b carryover | `AuthInterceptor` refresh dedupe `Completer` can leak on synchronous throw inside `_attemptRefresh`. | ~~PR-1f or PR-1g~~ **resolved in PR-1e** | Wrapped `_attemptRefresh` body in async IIFE with try/catch/finally that clears `_refreshing` regardless of outcome. |
 | PR-1d #22 | Drawer `onTap` fires `context.go` before `Navigator.pop` completes — visible jank on slow devices, double-tap can throw on deactivated context. | **acknowledged** | Common Flutter idiom; reordering to `go-then-pop` causes other quirks. Re-evaluate only if real users report jank. |
 
 ---

@@ -152,6 +152,7 @@ class NodeDetailScreen extends ConsumerWidget {
         return ResourceDetailScaffold(
           kindLabel: 'Node',
           name: n.meta.name,
+          uid: n.meta.uid,
           icon: Icons.dns_outlined,
           statusLabel: n.ready ? 'Ready' : 'NotReady',
           statusColor: n.ready ? colors.success : colors.error,

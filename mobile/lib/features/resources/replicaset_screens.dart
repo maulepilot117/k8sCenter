@@ -1,4 +1,6 @@
-// Deployment list + detail.
+// ReplicaSet list + detail. Surfaces owning Deployment via
+// metadata.ownerReferences so operators can navigate up the
+// Deployment → ReplicaSet → Pod chain.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,25 +16,35 @@ import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
-class _DeploymentRow {
-  _DeploymentRow(this.raw) : meta = K8sMeta.from(raw);
+class _ReplicaSetRow {
+  _ReplicaSetRow(this.raw) : meta = K8sMeta.from(raw);
   final Map<String, dynamic> raw;
   final K8sMeta meta;
 
   int get desired => (readPath(raw, 'spec.replicas') as num?)?.toInt() ?? 0;
+  int get current =>
+      (readPath(raw, 'status.replicas') as num?)?.toInt() ?? 0;
   int get ready => (readPath(raw, 'status.readyReplicas') as num?)?.toInt() ?? 0;
-  int get available =>
-      (readPath(raw, 'status.availableReplicas') as num?)?.toInt() ?? 0;
-  int get updated =>
-      (readPath(raw, 'status.updatedReplicas') as num?)?.toInt() ?? 0;
-  String get strategy =>
-      readPath(raw, 'spec.strategy.type') as String? ?? 'RollingUpdate';
-  bool get healthy => desired > 0 && ready == desired;
+
+  /// Owner Deployment name (or '—' if no Deployment owner). RS that
+  /// haven't been reaped after a rollback can have an owner-less state;
+  /// the kubectl behavior is to render `<none>` and we mirror that.
+  String get ownerDeployment {
+    final owners =
+        (readPath(raw, 'metadata.ownerReferences') as List?) ?? const [];
+    for (final o in owners) {
+      if (o is Map && o['kind'] == 'Deployment') {
+        return o['name'] as String? ?? '—';
+      }
+    }
+    return '<none>';
+  }
+
+  bool get healthy => desired > 0 ? ready == desired : current == 0;
 }
 
-class DeploymentListScreen extends ConsumerWidget {
-  const DeploymentListScreen({super.key, this.namespace});
-
+class ReplicaSetListScreen extends ConsumerWidget {
+  const ReplicaSetListScreen({super.key, this.namespace});
   final String? namespace;
 
   @override
@@ -41,30 +53,34 @@ class DeploymentListScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-            namespace == null ? 'Deployments' : 'Deployments · $namespace'),
+            namespace == null ? 'ReplicaSets' : 'ReplicaSets · $namespace'),
       ),
       body: ResourceListScaffold(
         providerKey: ResourceListKey(
           clusterId: clusterId,
-          kind: 'deployments',
+          kind: 'replicasets',
           namespace: namespace,
         ),
         builder: (context, result) {
-          final rows = result.items.map(_DeploymentRow.new).toList();
-          return ResourceTable<_DeploymentRow>(
+          final rows = result.items.map(_ReplicaSetRow.new).toList();
+          return ResourceTable<_ReplicaSetRow>(
             items: rows,
             columns: [
               ResourceColumn(label: 'Name', value: (r) => r.meta.name),
               ResourceColumn(label: 'Namespace', value: (r) => r.meta.namespace),
+              ResourceColumn(label: 'Desired', value: (r) => '${r.desired}'),
+              ResourceColumn(label: 'Current', value: (r) => '${r.current}'),
               ResourceColumn(
                 label: 'Ready',
-                value: (r) => '${r.ready}/${r.desired}',
+                value: (r) => '${r.ready}',
                 color: (ctx, r) => r.healthy
                     ? Theme.of(ctx).extension<KubeColors>()!.success
                     : Theme.of(ctx).extension<KubeColors>()!.warning,
               ),
-              ResourceColumn(label: 'Up-to-date', value: (r) => '${r.updated}'),
-              ResourceColumn(label: 'Available', value: (r) => '${r.available}'),
+              ResourceColumn(
+                label: 'Owner',
+                value: (r) => r.ownerDeployment,
+              ),
               ResourceColumn(
                 label: 'Age',
                 value: (r) => formatAge(r.meta.creationTimestamp),
@@ -73,7 +89,7 @@ class DeploymentListScreen extends ConsumerWidget {
             onTap: (r) => context.push(
               kindDetailPath(
                 clusterId: clusterId,
-                kind: 'deployments',
+                kind: 'replicasets',
                 namespace: r.meta.namespace,
                 name: r.meta.name,
               ),
@@ -85,8 +101,8 @@ class DeploymentListScreen extends ConsumerWidget {
   }
 }
 
-class DeploymentDetailScreen extends ConsumerWidget {
-  const DeploymentDetailScreen({
+class ReplicaSetDetailScreen extends ConsumerWidget {
+  const ReplicaSetDetailScreen({
     super.key,
     required this.namespace,
     required this.name,
@@ -100,7 +116,7 @@ class DeploymentDetailScreen extends ConsumerWidget {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
-      kind: 'deployments',
+      kind: 'replicasets',
       namespace: namespace,
       name: name,
     );
@@ -115,16 +131,16 @@ class DeploymentDetailScreen extends ConsumerWidget {
         ),
       ),
       data: (raw) {
-        final d = _DeploymentRow(raw);
+        final r = _ReplicaSetRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
         return ResourceDetailScaffold(
-          kindLabel: 'Deployment',
-          name: d.meta.name,
-          namespace: d.meta.namespace,
-          uid: d.meta.uid,
-          icon: Icons.dashboard_outlined,
-          statusLabel: d.healthy ? 'Healthy' : 'Degraded',
-          statusColor: d.healthy ? colors.success : colors.warning,
+          kindLabel: 'ReplicaSet',
+          name: r.meta.name,
+          namespace: r.meta.namespace,
+          uid: r.meta.uid,
+          icon: Icons.layers_outlined,
+          statusLabel: r.healthy ? 'Healthy' : 'Degraded',
+          statusColor: r.healthy ? colors.success : colors.warning,
           resource: raw,
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -133,23 +149,25 @@ class DeploymentDetailScreen extends ConsumerWidget {
                 title: 'REPLICAS',
                 child: Column(
                   children: [
-                    DetailRow(label: 'Desired', value: '${d.desired}'),
-                    DetailRow(label: 'Ready', value: '${d.ready}'),
-                    DetailRow(label: 'Up-to-date', value: '${d.updated}'),
-                    DetailRow(label: 'Available', value: '${d.available}'),
+                    DetailRow(label: 'Desired', value: '${r.desired}'),
+                    DetailRow(label: 'Current', value: '${r.current}'),
+                    DetailRow(label: 'Ready', value: '${r.ready}'),
                   ],
                 ),
               ),
               DetailSection(
-                title: 'STRATEGY',
-                child: DetailRow(label: 'Type', value: d.strategy),
+                title: 'OWNER',
+                child: DetailRow(
+                  label: 'Deployment',
+                  value: r.ownerDeployment,
+                ),
               ),
-              if (d.meta.labels.isNotEmpty)
+              if (r.meta.labels.isNotEmpty)
                 DetailSection(
                   title: 'LABELS',
                   child: DetailRow(
                     label: 'Labels',
-                    value: joinMap(d.meta.labels, maxEntries: 10),
+                    value: joinMap(r.meta.labels, maxEntries: 10),
                   ),
                 ),
             ],

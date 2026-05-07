@@ -9,8 +9,13 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/resource_repository.dart';
+import '../cluster/cluster_provider.dart';
+import '../features/resources/k8s_helpers.dart';
 import '../theme/kube_theme_builder.dart';
+import 'empty_states.dart';
 
 class ResourceDetailScaffold extends StatelessWidget {
   const ResourceDetailScaffold({
@@ -24,6 +29,8 @@ class ResourceDetailScaffold extends StatelessWidget {
     required this.overview,
     this.icon = Icons.inventory_2_outlined,
     this.isSensitive = false,
+    this.overviewScrollable = true,
+    this.uid,
   });
 
   /// Heuristic the Secret screen sets to true. When true, the YAML tab
@@ -39,6 +46,7 @@ class ResourceDetailScaffold extends StatelessWidget {
     Color? statusColor,
     required Widget overview,
     IconData icon = Icons.key_outlined,
+    String? uid,
   }) : this(
           key: key,
           kindLabel: 'Secret',
@@ -50,6 +58,7 @@ class ResourceDetailScaffold extends StatelessWidget {
           overview: overview,
           icon: icon,
           isSensitive: true,
+          uid: uid,
         );
 
   final String kindLabel;
@@ -73,6 +82,18 @@ class ResourceDetailScaffold extends StatelessWidget {
   /// "operator copies plaintext from YAML tab and bypasses the Reveal
   /// gate" failure mode.
   final bool isSensitive;
+
+  /// When false, the Overview tab renders [overview] directly without
+  /// wrapping it in a SingleChildScrollView. Use for screens that need
+  /// to provide their own scroll body (e.g., ConfigMap detail uses a
+  /// CustomScrollView with a SliverList for many-key virtualization).
+  final bool overviewScrollable;
+
+  /// Optional metadata.uid; required for the Events tab to filter
+  /// events by `involvedObject.uid`. When null, Events tab falls back
+  /// to filtering by kind+namespace+name (less precise on recreated
+  /// resources but still correct for the common case).
+  final String? uid;
 
   @override
   Widget build(BuildContext context) {
@@ -121,12 +142,20 @@ class ResourceDetailScaffold extends StatelessWidget {
         ),
         body: TabBarView(
           children: [
-            SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: overview,
-            ),
+            if (overviewScrollable)
+              SingleChildScrollView(
+                padding: const EdgeInsets.all(16),
+                child: overview,
+              )
+            else
+              overview,
             _YamlTab(resource: resource, sensitive: isSensitive),
-            const _EventsPlaceholder(),
+            EventsTab(
+              kind: kindLabel,
+              namespace: namespace,
+              name: name,
+              uid: uid,
+            ),
           ],
         ),
       ),
@@ -246,30 +275,6 @@ Map<String, dynamic> _redactSensitive(Map<String, dynamic> input) {
   return out;
 }
 
-class _EventsPlaceholder extends StatelessWidget {
-  const _EventsPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.event_note_outlined, size: 48, color: colors.textMuted),
-            const SizedBox(height: 12),
-            Text(
-              'Events arrive in PR-1e',
-              style: TextStyle(color: colors.textSecondary),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 /// Helper for kind-specific overviews — renders a label/value row.
 class DetailRow extends StatelessWidget {
@@ -337,6 +342,223 @@ class DetailSection extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           child,
+        ],
+      ),
+    );
+  }
+}
+
+/// Events tab — fetches `events` from the resource's namespace and
+/// filters by `involvedObject`. Falls back to kind+name match when no
+/// uid is supplied (older detail callers, cluster-scoped resources).
+class EventsTab extends ConsumerWidget {
+  const EventsTab({
+    super.key,
+    required this.kind,
+    required this.namespace,
+    required this.name,
+    this.uid,
+  });
+
+  final String kind;
+  final String? namespace;
+  final String name;
+  final String? uid;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clusterId = ref.watch(activeClusterProvider);
+    // Events live in the same namespace as their target. For
+    // cluster-scoped resources (namespace is null/empty) we have no
+    // precise filter without a uid — UID match across the cross-namespace
+    // event list is the only correct option, but a cluster-wide fetch
+    // capped at `defaultListLimit` may truncate before reaching the
+    // matching events on busy clusters. Without a uid, we cannot match
+    // precisely, so render an explicit empty-state instead of fetching.
+    final ns = (namespace == null || namespace!.isEmpty) ? null : namespace;
+    if (ns == null && (uid == null || uid!.isEmpty)) {
+      final colors = Theme.of(context).extension<KubeColors>()!;
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Events not available for cluster-scoped resources without uid.',
+            style: TextStyle(color: colors.textMuted),
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+    final key = ResourceListKey(
+      clusterId: clusterId,
+      kind: 'events',
+      namespace: ns,
+    );
+    final events = ref.watch(resourceListProvider(key));
+    final colors = Theme.of(context).extension<KubeColors>()!;
+
+    return events.when(
+      loading: () => const LoadingState(),
+      error: (e, _) => ErrorStateView(
+        message: e.toString(),
+        onRetry: () => ref.invalidate(resourceListProvider(key)),
+      ),
+      data: (result) {
+        final filtered = result.items.where((e) => _matches(e)).toList()
+          ..sort(_byLastTimestampDesc);
+        if (filtered.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.event_note_outlined,
+                      size: 48, color: colors.textMuted),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No events for this resource',
+                    style: TextStyle(color: colors.textSecondary),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          itemCount: filtered.length,
+          itemBuilder: (context, i) => _EventTile(event: filtered[i]),
+        );
+      },
+    );
+  }
+
+  /// Matches an event row to this resource. Prefers UID equality (the
+  /// only correct signal across resource recreation) and falls back to
+  /// kind+name+namespace tuple when uid is unavailable.
+  bool _matches(Map<String, dynamic> event) {
+    final involved =
+        event['involvedObject'] as Map<String, dynamic>? ?? const {};
+    if (uid != null && uid!.isNotEmpty) {
+      return involved['uid'] == uid;
+    }
+    final involvedKind = involved['kind'] as String? ?? '';
+    final involvedName = involved['name'] as String? ?? '';
+    final involvedNs = involved['namespace'] as String? ?? '';
+    if (!_kindMatches(involvedKind, kind)) return false;
+    if (involvedName != name) return false;
+    if (namespace == null || namespace!.isEmpty) return true;
+    return involvedNs == namespace;
+  }
+
+  /// Tolerant Kubernetes-Kind comparison. The hint may arrive as the
+  /// canonical Kind ("Ingress") from a specialized detail screen, or as
+  /// the URL route segment ("ingresses", "namespaces") from the
+  /// generic-detail fallback. Kubernetes events always carry the
+  /// canonical Kind in `involvedObject.kind`, so this normalizer accepts
+  /// either side adding a trailing 's' or 'es'.
+  bool _kindMatches(String involvedKind, String hint) {
+    final a = involvedKind.toLowerCase();
+    final b = hint.toLowerCase();
+    if (a == b) return true;
+    return a == '${b}s' ||
+        a == '${b}es' ||
+        b == '${a}s' ||
+        b == '${a}es';
+  }
+
+  int _byLastTimestampDesc(
+      Map<String, dynamic> a, Map<String, dynamic> b) {
+    final ta = _eventTimestamp(a);
+    final tb = _eventTimestamp(b);
+    return tb.compareTo(ta);
+  }
+
+  String _eventTimestamp(Map<String, dynamic> e) {
+    return (e['lastTimestamp'] as String?) ??
+        (e['eventTime'] as String?) ??
+        ((e['metadata'] as Map?)?['creationTimestamp'] as String?) ??
+        '';
+  }
+}
+
+class _EventTile extends StatelessWidget {
+  const _EventTile({required this.event});
+
+  final Map<String, dynamic> event;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final type = event['type'] as String? ?? 'Normal';
+    final reason = event['reason'] as String? ?? '—';
+    final message = event['message'] as String? ?? '';
+    final count = (event['count'] as num?)?.toInt() ?? 1;
+    final ts = (event['lastTimestamp'] as String?) ??
+        (event['eventTime'] as String?) ??
+        ((event['metadata'] as Map?)?['creationTimestamp'] as String?) ??
+        '';
+    final isWarning = type == 'Warning';
+    final tone = isWarning ? colors.warning : colors.accent;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: colors.bgSurface,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: colors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: tone.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  type,
+                  style: TextStyle(
+                    color: tone,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                reason,
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const Spacer(),
+              if (count > 1)
+                Text(
+                  '×$count',
+                  style: TextStyle(color: colors.textMuted, fontSize: 11),
+                ),
+              const SizedBox(width: 8),
+              Text(
+                formatAge(ts),
+                style: TextStyle(color: colors.textMuted, fontSize: 11),
+              ),
+            ],
+          ),
+          if (message.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            SelectableText(
+              message,
+              style: TextStyle(color: colors.textSecondary, fontSize: 12),
+            ),
+          ],
         ],
       ),
     );

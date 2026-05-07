@@ -1,6 +1,7 @@
 // ResourceTable widget tests: phone vs tablet layout, tap callback,
 // empty state, and per-row color override.
 
+import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
@@ -50,7 +51,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ListTile), findsNWidgets(2));
-    expect(find.byType(DataTable), findsNothing);
+    expect(find.byType(DataTable2), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('resource-row-1')));
     await tester.pumpAndSettle();
@@ -78,7 +79,7 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    expect(find.byType(DataTable), findsOneWidget);
+    expect(find.byType(DataTable2), findsOneWidget);
     expect(find.byType(ListTile), findsNothing);
   });
 

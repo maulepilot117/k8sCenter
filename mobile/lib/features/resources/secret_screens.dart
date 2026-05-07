@@ -158,6 +158,7 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
         return ResourceDetailScaffold.secret(
           name: s.meta.name,
           namespace: s.meta.namespace,
+          uid: s.meta.uid,
           statusLabel: s.type,
           statusColor: colors.warning,
           resource: raw,

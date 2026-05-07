@@ -1,4 +1,6 @@
-// Deployment list + detail.
+// StatefulSet list + detail. Surfaces the headless service name and
+// volumeClaimTemplate count alongside the ready/desired ratio — the
+// three numbers oncall actually checks before deciding to roll back.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,25 +16,32 @@ import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
-class _DeploymentRow {
-  _DeploymentRow(this.raw) : meta = K8sMeta.from(raw);
+class _StatefulSetRow {
+  _StatefulSetRow(this.raw) : meta = K8sMeta.from(raw);
   final Map<String, dynamic> raw;
   final K8sMeta meta;
 
   int get desired => (readPath(raw, 'spec.replicas') as num?)?.toInt() ?? 0;
   int get ready => (readPath(raw, 'status.readyReplicas') as num?)?.toInt() ?? 0;
-  int get available =>
-      (readPath(raw, 'status.availableReplicas') as num?)?.toInt() ?? 0;
+  int get current =>
+      (readPath(raw, 'status.currentReplicas') as num?)?.toInt() ?? 0;
   int get updated =>
       (readPath(raw, 'status.updatedReplicas') as num?)?.toInt() ?? 0;
-  String get strategy =>
-      readPath(raw, 'spec.strategy.type') as String? ?? 'RollingUpdate';
+  String get serviceName =>
+      readPath(raw, 'spec.serviceName') as String? ?? '—';
+  int get volumeClaimTemplateCount {
+    final t = (readPath(raw, 'spec.volumeClaimTemplates') as List?) ?? const [];
+    return t.length;
+  }
+
+  String get updateStrategy =>
+      readPath(raw, 'spec.updateStrategy.type') as String? ?? 'RollingUpdate';
+
   bool get healthy => desired > 0 && ready == desired;
 }
 
-class DeploymentListScreen extends ConsumerWidget {
-  const DeploymentListScreen({super.key, this.namespace});
-
+class StatefulSetListScreen extends ConsumerWidget {
+  const StatefulSetListScreen({super.key, this.namespace});
   final String? namespace;
 
   @override
@@ -41,17 +50,17 @@ class DeploymentListScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-            namespace == null ? 'Deployments' : 'Deployments · $namespace'),
+            namespace == null ? 'StatefulSets' : 'StatefulSets · $namespace'),
       ),
       body: ResourceListScaffold(
         providerKey: ResourceListKey(
           clusterId: clusterId,
-          kind: 'deployments',
+          kind: 'statefulsets',
           namespace: namespace,
         ),
         builder: (context, result) {
-          final rows = result.items.map(_DeploymentRow.new).toList();
-          return ResourceTable<_DeploymentRow>(
+          final rows = result.items.map(_StatefulSetRow.new).toList();
+          return ResourceTable<_StatefulSetRow>(
             items: rows,
             columns: [
               ResourceColumn(label: 'Name', value: (r) => r.meta.name),
@@ -63,8 +72,7 @@ class DeploymentListScreen extends ConsumerWidget {
                     ? Theme.of(ctx).extension<KubeColors>()!.success
                     : Theme.of(ctx).extension<KubeColors>()!.warning,
               ),
-              ResourceColumn(label: 'Up-to-date', value: (r) => '${r.updated}'),
-              ResourceColumn(label: 'Available', value: (r) => '${r.available}'),
+              ResourceColumn(label: 'Service', value: (r) => r.serviceName),
               ResourceColumn(
                 label: 'Age',
                 value: (r) => formatAge(r.meta.creationTimestamp),
@@ -73,7 +81,7 @@ class DeploymentListScreen extends ConsumerWidget {
             onTap: (r) => context.push(
               kindDetailPath(
                 clusterId: clusterId,
-                kind: 'deployments',
+                kind: 'statefulsets',
                 namespace: r.meta.namespace,
                 name: r.meta.name,
               ),
@@ -85,8 +93,8 @@ class DeploymentListScreen extends ConsumerWidget {
   }
 }
 
-class DeploymentDetailScreen extends ConsumerWidget {
-  const DeploymentDetailScreen({
+class StatefulSetDetailScreen extends ConsumerWidget {
+  const StatefulSetDetailScreen({
     super.key,
     required this.namespace,
     required this.name,
@@ -100,7 +108,7 @@ class DeploymentDetailScreen extends ConsumerWidget {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
-      kind: 'deployments',
+      kind: 'statefulsets',
       namespace: namespace,
       name: name,
     );
@@ -115,16 +123,16 @@ class DeploymentDetailScreen extends ConsumerWidget {
         ),
       ),
       data: (raw) {
-        final d = _DeploymentRow(raw);
+        final s = _StatefulSetRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
         return ResourceDetailScaffold(
-          kindLabel: 'Deployment',
-          name: d.meta.name,
-          namespace: d.meta.namespace,
-          uid: d.meta.uid,
-          icon: Icons.dashboard_outlined,
-          statusLabel: d.healthy ? 'Healthy' : 'Degraded',
-          statusColor: d.healthy ? colors.success : colors.warning,
+          kindLabel: 'StatefulSet',
+          name: s.meta.name,
+          namespace: s.meta.namespace,
+          uid: s.meta.uid,
+          icon: Icons.storage_outlined,
+          statusLabel: s.healthy ? 'Healthy' : 'Degraded',
+          statusColor: s.healthy ? colors.success : colors.warning,
           resource: raw,
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -133,25 +141,28 @@ class DeploymentDetailScreen extends ConsumerWidget {
                 title: 'REPLICAS',
                 child: Column(
                   children: [
-                    DetailRow(label: 'Desired', value: '${d.desired}'),
-                    DetailRow(label: 'Ready', value: '${d.ready}'),
-                    DetailRow(label: 'Up-to-date', value: '${d.updated}'),
-                    DetailRow(label: 'Available', value: '${d.available}'),
+                    DetailRow(label: 'Desired', value: '${s.desired}'),
+                    DetailRow(label: 'Ready', value: '${s.ready}'),
+                    DetailRow(label: 'Current', value: '${s.current}'),
+                    DetailRow(label: 'Updated', value: '${s.updated}'),
                   ],
                 ),
               ),
               DetailSection(
-                title: 'STRATEGY',
-                child: DetailRow(label: 'Type', value: d.strategy),
+                title: 'SERVICE',
+                child: DetailRow(label: 'Headless', value: s.serviceName),
               ),
-              if (d.meta.labels.isNotEmpty)
-                DetailSection(
-                  title: 'LABELS',
-                  child: DetailRow(
-                    label: 'Labels',
-                    value: joinMap(d.meta.labels, maxEntries: 10),
-                  ),
+              DetailSection(
+                title: 'STORAGE',
+                child: DetailRow(
+                  label: 'Volume claim templates',
+                  value: '${s.volumeClaimTemplateCount}',
                 ),
+              ),
+              DetailSection(
+                title: 'UPDATE STRATEGY',
+                child: DetailRow(label: 'Type', value: s.updateStrategy),
+              ),
             ],
           ),
         );

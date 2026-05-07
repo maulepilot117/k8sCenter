@@ -161,13 +161,23 @@ class AuthInterceptor extends Interceptor {
 
     final completer = Completer<bool>();
     _refreshing = completer;
-    _refresh().then((ok) {
-      _refreshing = null;
-      completer.complete(ok);
-    }).catchError((Object _) {
-      _refreshing = null;
-      completer.complete(false);
-    });
+    // try/finally guarantees `_refreshing` is cleared even if `_refresh`
+    // throws synchronously before returning a Future, or if a Zone error
+    // bypasses the .catchError path. Without this, a single synchronous
+    // throw permanently wedges all subsequent 401 retries. The IIFE is
+    // intentionally fire-and-forget — callers wait on `completer.future`,
+    // so wrap in `unawaited` to declare intent and survive future
+    // analyzer upgrades that enable `unawaited_futures`.
+    unawaited(() async {
+      try {
+        final ok = await _refresh();
+        completer.complete(ok);
+      } catch (_) {
+        completer.complete(false);
+      } finally {
+        _refreshing = null;
+      }
+    }());
     return completer.future;
   }
 

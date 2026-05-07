@@ -1,7 +1,7 @@
 // Drawer navigation catalog. Mirrors a subset of
-// `frontend/lib/constants.ts::DOMAIN_SECTIONS` — only the kinds with
-// specialized list/detail screens in PR-1d are wired here. Subsequent PRs
-// (PR-1e adds RS/STS/DS/Ingress/PVC/Namespace) extend the list.
+// `frontend/lib/constants.ts::DOMAIN_SECTIONS`. PR-1d shipped the 6 hot
+// kinds; PR-1e extends with ReplicaSet, StatefulSet, DaemonSet, Ingress,
+// PVC (new Storage section), Namespace.
 
 import 'package:flutter/material.dart';
 
@@ -42,8 +42,8 @@ class DomainSection {
   final List<DomainKind> kinds;
 }
 
-/// PR-1d slice. Kinds without a specialized screen fall through to the
-/// generic detail at runtime.
+/// Kinds without a specialized screen fall through to the generic detail
+/// at runtime via [GenericDetailScreen].
 const List<DomainSection> domainSections = [
   DomainSection(
     label: 'Workloads',
@@ -56,6 +56,21 @@ const List<DomainSection> domainSections = [
         label: 'Deployments',
         icon: Icons.dashboard_outlined,
       ),
+      DomainKind(
+        kind: 'replicasets',
+        label: 'ReplicaSets',
+        icon: Icons.layers_outlined,
+      ),
+      DomainKind(
+        kind: 'statefulsets',
+        label: 'StatefulSets',
+        icon: Icons.storage_outlined,
+      ),
+      DomainKind(
+        kind: 'daemonsets',
+        label: 'DaemonSets',
+        icon: Icons.workspaces_outline,
+      ),
     ],
   ),
   DomainSection(
@@ -64,6 +79,11 @@ const List<DomainSection> domainSections = [
     icon: Icons.hub_outlined,
     kinds: [
       DomainKind(kind: 'services', label: 'Services', icon: Icons.lan_outlined),
+      DomainKind(
+        kind: 'ingresses',
+        label: 'Ingresses',
+        icon: Icons.alt_route_outlined,
+      ),
     ],
   ),
   DomainSection(
@@ -84,6 +104,18 @@ const List<DomainSection> domainSections = [
     ],
   ),
   DomainSection(
+    label: 'Storage',
+    pathSegment: 'storage',
+    icon: Icons.sd_storage_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'pvcs',
+        label: 'PVCs',
+        icon: Icons.sd_storage_outlined,
+      ),
+    ],
+  ),
+  DomainSection(
     label: 'Cluster',
     pathSegment: 'cluster',
     icon: Icons.dns_outlined,
@@ -92,6 +124,12 @@ const List<DomainSection> domainSections = [
         kind: 'nodes',
         label: 'Nodes',
         icon: Icons.dns_outlined,
+        namespaced: false,
+      ),
+      DomainKind(
+        kind: 'namespaces',
+        label: 'Namespaces',
+        icon: Icons.folder_outlined,
         namespaced: false,
       ),
     ],

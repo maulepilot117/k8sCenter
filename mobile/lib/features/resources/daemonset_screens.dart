@@ -1,4 +1,7 @@
-// Deployment list + detail.
+// DaemonSet list + detail. The five status numbers (desired, current,
+// ready, up-to-date, available) come straight from the controller and
+// answer the only question oncall asks: "is this rolling out cleanly
+// across every matched node, or is one stuck?".
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -14,25 +17,37 @@ import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
-class _DeploymentRow {
-  _DeploymentRow(this.raw) : meta = K8sMeta.from(raw);
+class _DaemonSetRow {
+  _DaemonSetRow(this.raw) : meta = K8sMeta.from(raw);
   final Map<String, dynamic> raw;
   final K8sMeta meta;
 
-  int get desired => (readPath(raw, 'spec.replicas') as num?)?.toInt() ?? 0;
-  int get ready => (readPath(raw, 'status.readyReplicas') as num?)?.toInt() ?? 0;
+  int get desired =>
+      (readPath(raw, 'status.desiredNumberScheduled') as num?)?.toInt() ?? 0;
+  int get current =>
+      (readPath(raw, 'status.currentNumberScheduled') as num?)?.toInt() ?? 0;
+  int get ready =>
+      (readPath(raw, 'status.numberReady') as num?)?.toInt() ?? 0;
+  int get upToDate =>
+      (readPath(raw, 'status.updatedNumberScheduled') as num?)?.toInt() ?? 0;
   int get available =>
-      (readPath(raw, 'status.availableReplicas') as num?)?.toInt() ?? 0;
-  int get updated =>
-      (readPath(raw, 'status.updatedReplicas') as num?)?.toInt() ?? 0;
-  String get strategy =>
-      readPath(raw, 'spec.strategy.type') as String? ?? 'RollingUpdate';
-  bool get healthy => desired > 0 && ready == desired;
+      (readPath(raw, 'status.numberAvailable') as num?)?.toInt() ?? 0;
+  int get misscheduled =>
+      (readPath(raw, 'status.numberMisscheduled') as num?)?.toInt() ?? 0;
+
+  String get nodeSelector {
+    final ns =
+        readPath(raw, 'spec.template.spec.nodeSelector') as Map?  ?? const {};
+    if (ns.isEmpty) return '<all nodes>';
+    return ns.entries.map((e) => '${e.key}=${e.value}').join(', ');
+  }
+
+  bool get healthy =>
+      desired > 0 && ready == desired && upToDate == desired && misscheduled == 0;
 }
 
-class DeploymentListScreen extends ConsumerWidget {
-  const DeploymentListScreen({super.key, this.namespace});
-
+class DaemonSetListScreen extends ConsumerWidget {
+  const DaemonSetListScreen({super.key, this.namespace});
   final String? namespace;
 
   @override
@@ -41,29 +56,34 @@ class DeploymentListScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-            namespace == null ? 'Deployments' : 'Deployments · $namespace'),
+            namespace == null ? 'DaemonSets' : 'DaemonSets · $namespace'),
       ),
       body: ResourceListScaffold(
         providerKey: ResourceListKey(
           clusterId: clusterId,
-          kind: 'deployments',
+          kind: 'daemonsets',
           namespace: namespace,
         ),
         builder: (context, result) {
-          final rows = result.items.map(_DeploymentRow.new).toList();
-          return ResourceTable<_DeploymentRow>(
+          final rows = result.items.map(_DaemonSetRow.new).toList();
+          return ResourceTable<_DaemonSetRow>(
             items: rows,
             columns: [
               ResourceColumn(label: 'Name', value: (r) => r.meta.name),
               ResourceColumn(label: 'Namespace', value: (r) => r.meta.namespace),
+              ResourceColumn(label: 'Desired', value: (r) => '${r.desired}'),
+              ResourceColumn(label: 'Current', value: (r) => '${r.current}'),
               ResourceColumn(
                 label: 'Ready',
-                value: (r) => '${r.ready}/${r.desired}',
+                value: (r) => '${r.ready}',
                 color: (ctx, r) => r.healthy
                     ? Theme.of(ctx).extension<KubeColors>()!.success
                     : Theme.of(ctx).extension<KubeColors>()!.warning,
               ),
-              ResourceColumn(label: 'Up-to-date', value: (r) => '${r.updated}'),
+              ResourceColumn(
+                label: 'Up-to-date',
+                value: (r) => '${r.upToDate}',
+              ),
               ResourceColumn(label: 'Available', value: (r) => '${r.available}'),
               ResourceColumn(
                 label: 'Age',
@@ -73,7 +93,7 @@ class DeploymentListScreen extends ConsumerWidget {
             onTap: (r) => context.push(
               kindDetailPath(
                 clusterId: clusterId,
-                kind: 'deployments',
+                kind: 'daemonsets',
                 namespace: r.meta.namespace,
                 name: r.meta.name,
               ),
@@ -85,8 +105,8 @@ class DeploymentListScreen extends ConsumerWidget {
   }
 }
 
-class DeploymentDetailScreen extends ConsumerWidget {
-  const DeploymentDetailScreen({
+class DaemonSetDetailScreen extends ConsumerWidget {
+  const DaemonSetDetailScreen({
     super.key,
     required this.namespace,
     required this.name,
@@ -100,7 +120,7 @@ class DeploymentDetailScreen extends ConsumerWidget {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
-      kind: 'deployments',
+      kind: 'daemonsets',
       namespace: namespace,
       name: name,
     );
@@ -115,14 +135,14 @@ class DeploymentDetailScreen extends ConsumerWidget {
         ),
       ),
       data: (raw) {
-        final d = _DeploymentRow(raw);
+        final d = _DaemonSetRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
         return ResourceDetailScaffold(
-          kindLabel: 'Deployment',
+          kindLabel: 'DaemonSet',
           name: d.meta.name,
           namespace: d.meta.namespace,
           uid: d.meta.uid,
-          icon: Icons.dashboard_outlined,
+          icon: Icons.workspaces_outline,
           statusLabel: d.healthy ? 'Healthy' : 'Degraded',
           statusColor: d.healthy ? colors.success : colors.warning,
           resource: raw,
@@ -130,28 +150,29 @@ class DeploymentDetailScreen extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               DetailSection(
-                title: 'REPLICAS',
+                title: 'ROLLOUT',
                 child: Column(
                   children: [
                     DetailRow(label: 'Desired', value: '${d.desired}'),
+                    DetailRow(label: 'Current', value: '${d.current}'),
                     DetailRow(label: 'Ready', value: '${d.ready}'),
-                    DetailRow(label: 'Up-to-date', value: '${d.updated}'),
+                    DetailRow(label: 'Up-to-date', value: '${d.upToDate}'),
                     DetailRow(label: 'Available', value: '${d.available}'),
+                    if (d.misscheduled > 0)
+                      DetailRow(
+                        label: 'Misscheduled',
+                        value: '${d.misscheduled}',
+                      ),
                   ],
                 ),
               ),
               DetailSection(
-                title: 'STRATEGY',
-                child: DetailRow(label: 'Type', value: d.strategy),
-              ),
-              if (d.meta.labels.isNotEmpty)
-                DetailSection(
-                  title: 'LABELS',
-                  child: DetailRow(
-                    label: 'Labels',
-                    value: joinMap(d.meta.labels, maxEntries: 10),
-                  ),
+                title: 'PLACEMENT',
+                child: DetailRow(
+                  label: 'Node selector',
+                  value: d.nodeSelector,
                 ),
+              ),
             ],
           ),
         );
