@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../api/resource_repository.dart';
+import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
@@ -25,16 +26,22 @@ class GenericDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final get = ref.watch(
-      resourceGetProvider(
-        ResourceGetKey(kind: kind, namespace: namespace, name: name),
-      ),
+    final clusterId = ref.watch(activeClusterProvider);
+    final getKey = ResourceGetKey(
+      clusterId: clusterId,
+      kind: kind,
+      namespace: namespace,
+      name: name,
     );
+    final get = ref.watch(resourceGetProvider(getKey));
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
         appBar: AppBar(title: Text(name)),
-        body: ErrorStateView(message: e.toString()),
+        body: ErrorStateView(
+          message: e.toString(),
+          onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
+        ),
       ),
       data: (raw) {
         final meta = K8sMeta.from(raw);
@@ -45,6 +52,8 @@ class GenericDetailScreen extends ConsumerWidget {
           namespace: meta.namespace.isEmpty ? null : meta.namespace,
           icon: Icons.inventory_2_outlined,
           resource: raw,
+          isSensitive: kind.toLowerCase() == 'secret' ||
+              kind.toLowerCase() == 'secrets',
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

@@ -17,6 +17,10 @@ class DomainKind {
   final String kind;
   final String label;
   final IconData icon;
+
+  /// True when the resource is namespace-scoped. Used by `kindDetailPath`
+  /// to choose between `/clusters/<id>/<section>/<kind>/<ns>/<name>` and
+  /// the cluster-scoped `/<kind>/<name>` shape.
   final bool namespaced;
 }
 
@@ -94,13 +98,49 @@ const List<DomainSection> domainSections = [
   ),
 ];
 
-/// Lookup a kind by its URL path segment. Returns null when the kind is
-/// not in the catalog (caller falls through to generic detail).
-DomainKind? findDomainKind(String kind) {
+/// Lookup the section that owns a given kind. Used by `kindDetailPath`
+/// so detail-route construction stays in one place rather than each
+/// screen hardcoding its parent section.
+DomainSection? findDomainSection(String kind) {
   for (final section in domainSections) {
     for (final k in section.kinds) {
-      if (k.kind == kind) return k;
+      if (k.kind == kind) return section;
     }
   }
   return null;
 }
+
+/// Builds the detail-route URL for a given kind. Namespaced kinds get
+/// `/clusters/<id>/<section>/<kind>/<namespace>/<name>`; cluster-scoped
+/// kinds get `/clusters/<id>/<section>/<kind>/<name>`. Falls through to
+/// the generic-detail catch-all when the kind is not in [domainSections].
+///
+/// Pulling all path construction here means cluster-id propagation, kind
+/// → section mapping, and the namespaced-vs-cluster-scoped shape all
+/// live in one source of truth — no per-screen hardcoded URLs.
+String kindDetailPath({
+  required String clusterId,
+  required String kind,
+  required String namespace,
+  required String name,
+}) {
+  final section = findDomainSection(kind);
+  if (section == null) {
+    // Generic catch-all uses '_' as the cluster-scoped namespace
+    // sentinel — picked because '_' is not a legal Kubernetes namespace
+    // (DNS-1123 label, can't start with underscore) so it can't collide.
+    final ns = namespace.isEmpty ? '_' : namespace;
+    return '/clusters/$clusterId/generic/$kind/$ns/$name';
+  }
+  final k = section.kinds.firstWhere((k) => k.kind == kind);
+  if (k.namespaced) {
+    return '/clusters/$clusterId/${section.pathSegment}/$kind/$namespace/$name';
+  }
+  return '/clusters/$clusterId/${section.pathSegment}/$kind/$name';
+}
+
+/// Sentinel used in the generic-detail route's `:namespace` slot to
+/// signal a cluster-scoped resource. `_` is illegal in DNS-1123 labels
+/// so it cannot collide with a real namespace name (unlike `cluster`,
+/// which is a perfectly valid namespace identifier).
+const String clusterScopedNamespaceSentinel = '_';

@@ -12,7 +12,6 @@ class ResourceColumn<T> {
   const ResourceColumn({
     required this.label,
     required this.value,
-    this.width,
     this.color,
   });
 
@@ -21,9 +20,6 @@ class ResourceColumn<T> {
 
   /// Extracts the cell value as a string for the given row.
   final String Function(T item) value;
-
-  /// Optional fixed width (tablet DataTable). Phone card list ignores.
-  final double? width;
 
   /// Optional color override (per-row, e.g., status pills). Returns null
   /// to use the default text color.

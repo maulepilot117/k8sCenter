@@ -1,15 +1,18 @@
 // Pod list + detail. Phone shows a card list, tablet a DataTable.
-// Detail Overview surfaces phase, container count, restart count,
-// node + IPs.
+// Detail Overview surfaces phase, container count, restart count
+// (including init + ephemeral containers, matching kubectl), node + IPs.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../api/resource_repository.dart';
+import '../../cluster/cluster_provider.dart';
+import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
+import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
@@ -22,14 +25,26 @@ class _PodRow {
   String get phase =>
       readPath(raw, 'status.phase') as String? ?? 'Unknown';
 
+  /// Sums restart counts across regular, init, and ephemeral container
+  /// statuses — matches kubectl semantics. Pre-fix this only counted
+  /// regular containers, hiding init-container CrashLoopBackOff (the
+  /// most common oncall failure mode for stuck pods).
   int get restartCount {
-    final statuses =
-        (readPath(raw, 'status.containerStatuses') as List?) ?? const [];
-    return statuses.fold<int>(0, (acc, s) {
-      if (s is! Map) return acc;
-      final r = s['restartCount'];
-      return acc + (r is num ? r.toInt() : 0);
-    });
+    var total = 0;
+    for (final field in const [
+      'status.containerStatuses',
+      'status.initContainerStatuses',
+      'status.ephemeralContainerStatuses',
+    ]) {
+      final statuses = (readPath(raw, field) as List?) ?? const [];
+      for (final s in statuses) {
+        if (s is Map) {
+          final r = s['restartCount'];
+          if (r is num) total += r.toInt();
+        }
+      }
+    }
+    return total;
   }
 
   int get readyContainers {
@@ -48,6 +63,31 @@ class _PodRow {
     return containers.length;
   }
 
+  /// Init containers that have completed (exitCode==0). Surfaced
+  /// separately on the row so a Pod stuck on init shows "Init: 1/3"
+  /// rather than misleadingly reporting all-ready via the regular
+  /// container ratio.
+  int get readyInitContainers {
+    final statuses =
+        (readPath(raw, 'status.initContainerStatuses') as List?) ?? const [];
+    var done = 0;
+    for (final s in statuses) {
+      if (s is Map) {
+        final state = s['state'];
+        if (state is Map && state['terminated'] is Map) {
+          final term = state['terminated'] as Map;
+          if ((term['exitCode'] as num?)?.toInt() == 0) done++;
+        }
+      }
+    }
+    return done;
+  }
+
+  int get totalInitContainers {
+    final inits = (readPath(raw, 'spec.initContainers') as List?) ?? const [];
+    return inits.length;
+  }
+
   String get podIP => readPath(raw, 'status.podIP') as String? ?? '—';
   String get nodeName => readPath(raw, 'spec.nodeName') as String? ?? '—';
 }
@@ -59,28 +99,19 @@ class PodListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final list = ref.watch(
-      resourceListProvider(
-        ResourceListKey(kind: 'pods', namespace: namespace),
-      ),
-    );
-
+    final clusterId = ref.watch(activeClusterProvider);
     return Scaffold(
       appBar: AppBar(
         title: Text(namespace == null ? 'Pods' : 'Pods · $namespace'),
       ),
-      body: list.when(
-        loading: () => const LoadingState(),
-        error: (e, _) => ErrorStateView(
-          message: e.toString(),
-          onRetry: () => ref.invalidate(
-            resourceListProvider(
-              ResourceListKey(kind: 'pods', namespace: namespace),
-            ),
-          ),
+      body: ResourceListScaffold(
+        providerKey: ResourceListKey(
+          clusterId: clusterId,
+          kind: 'pods',
+          namespace: namespace,
         ),
-        data: (resp) {
-          final rows = resp.items.map(_PodRow.new).toList();
+        builder: (context, result) {
+          final rows = result.items.map(_PodRow.new).toList();
           return ResourceTable<_PodRow>(
             items: rows,
             columns: [
@@ -107,7 +138,10 @@ class PodListScreen extends ConsumerWidget {
               ),
               ResourceColumn(
                 label: 'Ready',
-                value: (r) => '${r.readyContainers}/${r.totalContainers}',
+                value: (r) => r.totalInitContainers > 0 &&
+                        r.readyInitContainers < r.totalInitContainers
+                    ? 'Init ${r.readyInitContainers}/${r.totalInitContainers}'
+                    : '${r.readyContainers}/${r.totalContainers}',
               ),
               ResourceColumn(
                 label: 'Restarts',
@@ -119,7 +153,12 @@ class PodListScreen extends ConsumerWidget {
               ),
             ],
             onTap: (r) => context.push(
-              '/clusters/local/workloads/pods/${r.meta.namespace}/${r.meta.name}',
+              kindDetailPath(
+                clusterId: clusterId,
+                kind: 'pods',
+                namespace: r.meta.namespace,
+                name: r.meta.name,
+              ),
             ),
           );
         },
@@ -140,17 +179,23 @@ class PodDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final get = ref.watch(
-      resourceGetProvider(
-        ResourceGetKey(kind: 'pods', namespace: namespace, name: name),
-      ),
+    final clusterId = ref.watch(activeClusterProvider);
+    final getKey = ResourceGetKey(
+      clusterId: clusterId,
+      kind: 'pods',
+      namespace: namespace,
+      name: name,
     );
+    final get = ref.watch(resourceGetProvider(getKey));
 
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
         appBar: AppBar(title: Text(name)),
-        body: ErrorStateView(message: e.toString()),
+        body: ErrorStateView(
+          message: e.toString(),
+          onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
+        ),
       ),
       data: (raw) {
         final pod = _PodRow(raw);
@@ -179,11 +224,19 @@ class PodDetailScreen extends ConsumerWidget {
                     DetailRow(label: 'Phase', value: pod.phase),
                     DetailRow(
                       label: 'Containers',
-                      value: '${pod.readyContainers}/${pod.totalContainers} ready',
+                      value:
+                          '${pod.readyContainers}/${pod.totalContainers} ready',
                     ),
+                    if (pod.totalInitContainers > 0)
+                      DetailRow(
+                        label: 'Init containers',
+                        value:
+                            '${pod.readyInitContainers}/${pod.totalInitContainers} done',
+                      ),
                     DetailRow(
                       label: 'Restarts',
-                      value: '${pod.restartCount}',
+                      value: '${pod.restartCount} '
+                          '(sum across containers + init + ephemeral)',
                     ),
                     DetailRow(label: 'Pod IP', value: pod.podIP),
                     DetailRow(label: 'Node', value: pod.nodeName),

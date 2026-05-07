@@ -1,21 +1,26 @@
-// Secret list + detail. Values masked by default; per-key Reveal toggle
-// surfaces the base64-decoded payload locally. There is no backend
-// reveal-audit hook in PR-1d — the existing `/v1/resources/secrets/...`
-// GET endpoint already returns the full Secret payload (audit logging
-// happens at the request level on the backend). A future PR can add an
-// explicit `/secrets/:ns/:name/reveal/:key` endpoint that audits per
-// reveal click; for now the existing audit log captures the GET.
-
-import 'dart:convert';
+// Secret list + detail. Values masked by default. Tapping Reveal calls
+// the per-key audited reveal endpoint (`/v1/resources/secrets/:ns/:name/
+// reveal/:key`) so each disclosure is logged server-side, matching the
+// web frontend's audit model. Plaintext is sanitized for BiDi/control
+// characters before render. Copy-to-clipboard requires explicit confirm
+// and the clipboard is wiped after 30 seconds.
+//
+// The detail GET still returns the masked Secret (the YAML tab redacts
+// `data`/`stringData` for kind == 'Secret' — see resource_detail_scaffold.dart).
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/api_error.dart';
 import '../../api/resource_repository.dart';
+import '../../cluster/cluster_provider.dart';
+import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
+import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
@@ -40,20 +45,19 @@ class SecretListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final list = ref.watch(
-      resourceListProvider(
-        ResourceListKey(kind: 'secrets', namespace: namespace),
-      ),
-    );
+    final clusterId = ref.watch(activeClusterProvider);
     return Scaffold(
       appBar: AppBar(
         title: Text(namespace == null ? 'Secrets' : 'Secrets · $namespace'),
       ),
-      body: list.when(
-        loading: () => const LoadingState(),
-        error: (e, _) => ErrorStateView(message: e.toString()),
-        data: (resp) {
-          final rows = resp.items.map(_SecretRow.new).toList();
+      body: ResourceListScaffold(
+        providerKey: ResourceListKey(
+          clusterId: clusterId,
+          kind: 'secrets',
+          namespace: namespace,
+        ),
+        builder: (context, result) {
+          final rows = result.items.map(_SecretRow.new).toList();
           return ResourceTable<_SecretRow>(
             items: rows,
             columns: [
@@ -67,7 +71,12 @@ class SecretListScreen extends ConsumerWidget {
               ),
             ],
             onTap: (r) => context.push(
-              '/clusters/local/config/secrets/${r.meta.namespace}/${r.meta.name}',
+              kindDetailPath(
+                clusterId: clusterId,
+                kind: 'secrets',
+                namespace: r.meta.namespace,
+                name: r.meta.name,
+              ),
             ),
           );
         },
@@ -91,33 +100,64 @@ class SecretDetailScreen extends ConsumerStatefulWidget {
 }
 
 class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
-  final Set<String> _revealed = {};
+  /// Per-key revealed value cache. State is widget-scoped — back-button
+  /// out of the screen disposes State, so re-entering the detail starts
+  /// fresh with everything masked again.
+  final Map<String, String> _revealed = {};
+  final Set<String> _revealing = {};
+
+  Future<void> _reveal(String key) async {
+    setState(() => _revealing.add(key));
+    try {
+      final value =
+          await ref.read(resourceRepositoryProvider).revealSecretKey(
+                namespace: widget.namespace,
+                name: widget.name,
+                key: key,
+              );
+      if (!mounted) return;
+      setState(() {
+        _revealed[key] = value;
+        _revealing.remove(key);
+      });
+    } on ApiError catch (e) {
+      if (!mounted) return;
+      setState(() => _revealing.remove(key));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reveal failed: ${e.message}')),
+      );
+    }
+  }
+
+  void _hide(String key) {
+    setState(() => _revealed.remove(key));
+  }
 
   @override
   Widget build(BuildContext context) {
-    final get = ref.watch(
-      resourceGetProvider(
-        ResourceGetKey(
-          kind: 'secrets',
-          namespace: widget.namespace,
-          name: widget.name,
-        ),
-      ),
+    final clusterId = ref.watch(activeClusterProvider);
+    final getKey = ResourceGetKey(
+      clusterId: clusterId,
+      kind: 'secrets',
+      namespace: widget.namespace,
+      name: widget.name,
     );
+    final get = ref.watch(resourceGetProvider(getKey));
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
         appBar: AppBar(title: Text(widget.name)),
-        body: ErrorStateView(message: e.toString()),
+        body: ErrorStateView(
+          message: e.toString(),
+          onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
+        ),
       ),
       data: (raw) {
         final s = _SecretRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
-        return ResourceDetailScaffold(
-          kindLabel: 'Secret',
+        return ResourceDetailScaffold.secret(
           name: s.meta.name,
           namespace: s.meta.namespace,
-          icon: Icons.key_outlined,
           statusLabel: s.type,
           statusColor: colors.warning,
           resource: raw,
@@ -149,16 +189,11 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
                         children: [
                           for (final entry in s.encodedData.entries)
                             _SecretKeyTile(
-                              name: entry.key,
-                              encoded: entry.value,
-                              revealed: _revealed.contains(entry.key),
-                              onToggle: () => setState(() {
-                                if (_revealed.contains(entry.key)) {
-                                  _revealed.remove(entry.key);
-                                } else {
-                                  _revealed.add(entry.key);
-                                }
-                              }),
+                              keyName: entry.key,
+                              revealed: _revealed[entry.key],
+                              loading: _revealing.contains(entry.key),
+                              onReveal: () => _reveal(entry.key),
+                              onHide: () => _hide(entry.key),
                             ),
                         ],
                       ),
@@ -173,30 +208,33 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
 
 class _SecretKeyTile extends StatelessWidget {
   const _SecretKeyTile({
-    required this.name,
-    required this.encoded,
+    required this.keyName,
     required this.revealed,
-    required this.onToggle,
+    required this.loading,
+    required this.onReveal,
+    required this.onHide,
   });
 
-  final String name;
-  final String encoded;
-  final bool revealed;
-  final VoidCallback onToggle;
+  final String keyName;
+  final String? revealed;
+  final bool loading;
+  final VoidCallback onReveal;
+  final VoidCallback onHide;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
+    final isRevealed = revealed != null;
     return ListTile(
       contentPadding: EdgeInsets.zero,
       title: Text(
-        name,
+        keyName,
         style: TextStyle(color: colors.textPrimary, fontSize: 13),
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: SelectableText(
-          revealed ? _safeDecode(encoded) : '•' * 12,
+        child: Text(
+          isRevealed ? sanitizeSecretValue(revealed!) : '•' * 12,
           style: TextStyle(
             color: colors.textSecondary,
             fontSize: 12,
@@ -204,19 +242,118 @@ class _SecretKeyTile extends StatelessWidget {
           ),
         ),
       ),
-      trailing: TextButton(
-        onPressed: onToggle,
-        child: Text(revealed ? 'Hide' : 'Reveal'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isRevealed)
+            IconButton(
+              key: ValueKey('secret-copy-$keyName'),
+              icon: const Icon(Icons.copy, size: 18),
+              tooltip: 'Copy value',
+              onPressed: () => _confirmCopy(context, keyName, revealed!),
+            ),
+          if (loading)
+            const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            TextButton(
+              key: ValueKey('secret-toggle-$keyName'),
+              onPressed: isRevealed ? onHide : onReveal,
+              child: Text(isRevealed ? 'Hide' : 'Reveal'),
+            ),
+        ],
       ),
     );
   }
 
-  String _safeDecode(String b64) {
-    try {
-      return utf8.decode(base64.decode(b64));
-    } catch (_) {
-      // Binary value — render raw base64 so the operator can copy it.
-      return '(binary, base64) $b64';
+  Future<void> _confirmCopy(
+    BuildContext context,
+    String key,
+    String value,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Copy secret to clipboard?'),
+        content: Text(
+          'The value for `$key` will be placed on the system clipboard '
+          'and wiped after 30 seconds.\n\n'
+          'On Android the clipboard may be readable by other apps. '
+          'On iOS it may sync to other Apple devices via Universal Clipboard.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await Clipboard.setData(ClipboardData(text: value));
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Copied. Clipboard will clear in 30 seconds.'),
+      ),
+    );
+    // Best-effort wipe — fails silently if app is backgrounded.
+    Future.delayed(const Duration(seconds: 30), () async {
+      final cur = await Clipboard.getData(Clipboard.kTextPlain);
+      if (cur?.text == value) {
+        await Clipboard.setData(const ClipboardData(text: ''));
+      }
+    });
+  }
+}
+
+/// Escapes BiDi controls and other invisible/control characters in
+/// revealed Secret values so a Trojan-Source-style payload (e.g., a
+/// password followed by U+202E RIGHT-TO-LEFT OVERRIDE then a suffix
+/// reversing visual order) can't trick an operator into copying a
+/// different string than they see.
+@visibleForTesting
+String sanitizeSecretValue(String input) {
+  final sb = StringBuffer();
+  for (final code in input.runes) {
+    if (_isUnsafe(code)) {
+      sb.write('\\u${code.toRadixString(16).padLeft(4, '0')}');
+    } else {
+      sb.writeCharCode(code);
     }
   }
+  return sb.toString();
+}
+
+bool _isUnsafe(int code) {
+  // C0 controls except \t, \n, \r.
+  if (code < 0x20 && code != 0x09 && code != 0x0A && code != 0x0D) return true;
+  // DEL.
+  if (code == 0x7F) return true;
+  // C1 controls.
+  if (code >= 0x80 && code <= 0x9F) return true;
+  // BiDi formatting characters (Trojan-Source vector).
+  const bidi = {
+    0x202A, // LRE
+    0x202B, // RLE
+    0x202C, // PDF
+    0x202D, // LRO
+    0x202E, // RLO
+    0x2066, // LRI
+    0x2067, // RLI
+    0x2068, // FSI
+    0x2069, // PDI
+  };
+  if (bidi.contains(code)) return true;
+  // Zero-width characters.
+  const zeroWidth = {0x200B, 0x200C, 0x200D, 0xFEFF};
+  if (zeroWidth.contains(code)) return true;
+  return false;
 }

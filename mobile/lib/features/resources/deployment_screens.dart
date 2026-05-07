@@ -5,9 +5,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../api/resource_repository.dart';
+import '../../cluster/cluster_provider.dart';
+import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
+import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
 import 'k8s_helpers.dart';
 
@@ -34,27 +37,20 @@ class DeploymentListScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final list = ref.watch(
-      resourceListProvider(
-        ResourceListKey(kind: 'deployments', namespace: namespace),
-      ),
-    );
+    final clusterId = ref.watch(activeClusterProvider);
     return Scaffold(
       appBar: AppBar(
-        title: Text(namespace == null ? 'Deployments' : 'Deployments · $namespace'),
+        title: Text(
+            namespace == null ? 'Deployments' : 'Deployments · $namespace'),
       ),
-      body: list.when(
-        loading: () => const LoadingState(),
-        error: (e, _) => ErrorStateView(
-          message: e.toString(),
-          onRetry: () => ref.invalidate(
-            resourceListProvider(
-              ResourceListKey(kind: 'deployments', namespace: namespace),
-            ),
-          ),
+      body: ResourceListScaffold(
+        providerKey: ResourceListKey(
+          clusterId: clusterId,
+          kind: 'deployments',
+          namespace: namespace,
         ),
-        data: (resp) {
-          final rows = resp.items.map(_DeploymentRow.new).toList();
+        builder: (context, result) {
+          final rows = result.items.map(_DeploymentRow.new).toList();
           return ResourceTable<_DeploymentRow>(
             items: rows,
             columns: [
@@ -75,7 +71,12 @@ class DeploymentListScreen extends ConsumerWidget {
               ),
             ],
             onTap: (r) => context.push(
-              '/clusters/local/workloads/deployments/${r.meta.namespace}/${r.meta.name}',
+              kindDetailPath(
+                clusterId: clusterId,
+                kind: 'deployments',
+                namespace: r.meta.namespace,
+                name: r.meta.name,
+              ),
             ),
           );
         },
@@ -96,16 +97,22 @@ class DeploymentDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final get = ref.watch(
-      resourceGetProvider(
-        ResourceGetKey(kind: 'deployments', namespace: namespace, name: name),
-      ),
+    final clusterId = ref.watch(activeClusterProvider);
+    final getKey = ResourceGetKey(
+      clusterId: clusterId,
+      kind: 'deployments',
+      namespace: namespace,
+      name: name,
     );
+    final get = ref.watch(resourceGetProvider(getKey));
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
         appBar: AppBar(title: Text(name)),
-        body: ErrorStateView(message: e.toString()),
+        body: ErrorStateView(
+          message: e.toString(),
+          onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
+        ),
       ),
       data: (raw) {
         final d = _DeploymentRow(raw);

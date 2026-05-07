@@ -25,6 +25,7 @@ import '../widgets/adaptive_scaffold.dart';
 import '../widgets/cluster_pill.dart';
 import '../widgets/domain_navigation_drawer.dart';
 import '../widgets/empty_states.dart';
+import 'domain_sections.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   // Listening to authRepositoryProvider rebuilds the router on transitions.
@@ -135,16 +136,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
 
       // --- Generic detail fallback for any unspecialized kind ---
       // Path shape: /clusters/<id>/generic/<kind>/<namespace>/<name>
-      // (cluster-scoped uses 'cluster' as the namespace placeholder).
+      // (cluster-scoped uses [clusterScopedNamespaceSentinel] = '_'
+      // because DNS-1123 labels can't start with underscore so it can't
+      // collide with a real namespace name).
       GoRoute(
         path: '/clusters/:clusterId/generic/:kind/:namespace/:name',
-        builder: (context, state) => GenericDetailScreen(
-          kind: state.pathParameters['kind']!,
-          namespace: state.pathParameters['namespace']! == 'cluster'
-              ? ''
-              : state.pathParameters['namespace']!,
-          name: state.pathParameters['name']!,
-        ),
+        builder: (context, state) {
+          final ns = state.pathParameters['namespace']!;
+          return GenericDetailScreen(
+            kind: state.pathParameters['kind']!,
+            namespace: ns == clusterScopedNamespaceSentinel ? '' : ns,
+            name: state.pathParameters['name']!,
+          );
+        },
       ),
     ],
   );
