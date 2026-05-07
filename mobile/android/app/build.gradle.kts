@@ -26,8 +26,25 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
-        versionCode = flutter.versionCode
+        // versionCode comes from the `-PversionCode` Gradle property when
+        // set (Fastlane forwards GITHUB_RUN_NUMBER * 10 + RUN_ATTEMPT-1
+        // for unique Play uploads on every push and re-run); otherwise
+        // falls back to flutter.versionCode for local dev.
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull()
+            ?: flutter.versionCode
         versionName = flutter.versionName
+
+        // Universal Link host. Operators set this via gradle.properties
+        // or `-PuniversalLinkHost=<domain>` so the AndroidManifest's HTTPS
+        // intent-filter resolves at build time. Empty default disables
+        // the HTTPS App Links filter entirely (keeps the manifest valid
+        // for homelab builds that rely on the k8scenter:// custom scheme),
+        // avoiding the Android-13+ verifier flooding logcat with
+        // "host=''" verification failures.
+        val universalLinkHost = (project.findProperty("universalLinkHost") as String?) ?: ""
+        manifestPlaceholders["universalLinkHost"] = universalLinkHost
+        manifestPlaceholders["universalLinkEnabled"] =
+            if (universalLinkHost.isNotEmpty()) "true" else "false"
     }
 
     buildTypes {

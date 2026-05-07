@@ -1,7 +1,7 @@
 ---
 title: "Mobile App M1 — PR sequence"
 type: feat
-status: active
+status: completed
 date: 2026-05-06
 origin: plans/mobile-app.md
 ---

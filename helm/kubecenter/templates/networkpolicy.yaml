@@ -113,4 +113,46 @@ spec:
         - port: {{ .Values.backend.port }}
           protocol: TCP
 {{- end }}
+---
+{{- if .Values.mobile.universalLinkDomain }}
+# Well-known NetworkPolicy: gated on mobile.universalLinkDomain since
+# the well-known Pod (Apple AASA + Android assetlinks.json) only renders
+# when Universal Links are enabled. Allow ingress from the ingress
+# controller namespace, egress restricted to DNS only — the pod serves
+# static files from a ConfigMap and never reaches outbound.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kubecenter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: well-known
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if .Values.ingress.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressNamespace | default "ingress-nginx" }}
+      ports:
+        - port: 8080
+          protocol: TCP
+    {{- end }}
+  egress:
+    # DNS only — well-known Pod serves static ConfigMap content and
+    # has no other outbound dependencies.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}
 {{- end }}
