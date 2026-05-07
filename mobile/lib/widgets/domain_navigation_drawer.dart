@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../cluster/cluster_provider.dart';
+import '../features/notifications_center/feed_repository.dart';
 import '../routing/domain_sections.dart';
 import '../theme/kube_theme_builder.dart';
 
@@ -51,6 +52,15 @@ class DomainNavigationDrawer extends ConsumerWidget {
               context.go('/');
             },
           ),
+          ListTile(
+            leading: Icon(Icons.notifications_outlined, color: colors.accent),
+            title: const Text('Notifications'),
+            trailing: _UnreadBadge(),
+            onTap: () {
+              Navigator.of(context).pop();
+              context.go('/notifications');
+            },
+          ),
           for (final section in domainSections) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
@@ -79,6 +89,32 @@ class DomainNavigationDrawer extends ConsumerWidget {
               ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+/// Drawer trailing widget — shows unread notification count.
+/// Reads `unreadCountProvider`; renders nothing when zero or loading.
+class _UnreadBadge extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final count = ref.watch(unreadCountProvider).asData?.value ?? 0;
+    if (count == 0) return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: colors.accent,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        count > 99 ? '99+' : '$count',
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }

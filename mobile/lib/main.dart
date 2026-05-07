@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'auth/auth_repository.dart';
+import 'auth/auth_state.dart';
+import 'notifications/fcm_registration.dart';
 import 'theme/theme_controller.dart';
 
 Future<void> main() async {
@@ -24,6 +26,15 @@ Future<void> main() async {
   // Bootstrap auth in the background — the router renders the splash
   // (AuthInitializing) until this resolves.
   unawaited(container.read(authRepositoryProvider.notifier).bootstrap());
+
+  // Register for FCM the first time auth lands on Authenticated.
+  // Conditional Firebase init means this is a no-op when the operator
+  // hasn't dropped in google-services.json / GoogleService-Info.plist.
+  container.listen<AuthState>(authRepositoryProvider, (prev, next) {
+    if (next is AuthAuthenticated && prev is! AuthAuthenticated) {
+      unawaited(container.read(fcmRegistrationProvider).ensureRegistered());
+    }
+  }, fireImmediately: true);
 
   runApp(
     UncontrolledProviderScope(

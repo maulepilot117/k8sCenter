@@ -24,6 +24,19 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<!-- Custom-scheme deep links. Universal Links land in PR-1g
+			     via the com.apple.developer.associated-domains entitlement. -->
+			<key>CFBundleURLName</key>
+			<string>io.kubecenter.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>k8scenter</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
