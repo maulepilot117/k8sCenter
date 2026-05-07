@@ -18,20 +18,25 @@ class ClusterPill extends ConsumerWidget {
     final clustersAsync = ref.watch(clustersProvider);
     final colors = Theme.of(context).extension<KubeColors>()!;
 
+    // Resolve a human-friendly label. While the list is loading or
+    // errored we render a placeholder rather than leaking the raw id
+    // (which may be a UUID for remote clusters).
     final label = clustersAsync.maybeWhen(
-      data: (list) => list
-          .firstWhere(
-            (c) => c.id == activeId,
-            orElse: () => localCluster,
-          )
-          .label,
-      orElse: () => activeId,
+      data: (result) {
+        final match = result.clusters.where((c) => c.id == activeId).toList();
+        if (match.isNotEmpty) return match.first.label;
+        // Active id is no longer in the list (deleted upstream); show the
+        // id so the operator notices the inconsistency rather than seeing
+        // a confident-looking 'local' fallback.
+        return activeId;
+      },
+      orElse: () => '…',
     );
 
     return InkWell(
       key: const ValueKey('cluster-pill'),
       borderRadius: BorderRadius.circular(18),
-      onTap: () => ClusterPickerSheet.show(context),
+      onTap: () => ClusterPickerSheet.show(context, ref),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         margin: const EdgeInsets.symmetric(horizontal: 4),

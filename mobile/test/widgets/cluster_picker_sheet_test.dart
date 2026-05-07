@@ -66,11 +66,11 @@ Widget _harness(ProviderContainer container) {
     container: container,
     child: MaterialApp(
       theme: buildKubeTheme('nexus'),
-      home: Builder(
-        builder: (context) => Scaffold(
+      home: Consumer(
+        builder: (context, ref, _) => Scaffold(
           body: Center(
             child: FilledButton(
-              onPressed: () => ClusterPickerSheet.show(context),
+              onPressed: () => ClusterPickerSheet.show(context, ref),
               child: const Text('open'),
             ),
           ),

@@ -8,31 +8,131 @@
 // alerts (active/critical), and CPU / Memory utilisation when
 // Prometheus metrics are available.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
 import 'dashboard_repository.dart';
 import 'dashboard_state.dart';
 
-class DashboardScreen extends ConsumerWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  Future<void>? _inFlightRefresh;
+
+  /// Dedupes rapid pull-to-refresh gestures: a second pull during a
+  /// running refresh awaits the same future instead of stacking a fresh
+  /// HTTP request.
+  Future<void> _onRefresh() {
+    final existing = _inFlightRefresh;
+    if (existing != null) return existing;
+    final fresh = ref.refresh(dashboardSummaryProvider.future).whenComplete(() {
+      _inFlightRefresh = null;
+    });
+    _inFlightRefresh = fresh;
+    return fresh;
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final summaryAsync = ref.watch(dashboardSummaryProvider);
 
     return RefreshIndicator(
-      onRefresh: () => ref.refresh(dashboardSummaryProvider.future),
+      onRefresh: _onRefresh,
       child: summaryAsync.when(
         data: (summary) => _DashboardGrid(summary: summary),
-        loading: () => const Center(child: LoadingState()),
-        error: (e, _) => ErrorStateView(
-          message: e.toString(),
-          onRetry: () => ref.invalidate(dashboardSummaryProvider),
+        loading: () => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 200, child: LoadingState()),
+          ],
         ),
+        error: (e, _) {
+          if (e is DashboardLocalOnlyError) {
+            return _DashboardLocalOnlyView(
+              onSwitchToLocal: () =>
+                  // Reset to local cluster — invalidating active cluster
+                  // cascades through the FutureProvider.autoDispose chain
+                  // and refetches against /v1/cluster/dashboard-summary.
+                  ref
+                      .read(activeClusterProvider.notifier)
+                      .setCluster('local'),
+            );
+          }
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              SizedBox(
+                height: 200,
+                child: ErrorStateView(
+                  message: e.toString(),
+                  onRetry: () => ref.invalidate(dashboardSummaryProvider),
+                ),
+              ),
+            ],
+          );
+        },
       ),
+    );
+  }
+}
+
+class _DashboardLocalOnlyView extends StatelessWidget {
+  const _DashboardLocalOnlyView({required this.onSwitchToLocal});
+
+  final VoidCallback onSwitchToLocal;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(24),
+      children: [
+        SizedBox(
+          height: 240,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.cloud_off, size: 48, color: colors.textMuted),
+                const SizedBox(height: 16),
+                Text(
+                  'Dashboard summary is local-cluster only',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Aggregated counts come from the local cluster\'s informer cache. '
+                  'Browse remote clusters via the resource list (PR-1d).',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: colors.textSecondary),
+                ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: onSwitchToLocal,
+                  icon: const Icon(Icons.home_outlined),
+                  label: const Text('Switch to local cluster'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -186,7 +286,26 @@ class _UtilCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final pct = utilization.percentage.clamp(0, 100).toDouble();
+
+    if (utilization.unavailable) {
+      return _UnavailableCard(icon: icon, label: label, colors: colors);
+    }
+
+    // Defend against non-finite percentages from 0/0 PromQL division
+    // — `double.nan.clamp(0,100)` returns NaN, which trips
+    // LinearProgressIndicator's debug assertion and is undefined in release.
+    final raw = utilization.percentage;
+    final pct = raw.isFinite ? raw.clamp(0, 100).toDouble() : 0.0;
+
+    final subtitle = StringBuffer('${utilization.used} / ${utilization.total}');
+    final reqLim = [
+      if (utilization.requests.isNotEmpty) 'req ${utilization.requests}',
+      if (utilization.limits.isNotEmpty) 'lim ${utilization.limits}',
+    ];
+    if (reqLim.isNotEmpty) {
+      subtitle.write(' · ${reqLim.join(' · ')}');
+    }
+
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -236,8 +355,75 @@ class _UtilCard extends StatelessWidget {
             ),
           ),
           Text(
-            '${utilization.used} / ${utilization.total}',
+            subtitle.toString(),
             style: TextStyle(color: colors.textMuted, fontSize: 12),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Renders when the backend signaled "Prometheus unavailable" via the
+/// synthetic `Utilization{Percentage:0, Used:'N/A'}` payload. Distinct
+/// from the 0%-but-real-data case so operators don't read green progress
+/// bars as healthy when metrics are simply missing.
+class _UnavailableCard extends StatelessWidget {
+  const _UnavailableCard({
+    required this.icon,
+    required this.label,
+    required this.colors,
+  });
+
+  final IconData icon;
+  final String label;
+  final KubeColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.bgSurface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: colors.textSecondary),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          Text(
+            '—',
+            style: TextStyle(
+              color: colors.textMuted,
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          Row(
+            children: [
+              Icon(Icons.cloud_off, size: 12, color: colors.textMuted),
+              const SizedBox(width: 4),
+              Text(
+                'Prometheus unavailable',
+                style: TextStyle(color: colors.textMuted, fontSize: 12),
+              ),
+            ],
           ),
         ],
       ),

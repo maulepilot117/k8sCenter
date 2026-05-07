@@ -7,9 +7,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/api_error.dart';
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
-import '../cluster/cluster.dart';
 import '../cluster/cluster_provider.dart';
 import '../cluster/cluster_repository.dart';
 import '../theme/kube_theme_builder.dart';
@@ -18,8 +18,12 @@ import 'empty_states.dart';
 class ClusterPickerSheet extends ConsumerWidget {
   const ClusterPickerSheet({super.key});
 
-  static Future<void> show(BuildContext context) {
-    return showModalBottomSheet(
+  /// Opens the picker. Forces a fresh `/v1/clusters` fetch so users
+  /// always see the current state when selecting — stale lists let
+  /// operators pick a cluster that was deleted upstream.
+  static Future<void> show(BuildContext context, WidgetRef ref) {
+    ref.invalidate(clustersProvider);
+    return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (_) => const ClusterPickerSheet(),
@@ -57,8 +61,8 @@ class ClusterPickerSheet extends ConsumerWidget {
             ),
             Flexible(
               child: clustersAsync.when(
-                data: (list) => _ClusterList(
-                  clusters: list,
+                data: (result) => _ClusterList(
+                  result: result,
                   activeId: activeId,
                   onSelected: (id) {
                     ref.read(activeClusterProvider.notifier).setCluster(id);
@@ -70,8 +74,11 @@ class ClusterPickerSheet extends ConsumerWidget {
                   child: LoadingState(),
                 ),
                 error: (e, _) => SizedBox(
-                  height: 160,
-                  child: ErrorStateView(message: e.toString()),
+                  height: 200,
+                  child: ErrorStateView(
+                    message: e is ApiError ? e.message : 'Failed to load clusters',
+                    onRetry: () => ref.invalidate(clustersProvider),
+                  ),
                 ),
               ),
             ),
@@ -84,8 +91,14 @@ class ClusterPickerSheet extends ConsumerWidget {
                   style: TextStyle(color: colors.accent),
                 ),
                 onTap: () {
+                  // Capture messenger before pop — once the sheet closes
+                  // its context is deactivated and ScaffoldMessenger.of
+                  // looks up against a torn-down element. Capturing
+                  // first sidesteps the use_build_context_synchronously
+                  // class of bug.
+                  final messenger = ScaffoldMessenger.of(context);
                   Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  messenger.showSnackBar(
                     const SnackBar(
                       content:
                           Text('Cluster registration ships in a follow-up PR.'),
@@ -102,47 +115,78 @@ class ClusterPickerSheet extends ConsumerWidget {
 
 class _ClusterList extends StatelessWidget {
   const _ClusterList({
-    required this.clusters,
+    required this.result,
     required this.activeId,
     required this.onSelected,
   });
 
-  final List<Cluster> clusters;
+  final ClusterListResult result;
   final String activeId;
   final ValueChanged<String> onSelected;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return RadioGroup<String>(
-      groupValue: activeId,
-      onChanged: (id) {
-        if (id == null) return;
-        onSelected(id);
-      },
-      child: ListView.builder(
-        shrinkWrap: true,
-        itemCount: clusters.length,
-        itemBuilder: (context, index) {
-          final c = clusters[index];
-          return RadioListTile<String>(
-            key: ValueKey('cluster-radio-${c.id}'),
-            value: c.id,
-            title: Text(c.label),
-            subtitle: c.k8sVersion != null
-                ? Text(
-                    'k8s ${c.k8sVersion}',
-                    style: TextStyle(color: colors.textMuted, fontSize: 12),
-                  )
-                : null,
-            secondary: Icon(
-              c.isLocal ? Icons.home_outlined : Icons.cloud_outlined,
-              color: colors.textSecondary,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (result.degraded)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              color: colors.warningDim,
+              borderRadius: BorderRadius.circular(6),
             ),
-            activeColor: colors.accent,
-          );
-        },
-      ),
+            child: Row(
+              children: [
+                Icon(Icons.cloud_off, size: 16, color: colors.warning),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Backend unreachable — showing local cluster only.',
+                    style: TextStyle(color: colors.warning, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Flexible(
+          child: RadioGroup<String>(
+            groupValue: activeId,
+            onChanged: (id) {
+              if (id == null) return;
+              onSelected(id);
+            },
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: result.clusters.length,
+              itemBuilder: (context, index) {
+                final c = result.clusters[index];
+                return RadioListTile<String>(
+                  key: ValueKey('cluster-radio-${c.id}'),
+                  value: c.id,
+                  title: Text(c.label),
+                  subtitle: c.k8sVersion != null
+                      ? Text(
+                          'k8s ${c.k8sVersion}',
+                          style: TextStyle(
+                            color: colors.textMuted,
+                            fontSize: 12,
+                          ),
+                        )
+                      : null,
+                  secondary: Icon(
+                    c.isLocal ? Icons.home_outlined : Icons.cloud_outlined,
+                    color: colors.textSecondary,
+                  ),
+                  activeColor: colors.accent,
+                );
+              },
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

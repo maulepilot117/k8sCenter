@@ -102,6 +102,49 @@ void main() {
     );
   });
 
+  test('400 with "local cluster" message becomes DashboardLocalOnlyError',
+      () async {
+    final (:container, :mock) = _make();
+    addTearDown(container.dispose);
+
+    mock.on('GET', '/api/v1/cluster/dashboard-summary', (_) {
+      return _json(
+        {
+          'error': {
+            'code': 400,
+            'message':
+                'dashboard summary is only available for the local cluster',
+          },
+        },
+        status: 400,
+      );
+    });
+
+    expect(
+      () => container.read(dashboardRepositoryProvider).fetchSummary(),
+      throwsA(isA<DashboardLocalOnlyError>()),
+    );
+  });
+
+  test('400 without "local cluster" message stays as ApiError', () async {
+    final (:container, :mock) = _make();
+    addTearDown(container.dispose);
+
+    mock.on('GET', '/api/v1/cluster/dashboard-summary', (_) {
+      return _json(
+        {
+          'error': {'code': 400, 'message': 'bad request'},
+        },
+        status: 400,
+      );
+    });
+
+    expect(
+      () => container.read(dashboardRepositoryProvider).fetchSummary(),
+      throwsA(isA<ApiError>()),
+    );
+  });
+
   test('summary refetches when active cluster changes', () async {
     final (:container, :mock) = _make();
     addTearDown(container.dispose);

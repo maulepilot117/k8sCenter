@@ -1,5 +1,14 @@
 // Mirrors `backend/internal/k8s/resources/dashboard.go::DashboardSummary`.
-// CPU/Memory utilization may be null when Prometheus is unreachable.
+// CPU/Memory utilization may be null when Prometheus is unreachable. The
+// backend also sometimes returns a synthetic `Utilization{Percentage:0,
+// Used:'N/A'}` when Prometheus errors but allocatable>0 — `unavailable`
+// detects that case so the UI can render an "Unavailable" placeholder
+// instead of a confident-looking 0%.
+//
+// JSON parsing uses `(json[k] as num?)?.toX()` instead of `as int?` /
+// `as double?` because Dart does not coerce JSON doubles to int. A
+// backend value of `5` (int) and `5.0` (double) both deserialize as
+// `num`, and only the `num` cast is permissive enough to handle both.
 
 class DashboardSummary {
   const DashboardSummary({
@@ -12,18 +21,17 @@ class DashboardSummary {
   });
 
   factory DashboardSummary.fromJson(Map<String, dynamic> json) {
-    final services = json['services'] as Map<String, dynamic>?;
+    final services = _asMap(json['services']);
     return DashboardSummary(
-      nodes: NodeSummary.fromJson(json['nodes'] as Map<String, dynamic>? ?? {}),
-      pods: PodSummary.fromJson(json['pods'] as Map<String, dynamic>? ?? {}),
-      servicesTotal: services?['total'] as int? ?? 0,
-      alerts:
-          AlertSummary.fromJson(json['alerts'] as Map<String, dynamic>? ?? {}),
-      cpu: json['cpu'] != null
-          ? Utilization.fromJson(json['cpu'] as Map<String, dynamic>)
+      nodes: NodeSummary.fromJson(_asMap(json['nodes'])),
+      pods: PodSummary.fromJson(_asMap(json['pods'])),
+      servicesTotal: _asInt(services['total']),
+      alerts: AlertSummary.fromJson(_asMap(json['alerts'])),
+      cpu: json['cpu'] is Map
+          ? Utilization.fromJson(_asMap(json['cpu']))
           : null,
-      memory: json['memory'] != null
-          ? Utilization.fromJson(json['memory'] as Map<String, dynamic>)
+      memory: json['memory'] is Map
+          ? Utilization.fromJson(_asMap(json['memory']))
           : null,
     );
   }
@@ -40,8 +48,8 @@ class NodeSummary {
   const NodeSummary({required this.total, required this.ready});
 
   factory NodeSummary.fromJson(Map<String, dynamic> json) => NodeSummary(
-        total: json['total'] as int? ?? 0,
-        ready: json['ready'] as int? ?? 0,
+        total: _asInt(json['total']),
+        ready: _asInt(json['ready']),
       );
 
   final int total;
@@ -57,10 +65,10 @@ class PodSummary {
   });
 
   factory PodSummary.fromJson(Map<String, dynamic> json) => PodSummary(
-        total: json['total'] as int? ?? 0,
-        running: json['running'] as int? ?? 0,
-        pending: json['pending'] as int? ?? 0,
-        failed: json['failed'] as int? ?? 0,
+        total: _asInt(json['total']),
+        running: _asInt(json['running']),
+        pending: _asInt(json['pending']),
+        failed: _asInt(json['failed']),
       );
 
   final int total;
@@ -73,8 +81,8 @@ class AlertSummary {
   const AlertSummary({required this.active, required this.critical});
 
   factory AlertSummary.fromJson(Map<String, dynamic> json) => AlertSummary(
-        active: json['active'] as int? ?? 0,
-        critical: json['critical'] as int? ?? 0,
+        active: _asInt(json['active']),
+        critical: _asInt(json['critical']),
       );
 
   final int active;
@@ -91,11 +99,11 @@ class Utilization {
   });
 
   factory Utilization.fromJson(Map<String, dynamic> json) => Utilization(
-        percentage: (json['percentage'] as num?)?.toDouble() ?? 0,
-        used: json['used'] as String? ?? '',
-        total: json['total'] as String? ?? '',
-        requests: json['requests'] as String? ?? '',
-        limits: json['limits'] as String? ?? '',
+        percentage: _asDouble(json['percentage']),
+        used: _asString(json['used']),
+        total: _asString(json['total']),
+        requests: _asString(json['requests']),
+        limits: _asString(json['limits']),
       );
 
   final double percentage;
@@ -103,4 +111,42 @@ class Utilization {
   final String total;
   final String requests;
   final String limits;
+
+  /// True when the backend signals "Prometheus unreachable" by emitting
+  /// the synthetic `Utilization{Percentage:0, Used:'N/A'}` payload — see
+  /// `backend/internal/k8s/resources/dashboard.go`. UI renders an
+  /// "Unavailable" placeholder rather than a misleading 0% gauge.
+  bool get unavailable =>
+      used.trim().toUpperCase() == 'N/A' && percentage == 0;
+
+  /// True when the backend supplied a finite percentage we can render.
+  bool get hasFinitePercentage => percentage.isFinite;
+}
+
+// --- Defensive coercion helpers ---
+//
+// Backend JSON sometimes drifts (Prometheus emits doubles, fields go
+// missing during partial outages). These helpers absorb the common
+// drift cases so a single bad number doesn't crash the dashboard.
+
+int _asInt(Object? v) {
+  if (v is num && v.isFinite) return v.toInt();
+  return 0;
+}
+
+double _asDouble(Object? v) {
+  if (v is num && v.isFinite) return v.toDouble();
+  return 0;
+}
+
+String _asString(Object? v) {
+  if (v is String) return v;
+  if (v == null) return '';
+  return v.toString();
+}
+
+Map<String, dynamic> _asMap(Object? v) {
+  if (v is Map<String, dynamic>) return v;
+  if (v is Map) return Map<String, dynamic>.from(v);
+  return <String, dynamic>{};
 }

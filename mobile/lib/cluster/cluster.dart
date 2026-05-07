@@ -16,6 +16,7 @@ class Cluster {
   });
 
   factory Cluster.fromJson(Map<String, dynamic> json) {
+    final nodeCount = json['nodeCount'];
     return Cluster(
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? '',
@@ -25,7 +26,9 @@ class Cluster {
       status: json['status'] as String? ?? 'unknown',
       statusMessage: json['statusMessage'] as String?,
       k8sVersion: json['k8sVersion'] as String?,
-      nodeCount: json['nodeCount'] as int? ?? 0,
+      // Permissive cast: backend may serialize as int or double.
+      nodeCount:
+          nodeCount is num && nodeCount.isFinite ? nodeCount.toInt() : 0,
     );
   }
 
