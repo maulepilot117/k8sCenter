@@ -3,6 +3,16 @@ name: E2E Tests
 on:
   pull_request:
     branches: [main]
+    # E2E exercises only the web frontend + backend + Helm chart against a
+    # kind cluster. Skip when a PR touches none of those — running the
+    # 5–6m suite on mobile-only or docs-only diffs burns CI for no signal.
+    paths-ignore:
+      - 'mobile/**'
+      - 'plans/**'
+      - 'docs/**'
+      - '**/*.md'
+      - 'CLAUDE.md'
+      - '.github/CODEOWNERS'
   workflow_dispatch:
 
 # Deny by default — each job declares minimum permissions

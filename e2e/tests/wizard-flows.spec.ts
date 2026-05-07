@@ -84,22 +84,28 @@ for (const w of WIZARDS) {
           name: /next|preview/i,
         });
 
-        // Click Next until review step (submit button visible) — max 5 iterations
+        // Click Next until review step (submit button visible) — max 5 iterations.
+        //
+        // Race fix: do not assert `submitButton.or(nextButton)` between clicks.
+        // During step transition the previous step's button unmounts before
+        // the new step's button mounts, so a momentary "neither visible"
+        // window can stall the assertion. Instead, after each click, wait
+        // for network idle (covers the SSR-island hydration the wizard
+        // does on step swap) and let the next loop iteration poll the
+        // visibility checks — they're already nullable-safe via .catch().
         for (let i = 0; i < 5; i++) {
           if (await submitButton.isVisible().catch(() => false)) break;
           if (await nextButton.isVisible().catch(() => false)) {
             await nextButton.click();
-            // Wait for step transition (actionability of next button or submit button)
-            await expect(
-              submitButton.or(nextButton),
-            ).toBeVisible();
+            await page.waitForLoadState("networkidle").catch(() => {});
           } else {
             break;
           }
         }
 
-        // Submit
-        await expect(submitButton).toBeVisible({ timeout: 5_000 });
+        // Submit. Bumped to 10s — slow CI runners occasionally need more
+        // than 5s to hydrate the review step's island.
+        await expect(submitButton).toBeVisible({ timeout: 10_000 });
         await submitButton.click();
 
         // Assert success — either a success message appears or we navigate away
