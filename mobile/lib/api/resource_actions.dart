@@ -17,27 +17,35 @@ import 'api_error.dart';
 enum ActionId { scale, restart, delete, suspend, trigger, rollback }
 
 /// Kind → action map. Mirrors `frontend/lib/action-handlers.ts:ACTIONS_BY_KIND`
-// 1:1 except where M2 PR-2a intentionally defers an action to PR-2b. Drift
-// between this map and the TS source is the bug class type-to-confirm exists
-// to prevent — keep them isomorphic.
-//
-// Deferred this PR (will re-appear in PR-2b):
-//   - deployments rollback (revision picker + execution land in PR-2b)
-//   - rolebindings / clusterrolebindings delete (cluster-scoped URL routing
-//     not yet implemented; current `executeAction` URL builder assumes
-//     namespaced resources, which produces a malformed `/.../<kind>//<name>`
-//     for cluster-scoped delete. Tracked for PR-2b.)
+/// 1:1 except where M2 intentionally defers an action. Drift between this
+/// map and the TS source is the bug class type-to-confirm exists to
+/// prevent — keep them isomorphic.
+///
+/// Deferred:
+///   - rolebindings / clusterrolebindings delete (cluster-scoped URL
+///     routing not yet implemented; current `executeAction` URL builder
+///     assumes namespaced resources, which produces a malformed
+///     `/.../<kind>//<name>` for cluster-scoped delete. Tracked for M3.)
+///   - nodes (delete is not a routine oncall verb; deferred per master plan.)
 const Map<String, List<ActionId>> actionsByKind = {
   'deployments': [
     ActionId.scale,
     ActionId.restart,
+    ActionId.rollback,
     ActionId.delete,
   ],
   'statefulsets': [ActionId.scale, ActionId.restart, ActionId.delete],
   'daemonsets': [ActionId.restart, ActionId.delete],
+  'replicasets': [ActionId.delete],
   'pods': [ActionId.delete],
   'jobs': [ActionId.suspend, ActionId.delete],
   'cronjobs': [ActionId.suspend, ActionId.trigger, ActionId.delete],
+  'services': [ActionId.delete],
+  'ingresses': [ActionId.delete],
+  'configmaps': [ActionId.delete],
+  'secrets': [ActionId.delete],
+  'persistentvolumeclaims': [ActionId.delete],
+  'namespaces': [ActionId.delete],
 };
 
 /// Maps action IDs to the k8s verb required to perform them. Used by
