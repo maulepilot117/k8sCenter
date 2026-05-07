@@ -87,6 +87,27 @@ void main() {
     expect(tester.widget<FilledButton>(confirmFinder).onPressed, isNotNull);
   });
 
+  testWidgets('typeToConfirm: strips zero-width characters before matching',
+      (tester) async {
+    // Slack and rich-text clipboards inject U+200B / U+FEFF around copied
+    // identifiers. Without normalization a paste that *looks* identical
+    // silently fails the equality check.
+    await tester.pumpWidget(_host(
+      (_) => const ConfirmSheet(
+        title: 'Delete',
+        confirmLabel: 'Delete',
+        typeToConfirm: 'foo',
+      ),
+    ));
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'foo​'); // ZWSP
+    await tester.pump();
+    final btn = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Delete'));
+    expect(btn.onPressed, isNotNull);
+  });
+
   testWidgets('typeToConfirm: trims whitespace before matching',
       (tester) async {
     await tester.pumpWidget(_host(

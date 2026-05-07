@@ -17,8 +17,16 @@ bool canPerform(
   RBACSummary? rbac,
   String kind,
   String verb,
-  String namespace,
-) {
+  String namespace, {
+  /// When true, an empty [namespace] means "All-Namespaces list view" and
+  /// the predicate returns true if the verb is granted in *any* loaded
+  /// namespace. When false (the default), an empty [namespace] is
+  /// interpreted strictly as "cluster-scoped resource" and only
+  /// `clusterScoped` grants apply. Detail-view callers (like
+  /// ResourceActionsButton) should leave this false; list-view callers
+  /// (ResourceTable's All-Namespaces kebab) should set it true.
+  bool allowAnyNamespaceFallback = false,
+}) {
   if (rbac == null) return true;
   final raw = rbac.raw;
 
@@ -30,11 +38,8 @@ bool canPerform(
   }
 
   final namespaces = raw['namespaces'];
-  // Empty namespace == "All Namespaces" view: allow if the user has the
-  // verb in *any* loaded namespace. Otherwise the All-Namespaces list view
-  // would be unable to surface row-level actions for users with per-ns
-  // permissions but no cluster-scoped grant.
   if (namespace.isEmpty) {
+    if (!allowAnyNamespaceFallback) return false;
     if (namespaces is Map) {
       for (final nsPerms in namespaces.values) {
         if (nsPerms is Map) {

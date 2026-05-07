@@ -43,7 +43,16 @@ export function getVisibleActions(
   );
 }
 
-/** Action metadata for UI rendering. */
+/**
+ * Action metadata for UI rendering.
+ *
+ * Mobile parity note: `mobile/lib/api/resource_actions.dart` ports this
+ * shape but extends `ActionMeta` with a `typeToConfirm: String?` field
+ * (the destructive resource name to type) and drops the `confirm`
+ * discriminator (mobile uses `typeToConfirm != null` as the sole signal).
+ * If the web `confirm` field is replaced or extended, mirror the change
+ * in the Dart port so the two stay in lockstep.
+ */
 export interface ActionMeta {
   label: string;
   danger?: boolean;

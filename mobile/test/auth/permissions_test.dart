@@ -43,7 +43,9 @@ void main() {
     expect(canPerform(rbac, 'deployments', 'patch', 'app'), isTrue);
   });
 
-  test('empty namespace allows the verb if granted in ANY namespace', () {
+  test(
+      'empty namespace with allowAnyNamespaceFallback allows the verb if '
+      'granted in ANY namespace (All-Namespaces list view)', () {
     final rbac = RBACSummary.fromJson({
       'namespaces': {
         'app1': {
@@ -54,8 +56,31 @@ void main() {
         },
       },
     });
-    expect(canPerform(rbac, 'pods', 'delete', ''), isTrue);
-    expect(canPerform(rbac, 'pods', 'create', ''), isFalse);
+    expect(
+      canPerform(rbac, 'pods', 'delete', '', allowAnyNamespaceFallback: true),
+      isTrue,
+    );
+    expect(
+      canPerform(rbac, 'pods', 'create', '', allowAnyNamespaceFallback: true),
+      isFalse,
+    );
+  });
+
+  test(
+      'empty namespace WITHOUT allowAnyNamespaceFallback denies '
+      '(detail-view of cluster-scoped resource — only clusterScoped grants)',
+      () {
+    final rbac = RBACSummary.fromJson({
+      'namespaces': {
+        'app1': {
+          'pods': ['delete'],
+        },
+      },
+    });
+    // Default is allowAnyNamespaceFallback: false. A namespaced grant for
+    // 'pods' in 'app1' must NOT bleed into the detail-view check for a
+    // cluster-scoped resource (where namespace is empty).
+    expect(canPerform(rbac, 'pods', 'delete', ''), isFalse);
   });
 
   test('missing kind in namespace returns false', () {

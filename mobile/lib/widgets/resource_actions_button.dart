@@ -83,6 +83,11 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
     final pinnedCluster = ref.read(activeClusterProvider);
     final auth = ref.read(authRepositoryProvider);
     final rbac = auth is AuthAuthenticated ? auth.rbac : null;
+    // TODO(M3): when a periodic /v1/auth/me refresh lands, switch from
+    // ref.read to ref.watch so revoked permissions stop surfacing actions
+    // the backend will 403. M2 leaves this as a one-shot read; backend
+    // remains the final authority, so the gap is defense-in-depth UX
+    // only.
     if (!mounted) return;
 
     final id = await showActionSheet(
@@ -141,16 +146,45 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
 
     Map<String, dynamic>? params;
     if (id == ActionId.suspend) {
-      // Toggle from the snapshot the operator confirmed against. A small
-      // race exists if another oncall mutated the resource between detail
-      // load and this confirm — backend is idempotent (suspend twice is a
-      // no-op; resume twice is a no-op) so the worst case is a wasted PUT,
-      // not state corruption. Surfacing a confirmation against fresh state
-      // would add a network round-trip per suspend tap; not worth it.
-      final spec =
+      // The operator confirmed against `meta.label` — "Resume" if the
+      // captured snapshot was suspended, "Suspend" if it was running.
+      // Send the inverse of the SAME snapshot's state so the backend
+      // POST honors the operator's stated intent. A subsequent refetch
+      // (the post-execute invalidate) reconciles whatever the cluster
+      // is actually doing.
+      //
+      // The defended race: another oncall flips spec.suspend between
+      // detail load and confirm. The operator confirmed "Resume" but
+      // current state is already running. Sending !running == suspend
+      // would invert intent. Refresh the resource right before sending
+      // and abort if the state diverged from what was confirmed.
+      final freshState = await ref.refresh(
+        resourceGetProvider(ResourceGetKey(
+          clusterId: pinnedCluster,
+          kind: widget.kind,
+          namespace: widget.namespace,
+          name: widget.name,
+        )).future,
+      );
+      if (!mounted) return;
+      final freshSpec =
+          freshState['spec'] as Map<String, dynamic>? ?? const {};
+      final freshSuspended = freshSpec['suspend'] == true;
+      final capturedSpec =
           widget.resource['spec'] as Map<String, dynamic>? ?? const {};
-      final currentlySuspended = spec['suspend'] == true;
-      params = {'suspend': !currentlySuspended};
+      final capturedSuspended = capturedSpec['suspend'] == true;
+      if (freshSuspended != capturedSuspended) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Resource state changed during this action. Aborted to '
+              'preserve operator intent. Re-open and re-confirm.',
+            ),
+          ),
+        );
+        return;
+      }
+      params = {'suspend': !capturedSuspended};
     }
 
     await _execute(id, pinnedCluster, params: params);
@@ -189,6 +223,11 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
         params: params,
       );
       if (!mounted) return;
+      // Snackbar BEFORE the pop for delete — capturing the messenger
+      // earlier still works in practice because MaterialApp's root
+      // ScaffoldMessenger persists across the pop, but ordering the
+      // showSnackBar call before maybePop removes any reliance on
+      // root-vs-Scaffold-local messenger semantics.
       messenger.showSnackBar(SnackBar(content: Text(result.message)));
 
       // Invalidate the detail's GET so Overview/YAML/status refetch.

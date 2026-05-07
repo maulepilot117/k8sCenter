@@ -79,7 +79,17 @@ class _ConfirmSheetState extends State<ConfirmSheet> {
   bool get _canConfirm {
     final required = widget.typeToConfirm;
     if (required == null) return true;
-    return _controller.text.trim() == required;
+    return _normalize(_controller.text) == _normalize(required);
+  }
+
+  /// Trim whitespace (covers autocorrect's trailing space on iOS) and strip
+  /// zero-width characters that arrive via clipboard pastes from rich-text
+  /// surfaces (Slack, browser, mail clients). Without this, a paste that
+  /// looks identical to the operator silently fails the equality check.
+  static String _normalize(String s) {
+    final trimmed = s.trim();
+    // U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+FEFF BOM.
+    return trimmed.replaceAll(RegExp(r'[​-‍﻿]'), '');
   }
 
   @override

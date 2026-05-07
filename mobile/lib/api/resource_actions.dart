@@ -108,7 +108,12 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
     case ActionId.delete:
       final owners =
           (metadata['ownerReferences'] as List?) ?? const <dynamic>[];
-      final owner = owners.isNotEmpty ? owners.first as Map? : null;
+      // Defensive `is Map` guard — a bare `as Map?` cast would throw
+      // CastError synchronously inside the action sheet build for a
+      // malformed payload (e.g., backend returns a string in the array).
+      final owner = (owners.isNotEmpty && owners.first is Map)
+          ? owners.first as Map
+          : null;
       final kind = (resource['kind'] as String?) ?? 'resource';
       final msg = owner != null
           ? 'This $kind is managed by ${owner['kind']}/${owner['name']} and will be recreated after deletion.'
@@ -150,6 +155,15 @@ class ActionResult {
   final String? createdName;
 }
 
+/// Per-action receive timeout. Defaults match Dio's 30s; delete bumps to
+/// 90s because pods with `terminationGracePeriodSeconds > 30` (or
+/// namespace deletes with cascading dependents) regularly take longer
+/// than 30s before the backend's k8s API call returns. Without this, a
+/// long-grace delete surfaces as `Network error` even though the
+/// deletion is proceeding.
+const Duration _defaultActionTimeout = Duration(seconds: 30);
+const Duration _deleteActionTimeout = Duration(seconds: 90);
+
 /// Execute an action against the backend. Throws [ApiError] on failure.
 /// Mirrors the executeAction switch in action-handlers.ts.
 Future<ActionResult> executeAction({
@@ -161,6 +175,10 @@ Future<ActionResult> executeAction({
   Map<String, dynamic>? params,
 }) async {
   final base = '/api/v1/resources/$kind/$namespace/$name';
+  final opts = Options(
+    receiveTimeout:
+        id == ActionId.delete ? _deleteActionTimeout : _defaultActionTimeout,
+  );
   try {
     switch (id) {
       case ActionId.scale:
@@ -175,13 +193,14 @@ Future<ActionResult> executeAction({
         await dio.post<Map<String, dynamic>>(
           '$base/scale',
           data: {'replicas': replicas},
+          options: opts,
         );
         return ActionResult(message: 'Scaled to $replicas replicas');
       case ActionId.restart:
-        await dio.post<Map<String, dynamic>>('$base/restart');
+        await dio.post<Map<String, dynamic>>('$base/restart', options: opts);
         return const ActionResult(message: 'Rolling restart initiated');
       case ActionId.delete:
-        await dio.delete<Map<String, dynamic>>(base);
+        await dio.delete<Map<String, dynamic>>(base, options: opts);
         return ActionResult(message: 'Deleted $name');
       case ActionId.suspend:
         final suspend = params?['suspend'];
@@ -195,10 +214,12 @@ Future<ActionResult> executeAction({
         await dio.post<Map<String, dynamic>>(
           '$base/suspend',
           data: {'suspend': suspend},
+          options: opts,
         );
         return ActionResult(message: suspend ? 'Suspended' : 'Resumed');
       case ActionId.trigger:
-        final res = await dio.post<Map<String, dynamic>>('$base/trigger');
+        final res =
+            await dio.post<Map<String, dynamic>>('$base/trigger', options: opts);
         final data = res.data?['data'];
         final meta = data is Map ? data['metadata'] as Map? : null;
         final createdName = meta?['name'] as String?;
@@ -218,6 +239,7 @@ Future<ActionResult> executeAction({
         await dio.post<Map<String, dynamic>>(
           '$base/rollback',
           data: {'revision': revision},
+          options: opts,
         );
         return ActionResult(message: 'Rolled back to revision $revision');
     }
