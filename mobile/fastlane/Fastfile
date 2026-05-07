@@ -1,0 +1,106 @@
+# Fastlane lanes for k8sCenter mobile release uploads. Invoked from the
+# `mobile-deploy` job in `.github/workflows/mobile-ci.yml` on push-to-main.
+#
+# Both lanes are no-ops in CI when their required secrets are absent —
+# the workflow's secret-presence checks short-circuit before invoking
+# Fastlane. When a secret was set on a prior run and is later removed,
+# the lane still fails gracefully with a clear error pointing at
+# `mobile/docs/RELEASE.md`.
+#
+# Operator setup is documented in `mobile/docs/RELEASE.md`. The TL;DR:
+# enroll in Apple Developer Program, set up Play Console, create an
+# App Store Connect API key + Play service account, host the certs +
+# provisioning profiles in a private GitHub repo accessible to
+# `fastlane match`, and set the GitHub Actions secrets the workflow
+# expects.
+
+default_platform(:ios)
+
+# -----------------------------------------------------------------------
+# iOS — TestFlight upload
+# -----------------------------------------------------------------------
+platform :ios do
+  desc "Build the IPA and upload to TestFlight"
+  lane :beta_ios do
+    setup_ci if is_ci
+
+    # Pull production certs + provisioning profile from the private
+    # `match` repo. Read-only; CI never writes to that repo.
+    match(
+      type: "appstore",
+      readonly: true,
+      git_url: ENV["MATCH_GIT_URL"] || raise(
+        "MATCH_GIT_URL not set — see mobile/docs/RELEASE.md"
+      ),
+      app_identifier: "io.kubecenter.kubecenter"
+    )
+
+    # Build number from CI run id keeps each TestFlight build unique
+    # without bumping the version string. Falls back to git rev-list
+    # count for local invocation.
+    build_number = ENV["GITHUB_RUN_NUMBER"] ||
+      `git rev-list --count HEAD`.strip
+    increment_build_number(
+      build_number: build_number,
+      xcodeproj: "../ios/Runner.xcodeproj"
+    )
+
+    build_app(
+      workspace: "../ios/Runner.xcworkspace",
+      scheme: "Runner",
+      export_method: "app-store",
+      output_directory: "build/ios",
+      output_name: "kubecenter.ipa"
+    )
+
+    upload_to_testflight(
+      api_key_path: ENV["APP_STORE_CONNECT_API_KEY_PATH"] ||
+        raise("APP_STORE_CONNECT_API_KEY_PATH not set"),
+      skip_waiting_for_build_processing: true,
+      ipa: "build/ios/kubecenter.ipa"
+    )
+  end
+end
+
+# -----------------------------------------------------------------------
+# Android — Play Internal track upload
+# -----------------------------------------------------------------------
+platform :android do
+  desc "Build the AAB and upload to Play Internal"
+  lane :beta_android do
+    # Decode the Play service-account JSON from the GitHub Actions
+    # secret. The file is created by the workflow before invoking
+    # Fastlane and removed after the lane completes (see workflow).
+    json_key = ENV["PLAY_SERVICE_ACCOUNT_JSON_PATH"] ||
+      raise("PLAY_SERVICE_ACCOUNT_JSON_PATH not set")
+
+    # Bump the versionCode from the CI run number so every push to main
+    # produces a unique Play upload. versionName is left to the
+    # operator's tag/release flow.
+    build_number = ENV["GITHUB_RUN_NUMBER"] ||
+      `git rev-list --count HEAD`.strip
+
+    gradle(
+      task: "bundleRelease",
+      project_dir: "../android",
+      properties: {
+        "versionCode" => build_number,
+        # Plumb the Universal Link host through to Gradle so the
+        # release manifest gets the correct App Links host.
+        "universalLinkHost" => ENV["UNIVERSAL_LINK_HOST"] || ""
+      }
+    )
+
+    upload_to_play_store(
+      track: "internal",
+      json_key: json_key,
+      package_name: "io.kubecenter.kubecenter",
+      aab: "../android/app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_apk: true,
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+  end
+end

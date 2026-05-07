@@ -1,0 +1,232 @@
+{{/*
+Mobile-app Universal Link well-known files. Renders only when
+`.Values.mobile.universalLinkDomain` is set — empty default keeps this
+template inert for operators who don't run the mobile app or use the
+`k8scenter://` custom scheme instead.
+
+Two static payloads are served from `.well-known/`:
+
+  - apple-app-site-association
+      iOS fetches this from `https://<domain>/.well-known/...` and
+      validates that the listed `appID` (TeamID + BundleID) matches the
+      app trying to handle the universal link. Without this, iOS opens
+      Safari instead of the app.
+
+  - assetlinks.json
+      Android equivalent. Lists the package name + SHA-256 fingerprint
+      of the upload signing key. autoVerify="true" in AndroidManifest
+      tells the OS to fetch this file once and grant the app exclusive
+      handling of HTTPS links to the host.
+
+Both files MUST be served as `application/json`. Apple requires the iOS
+file to also have NO file extension (note: this contradicts the older
+`.json` convention — the modern path is extensionless).
+
+The Ingress section adds a route that points at a backing Service which
+serves the ConfigMap as static content via a tiny nginx pod. Operators
+who already have an Ingress that handles the same host can omit the
+Ingress here and serve the files via their own static-site setup —
+they just need the .well-known paths to resolve.
+*/}}
+{{- if .Values.mobile.universalLinkDomain }}
+{{- if not .Values.mobile.iosTeamId }}
+{{- fail "mobile.universalLinkDomain is set but mobile.iosTeamId is empty — set both or unset universalLinkDomain" }}
+{{- end }}
+{{- if not .Values.mobile.androidSha256CertFingerprint }}
+{{- fail "mobile.universalLinkDomain is set but mobile.androidSha256CertFingerprint is empty — set both or unset universalLinkDomain" }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+data:
+  apple-app-site-association: |
+    {
+      "applinks": {
+        "apps": [],
+        "details": [
+          {
+            "appID": "{{ .Values.mobile.iosTeamId }}.{{ .Values.mobile.iosBundleId }}",
+            "paths": ["/m/*"]
+          }
+        ]
+      }
+    }
+  assetlinks.json: |
+    [
+      {
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+          "namespace": "android_app",
+          "package_name": "{{ .Values.mobile.androidPackageName }}",
+          "sha256_cert_fingerprints": [
+            "{{ .Values.mobile.androidSha256CertFingerprint }}"
+          ]
+        }
+      }
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubecenter.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: well-known
+  template:
+    metadata:
+      labels:
+        {{- include "kubecenter.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: well-known
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          volumeMounts:
+            - name: well-known
+              mountPath: /usr/share/nginx/html/.well-known
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+      volumes:
+        - name: well-known
+          configMap:
+            name: {{ include "kubecenter.fullname" . }}-well-known
+            items:
+              - key: apple-app-site-association
+                path: apple-app-site-association
+              - key: assetlinks.json
+                path: assetlinks.json
+        - name: nginx-conf
+          configMap:
+            name: {{ include "kubecenter.fullname" . }}-well-known-nginx
+        - name: tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known-nginx
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+      root /usr/share/nginx/html;
+
+      # Apple requires the apple-app-site-association file to be served
+      # as application/json with NO file extension. nginx's default
+      # mime.types map doesn't catch the extensionless path; force it.
+      location = /.well-known/apple-app-site-association {
+        default_type application/json;
+        try_files $uri =404;
+      }
+      location = /.well-known/assetlinks.json {
+        default_type application/json;
+        try_files $uri =404;
+      }
+      location / { return 404; }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  selector:
+    {{- include "kubecenter.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-well-known
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+    app.kubernetes.io/component: well-known
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.mobile.universalLinkDomain | quote }}
+      http:
+        paths:
+          - path: /.well-known/apple-app-site-association
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "kubecenter.fullname" . }}-well-known
+                port:
+                  number: 80
+          - path: /.well-known/assetlinks.json
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "kubecenter.fullname" . }}-well-known
+                port:
+                  number: 80
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

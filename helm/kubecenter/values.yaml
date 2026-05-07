@@ -195,3 +195,31 @@ monitoring-stack:
     enabled: true
   nodeExporter:
     enabled: true
+
+# -- Mobile app — Universal Link domain hosting (optional)
+#
+# When operators run the mobile app and want to use Universal Links
+# (HTTPS deep links instead of the k8scenter:// custom scheme), set
+# `mobile.universalLinkDomain` to the public host they operate the
+# k8sCenter web frontend on. The chart will then expose two static
+# files at that host:
+#   - /.well-known/apple-app-site-association  (iOS)
+#   - /.well-known/assetlinks.json             (Android)
+#
+# Both files are required for the mobile OS to recognize HTTPS links to
+# that host as belonging to the k8sCenter app. When `domain` is empty,
+# the template emits nothing and the mobile app falls back to the
+# `k8scenter://` custom scheme.
+mobile:
+  universalLinkDomain: ""  # e.g., "kubecenter.example.com"
+  # Apple Developer Team ID + iOS bundle identifier — both required
+  # for the apple-app-site-association payload. Find the team ID in
+  # Apple Developer → Membership.
+  iosTeamId: ""             # e.g., "ABCDE12345"
+  iosBundleId: "io.kubecenter.kubecenter"
+  # Android: SHA-256 fingerprint of the upload signing key's
+  # certificate, in the colon-separated hex format Play returns
+  # (`keytool -list -v -keystore <keystore>` shows it). Must match
+  # the cert used to sign the AAB Fastlane uploads.
+  androidPackageName: "io.kubecenter.kubecenter"
+  androidSha256CertFingerprint: ""  # e.g., "AB:CD:EF:..."

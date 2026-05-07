@@ -1,0 +1,10 @@
+# Fastlane Appfile — identifies the iOS bundle and Apple Developer
+# team. The Apple ID and team ID come from CI secrets at runtime so
+# they're not checked in.
+
+app_identifier("io.kubecenter.kubecenter")
+apple_id(ENV["APPLE_ID"])
+team_id(ENV["APPLE_TEAM_ID"])
+
+# Android package — used by `fastlane supply` (upload_to_play_store).
+package_name("io.kubecenter.kubecenter")

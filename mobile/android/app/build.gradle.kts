@@ -28,6 +28,14 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // Universal Link host. Operators set this via gradle.properties
+        // or `-PuniversalLinkHost=<domain>` so the AndroidManifest's HTTPS
+        // intent-filter resolves at build time. Empty default keeps the
+        // manifest valid for homelab builds that rely on the k8scenter://
+        // custom scheme instead.
+        val universalLinkHost = (project.findProperty("universalLinkHost") as String?) ?: ""
+        manifestPlaceholders["universalLinkHost"] = universalLinkHost
     }
 
     buildTypes {

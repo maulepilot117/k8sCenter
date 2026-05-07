@@ -31,9 +31,23 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="k8scenter"/>
             </intent-filter>
-            <!-- Universal Links: PR-1g sets the actual production host
-                 via Helm values.mobile.universalLinkDomain. Until then
-                 this intent-filter is harmless (no autoVerify, no host). -->
+            <!-- Universal Links (HTTPS App Links). Host is wired in via
+                 the `universalLinkHost` Gradle property (see
+                 build.gradle.kts) so operators set their own domain at
+                 build time. autoVerify="true" pairs with the
+                 .well-known/assetlinks.json hosted by the Helm template
+                 (helm/kubecenter/templates/well-known.yaml). When the
+                 property is empty the filter still parses but nothing
+                 matches; the custom-scheme filter above handles deep
+                 links in that case. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"
+                      android:host="${universalLinkHost}"
+                      android:pathPrefix="/m/"/>
+            </intent-filter>
         </activity>
         <!-- POST_NOTIFICATIONS runtime permission (Android 13+, API 33). -->
         <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
