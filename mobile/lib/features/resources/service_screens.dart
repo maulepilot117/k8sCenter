@@ -145,6 +145,7 @@ class ServiceDetailScreen extends ConsumerWidget {
           kindLabel: 'Service',
           name: s.meta.name,
           namespace: s.meta.namespace,
+          uid: s.meta.uid,
           icon: Icons.lan_outlined,
           statusLabel: s.type,
           statusColor: colors.accent,

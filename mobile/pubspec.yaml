@@ -42,6 +42,10 @@ dependencies:
   # Charts (PR-1f+ Prometheus integration). Listed early so deps resolve consistently.
   fl_chart: ^0.69.0
 
+  # Virtualized DataTable for the tablet resource list. Stock DataTable
+  # materializes every row eagerly, which jank-locks 500-pod clusters.
+  data_table_2: ^2.5.16
+
   # In-app browser for OIDC (PR-1g).
   flutter_custom_tabs: ^2.2.0
 

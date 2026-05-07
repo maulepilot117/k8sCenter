@@ -14,12 +14,18 @@ import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/resources/configmap_screens.dart';
+import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
 import '../features/resources/generic_detail_screen.dart';
+import '../features/resources/ingress_screens.dart';
+import '../features/resources/namespace_screens.dart';
 import '../features/resources/node_screens.dart';
 import '../features/resources/pod_screens.dart';
+import '../features/resources/pvc_screens.dart';
+import '../features/resources/replicaset_screens.dart';
 import '../features/resources/secret_screens.dart';
 import '../features/resources/service_screens.dart';
+import '../features/resources/statefulset_screens.dart';
 import '../features/settings/theme_picker_sheet.dart';
 import '../widgets/adaptive_scaffold.dart';
 import '../widgets/cluster_pill.dart';
@@ -128,6 +134,86 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: ':name',
             builder: (context, state) => NodeDetailScreen(
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+
+      // --- PR-1e: 6 additional specialized kinds ---
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/replicasets',
+        builder: (context, state) => const ReplicaSetListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => ReplicaSetDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/statefulsets',
+        builder: (context, state) => const StatefulSetListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => StatefulSetDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/daemonsets',
+        builder: (context, state) => const DaemonSetListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => DaemonSetDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/networking/ingresses',
+        builder: (context, state) => const IngressListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => IngressDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/storage/pvcs',
+        builder: (context, state) => const PvcListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => PvcDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/cluster/namespaces',
+        builder: (context, state) => const NamespaceListScreen(),
+        routes: [
+          // Cluster-scoped — single :name segment.
+          GoRoute(
+            path: ':name',
+            builder: (context, state) => NamespaceDetailScreen(
               name: state.pathParameters['name']!,
             ),
           ),

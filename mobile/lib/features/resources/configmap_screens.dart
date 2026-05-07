@@ -118,65 +118,112 @@ class ConfigMapDetailScreen extends ConsumerWidget {
       data: (raw) {
         final cm = _ConfigMapRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
+        // Stable, ordered list of (key, value, isBinary) tuples drives the
+        // SliverList builder so configmaps with many keys lazy-render
+        // their tiles as the operator scrolls — the prior Column-of-tiles
+        // materialized every key up front and janked on Helm-rendered
+        // configmaps with hundreds of keys.
+        final entries = <_DataEntry>[
+          for (final e in cm.data.entries)
+            _DataEntry(name: e.key, value: e.value, binary: false),
+          for (final e in cm.binaryData.entries)
+            _DataEntry(name: e.key, value: e.value, binary: true),
+        ];
         return ResourceDetailScaffold(
           kindLabel: 'ConfigMap',
           name: cm.meta.name,
           namespace: cm.meta.namespace,
+          uid: cm.meta.uid,
           icon: Icons.description_outlined,
           statusLabel: '${cm.keyCount} keys',
           statusColor: colors.accent,
           resource: raw,
-          overview: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              DetailSection(
-                title: 'METADATA',
-                child: Column(
-                  children: [
-                    DetailRow(
-                      label: 'Created',
-                      value: cm.meta.creationTimestamp.isEmpty
-                          ? '—'
-                          : '${cm.meta.creationTimestamp} (${formatAge(cm.meta.creationTimestamp)})',
+          overviewScrollable: false,
+          overview: CustomScrollView(
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                sliver: SliverToBoxAdapter(
+                  child: DetailSection(
+                    title: 'METADATA',
+                    child: Column(
+                      children: [
+                        DetailRow(
+                          label: 'Created',
+                          value: cm.meta.creationTimestamp.isEmpty
+                              ? '—'
+                              : '${cm.meta.creationTimestamp} (${formatAge(cm.meta.creationTimestamp)})',
+                        ),
+                        DetailRow(
+                          label: 'Labels',
+                          value: joinMap(cm.meta.labels, maxEntries: 10),
+                        ),
+                      ],
                     ),
-                    DetailRow(
-                      label: 'Labels',
-                      value: joinMap(cm.meta.labels, maxEntries: 10),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-              DetailSection(
-                title: 'DATA (${cm.data.length} text keys, '
-                    '${cm.binaryData.length} binary)',
-                child: cm.keyCount == 0
-                    ? Text(
-                        'No data',
-                        style: TextStyle(color: colors.textMuted),
-                      )
-                    : Column(
-                        children: [
-                          for (final entry in cm.data.entries)
-                            _DataKeyTile(
-                              name: entry.key,
-                              value: entry.value,
-                              binary: false,
-                            ),
-                          for (final entry in cm.binaryData.entries)
-                            _DataKeyTile(
-                              name: entry.key,
-                              value: entry.value,
-                              binary: true,
-                            ),
-                        ],
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                sliver: SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      'DATA (${cm.data.length} text keys, '
+                      '${cm.binaryData.length} binary)',
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.5,
                       ),
+                    ),
+                  ),
+                ),
               ),
+              if (entries.isEmpty)
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: SliverToBoxAdapter(
+                    child: Text(
+                      'No data',
+                      style: TextStyle(color: colors.textMuted),
+                    ),
+                  ),
+                )
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: SliverList.builder(
+                    itemCount: entries.length,
+                    itemBuilder: (context, i) {
+                      final e = entries[i];
+                      return _DataKeyTile(
+                        name: e.name,
+                        value: e.value,
+                        binary: e.binary,
+                      );
+                    },
+                  ),
+                ),
+              const SliverToBoxAdapter(child: SizedBox(height: 16)),
             ],
           ),
         );
       },
     );
   }
+}
+
+class _DataEntry {
+  const _DataEntry({
+    required this.name,
+    required this.value,
+    required this.binary,
+  });
+  final String name;
+  final String value;
+  final bool binary;
 }
 
 class _DataKeyTile extends StatelessWidget {

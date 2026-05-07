@@ -3,6 +3,7 @@
 // shared widget handles layout and the kind-specific screens specify
 // what to show.
 
+import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/kube_theme_builder.dart';
@@ -107,42 +108,48 @@ class ResourceTable<T> extends StatelessWidget {
 
   Widget _buildTabletTable(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return SingleChildScrollView(
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: DataTable(
-          columns: [
-            for (final col in columns)
-              DataColumn(
-                label: Text(
-                  col.label,
-                  style: TextStyle(
-                    color: colors.textSecondary,
-                    fontWeight: FontWeight.w500,
+    // DataTable2 lazy-builds rows as they scroll into view, which keeps
+    // memory + first-frame latency flat for 500-row clusters. Stock
+    // DataTable wrapped in nested SingleChildScrollViews materialized
+    // every row eagerly — fine for 20 rows, jank for 200.
+    // 96px per column hits a comfortable median for k8s names + numeric
+    // status cells. Wide tables (8+ columns like PVC) push past viewport
+    // and DataTable2 enables horizontal scroll automatically.
+    final minWidth = (columns.length * 96).toDouble();
+    return DataTable2(
+      columnSpacing: 16,
+      horizontalMargin: 12,
+      minWidth: minWidth,
+      columns: [
+        for (final col in columns)
+          DataColumn2(
+            label: Text(
+              col.label,
+              style: TextStyle(
+                color: colors.textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+      ],
+      rows: [
+        for (final item in items)
+          DataRow2(
+            onTap: () => onTap(item),
+            cells: [
+              for (final col in columns)
+                DataCell(
+                  Text(
+                    col.value(item),
+                    style: TextStyle(
+                      color: col.color?.call(context, item) ??
+                          colors.textPrimary,
+                    ),
                   ),
                 ),
-              ),
-          ],
-          rows: [
-            for (final item in items)
-              DataRow(
-                onSelectChanged: (_) => onTap(item),
-                cells: [
-                  for (final col in columns)
-                    DataCell(
-                      Text(
-                        col.value(item),
-                        style: TextStyle(
-                          color: col.color?.call(context, item) ??
-                              colors.textPrimary,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-          ],
-        ),
-      ),
+            ],
+          ),
+      ],
     );
   }
 }

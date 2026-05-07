@@ -210,6 +210,7 @@ class PodDetailScreen extends ConsumerWidget {
           kindLabel: 'Pod',
           name: pod.meta.name,
           namespace: pod.meta.namespace,
+          uid: pod.meta.uid,
           icon: Icons.bubble_chart_outlined,
           statusLabel: pod.phase,
           statusColor: statusColor,

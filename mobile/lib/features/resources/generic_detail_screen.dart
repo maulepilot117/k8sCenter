@@ -50,6 +50,7 @@ class GenericDetailScreen extends ConsumerWidget {
           kindLabel: kind,
           name: meta.name,
           namespace: meta.namespace.isEmpty ? null : meta.namespace,
+          uid: meta.uid,
           icon: Icons.inventory_2_outlined,
           resource: raw,
           isSensitive: kind.toLowerCase() == 'secret' ||
