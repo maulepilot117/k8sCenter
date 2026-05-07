@@ -11,6 +11,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
@@ -126,6 +127,12 @@ class NamespaceDetailScreen extends ConsumerWidget {
           statusLabel: n.phase,
           statusColor: statusColor,
           resource: raw,
+          trailingAction: ResourceActionsButton(
+            kind: 'namespaces',
+            namespace: '',
+            name: n.meta.name,
+            resource: raw,
+          ),
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

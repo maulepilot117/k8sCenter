@@ -270,11 +270,10 @@ void main() {
         containsAll(<ActionId>[
           ActionId.scale,
           ActionId.restart,
+          ActionId.rollback,
           ActionId.delete,
         ]),
       );
-      // Rollback ships in PR-2b — filtered from actionsByKind for now.
-      expect(visible, isNot(contains(ActionId.rollback)));
     });
 
     test('read-only RBAC hides every write action', () {
@@ -283,12 +282,44 @@ void main() {
       expect(visible, isEmpty);
     });
 
-    test('update-only RBAC shows scale/restart but not delete', () {
+    test('update-only RBAC shows scale/restart/rollback but not delete', () {
       final visible =
           getVisibleActions('deployments', 'default', updateOnlyRbac);
       expect(visible, contains(ActionId.scale));
       expect(visible, contains(ActionId.restart));
+      expect(visible, contains(ActionId.rollback));
       expect(visible, isNot(contains(ActionId.delete)));
+    });
+
+    test('newly-added kinds expose delete (services, configmaps, etc.)', () {
+      final allOps = RBACSummary.fromJson({
+        'namespaces': {
+          'default': {
+            'services': ['*'],
+            'configmaps': ['*'],
+            'secrets': ['*'],
+            'replicasets': ['*'],
+            'ingresses': ['*'],
+            'persistentvolumeclaims': ['*'],
+            'namespaces': ['*'],
+          },
+        },
+      });
+      for (final kind in const [
+        'services',
+        'configmaps',
+        'secrets',
+        'replicasets',
+        'ingresses',
+        'persistentvolumeclaims',
+        'namespaces',
+      ]) {
+        expect(
+          getVisibleActions(kind, 'default', allOps),
+          contains(ActionId.delete),
+          reason: 'kind=$kind should expose delete',
+        );
+      }
     });
 
     test('null RBAC returns all actions (optimistic)', () {

@@ -17,27 +17,35 @@ import 'api_error.dart';
 enum ActionId { scale, restart, delete, suspend, trigger, rollback }
 
 /// Kind → action map. Mirrors `frontend/lib/action-handlers.ts:ACTIONS_BY_KIND`
-// 1:1 except where M2 PR-2a intentionally defers an action to PR-2b. Drift
-// between this map and the TS source is the bug class type-to-confirm exists
-// to prevent — keep them isomorphic.
-//
-// Deferred this PR (will re-appear in PR-2b):
-//   - deployments rollback (revision picker + execution land in PR-2b)
-//   - rolebindings / clusterrolebindings delete (cluster-scoped URL routing
-//     not yet implemented; current `executeAction` URL builder assumes
-//     namespaced resources, which produces a malformed `/.../<kind>//<name>`
-//     for cluster-scoped delete. Tracked for PR-2b.)
+/// 1:1 except where M2 intentionally defers an action. Drift between this
+/// map and the TS source is the bug class type-to-confirm exists to
+/// prevent — keep them isomorphic.
+///
+/// Deferred:
+///   - rolebindings / clusterrolebindings delete (cluster-scoped URL
+///     routing not yet implemented; current `executeAction` URL builder
+///     assumes namespaced resources, which produces a malformed
+///     `/.../<kind>//<name>` for cluster-scoped delete. Tracked for M3.)
+///   - nodes (delete is not a routine oncall verb; deferred per master plan.)
 const Map<String, List<ActionId>> actionsByKind = {
   'deployments': [
     ActionId.scale,
     ActionId.restart,
+    ActionId.rollback,
     ActionId.delete,
   ],
   'statefulsets': [ActionId.scale, ActionId.restart, ActionId.delete],
   'daemonsets': [ActionId.restart, ActionId.delete],
+  'replicasets': [ActionId.delete],
   'pods': [ActionId.delete],
   'jobs': [ActionId.suspend, ActionId.delete],
   'cronjobs': [ActionId.suspend, ActionId.trigger, ActionId.delete],
+  'services': [ActionId.delete],
+  'ingresses': [ActionId.delete],
+  'configmaps': [ActionId.delete],
+  'secrets': [ActionId.delete],
+  'persistentvolumeclaims': [ActionId.delete],
+  'namespaces': [ActionId.delete],
 };
 
 /// Maps action IDs to the k8s verb required to perform them. Used by
@@ -115,9 +123,23 @@ ActionMeta getActionMeta(ActionId id, Map<String, dynamic> resource) {
           ? owners.first as Map
           : null;
       final kind = (resource['kind'] as String?) ?? 'resource';
-      final msg = owner != null
-          ? 'This $kind is managed by ${owner['kind']}/${owner['name']} and will be recreated after deletion.'
-          : 'This will permanently delete "$name".';
+      // Namespace delete cascades to every resource in the namespace —
+      // pods, services, configmaps, secrets, ingresses, etc. The
+      // type-to-confirm gate is meaningful only when the operator
+      // actually understands the blast radius, so the message says it
+      // explicitly.
+      final isNamespace = kind == 'Namespace' || kind == 'namespaces';
+      final String msg;
+      if (isNamespace) {
+        msg = 'This will delete namespace "$name" AND every resource '
+            'inside it (pods, services, configmaps, secrets, etc.). '
+            'This cannot be undone.';
+      } else if (owner != null) {
+        msg =
+            'This $kind is managed by ${owner['kind']}/${owner['name']} and will be recreated after deletion.';
+      } else {
+        msg = 'This will permanently delete "$name".';
+      }
       return ActionMeta(
         label: 'Delete',
         danger: true,
@@ -164,6 +186,23 @@ class ActionResult {
 const Duration _defaultActionTimeout = Duration(seconds: 30);
 const Duration _deleteActionTimeout = Duration(seconds: 90);
 
+/// Build the `/api/v1/resources/...` base path. Skips the namespace
+/// segment for cluster-scoped resources (namespace is empty), so an
+/// action on a Namespace produces `/api/v1/resources/namespaces/<name>`
+/// not `/api/v1/resources/namespaces//<name>`. Matches the backend
+/// router's split between cluster-scoped and namespaced action routes.
+String _resourceBase(String kind, String namespace, String name) {
+  final segs = <String>[
+    'api',
+    'v1',
+    'resources',
+    Uri.encodeComponent(kind),
+    if (namespace.isNotEmpty) Uri.encodeComponent(namespace),
+    Uri.encodeComponent(name),
+  ];
+  return '/${segs.join('/')}';
+}
+
 /// Execute an action against the backend. Throws [ApiError] on failure.
 /// Mirrors the executeAction switch in action-handlers.ts.
 Future<ActionResult> executeAction({
@@ -174,7 +213,7 @@ Future<ActionResult> executeAction({
   required String name,
   Map<String, dynamic>? params,
 }) async {
-  final base = '/api/v1/resources/$kind/$namespace/$name';
+  final base = _resourceBase(kind, namespace, name);
   final opts = Options(
     receiveTimeout:
         id == ActionId.delete ? _deleteActionTimeout : _defaultActionTimeout,

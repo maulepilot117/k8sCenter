@@ -18,6 +18,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../api/api_error.dart';
 import '../api/dio_client.dart';
@@ -104,8 +105,14 @@ class _ResourceActionsButtonState extends ConsumerState<ResourceActionsButton> {
         await _runScale(pinnedCluster);
         return;
       case ActionId.rollback:
-        // Rollback ships in PR-2b. Filtered out of `actionsByKind` so this
-        // case is unreachable; kept for enum exhaustiveness.
+        // Push the revision-picker route using the cluster pinned at
+        // sheet-open. Reading activeClusterProvider freshly here would
+        // race against a mid-flow cluster switch — same bug class
+        // PR-2a's pinning fix targets.
+        context.push(
+          '/clusters/$pinnedCluster/workloads/deployments/'
+          '${widget.namespace}/${widget.name}/rollback',
+        );
         return;
       case ActionId.restart:
       case ActionId.delete:

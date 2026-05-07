@@ -15,10 +15,12 @@ import 'package:go_router/go_router.dart';
 
 import '../../api/api_error.dart';
 import '../../api/resource_repository.dart';
+import '../../api/yaml_apply_controller.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
@@ -162,6 +164,19 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
           statusLabel: s.type,
           statusColor: colors.warning,
           resource: raw,
+          trailingAction: ResourceActionsButton(
+            kind: 'secrets',
+            namespace: s.meta.namespace,
+            name: s.meta.name,
+            resource: raw,
+          ),
+          editableYaml: true,
+          applyKey: YamlApplyKey(
+            clusterId: clusterId,
+            kind: 'secrets',
+            namespace: s.meta.namespace,
+            name: s.meta.name,
+          ),
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

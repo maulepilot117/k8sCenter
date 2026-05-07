@@ -52,9 +52,8 @@ void main() {
 
     expect(find.text('Scale'), findsOneWidget);
     expect(find.text('Restart'), findsOneWidget);
+    expect(find.text('Rollback'), findsOneWidget);
     expect(find.text('Delete'), findsOneWidget);
-    // Rollback hidden in PR-2a; UI ships in PR-2b.
-    expect(find.text('Rollback'), findsNothing);
   });
 
   testWidgets('read-only RBAC renders the empty-state', (tester) async {

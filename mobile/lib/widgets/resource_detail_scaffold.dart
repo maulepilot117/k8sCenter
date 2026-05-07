@@ -12,10 +12,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/resource_repository.dart';
+import '../api/yaml_apply_controller.dart';
 import '../cluster/cluster_provider.dart';
 import '../features/resources/k8s_helpers.dart';
 import '../theme/kube_theme_builder.dart';
 import 'empty_states.dart';
+import 'yaml_editor_panel.dart';
 
 class ResourceDetailScaffold extends StatelessWidget {
   const ResourceDetailScaffold({
@@ -32,7 +34,10 @@ class ResourceDetailScaffold extends StatelessWidget {
     this.overviewScrollable = true,
     this.uid,
     this.trailingAction,
-  });
+    this.editableYaml = false,
+    this.applyKey,
+  }) : assert(!editableYaml || applyKey != null,
+            'editableYaml requires applyKey for the YAML editor panel');
 
   /// Heuristic the Secret screen sets to true. When true, the YAML tab
   /// redacts `data` and `stringData` fields before rendering — without
@@ -49,6 +54,8 @@ class ResourceDetailScaffold extends StatelessWidget {
     IconData icon = Icons.key_outlined,
     String? uid,
     Widget? trailingAction,
+    bool editableYaml = false,
+    YamlApplyKey? applyKey,
   }) : this(
           key: key,
           kindLabel: 'Secret',
@@ -62,6 +69,8 @@ class ResourceDetailScaffold extends StatelessWidget {
           isSensitive: true,
           uid: uid,
           trailingAction: trailingAction,
+          editableYaml: editableYaml,
+          applyKey: applyKey,
         );
 
   final String kindLabel;
@@ -104,6 +113,15 @@ class ResourceDetailScaffold extends StatelessWidget {
   /// separate FloatingActionButton — operators reach for the top-right
   /// when they want to act on the focused resource.
   final Widget? trailingAction;
+
+  /// When true, the YAML tab swaps the read-only [_YamlTab] for the
+  /// edit-mode [YamlEditorPanel]. M2 ships this for ConfigMap and Secret
+  /// detail; other kinds will get it as wizards land in M3.
+  final bool editableYaml;
+
+  /// Composite key for the YAML edit state machine. Required when
+  /// [editableYaml] is true.
+  final YamlApplyKey? applyKey;
 
   @override
   Widget build(BuildContext context) {
@@ -160,7 +178,47 @@ class ResourceDetailScaffold extends StatelessWidget {
               )
             else
               overview,
-            _YamlTab(resource: resource, sensitive: isSensitive),
+            if (editableYaml && applyKey != null)
+              YamlEditorPanel(
+                applyKey: applyKey!,
+                resource: resource,
+                stripSensitiveDataFields: isSensitive,
+                headerWarning: isSensitive
+                    ? Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colors.warningDim,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.lock_outline,
+                                  size: 16, color: colors.warning),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Secret data and stringData are stripped '
+                                  'from the editor — server-side apply leaves '
+                                  'existing credential values untouched.',
+                                  style: TextStyle(
+                                    color: colors.warning,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : null,
+              )
+            else
+              _YamlTab(resource: resource, sensitive: isSensitive),
             EventsTab(
               kind: kindLabel,
               namespace: namespace,
