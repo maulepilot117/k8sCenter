@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../api/resource_repository.dart';
+import '../../api/yaml_apply_controller.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
@@ -144,6 +145,13 @@ class ConfigMapDetailScreen extends ConsumerWidget {
             namespace: cm.meta.namespace,
             name: cm.meta.name,
             resource: raw,
+          ),
+          editableYaml: true,
+          applyKey: YamlApplyKey(
+            clusterId: clusterId,
+            kind: 'configmaps',
+            namespace: cm.meta.namespace,
+            name: cm.meta.name,
           ),
           overviewScrollable: false,
           overview: CustomScrollView(
