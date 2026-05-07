@@ -12,6 +12,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
@@ -146,6 +147,12 @@ class DaemonSetDetailScreen extends ConsumerWidget {
           statusLabel: d.healthy ? 'Healthy' : 'Degraded',
           statusColor: d.healthy ? colors.success : colors.warning,
           resource: raw,
+          trailingAction: ResourceActionsButton(
+            kind: 'daemonsets',
+            namespace: d.meta.namespace,
+            name: d.meta.name,
+            resource: raw,
+          ),
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

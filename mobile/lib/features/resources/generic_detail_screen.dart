@@ -5,10 +5,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../api/resource_actions.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import 'k8s_helpers.dart';
 
@@ -46,6 +48,12 @@ class GenericDetailScreen extends ConsumerWidget {
       data: (raw) {
         final meta = K8sMeta.from(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
+        // Generic detail picks up actions for any kind in `actionsByKind`
+        // — Jobs/CronJobs go through this screen rather than a specialized
+        // one, so this is where suspend/trigger become reachable for them.
+        final hasActions =
+            (actionsByKind[kind] ?? const []).isNotEmpty &&
+                meta.namespace.isNotEmpty;
         return ResourceDetailScaffold(
           kindLabel: kind,
           name: meta.name,
@@ -55,6 +63,14 @@ class GenericDetailScreen extends ConsumerWidget {
           resource: raw,
           isSensitive: kind.toLowerCase() == 'secret' ||
               kind.toLowerCase() == 'secrets',
+          trailingAction: hasActions
+              ? ResourceActionsButton(
+                  kind: kind,
+                  namespace: meta.namespace,
+                  name: meta.name,
+                  resource: raw,
+                )
+              : null,
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

@@ -31,6 +31,7 @@ class ResourceDetailScaffold extends StatelessWidget {
     this.isSensitive = false,
     this.overviewScrollable = true,
     this.uid,
+    this.trailingAction,
   });
 
   /// Heuristic the Secret screen sets to true. When true, the YAML tab
@@ -47,6 +48,7 @@ class ResourceDetailScaffold extends StatelessWidget {
     required Widget overview,
     IconData icon = Icons.key_outlined,
     String? uid,
+    Widget? trailingAction,
   }) : this(
           key: key,
           kindLabel: 'Secret',
@@ -59,6 +61,7 @@ class ResourceDetailScaffold extends StatelessWidget {
           icon: icon,
           isSensitive: true,
           uid: uid,
+          trailingAction: trailingAction,
         );
 
   final String kindLabel;
@@ -95,6 +98,13 @@ class ResourceDetailScaffold extends StatelessWidget {
   /// resources but still correct for the common case).
   final String? uid;
 
+  /// Optional widget rendered in the app-bar actions slot (typically a
+  /// [ResourceActionsButton]). Renders before the status pill so action
+  /// affordances are reachable on both phone and tablet without a
+  /// separate FloatingActionButton — operators reach for the top-right
+  /// when they want to act on the focused resource.
+  final Widget? trailingAction;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
@@ -121,6 +131,7 @@ class ResourceDetailScaffold extends StatelessWidget {
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           actions: [
+            ?trailingAction,
             if (statusLabel != null)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
