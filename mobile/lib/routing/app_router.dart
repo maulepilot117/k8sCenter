@@ -1,11 +1,9 @@
 // go_router config + redirect guard.
 //
-// Two routes in PR-1b: `/login` and `/`. The redirect guard sends
-// unauthenticated users to /login, and authenticated users away from
-// /login back to /. AuthRepository is the source of truth — the guard
-// rebuilds whenever auth state transitions.
-//
-// PR-1c+ adds resource routes that the guard treats the same way as `/`.
+// PR-1d adds resource list/detail routes for the 6 specialized kinds
+// plus a generic detail fallback. Routes are flat under
+// `/clusters/:clusterId/<domain>/<kind>[/:namespace/:name]` mirroring
+// the web frontend's URL shape so deep links land identically.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,9 +13,17 @@ import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
+import '../features/resources/configmap_screens.dart';
+import '../features/resources/deployment_screens.dart';
+import '../features/resources/generic_detail_screen.dart';
+import '../features/resources/node_screens.dart';
+import '../features/resources/pod_screens.dart';
+import '../features/resources/secret_screens.dart';
+import '../features/resources/service_screens.dart';
 import '../features/settings/theme_picker_sheet.dart';
 import '../widgets/adaptive_scaffold.dart';
 import '../widgets/cluster_pill.dart';
+import '../widgets/domain_navigation_drawer.dart';
 import '../widgets/empty_states.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
@@ -46,6 +52,100 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/',
         builder: (context, state) => const _RootScreen(),
       ),
+
+      // --- Resource list routes (PR-1d: 6 specialized kinds) ---
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/pods',
+        builder: (context, state) => const PodListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => PodDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/workloads/deployments',
+        builder: (context, state) => const DeploymentListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => DeploymentDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/networking/services',
+        builder: (context, state) => const ServiceListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => ServiceDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/config/configmaps',
+        builder: (context, state) => const ConfigMapListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => ConfigMapDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/config/secrets',
+        builder: (context, state) => const SecretListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => SecretDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/cluster/nodes',
+        builder: (context, state) => const NodeListScreen(),
+        routes: [
+          // Node is cluster-scoped — single :name segment.
+          GoRoute(
+            path: ':name',
+            builder: (context, state) => NodeDetailScreen(
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+
+      // --- Generic detail fallback for any unspecialized kind ---
+      // Path shape: /clusters/<id>/generic/<kind>/<namespace>/<name>
+      // (cluster-scoped uses 'cluster' as the namespace placeholder).
+      GoRoute(
+        path: '/clusters/:clusterId/generic/:kind/:namespace/:name',
+        builder: (context, state) => GenericDetailScreen(
+          kind: state.pathParameters['kind']!,
+          namespace: state.pathParameters['namespace']! == 'cluster'
+              ? ''
+              : state.pathParameters['namespace']!,
+          name: state.pathParameters['name']!,
+        ),
+      ),
     ],
   );
 });
@@ -64,6 +164,7 @@ class _RootScreen extends ConsumerWidget {
     return AdaptiveScaffold(
       title: 'k8sCenter',
       body: const DashboardScreen(),
+      drawer: const DomainNavigationDrawer(),
       actions: [
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 8),
