@@ -13,10 +13,11 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
-import '../features/dashboard/dashboard_placeholder.dart';
+import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/settings/theme_picker_sheet.dart';
 import '../widgets/adaptive_scaffold.dart';
+import '../widgets/cluster_pill.dart';
 import '../widgets/empty_states.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
@@ -62,8 +63,12 @@ class _RootScreen extends ConsumerWidget {
 
     return AdaptiveScaffold(
       title: 'k8sCenter',
-      body: const DashboardPlaceholder(),
+      body: const DashboardScreen(),
       actions: [
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: ClusterPill(),
+        ),
         IconButton(
           icon: const Icon(Icons.palette_outlined),
           tooltip: 'Theme',
