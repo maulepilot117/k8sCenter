@@ -233,6 +233,18 @@ const List<WizardEntry> wizardRegistry = [
     icon: Icons.update_outlined,
     group: 'Storage',
   ),
+  // Restore-snapshot is a UX wrapper around the `pvc` backend wizard
+  // type — it lands a PVC with `dataSource` pointing at a snapshot.
+  // Treated as its own routable wizard so the drawer surfaces it
+  // distinctly; RBAC checks `create persistentvolumeclaims`.
+  WizardEntry(
+    type: 'restore-snapshot',
+    scope: WizardScope.namespaced,
+    label: 'Restore from snapshot',
+    kind: 'persistentvolumeclaims',
+    icon: Icons.restore_page_outlined,
+    group: 'Storage',
+  ),
 
   // --- Quotas ---
   WizardEntry(

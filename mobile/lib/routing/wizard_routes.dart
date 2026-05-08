@@ -35,11 +35,18 @@ import '../wizards/types/job/job_wizard_screen.dart';
 import '../wizards/types/namespace_limits/namespace_limits_wizard_screen.dart';
 import '../wizards/types/networkpolicy/networkpolicy_wizard_screen.dart';
 import '../wizards/types/pdb/pdb_wizard_screen.dart';
+import '../wizards/types/pvc/pvc_wizard_screen.dart';
+import '../wizards/types/restore_snapshot/restore_snapshot_wizard_screen.dart';
 import '../wizards/types/rolebinding/rolebinding_wizard_screen.dart';
+import '../wizards/types/scheduled_snapshot/scheduled_snapshot_wizard_screen.dart';
 import '../wizards/types/secret/secret_wizard_screen.dart';
 import '../wizards/types/service/service_wizard_screen.dart';
+import '../wizards/types/snapshot/snapshot_wizard_screen.dart';
 import '../wizards/types/statefulset/statefulset_wizard_screen.dart';
 import '../wizards/types/storageclass/storageclass_wizard_screen.dart';
+import '../wizards/types/velero_backup/velero_backup_wizard_screen.dart';
+import '../wizards/types/velero_restore/velero_restore_wizard_screen.dart';
+import '../wizards/types/velero_schedule/velero_schedule_wizard_screen.dart';
 import '../wizards/wizard_registry.dart';
 
 /// Public list of wizard routes — caller (app_router.dart) appends
@@ -93,6 +100,20 @@ Widget _wizardScreenForType(String type) {
       return const StorageClassWizardScreen();
     case 'namespace-limits':
       return const NamespaceLimitsWizardScreen();
+    case 'pvc':
+      return const PvcWizardScreen();
+    case 'snapshot':
+      return const SnapshotWizardScreen();
+    case 'scheduled-snapshot':
+      return const ScheduledSnapshotWizardScreen();
+    case 'restore-snapshot':
+      return const RestoreSnapshotWizardScreen();
+    case 'velero-backup':
+      return const VeleroBackupWizardScreen();
+    case 'velero-restore':
+      return const VeleroRestoreWizardScreen();
+    case 'velero-schedule':
+      return const VeleroScheduleWizardScreen();
     default:
       return _ComingSoonScreen(type: type);
   }
