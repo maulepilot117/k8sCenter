@@ -25,12 +25,14 @@ import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
 import '../auth/permissions.dart';
 import '../theme/kube_theme_builder.dart';
+import '../wizards/types/certificate/certificate_wizard_screen.dart';
 import '../wizards/types/configmap/configmap_wizard_screen.dart';
 import '../wizards/types/cronjob/cronjob_wizard_screen.dart';
 import '../wizards/types/daemonset/daemonset_wizard_screen.dart';
 import '../wizards/types/deployment/deployment_wizard_screen.dart';
 import '../wizards/types/hpa/hpa_wizard_screen.dart';
 import '../wizards/types/ingress/ingress_wizard_screen.dart';
+import '../wizards/types/issuer/issuer_wizard_screen.dart';
 import '../wizards/types/job/job_wizard_screen.dart';
 import '../wizards/types/namespace_limits/namespace_limits_wizard_screen.dart';
 import '../wizards/types/networkpolicy/networkpolicy_wizard_screen.dart';
@@ -114,6 +116,12 @@ Widget _wizardScreenForType(String type) {
       return const VeleroRestoreWizardScreen();
     case 'velero-schedule':
       return const VeleroScheduleWizardScreen();
+    case 'certificate':
+      return const CertificateWizardScreen();
+    case 'issuer':
+      return const IssuerWizardScreen(scope: WizardScope.namespaced);
+    case 'cluster-issuer':
+      return const IssuerWizardScreen(scope: WizardScope.cluster);
     default:
       return _ComingSoonScreen(type: type);
   }
