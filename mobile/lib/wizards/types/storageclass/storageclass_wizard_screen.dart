@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
+import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -87,14 +88,7 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(provisioner: v.trim())),
         ),
         const SizedBox(height: 24),
-        Text(
-          'Reclaim policy',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        const WizardSectionHeader('Reclaim policy'),
         const SizedBox(height: 8),
         SegmentedButton<String>(
           segments: const [
@@ -115,14 +109,7 @@ class _ConfigureStep extends ConsumerWidget {
             ),
           ),
         const SizedBox(height: 24),
-        Text(
-          'Volume binding mode',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        const WizardSectionHeader('Volume binding mode'),
         const SizedBox(height: 8),
         SegmentedButton<String>(
           segments: const [
@@ -162,20 +149,9 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(isDefault: v)),
         ),
         const SizedBox(height: 16),
-        Text(
+        const WizardSectionHeader(
           'Parameters',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(
-            'Provisioner-specific (e.g. type=gp3, fsType=ext4)',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
+          subtitle: 'Provisioner-specific (e.g. type=gp3, fsType=ext4)',
         ),
         const SizedBox(height: 8),
         KeyValueTable(

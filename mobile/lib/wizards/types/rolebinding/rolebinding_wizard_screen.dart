@@ -11,6 +11,7 @@ import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/kind_picker.dart';
 import '../../widgets/named_resource_picker.dart';
 import '../../widgets/repeating_row_group.dart';
+import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -97,14 +98,7 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(namespace: v)),
         ),
         const SizedBox(height: 24),
-        Text(
-          'Role reference',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        const WizardSectionHeader('Role reference'),
         const SizedBox(height: 8),
         KindPicker(
           options: const [
@@ -135,20 +129,9 @@ class _ConfigureStep extends ConsumerWidget {
             errorMessage: stepErrors['roleRef.name'],
           ),
         const SizedBox(height: 24),
-        Text(
+        const WizardSectionHeader(
           'Subjects',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(
-            'Users, groups, or service accounts to bind',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
+          subtitle: 'Users, groups, or service accounts to bind',
         ),
         const SizedBox(height: 8),
         RepeatingRowGroup<RoleBindingSubject>(

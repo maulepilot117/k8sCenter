@@ -151,8 +151,10 @@ class StorageClassWizardController
   @override
   StepFieldErrors validateLocally(StorageClassForm form, int stepIndex) {
     if (stepIndex != 0) return const <String, String>{};
-    final out = <String, String>{};
-    if (form.name.trim().isEmpty) out['name'] = 'Name is required';
+    final out = <String, String>{
+      // Cluster-scoped — no namespace input.
+      ...validateNameAndNamespace(form.name, '', requireNamespace: false),
+    };
     if (form.provisioner.trim().isEmpty) {
       out['provisioner'] = 'Provisioner is required';
     }

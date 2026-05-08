@@ -97,11 +97,15 @@ class NamespaceLimitsWizardController
   String get wizardType => 'namespace-limits';
 
   /// The wizard creates two resources — a ResourceQuota and a
-  /// LimitRange. We invalidate the quotas list since that's what the
-  /// dashboard's namespace-limits view reads first; LimitRange list
-  /// will refetch on next visit.
+  /// LimitRange. Primary list is `resourcequotas` (what the dashboard's
+  /// namespace-limits view reads first); `limitranges` is invalidated
+  /// via [extraResourceListKinds] so its list cache also refreshes
+  /// after a successful apply.
   @override
   String get resourceListKind => 'resourcequotas';
+
+  @override
+  List<String> get extraResourceListKinds => const ['limitranges'];
 
   @override
   List<WizardStep> get steps => const [

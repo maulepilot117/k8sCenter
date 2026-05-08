@@ -79,6 +79,14 @@ final dioProvider = Provider<Dio>((ref) {
 /// Adds `X-Cluster-ID: <active>` so multi-cluster routing reaches the
 /// right backend. Defaults to `local` in PR-1b; PR-1c hooks the real
 /// cluster picker into [activeClusterProvider].
+///
+/// Honors a pre-set `X-Cluster-ID` header so callers that already pin
+/// a cluster (wizards' named-resource pickers, scheduled background
+/// fetches keyed on a specific cluster) can override the active value
+/// per request. Without this carve-out the interceptor would silently
+/// reroute the picker's wire request to whichever cluster the operator
+/// last toggled in the picker UI, producing wrong-cluster reads under
+/// the wizard's pinned-cluster cache slot.
 class ClusterInterceptor extends Interceptor {
   ClusterInterceptor(this.ref);
 
@@ -86,7 +94,9 @@ class ClusterInterceptor extends Interceptor {
 
   @override
   void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    options.headers['X-Cluster-ID'] = ref.read(activeClusterProvider);
+    if (!options.headers.containsKey('X-Cluster-ID')) {
+      options.headers['X-Cluster-ID'] = ref.read(activeClusterProvider);
+    }
     handler.next(options);
   }
 }

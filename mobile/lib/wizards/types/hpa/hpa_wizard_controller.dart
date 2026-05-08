@@ -151,11 +151,9 @@ class HpaWizardController extends WizardController<HpaForm> {
   @override
   StepFieldErrors validateLocally(HpaForm form, int stepIndex) {
     if (stepIndex != 0) return const <String, String>{};
-    final out = <String, String>{};
-    if (form.name.trim().isEmpty) out['name'] = 'Name is required';
-    if (form.namespace.trim().isEmpty) {
-      out['namespace'] = 'Namespace is required';
-    }
+    final out = <String, String>{
+      ...validateNameAndNamespace(form.name, form.namespace),
+    };
     if (form.targetName.trim().isEmpty) {
       out['targetName'] = 'Target name is required';
     }

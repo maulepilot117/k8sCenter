@@ -2,19 +2,14 @@
 // Used by HPA (scaleTargetRef.kind ∈ Deployment/StatefulSet/ReplicaSet)
 // and RoleBinding (roleRef.kind ∈ Role/ClusterRole). Renders as a
 // segmented row of [ChoiceChip]s — small enough on phone, no dropdown
-// indirection. Disabled chips are tap-blocked but still visible so the
-// operator sees the full kind catalogue.
+// indirection.
 
 import 'package:flutter/material.dart';
 
 import '../../theme/kube_theme_builder.dart';
 
 class KindPickerOption {
-  const KindPickerOption({
-    required this.value,
-    required this.label,
-    this.disabled = false,
-  });
+  const KindPickerOption({required this.value, required this.label});
 
   /// Wire value (e.g., "Deployment", "ClusterRole"). What the wizard's
   /// form record stores and what the backend expects.
@@ -23,12 +18,6 @@ class KindPickerOption {
   /// Display label. Defaults to [value] in callers that don't need a
   /// nicer presentation.
   final String label;
-
-  /// When true, the chip renders muted and tap-disabled. Useful for
-  /// kinds that exist conceptually but aren't valid in the current
-  /// scope (e.g., RoleBinding cluster-scoped variant cannot reference
-  /// a namespaced Role).
-  final bool disabled;
 }
 
 class KindPicker extends StatelessWidget {
@@ -76,11 +65,9 @@ class KindPicker extends StatelessWidget {
               ChoiceChip(
                 label: Text(opt.label),
                 selected: selected == opt.value,
-                onSelected: opt.disabled
-                    ? null
-                    : (sel) {
-                        if (sel) onChanged(opt.value);
-                      },
+                onSelected: (sel) {
+                  if (sel) onChanged(opt.value);
+                },
               ),
           ],
         ),

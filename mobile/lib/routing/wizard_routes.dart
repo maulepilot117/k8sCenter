@@ -128,11 +128,17 @@ class _WizardRouteGuard extends ConsumerWidget {
     // operator who has create in *some* namespace is allowed to open
     // the form and pick a namespace they have permission for. The
     // server returns 403 if they pick wrong.
+    // Namespace is unknown at route time (the form picks it). Pass
+    // empty so canPerform's `allowAnyNamespaceFallback` toggle drives
+    // the decision: namespaced wizards (`requiresNamespace: true`) ->
+    // permit if the operator has create on the kind in *any*
+    // namespace; cluster-scoped wizards -> permit only if they have
+    // cluster-scoped create.
     final permitted = canPerform(
       rbac,
       entry.kind,
       entry.createVerb,
-      entry.requiresNamespace ? '' : '',
+      '',
       allowAnyNamespaceFallback: entry.requiresNamespace,
     );
     if (!permitted) {

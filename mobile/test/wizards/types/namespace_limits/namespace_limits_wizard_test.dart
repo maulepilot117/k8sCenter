@@ -128,5 +128,67 @@ void main() {
       expect(c.errorRouter('quotaName'), 0);
       expect(c.errorRouter('totally-unknown'), isNull);
     });
+
+    test('partial apply (summary.failed > 0) routes to failed', () async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      const multiDoc =
+          'apiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: q\n---\n'
+          'apiVersion: v1\nkind: LimitRange\nmetadata:\n  name: lr\n';
+      mock.onJson(
+        'POST',
+        '/api/v1/wizards/namespace-limits/preview',
+        body: {
+          'data': {'yaml': multiDoc},
+        },
+      );
+      // /apply returns one created + one failed: the partial-apply
+      // gate in WizardController.apply must route to `failed` so the
+      // operator doesn't see "Created!" while the LimitRange is gone.
+      mock.onJson(
+        'POST',
+        '/api/v1/yaml/apply',
+        body: {
+          'data': {
+            'summary': {
+              'created': 1,
+              'configured': 0,
+              'unchanged': 0,
+              'failed': 1,
+            },
+            'results': [
+              {
+                'kind': 'ResourceQuota',
+                'name': 'tenant-a-quota',
+                'namespace': 'tenant-a',
+              },
+              {
+                'kind': 'LimitRange',
+                'name': 'tenant-a-limits',
+                'namespace': 'tenant-a',
+                'error': 'invalid memory unit',
+              },
+            ],
+          },
+        },
+      );
+
+      final notifier =
+          container.read(namespaceLimitsWizardProvider(_key).notifier);
+      notifier.updateForm((_) => _validForm());
+      await notifier.next(); // → preview → reviewing
+      await notifier.apply();
+
+      final state = container.read(namespaceLimitsWizardProvider(_key));
+      expect(state.status, WizardStatus.failed);
+      expect(state.applyOutcome?.created, 1);
+      expect(state.applyOutcome?.failed, 1);
+      expect(state.errorMessage, contains('partially failed'));
+      // Preview YAML preserved so the operator can Back/edit/retry.
+      expect(state.previewYaml, isNotNull);
+    });
   });
 }

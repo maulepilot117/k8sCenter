@@ -279,14 +279,57 @@ class NetworkPolicyWizardController
   @override
   StepFieldErrors validateLocally(NetworkPolicyForm form, int stepIndex) {
     if (stepIndex != 0) return const <String, String>{};
-    final out = <String, String>{};
-    if (form.name.trim().isEmpty) out['name'] = 'Name is required';
-    if (form.namespace.trim().isEmpty) {
-      out['namespace'] = 'Namespace is required';
-    }
+    final out = <String, String>{
+      ...validateNameAndNamespace(form.name, form.namespace),
+    };
     if (!form.includeIngress && !form.includeEgress) {
       out['policyTypes'] = 'At least one policy type is required';
     }
+    // Each peer must contribute *something* — empty selectors and
+    // empty CIDRs cause `peer.toJson()` to return null, silently
+    // shrinking the peer list and (combined with the rule-level null
+    // filter) potentially erasing whole rules from the preview body
+    // without telling the operator. Surface the gap inline before the
+    // body is built.
+    void checkPeers(String groupKey, List<NetworkPolicyRule> rules) {
+      for (var ri = 0; ri < rules.length; ri++) {
+        final rule = rules[ri];
+        for (var pi = 0; pi < rule.peers.length; pi++) {
+          final peer = rule.peers[pi];
+          final prefix = '$groupKey[$ri].'
+              '${groupKey == 'ingress' ? 'from' : 'to'}[$pi]';
+          switch (peer.kind) {
+            case PeerKind.pod:
+              final m = <String, String>{};
+              for (final p in peer.podSelector) {
+                if (p.key.isEmpty) continue;
+                m[p.key] = p.value;
+              }
+              if (m.isEmpty) {
+                out['$prefix.podSelector'] =
+                    'Add at least one label or remove this peer';
+              }
+            case PeerKind.namespaceSel:
+              final m = <String, String>{};
+              for (final p in peer.namespaceSelector) {
+                if (p.key.isEmpty) continue;
+                m[p.key] = p.value;
+              }
+              if (m.isEmpty) {
+                out['$prefix.namespaceSelector'] =
+                    'Add at least one label or remove this peer';
+              }
+            case PeerKind.ipBlock:
+              if (peer.cidr.trim().isEmpty) {
+                out['$prefix.ipBlock.cidr'] = 'CIDR is required';
+              }
+          }
+        }
+      }
+    }
+
+    if (form.includeIngress) checkPeers('ingress', form.ingress);
+    if (form.includeEgress) checkPeers('egress', form.egress);
     return out;
   }
 }

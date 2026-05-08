@@ -19,6 +19,7 @@ import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
 import '../../widgets/repeating_row_group.dart';
+import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -96,7 +97,7 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(namespace: v)),
         ),
         const SizedBox(height: 24),
-        _SectionHeader(
+        WizardSectionHeader(
           'Pod selector',
           subtitle: 'Match labels — leave empty to apply to all pods',
         ),
@@ -110,7 +111,7 @@ class _ConfigureStep extends ConsumerWidget {
           errorMessage: stepErrors['podSelector'],
         ),
         const SizedBox(height: 24),
-        _SectionHeader(
+        WizardSectionHeader(
           'Policy types',
           subtitle: 'Direction(s) of traffic this policy controls',
         ),
@@ -126,7 +127,7 @@ class _ConfigureStep extends ConsumerWidget {
         ),
         if (state.form.includeIngress) ...[
           const SizedBox(height: 24),
-          _SectionHeader(
+          WizardSectionHeader(
             'Ingress rules',
             subtitle:
                 'Empty list with Ingress policy type denies all incoming traffic',
@@ -142,7 +143,7 @@ class _ConfigureStep extends ConsumerWidget {
         ],
         if (state.form.includeEgress) ...[
           const SizedBox(height: 24),
-          _SectionHeader(
+          WizardSectionHeader(
             'Egress rules',
             subtitle:
                 'Empty list with Egress policy type denies all outgoing traffic',
@@ -156,38 +157,6 @@ class _ConfigureStep extends ConsumerWidget {
             stepErrors: stepErrors,
           ),
         ],
-      ],
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title, {this.subtitle});
-  final String title;
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        if (subtitle != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              subtitle!,
-              style: TextStyle(color: colors.textMuted, fontSize: 12),
-            ),
-          ),
       ],
     );
   }
@@ -264,6 +233,21 @@ class _RuleGroup extends StatelessWidget {
   String _errKey(int i, String suffix) =>
       '${isIngress ? 'ingress' : 'egress'}[$i]$suffix';
 
+  /// Aggregate any rule-level errors (`ingress[N]` / `egress[N]`)
+  /// across all rules into a single banner message — there is no
+  /// per-rule slot in [RepeatingRowGroup], and dropping these would
+  /// silently eat backend cap-violation messages
+  /// (`maxPeersPerRule=20`, `maxPortsPerRule=20`).
+  String? _aggregatedRuleError(int ruleCount) {
+    final messages = <String>[];
+    for (var i = 0; i < ruleCount; i++) {
+      final m = stepErrors[_errKey(i, '')];
+      if (m != null && m.isNotEmpty) messages.add('Rule ${i + 1}: $m');
+    }
+    if (messages.isEmpty) return null;
+    return messages.join('\n');
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
@@ -332,7 +316,7 @@ class _RuleGroup extends StatelessWidget {
           ),
         );
       },
-      errorMessage: stepErrors[_errKey(0, '')],
+      errorMessage: _aggregatedRuleError(rules.length),
     );
   }
 }
@@ -368,9 +352,21 @@ class _PeerGroup extends StatelessWidget {
         onChanged(next);
       },
       itemBuilder: (ctx, i, peer) {
+        // Aggregate any except[N] errors (the textarea has one input
+        // for many CIDRs; backend reports per-index — surface them all
+        // under the field rather than dropping them).
+        final exceptErrors = <String>[];
+        final exceptPrefix = _peerErrKey(i, '.ipBlock.except[');
+        for (final entry in stepErrors.entries) {
+          if (entry.key.startsWith(exceptPrefix)) {
+            exceptErrors.add(entry.value);
+          }
+        }
         return _PeerRow(
           peer: peer,
           cidrError: stepErrors[_peerErrKey(i, '.ipBlock.cidr')],
+          exceptError:
+              exceptErrors.isEmpty ? null : exceptErrors.join('; '),
           onChanged: (next) {
             final list = [...peers];
             list[i] = next;
@@ -386,11 +382,13 @@ class _PeerRow extends StatelessWidget {
   const _PeerRow({
     required this.peer,
     required this.cidrError,
+    required this.exceptError,
     required this.onChanged,
   });
 
   final NetworkPolicyPeer peer;
   final String? cidrError;
+  final String? exceptError;
   final ValueChanged<NetworkPolicyPeer> onChanged;
 
   @override
@@ -440,24 +438,29 @@ class _PeerRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Except CIDRs (one per line, optional)',
+                  'Except CIDRs (one per line or comma-separated, optional)',
                   style: TextStyle(color: colors.textMuted, fontSize: 12),
                 ),
                 const SizedBox(height: 4),
                 TextFormField(
                   initialValue: peer.except.join('\n'),
                   maxLines: 3,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     hintText: '10.0.1.0/24\n10.0.2.0/24',
-                    border: OutlineInputBorder(),
+                    border: const OutlineInputBorder(),
+                    errorText: exceptError,
                   ),
                   onChanged: (v) {
-                    final lines = v
-                        .split('\n')
+                    // Accept both newline-separated and comma-separated
+                    // input. kubectl examples in the wild come in both
+                    // forms; rejecting either silently produces invalid
+                    // CIDRs the backend then 422's on.
+                    final entries = v
+                        .split(RegExp(r'[\n,]'))
                         .map((s) => s.trim())
                         .where((s) => s.isNotEmpty)
                         .toList();
-                    onChanged(peer.copyWith(except: lines));
+                    onChanged(peer.copyWith(except: entries));
                   },
                 ),
               ],

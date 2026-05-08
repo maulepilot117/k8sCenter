@@ -209,6 +209,13 @@ abstract class WizardController<TForm>
   /// `services`). Mirrors the backend's `kind` URL param shape.
   String get resourceListKind;
 
+  /// Additional kinds to invalidate on a successful apply, beyond
+  /// [resourceListKind]. Multi-resource wizards (NamespaceLimits emits
+  /// a ResourceQuota *and* a LimitRange) override this so both list
+  /// caches refresh — otherwise the operator sees a stale
+  /// counterpart-list immediately after creation. Default empty.
+  List<String> get extraResourceListKinds => const <String>[];
+
   /// Build the empty/default form when the wizard opens.
   TForm buildInitialForm();
 
@@ -226,6 +233,26 @@ abstract class WizardController<TForm>
   /// path. Empty map means OK to advance.
   StepFieldErrors validateLocally(TForm form, int stepIndex) =>
       const <String, String>{};
+
+  /// Helper for the universal "Name + Namespace required" pair every
+  /// namespaced wizard surfaces in its Configure step. Subclasses call
+  /// it from their own [validateLocally] and merge the result into
+  /// their step-0 error map. Pass [requireNamespace] = false for
+  /// cluster-scoped wizards so only the name is checked. Centralizing
+  /// the literal strings here keeps the operator-facing copy aligned
+  /// across all 14+ namespaced wizards.
+  StepFieldErrors validateNameAndNamespace(
+    String name,
+    String namespace, {
+    bool requireNamespace = true,
+  }) {
+    final out = <String, String>{};
+    if (name.trim().isEmpty) out['name'] = 'Name is required';
+    if (requireNamespace && namespace.trim().isEmpty) {
+      out['namespace'] = 'Namespace is required';
+    }
+    return out;
+  }
 
   @override
   WizardState<TForm> build(WizardKey arg) {
@@ -422,6 +449,15 @@ abstract class WizardController<TForm>
         kind: resourceListKind,
         namespace: outcome.firstResultNamespace,
       )));
+      // Multi-resource wizards (e.g. NamespaceLimits = ResourceQuota +
+      // LimitRange) need their counterpart kinds refreshed too.
+      for (final extra in extraResourceListKinds) {
+        ref.invalidate(resourceListProvider(ResourceListKey(
+          clusterId: arg.clusterId,
+          kind: extra,
+          namespace: outcome.firstResultNamespace,
+        )));
+      }
     } on ApiError catch (e) {
       if (_disposed || dispatchId != _dispatchId) return;
       _safeSet(state.copyWith(

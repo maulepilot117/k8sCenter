@@ -54,6 +54,7 @@ class ResourceRepository {
     String? labelSelector,
     int limit = defaultListLimit,
     CancelToken? cancelToken,
+    String? clusterIdOverride,
   }) async {
     // URL-encode each segment so a future kind/namespace containing
     // characters that need escaping (no current k8s name does, but
@@ -75,6 +76,14 @@ class ResourceRepository {
             'labelSelector': labelSelector,
           if (limit > 0) 'limit': '$limit',
         },
+        // When a caller pins a specific cluster (wizard pickers — see
+        // ClusterInterceptor's docstring) thread the override here so
+        // the cache slot keyed on `clusterId` and the wire request
+        // share the same X-Cluster-ID. Otherwise the interceptor falls
+        // back to activeClusterProvider.
+        options: clusterIdOverride == null
+            ? null
+            : Options(headers: {'X-Cluster-ID': clusterIdOverride}),
         cancelToken: cancelToken,
       );
       final data = res.data?['data'];
@@ -195,6 +204,12 @@ final resourceListProvider = FutureProvider.autoDispose
           namespace: key.namespace,
           labelSelector: key.labelSelector,
           cancelToken: cancel,
+          // The cache slot is keyed on key.clusterId. Pin the wire
+          // request to the same cluster so a mid-request switch of
+          // activeClusterProvider doesn't populate this slot with
+          // wrong-cluster data — the bug that bit wizard pickers in
+          // M3 PR-3c review.
+          clusterIdOverride: key.clusterId,
         );
   } on DioException catch (e) {
     if (CancelToken.isCancel(e)) {

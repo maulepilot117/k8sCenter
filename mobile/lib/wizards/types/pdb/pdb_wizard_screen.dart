@@ -6,8 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../cluster/cluster_provider.dart';
-import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
+import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -53,7 +53,6 @@ class _ConfigureStep extends ConsumerWidget {
     final state = ref.watch(pdbWizardProvider(wizardKey));
     final controller = ref.read(pdbWizardProvider(wizardKey).notifier);
     final stepErrors = state.stepErrors[0] ?? const <String, String>{};
-    final colors = Theme.of(context).extension<KubeColors>()!;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -83,21 +82,7 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(namespace: v)),
         ),
         const SizedBox(height: 24),
-        Text(
-          'Selector',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(
-            'Pods this budget protects',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
-        ),
+        const WizardSectionHeader('Selector', subtitle: 'Pods this budget protects'),
         const SizedBox(height: 8),
         KeyValueTable(
           pairs: state.form.selector,
@@ -108,20 +93,9 @@ class _ConfigureStep extends ConsumerWidget {
           errorMessage: stepErrors['selector'],
         ),
         const SizedBox(height: 24),
-        Text(
+        const WizardSectionHeader(
           'Policy',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Text(
-            'Pick exactly one. Values can be integers ("2") or percentages ("50%").',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
+          subtitle: 'Pick exactly one. Values can be integers ("2") or percentages ("50%").',
         ),
         const SizedBox(height: 8),
         SegmentedButton<PdbPolicy>(

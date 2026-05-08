@@ -163,9 +163,15 @@ class IngressWizardController extends WizardController<IngressForm> {
     if (form.ingressClassName.isNotEmpty) {
       body['ingressClassName'] = form.ingressClassName;
     }
-    if (form.tls.isNotEmpty) {
-      body['tls'] = [for (final t in form.tls) t.toJson()];
-    }
+    // Strip TLS rows that are entirely empty (operator clicked "Add"
+    // then typed nothing). Backend `IngressTLS` validation rejects
+    // empty hosts/secretName, so leaving an empty row in the body
+    // would 422 even though the operator never meant to add TLS.
+    final tlsEmitted = [
+      for (final t in form.tls)
+        if (t.hosts.isNotEmpty || t.secretName.isNotEmpty) t.toJson(),
+    ];
+    if (tlsEmitted.isNotEmpty) body['tls'] = tlsEmitted;
     return body;
   }
 
@@ -186,10 +192,23 @@ class IngressWizardController extends WizardController<IngressForm> {
   @override
   StepFieldErrors validateLocally(IngressForm form, int stepIndex) {
     if (stepIndex != 0) return const <String, String>{};
-    final out = <String, String>{};
-    if (form.name.trim().isEmpty) out['name'] = 'Name is required';
-    if (form.namespace.trim().isEmpty) {
-      out['namespace'] = 'Namespace is required';
+    final out = <String, String>{
+      ...validateNameAndNamespace(form.name, form.namespace),
+    };
+    // Validate any partially-filled TLS rows so the operator gets a
+    // pre-preview cue instead of a backend 422 round-trip. Rows that
+    // are wholly empty are stripped in `toPreviewBody`.
+    for (var i = 0; i < form.tls.length; i++) {
+      final t = form.tls[i];
+      final partiallyFilled =
+          t.hosts.isNotEmpty || t.secretName.isNotEmpty;
+      if (!partiallyFilled) continue;
+      if (t.secretName.trim().isEmpty) {
+        out['tls[$i].secretName'] = 'TLS secret name is required';
+      }
+      if (t.hosts.isEmpty) {
+        out['tls[$i].hosts'] = 'At least one host is required';
+      }
     }
     if (form.rules.isEmpty) {
       out['rules'] = 'Add at least one rule';

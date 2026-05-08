@@ -14,6 +14,7 @@ import '../../widgets/kind_picker.dart';
 import '../../widgets/named_resource_picker.dart';
 import '../../widgets/optional_int_field.dart';
 import '../../widgets/repeating_row_group.dart';
+import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -103,13 +104,12 @@ class _ConfigureStep extends ConsumerWidget {
               controller.updateForm((f) => f.copyWith(namespace: v)),
         ),
         const SizedBox(height: 24),
-        _SectionHeader('Scale target', subtitle: 'Workload to autoscale'),
+        WizardSectionHeader('Scale target', subtitle: 'Workload to autoscale'),
         const SizedBox(height: 8),
         KindPicker(
-          options: const [
-            KindPickerOption(value: 'Deployment', label: 'Deployment'),
-            KindPickerOption(value: 'StatefulSet', label: 'StatefulSet'),
-            KindPickerOption(value: 'ReplicaSet', label: 'ReplicaSet'),
+          options: [
+            for (final kind in kHpaTargetKinds)
+              KindPickerOption(value: kind, label: kind),
           ],
           selected: state.form.targetKind,
           onChanged: (v) {
@@ -145,7 +145,7 @@ class _ConfigureStep extends ConsumerWidget {
             errorMessage: stepErrors['targetName'],
           ),
         const SizedBox(height: 24),
-        _SectionHeader('Replica bounds'),
+        WizardSectionHeader('Replica bounds'),
         const SizedBox(height: 8),
         Row(
           children: [
@@ -177,7 +177,7 @@ class _ConfigureStep extends ConsumerWidget {
           ],
         ),
         const SizedBox(height: 24),
-        _SectionHeader('Metrics', subtitle: 'Each row is a Resource metric'),
+        WizardSectionHeader('Metrics', subtitle: 'Each row is a Resource metric'),
         const SizedBox(height: 8),
         RepeatingRowGroup<HpaMetric>(
           items: state.form.metrics,
@@ -200,38 +200,6 @@ class _ConfigureStep extends ConsumerWidget {
           ),
           errorMessage: stepErrors['metrics'],
         ),
-      ],
-    );
-  }
-}
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title, {this.subtitle});
-  final String title;
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        if (subtitle != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              subtitle!,
-              style: TextStyle(color: colors.textMuted, fontSize: 12),
-            ),
-          ),
       ],
     );
   }

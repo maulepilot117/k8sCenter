@@ -2,6 +2,8 @@
 // pattern (no rules), an allow-from-namespace policy, podSelector
 // validation, and the errorRouter routing.
 
+import 'dart:convert';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/api/dio_client.dart';
@@ -115,6 +117,94 @@ void main() {
       expect(state.stepErrors[0]?['name'], isNotNull);
       expect(state.stepErrors[0]?['namespace'], isNotNull);
       expect(state.stepErrors[0]?['policyTypes'], isNotNull);
+    });
+
+    test('peer with empty CIDR caught by validateLocally (no silent drop)',
+        () async {
+      final (:container, mock: _) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      final notifier =
+          container.read(networkPolicyWizardProvider(_key).notifier);
+      notifier.updateForm((f) => f.copyWith(
+            name: 'np',
+            namespace: 'default',
+            includeIngress: true,
+            ingress: [
+              const NetworkPolicyRule(peers: [
+                NetworkPolicyPeer(kind: PeerKind.ipBlock),
+              ]),
+            ],
+          ));
+      await notifier.next();
+
+      final state = container.read(networkPolicyWizardProvider(_key));
+      expect(state.currentStep, 0);
+      expect(
+        state.stepErrors[0]?['ingress[0].from[0].ipBlock.cidr'],
+        isNotNull,
+      );
+    });
+
+    test('422 with ingress[2] error rewinds to Configure with the message',
+        () async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      mock.onJson(
+        'POST',
+        '/api/v1/wizards/networkpolicy/preview',
+        status: 422,
+        body: {
+          'error': {
+            'code': 422,
+            'message': 'validation failed',
+            'detail': json.encode([
+              {
+                'field': 'ingress[2].ports[0].port',
+                'message': 'must be between 1 and 65535',
+              },
+            ]),
+          },
+        },
+      );
+
+      final notifier =
+          container.read(networkPolicyWizardProvider(_key).notifier);
+      // Build a form with three rules; backend will complain about
+      // index 2. Pass-through validateLocally by giving each rule a
+      // valid pod-selector peer + a bad port (port=0 sneaks past local
+      // gates).
+      notifier.updateForm((f) => f.copyWith(
+            name: 'np',
+            namespace: 'default',
+            includeIngress: true,
+            ingress: [
+              for (var i = 0; i < 3; i++)
+                NetworkPolicyRule(
+                  peers: const [
+                    NetworkPolicyPeer(
+                      kind: PeerKind.pod,
+                      podSelector: [KeyValuePair(key: 'app', value: 'web')],
+                    ),
+                  ],
+                  ports: const [NetworkPolicyPort(port: 80)],
+                ),
+            ],
+          ));
+      await notifier.next();
+
+      final state = container.read(networkPolicyWizardProvider(_key));
+      expect(state.status, WizardStatus.formEditing);
+      expect(state.currentStep, 0);
+      expect(
+        state.stepErrors[0]?['ingress[2].ports[0].port'],
+        contains('between 1 and 65535'),
+      );
     });
 
     test('errorRouter routes ingress/egress/policyTypes paths to step 0',
