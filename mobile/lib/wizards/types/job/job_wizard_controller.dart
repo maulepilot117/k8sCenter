@@ -51,9 +51,9 @@ class JobForm {
     String? image,
     List<EnvVarData>? envVars,
     String? restartPolicy,
-    Object? parallelism = _unset,
-    Object? completions = _unset,
-    Object? backoffLimit = _unset,
+    Object? parallelism = kFormFieldUnset,
+    Object? completions = kFormFieldUnset,
+    Object? backoffLimit = kFormFieldUnset,
   }) =>
       JobForm(
         name: name ?? this.name,
@@ -61,31 +61,16 @@ class JobForm {
         image: image ?? this.image,
         envVars: envVars ?? this.envVars,
         restartPolicy: restartPolicy ?? this.restartPolicy,
-        parallelism: identical(parallelism, _unset)
+        parallelism: identical(parallelism, kFormFieldUnset)
             ? this.parallelism
             : parallelism as int?,
-        completions: identical(completions, _unset)
+        completions: identical(completions, kFormFieldUnset)
             ? this.completions
             : completions as int?,
-        backoffLimit: identical(backoffLimit, _unset)
+        backoffLimit: identical(backoffLimit, kFormFieldUnset)
             ? this.backoffLimit
             : backoffLimit as int?,
       );
-}
-
-const Object _unset = Object();
-
-/// Build the `container` JSON sub-object from the form's image + env
-/// vars. Reused by CronJob's controller for the embedded job template
-/// — keeps the two wizards' container-shape serialization identical.
-Map<String, dynamic> buildJobContainerJson({
-  required String image,
-  required List<EnvVarData> envVars,
-}) {
-  final out = <String, dynamic>{'image': image};
-  final ev = envVarsAsJson(envVars);
-  if (ev.isNotEmpty) out['envVars'] = ev;
-  return out;
 }
 
 class JobWizardController extends WizardController<JobForm> {
@@ -113,7 +98,7 @@ class JobWizardController extends WizardController<JobForm> {
       'name': form.name,
       'namespace': form.namespace,
       'container':
-          buildJobContainerJson(image: form.image, envVars: form.envVars),
+          buildContainerJson(image: form.image, envVars: form.envVars),
       'restartPolicy': form.restartPolicy,
     };
     if (form.parallelism != null) body['parallelism'] = form.parallelism;
@@ -124,13 +109,16 @@ class JobWizardController extends WizardController<JobForm> {
 
   @override
   int? errorRouter(String fieldPath) {
+    // `activeDeadlineSeconds` isn't surfaced as a form field, so a
+    // server error against it has no input to render under. Let it
+    // fall through to state.unrouted so the operator at least sees
+    // the raw message instead of a silent stepErrors[0] swallow.
     if (fieldPath == 'name' ||
         fieldPath == 'namespace' ||
         fieldPath == 'restartPolicy' ||
         fieldPath == 'parallelism' ||
         fieldPath == 'completions' ||
         fieldPath == 'backoffLimit' ||
-        fieldPath == 'activeDeadlineSeconds' ||
         fieldPath.startsWith('container')) {
       return 0;
     }

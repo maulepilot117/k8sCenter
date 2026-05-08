@@ -139,16 +139,13 @@ class StatefulSetWizardController
 
   @override
   Map<String, dynamic> toPreviewBody(StatefulSetForm form) {
-    final container = <String, dynamic>{'image': form.image};
-    final ev = envVarsAsJson(form.envVars);
-    if (ev.isNotEmpty) container['envVars'] = ev;
-
     final body = <String, dynamic>{
       'name': form.name,
       'namespace': form.namespace,
       'serviceName': form.serviceName,
       'replicas': form.replicas,
-      'container': container,
+      'container':
+          buildContainerJson(image: form.image, envVars: form.envVars),
       'podManagementPolicy': form.podManagementPolicy,
     };
     final vcts = form.volumeClaimTemplatesJson();

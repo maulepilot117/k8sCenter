@@ -49,8 +49,8 @@ class DaemonSetForm {
     List<EnvVarData>? envVars,
     List<KeyValuePair>? nodeSelector,
     String? maxUnavailable,
-    Object? liveness = _unset,
-    Object? readiness = _unset,
+    Object? liveness = kFormFieldUnset,
+    Object? readiness = kFormFieldUnset,
   }) =>
       DaemonSetForm(
         name: name ?? this.name,
@@ -59,10 +59,10 @@ class DaemonSetForm {
         envVars: envVars ?? this.envVars,
         nodeSelector: nodeSelector ?? this.nodeSelector,
         maxUnavailable: maxUnavailable ?? this.maxUnavailable,
-        liveness: identical(liveness, _unset)
+        liveness: identical(liveness, kFormFieldUnset)
             ? this.liveness
             : liveness as ProbeData?,
-        readiness: identical(readiness, _unset)
+        readiness: identical(readiness, kFormFieldUnset)
             ? this.readiness
             : readiness as ProbeData?,
       );
@@ -76,8 +76,6 @@ class DaemonSetForm {
     return out;
   }
 }
-
-const Object _unset = Object();
 
 class DaemonSetWizardController extends WizardController<DaemonSetForm> {
   @override
@@ -100,22 +98,15 @@ class DaemonSetWizardController extends WizardController<DaemonSetForm> {
 
   @override
   Map<String, dynamic> toPreviewBody(DaemonSetForm form) {
-    final container = <String, dynamic>{'image': form.image};
-    final ev = envVarsAsJson(form.envVars);
-    if (ev.isNotEmpty) container['envVars'] = ev;
-    if (form.liveness != null || form.readiness != null) {
-      final probes = <String, dynamic>{};
-      if (form.liveness != null) probes['liveness'] = form.liveness!.toJson();
-      if (form.readiness != null) {
-        probes['readiness'] = form.readiness!.toJson();
-      }
-      container['probes'] = probes;
-    }
-
     final body = <String, dynamic>{
       'name': form.name,
       'namespace': form.namespace,
-      'container': container,
+      'container': buildContainerJson(
+        image: form.image,
+        envVars: form.envVars,
+        liveness: form.liveness,
+        readiness: form.readiness,
+      ),
     };
     final nodeSel = form.nodeSelectorAsMap();
     if (nodeSel.isNotEmpty) body['nodeSelector'] = nodeSel;

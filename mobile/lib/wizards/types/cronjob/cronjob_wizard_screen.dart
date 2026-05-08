@@ -8,7 +8,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/container_form_parts.dart';
-import '../../widgets/repeating_row_group.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -216,34 +215,10 @@ class _ConfigureStepState extends ConsumerState<_ConfigureStep> {
           contentPadding: EdgeInsets.zero,
         ),
         const SizedBox(height: 16),
-        Text(
-          'Environment variables',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 12),
-        RepeatingRowGroup<EnvVarData>(
+        EnvVarSection(
           items: state.form.envVars,
-          itemBuilder: (ctx, i, item) => EnvVarRow(
-            value: item,
-            onChanged: (next) {
-              final list = [...state.form.envVars];
-              list[i] = next;
-              controller.updateForm((f) => f.copyWith(envVars: list));
-            },
-          ),
-          onAdd: () => controller.updateForm((f) => f.copyWith(
-                envVars: [...f.envVars, const EnvVarData()],
-              )),
-          onRemove: (i) {
-            final list = [...state.form.envVars]..removeAt(i);
-            controller.updateForm((f) => f.copyWith(envVars: list));
-          },
-          addLabel: 'Add env var',
-          emptyMessage: 'No env vars defined.',
+          onChanged: (list) =>
+              controller.updateForm((f) => f.copyWith(envVars: list)),
         ),
       ],
     );

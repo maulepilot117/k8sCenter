@@ -9,6 +9,17 @@
 
 import 'package:flutter/material.dart';
 
+import '../../theme/kube_theme_builder.dart';
+import 'probe_form.dart';
+import 'repeating_row_group.dart';
+
+/// Sentinel for `copyWith` parameters on form records that have
+/// nullable fields (e.g. Deployment.liveness, Job.parallelism). Lets
+/// callers distinguish "no change" (param omitted) from "set to null"
+/// (param passed as null). Single canonical instance shared across
+/// every wizard's controller.
+const Object kFormFieldUnset = Object();
+
 /// Mirrors backend `EnvVarInput`. We surface only the literal-value
 /// case in M3 PR-3b — configMapRef/secretRef refs are deferrable and
 /// add a separate sub-form (operator picks the source ConfigMap/Secret
@@ -34,6 +45,28 @@ List<Map<String, dynamic>> envVarsAsJson(List<EnvVarData> envVars) {
     for (final e in envVars)
       if (!e.isEmpty) e.toJson(),
   ];
+}
+
+/// Build the `container` JSON sub-object shared by Job, CronJob,
+/// DaemonSet, and StatefulSet. Optional [liveness]/[readiness] fold
+/// the probe block in when present so DaemonSet's controller doesn't
+/// need to hand-roll the same shape inline.
+Map<String, dynamic> buildContainerJson({
+  required String image,
+  required List<EnvVarData> envVars,
+  ProbeData? liveness,
+  ProbeData? readiness,
+}) {
+  final out = <String, dynamic>{'image': image};
+  final ev = envVarsAsJson(envVars);
+  if (ev.isNotEmpty) out['envVars'] = ev;
+  if (liveness != null || readiness != null) {
+    final probes = <String, dynamic>{};
+    if (liveness != null) probes['liveness'] = liveness.toJson();
+    if (readiness != null) probes['readiness'] = readiness.toJson();
+    out['probes'] = probes;
+  }
+  return out;
 }
 
 /// Mirrors backend `PortInput` for a container (NOT Service port).
@@ -218,7 +251,10 @@ class _ContainerPortRowState extends State<ContainerPortRow> {
             controller: _port,
             keyboardType: TextInputType.number,
             onChanged: (v) {
-              final n = int.tryParse(v) ?? 0;
+              // Silent no-op on unparseable input — keeps the last
+              // good port in form state until the operator corrects.
+              final n = int.tryParse(v);
+              if (n == null) return;
               widget.onChanged(widget.value.copyWith(containerPort: n));
             },
             decoration: InputDecoration(
@@ -249,6 +285,60 @@ class _ContainerPortRowState extends State<ContainerPortRow> {
               border: OutlineInputBorder(),
             ),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Reusable env-var section: heading + `RepeatingRowGroup<EnvVarData>`.
+/// Replaces the ~14-line copy that previously lived in every workload
+/// wizard screen.
+class EnvVarSection extends StatelessWidget {
+  const EnvVarSection({
+    super.key,
+    required this.items,
+    required this.onChanged,
+    this.errorMessage,
+  });
+
+  final List<EnvVarData> items;
+  final ValueChanged<List<EnvVarData>> onChanged;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Environment variables',
+          style: TextStyle(
+            color: colors.textPrimary,
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 12),
+        RepeatingRowGroup<EnvVarData>(
+          items: items,
+          itemBuilder: (ctx, i, item) => EnvVarRow(
+            value: item,
+            onChanged: (next) {
+              final list = [...items];
+              list[i] = next;
+              onChanged(list);
+            },
+          ),
+          onAdd: () => onChanged([...items, const EnvVarData()]),
+          onRemove: (i) {
+            final list = [...items]..removeAt(i);
+            onChanged(list);
+          },
+          addLabel: 'Add env var',
+          emptyMessage: 'No env vars defined.',
+          errorMessage: errorMessage,
         ),
       ],
     );

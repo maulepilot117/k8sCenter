@@ -21,7 +21,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../widgets/container_form_parts.dart';
 import '../../wizard_controller.dart';
 import '../../wizard_step.dart';
-import '../job/job_wizard_controller.dart';
 
 const List<String> kCronConcurrencyPolicies = ['Allow', 'Forbid', 'Replace'];
 
@@ -106,7 +105,7 @@ class CronJobWizardController extends WizardController<CronJobForm> {
       'namespace': form.namespace,
       'schedule': form.schedule,
       'container':
-          buildJobContainerJson(image: form.image, envVars: form.envVars),
+          buildContainerJson(image: form.image, envVars: form.envVars),
       'restartPolicy': form.restartPolicy,
       'concurrencyPolicy': form.concurrencyPolicy,
       if (form.suspend) 'suspend': true,
@@ -115,13 +114,15 @@ class CronJobWizardController extends WizardController<CronJobForm> {
 
   @override
   int? errorRouter(String fieldPath) {
+    // History-limit fields aren't surfaced as form inputs, so a server
+    // error against them has no place to render. Let them fall through
+    // to state.unrouted so the operator sees the raw message instead
+    // of a silent stepErrors[0] swallow.
     if (fieldPath == 'name' ||
         fieldPath == 'namespace' ||
         fieldPath == 'schedule' ||
         fieldPath == 'restartPolicy' ||
         fieldPath == 'concurrencyPolicy' ||
-        fieldPath == 'successfulJobsHistoryLimit' ||
-        fieldPath == 'failedJobsHistoryLimit' ||
         fieldPath == 'suspend' ||
         fieldPath.startsWith('container')) {
       return 0;

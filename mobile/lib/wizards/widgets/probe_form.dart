@@ -213,7 +213,12 @@ class _ProbeFormSectionState extends State<ProbeFormSection> {
               controller: _portCtl,
               keyboardType: TextInputType.number,
               onChanged: (v) {
-                final n = int.tryParse(v) ?? 0;
+                // Silent no-op on unparseable input — operator's last
+                // good port stays in form state until corrected.
+                // Coercing to 0 would silently send `port: 0` to the
+                // server, which 422s with a generic "must be 1-65535".
+                final n = int.tryParse(v);
+                if (n == null) return;
                 widget.onChanged(probe.copyWith(port: n));
               },
               decoration: InputDecoration(
@@ -232,7 +237,8 @@ class _ProbeFormSectionState extends State<ProbeFormSection> {
                     controller: _initialDelayCtl,
                     keyboardType: TextInputType.number,
                     onChanged: (v) {
-                      final n = int.tryParse(v) ?? 0;
+                      final n = int.tryParse(v);
+                      if (n == null) return;
                       widget.onChanged(
                           probe.copyWith(initialDelaySeconds: n));
                     },
@@ -249,7 +255,8 @@ class _ProbeFormSectionState extends State<ProbeFormSection> {
                     controller: _periodCtl,
                     keyboardType: TextInputType.number,
                     onChanged: (v) {
-                      final n = int.tryParse(v) ?? 0;
+                      final n = int.tryParse(v);
+                      if (n == null) return;
                       widget.onChanged(probe.copyWith(periodSeconds: n));
                     },
                     decoration: const InputDecoration(

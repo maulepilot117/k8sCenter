@@ -57,8 +57,8 @@ class DeploymentForm {
     List<EnvVarData>? envVars,
     List<ContainerPortData>? ports,
     ResourcesData? resources,
-    Object? liveness = _unset,
-    Object? readiness = _unset,
+    Object? liveness = kFormFieldUnset,
+    Object? readiness = kFormFieldUnset,
   }) =>
       DeploymentForm(
         name: name ?? this.name,
@@ -69,10 +69,10 @@ class DeploymentForm {
         envVars: envVars ?? this.envVars,
         ports: ports ?? this.ports,
         resources: resources ?? this.resources,
-        liveness: identical(liveness, _unset)
+        liveness: identical(liveness, kFormFieldUnset)
             ? this.liveness
             : liveness as ProbeData?,
-        readiness: identical(readiness, _unset)
+        readiness: identical(readiness, kFormFieldUnset)
             ? this.readiness
             : readiness as ProbeData?,
       );
@@ -86,8 +86,6 @@ class DeploymentForm {
     return out;
   }
 }
-
-const Object _unset = Object();
 
 class DeploymentWizardController extends WizardController<DeploymentForm> {
   @override

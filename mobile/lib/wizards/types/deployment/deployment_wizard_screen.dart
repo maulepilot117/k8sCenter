@@ -147,39 +147,29 @@ class _BasicsStep extends ConsumerWidget {
           errorMessage: errors['labels'],
         ),
         const SizedBox(height: 24),
-        Text(
-          'Environment variables',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 12),
-        RepeatingRowGroup<EnvVarData>(
+        EnvVarSection(
           items: state.form.envVars,
-          itemBuilder: (ctx, i, item) => EnvVarRow(
-            value: item,
-            onChanged: (next) {
-              final list = [...state.form.envVars];
-              list[i] = next;
-              controller.updateForm((f) => f.copyWith(envVars: list));
-            },
-          ),
-          onAdd: () => controller.updateForm((f) => f.copyWith(
-                envVars: [...f.envVars, const EnvVarData()],
-              )),
-          onRemove: (i) {
-            final list = [...state.form.envVars]..removeAt(i);
-            controller.updateForm((f) => f.copyWith(envVars: list));
-          },
-          addLabel: 'Add env var',
-          emptyMessage: 'No env vars defined.',
+          onChanged: (list) =>
+              controller.updateForm((f) => f.copyWith(envVars: list)),
           errorMessage: errors['envVars'],
         ),
       ],
     );
   }
+}
+
+/// Map form-row index to the index the backend reports errors against
+/// for `ports[N]` paths, accounting for `containerPortsAsJson()`
+/// stripping empty rows. Returns null when the row at [formIndex] is
+/// itself empty.
+int? _portsServerIndexFor(List<ContainerPortData> rows, int formIndex) {
+  if (formIndex < 0 || formIndex >= rows.length) return null;
+  if (rows[formIndex].isEmpty) return null;
+  var serverIndex = 0;
+  for (var i = 0; i < formIndex; i++) {
+    if (!rows[i].isEmpty) serverIndex++;
+  }
+  return serverIndex;
 }
 
 class _NetworkingStep extends ConsumerWidget {
@@ -215,15 +205,25 @@ class _NetworkingStep extends ConsumerWidget {
         const SizedBox(height: 12),
         RepeatingRowGroup<ContainerPortData>(
           items: state.form.ports,
-          itemBuilder: (ctx, i, item) => ContainerPortRow(
-            value: item,
-            portError: errors['ports[$i].containerPort'],
-            onChanged: (next) {
-              final list = [...state.form.ports];
-              list[i] = next;
-              controller.updateForm((f) => f.copyWith(ports: list));
-            },
-          ),
+          itemBuilder: (ctx, i, item) {
+            // containerPortsAsJson() strips empty rows before send,
+            // so server-reported errors are indexed against the
+            // stripped list. Map form-row index → server index so
+            // the error lands on the row the operator actually filled.
+            final serverIndex =
+                _portsServerIndexFor(state.form.ports, i);
+            return ContainerPortRow(
+              value: item,
+              portError: serverIndex == null
+                  ? null
+                  : errors['ports[$serverIndex].containerPort'],
+              onChanged: (next) {
+                final list = [...state.form.ports];
+                list[i] = next;
+                controller.updateForm((f) => f.copyWith(ports: list));
+              },
+            );
+          },
           onAdd: () => controller.updateForm((f) => f.copyWith(
                 ports: [...f.ports, const ContainerPortData()],
               )),

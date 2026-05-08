@@ -178,7 +178,15 @@ class _ConfigureStep extends ConsumerWidget {
           itemBuilder: (ctx, i, item) => _VctRow(
             value: item,
             errors: errors,
-            index: i,
+            // Translate form-row index to the index the server sees
+            // after volumeClaimTemplatesJson() strips empty rows. The
+            // server reports `volumeClaimTemplates[N].size` against
+            // the stripped list, so a UI row that was form-index 2
+            // but server-index 0 (because rows 0/1 were empty) must
+            // look up errors by 0. Empty form rows have no server
+            // counterpart and pass null to suppress error rendering.
+            serverIndex:
+                _serverIndexFor(state.form.volumeClaimTemplates, i),
             onChanged: (next) {
               final list = [...state.form.volumeClaimTemplates];
               list[i] = next;
@@ -204,38 +212,28 @@ class _ConfigureStep extends ConsumerWidget {
           errorMessage: errors['volumeClaimTemplates'],
         ),
         const SizedBox(height: 24),
-        Text(
-          'Environment variables',
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 12),
-        RepeatingRowGroup<EnvVarData>(
+        EnvVarSection(
           items: state.form.envVars,
-          itemBuilder: (ctx, i, item) => EnvVarRow(
-            value: item,
-            onChanged: (next) {
-              final list = [...state.form.envVars];
-              list[i] = next;
-              controller.updateForm((f) => f.copyWith(envVars: list));
-            },
-          ),
-          onAdd: () => controller.updateForm((f) => f.copyWith(
-                envVars: [...f.envVars, const EnvVarData()],
-              )),
-          onRemove: (i) {
-            final list = [...state.form.envVars]..removeAt(i);
-            controller.updateForm((f) => f.copyWith(envVars: list));
-          },
-          addLabel: 'Add env var',
-          emptyMessage: 'No env vars defined.',
+          onChanged: (list) =>
+              controller.updateForm((f) => f.copyWith(envVars: list)),
         ),
       ],
     );
   }
+}
+
+/// Map a form-row index to the index the backend will report errors
+/// against, accounting for `volumeClaimTemplatesJson()` stripping
+/// empty rows. Returns null when the row at [formIndex] is itself
+/// empty — those rows aren't sent and have no server-side errors.
+int? _serverIndexFor(List<VolumeClaimTemplate> rows, int formIndex) {
+  if (formIndex < 0 || formIndex >= rows.length) return null;
+  if (rows[formIndex].isEmpty) return null;
+  var serverIndex = 0;
+  for (var i = 0; i < formIndex; i++) {
+    if (!rows[i].isEmpty) serverIndex++;
+  }
+  return serverIndex;
 }
 
 /// One row inside the volume-claim-template repeating group. Carries
@@ -245,13 +243,16 @@ class _VctRow extends StatefulWidget {
   const _VctRow({
     required this.value,
     required this.errors,
-    required this.index,
+    required this.serverIndex,
     required this.onChanged,
   });
 
   final VolumeClaimTemplate value;
   final Map<String, String> errors;
-  final int index;
+
+  /// Index used for `volumeClaimTemplates[N]` error-key lookup. May be
+  /// null when this row is empty (not sent to the server).
+  final int? serverIndex;
   final ValueChanged<VolumeClaimTemplate> onChanged;
 
   @override
@@ -286,7 +287,12 @@ class _VctRowState extends State<_VctRow> {
 
   @override
   Widget build(BuildContext context) {
-    final p = 'volumeClaimTemplates[${widget.index}]';
+    // No server index → no row-specific errors to render. Inputs still
+    // accept edits; the server will assign a fresh index once the row
+    // becomes non-empty and a re-preview lands.
+    final si = widget.serverIndex;
+    final p = si == null ? null : 'volumeClaimTemplates[$si]';
+    String? err(String key) => p == null ? null : widget.errors['$p.$key'];
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
@@ -308,7 +314,7 @@ class _VctRowState extends State<_VctRow> {
               hintText: 'data',
               isDense: true,
               border: const OutlineInputBorder(),
-              errorText: widget.errors['$p.name'],
+              errorText: err('name'),
             ),
           ),
           const SizedBox(height: 8),
@@ -324,7 +330,7 @@ class _VctRowState extends State<_VctRow> {
                     hintText: 'standard',
                     isDense: true,
                     border: const OutlineInputBorder(),
-                    errorText: widget.errors['$p.storageClassName'],
+                    errorText: err('storageClassName'),
                   ),
                 ),
               ),
@@ -339,7 +345,7 @@ class _VctRowState extends State<_VctRow> {
                     hintText: '5Gi',
                     isDense: true,
                     border: const OutlineInputBorder(),
-                    errorText: widget.errors['$p.size'],
+                    errorText: err('size'),
                   ),
                 ),
               ),
@@ -367,7 +373,7 @@ class _VctRowState extends State<_VctRow> {
               labelText: 'Access mode',
               isDense: true,
               border: const OutlineInputBorder(),
-              errorText: widget.errors['$p.accessMode'],
+              errorText: err('accessMode'),
             ),
           ),
         ],
