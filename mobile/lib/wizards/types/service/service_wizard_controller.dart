@@ -134,6 +134,9 @@ class ServiceWizardController extends WizardController<ServiceForm> {
   String get wizardType => 'service';
 
   @override
+  String get resourceListKind => 'services';
+
+  @override
   List<WizardStep> get steps => const [
         WizardStep(
           title: 'Configure',
@@ -162,9 +165,25 @@ class ServiceWizardController extends WizardController<ServiceForm> {
     return body;
   }
 
-  /// Single Configure step in PR-3a so all field paths route to step 0.
+  /// Single Configure step. Known paths: `name`, `namespace`, `type`,
+  /// `selector`, `labels`, `ports`, `ports[N].port|targetPort|name`.
+  /// Unknown paths return null so the controller surfaces them via
+  /// [WizardState.unrouted].
   @override
-  int errorRouter(String fieldPath) => 0;
+  int? errorRouter(String fieldPath) {
+    if (fieldPath == 'name' ||
+        fieldPath == 'namespace' ||
+        fieldPath == 'type' ||
+        fieldPath == 'selector' ||
+        fieldPath == 'labels' ||
+        fieldPath == 'ports' ||
+        fieldPath.startsWith('ports[') ||
+        fieldPath.startsWith('selector[') ||
+        fieldPath.startsWith('labels[')) {
+      return 0;
+    }
+    return null;
+  }
 
   @override
   StepFieldErrors validateLocally(ServiceForm form, int stepIndex) {

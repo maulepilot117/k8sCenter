@@ -24,9 +24,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/confirm_sheet.dart';
 import '../wizard_controller.dart';
+import '../wizard_registry.dart';
 import 'wizard_stepper_mobile.dart';
 
 /// Builder signature for per-step bodies. Each wizard provides one
@@ -37,13 +39,20 @@ typedef WizardStepBuilder = Widget Function(BuildContext context);
 class WizardScreenScaffold<TForm> extends ConsumerWidget {
   const WizardScreenScaffold({
     super.key,
+    required this.wizardType,
     required this.title,
     required this.subtitle,
     required this.wizardKey,
     required this.controllerProvider,
     required this.stepBuilders,
-    required this.onApplied,
+    this.onApplied,
   });
+
+  /// Backend wizard type — used to look up the [WizardEntry] in the
+  /// registry so the default [onApplied] can route to the created
+  /// resource's detail screen without each wizard duplicating the
+  /// same SnackBar + go-to-detail boilerplate.
+  final String wizardType;
 
   final String title;
   final String? subtitle;
@@ -59,9 +68,13 @@ class WizardScreenScaffold<TForm> extends ConsumerWidget {
   /// `steps` length.
   final List<WizardStepBuilder> stepBuilders;
 
-  /// Fired after a successful apply. Wizards typically navigate to the
-  /// created resource's detail screen, or back to the resource list.
-  final void Function(BuildContext context, WizardApplyOutcome outcome)
+  /// Optional override of the default apply-success handler. The
+  /// default reads the [WizardEntry] for [wizardType] and either
+  /// navigates to the created resource's detail screen (when the
+  /// outcome carries a name + namespace) or back to the resource list.
+  /// Most wizards leave this null. Custom flows (e.g. multi-resource
+  /// wizards in PR-3c) override.
+  final void Function(BuildContext context, WizardApplyOutcome outcome)?
       onApplied;
 
   @override
@@ -77,7 +90,8 @@ class WizardScreenScaffold<TForm> extends ConsumerWidget {
       if (prev?.status != WizardStatus.applied &&
           next.status == WizardStatus.applied &&
           next.applyOutcome != null) {
-        onApplied(context, next.applyOutcome!);
+        final handler = onApplied ?? _defaultOnApplied;
+        handler(context, next.applyOutcome!);
       }
     });
 
@@ -130,6 +144,47 @@ class WizardScreenScaffold<TForm> extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Default apply-success handler. Reads the wizard registry to look
+  /// up the produced kind and the section path, surfaces a SnackBar
+  /// with the created name, then navigates either to the resource's
+  /// detail screen (when the outcome carries a namespace) or to the
+  /// resource list. Mirrors what each wizard's PR-3a `onApplied` did
+  /// individually before this collapse.
+  void _defaultOnApplied(BuildContext context, WizardApplyOutcome outcome) {
+    final entry = findWizardEntry(wizardType);
+    if (entry == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(outcome.created > 0
+            ? 'Created ${entry.label} "${outcome.firstResultName}"'
+            : 'Apply complete'),
+      ),
+    );
+    if (!context.mounted) return;
+    if (outcome.firstResultName.isNotEmpty &&
+        outcome.firstResultNamespace != null) {
+      context.go(kindDetailPath(
+        clusterId: wizardKey.clusterId,
+        kind: entry.kind,
+        namespace: outcome.firstResultNamespace!,
+        name: outcome.firstResultName,
+      ));
+      return;
+    }
+    // Fall back to the kind's list under its section, or just home if
+    // the section can't be found in domainSections (e.g., wizard for a
+    // CRD-discovered kind that doesn't appear in the drawer's static
+    // catalogue).
+    final section = findDomainSection(entry.kind);
+    if (section == null) {
+      context.go('/');
+      return;
+    }
+    context.go('/clusters/${wizardKey.clusterId}/'
+        '${section.pathSegment}/${entry.kind}');
   }
 
   /// Close-button handler. If nothing's been entered, pops immediately;
@@ -247,6 +302,24 @@ class _Footer<TForm> extends StatelessWidget {
           ),
         ];
       case WizardStatus.failed:
+        // Cluster-mismatch is a typed failure — Retry would just re-
+        // check the pin and re-fail. Offer Discard & restart so the
+        // operator gets back to step 0 instead of a dead-end loop.
+        if (state.clusterMismatch) {
+          return [
+            OutlinedButton(
+              onPressed: () => context.pop(),
+              child: const Text('Cancel'),
+            ),
+            const Spacer(),
+            FilledButton(
+              onPressed: () {
+                controller.discardAndReset();
+              },
+              child: const Text('Discard & restart'),
+            ),
+          ];
+        }
         return [
           OutlinedButton(
             onPressed: () => context.pop(),

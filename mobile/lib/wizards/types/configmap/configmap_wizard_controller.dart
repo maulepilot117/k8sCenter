@@ -55,6 +55,9 @@ class ConfigMapWizardController
   String get wizardType => 'configmap';
 
   @override
+  String get resourceListKind => 'configmaps';
+
+  @override
   List<WizardStep> get steps => const [
         WizardStep(
           title: 'Configure',
@@ -84,8 +87,19 @@ class ConfigMapWizardController
 
   /// Field paths from `configmap.go:Validate` map to step 0 (Configure)
   /// — that's the only form step. Review owns the YAML preview only.
+  /// Known paths: `name`, `namespace`, `data`, `data[<key>]`. Unknown
+  /// paths return null so the controller surfaces them via
+  /// [WizardState.unrouted] as a top-of-step banner.
   @override
-  int errorRouter(String fieldPath) => 0;
+  int? errorRouter(String fieldPath) {
+    if (fieldPath == 'name' ||
+        fieldPath == 'namespace' ||
+        fieldPath == 'data' ||
+        fieldPath.startsWith('data[')) {
+      return 0;
+    }
+    return null;
+  }
 
   @override
   StepFieldErrors validateLocally(ConfigMapForm form, int stepIndex) {

@@ -6,14 +6,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../cluster/cluster_provider.dart';
-import '../../../routing/domain_sections.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
+import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
-import '../../widgets/yaml_preview_panel.dart';
+import '../../widgets/wizard_unrouted_banner.dart';
 import '../../wizard_controller.dart';
 import 'service_wizard_controller.dart';
 
@@ -33,34 +32,18 @@ class _ServiceWizardScreenState
   @override
   Widget build(BuildContext context) {
     return WizardScreenScaffold<ServiceForm>(
+      wizardType: 'service',
       title: 'New Service',
       subtitle: 'cluster: ${_wizardKey.clusterId}',
       wizardKey: _wizardKey,
       controllerProvider: serviceWizardProvider,
       stepBuilders: [
         (ctx) => _ConfigureStep(wizardKey: _wizardKey),
-        (ctx) => _ReviewStep(wizardKey: _wizardKey),
+        (ctx) => WizardReviewBody<ServiceForm>(
+              wizardKey: _wizardKey,
+              controllerProvider: serviceWizardProvider,
+            ),
       ],
-      onApplied: (ctx, outcome) {
-        ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(
-            content: Text(outcome.created > 0
-                ? 'Created Service "${outcome.firstResultName}"'
-                : 'Apply complete'),
-          ),
-        );
-        if (outcome.firstResultName.isNotEmpty &&
-            outcome.firstResultNamespace != null) {
-          ctx.go(kindDetailPath(
-            clusterId: _wizardKey.clusterId,
-            kind: 'services',
-            namespace: outcome.firstResultNamespace!,
-            name: outcome.firstResultName,
-          ));
-        } else {
-          ctx.go('/clusters/${_wizardKey.clusterId}/networking/services');
-        }
-      },
     );
   }
 }
@@ -79,6 +62,7 @@ class _ConfigureStep extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        WizardUnroutedBanner(unrouted: state.unrouted),
         TextFormField(
           initialValue: state.form.name,
           decoration: InputDecoration(
@@ -413,65 +397,3 @@ class _PortRowState extends State<_PortRow> {
   }
 }
 
-class _ReviewStep extends ConsumerWidget {
-  const _ReviewStep({required this.wizardKey});
-  final WizardKey wizardKey;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final state = ref.watch(serviceWizardProvider(wizardKey));
-    final controller = ref.read(serviceWizardProvider(wizardKey).notifier);
-    final colors = Theme.of(context).extension<KubeColors>()!;
-
-    if (state.status == WizardStatus.applied &&
-        state.applyOutcome != null) {
-      final outcome = state.applyOutcome!;
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: colors.success.withValues(alpha: 0.10),
-              border: Border.all(color: colors.success.withValues(alpha: 0.4)),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.check_circle_outline, color: colors.success),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    '${outcome.created} created · '
-                    '${outcome.configured} configured · '
-                    '${outcome.unchanged} unchanged · '
-                    '${outcome.failed} failed',
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 13,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          YamlPreviewPanel(yaml: state.previewYaml ?? ''),
-        ],
-      );
-    }
-
-    return YamlPreviewPanel(
-      yaml: state.previewYaml ?? '',
-      loading: state.status == WizardStatus.previewing,
-      errorMessage: state.status == WizardStatus.failed &&
-              state.previewYaml == null
-          ? state.errorMessage
-          : null,
-      onRetry: state.status == WizardStatus.failed &&
-              state.previewYaml == null
-          ? controller.retryPreview
-          : null,
-    );
-  }
-}

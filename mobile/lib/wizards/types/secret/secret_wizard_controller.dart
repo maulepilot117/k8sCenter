@@ -70,6 +70,9 @@ class SecretWizardController extends WizardController<SecretForm> {
   String get wizardType => 'secret';
 
   @override
+  String get resourceListKind => 'secrets';
+
+  @override
   List<WizardStep> get steps => const [
         WizardStep(
           title: 'Configure',
@@ -94,9 +97,23 @@ class SecretWizardController extends WizardController<SecretForm> {
     };
   }
 
-  /// Single Configure step; every server field path resolves to step 0.
+  /// Single Configure step. Known paths: `name`, `namespace`, `type`,
+  /// `data`, `data.<key>`, `data..<key>` (dockerconfigjson uses
+  /// `data..dockerconfigjson` per `secret.go:Validate`). Unknown paths
+  /// return null so the controller surfaces them via
+  /// [WizardState.unrouted].
   @override
-  int errorRouter(String fieldPath) => 0;
+  int? errorRouter(String fieldPath) {
+    if (fieldPath == 'name' ||
+        fieldPath == 'namespace' ||
+        fieldPath == 'type' ||
+        fieldPath == 'data' ||
+        fieldPath.startsWith('data.') ||
+        fieldPath.startsWith('data[')) {
+      return 0;
+    }
+    return null;
+  }
 
   @override
   StepFieldErrors validateLocally(SecretForm form, int stepIndex) {

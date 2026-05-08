@@ -120,7 +120,15 @@ class _CreateSubmenu extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final auth = ref.watch(authRepositoryProvider);
-    final rbac = auth is AuthAuthenticated ? auth.rbac : null;
+    if (auth is! AuthAuthenticated) return const SizedBox.shrink();
+    // Hide the entire submenu while the RBAC summary is still loading.
+    // canPerform's null-fallback returns true (UI optimization for
+    // read paths), but for write entry-points that's a footgun:
+    // operators briefly see wizards they can't actually create, tap
+    // through, and hit a 403 at apply time. Cost of waiting: the
+    // submenu appears a few hundred ms after login. Worth it.
+    final rbac = auth.rbac;
+    if (rbac.raw.isEmpty) return const SizedBox.shrink();
     final entries = visibleWizards(rbac: rbac, namespace: '');
     if (entries.isEmpty) return const SizedBox.shrink();
 

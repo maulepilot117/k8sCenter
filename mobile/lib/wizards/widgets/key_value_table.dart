@@ -77,15 +77,40 @@ class _KeyValueTableState extends State<KeyValueTable> {
   void didUpdateWidget(covariant KeyValueTable oldWidget) {
     super.didUpdateWidget(oldWidget);
     final next = _displayPairs(widget.pairs);
-    if (next.length != _controllers.length) {
-      _disposeAll();
-      _controllers = _buildControllers(next);
-      return;
-    }
-    for (var i = 0; i < next.length; i++) {
+    // Reconcile controllers in place rather than dispose-and-rebuild.
+    // The naive `if (next.length != _controllers.length) → rebuild`
+    // kills the focused controller mid-keystroke: typing into the
+    // trailing-sentinel row promotes it to "real" and the parent re-
+    // emits, which adds a new sentinel and grows next.length by 1 —
+    // without this in-place reconciliation, the operator would lose
+    // focus after every character.
+    //
+    // Strategy: align text on overlapping rows, append fresh
+    // controllers for new tail rows, dispose only the surplus tail
+    // when rows shrink. The focused controller is preserved by
+    // identity. Text alignment on overlap rows handles external
+    // resets (e.g., wizard discardAndReset emits an empty list).
+    final overlap = next.length < _controllers.length
+        ? next.length
+        : _controllers.length;
+    for (var i = 0; i < overlap; i++) {
       final c = _controllers[i];
       if (c.key.text != next[i].key) c.key.text = next[i].key;
       if (c.value.text != next[i].value) c.value.text = next[i].value;
+    }
+    if (next.length > _controllers.length) {
+      for (var i = _controllers.length; i < next.length; i++) {
+        _controllers.add(_RowControllers(
+          key: TextEditingController(text: next[i].key),
+          value: TextEditingController(text: next[i].value),
+        ));
+      }
+    } else if (next.length < _controllers.length) {
+      for (var i = next.length; i < _controllers.length; i++) {
+        _controllers[i].key.dispose();
+        _controllers[i].value.dispose();
+      }
+      _controllers.removeRange(next.length, _controllers.length);
     }
   }
 

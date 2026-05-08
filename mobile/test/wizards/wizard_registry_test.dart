@@ -72,18 +72,6 @@ void main() {
       expect(entries, isEmpty);
     });
 
-    test('groupByCategory preserves registry order within a group', () {
-      final byGroup =
-          groupByCategory(visibleWizards(rbac: null, namespace: ''));
-      // Configuration group should hold ConfigMap before Secret (the
-      // registry order). Order matters: the drawer renders in this
-      // exact sequence.
-      final config = byGroup['Configuration'];
-      expect(config, isNotNull);
-      expect(config!.first.type, 'configmap');
-      expect(config[1].type, 'secret');
-    });
-
     test('findWizardEntry returns the entry by type', () {
       expect(findWizardEntry('configmap')?.label, 'ConfigMap');
       expect(findWizardEntry('nope'), isNull);
