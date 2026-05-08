@@ -30,6 +30,7 @@ import '../wizards/types/configmap/configmap_wizard_screen.dart';
 import '../wizards/types/cronjob/cronjob_wizard_screen.dart';
 import '../wizards/types/daemonset/daemonset_wizard_screen.dart';
 import '../wizards/types/deployment/deployment_wizard_screen.dart';
+import '../wizards/types/external_secret/external_secret_wizard_screen.dart';
 import '../wizards/types/hpa/hpa_wizard_screen.dart';
 import '../wizards/types/ingress/ingress_wizard_screen.dart';
 import '../wizards/types/issuer/issuer_wizard_screen.dart';
@@ -37,11 +38,13 @@ import '../wizards/types/job/job_wizard_screen.dart';
 import '../wizards/types/namespace_limits/namespace_limits_wizard_screen.dart';
 import '../wizards/types/networkpolicy/networkpolicy_wizard_screen.dart';
 import '../wizards/types/pdb/pdb_wizard_screen.dart';
+import '../wizards/types/policy/policy_wizard_screen.dart';
 import '../wizards/types/pvc/pvc_wizard_screen.dart';
 import '../wizards/types/restore_snapshot/restore_snapshot_wizard_screen.dart';
 import '../wizards/types/rolebinding/rolebinding_wizard_screen.dart';
 import '../wizards/types/scheduled_snapshot/scheduled_snapshot_wizard_screen.dart';
 import '../wizards/types/secret/secret_wizard_screen.dart';
+import '../wizards/types/secret_store/secret_store_wizard_screen.dart';
 import '../wizards/types/service/service_wizard_screen.dart';
 import '../wizards/types/snapshot/snapshot_wizard_screen.dart';
 import '../wizards/types/statefulset/statefulset_wizard_screen.dart';
@@ -122,6 +125,14 @@ Widget _wizardScreenForType(String type) {
       return const IssuerWizardScreen(scope: WizardScope.namespaced);
     case 'cluster-issuer':
       return const IssuerWizardScreen(scope: WizardScope.cluster);
+    case 'external-secret':
+      return const ExternalSecretWizardScreen();
+    case 'secret-store':
+      return const SecretStoreWizardScreen(scope: WizardScope.namespaced);
+    case 'cluster-secret-store':
+      return const SecretStoreWizardScreen(scope: WizardScope.cluster);
+    case 'policy':
+      return const PolicyWizardScreen();
     default:
       return _ComingSoonScreen(type: type);
   }

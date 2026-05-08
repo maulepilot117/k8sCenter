@@ -520,9 +520,10 @@ abstract class WizardController<TForm>
         'Cluster changed during this wizard. Aborted to avoid mutating '
             'the wrong cluster. Discard and re-open from the new cluster.',
       _PinPhase.postEmission =>
-        'Cluster changed mid-request. The request landed on the pinned '
-            'cluster (${arg.clusterId}); re-open the wizard from that '
-            'cluster to confirm the resource was created.',
+        'Cluster changed mid-request. The resource WAS applied to the '
+            'pinned cluster (${arg.clusterId}). Switch back to that '
+            'cluster to view it; do NOT re-create it on the new cluster '
+            'or you will end up with duplicates.',
     };
     _safeSet(state.copyWith(
       status: WizardStatus.failed,
