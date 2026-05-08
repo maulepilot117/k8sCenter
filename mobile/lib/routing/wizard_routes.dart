@@ -26,8 +26,13 @@ import '../auth/auth_state.dart';
 import '../auth/permissions.dart';
 import '../theme/kube_theme_builder.dart';
 import '../wizards/types/configmap/configmap_wizard_screen.dart';
+import '../wizards/types/cronjob/cronjob_wizard_screen.dart';
+import '../wizards/types/daemonset/daemonset_wizard_screen.dart';
+import '../wizards/types/deployment/deployment_wizard_screen.dart';
+import '../wizards/types/job/job_wizard_screen.dart';
 import '../wizards/types/secret/secret_wizard_screen.dart';
 import '../wizards/types/service/service_wizard_screen.dart';
+import '../wizards/types/statefulset/statefulset_wizard_screen.dart';
 import '../wizards/wizard_registry.dart';
 
 /// Public list of wizard routes — caller (app_router.dart) appends
@@ -57,6 +62,16 @@ Widget _wizardScreenForType(String type) {
       return const SecretWizardScreen();
     case 'service':
       return const ServiceWizardScreen();
+    case 'deployment':
+      return const DeploymentWizardScreen();
+    case 'job':
+      return const JobWizardScreen();
+    case 'cronjob':
+      return const CronJobWizardScreen();
+    case 'daemonset':
+      return const DaemonSetWizardScreen();
+    case 'statefulset':
+      return const StatefulSetWizardScreen();
     default:
       return _ComingSoonScreen(type: type);
   }
