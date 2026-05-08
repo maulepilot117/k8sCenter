@@ -16,8 +16,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../wizard_controller.dart';
 import '../../wizard_step.dart';
 
+// ScheduledSnapshot's backend validates schedules with a strict 5-field
+// regex (cronRegex in backend/internal/wizard/container.go), which
+// rejects @-shorthand. Keep all presets as 5-field expressions so the
+// chip the operator clicks always survives backend validation.
+// VeleroSchedule's backend uses cron.ParseStandard and accepts
+// @-shorthand — its preset list lives separately for that reason.
 const List<({String label, String value})> kCronPresets = [
-  (label: 'Every hour', value: '@hourly'),
+  (label: 'Every hour', value: '0 * * * *'),
   (label: 'Every day at 02:00', value: '0 2 * * *'),
   (label: 'Every Sunday at 03:00', value: '0 3 * * 0'),
   (label: 'Every 6 hours', value: '0 */6 * * *'),

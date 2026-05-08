@@ -53,13 +53,30 @@ class VeleroRestoreForm {
         restorePVs: restorePVs ?? this.restorePVs,
       );
 
+  /// Strip the trailing-sentinel row (both fields blank) before
+  /// serializing. Half-filled rows (one of key/value blank) are an
+  /// operator error and are caught in [validateLocally] — never silently
+  /// dropped from the body. Mirrors the empty-row defense PR-3c added
+  /// to NetworkPolicy peers.
   Map<String, String> mappingAsMap() {
     final out = <String, String>{};
     for (final p in namespaceMapping) {
-      if (p.key.isEmpty || p.value.isEmpty) continue;
+      if (p.key.isEmpty && p.value.isEmpty) continue;
       out[p.key] = p.value;
     }
     return out;
+  }
+
+  /// True when at least one row has exactly one of key/value filled.
+  /// Used by [validateLocally] to surface a single error rather than
+  /// quietly dropping the row.
+  bool hasIncompleteMappingRow() {
+    for (final p in namespaceMapping) {
+      final keyEmpty = p.key.isEmpty;
+      final valEmpty = p.value.isEmpty;
+      if (keyEmpty != valEmpty) return true;
+    }
+    return false;
   }
 }
 
@@ -120,6 +137,11 @@ class VeleroRestoreWizardController
     };
     if (form.backupName.trim().isEmpty) {
       out['backupName'] = 'Pick a backup to restore from';
+    }
+    if (form.hasIncompleteMappingRow()) {
+      out['namespaceMapping'] =
+          'Each mapping row needs both source and target namespaces. '
+          'Remove the row or fill the missing field.';
     }
     return out;
   }

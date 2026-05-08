@@ -95,9 +95,9 @@ class RestoreSnapshotWizardController
       'storageClassName': form.storageClassName,
       'size': form.sizeQuantity,
       'accessMode': form.accessMode,
-      'dataSource': const PvcDataSource(name: '').copyDataSource(
-        name: form.sourceSnapshot,
-      ),
+      // PvcDataSource defaults kind/apiGroup to the VolumeSnapshot
+      // values — only the snapshot name needs threading.
+      'dataSource': PvcDataSource(name: form.sourceSnapshot).toJson(),
     };
   }
 
@@ -133,14 +133,6 @@ class RestoreSnapshotWizardController
     }
     return out;
   }
-}
-
-extension on PvcDataSource {
-  /// Internal helper to clone with a new name; PvcDataSource is const
-  /// so we use this rather than letting RestoreSnapshot duplicate the
-  /// `kind`/`apiGroup` constants.
-  Map<String, String> copyDataSource({required String name}) =>
-      PvcDataSource(name: name).toJson();
 }
 
 final restoreSnapshotWizardProvider = AutoDisposeNotifierProvider.family<

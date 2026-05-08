@@ -49,9 +49,71 @@ void main() {
       ));
 
       expect(body['name'], 'nightly-data');
+      expect(body['namespace'], 'app');
       expect(body['sourcePVC'], 'data');
+      expect(body['volumeSnapshotClassName'], 'csi-hostpath');
       expect(body['schedule'], '0 2 * * *');
       expect(body['retentionCount'], 7);
+    });
+
+    test('cron presets all match the backend strict 5-field cronRegex '
+        '(no @-shorthand — backend rejects it)', () {
+      // Mirrors backend/internal/wizard/container.go:20 cronRegex.
+      final cronRegex = RegExp(r'^(\S+\s+){4}\S+$');
+      for (final preset in kCronPresets) {
+        expect(
+          cronRegex.hasMatch(preset.value),
+          isTrue,
+          reason:
+              'preset "${preset.label}" → "${preset.value}" must match the '
+              'backend 5-field cron regex; @-shorthand is rejected.',
+        );
+      }
+    });
+
+    test('three-step navigation: clean step 0 → step 1 → step 2 (Review)',
+        () async {
+      final (:container, mock: _) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      final notifier =
+          container.read(scheduledSnapshotWizardProvider(_key).notifier);
+
+      // Step 0 → Step 1
+      notifier.updateForm((f) => f.copyWith(
+            name: 'x',
+            namespace: 'y',
+            sourcePVC: 'data',
+            schedule: '0 2 * * *',
+          ));
+      await notifier.next();
+      expect(
+          container
+              .read(scheduledSnapshotWizardProvider(_key))
+              .currentStep,
+          1);
+
+      // Step 1 → preview (last form step). Local validation passes;
+      // status transitions to previewing (HTTP not stubbed, so the
+      // request will fail and land in `failed` — but the step
+      // advancement itself is what we're verifying).
+      notifier.updateForm((f) => f.copyWith(
+            volumeSnapshotClassName: 'csi-hostpath',
+            retentionCount: 7,
+          ));
+      await notifier.next();
+      final state = container.read(scheduledSnapshotWizardProvider(_key));
+      // Step 1 was the last form step (index 1, with Review at 2).
+      // After local validation passes, the controller transitions to
+      // previewing. Reaching `previewing` from step 1 confirms the
+      // step 1 → review pipeline is wired up.
+      expect(
+        [WizardStatus.previewing, WizardStatus.failed],
+        contains(state.status),
+        reason: 'step 1 → preview transition fired',
+      );
     });
 
     test('retention 0 fails step-1 validation', () async {

@@ -83,6 +83,46 @@ void main() {
       expect(captured.contains('production'), isTrue);
     });
 
+    testWidgets('toggling a selected chip deselects it', (tester) async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/resources/namespaces',
+        body: {
+          'data': [
+            {
+              'metadata': {'name': 'production'},
+            },
+          ],
+          'metadata': {'total': 1},
+        },
+      );
+
+      Set<String> captured = {'production'};
+
+      await tester.pumpWidget(_wrap(
+        container,
+        StatefulBuilder(
+          builder: (context, setState) {
+            return MultiNamespacePicker(
+              clusterId: 'local',
+              selected: captured,
+              onChanged: (s) => setState(() => captured = s),
+            );
+          },
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // Tap the already-selected chip → deselects it.
+      await tester.tap(find.text('production'));
+      await tester.pump();
+      expect(captured.contains('production'), isFalse);
+    });
+
     testWidgets('empty list yields helpful message', (tester) async {
       final (:container, :mock) = _makeContainer();
       addTearDown(container.dispose);

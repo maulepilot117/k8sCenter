@@ -65,6 +65,21 @@ void main() {
       expect(body.containsKey('volumeSnapshotClassName'), false);
     });
 
+    test('errorRouter routes known field paths to step 0; unknown fall '
+        'through to unrouted', () {
+      final (:container, mock: _) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      final c = container.read(snapshotWizardProvider(_key).notifier);
+      expect(c.errorRouter('name'), 0);
+      expect(c.errorRouter('namespace'), 0);
+      expect(c.errorRouter('sourcePVC'), 0);
+      expect(c.errorRouter('volumeSnapshotClassName'), 0);
+      expect(c.errorRouter('mystery'), null);
+    });
+
     test('missing source PVC fails validateLocally', () async {
       final (:container, mock: _) = _makeContainer();
       addTearDown(container.dispose);

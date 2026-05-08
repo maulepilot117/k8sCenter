@@ -50,17 +50,28 @@ class WizardPreviewClient {
   /// Returns [PreviewYaml] on 200, [PreviewErrors] on 422. Anything else
   /// throws [ApiError] (network failure, 5xx, auth issues — same surface
   /// every other write hits in this app).
+  ///
+  /// [clusterId] is the wizard's pinned cluster. We send it explicitly
+  /// as an `X-Cluster-ID` header so a mid-flight switch of
+  /// `activeClusterProvider` cannot cause `ClusterInterceptor` to
+  /// rewrite the header — same defense PR-3c added to the picker path.
+  /// The interceptor only injects when the header is absent; we always
+  /// set it here, so the request always lands on the pinned cluster.
   Future<PreviewResult> preview(
     String type,
-    Map<String, dynamic> body,
-  ) async {
+    Map<String, dynamic> body, {
+    required String clusterId,
+  }) async {
     try {
       final res = await _dio.post<Map<String, dynamic>>(
         '/api/v1/wizards/$type/preview',
         data: body,
         options: Options(
           contentType: 'application/json',
-          headers: {'Accept': 'application/json'},
+          headers: {
+            'Accept': 'application/json',
+            'X-Cluster-ID': clusterId,
+          },
         ),
       );
       final outer = res.data ?? const <String, dynamic>{};
