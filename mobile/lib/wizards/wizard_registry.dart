@@ -225,12 +225,33 @@ const List<WizardEntry> wizardRegistry = [
     icon: Icons.photo_camera_outlined,
     group: 'Storage',
   ),
+  // ScheduledSnapshot lands a multi-doc YAML (ServiceAccount + Role +
+  // RoleBinding + CronJob). RBAC-gate on `cronjobs` — that's the
+  // user-perceivable workload the wizard creates and the verb most
+  // operators will recognize. The companion RBAC docs (SA/Role/RB) are
+  // housekeeping for the CronJob; if the operator can create CronJobs
+  // but not the housekeeping resources, the apply 403s server-side
+  // (the most-conservative outcome). Gating on `schedules` (the Velero
+  // CRD plural) was the wrong verb — the wizard does not create a
+  // Velero Schedule.
   WizardEntry(
     type: 'scheduled-snapshot',
     scope: WizardScope.namespaced,
     label: 'Scheduled snapshot',
-    kind: 'schedules',
+    kind: 'cronjobs',
     icon: Icons.update_outlined,
+    group: 'Storage',
+  ),
+  // Restore-snapshot is a UX wrapper around the `pvc` backend wizard
+  // type — it lands a PVC with `dataSource` pointing at a snapshot.
+  // Treated as its own routable wizard so the drawer surfaces it
+  // distinctly; RBAC checks `create persistentvolumeclaims`.
+  WizardEntry(
+    type: 'restore-snapshot',
+    scope: WizardScope.namespaced,
+    label: 'Restore from snapshot',
+    kind: 'persistentvolumeclaims',
+    icon: Icons.restore_page_outlined,
     group: 'Storage',
   ),
 

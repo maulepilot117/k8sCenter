@@ -359,12 +359,19 @@ abstract class WizardController<TForm>
     ));
     try {
       final client = WizardPreviewClient(ref.read(dioProvider));
-      final result =
-          await client.preview(wizardType, toPreviewBody(state.form));
+      final result = await client.preview(
+        wizardType,
+        toPreviewBody(state.form),
+        clusterId: arg.clusterId,
+      );
       // Late-arrival guards: drop if disposed, dispatch superseded, or
-      // cluster changed between request issue and HTTP completion.
+      // cluster changed between request issue and HTTP completion. The
+      // request itself was pinned via X-Cluster-ID header to the
+      // wizard's cluster; the post-emission pin check exists to keep
+      // wizard state aligned with the operator's current cluster
+      // context, not to defend against wrong-cluster mutation.
       if (_disposed || dispatchId != _dispatchId) return;
-      if (!_clusterStillPinned()) return;
+      if (!_clusterStillPinned(phase: _PinPhase.postEmission)) return;
       switch (result) {
         case PreviewYaml(:final yaml):
           _safeSet(state.copyWith(
@@ -420,7 +427,10 @@ abstract class WizardController<TForm>
     try {
       final outcome = await _postYamlApply(yaml);
       if (_disposed || dispatchId != _dispatchId) return;
-      if (!_clusterStillPinned()) return;
+      // Post-emission: the apply request was pinned via X-Cluster-ID
+      // header, so any cluster-side mutation already landed on the
+      // pinned cluster. The mismatch message reflects that.
+      if (!_clusterStillPinned(phase: _PinPhase.postEmission)) return;
       if (!outcome.allSucceeded) {
         // Multi-resource wizards (PR-3b+ NamespaceLimits, etc.) can
         // produce a 200 with `summary.failed > 0`. Treat as failed so
@@ -496,16 +506,29 @@ abstract class WizardController<TForm>
     ));
   }
 
-  bool _clusterStillPinned() {
+  /// Phase used to tailor the cluster-mismatch message. Pre-emission
+  /// mismatches abort cleanly; post-emission mismatches happen *after*
+  /// a request has already gone out with the pinned cluster's
+  /// `X-Cluster-ID` header — the resource on the pinned cluster may
+  /// already exist, so the copy must not say "aborted to avoid
+  /// mutating the wrong cluster" (which is false at that point).
+  bool _clusterStillPinned({_PinPhase phase = _PinPhase.preEmission}) {
     final active = ref.read(activeClusterProvider);
     if (active == arg.clusterId) return true;
+    final message = switch (phase) {
+      _PinPhase.preEmission =>
+        'Cluster changed during this wizard. Aborted to avoid mutating '
+            'the wrong cluster. Discard and re-open from the new cluster.',
+      _PinPhase.postEmission =>
+        'Cluster changed mid-request. The request landed on the pinned '
+            'cluster (${arg.clusterId}); re-open the wizard from that '
+            'cluster to confirm the resource was created.',
+    };
     _safeSet(state.copyWith(
       status: WizardStatus.failed,
       clusterMismatch: true,
       clearPreviewYaml: true,
-      errorMessage:
-          'Cluster changed during this wizard. Aborted to avoid mutating '
-          'the wrong cluster. Discard and re-open from the new cluster.',
+      errorMessage: message,
     ));
     return false;
   }
@@ -555,7 +578,16 @@ abstract class WizardController<TForm>
         data: yaml,
         options: Options(
           contentType: 'application/yaml',
-          headers: {'Accept': 'application/json'},
+          headers: {
+            'Accept': 'application/json',
+            // Pin X-Cluster-ID to the wizard's locked cluster so a
+            // mid-flight switch of activeClusterProvider cannot let
+            // ClusterInterceptor rewrite the header. The interceptor
+            // only injects when the header is absent. PR-3c applied
+            // this defense to the picker path; the wizard
+            // preview/apply path was missed at the time.
+            'X-Cluster-ID': arg.clusterId,
+          },
           // Wizards may produce multi-MB YAML (large ConfigMaps in
           // PR-3b+ etc.); the dioProvider's default 30s sendTimeout
           // can be tight on slow mobile networks. Mirrors M2's YAML
@@ -587,3 +619,5 @@ abstract class WizardController<TForm>
     }
   }
 }
+
+enum _PinPhase { preEmission, postEmission }

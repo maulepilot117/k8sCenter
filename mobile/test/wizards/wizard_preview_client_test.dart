@@ -28,6 +28,34 @@ void main() {
       dio.httpClientAdapter = mock;
     });
 
+    test('preview pins X-Cluster-ID header to the wizard-provided '
+        'clusterId so a mid-flight switch of activeClusterProvider '
+        'cannot let ClusterInterceptor rewrite the request '
+        '(regression guard for PR-3d review finding)', () async {
+      mock.onJson(
+        'POST',
+        '/api/v1/wizards/configmap/preview',
+        body: {
+          'data': {'yaml': 'apiVersion: v1\nkind: ConfigMap\n'},
+        },
+      );
+
+      await WizardPreviewClient(dio).preview(
+        'configmap',
+        const <String, dynamic>{},
+        clusterId: 'pinned-cluster-A',
+      );
+
+      expect(mock.requests, isNotEmpty);
+      expect(
+        mock.requests.last.headers['X-Cluster-ID'],
+        'pinned-cluster-A',
+        reason: 'wizard preview must always set X-Cluster-ID explicitly '
+            'so the dio interceptor cannot rewrite it from a stale '
+            'activeClusterProvider value',
+      );
+    });
+
     test('200 with {data:{yaml}} returns PreviewYaml', () async {
       mock.onJson(
         'POST',
@@ -40,6 +68,7 @@ void main() {
       final result = await WizardPreviewClient(dio).preview(
         'configmap',
         {'name': 'cfg', 'namespace': 'default', 'data': {'k': 'v'}},
+        clusterId: 'local',
       );
 
       expect(result, isA<PreviewYaml>());
@@ -68,6 +97,7 @@ void main() {
       final result = await WizardPreviewClient(dio).preview(
         'configmap',
         const <String, dynamic>{},
+        clusterId: 'local',
       );
 
       expect(result, isA<PreviewErrors>());
@@ -95,8 +125,11 @@ void main() {
       );
 
       expect(
-        () => WizardPreviewClient(dio)
-            .preview('configmap', const <String, dynamic>{}),
+        () => WizardPreviewClient(dio).preview(
+          'configmap',
+          const <String, dynamic>{},
+          clusterId: 'local',
+        ),
         throwsA(isA<ApiError>()),
       );
     });
@@ -115,8 +148,11 @@ void main() {
       );
 
       try {
-        await WizardPreviewClient(dio)
-            .preview('configmap', const <String, dynamic>{});
+        await WizardPreviewClient(dio).preview(
+          'configmap',
+          const <String, dynamic>{},
+          clusterId: 'local',
+        );
         fail('expected ApiError');
       } on ApiError catch (e) {
         expect(e.statusCode, 503);
