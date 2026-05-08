@@ -38,19 +38,15 @@ class PolicyEngineStatus {
 
   /// Engines available to pick from in the wizard. Empty list means
   /// neither engine is installed — wizard renders an EmptyState.
+  /// Order is informational only; engine resolution within
+  /// `PolicyWizardController.pickTemplate` intersects this list with
+  /// the template's supported engines and respects the operator's
+  /// already-picked engine when applicable.
   List<String> get availableEngines {
     final out = <String>[];
     if (kyvernoAvailable) out.add('kyverno');
     if (gatekeeperAvailable) out.add('gatekeeper');
     return out;
-  }
-
-  /// Convenience: the engine to default to. When both are present,
-  /// pick Kyverno (matches web behavior — see PolicyWizard.tsx).
-  String get defaultEngine {
-    if (kyvernoAvailable) return 'kyverno';
-    if (gatekeeperAvailable) return 'gatekeeper';
-    return '';
   }
 }
 

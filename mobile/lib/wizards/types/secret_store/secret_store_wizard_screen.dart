@@ -38,9 +38,11 @@ import 'providers/vault_provider_form.dart';
 import 'secret_store_wizard_controller.dart';
 
 /// Map provider id → form builder. Adding a new provider amounts to
-/// adding a row here plus an import. Keeping the table here (rather
-/// than in `provider_picker.dart`) keeps the picker decoupled from the
-/// per-form imports.
+/// adding a row here, an import, AND a matching entry in
+/// `provider_picker.dart`'s `kSecretStoreProviders`. The two tables
+/// are kept in lockstep by the debug-mode assert in `_validateProviderRegistry`
+/// below — a missing entry on either side surfaces at first build
+/// instead of as the silent `_NoProviderFormFallback` banner at runtime.
 const Map<String, ProviderFormBuilder> _kProviderForms = {
   'vault': vaultProviderForm,
   'aws': awsProviderForm,
@@ -51,6 +53,26 @@ const Map<String, ProviderFormBuilder> _kProviderForms = {
   'doppler': dopplerProviderForm,
   'onepassword': onepasswordProviderForm,
 };
+
+/// Cross-check that the picker's provider list and the dispatch
+/// table's keys agree. Runs once per process in debug builds. Release
+/// builds skip the check (Dart strips `assert`); the test suite is
+/// the safety net for release.
+bool _validateProviderRegistry() {
+  final pickerIds = kSecretStoreProviders.map((p) => p.id).toSet();
+  final formIds = _kProviderForms.keys.toSet();
+  final missingForm = pickerIds.difference(formIds);
+  final missingPicker = formIds.difference(pickerIds);
+  assert(
+    missingForm.isEmpty && missingPicker.isEmpty,
+    'SecretStore provider registry drift: '
+    'picker has ${missingForm.isEmpty ? "no" : missingForm} entries with no form; '
+    'forms have ${missingPicker.isEmpty ? "no" : missingPicker} entries with no picker tile.',
+  );
+  return true;
+}
+
+final bool _kRegistryValidated = _validateProviderRegistry();
 
 class SecretStoreWizardScreen extends ConsumerStatefulWidget {
   const SecretStoreWizardScreen({
@@ -72,6 +94,9 @@ class _SecretStoreWizardScreenState
 
   @override
   Widget build(BuildContext context) {
+    // Touch the registry sentinel so the debug-mode validation
+    // assert runs once before any provider form is dispatched.
+    assert(_kRegistryValidated);
     return widget.scope == WizardScope.cluster
         ? _buildScaffold(
             wizardType: 'cluster-secret-store',

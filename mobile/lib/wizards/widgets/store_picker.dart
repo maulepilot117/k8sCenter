@@ -64,11 +64,21 @@ class StoreOption {
   final String provider;
 }
 
-/// Compound result from the two list endpoints.
+/// Compound result from the two list endpoints. Each fetch can fail
+/// independently — when one succeeds and the other doesn't, we surface
+/// the partial result rather than blocking the picker entirely.
+/// `errors` carries one entry per failed kind ("namespaced" or
+/// "cluster") so the picker can render an inline warning above the
+/// dropdown.
 class _StoreLists {
-  const _StoreLists({required this.namespaced, required this.cluster});
+  const _StoreLists({
+    required this.namespaced,
+    required this.cluster,
+    this.errors = const <String, String>{},
+  });
   final List<StoreOption> namespaced;
   final List<StoreOption> cluster;
+  final Map<String, String> errors;
 }
 
 /// Family key — clusterId pins the cache slot, namespace scopes the
@@ -97,7 +107,10 @@ final storeListProvider = FutureProvider.autoDispose
   final dio = ref.watch(dioProvider);
   final headers = {'X-Cluster-ID': key.clusterId};
 
-  Future<List<dynamic>> fetch(String path,
+  // Each fetch returns either a list or a one-line error message.
+  // We catch per-fetch so a transient failure on one endpoint doesn't
+  // gate the operator out of the other endpoint's results.
+  Future<({List<dynamic> data, String? error})> fetch(String path,
       {Map<String, dynamic>? query}) async {
     try {
       final res = await dio.get<Map<String, dynamic>>(
@@ -106,10 +119,11 @@ final storeListProvider = FutureProvider.autoDispose
         options: Options(headers: headers),
       );
       final data = res.data?['data'];
-      return data is List ? data : const [];
+      return (data: data is List ? data : const <dynamic>[], error: null);
     } on DioException catch (e) {
       final err = e.error;
-      throw err is ApiError ? err : ApiError.fromDio(e);
+      final apiErr = err is ApiError ? err : ApiError.fromDio(e);
+      return (data: const <dynamic>[], error: apiErr.message);
     }
   }
 
@@ -134,18 +148,21 @@ final storeListProvider = FutureProvider.autoDispose
   }
 
   final namespaced = <StoreOption>[];
-  for (final item in results[0]) {
+  for (final item in results[0].data) {
     final opt = toOption(item, 'SecretStore');
     if (opt != null) namespaced.add(opt);
   }
   final cluster = <StoreOption>[];
-  for (final item in results[1]) {
+  for (final item in results[1].data) {
     final opt = toOption(item, 'ClusterSecretStore');
     if (opt != null) cluster.add(opt);
   }
   namespaced.sort((a, b) => a.name.compareTo(b.name));
   cluster.sort((a, b) => a.name.compareTo(b.name));
-  return _StoreLists(namespaced: namespaced, cluster: cluster);
+  final errors = <String, String>{};
+  if (results[0].error != null) errors['namespaced'] = results[0].error!;
+  if (results[1].error != null) errors['cluster'] = results[1].error!;
+  return _StoreLists(namespaced: namespaced, cluster: cluster, errors: errors);
 });
 
 class StorePicker extends ConsumerWidget {
@@ -236,13 +253,20 @@ class StorePicker extends ConsumerWidget {
         }
 
         // If [selected] points at an entry not in the loaded lists
-        // (RBAC-hidden, just deleted, etc.) surface it as an extra item
-        // so the dropdown can render a value rather than asserting.
+        // (RBAC-hidden, just deleted, or vanished after a namespace
+        // change), surface it as an extra dropdown item so the value
+        // renders, AND warn the operator above the dropdown so they
+        // know the store reference will fail at apply time. Without
+        // the warning, the wizard happily ships a YAML referencing a
+        // non-existent store; ESO reconciliation lands NotReady
+        // forever and the operator has no surface to learn why.
         final allNames = {
           ...lists.namespaced.map((s) => s.name),
           ...lists.cluster.map((s) => s.name),
         };
-        if (selected != null && !allNames.contains(selected!.name)) {
+        final selectedMissing =
+            selected != null && !allNames.contains(selected!.name);
+        if (selectedMissing) {
           items.insert(
             0,
             DropdownMenuItem(
@@ -259,18 +283,38 @@ class StorePicker extends ConsumerWidget {
           );
         }
 
-        return DropdownButtonFormField<StoreSelection>(
-          initialValue: selected,
-          isExpanded: true,
-          decoration: InputDecoration(
-            labelText: label,
-            border: const OutlineInputBorder(),
-            errorText: errorMessage,
-          ),
-          items: items,
-          onChanged: (v) {
-            if (v != null) onChanged(v);
-          },
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Surface any partial-fetch error so the operator knows
+            // their list of options is incomplete (one of the two
+            // endpoints failed but the other returned).
+            if (lists.errors.isNotEmpty) ...[
+              _PartialFetchWarning(errors: lists.errors, colors: colors),
+              const SizedBox(height: 8),
+            ],
+            if (selectedMissing) ...[
+              _SelectedMissingWarning(
+                name: selected!.name,
+                kind: selected!.kind,
+                colors: colors,
+              ),
+              const SizedBox(height: 8),
+            ],
+            DropdownButtonFormField<StoreSelection>(
+              initialValue: selected,
+              isExpanded: true,
+              decoration: InputDecoration(
+                labelText: label,
+                border: const OutlineInputBorder(),
+                errorText: errorMessage,
+              ),
+              items: items,
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
+          ],
         );
       },
     );
@@ -303,6 +347,9 @@ class StorePicker extends ConsumerWidget {
     );
   }
 
+  // Warning widgets are private to this file; they only render when
+  // their respective conditions hold (partial-fetch failure /
+  // selection vanished from the visible list).
   Widget _frame(KubeColors colors, Widget child) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -334,6 +381,72 @@ class StorePicker extends ConsumerWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _PartialFetchWarning extends StatelessWidget {
+  const _PartialFetchWarning({required this.errors, required this.colors});
+  final Map<String, String> errors;
+  final KubeColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    final missing = errors.keys
+        .map((k) => k == 'namespaced' ? 'SecretStores' : 'ClusterSecretStores')
+        .join(' + ');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.warning),
+        borderRadius: BorderRadius.circular(4),
+        color: colors.warning.withValues(alpha: 0.08),
+      ),
+      child: Row(children: [
+        Icon(Icons.warning_amber_outlined, size: 14, color: colors.warning),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'Failed to load $missing — list is incomplete',
+            style: TextStyle(color: colors.textSecondary, fontSize: 11),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+class _SelectedMissingWarning extends StatelessWidget {
+  const _SelectedMissingWarning({
+    required this.name,
+    required this.kind,
+    required this.colors,
+  });
+  final String name;
+  final String kind;
+  final KubeColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.warning),
+        borderRadius: BorderRadius.circular(4),
+        color: colors.warning.withValues(alpha: 0.08),
+      ),
+      child: Row(children: [
+        Icon(Icons.warning_amber_outlined, size: 14, color: colors.warning),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            '$kind "$name" is no longer visible — it may have been '
+            'deleted or you lost RBAC. Pick a different store before '
+            'applying.',
+            style: TextStyle(color: colors.textSecondary, fontSize: 11),
+          ),
+        ),
+      ]),
     );
   }
 }

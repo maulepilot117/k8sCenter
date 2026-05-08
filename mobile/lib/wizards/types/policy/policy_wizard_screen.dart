@@ -93,7 +93,12 @@ class _TemplateStep extends ConsumerWidget {
             padding: EdgeInsets.symmetric(vertical: 24),
             child: Center(child: CircularProgressIndicator()),
           ),
-          error: (e, _) => _StatusError(message: '$e'),
+          error: (e, _) => _StatusError(
+            message: '$e',
+            onRetry: () => ref.invalidate(policyEngineStatusProvider(
+              PolicyEngineStatusKey(clusterId: wizardKey.clusterId),
+            )),
+          ),
           data: (status) {
             final engines = status.availableEngines;
             if (engines.isEmpty) {
@@ -114,7 +119,16 @@ class _TemplateStep extends ConsumerWidget {
                 ..._buildTemplateGroups(
                   selectedId: state.form.templateId,
                   engines: engines,
-                  onPick: controller.pickTemplate,
+                  // Thread the cluster-installed engine list into
+                  // pickTemplate so the engine auto-default intersects
+                  // template-supported engines with what's actually
+                  // installed. Without this, every template picks
+                  // `kyverno` (the first engine in template defs) and
+                  // the wizard pins to Kyverno on a Gatekeeper-only
+                  // cluster, with no UI to override (engine ChoiceChip
+                  // is hidden when pickableEngines.length == 1).
+                  onPick: (id) =>
+                      controller.pickTemplate(id, availableEngines: engines),
                   colors: colors,
                 ),
                 if (stepErrors['templateId'] != null) ...[
@@ -236,8 +250,9 @@ class _NoEngineEmpty extends StatelessWidget {
 }
 
 class _StatusError extends StatelessWidget {
-  const _StatusError({required this.message});
+  const _StatusError({required this.message, required this.onRetry});
   final String message;
+  final VoidCallback onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -248,9 +263,79 @@ class _StatusError extends StatelessWidget {
         border: Border.all(color: colors.error),
         borderRadius: BorderRadius.circular(6),
       ),
-      child: Text(
-        'Failed to detect policy engine: $message',
-        style: TextStyle(color: colors.error),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Failed to detect policy engine: $message',
+            style: TextStyle(color: colors.error),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ElevatedButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh, size: 16),
+              label: const Text('Retry'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoPickableEngineBanner extends StatelessWidget {
+  const _NoPickableEngineBanner({
+    required this.templateName,
+    required this.onGoBack,
+  });
+  final String templateName;
+  final VoidCallback onGoBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.warning),
+        borderRadius: BorderRadius.circular(6),
+        color: colors.warning.withValues(alpha: 0.08),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Icon(Icons.warning_amber_outlined,
+                color: colors.warning, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Template no longer supported on this cluster',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            '"$templateName" requires an engine that is not currently '
+            'installed on this cluster. Pick a different template.',
+            style: TextStyle(color: colors.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ElevatedButton.icon(
+              onPressed: onGoBack,
+              icon: const Icon(Icons.arrow_back, size: 16),
+              label: const Text('Pick a different template'),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -383,6 +468,21 @@ class _ConfigureStep extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         WizardUnroutedBanner(unrouted: state.unrouted),
+        // Engine availability sanity check. If the cluster's engine
+        // list changed out-of-band (e.g. Kyverno uninstalled mid-wizard
+        // via GitOps reconcile), the picked template may no longer
+        // be supported by any installed engine. The engine ChoiceChip
+        // is hidden when pickableEngines.length <= 1, so without this
+        // banner the wizard becomes a dead-end where the operator
+        // cannot change engine and Apply is destined to 422. Surface
+        // the situation explicitly with an action to go back.
+        if (pickableEngines.isEmpty) ...[
+          _NoPickableEngineBanner(
+            templateName: template.name,
+            onGoBack: () => controller.goToStep(0),
+          ),
+          const SizedBox(height: 16),
+        ],
         TextFormField(
           initialValue: form.name,
           decoration: InputDecoration(

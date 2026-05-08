@@ -143,19 +143,34 @@ abstract class SecretStoreWizardBase extends WizardController<SecretStoreForm> {
 
   @override
   int? errorRouter(String fieldPath) {
-    // Step 0: identity / refreshInterval / scope.
-    const step0 = {
-      'name',
-      'namespace',
-      'refreshInterval',
-      'scope',
-    };
     // Step 1: provider selection itself.
     const step1 = {
       'provider',
       'providerSpec',
     };
-    if (step0.contains(fieldPath)) return 0;
+    // Step 0: identity / refreshInterval / scope. `namespace` is
+    // ambiguous: backend's Vault provider validator emits bare
+    // `namespace` for the Vault Enterprise namespace inside
+    // providerSpec, NOT for the k8s namespace input. Disambiguate by
+    // routing bare `namespace` to step 0 only when (a) provider is
+    // not Vault, OR (b) the operator's k8s namespace input is
+    // currently empty/invalid (meaning the top-level validator is
+    // the more likely error source). When provider is Vault and the
+    // form's k8s namespace passes a basic non-empty check, the
+    // `namespace` error must be the Vault Enterprise namespace
+    // input on Configure → step 2.
+    if (fieldPath == 'name' ||
+        fieldPath == 'refreshInterval' ||
+        fieldPath == 'scope') {
+      return 0;
+    }
+    if (fieldPath == 'namespace') {
+      final isVault = state.form.provider == 'vault';
+      final k8sNsValid =
+          scope == WizardScope.cluster || state.form.namespace.trim().isNotEmpty;
+      if (isVault && k8sNsValid) return 2;
+      return 0;
+    }
     if (step1.contains(fieldPath)) return 1;
     // Everything else is per-provider spec — Configure step.
     // Examples: server, region, vaultUrl, tenantId, projectID,
@@ -175,6 +190,20 @@ abstract class SecretStoreWizardBase extends WizardController<SecretStoreForm> {
     if (stepIndex == 1) {
       if (form.provider.isEmpty) {
         return {'provider': 'Pick a provider before continuing'};
+      }
+    }
+    if (stepIndex == 2) {
+      // The Configure step has no per-provider preflight (each
+      // provider's required-field shape is the backend's job). But
+      // we DO catch the case where the operator advanced through
+      // Configure without entering anything — backend would 422 with
+      // 5+ inline errors at once with no header. A single client-side
+      // gate avoids that round-trip and gives a coherent message.
+      if (form.providerSpec.isEmpty) {
+        return {
+          'providerSpec':
+              'Fill in the provider configuration before continuing',
+        };
       }
     }
     return const <String, String>{};

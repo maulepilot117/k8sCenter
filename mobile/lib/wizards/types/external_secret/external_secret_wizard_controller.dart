@@ -196,6 +196,7 @@ class ExternalSecretWizardController
     // Per-row validation: a half-filled row (one of secretKey/remoteKey
     // blank) is a UX trap — the operator probably forgot to finish.
     // Surface that explicitly rather than letting the backend echo it.
+    final secretKeyToRows = <String, List<int>>{};
     for (var i = 0; i < form.data.length; i++) {
       final d = form.data[i];
       final hasSecretKey = d.secretKey.trim().isNotEmpty;
@@ -204,9 +205,21 @@ class ExternalSecretWizardController
       if (!hasSecretKey && !hasRemoteKey && !hasProperty) continue;
       if (!hasSecretKey) {
         out['data[$i].secretKey'] = 'Required';
+      } else {
+        // Track populated secretKeys for the duplicate gate. Backend
+        // rejects duplicates explicitly; surfacing inline here saves
+        // a round-trip and points at every offending row, not just
+        // the second one.
+        secretKeyToRows.putIfAbsent(d.secretKey.trim(), () => []).add(i);
       }
       if (!hasRemoteKey) {
         out['data[$i].remoteRef.key'] = 'Required';
+      }
+    }
+    for (final entry in secretKeyToRows.entries) {
+      if (entry.value.length < 2) continue;
+      for (final i in entry.value) {
+        out['data[$i].secretKey'] = 'Duplicate of row ${entry.value.where((x) => x != i).first + 1}';
       }
     }
     return out;

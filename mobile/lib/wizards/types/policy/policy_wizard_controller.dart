@@ -107,19 +107,47 @@ class PolicyWizardController extends WizardController<PolicyForm> {
   PolicyForm buildInitialForm() => const PolicyForm();
 
   /// Pick a template. Auto-fills name, targetKinds, description, and
-  /// params from the template's defaults. If a default engine was
-  /// previously set (by `setEngine`), preserve it so the action
-  /// computes against the operator's already-picked engine.
-  void pickTemplate(String templateId) {
+  /// params from the template's defaults.
+  ///
+  /// Engine resolution priority:
+  ///   1. Operator's already-picked engine if the template supports it
+  ///      AND that engine is installed on the cluster.
+  ///   2. The first template-supported engine that is installed on the
+  ///      cluster.
+  ///   3. The template's own first engine (covers the "no
+  ///      availableEngines passed" call site, e.g. tests).
+  ///
+  /// Without [availableEngines], pickTemplate would default `engine` to
+  /// `t.engines.first` — every template lists `kyverno` first, so on a
+  /// Gatekeeper-only cluster the wizard would silently pin to Kyverno
+  /// and the engine ChoiceChip (hidden when `pickableEngines.length == 1`)
+  /// would give the operator no UI to fix it. Apply ships `engine: kyverno`
+  /// to a cluster without Kyverno and the backend rejects.
+  ///
+  /// The screen passes `availableEngines` from `policyEngineStatusProvider`
+  /// when present; tests may omit it (the no-intersection fallback keeps
+  /// existing controller-only tests valid).
+  void pickTemplate(String templateId, {List<String>? availableEngines}) {
     final t = findPolicyTemplate(templateId);
     if (t == null) return;
+    // Templates that overlap with installed engines, in template's
+    // declared order. When [availableEngines] is null (test path or
+    // status not yet resolved), fall back to template-only ordering.
+    final intersection = availableEngines == null
+        ? List<String>.from(t.engines)
+        : t.engines.where(availableEngines.contains).toList();
+    final pickPool = intersection.isEmpty
+        ? List<String>.from(t.engines)
+        : intersection;
     final currentEngine = state.form.engine;
-    final nextEngine = t.engines.contains(currentEngine)
+    final nextEngine = pickPool.contains(currentEngine)
         ? currentEngine
-        : (t.engines.isNotEmpty ? t.engines.first : '');
+        : (pickPool.isNotEmpty ? pickPool.first : '');
     updateForm((f) => f.copyWith(
           templateId: t.id,
-          name: f.name.isEmpty ? t.id : f.name,
+          // Replace name when it was still the previous template's
+          // auto-fill (or empty); preserve operator-edited names.
+          name: (f.name.isEmpty || f.name == f.templateId) ? t.id : f.name,
           targetKinds: List<String>.from(t.targetKinds),
           description: t.description,
           params: defaultParamsFor(t),
