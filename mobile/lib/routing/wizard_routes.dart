@@ -29,10 +29,17 @@ import '../wizards/types/configmap/configmap_wizard_screen.dart';
 import '../wizards/types/cronjob/cronjob_wizard_screen.dart';
 import '../wizards/types/daemonset/daemonset_wizard_screen.dart';
 import '../wizards/types/deployment/deployment_wizard_screen.dart';
+import '../wizards/types/hpa/hpa_wizard_screen.dart';
+import '../wizards/types/ingress/ingress_wizard_screen.dart';
 import '../wizards/types/job/job_wizard_screen.dart';
+import '../wizards/types/namespace_limits/namespace_limits_wizard_screen.dart';
+import '../wizards/types/networkpolicy/networkpolicy_wizard_screen.dart';
+import '../wizards/types/pdb/pdb_wizard_screen.dart';
+import '../wizards/types/rolebinding/rolebinding_wizard_screen.dart';
 import '../wizards/types/secret/secret_wizard_screen.dart';
 import '../wizards/types/service/service_wizard_screen.dart';
 import '../wizards/types/statefulset/statefulset_wizard_screen.dart';
+import '../wizards/types/storageclass/storageclass_wizard_screen.dart';
 import '../wizards/wizard_registry.dart';
 
 /// Public list of wizard routes — caller (app_router.dart) appends
@@ -72,6 +79,20 @@ Widget _wizardScreenForType(String type) {
       return const DaemonSetWizardScreen();
     case 'statefulset':
       return const StatefulSetWizardScreen();
+    case 'ingress':
+      return const IngressWizardScreen();
+    case 'networkpolicy':
+      return const NetworkPolicyWizardScreen();
+    case 'hpa':
+      return const HpaWizardScreen();
+    case 'pdb':
+      return const PdbWizardScreen();
+    case 'rolebinding':
+      return const RoleBindingWizardScreen();
+    case 'storageclass':
+      return const StorageClassWizardScreen();
+    case 'namespace-limits':
+      return const NamespaceLimitsWizardScreen();
     default:
       return _ComingSoonScreen(type: type);
   }
