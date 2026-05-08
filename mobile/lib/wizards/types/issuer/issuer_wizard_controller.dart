@@ -211,6 +211,15 @@ abstract class _IssuerWizardBase extends WizardController<IssuerForm> {
         ),
       };
       if (form.type == IssuerType.acme) {
+        // Server URL: backend's validateHTTPSPublicURL rejects empty
+        // and non-https; surface those locally so the operator gets an
+        // inline message before the round-trip.
+        final server = form.acme.server.trim();
+        if (server.isEmpty) {
+          out['acme.server'] = 'Server URL is required';
+        } else if (!server.toLowerCase().startsWith('https://')) {
+          out['acme.server'] = 'Server URL must use https://';
+        }
         if (form.acme.email.trim().isEmpty) {
           out['acme.email'] = 'Email is required';
         }

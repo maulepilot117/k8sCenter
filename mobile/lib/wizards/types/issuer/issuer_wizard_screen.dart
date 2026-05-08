@@ -37,50 +37,51 @@ class _IssuerWizardScreenState extends ConsumerState<IssuerWizardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isCluster = widget.scope == WizardScope.cluster;
-    if (isCluster) {
-      return WizardScreenScaffold<IssuerForm>(
-        wizardType: 'cluster-issuer',
-        title: 'New ClusterIssuer',
-        subtitle: 'cluster: ${_wizardKey.clusterId}',
-        wizardKey: _wizardKey,
-        controllerProvider: clusterIssuerWizardProvider,
-        stepBuilders: [
-          (ctx) => _TypeStep(
-                wizardKey: _wizardKey,
-                provider: clusterIssuerWizardProvider,
-              ),
-          (ctx) => _ConfigureStep(
-                wizardKey: _wizardKey,
-                provider: clusterIssuerWizardProvider,
-                scope: WizardScope.cluster,
-              ),
-          (ctx) => WizardReviewBody<IssuerForm>(
-                wizardKey: _wizardKey,
-                controllerProvider: clusterIssuerWizardProvider,
-              ),
-        ],
-      );
-    }
+    return widget.scope == WizardScope.cluster
+        ? _buildScaffold(
+            wizardType: 'cluster-issuer',
+            title: 'New ClusterIssuer',
+            provider: clusterIssuerWizardProvider,
+            scope: WizardScope.cluster,
+          )
+        : _buildScaffold(
+            wizardType: 'issuer',
+            title: 'New Issuer',
+            provider: issuerWizardProvider,
+            scope: WizardScope.namespaced,
+          );
+  }
+
+  /// Generic scaffold builder shared between Issuer and ClusterIssuer.
+  /// `AutoDisposeNotifierProviderFamily` is invariant in the Notifier
+  /// type, so the per-scope concrete provider type can't be erased to
+  /// the `WizardController` IssuerForm supertype — the generic param
+  /// preserves the concrete type all the way through `_TypeStep` /
+  /// `_ConfigureStep` / `WizardReviewBody`.
+  Widget _buildScaffold<C extends WizardController<IssuerForm>>({
+    required String wizardType,
+    required String title,
+    required AutoDisposeNotifierProviderFamily<C, WizardState<IssuerForm>,
+            WizardKey>
+        provider,
+    required WizardScope scope,
+  }) {
     return WizardScreenScaffold<IssuerForm>(
-      wizardType: 'issuer',
-      title: 'New Issuer',
+      wizardType: wizardType,
+      title: title,
       subtitle: 'cluster: ${_wizardKey.clusterId}',
       wizardKey: _wizardKey,
-      controllerProvider: issuerWizardProvider,
+      controllerProvider: provider,
       stepBuilders: [
-        (ctx) => _TypeStep(
-              wizardKey: _wizardKey,
-              provider: issuerWizardProvider,
-            ),
+        (ctx) => _TypeStep(wizardKey: _wizardKey, provider: provider),
         (ctx) => _ConfigureStep(
               wizardKey: _wizardKey,
-              provider: issuerWizardProvider,
-              scope: WizardScope.namespaced,
+              provider: provider,
+              scope: scope,
             ),
         (ctx) => WizardReviewBody<IssuerForm>(
               wizardKey: _wizardKey,
-              controllerProvider: issuerWizardProvider,
+              controllerProvider: provider,
             ),
       ],
     );
@@ -119,14 +120,20 @@ class _TypeStep<C extends WizardController<IssuerForm>>
             ChoiceChip(
               label: const Text('SelfSigned'),
               selected: state.form.type == IssuerType.selfSigned,
-              onSelected: (_) => controller.updateForm(
-                  (f) => f.copyWith(type: IssuerType.selfSigned)),
+              onSelected: (_) {
+                if (state.form.type == IssuerType.selfSigned) return;
+                controller.updateForm(
+                    (f) => f.copyWith(type: IssuerType.selfSigned));
+              },
             ),
             ChoiceChip(
               label: const Text('ACME'),
               selected: state.form.type == IssuerType.acme,
-              onSelected: (_) => controller
-                  .updateForm((f) => f.copyWith(type: IssuerType.acme)),
+              onSelected: (_) {
+                if (state.form.type == IssuerType.acme) return;
+                controller
+                    .updateForm((f) => f.copyWith(type: IssuerType.acme));
+              },
             ),
           ],
         ),
@@ -287,15 +294,13 @@ class _AcmeForm<C extends WizardController<IssuerForm>>
             dense: true,
           ),
         // Custom server URL — the operator can override the preset.
+        // Stateful so picking a preset radio updates the visible value
+        // (TextFormField only consumes initialValue on first build;
+        // resync mirrors _DnsNameRow's didUpdateWidget pattern).
         const SizedBox(height: 8),
-        TextFormField(
-          initialValue: acme.server,
-          decoration: InputDecoration(
-            labelText: 'Server URL',
-            hintText: 'https://acme-v02.api.letsencrypt.org/directory',
-            border: const OutlineInputBorder(),
-            errorText: stepErrors['acme.server'],
-          ),
+        _AcmeServerField(
+          value: acme.server,
+          error: stepErrors['acme.server'],
           onChanged: (v) => controller.updateForm(
               (f) => f.copyWith(acme: f.acme.copyWith(server: v))),
         ),
@@ -405,6 +410,64 @@ class _SolverRowState extends State<_SolverRow> {
         labelText: 'Ingress class (optional)',
         hintText: 'nginx',
         isDense: true,
+        border: const OutlineInputBorder(),
+        errorText: widget.error,
+      ),
+      onChanged: widget.onChanged,
+    );
+  }
+}
+
+/// ACME server URL field. Stateful with controller resync so a preset
+/// radio click updates the visible value — `TextFormField`'s
+/// `initialValue` is consumed only on first build, so binding directly
+/// to `acme.server` would leave the visible field stale after a preset
+/// pick.
+class _AcmeServerField extends StatefulWidget {
+  const _AcmeServerField({
+    required this.value,
+    required this.error,
+    required this.onChanged,
+  });
+
+  final String value;
+  final String? error;
+  final ValueChanged<String> onChanged;
+
+  @override
+  State<_AcmeServerField> createState() => _AcmeServerFieldState();
+}
+
+class _AcmeServerFieldState extends State<_AcmeServerField> {
+  late final TextEditingController _ctl =
+      TextEditingController(text: widget.value);
+
+  @override
+  void didUpdateWidget(covariant _AcmeServerField old) {
+    super.didUpdateWidget(old);
+    // Only resync on external value change (e.g. preset radio pick).
+    // Don't resync on every keystroke — the local controller is the
+    // truth during typing and resyncing on echo would jump the cursor.
+    if (widget.value != _ctl.text && widget.value != old.value) {
+      _ctl.text = widget.value;
+      _ctl.selection =
+          TextSelection.collapsed(offset: widget.value.length);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _ctl,
+      decoration: InputDecoration(
+        labelText: 'Server URL',
+        hintText: 'https://acme-v02.api.letsencrypt.org/directory',
         border: const OutlineInputBorder(),
         errorText: widget.error,
       ),

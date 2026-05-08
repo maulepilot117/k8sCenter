@@ -90,8 +90,19 @@ class _ConfigureStep extends ConsumerWidget {
             border: const OutlineInputBorder(),
             errorText: stepErrors['namespace'],
           ),
-          onChanged: (v) =>
-              controller.updateForm((f) => f.copyWith(namespace: v)),
+          onChanged: (v) {
+            // Namespace change invalidates a previously picked Issuer:
+            // namespaced Issuer refs only resolve in their own namespace
+            // (cert-manager rejects cross-namespace), and a stale
+            // ClusterIssuer ref would also be confusing if the operator
+            // expected it tied to the prior namespace. Clear so the
+            // picker re-prompts for the new namespace's options. The
+            // backend doesn't pre-validate Issuer existence, so without
+            // this guard a stale ref produces a Certificate that never
+            // issues — silent operational failure.
+            controller.updateForm(
+                (f) => f.copyWith(namespace: v, clearIssuerRef: true));
+          },
         ),
         const SizedBox(height: 16),
         TextFormField(
@@ -219,7 +230,13 @@ class _ConfigureStep extends ConsumerWidget {
         ),
         if (form.privateKey.algorithm != 'Ed25519') ...[
           const SizedBox(height: 12),
+          // Key on algorithm: switching RSA↔ECDSA produces disjoint size
+          // sets (RSA: 2048/3072/4096; ECDSA: 256/384/521). Without a
+          // fresh State, the inner DropdownButtonFormField's FormField
+          // value persists across rebuilds; if the prior value isn't in
+          // the new items list, DropdownButton asserts and throws.
           _KeySizeField(
+            key: ValueKey('keysize-${form.privateKey.algorithm}'),
             algorithm: form.privateKey.algorithm,
             value: form.privateKey.size ?? 0,
             error: stepErrors['privateKey.size'],
@@ -291,6 +308,7 @@ class _DnsNameRowState extends State<_DnsNameRow> {
 /// specific allowed sizes so the operator can't pick an invalid one.
 class _KeySizeField extends StatelessWidget {
   const _KeySizeField({
+    super.key,
     required this.algorithm,
     required this.value,
     required this.error,
