@@ -23,7 +23,7 @@ Flutter 3.x stable, Dart 3.x, Riverpod 2.x w/ `riverpod_generator`, `go_router` 
 - **M1 (4–6 wk)** — Foundation + read-only oncall companion. Login (local/OIDC/LDAP), cluster pill + bottom-sheet picker, namespace browse, resource list/detail (12 specialized kinds + generic for the rest), log tail, Notification Center feed, push delivery with deep-links, all 7 themes via the generator.
 - **M2 (3 wk)** — Write actions + YAML editor. Scale/restart/rollback/suspend/trigger/delete on resource detail. ConfigMap/Secret YAML edit through `/v1/yaml/apply`. Type-to-confirm dialogs mirroring the web pattern.
 - **M3 (5–7 wk)** — All 18 wizards. `WizardStepperMobile` mirrors `frontend/components/wizard/WizardStepper.tsx`. YAML preview step uses existing `/v1/wizards/:type/preview`.
-- **M4 (4–6 wk)** — Observability + advanced surfaces. `fl_chart` over `/v1/monitoring/query_range`; LogQL editor + label browser; topology graph; diagnostics blast-radius; full GitOps / mesh / cert-manager / ESO / policy / Trivy / Kubescape parity.
+- **M4 (4–6 wk)** — Observability + advanced surfaces. `fl_chart` over `/v1/monitoring/query_range`; LogQL editor + label browser; diagnostics blast-radius; full GitOps / mesh / cert-manager / ESO / policy / Trivy / Kubescape parity. **Out of scope:** topology graph — phone-sized rendering of a 2000-node-capped namespace graph is too much surface for too little oncall value; operators who need topology pull out a desktop.
 - **M5 (2–3 wk)** — Polish + public store launch. WCAG 2.2 AA accessibility, perf pass, App Store + Play public listings, Sentry crash reporting (opt-in).
 
 Internal-beta ships every `main` merge from end-of-M1 (TestFlight + Play Internal). M5 promotes to public stores.
