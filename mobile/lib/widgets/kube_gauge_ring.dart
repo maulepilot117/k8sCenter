@@ -12,7 +12,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../theme/kube_theme_builder.dart';
-import 'kube_line_chart.dart' show KubeChartSeverity;
+import 'kube_line_chart.dart' show KubeChartSeverity, kubeChartSeverityColor;
 
 /// Returns the appropriate chart severity for a 0–1 percentage.
 /// Thresholds are configurable so callers can tune warn/crit per domain.
@@ -59,14 +59,21 @@ class KubeGaugeRing extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final fillColor = _severityColor(severity, colors);
+    final fillColor = kubeChartSeverityColor(severity, colors);
+
+    // Guard non-finite percentages (e.g. 0/0 from a "0 of 0 policies
+    // evaluated" compliance score). NaN.clamp(0,1) is NaN; the painter
+    // would render a 0% empty ring while the centerLabel showed "NaN%".
+    // Substitute a 0 fill so the operator sees an empty ring with
+    // whatever no-data copy the caller supplies in centerLabel.
+    final safePct = percentage.isFinite ? percentage.clamp(0.0, 1.0) : 0.0;
 
     return SizedBox(
       width: size,
       height: size,
       child: CustomPaint(
         painter: _GaugePainter(
-          percentage: percentage.clamp(0.0, 1.0),
+          percentage: safePct,
           fillColor: fillColor,
           trackColor: colors.bgElevated,
           strokeWidth: 12,
@@ -101,22 +108,6 @@ class KubeGaugeRing extends StatelessWidget {
     );
   }
 
-  Color _severityColor(KubeChartSeverity s, KubeColors c) {
-    switch (s) {
-      case KubeChartSeverity.primary:
-        return c.accent;
-      case KubeChartSeverity.success:
-        return c.success;
-      case KubeChartSeverity.warning:
-        return c.warning;
-      case KubeChartSeverity.error:
-        return c.error;
-      case KubeChartSeverity.info:
-        return c.info;
-      case KubeChartSeverity.muted:
-        return c.textMuted;
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +163,15 @@ class _GaugePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GaugePainter old) =>
-      old.percentage != percentage ||
+      !_pctEquals(old.percentage, percentage) ||
       old.fillColor != fillColor ||
       old.trackColor != trackColor ||
       old.strokeWidth != strokeWidth;
+
+  /// NaN-aware equality. `NaN != NaN` in Dart, which would force a
+  /// repaint on every rebuild for a non-finite percentage.
+  static bool _pctEquals(double a, double b) {
+    if (a.isNaN && b.isNaN) return true;
+    return a == b;
+  }
 }

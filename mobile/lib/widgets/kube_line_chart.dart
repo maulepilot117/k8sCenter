@@ -131,7 +131,7 @@ class _Legend extends StatelessWidget {
         spacing: 16,
         runSpacing: 4,
         children: series.map((s) {
-          final color = _severityColor(s.severity, colors);
+          final color = kubeChartSeverityColor(s.severity, colors);
           return Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -169,7 +169,22 @@ class _LineChartBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final allPoints = series.expand((s) => s.points).toList();
+    // Filter out NaN/Infinity points up front. Prometheus emits NaN
+    // for division-by-zero rate windows and stale-for-N samples; a
+    // single NaN poisons fl_chart's reduce(min/max) axis computation
+    // and blanks the entire chart with no operator hint.
+    final cleanedSeries = series
+        .map((s) => (
+              label: s.label,
+              points: _sortByTime(
+                  s.points.where((p) => p.v.isFinite).toList()),
+              severity: s.severity,
+            ))
+        .toList();
+    final allPoints = cleanedSeries.expand((s) => s.points).toList();
+    if (allPoints.isEmpty) {
+      return _NoDataPlaceholder(colors: colors);
+    }
     final minTs = allPoints.map((p) => p.t).reduce(
       (a, b) => a.isBefore(b) ? a : b,
     );
@@ -182,8 +197,23 @@ class _LineChartBody extends StatelessWidget {
         ? DateFormat('HH:mm')
         : DateFormat('MM/dd HH:mm');
 
-    final barData = series.map((s) {
-      final color = _severityColor(s.severity, colors);
+    // Pad zero-range axes (single-point series). Without explicit
+    // min/max, fl_chart's default interval for a zero range collapses
+    // toward zero and SideTitlesWidget tries to emit millions of axis
+    // labels, OOMing the UI thread. The pad values are arbitrary —
+    // fl_chart only needs a non-zero range to compute a sane interval.
+    final rawMinX = minTs.millisecondsSinceEpoch.toDouble();
+    final rawMaxX = maxTs.millisecondsSinceEpoch.toDouble();
+    final minX = rawMinX == rawMaxX ? rawMinX - 1 : rawMinX;
+    final maxX = rawMinX == rawMaxX ? rawMaxX + 1 : rawMaxX;
+    final yValues = allPoints.map((p) => p.v);
+    final rawMinY = yValues.reduce((a, b) => a < b ? a : b);
+    final rawMaxY = yValues.reduce((a, b) => a > b ? a : b);
+    final minY = rawMinY == rawMaxY ? rawMinY - 1 : rawMinY;
+    final maxY = rawMinY == rawMaxY ? rawMaxY + 1 : rawMaxY;
+
+    final barData = cleanedSeries.map((s) {
+      final color = kubeChartSeverityColor(s.severity, colors);
       final spots = s.points
           .map((p) => FlSpot(
                 p.t.millisecondsSinceEpoch.toDouble(),
@@ -204,6 +234,10 @@ class _LineChartBody extends StatelessWidget {
 
     return LineChart(
       LineChartData(
+        minX: minX,
+        maxX: maxX,
+        minY: minY,
+        maxY: maxY,
         lineBarsData: barData,
         gridData: FlGridData(
           show: showGrid,
@@ -223,7 +257,7 @@ class _LineChartBody extends StatelessWidget {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 28,
-              interval: _xInterval(minTs, maxTs),
+              interval: (maxX - minX) / 4,
               getTitlesWidget: (value, meta) {
                 final dt =
                     DateTime.fromMillisecondsSinceEpoch(value.toInt());
@@ -244,6 +278,7 @@ class _LineChartBody extends StatelessWidget {
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 40,
+              interval: (maxY - minY) / 4,
               getTitlesWidget: (value, meta) => SideTitleWidget(
                 axisSide: meta.axisSide,
                 child: Text(
@@ -261,10 +296,13 @@ class _LineChartBody extends StatelessWidget {
     );
   }
 
-  // Target ~4 x-axis labels regardless of range.
-  double _xInterval(DateTime min, DateTime max) {
-    final rangeMs = max.millisecondsSinceEpoch - min.millisecondsSinceEpoch;
-    return (rangeMs / 4).clamp(1, double.infinity);
+  /// Sorts points by timestamp ascending. fl_chart connects spots in
+  /// array order — out-of-order timestamps (Prometheus federated merge,
+  /// Loki shard interleave) render as visible "backwards" segments.
+  List<MetricsPoint> _sortByTime(List<MetricsPoint> points) {
+    if (points.length <= 1) return points;
+    final sorted = [...points]..sort((a, b) => a.t.compareTo(b.t));
+    return sorted;
   }
 
   String _formatY(double v) {
@@ -278,7 +316,7 @@ class _LineChartBody extends StatelessWidget {
 /// Maps a [KubeChartSeverity] to the corresponding [KubeColors] token.
 /// Kept as a top-level function so both the line chart and bar chart
 /// can share the same mapping without duplication.
-Color _severityColor(KubeChartSeverity severity, KubeColors colors) {
+Color kubeChartSeverityColor(KubeChartSeverity severity, KubeColors colors) {
   switch (severity) {
     case KubeChartSeverity.primary:
       return colors.accent;

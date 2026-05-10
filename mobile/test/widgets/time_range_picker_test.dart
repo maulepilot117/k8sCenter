@@ -1,6 +1,9 @@
 // Tests for the TimeRangePicker preset → range conversion plus the
-// pure helper used by callers that want presets without a widget.
+// pure helper used by callers that want presets without a widget,
+// and a widget-level test that the SegmentedButton tap path emits
+// the expected typed range.
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/widgets/time_range_picker.dart';
 
@@ -47,6 +50,57 @@ void main() {
         final r = timeRangeFromPreset(p, now: fixedNow);
         expect(r.end, fixedNow,
             reason: 'preset $p should end at now (no future-date drift)');
+      }
+    });
+
+    test('custom preset throws — caller must construct TimeRange directly',
+        () {
+      // Catches the silent 1h-fallback regression. The custom preset
+      // has no implicit duration; provider-seed paths that mistakenly
+      // call this helper for a restored custom range should fail loud.
+      expect(
+        () => timeRangeFromPreset(TimePreset.custom, now: fixedNow),
+        throwsArgumentError,
+      );
+    });
+  });
+
+  group('TimeRangePicker widget', () {
+    testWidgets('tapping a preset emits a typed TimeRange via onChanged',
+        (tester) async {
+      TimeRange? emitted;
+      final now = DateTime.now();
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: TimeRangePicker(
+            initial: timeRangeFromPreset(TimePreset.last1h, now: now),
+            onChanged: (r) => emitted = r,
+          ),
+        ),
+      ));
+      // Tap the '6h' segment.
+      await tester.tap(find.text('6h'));
+      await tester.pumpAndSettle();
+      expect(emitted, isNotNull);
+      expect(emitted!.preset, TimePreset.last6h);
+      expect(
+        emitted!.end.difference(emitted!.start),
+        const Duration(hours: 6),
+      );
+    });
+
+    testWidgets('renders all 6 preset segments', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: TimeRangePicker(
+            initial: timeRangeFromPreset(TimePreset.last1h),
+            onChanged: (_) {},
+          ),
+        ),
+      ));
+      for (final label in ['15m', '1h', '6h', '24h', '7d', 'Custom']) {
+        expect(find.text(label), findsOneWidget,
+            reason: 'preset $label segment should render');
       }
     });
   });

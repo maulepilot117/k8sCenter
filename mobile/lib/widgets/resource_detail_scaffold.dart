@@ -355,9 +355,13 @@ class _YamlTab extends StatelessWidget {
 }
 
 /// Returns a deep copy of the resource map with sensitive payload fields
-/// redacted. Currently scrubs `data` and `stringData` (Secret + a few
-/// adjacent kinds with similar shapes); preserves metadata, type, and
-/// non-sensitive fields so the operator can still verify the structure.
+/// redacted. Scope: top-level `data` and `stringData` only — designed
+/// for the core/v1 Secret kind. Does not walk into nested maps. Kinds
+/// whose sensitive payload nests deeper (ExternalSecret status, sealed
+/// secrets at `spec.encryptedData`, vault paths under `spec`) need
+/// their own redaction layer; do not reuse `isSensitive: true` for
+/// those without first extending this helper or adding a kind-specific
+/// scrubber.
 Map<String, dynamic> _redactSensitive(Map<String, dynamic> input) {
   final out = <String, dynamic>{};
   for (final entry in input.entries) {
@@ -572,16 +576,21 @@ class EventsTab extends ConsumerWidget {
 
   int _byLastTimestampDesc(
       Map<String, dynamic> a, Map<String, dynamic> b) {
-    final ta = _eventTimestamp(a);
-    final tb = _eventTimestamp(b);
-    return tb.compareTo(ta);
+    return _eventDateTime(b).compareTo(_eventDateTime(a));
   }
 
-  String _eventTimestamp(Map<String, dynamic> e) {
-    return (e['lastTimestamp'] as String?) ??
+  /// Parses the event timestamp to a real `DateTime` so events emitted
+  /// in the same second still sort by sub-second precision. The Event
+  /// v1.events.k8s.io resource carries microsecond precision in
+  /// `eventTime`; the legacy core/v1 `lastTimestamp` is second-precision.
+  /// Lexicographic string compare misorders them when they share a
+  /// second because `Z` (0x5A) > `.` (0x2E).
+  DateTime _eventDateTime(Map<String, dynamic> e) {
+    final raw = (e['lastTimestamp'] as String?) ??
         (e['eventTime'] as String?) ??
-        ((e['metadata'] as Map?)?['creationTimestamp'] as String?) ??
-        '';
+        ((e['metadata'] as Map?)?['creationTimestamp'] as String?);
+    if (raw == null) return DateTime.fromMillisecondsSinceEpoch(0);
+    return DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0);
   }
 }
 

@@ -9,8 +9,6 @@
 
 import 'package:flutter/material.dart';
 
-import '../theme/kube_theme_builder.dart';
-
 /// The six time-window options surfaced in the picker.
 enum TimePreset { last15m, last1h, last6h, last24h, last7d, custom }
 
@@ -35,8 +33,15 @@ TimeRange timeRangeFromPreset(TimePreset p, {DateTime? now}) {
     case TimePreset.last7d:
       delta = const Duration(days: 7);
     case TimePreset.custom:
-      // Caller must supply explicit start/end for custom; fall back to 1h.
-      delta = const Duration(hours: 1);
+      // `custom` has no implicit duration — callers must construct
+      // the TimeRange directly from operator-picked dates. Throwing
+      // here prevents the silent 1h fallback from masking
+      // provider-seed paths that mistakenly call this helper for a
+      // restored custom range.
+      throw ArgumentError(
+        'timeRangeFromPreset does not support TimePreset.custom — '
+        'construct the TimeRange directly from operator-picked dates.',
+      );
   }
   return (start: end.subtract(delta), end: end, preset: p);
 }
@@ -69,20 +74,52 @@ class _TimeRangePickerState extends State<TimeRangePicker> {
   }
 
   Future<void> _openCustomPicker() async {
+    final firstDate = DateTime.now().subtract(const Duration(days: 365));
+    final lastDate = DateTime.now();
+    // Clamp the restored initial range to [firstDate, lastDate].
+    // showDateRangePicker asserts initialDateRange is in-range and
+    // crashes the route otherwise — reachable via saved-views with a
+    // 400-day-old range, a manual clock reset, or a wizard reusing a
+    // TimeRange from outside the 365-day cap.
+    final clampedStart = widget.initial.start.isBefore(firstDate)
+        ? firstDate
+        : (widget.initial.start.isAfter(lastDate)
+            ? lastDate
+            : widget.initial.start);
+    final clampedEnd = widget.initial.end.isAfter(lastDate)
+        ? lastDate
+        : (widget.initial.end.isBefore(firstDate)
+            ? firstDate
+            : widget.initial.end);
+    final initialRange = clampedStart.isAfter(clampedEnd)
+        ? DateTimeRange(start: clampedEnd, end: clampedEnd)
+        : DateTimeRange(start: clampedStart, end: clampedEnd);
     final result = await showDateRangePicker(
       context: context,
-      firstDate: DateTime.now().subtract(const Duration(days: 365)),
-      lastDate: DateTime.now(),
-      initialDateRange: DateTimeRange(
-        start: widget.initial.start,
-        end: widget.initial.end,
-      ),
+      firstDate: firstDate,
+      lastDate: lastDate,
+      initialDateRange: initialRange,
     );
     if (result == null || !mounted) return;
+    // showDateRangePicker returns date-precision values: start at
+    // 00:00 of the chosen day and end at 00:00 of the chosen day.
+    // Without the +1 day extension the trailing day is silently
+    // dropped from every metrics / logs / policy-compliance custom
+    // range — operators querying "May 6 to May 8" would lose May 8
+    // entirely. Snap end to 23:59:59.999 of the picked day instead.
+    final endOfDay = DateTime(
+      result.end.year,
+      result.end.month,
+      result.end.day,
+      23,
+      59,
+      59,
+      999,
+    );
     setState(() => _selected = TimePreset.custom);
     widget.onChanged((
       start: result.start,
-      end: result.end,
+      end: endOfDay,
       preset: TimePreset.custom,
     ));
   }
@@ -98,10 +135,6 @@ class _TimeRangePickerState extends State<TimeRangePicker> {
 
   @override
   Widget build(BuildContext context) {
-    // Read colors to style the button; actual coloring is driven by
-    // Material's SegmentedButton theme which inherits ColorScheme.primary.
-    Theme.of(context).extension<KubeColors>()!;
-
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: SegmentedButton<TimePreset>(

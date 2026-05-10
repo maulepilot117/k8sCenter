@@ -11,9 +11,22 @@
 // path segments for detail-screen deep-links, and decodes them on
 // detail-screen mount.
 //
-// The encode step exists because go_router segment matching mishandles
-// raw colons in some configurations — `Uri.encodeComponent` is the
-// safe transport. Decode reverses the encoding before split.
+// `encode()` percent-encodes each segment with `Uri.encodeComponent`
+// before joining on `:`. `tryParse()` percent-decodes each segment
+// after splitting. This makes the encoding self-contained: callers
+// can drop the result into a go_router path segment without an
+// additional `Uri.encodeComponent` step, and segments that contain a
+// literal `:` (Gatekeeper constraint names like `myrule:v2`) round-
+// trip cleanly. The runtime contract is enforced by the API rather
+// than the call-site documentation.
+//
+// Empty-namespace policy:
+//   - GitOpsId allows an empty namespace segment (Argo CD apps in the
+//     argocd namespace and Flux-style cluster-scoped objects).
+//   - PolicyId allows an empty namespace (Kyverno ClusterPolicy and
+//     Gatekeeper cluster-scoped templates).
+//   - MeshRouteId requires all four segments — no Istio/Linkerd
+//     routing CRD is cluster-scoped without a namespace.
 
 class GitOpsId {
   const GitOpsId({
@@ -34,15 +47,16 @@ class GitOpsId {
   static GitOpsId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 3) return null;
-    if (parts[0].isEmpty || parts[2].isEmpty) return null;
+    final decoded = parts.map(Uri.decodeComponent).toList();
+    if (decoded[0].isEmpty || decoded[2].isEmpty) return null;
     return GitOpsId(
-      tool: parts[0],
-      namespace: parts[1],
-      name: parts[2],
+      tool: decoded[0],
+      namespace: decoded[1],
+      name: decoded[2],
     );
   }
 
-  String encode() => '$tool:$namespace:$name';
+  String encode() => [tool, namespace, name].map(Uri.encodeComponent).join(':');
 
   @override
   String toString() => encode();
@@ -77,16 +91,20 @@ class PolicyId {
   static PolicyId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 4) return null;
-    if (parts[0].isEmpty || parts[2].isEmpty || parts[3].isEmpty) return null;
+    final decoded = parts.map(Uri.decodeComponent).toList();
+    if (decoded[0].isEmpty || decoded[2].isEmpty || decoded[3].isEmpty) {
+      return null;
+    }
     return PolicyId(
-      engine: parts[0],
-      namespace: parts[1],
-      kind: parts[2],
-      name: parts[3],
+      engine: decoded[0],
+      namespace: decoded[1],
+      kind: decoded[2],
+      name: decoded[3],
     );
   }
 
-  String encode() => '$engine:$namespace:$kind:$name';
+  String encode() =>
+      [engine, namespace, kind, name].map(Uri.encodeComponent).join(':');
 
   @override
   String toString() => encode();
@@ -123,21 +141,23 @@ class MeshRouteId {
   static MeshRouteId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 4) return null;
-    if (parts[0].isEmpty ||
-        parts[1].isEmpty ||
-        parts[2].isEmpty ||
-        parts[3].isEmpty) {
+    final decoded = parts.map(Uri.decodeComponent).toList();
+    if (decoded[0].isEmpty ||
+        decoded[1].isEmpty ||
+        decoded[2].isEmpty ||
+        decoded[3].isEmpty) {
       return null;
     }
     return MeshRouteId(
-      mesh: parts[0],
-      namespace: parts[1],
-      kindCode: parts[2],
-      name: parts[3],
+      mesh: decoded[0],
+      namespace: decoded[1],
+      kindCode: decoded[2],
+      name: decoded[3],
     );
   }
 
-  String encode() => '$mesh:$namespace:$kindCode:$name';
+  String encode() =>
+      [mesh, namespace, kindCode, name].map(Uri.encodeComponent).join(':');
 
   @override
   String toString() => encode();
@@ -154,12 +174,8 @@ class MeshRouteId {
   int get hashCode => Object.hash(mesh, namespace, kindCode, name);
 }
 
-/// URL-encode a composite ID for safe go_router path embedding.
-/// Wraps `Uri.encodeComponent` so callers don't have to import
-/// `dart:core`'s URI helpers directly.
-String encodeIdForPath(String compositeId) =>
-    Uri.encodeComponent(compositeId);
-
-/// Reverse of [encodeIdForPath]. Use on the receiving side of a
-/// go_router `:id` parameter before passing to a `tryParse` method.
-String decodeIdFromPath(String encoded) => Uri.decodeComponent(encoded);
+// go_router path-segment integration: `encode()` already returns a
+// URL-safe string (each segment percent-encoded; `:` separators
+// preserved). Push the result directly into a path segment and call
+// `tryParse` on the receiving side without an additional
+// encode/decode round-trip.

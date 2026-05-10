@@ -41,12 +41,13 @@ void main() {
   });
 
   group('PolicyId', () {
-    test('parses 4-part engine:ns:kind:name', () {
+    test('parses 4-part engine:ns:kind:name and round-trips encode', () {
       final id = PolicyId.tryParse('kyverno:app:Pod:disallow-privileged')!;
       expect(id.engine, 'kyverno');
       expect(id.namespace, 'app');
       expect(id.kind, 'Pod');
       expect(id.name, 'disallow-privileged');
+      expect(id.encode(), 'kyverno:app:Pod:disallow-privileged');
     });
 
     test('accepts empty namespace for cluster-scoped policies', () {
@@ -54,6 +55,7 @@ void main() {
           PolicyId.tryParse('kyverno::ClusterPolicy:disallow-root')!;
       expect(id.namespace, isEmpty);
       expect(id.kind, 'ClusterPolicy');
+      expect(id.encode(), 'kyverno::ClusterPolicy:disallow-root');
     });
 
     test('returns null when engine, kind, or name is empty', () {
@@ -69,12 +71,13 @@ void main() {
   });
 
   group('MeshRouteId', () {
-    test('parses mesh:ns:kindCode:name', () {
+    test('parses mesh:ns:kindCode:name and round-trips encode', () {
       final id = MeshRouteId.tryParse('istio:bookinfo:vs:reviews')!;
       expect(id.mesh, 'istio');
       expect(id.namespace, 'bookinfo');
       expect(id.kindCode, 'vs');
       expect(id.name, 'reviews');
+      expect(id.encode(), 'istio:bookinfo:vs:reviews');
     });
 
     test('returns null on any empty part', () {
@@ -85,25 +88,36 @@ void main() {
     });
   });
 
-  group('encodeIdForPath / decodeIdFromPath', () {
-    test('round-trips a colon-bearing GitOpsId encode through both', () {
+  group('Uri.encodeComponent round-trip (go_router transport)', () {
+    test('GitOpsId encode survives encode/decode round-trip', () {
       final id = GitOpsId(tool: 'argocd', namespace: 'argocd', name: 'my-app');
-      final encoded = encodeIdForPath(id.encode());
-      // Colons are URL-encoded so go_router path segment matching is
-      // safe.
+      final encoded = Uri.encodeComponent(id.encode());
+      // Colons are encoded so go_router segment matching is safe.
       expect(encoded.contains(':'), isFalse);
       expect(encoded, contains('%3A'));
-      final decoded = decodeIdFromPath(encoded);
+      final decoded = Uri.decodeComponent(encoded);
       expect(decoded, id.encode());
       expect(GitOpsId.tryParse(decoded), id);
     });
 
-    test('round-trips a PolicyId with empty namespace', () {
+    test('PolicyId with empty namespace round-trips', () {
       const raw = 'kyverno::ClusterPolicy:disallow-root';
-      final encoded = encodeIdForPath(raw);
-      final decoded = decodeIdFromPath(encoded);
+      final encoded = Uri.encodeComponent(raw);
+      final decoded = Uri.decodeComponent(encoded);
       expect(decoded, raw);
       expect(PolicyId.tryParse(decoded)!.namespace, isEmpty);
+    });
+
+    test('MeshRouteId encode survives round-trip', () {
+      final id = MeshRouteId(
+        mesh: 'istio',
+        namespace: 'bookinfo',
+        kindCode: 'vs',
+        name: 'reviews',
+      );
+      expect(id.encode(), 'istio:bookinfo:vs:reviews');
+      final decoded = Uri.decodeComponent(Uri.encodeComponent(id.encode()));
+      expect(MeshRouteId.tryParse(decoded), id);
     });
   });
 }

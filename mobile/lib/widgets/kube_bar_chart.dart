@@ -1,14 +1,14 @@
 // Single-series bar chart used for log volume histograms (PR-4c) and
 // ESO sync rate panels (PR-4g). Reuses KubeChartSeverity and the
-// shared _severityColor resolver from kube_line_chart.dart to keep
-// the color contract identical across both chart types.
+// shared kubeChartSeverityColor resolver from kube_line_chart.dart so
+// the color contract is identical across both chart types.
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../theme/kube_theme_builder.dart';
-import 'kube_line_chart.dart' show KubeChartSeverity;
+import 'kube_line_chart.dart' show KubeChartSeverity, kubeChartSeverityColor;
 
 /// A single timestamped bar value.
 typedef BarPoint = ({DateTime t, double v});
@@ -82,7 +82,18 @@ class _BarChartBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final points = series.points;
+    // Drop non-finite points (NaN/Infinity from Prometheus rate windows
+    // or stale samples), sort by timestamp, and merge duplicates so the
+    // index-keyed bottom-axis label lookup picks the right bucket.
+    final points = _normalize(series.points);
+    if (points.isEmpty) {
+      return Center(
+        child: Text(
+          'No volume data',
+          style: TextStyle(color: colors.textMuted, fontSize: 13),
+        ),
+      );
+    }
     final minTs = points.map((p) => p.t).reduce((a, b) => a.isBefore(b) ? a : b);
     final maxTs = points.map((p) => p.t).reduce((a, b) => a.isAfter(b) ? a : b);
     final rangeHours = maxTs.difference(minTs).inHours;
@@ -90,7 +101,7 @@ class _BarChartBody extends StatelessWidget {
         ? DateFormat('HH:mm')
         : DateFormat('MM/dd HH:mm');
 
-    final barColor = _resolveColor(series.severity, colors);
+    final barColor = kubeChartSeverityColor(series.severity, colors);
 
     final groups = points.asMap().entries.map((e) {
       return BarChartGroupData(
@@ -166,6 +177,27 @@ class _BarChartBody extends StatelessWidget {
     );
   }
 
+  /// Filters non-finite values, sorts by timestamp, and sums values
+  /// at duplicate timestamps so the histogram shows one bar per
+  /// bucket. Backend merge paths (federated Prometheus, Loki shard
+  /// interleave) can emit duplicates that fl_chart would otherwise
+  /// stack as ambiguous adjacent bars at the same time.
+  List<BarPoint> _normalize(List<BarPoint> raw) {
+    final clean = raw.where((p) => p.v.isFinite).toList()
+      ..sort((a, b) => a.t.compareTo(b.t));
+    if (clean.length <= 1) return clean;
+    final merged = <BarPoint>[];
+    for (final p in clean) {
+      if (merged.isNotEmpty && merged.last.t == p.t) {
+        final prev = merged.removeLast();
+        merged.add((t: prev.t, v: prev.v + p.v));
+      } else {
+        merged.add(p);
+      }
+    }
+    return merged;
+  }
+
   double _barWidth(int count) {
     if (count <= 20) return 8;
     if (count <= 60) return 5;
@@ -178,20 +210,4 @@ class _BarChartBody extends StatelessWidget {
     return v.toStringAsFixed(0);
   }
 
-  Color _resolveColor(KubeChartSeverity severity, KubeColors colors) {
-    switch (severity) {
-      case KubeChartSeverity.primary:
-        return colors.accent;
-      case KubeChartSeverity.success:
-        return colors.success;
-      case KubeChartSeverity.warning:
-        return colors.warning;
-      case KubeChartSeverity.error:
-        return colors.error;
-      case KubeChartSeverity.info:
-        return colors.info;
-      case KubeChartSeverity.muted:
-        return colors.textMuted;
-    }
-  }
 }

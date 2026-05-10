@@ -16,14 +16,13 @@ import '../theme/kube_theme_builder.dart';
 import 'empty_states.dart';
 
 /// A pull-to-refresh list scaffold for any domain-specific
-/// `FutureProvider<List<T>>`. The provider type is expressed as a
-/// `ProviderBase<AsyncValue<List<T>>>` so callers can pass both
-/// non-family providers and the result of calling a family provider
-/// (e.g. `certListProvider(clusterId)`). `ProviderBase` satisfies both
-/// `ProviderListenable` (for `ref.watch`) and `ProviderOrFamily` (for
-/// `ref.invalidate`), so the scaffold can do both without a separate
-/// invalidation callback.
-class DomainListScaffold<T> extends ConsumerWidget {
+/// `AutoDisposeFutureProvider<List<T>>`. The autoDispose-typed bound
+/// is what every M4 domain repository emits (their providers are
+/// keyed on `(clusterId, namespace?)` and tear down on screen exit),
+/// and it gives the scaffold access to `.future` so the
+/// RefreshIndicator can `await` the actual fetch completion instead
+/// of guessing with a fixed delay.
+class DomainListScaffold<T> extends ConsumerStatefulWidget {
   const DomainListScaffold({
     required this.listProvider,
     required this.itemBuilder,
@@ -33,7 +32,10 @@ class DomainListScaffold<T> extends ConsumerWidget {
     super.key,
   });
 
-  final ProviderBase<AsyncValue<List<T>>> listProvider;
+  /// AutoDispose-typed so the scaffold can read `.future` for the
+  /// pull-to-refresh wait. Callers pass either a bare provider or a
+  /// family invocation (`certListProvider(clusterId)`).
+  final AutoDisposeFutureProvider<List<T>> listProvider;
   final Widget Function(BuildContext context, T item) itemBuilder;
 
   /// Text shown in [EmptyState] when the list is empty and
@@ -44,42 +46,71 @@ class DomainListScaffold<T> extends ConsumerWidget {
   /// detected on this cluster (callers pass [FeatureUnavailableState]).
   final Widget? notDetectedFallback;
 
-  /// Custom refresh callback. When null, defaults to
-  /// `ref.invalidate(listProvider)`.
+  /// Custom refresh callback. When null, defaults to invalidating the
+  /// provider and awaiting its `.future` so the spinner stays up
+  /// until data actually arrives (or the call errors).
   final Future<void> Function()? onRefresh;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(listProvider);
+  ConsumerState<DomainListScaffold<T>> createState() =>
+      _DomainListScaffoldState<T>();
+}
 
-    Future<void> doRefresh() async {
-      if (onRefresh != null) {
-        await onRefresh!();
-      } else {
-        ref.invalidate(listProvider);
-        // Give the invalidated provider a tick to start fetching so the
-        // RefreshIndicator doesn't dismiss before data arrives.
-        await Future<void>.delayed(const Duration(milliseconds: 100));
-      }
+class _DomainListScaffoldState<T>
+    extends ConsumerState<DomainListScaffold<T>> {
+  /// In-flight refresh future. Subsequent pulls await this future
+  /// instead of invalidating again, so chained pulls + retry-button
+  /// taps + navigation-away cannot stack three or four invalidations
+  /// against the same provider while one is mid-flight.
+  Future<void>? _inflight;
+
+  Future<void> _doRefresh() {
+    final pending = _inflight;
+    if (pending != null) return pending;
+    final fut = _runRefresh();
+    _inflight = fut;
+    fut.whenComplete(() {
+      if (mounted && identical(_inflight, fut)) _inflight = null;
+    });
+    return fut;
+  }
+
+  Future<void> _runRefresh() async {
+    final onRefresh = widget.onRefresh;
+    if (onRefresh != null) {
+      await onRefresh();
+      return;
     }
+    ref.invalidate(widget.listProvider);
+    try {
+      await ref.read(widget.listProvider.future);
+    } on Object {
+      // Error state surfaces through the .when branch; swallow here
+      // to keep RefreshIndicator from rethrowing.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final async = ref.watch(widget.listProvider);
 
     return RefreshIndicator(
-      onRefresh: doRefresh,
+      onRefresh: _doRefresh,
       child: async.when(
         loading: () => const _ScrollableShell(child: LoadingState()),
         error: (e, _) => _ScrollableShell(
           child: ErrorStateView(
             message: e.toString(),
-            onRetry: () => ref.invalidate(listProvider),
+            onRetry: _doRefresh,
           ),
         ),
         data: (items) {
           if (items.isEmpty) {
             return _ScrollableShell(
-              child: notDetectedFallback ??
+              child: widget.notDetectedFallback ??
                   EmptyState(
-                    title: emptyMessage ?? 'No items found',
+                    title: widget.emptyMessage ?? 'No items found',
                     icon: Icons.inbox_outlined,
                   ),
             );
@@ -92,7 +123,7 @@ class DomainListScaffold<T> extends ConsumerWidget {
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  itemBuilder(context, item),
+                  widget.itemBuilder(context, item),
                   Divider(
                     color: colors.borderSubtle,
                     height: 1,
