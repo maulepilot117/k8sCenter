@@ -1,10 +1,16 @@
 // Detail-screen chrome for any kind. Header (kind icon + name + namespace
-// + status pill) + tabbed body (Overview, YAML, Events).
+// + status pill) + tabbed body (Overview, YAML, Events) plus optional
+// extra tabs supplied by the caller (M4: Metrics, Logs, Diagnose).
 //
 // PR-1d ships YAML as a read-only SelectableText render of the raw
 // resource map (toJson then JsonEncoder.withIndent). Syntax highlighting
 // (code_text_field) lands in PR-1e or M2 to keep this PR's surface area
 // reviewable. Events tab is a stub pending PR-1e's events fetch.
+//
+// `extraTabs` (M4 PR-4a): callers append tabs to the right of Events.
+// Order is operator-meaningful — typical M4 layout is Overview / YAML /
+// Events / Metrics / Logs. The TabBar becomes scrollable when the
+// total tab count exceeds the screen's horizontal capacity.
 
 import 'dart:convert';
 
@@ -18,6 +24,17 @@ import '../features/resources/k8s_helpers.dart';
 import '../theme/kube_theme_builder.dart';
 import 'empty_states.dart';
 import 'yaml_editor_panel.dart';
+
+/// One extra tab entry callers append to the scaffold's default
+/// Overview / YAML / Events triplet. Held as a class (not a record)
+/// so callers can compare instances and so the type is stable across
+/// future field additions.
+class DetailExtraTab {
+  const DetailExtraTab({required this.label, required this.body});
+
+  final String label;
+  final Widget body;
+}
 
 class ResourceDetailScaffold extends StatelessWidget {
   const ResourceDetailScaffold({
@@ -36,6 +53,7 @@ class ResourceDetailScaffold extends StatelessWidget {
     this.trailingAction,
     this.editableYaml = false,
     this.applyKey,
+    this.extraTabs = const <DetailExtraTab>[],
   }) : assert(!editableYaml || applyKey != null,
             'editableYaml requires applyKey for the YAML editor panel');
 
@@ -56,6 +74,7 @@ class ResourceDetailScaffold extends StatelessWidget {
     Widget? trailingAction,
     bool editableYaml = false,
     YamlApplyKey? applyKey,
+    List<DetailExtraTab> extraTabs = const <DetailExtraTab>[],
   }) : this(
           key: key,
           kindLabel: 'Secret',
@@ -71,6 +90,7 @@ class ResourceDetailScaffold extends StatelessWidget {
           trailingAction: trailingAction,
           editableYaml: editableYaml,
           applyKey: applyKey,
+          extraTabs: extraTabs,
         );
 
   final String kindLabel;
@@ -123,11 +143,17 @@ class ResourceDetailScaffold extends StatelessWidget {
   /// [editableYaml] is true.
   final YamlApplyKey? applyKey;
 
+  /// Caller-appended tabs rendered after Events. Empty by default —
+  /// the M1 detail screens render the canonical 3-tab layout. M4
+  /// per-resource Metrics + Logs tabs land here.
+  final List<DetailExtraTab> extraTabs;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
+    final extraCount = extraTabs.length;
     return DefaultTabController(
-      length: 3,
+      length: 3 + extraCount,
       child: Scaffold(
         appBar: AppBar(
           title: Column(
@@ -161,11 +187,17 @@ class ResourceDetailScaffold extends StatelessWidget {
                 ),
               ),
           ],
-          bottom: const TabBar(
+          bottom: TabBar(
+            // Becomes scrollable when extra tabs push the row past
+            // the screen's horizontal capacity. Default 3-tab layout
+            // stays non-scrollable (extraCount == 0).
+            isScrollable: extraCount > 0,
+            tabAlignment: extraCount > 0 ? TabAlignment.start : null,
             tabs: [
-              Tab(text: 'Overview'),
-              Tab(text: 'YAML'),
-              Tab(text: 'Events'),
+              const Tab(text: 'Overview'),
+              const Tab(text: 'YAML'),
+              const Tab(text: 'Events'),
+              for (final t in extraTabs) Tab(text: t.label),
             ],
           ),
         ),
@@ -225,6 +257,7 @@ class ResourceDetailScaffold extends StatelessWidget {
               name: name,
               uid: uid,
             ),
+            for (final t in extraTabs) t.body,
           ],
         ),
       ),
@@ -322,9 +355,13 @@ class _YamlTab extends StatelessWidget {
 }
 
 /// Returns a deep copy of the resource map with sensitive payload fields
-/// redacted. Currently scrubs `data` and `stringData` (Secret + a few
-/// adjacent kinds with similar shapes); preserves metadata, type, and
-/// non-sensitive fields so the operator can still verify the structure.
+/// redacted. Scope: top-level `data` and `stringData` only — designed
+/// for the core/v1 Secret kind. Does not walk into nested maps. Kinds
+/// whose sensitive payload nests deeper (ExternalSecret status, sealed
+/// secrets at `spec.encryptedData`, vault paths under `spec`) need
+/// their own redaction layer; do not reuse `isSensitive: true` for
+/// those without first extending this helper or adding a kind-specific
+/// scrubber.
 Map<String, dynamic> _redactSensitive(Map<String, dynamic> input) {
   final out = <String, dynamic>{};
   for (final entry in input.entries) {
@@ -539,16 +576,21 @@ class EventsTab extends ConsumerWidget {
 
   int _byLastTimestampDesc(
       Map<String, dynamic> a, Map<String, dynamic> b) {
-    final ta = _eventTimestamp(a);
-    final tb = _eventTimestamp(b);
-    return tb.compareTo(ta);
+    return _eventDateTime(b).compareTo(_eventDateTime(a));
   }
 
-  String _eventTimestamp(Map<String, dynamic> e) {
-    return (e['lastTimestamp'] as String?) ??
+  /// Parses the event timestamp to a real `DateTime` so events emitted
+  /// in the same second still sort by sub-second precision. The Event
+  /// v1.events.k8s.io resource carries microsecond precision in
+  /// `eventTime`; the legacy core/v1 `lastTimestamp` is second-precision.
+  /// Lexicographic string compare misorders them when they share a
+  /// second because `Z` (0x5A) > `.` (0x2E).
+  DateTime _eventDateTime(Map<String, dynamic> e) {
+    final raw = (e['lastTimestamp'] as String?) ??
         (e['eventTime'] as String?) ??
-        ((e['metadata'] as Map?)?['creationTimestamp'] as String?) ??
-        '';
+        ((e['metadata'] as Map?)?['creationTimestamp'] as String?);
+    if (raw == null) return DateTime.fromMillisecondsSinceEpoch(0);
+    return DateTime.tryParse(raw) ?? DateTime.fromMillisecondsSinceEpoch(0);
   }
 }
 
