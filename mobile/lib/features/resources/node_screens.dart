@@ -12,6 +12,7 @@ import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
 class _NodeRow {
@@ -157,6 +158,17 @@ class NodeDetailScreen extends ConsumerWidget {
           statusLabel: n.ready ? 'Ready' : 'NotReady',
           statusColor: n.ready ? colors.success : colors.error,
           resource: raw,
+          extraTabs: [
+            DetailExtraTab(
+              label: 'Metrics',
+              body: MetricsTab(
+                clusterId: clusterId,
+                kind: 'nodes',
+                namespace: '',
+                name: n.meta.name,
+              ),
+            ),
+          ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

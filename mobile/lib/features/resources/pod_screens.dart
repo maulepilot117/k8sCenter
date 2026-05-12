@@ -15,6 +15,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
 /// Read-only thin view over the unstructured Pod map.
@@ -244,6 +245,17 @@ class PodDetailScreen extends ConsumerWidget {
             name: pod.meta.name,
             resource: raw,
           ),
+          extraTabs: [
+            DetailExtraTab(
+              label: 'Metrics',
+              body: MetricsTab(
+                clusterId: clusterId,
+                kind: 'pods',
+                namespace: pod.meta.namespace,
+                name: pod.meta.name,
+              ),
+            ),
+          ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
