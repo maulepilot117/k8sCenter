@@ -66,27 +66,65 @@ void main() {
       );
     });
 
-    test('rejects values that would break the Kubernetes name regex '
-        '(PromQL injection defense)', () {
+    test('accepts legitimate names that the backend may still RFC-1123-reject '
+        '(uppercase, underscore) — defers strict validation to backend',
+        () {
+      // Kubelet's --hostname-override historically allowed uppercase and
+      // underscore on on-prem nodes. The client-side guard should not
+      // dead-end such names; backend returns a 400 with a precise error
+      // if the value is actually invalid per RFC 1123.
+      final panel = metricPanelsByKind['nodes']!.first;
+      expect(
+        () => panel.render({'node': 'WORKER_01.corp.local'}),
+        returnsNormally,
+      );
+    });
+
+    test('rejects values containing PromQL-breaking characters', () {
       final panel = metricPanelsByKind['pods']!.first;
-      // The backend's `isValidK8sName` rejects values with quotes,
-      // braces, or whitespace — these are the exact characters an
-      // attacker would use to break out of the PromQL label-value
-      // string. The client-side guard catches them before they hit the
-      // wire.
+      // Double-quote closes the label-value string — direct injection.
+      expect(
+        () => panel.render({'namespace': 'default', 'pod': 'evil"; up'}),
+        throwsArgumentError,
+      );
+      // Backslash escapes the next char — escape-chain injection.
+      expect(
+        () => panel.render({'namespace': 'default', 'pod': 'a\\b'}),
+        throwsArgumentError,
+      );
+      // Dollar — defence-in-depth against double-substitution.
+      expect(
+        () => panel.render({'namespace': 'default', 'pod': 'a\$b'}),
+        throwsArgumentError,
+      );
+      // Newline — breaks the wire format.
+      expect(
+        () => panel.render({'namespace': 'default', 'pod': 'a\nb'}),
+        throwsArgumentError,
+      );
+      // Empty — still rejected (no substitution target).
+      expect(
+        () => panel.render({'namespace': 'default', 'pod': ''}),
+        throwsArgumentError,
+      );
+      // 254-char name — over length cap.
       expect(
         () => panel.render({
           'namespace': 'default',
-          'pod': 'evil"} ; drop_metrics()',
+          'pod': 'a' * 254,
         }),
         throwsArgumentError,
       );
+    });
+
+    test('accepts boundary-valid 253-char name', () {
+      final panel = metricPanelsByKind['pods']!.first;
       expect(
         () => panel.render({
           'namespace': 'default',
-          'pod': '', // empty value
+          'pod': 'a' * 253,
         }),
-        throwsArgumentError,
+        returnsNormally,
       );
     });
   });

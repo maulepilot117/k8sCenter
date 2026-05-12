@@ -85,10 +85,10 @@ class MetricPanel {
       if (value == null || value.isEmpty) {
         throw ArgumentError('Missing variable for panel $id: $v');
       }
-      if (!_isValidK8sName(value)) {
+      if (!_isValidPromQLLabelValue(value)) {
         throw ArgumentError(
           'Invalid value for $v on panel $id: '
-          'must be a valid Kubernetes name',
+          'contains characters that would break the PromQL query',
         );
       }
       q = q.replaceAll('\$$v', value);
@@ -97,17 +97,33 @@ class MetricPanel {
   }
 }
 
-/// Mirrors the backend's `isValidK8sName` so client-side variable
-/// substitution catches injection attempts before they hit the
-/// backend's parser. Lowercase alnum + `-` + `.`, 1..253 chars.
-bool _isValidK8sName(String s) {
+/// Rejects values that would break out of the double-quoted PromQL
+/// label-value string. The strict RFC 1123 subdomain validator is
+/// applied server-side (backend `isValidK8sName`); this client-side
+/// guard exists for defence-in-depth and to fail fast before issuing
+/// the HTTP request — but it must accept any name a Kubernetes
+/// kubelet or controller can register, since legitimate on-prem node
+/// names sometimes contain uppercase or underscores (kubelet's
+/// `--hostname-override` allows them).
+///
+/// Reject only the characters that have semantic meaning inside the
+/// PromQL string context (`"` closes the string, `\` escapes the next
+/// char, `$` triggers another substitution pass in templated query
+/// engines, newline/return/NUL break the wire format) plus the
+/// 253-char Kubernetes name length cap. Anything else is forwarded to
+/// the backend, which applies the strict RFC 1123 check and returns a
+/// 400 with a precise error string for the operator to act on.
+bool _isValidPromQLLabelValue(String s) {
   if (s.isEmpty || s.length > 253) return false;
   for (final cu in s.codeUnits) {
-    final isLower = cu >= 0x61 && cu <= 0x7A;
-    final isDigit = cu >= 0x30 && cu <= 0x39;
-    final isDash = cu == 0x2D;
-    final isDot = cu == 0x2E;
-    if (!(isLower || isDigit || isDash || isDot)) return false;
+    // 0x00 NUL, 0x0A LF, 0x0D CR — control chars that break the wire
+    // format or Prometheus tokenizer.
+    if (cu == 0x00 || cu == 0x0A || cu == 0x0D) return false;
+    // 0x22 " — closes the surrounding label-value string.
+    // 0x5C \ — escape character.
+    // 0x24 $ — variable expansion marker; defence-in-depth, since the
+    //          template engine has already substituted at this point.
+    if (cu == 0x22 || cu == 0x5C || cu == 0x24) return false;
   }
   return true;
 }

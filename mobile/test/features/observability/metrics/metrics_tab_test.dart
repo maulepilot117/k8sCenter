@@ -128,6 +128,11 @@ void main() {
       // the remaining two live below the fold (ListView.builder lazy).
       expect(find.text('CPU usage per container'), findsOneWidget);
       expect(find.text('Memory working set per container'), findsOneWidget);
+      // The empty-vector mock should route each panel through the
+      // _renderResult `result.isEmpty` branch, surfacing the "No data"
+      // banner. Without this assertion the empty-state copy could
+      // regress silently when _renderResult is refactored.
+      expect(find.text('No data for this time range'), findsWidgets);
     });
 
     testWidgets('kind with no panels renders the "no curated metrics" state',

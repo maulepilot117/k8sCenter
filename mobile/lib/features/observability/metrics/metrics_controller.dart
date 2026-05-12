@@ -147,9 +147,16 @@ class MetricsController
     // initial state before `_writePanel` reads it back. Without this
     // yield, the first await in `_fetchAll` can land before `state` is
     // observable, and the per-panel writes silently drop.
+    //
+    // Capture the dispatch id eagerly so a same-tick `setRange()` or
+    // `refresh()` call (which bumps `_dispatchId` via `supersede`)
+    // invalidates this build's fetch before it launches — without
+    // this guard, the initial 1h range fetch could still produce the
+    // winning result for a user-selected 24h range.
+    final captured = captureDispatchId();
     scheduleMicrotask(() {
-      if (isDisposed) return;
-      unawaited(_fetchAll(panels, initialRange));
+      if (isDisposed || !isFresh(captured)) return;
+      unawaited(_fetchAll(panels, initialRange, capturedOverride: captured));
     });
     return MetricsState(range: initialRange, panels: initialStatuses);
   }
@@ -184,10 +191,11 @@ class MetricsController
 
   Future<void> _fetchAll(
     List<MetricPanel> panels,
-    ({DateTime start, DateTime end, MetricsPreset preset}) range,
-  ) async {
+    ({DateTime start, DateTime end, MetricsPreset preset}) range, {
+    int? capturedOverride,
+  }) async {
     if (panels.isEmpty) return;
-    final captured = captureDispatchId();
+    final captured = capturedOverride ?? captureDispatchId();
     final repo = ref.read(monitoringRepositoryProvider);
     final rangeSec =
         range.end.difference(range.start).inSeconds.clamp(1, 365 * 24 * 3600);
@@ -269,8 +277,9 @@ class MetricsController
   }
 
   void _writePanel(String panelId, PanelStatus status, int captured) {
+    // `isFresh` already short-circuits when `_disposed` is true, so a
+    // separate `isDisposed` check would be dead code.
     if (!isFresh(captured)) return;
-    if (isDisposed) return;
     final current = state;
     final next = Map<String, PanelStatus>.from(current.panels);
     next[panelId] = status;

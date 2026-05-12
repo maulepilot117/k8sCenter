@@ -90,7 +90,7 @@ class _MetricsBody extends ConsumerWidget {
             ),
           ),
           const SizedBox(height: 12),
-          ...metricPanelsByKind[target.kind]!.map((panel) {
+          ...(metricPanelsByKind[target.kind] ?? const <MetricPanel>[]).map((panel) {
             final status =
                 state.panels[panel.id] ?? const PanelLoading();
             return _PanelCard(panel: panel, status: status);
@@ -186,21 +186,19 @@ class _PanelBody extends StatelessWidget {
             ),
           ),
         ),
-      PanelLoaded(:final result) => _renderResult(result),
+      PanelLoaded(:final result) => _renderResult(context, result),
     };
   }
 
-  Widget _renderResult(QueryRangeResult result) {
+  Widget _renderResult(BuildContext context, QueryRangeResult result) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
     if (result.isEmpty) {
-      return Builder(builder: (context) {
-        final colors = Theme.of(context).extension<KubeColors>()!;
-        return Center(
-          child: Text(
-            'No data for this time range',
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-          ),
-        );
-      });
+      return Center(
+        child: Text(
+          'No data for this time range',
+          style: TextStyle(color: colors.textMuted, fontSize: 12),
+        ),
+      );
     }
     final severity = _toChartSeverity(panel.severity);
     final series = result.series.map((s) {
@@ -211,11 +209,25 @@ class _PanelBody extends StatelessWidget {
         severity: severity,
       );
     }).toList();
-    return KubeLineChart(
+    final chart = KubeLineChart(
       series: series,
       showLegend: result.series.length > 1,
-      // Title is rendered by the card chrome; chart-level title would
-      // duplicate it.
+    );
+    if (result.warnings.isEmpty) return chart;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            result.warnings.length == 1
+                ? result.warnings.first
+                : '${result.warnings.length} warnings: ${result.warnings.first}',
+            style: TextStyle(color: colors.warning, fontSize: 10),
+          ),
+        ),
+        Expanded(child: chart),
+      ],
     );
   }
 

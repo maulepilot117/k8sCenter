@@ -150,6 +150,34 @@ void main() {
       expect(s.prometheusAvailable, isTrue);
       expect(s.grafanaAvailable, isFalse);
     });
+
+    test('prometheus: null in status response → prometheusAvailable: false',
+        () async {
+      // A discoverer that explicitly emits `prometheus: null` (vs.
+      // absent) must not coerce to "available". The `prom is Map`
+      // check defends this; locking it down with a test prevents a
+      // future refactor from regressing the null case.
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/monitoring/status',
+        body: {
+          'data': {
+            'detected': true,
+            'prometheus': null,
+            'grafana': {'available': false},
+          },
+        },
+      );
+
+      final s = await container
+          .read(monitoringRepositoryProvider)
+          .status();
+      expect(s.detected, isTrue);
+      expect(s.prometheusAvailable, isFalse);
+    });
   });
 
   group('MonitoringRepository.queryRange', () {

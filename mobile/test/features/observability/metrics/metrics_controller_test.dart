@@ -300,5 +300,60 @@ void main() {
         isEmpty,
       );
     });
+
+    test('refresh() re-fires panel fetches after a previous failure', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      // First batch fails with 502 for every panel.
+      for (var i = 0; i < 4; i++) {
+        mock.on(
+          'GET',
+          '/api/v1/monitoring/query_range',
+          (_) => _json({
+            'error': {'code': 502, 'message': 'Prometheus query failed'},
+          }, status: 502),
+        );
+      }
+      // Second batch (after refresh) returns success.
+      for (var i = 0; i < 4; i++) {
+        mock.on(
+          'GET',
+          '/api/v1/monitoring/query_range',
+          (_) => _matrix([
+            {
+              'metric': {'container': 'web'},
+              'values': [
+                [1700000000.0, '0.5'],
+              ],
+            },
+          ]),
+        );
+      }
+
+      final target = const MetricsTarget(
+        clusterId: 'local',
+        kind: 'pods',
+        namespace: 'default',
+        name: 'web-pod',
+      );
+      final sub = container.listen(
+        metricsControllerProvider(target),
+        (_, _) {},
+      );
+      addTearDown(sub.close);
+      sub.read();
+      await _pumpAsync(container);
+      // First batch landed as PanelFailed.
+      expect(sub.read().panels.values, everyElement(isA<PanelFailed>()));
+
+      // refresh() supersedes and re-fires.
+      await container
+          .read(metricsControllerProvider(target).notifier)
+          .refresh();
+      await _pumpAsync(container);
+      // Second batch lands as PanelLoaded.
+      expect(sub.read().panels.values, everyElement(isA<PanelLoaded>()));
+    });
   });
 }

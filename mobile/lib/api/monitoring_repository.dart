@@ -238,8 +238,15 @@ class MonitoringRepository {
       return MonitoringStatus.empty;
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
-      // Treat 503 as a definitive "not configured" signal.
-      if (e.response?.statusCode == 503) {
+      // Treat any 5xx as "monitoring not reachable" — operators on a
+      // flaky reverse-proxy shouldn't see a noisy error card when the
+      // feature-unavailable state is more actionable. Backend
+      // distinguishes "Prometheus down" (503 with message) from
+      // "Prometheus errored on a specific query" (502 from
+      // /query_range), and only the latter is operator-actionable;
+      // the status endpoint is purely a probe.
+      final code = e.response?.statusCode ?? 0;
+      if (code >= 500 && code < 600) {
         return MonitoringStatus.empty;
       }
       final err = e.error;
@@ -269,9 +276,12 @@ class MonitoringRepository {
           'end': end.toUtc().toIso8601String(),
           'step': step,
         },
-        options: clusterIdOverride == null
-            ? null
-            : Options(headers: {'X-Cluster-ID': clusterIdOverride}),
+        options: Options(
+          receiveTimeout: const Duration(seconds: 30),
+          headers: clusterIdOverride == null
+              ? null
+              : {'X-Cluster-ID': clusterIdOverride},
+        ),
         cancelToken: cancelToken,
       );
       final data = res.data?['data'];
@@ -325,9 +335,7 @@ final monitoringStatusProvider = FutureProvider.autoDispose
           cancelToken: cancel,
         );
   } on DioException catch (e) {
-    if (CancelToken.isCancel(e)) {
-      return Completer<MonitoringStatus>().future;
-    }
+    if (CancelToken.isCancel(e)) rethrow;
     rethrow;
   }
 });
