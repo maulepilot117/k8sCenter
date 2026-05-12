@@ -14,6 +14,8 @@ import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
+import '../features/observability/diagnostics/diagnostics_screen.dart';
+import '../features/observability/diagnostics/namespace_summary_screen.dart';
 import '../features/observability/logs/log_search_screen.dart';
 import '../features/observability/logs/log_tail_screen.dart';
 import '../notifications/deep_link_handler.dart';
@@ -93,6 +95,33 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             initialNamespace: ns == null || ns.isEmpty ? null : ns,
           );
         },
+      ),
+
+      // --- M4 PR-4d: diagnostics blast-radius surface ---
+      // Per-resource diagnostics: `/clusters/<id>/diagnostics/<ns>/<kind>/<name>`.
+      // `<kind>` is the canonical Kubernetes Kind ("Pod", "Deployment", ...)
+      // so the URL matches the backend's `/v1/diagnostics/{ns}/{kind}/{name}`
+      // path param shape exactly.
+      //
+      // Namespace summary lives one segment up at
+      // `/clusters/<id>/diagnostics/<ns>/summary`. The `summary` literal
+      // collides with a kind named "summary" in theory, but Kubernetes
+      // Kind names are PascalCase identifiers — so "summary" cannot exist
+      // as a real kind. The literal-route is matched before the
+      // parametrised one because go_router prefers more specific paths.
+      GoRoute(
+        path: '/clusters/:clusterId/diagnostics/:namespace/summary',
+        builder: (context, state) => NamespaceSummaryScreen(
+          namespace: state.pathParameters['namespace']!,
+        ),
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/diagnostics/:namespace/:kind/:name',
+        builder: (context, state) => DiagnosticsScreen(
+          namespace: state.pathParameters['namespace']!,
+          kind: state.pathParameters['kind']!,
+          name: state.pathParameters['name']!,
+        ),
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---
