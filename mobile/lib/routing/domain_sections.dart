@@ -11,6 +11,7 @@ class DomainKind {
     required this.label,
     required this.icon,
     this.namespaced = true,
+    this.customListPath,
   });
 
   /// URL path segment that maps to the backend's `kind` route param.
@@ -22,6 +23,16 @@ class DomainKind {
   /// to choose between `/clusters/<id>/<section>/<kind>/<ns>/<name>` and
   /// the cluster-scoped `/<kind>/<name>` shape.
   final bool namespaced;
+
+  /// Optional override for the drawer's list-route navigation. Use the
+  /// `{clusterId}` placeholder where the active cluster id should be
+  /// substituted at navigation time. Entries that aren't resource kinds
+  /// (Log search, Observability dashboards) use this so the section
+  /// loop in the drawer doesn't have to special-case them.
+  ///
+  /// Resource kinds leave this null and the drawer falls back to
+  /// `/clusters/<id>/<sectionPath>/<kind>`.
+  final String? customListPath;
 }
 
 class DomainSection {
@@ -134,7 +145,34 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // Observability surfaces — log search (PR-4c) and (future) policy /
+  // mesh / cert-manager dashboards. These aren't resource kinds (no
+  // /v1/resources/ endpoint backs them) so they wire through the
+  // customListPath escape hatch rather than the kind/namespace
+  // detail-route construction in `kindDetailPath`.
+  DomainSection(
+    label: 'Observability',
+    pathSegment: 'observability',
+    icon: Icons.insights_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'logs',
+        label: 'Log search',
+        icon: Icons.text_snippet_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/logs',
+      ),
+    ],
+  ),
 ];
+
+/// Substitutes `{clusterId}` (and any future placeholder) in a
+/// [DomainKind.customListPath] template against the active cluster id.
+/// Pulled out as a top-level so the drawer + any future deep-link
+/// builder share one helper.
+String resolveCustomListPath(String template, {required String clusterId}) {
+  return template.replaceAll('{clusterId}', clusterId);
+}
 
 /// Lookup the section that owns a given kind. Used by `kindDetailPath`
 /// so detail-route construction stays in one place rather than each

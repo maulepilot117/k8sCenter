@@ -90,9 +90,13 @@ class DomainNavigationDrawer extends ConsumerWidget {
                 dense: true,
                 onTap: () {
                   Navigator.of(context).pop();
-                  context.go(
-                    '/clusters/$clusterId/${section.pathSegment}/${kind.kind}',
-                  );
+                  final target = kind.customListPath != null
+                      ? resolveCustomListPath(
+                          kind.customListPath!,
+                          clusterId: clusterId,
+                        )
+                      : '/clusters/$clusterId/${section.pathSegment}/${kind.kind}';
+                  context.go(target);
                 },
               ),
           ],
