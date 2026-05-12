@@ -15,6 +15,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
 class _PvcRow {
@@ -159,6 +160,17 @@ class PvcDetailScreen extends ConsumerWidget {
             name: p.meta.name,
             resource: raw,
           ),
+          extraTabs: [
+            DetailExtraTab(
+              label: 'Metrics',
+              body: MetricsTab(
+                clusterId: clusterId,
+                kind: 'persistentvolumeclaims',
+                namespace: p.meta.namespace,
+                name: p.meta.name,
+              ),
+            ),
+          ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

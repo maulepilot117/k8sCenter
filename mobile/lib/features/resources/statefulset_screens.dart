@@ -15,6 +15,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
 class _StatefulSetRow {
@@ -141,6 +142,17 @@ class StatefulSetDetailScreen extends ConsumerWidget {
             name: s.meta.name,
             resource: raw,
           ),
+          extraTabs: [
+            DetailExtraTab(
+              label: 'Metrics',
+              body: MetricsTab(
+                clusterId: clusterId,
+                kind: 'statefulsets',
+                namespace: s.meta.namespace,
+                name: s.meta.name,
+              ),
+            ),
+          ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

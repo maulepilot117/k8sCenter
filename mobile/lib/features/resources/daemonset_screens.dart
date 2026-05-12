@@ -16,6 +16,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
 class _DaemonSetRow {
@@ -153,6 +154,17 @@ class DaemonSetDetailScreen extends ConsumerWidget {
             name: d.meta.name,
             resource: raw,
           ),
+          extraTabs: [
+            DetailExtraTab(
+              label: 'Metrics',
+              body: MetricsTab(
+                clusterId: clusterId,
+                kind: 'daemonsets',
+                namespace: d.meta.namespace,
+                name: d.meta.name,
+              ),
+            ),
+          ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
