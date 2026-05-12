@@ -14,6 +14,7 @@ import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
+import '../features/observability/logs/log_search_screen.dart';
 import '../features/observability/logs/log_tail_screen.dart';
 import '../notifications/deep_link_handler.dart';
 import '../notifications/fcm_registration.dart';
@@ -78,6 +79,20 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           pod: state.pathParameters['name']!,
           container: state.pathParameters['container']!,
         ),
+      ),
+
+      // --- M4 PR-4c: top-level LogQL editor (multi-pod ad-hoc search).
+      // Separate from the M1 single-pod live tail above so neither
+      // surface has to compromise on UX. `?namespace=` query param
+      // seeds the filter bar for deep links from notifications.
+      GoRoute(
+        path: '/clusters/:clusterId/logs',
+        builder: (context, state) {
+          final ns = state.uri.queryParameters['namespace'];
+          return LogSearchScreen(
+            initialNamespace: ns == null || ns.isEmpty ? null : ns,
+          );
+        },
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---
