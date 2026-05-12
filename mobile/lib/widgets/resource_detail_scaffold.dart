@@ -16,7 +16,9 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../api/diagnostics_repository.dart' show kDiagnosticsKinds;
 import '../api/resource_repository.dart';
 import '../api/yaml_apply_controller.dart';
 import '../cluster/cluster_provider.dart';
@@ -36,7 +38,7 @@ class DetailExtraTab {
   final Widget body;
 }
 
-class ResourceDetailScaffold extends StatelessWidget {
+class ResourceDetailScaffold extends ConsumerWidget {
   const ResourceDetailScaffold({
     super.key,
     required this.kindLabel,
@@ -149,9 +151,17 @@ class ResourceDetailScaffold extends StatelessWidget {
   final List<DetailExtraTab> extraTabs;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final extraCount = extraTabs.length;
+    // M4 PR-4d: surface a Diagnose entry point on supported workload
+    // kinds. Gated on the canonical Kind set the backend's diagnostics
+    // pipeline accepts — taps on unsupported kinds would 400, so the
+    // button simply hides instead. Cluster-scoped or non-namespaced
+    // resources never get the button (the route requires `:namespace`).
+    final canDiagnose = namespace != null &&
+        namespace!.isNotEmpty &&
+        kDiagnosticsKinds.contains(kindLabel);
     return DefaultTabController(
       length: 3 + extraCount,
       child: Scaffold(
@@ -175,6 +185,17 @@ class ResourceDetailScaffold extends StatelessWidget {
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           actions: [
+            if (canDiagnose)
+              IconButton(
+                icon: const Icon(Icons.medical_services_outlined),
+                tooltip: 'Diagnose',
+                onPressed: () {
+                  final clusterId = ref.read(activeClusterProvider);
+                  context.push(
+                    '/clusters/$clusterId/diagnostics/$namespace/$kindLabel/$name',
+                  );
+                },
+              ),
             ?trailingAction,
             if (statusLabel != null)
               Padding(
