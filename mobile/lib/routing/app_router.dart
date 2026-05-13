@@ -18,6 +18,10 @@ import '../features/gitops/application_detail_screen.dart';
 import '../features/gitops/applications_list_screen.dart';
 import '../features/gitops/applicationset_detail_screen.dart';
 import '../features/gitops/applicationsets_list_screen.dart';
+import '../features/mesh/mesh_dashboard_screen.dart';
+import '../features/mesh/mtls_posture_screen.dart';
+import '../features/mesh/route_detail_screen.dart';
+import '../features/mesh/routing_list_screen.dart';
 import '../features/observability/diagnostics/diagnostics_screen.dart';
 import '../features/observability/diagnostics/namespace_summary_screen.dart';
 import '../features/observability/logs/log_search_screen.dart';
@@ -159,6 +163,50 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: ':id',
             builder: (context, state) => ApplicationSetDetailScreen(
               id: state.pathParameters['id']!,
+            ),
+          ),
+        ],
+      ),
+
+      // --- M4 PR-4f: service-mesh surfaces (Istio + Linkerd) ---
+      // /clusters/<id>/mesh                       → dashboard
+      // /clusters/<id>/mesh/routing[?mesh=istio]  → routing list
+      // /clusters/<id>/mesh/routing/<encoded-id>  → route detail
+      // /clusters/<id>/mesh/mtls[?namespace=]     → mTLS posture
+      //
+      // Composite ids on routing detail follow the
+      // `mesh:namespace:kindCode:name` shape; the route param carries
+      // one layer of percent encoding. The detail screen parses via
+      // [MeshRouteId.tryParse] and emits a validation error screen on
+      // malformed input rather than 500-ing.
+      //
+      // Status-gating is screen-level (each surface checks
+      // `meshStatusProvider` and falls back to
+      // `FeatureUnavailableState.mesh()`) rather than at the router so
+      // the drawer entries stay visible and operators get the
+      // install-guidance UX consistently.
+      GoRoute(
+        path: '/clusters/:clusterId/mesh',
+        builder: (context, state) => const MeshDashboardScreen(),
+        routes: [
+          GoRoute(
+            path: 'routing',
+            builder: (context, state) => MeshRoutingListScreen(
+              initialMesh: state.uri.queryParameters['mesh'],
+            ),
+            routes: [
+              GoRoute(
+                path: ':id',
+                builder: (context, state) => MeshRouteDetailScreen(
+                  id: state.pathParameters['id']!,
+                ),
+              ),
+            ],
+          ),
+          GoRoute(
+            path: 'mtls',
+            builder: (context, state) => MeshMtlsPostureScreen(
+              initialNamespace: state.uri.queryParameters['namespace'],
             ),
           ),
         ],
