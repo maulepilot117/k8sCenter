@@ -261,11 +261,179 @@ void main() {
     await _pump(tester, mock);
 
     await tester.tap(find.widgetWithText(TextButton, 'Renew'));
-    await tester.pumpAndSettle();
+    // Use pump with duration rather than pumpAndSettle: the confirm sheet
+    // has autofocus=true which can cause pumpAndSettle to spin indefinitely.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     // The confirm sheet renders its own "Renew" button — searching for
     // the sheet's title is the stable signal across confirm-sheet UX
     // variants.
     expect(find.textContaining('Renew certificate'), findsOneWidget);
+  });
+
+  // F6 — Renew confirm and dispatch path
+  testWidgets('Renew confirms and dispatches POST', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson(
+        'GET',
+        '/api/v1/certificates/certificates/app/web-tls',
+        body: _readyDetail(),
+      )
+      ..onJson(
+        'POST',
+        '/api/v1/certificates/certificates/app/web-tls/renew',
+        status: 202,
+        body: {'data': {'status': 'renewing'}},
+      );
+    _stubCommon(mock);
+
+    await _pump(tester, mock);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Renew'));
+    // Use pump with a duration rather than pumpAndSettle: the confirm sheet
+    // has autofocus=true which can cause pumpAndSettle to spin indefinitely.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.textContaining('Renew certificate'), findsOneWidget);
+
+    // Tap the sheet's FilledButton confirm button.
+    await tester.tap(find.widgetWithText(FilledButton, 'Renew'));
+    // Pump to process the action; advance past the 1500ms auto-clear timer.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final renewRequests = mock.requests.where(
+      (r) =>
+          r.path == '/api/v1/certificates/certificates/app/web-tls/renew' &&
+          r.method == 'POST',
+    );
+    expect(renewRequests, isNotEmpty);
+
+    // The action toast should appear before auto-clear.
+    expect(find.textContaining('Renewal triggered'), findsOneWidget);
+
+    // Advance past the 1500ms timer so the toast clears.
+    await tester.pump(const Duration(milliseconds: 1600));
+  });
+
+  testWidgets('Renew 403 error surfaces the error message', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson(
+        'GET',
+        '/api/v1/certificates/certificates/app/web-tls',
+        body: _readyDetail(),
+      )
+      ..onJson(
+        'POST',
+        '/api/v1/certificates/certificates/app/web-tls/renew',
+        status: 403,
+        body: {'error': {'code': 403, 'message': 'access denied'}},
+      );
+    _stubCommon(mock);
+
+    await _pump(tester, mock);
+
+    await tester.tap(find.widgetWithText(TextButton, 'Renew'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Renew'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.textContaining('access denied'), findsOneWidget);
+  });
+
+  // F5 — Reissue type-to-confirm gate and dispatch
+  testWidgets(
+      'Reissue confirm sheet: type-to-confirm gates dispatch, success path POSTs reissue',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson(
+        'GET',
+        '/api/v1/certificates/certificates/app/web-tls',
+        body: _readyDetail(),
+      )
+      ..onJson(
+        'POST',
+        '/api/v1/certificates/certificates/app/web-tls/reissue',
+        status: 202,
+        body: {'data': {'status': 'reissuing'}},
+      );
+    _stubCommon(mock);
+
+    await _pump(tester, mock);
+
+    // Tap Re-issue button.
+    await tester.tap(find.widgetWithText(TextButton, 'Re-issue'));
+    // Use pump with duration rather than pumpAndSettle to avoid infinite
+    // spin from autofocus TextField in the confirm sheet.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // Confirm sheet title should be visible.
+    expect(find.textContaining('Re-issue certificate'), findsOneWidget);
+
+    // The secret name from _readyDetail should appear in the sheet message
+    // (the confirm sheet shows it in both the message text and the
+    // type-to-confirm hint field, so use findsWidgets).
+    expect(find.textContaining('web-tls-secret'), findsWidgets);
+
+    // Type-to-confirm: enter wrong name — FilledButton confirm button stays
+    // disabled when text does not match.
+    final textField = find.byType(TextField);
+    expect(textField, findsOneWidget);
+    await tester.enterText(textField, 'wrong-name');
+    await tester.pump();
+
+    // Verify the FilledButton is disabled (onPressed is null) when the text
+    // does not match the required value.
+    final confirmBtnDisabled = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Re-issue'),
+    );
+    expect(confirmBtnDisabled.onPressed, isNull,
+        reason: 'Confirm button should be disabled when text does not match');
+
+    // No reissue POST should have been dispatched.
+    final dispatchedBeforeCorrect = mock.requests.where(
+      (r) =>
+          r.path ==
+              '/api/v1/certificates/certificates/app/web-tls/reissue' &&
+          r.method == 'POST',
+    );
+    expect(dispatchedBeforeCorrect, isEmpty);
+
+    // Now type the correct cert name.
+    await tester.enterText(textField, 'web-tls');
+    await tester.pump();
+
+    // Confirm button should now be enabled.
+    final confirmBtnEnabled = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Re-issue'),
+    );
+    expect(confirmBtnEnabled.onPressed, isNotNull,
+        reason: 'Confirm button should be enabled when text matches');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Re-issue'));
+    // Pump to process the action; advance past the 1500ms auto-clear timer.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // POST should now be dispatched.
+    final reissueRequests = mock.requests.where(
+      (r) =>
+          r.path ==
+              '/api/v1/certificates/certificates/app/web-tls/reissue' &&
+          r.method == 'POST',
+    );
+    expect(reissueRequests, isNotEmpty);
+
+    // Success toast should appear.
+    expect(find.textContaining('Re-issue triggered'), findsOneWidget);
+
+    // Advance past the 1500ms timer so the toast clears.
+    await tester.pump(const Duration(milliseconds: 1600));
   });
 }
