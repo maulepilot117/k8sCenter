@@ -86,10 +86,17 @@ class _ConfirmSheetState extends State<ConfirmSheet> {
   /// zero-width characters that arrive via clipboard pastes from rich-text
   /// surfaces (Slack, browser, mail clients). Without this, a paste that
   /// looks identical to the operator silently fails the equality check.
+  ///
+  /// The regex uses `\uXXXX` escape sequences rather than embedded literal
+  /// zero-width characters because some editors and CI tools (Unicode-
+  /// normalizing dart format passes, certain git filters, paste-through-
+  /// markdown rendering) silently strip the literal codepoints from the
+  /// source, collapsing the regex to an empty character class and breaking
+  /// normalization invisibly. Escapes survive every text transform.
   static String _normalize(String s) {
     final trimmed = s.trim();
     // U+200B ZWSP, U+200C ZWNJ, U+200D ZWJ, U+FEFF BOM.
-    return trimmed.replaceAll(RegExp(r'[​-‍﻿]'), '');
+    return trimmed.replaceAll(RegExp('[\\u200B-\\u200D\\uFEFF]'), '');
   }
 
   @override
@@ -166,6 +173,12 @@ class _ConfirmSheetState extends State<ConfirmSheet> {
                   autocorrect: false,
                   enableSuggestions: false,
                   textCapitalization: TextCapitalization.none,
+                  // Opt out of contextual autofill so a password manager
+                  // that indexed the resource name (e.g. as "username") cannot
+                  // one-tap satisfy the destructive-verb friction gate. The
+                  // gate exists to force operator-conscious confirmation;
+                  // autofill defeats that.
+                  autofillHints: const <String>[],
                   style: TextStyle(
                     fontFamily: 'monospace',
                     color: colors.textPrimary,

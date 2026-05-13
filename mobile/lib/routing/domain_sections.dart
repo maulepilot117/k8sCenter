@@ -226,6 +226,41 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // Cert-manager observatory (PR-4g). Three entries:
+  //   * Certificates — full list with filter chips (All / Expiring /
+  //     Failed) + search. `?status=expiring` URL param pre-filters.
+  //   * Issuers — combined namespaced + cluster Issuers.
+  //   * Expiring — backend-sorted summary list of certs nearing expiry.
+  // All three surfaces gate on `certManagerStatusProvider` and fall
+  // back to `FeatureUnavailableState.certManager()` when not installed.
+  DomainSection(
+    label: 'Certificates',
+    pathSegment: 'certificates',
+    icon: Icons.verified_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'certificates',
+        label: 'Certificates',
+        icon: Icons.verified_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/certificates/certificates',
+      ),
+      DomainKind(
+        kind: 'issuers',
+        label: 'Issuers',
+        icon: Icons.assignment_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/certificates/issuers',
+      ),
+      DomainKind(
+        kind: 'expiring',
+        label: 'Expiring',
+        icon: Icons.timer_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/certificates/expiring',
+      ),
+    ],
+  ),
 ];
 
 /// Substitutes `{clusterId}` (and any future placeholder) in a
