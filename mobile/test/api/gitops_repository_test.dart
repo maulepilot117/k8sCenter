@@ -209,8 +209,8 @@ void main() {
         }, status: 500),
       );
 
-      expect(
-        () => container.read(gitOpsRepositoryProvider).listApplications(),
+      await expectLater(
+        container.read(gitOpsRepositoryProvider).listApplications(),
         throwsA(isA<ApiError>()),
       );
     });
@@ -304,6 +304,26 @@ void main() {
     });
   });
 
+  group('GitOpsRepository.status 4xx rethrow', () {
+    test('401 from status endpoint surfaces as ApiError', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/gitops/status',
+        (_) => _json({
+          'error': {'code': 401, 'message': 'unauthorized'},
+        }, status: 401),
+      );
+
+      await expectLater(
+        container.read(gitOpsRepositoryProvider).status(),
+        throwsA(isA<ApiError>()),
+      );
+    });
+  });
+
   group('GitOpsRepository.listApplicationSets', () {
     test('parses normalized appsets from camelCase envelope key', () async {
       final (:container, :mock) = _make();
@@ -361,6 +381,26 @@ void main() {
           .read(gitOpsRepositoryProvider)
           .listApplicationSets();
       expect(sets, isEmpty);
+    });
+  });
+
+  group('GitOpsRepository.listApplicationSets errors', () {
+    test('5xx surfaces as ApiError', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/gitops/applicationsets',
+        (_) => _json({
+          'error': {'code': 503, 'message': 'service unavailable'},
+        }, status: 503),
+      );
+
+      await expectLater(
+        container.read(gitOpsRepositoryProvider).listApplicationSets(),
+        throwsA(isA<ApiError>()),
+      );
     });
   });
 
@@ -426,6 +466,55 @@ void main() {
       expect(detail.conditions.single.isError, isFalse);
       expect(detail.applications, hasLength(1));
       expect(detail.applications.single.id, 'argo:argocd:child-app');
+    });
+
+    test('5xx response surfaces as ApiError', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/gitops/applicationsets/argo-as%3Aargocd%3Amy-set',
+        (_) => _json({
+          'error': {'code': 500, 'message': 'internal error'},
+        }, status: 500),
+      );
+
+      await expectLater(
+        container
+            .read(gitOpsRepositoryProvider)
+            .getApplicationSet(id: 'argo-as:argocd:my-set'),
+        throwsA(isA<ApiError>()),
+      );
+    });
+  });
+
+  group('AppSetCondition.isError', () {
+    test('true when status is True and type contains error', () {
+      const c = AppSetCondition(
+        type: 'ErrorOccurred',
+        status: 'True',
+        message: 'git repo not found',
+        reason: 'GitRepoNotFound',
+      );
+      expect(c.isError, isTrue);
+    });
+
+    test('false when status is False even if type contains error', () {
+      const c = AppSetCondition(
+        type: 'ErrorOccurred',
+        status: 'False',
+        reason: 'NoErrors',
+      );
+      expect(c.isError, isFalse);
+    });
+
+    test('false when type does not contain error', () {
+      const c = AppSetCondition(
+        type: 'ResourcesUpToDate',
+        status: 'True',
+      );
+      expect(c.isError, isFalse);
     });
   });
 

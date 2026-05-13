@@ -165,5 +165,75 @@ void main() {
       expect(find.text('my-argo-app'), findsOneWidget);
       expect(find.text('my-flux-app'), findsNothing);
     });
+
+    testWidgets('sync filter Synced chip shows only synced apps',
+        (tester) async {
+      final mock = MockDioAdapter()
+        ..onJson('GET', '/api/v1/gitops/status', body: _statusInstalled())
+        ..onJson('GET', '/api/v1/gitops/applications', body: _twoApps());
+
+      await _pumpList(tester, mock);
+
+      final syncedChip = find.widgetWithText(ChoiceChip, 'Synced');
+      expect(syncedChip, findsOneWidget);
+      await tester.tap(syncedChip);
+      await tester.pumpAndSettle();
+
+      // my-argo-app is synced; my-flux-app is outofsync.
+      expect(find.text('my-argo-app'), findsOneWidget);
+      expect(find.text('my-flux-app'), findsNothing);
+    });
+
+    testWidgets('sync filter OutOfSync chip shows only outofsync apps',
+        (tester) async {
+      final mock = MockDioAdapter()
+        ..onJson('GET', '/api/v1/gitops/status', body: _statusInstalled())
+        ..onJson('GET', '/api/v1/gitops/applications', body: _twoApps());
+
+      await _pumpList(tester, mock);
+
+      final chip = find.widgetWithText(ChoiceChip, 'Out of Sync');
+      expect(chip, findsOneWidget);
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+
+      expect(find.text('my-argo-app'), findsNothing);
+      expect(find.text('my-flux-app'), findsOneWidget);
+    });
+
+    testWidgets('health filter Healthy chip shows only healthy apps',
+        (tester) async {
+      final mock = MockDioAdapter()
+        ..onJson('GET', '/api/v1/gitops/status', body: _statusInstalled())
+        ..onJson('GET', '/api/v1/gitops/applications', body: _twoApps());
+
+      await _pumpList(tester, mock);
+
+      final chip = find.widgetWithText(ChoiceChip, 'Healthy');
+      expect(chip, findsOneWidget);
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+
+      // my-argo-app is healthy; my-flux-app is degraded.
+      expect(find.text('my-argo-app'), findsOneWidget);
+      expect(find.text('my-flux-app'), findsNothing);
+    });
+
+    testWidgets('health filter Degraded chip shows only degraded apps',
+        (tester) async {
+      final mock = MockDioAdapter()
+        ..onJson('GET', '/api/v1/gitops/status', body: _statusInstalled())
+        ..onJson('GET', '/api/v1/gitops/applications', body: _twoApps());
+
+      await _pumpList(tester, mock);
+
+      final chip = find.widgetWithText(ChoiceChip, 'Degraded');
+      expect(chip, findsOneWidget);
+      await tester.tap(chip);
+      await tester.pumpAndSettle();
+
+      expect(find.text('my-argo-app'), findsNothing);
+      expect(find.text('my-flux-app'), findsOneWidget);
+    });
   });
 }

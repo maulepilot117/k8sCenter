@@ -7,6 +7,10 @@
 //   * Invalid composite id renders the "open from the list" inline
 //     error instead of crashing.
 
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,6 +21,16 @@ import 'package:kubecenter/features/gitops/application_detail_screen.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 
 import '../../support/mock_dio_adapter.dart';
+
+ResponseBody _errorJson(Object body, {required int status}) {
+  return ResponseBody.fromBytes(
+    Uint8List.fromList(utf8.encode(jsonEncode(body))),
+    status,
+    headers: {
+      Headers.contentTypeHeader: ['application/json'],
+    },
+  );
+}
 
 Future<void> _pumpDetail(
   WidgetTester tester, {
@@ -268,6 +282,88 @@ void main() {
         find.textContaining('Invalid application ID'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('404 response renders humanised not-found message',
+        (tester) async {
+      final mock = MockDioAdapter();
+      mock.on(
+        'GET',
+        '/api/v1/gitops/applications/argo%3Aargocd%3Amy-app',
+        (_) => _errorJson({
+          'error': {'code': 404, 'message': 'not found'},
+        }, status: 404),
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const ApplicationDetailScreen(
+              id: 'argo:argocd:my-app',
+            ),
+          ),
+        ],
+      );
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          backendUrlProvider.overrideWithValue('http://test'),
+          secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        ],
+        child: _MockedDio(
+          mock: mock,
+          child: MaterialApp.router(
+            theme: buildKubeTheme('nexus'),
+            routerConfig: router,
+          ),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+      expect(find.textContaining('was not found'), findsOneWidget);
+    });
+
+    testWidgets('403 response renders humanised access-denied message',
+        (tester) async {
+      final mock = MockDioAdapter();
+      mock.on(
+        'GET',
+        '/api/v1/gitops/applications/argo%3Aargocd%3Amy-app',
+        (_) => _errorJson({
+          'error': {'code': 403, 'message': 'forbidden'},
+        }, status: 403),
+      );
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const ApplicationDetailScreen(
+              id: 'argo:argocd:my-app',
+            ),
+          ),
+        ],
+      );
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          backendUrlProvider.overrideWithValue('http://test'),
+          secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        ],
+        child: _MockedDio(
+          mock: mock,
+          child: MaterialApp.router(
+            theme: buildKubeTheme('nexus'),
+            routerConfig: router,
+          ),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+      expect(find.textContaining('permission'), findsOneWidget);
     });
   });
 }
