@@ -164,6 +164,32 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // GitOps surfaces — Argo CD + Flux Applications and Argo CD
+  // ApplicationSets. Both entries are status-gated at screen mount via
+  // `gitOpsStatusProvider` rather than at the drawer level — operators
+  // on a cluster without GitOps see the entries but land on
+  // `FeatureUnavailableState.gitops()` when they tap.
+  DomainSection(
+    label: 'GitOps',
+    pathSegment: 'gitops',
+    icon: Icons.account_tree_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'applications',
+        label: 'Applications',
+        icon: Icons.dashboard_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/gitops/applications',
+      ),
+      DomainKind(
+        kind: 'applicationsets',
+        label: 'ApplicationSets',
+        icon: Icons.account_tree_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/gitops/applicationsets',
+      ),
+    ],
+  ),
 ];
 
 /// Substitutes `{clusterId}` (and any future placeholder) in a

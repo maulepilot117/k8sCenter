@@ -14,6 +14,10 @@ import '../auth/auth_state.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
+import '../features/gitops/application_detail_screen.dart';
+import '../features/gitops/applications_list_screen.dart';
+import '../features/gitops/applicationset_detail_screen.dart';
+import '../features/gitops/applicationsets_list_screen.dart';
 import '../features/observability/diagnostics/diagnostics_screen.dart';
 import '../features/observability/diagnostics/namespace_summary_screen.dart';
 import '../features/observability/logs/log_search_screen.dart';
@@ -122,6 +126,42 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           kind: state.pathParameters['kind']!,
           name: state.pathParameters['name']!,
         ),
+      ),
+
+      // --- GitOps detail surfaces (Argo + Flux + AppSets) ---
+      // Applications and ApplicationSets routes are flat under
+      // `/clusters/<id>/gitops/{applications,applicationsets}[/<id>]`.
+      // The `:id` slot is `Uri.encodeComponent(app.id)` — a composite
+      // `tool:ns:name` tuple percent-encoded once. The detail screens
+      // round-trip via [GitOpsId.tryParse] in their builders.
+      //
+      // go_router strips one layer of encoding from the matched segment
+      // before handing it to the builder, so the builder sees the raw
+      // `tool:ns:name` string. Double-encoding via [GitOpsId.encode]
+      // would break this.
+      GoRoute(
+        path: '/clusters/:clusterId/gitops/applications',
+        builder: (context, state) => const ApplicationsListScreen(),
+        routes: [
+          GoRoute(
+            path: ':id',
+            builder: (context, state) => ApplicationDetailScreen(
+              id: state.pathParameters['id']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/gitops/applicationsets',
+        builder: (context, state) => const ApplicationSetsListScreen(),
+        routes: [
+          GoRoute(
+            path: ':id',
+            builder: (context, state) => ApplicationSetDetailScreen(
+              id: state.pathParameters['id']!,
+            ),
+          ),
+        ],
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---
