@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/mesh_repository.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
@@ -13,6 +14,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../mesh/golden_signals_tab.dart';
 import 'k8s_helpers.dart';
 
 class _ServiceRow {
@@ -142,6 +144,23 @@ class ServiceDetailScreen extends ConsumerWidget {
       data: (raw) {
         final s = _ServiceRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
+        // M4 PR-4f: surface golden signals as an extra tab when a mesh
+        // is installed on the cluster. The mesh status drives both tab
+        // visibility and (in the tab itself) the mesh disambiguation
+        // when both Istio and Linkerd are present.
+        final meshStatus =
+            ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+        final extraTabs = <DetailExtraTab>[
+          if (meshStatus != null && meshStatus.isInstalled)
+            DetailExtraTab(
+              label: 'Golden signals',
+              body: GoldenSignalsTab(
+                namespace: s.meta.namespace,
+                service: s.meta.name,
+                status: meshStatus,
+              ),
+            ),
+        ];
         return ResourceDetailScaffold(
           kindLabel: 'Service',
           name: s.meta.name,
@@ -151,6 +170,7 @@ class ServiceDetailScreen extends ConsumerWidget {
           statusLabel: s.type,
           statusColor: colors.accent,
           resource: raw,
+          extraTabs: extraTabs,
           trailingAction: ResourceActionsButton(
             kind: 'services',
             namespace: s.meta.namespace,

@@ -190,6 +190,42 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // Service mesh surfaces (PR-4f). Three entries:
+  //   * Mesh dashboard — Istio + Linkerd side-by-side status cards.
+  //   * Routing — list of every TrafficRoute across both meshes.
+  //   * mTLS posture — per-namespace workload encryption state.
+  // Golden signals tab is rendered inline on Service detail screens
+  // rather than as a drawer entry. All three surfaces gate on
+  // `meshStatusProvider` and fall back to
+  // `FeatureUnavailableState.mesh()` when neither mesh is installed.
+  DomainSection(
+    label: 'Service Mesh',
+    pathSegment: 'mesh',
+    icon: Icons.hub_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'mesh',
+        label: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/mesh',
+      ),
+      DomainKind(
+        kind: 'routing',
+        label: 'Routing',
+        icon: Icons.alt_route_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/mesh/routing',
+      ),
+      DomainKind(
+        kind: 'mtls',
+        label: 'mTLS posture',
+        icon: Icons.lock_outline,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/mesh/mtls',
+      ),
+    ],
+  ),
 ];
 
 /// Substitutes `{clusterId}` (and any future placeholder) in a
