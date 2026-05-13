@@ -385,7 +385,7 @@ class _OverviewTab extends StatelessWidget {
               if (cert.commonName != null)
                 _Row('Common name', cert.commonName!),
               if (cert.dnsNames.isNotEmpty)
-                _Row('DNS names', cert.dnsNames.join(', ')),
+                _Row('DNS names', _formatDnsNames(cert.dnsNames)),
               _Row('Not before', _fmt(cert.notBefore)),
               _Row('Not after', _fmt(cert.notAfter)),
               _Row('Renewal time', _fmt(cert.renewalTime)),
@@ -563,10 +563,26 @@ String _sourceLabel(ThresholdSource source, Certificate cert) {
       return 'From Issuer ${cert.issuerRef.name}';
     case ThresholdSource.clusterIssuer:
       return 'From ClusterIssuer ${cert.issuerRef.name}';
-    case ThresholdSource.defaultSource:
+    case ThresholdSource.packageDefault:
     case ThresholdSource.unknown:
       return 'Default';
   }
+}
+
+/// Cap of DNS-name entries rendered inline in the Overview tab.
+/// Wildcard certs with 200+ SANs are legitimate (multi-tenant ingress
+/// consolidators); rendering the full list as a single SelectableText
+/// blows past Flutter's selection-geometry layout budget (>5000 chars
+/// → 30-60ms first-frame jank on mid-range Android). Cap at 30 names
+/// inline with a `(and N more)` suffix; the source-of-truth for the
+/// full list is the backend response itself.
+const int _kDnsNamesInlineCap = 30;
+
+String _formatDnsNames(List<String> names) {
+  if (names.length <= _kDnsNamesInlineCap) return names.join(', ');
+  final preview = names.take(_kDnsNamesInlineCap).join(', ');
+  final remaining = names.length - _kDnsNamesInlineCap;
+  return '$preview (and $remaining more)';
 }
 
 // ---------------------------------------------------------------------------

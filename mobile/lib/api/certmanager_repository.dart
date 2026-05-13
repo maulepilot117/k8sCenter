@@ -40,7 +40,7 @@ import 'dio_client.dart';
 enum ThresholdSource {
   /// Resolution fell through to the package default (warn=30d, crit=7d)
   /// — no annotation present anywhere in the chain.
-  defaultSource,
+  packageDefault,
 
   /// Annotation set directly on the Certificate.
   certificate,
@@ -60,7 +60,7 @@ ThresholdSource _thresholdSourceFromJson(Object? v) {
   if (v is! String) return ThresholdSource.unknown;
   switch (v) {
     case 'default':
-      return ThresholdSource.defaultSource;
+      return ThresholdSource.packageDefault;
     case 'certificate':
       return ThresholdSource.certificate;
     case 'issuer':
@@ -249,7 +249,14 @@ class Certificate {
 
   factory Certificate.fromJson(Map<String, dynamic> json) {
     String? s(Object? v) => v is String && v.isNotEmpty ? v : null;
-    int? n(Object? v) => (v as num?)?.toInt();
+    // Defensive cast: accept num (canonical), parse String (forward-compat /
+    // mock-backend / replay-proxy resilience), reject everything else by
+    // returning null rather than throwing. Mirrors the s() helper above.
+    int? n(Object? v) {
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v);
+      return null;
+    }
     final dnsRaw = json['dnsNames'];
     return Certificate(
       name: json['name'] as String? ?? '',
@@ -338,7 +345,14 @@ class Issuer {
 
   factory Issuer.fromJson(Map<String, dynamic> json) {
     String? s(Object? v) => v is String && v.isNotEmpty ? v : null;
-    int? n(Object? v) => (v as num?)?.toInt();
+    // Defensive cast: accept num (canonical), parse String (forward-compat /
+    // mock-backend / replay-proxy resilience), reject everything else by
+    // returning null rather than throwing. Mirrors the s() helper above.
+    int? n(Object? v) {
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v);
+      return null;
+    }
     return Issuer(
       name: json['name'] as String? ?? '',
       namespace: json['namespace'] as String? ?? '',
@@ -569,6 +583,17 @@ class ExpiringCertificate {
   final String severity;
 
   factory ExpiringCertificate.fromJson(Map<String, dynamic> json) {
+    // Defensive numeric cast — matches the n() helper used in Certificate
+    // and Issuer parsing above. Accepts num (canonical), parses String
+    // (forward-compat / mock-backend resilience), falls back to 0 for
+    // anything else rather than throwing — a single corrupt field on one
+    // row must not collapse the entire list response into an error state.
+    int days(Object? v) {
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? 0;
+      return 0;
+    }
+
     return ExpiringCertificate(
       namespace: json['namespace'] as String? ?? '',
       name: json['name'] as String? ?? '',
@@ -576,7 +601,7 @@ class ExpiringCertificate {
       issuerName: json['issuerName'] as String? ?? '',
       secretName: json['secretName'] as String? ?? '',
       notAfter: json['notAfter'] as String? ?? '',
-      daysRemaining: (json['daysRemaining'] as num?)?.toInt() ?? 0,
+      daysRemaining: days(json['daysRemaining']),
       severity: json['severity'] as String? ?? 'warning',
     );
   }
