@@ -108,6 +108,21 @@ class ExpiryBadge extends StatelessWidget {
   }
 }
 
+/// Ready/not-ready badge for Issuers and ClusterIssuers.
+/// Replaces the private `_ReadyBadge` in `issuers_list_screen.dart`.
+class ReadyBadge extends StatelessWidget {
+  const ReadyBadge({super.key, required this.ready});
+
+  final bool ready;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final tone = ready ? colors.success : colors.error;
+    return _Pill(label: ready ? 'Ready' : 'Not ready', color: tone);
+  }
+}
+
 /// Pill chrome — same shape used by every cert-manager badge so colors
 /// vary but the geometry stays consistent.
 class _Pill extends StatelessWidget {

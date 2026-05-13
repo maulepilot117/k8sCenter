@@ -69,7 +69,11 @@ class _IssuersBody extends ConsumerWidget {
       onRefresh: handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _errorShell(e, handleRefresh, colors),
+        error: (e, _) => ListErrorShell(
+          title: 'Failed to load issuers',
+          error: e,
+          onRetry: handleRefresh,
+        ),
         data: (issuers) {
           if (issuers.isEmpty) {
             return ListView(
@@ -101,44 +105,6 @@ class _IssuersBody extends ConsumerWidget {
     );
   }
 
-  Widget _errorShell(Object e, Future<void> Function() retry, KubeColors c) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Failed to load issuers',
-                    style: TextStyle(
-                      color: c.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    e is ApiError ? e.message : e.toString(),
-                    style: TextStyle(color: c.textMuted),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: retry,
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }
 
 class _IssuerRow extends StatelessWidget {
@@ -178,7 +144,7 @@ class _IssuerRow extends StatelessWidget {
               const SizedBox(width: 8),
               IssuerTypeBadge(type: issuer.type),
               const SizedBox(width: 6),
-              _ReadyBadge(ready: issuer.ready),
+              ReadyBadge(ready: issuer.ready),
             ],
           ),
           const SizedBox(height: 4),
@@ -201,30 +167,3 @@ class _IssuerRow extends StatelessWidget {
   }
 }
 
-class _ReadyBadge extends StatelessWidget {
-  const _ReadyBadge({required this.ready});
-
-  final bool ready;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    final tone = ready ? colors.success : colors.error;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: tone.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: tone.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        ready ? 'Ready' : 'Not ready',
-        style: TextStyle(
-          color: tone,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}

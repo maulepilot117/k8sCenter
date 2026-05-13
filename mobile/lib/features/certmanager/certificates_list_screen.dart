@@ -26,6 +26,7 @@ import '../../api/api_error.dart';
 import '../../api/certmanager_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
 import 'cert_badges.dart';
 
@@ -89,11 +90,9 @@ class _CertificatesListScreenState
       appBar: AppBar(title: const Text('Certificates')),
       body: statusAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(e.toString()),
-          ),
+        error: (e, _) => ErrorStateView(
+          message: e is ApiError ? e.message : e.toString(),
+          onRetry: () => ref.invalidate(certManagerStatusProvider(clusterId)),
         ),
         data: (status) {
           if (!status.detected) return FeatureUnavailableState.certManager();
@@ -148,7 +147,11 @@ class _CertListBody extends ConsumerWidget {
       onRefresh: handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => _errorShell(e, handleRefresh, colors),
+        error: (e, _) => ListErrorShell(
+          title: 'Failed to load certificates',
+          error: e,
+          onRetry: handleRefresh,
+        ),
         data: (certs) {
           final filtered = _applyFilters(certs);
           return CustomScrollView(
@@ -228,44 +231,6 @@ class _CertListBody extends ConsumerWidget {
     }).toList();
   }
 
-  Widget _errorShell(Object e, Future<void> Function() retry, KubeColors c) {
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        SizedBox(
-          height: 280,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Failed to load certificates',
-                    style: TextStyle(
-                      color: c.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    e is ApiError ? e.message : e.toString(),
-                    style: TextStyle(color: c.textMuted),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton(
-                    onPressed: retry,
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
 }
 
 class _FilterStrip extends StatelessWidget {

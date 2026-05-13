@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../api/api_error.dart';
 import '../theme/kube_theme_builder.dart';
 
 class LoadingState extends StatelessWidget {
@@ -77,6 +78,69 @@ class EmptyState extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Error shell for list screens that need pull-to-refresh to work even
+/// in the error state. Wraps the error in a [ListView] so the
+/// [RefreshIndicator] parent can detect scroll events.
+///
+/// Used by cert-manager list screens and any other list surface that
+/// calls `_errorShell` — extract the private method body here so the
+/// pattern is shared rather than duplicated.
+class ListErrorShell extends StatelessWidget {
+  const ListErrorShell({
+    super.key,
+    required this.title,
+    required this.error,
+    required this.onRetry,
+  });
+
+  final String title;
+  final Object error;
+  final Future<void> Function() onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        SizedBox(
+          height: 280,
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    error is ApiError
+                        ? (error as ApiError).message
+                        : error.toString(),
+                    style: TextStyle(color: colors.textMuted),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: onRetry,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
