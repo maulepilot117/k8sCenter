@@ -165,11 +165,10 @@ const List<DomainSection> domainSections = [
     ],
   ),
   // GitOps surfaces — Argo CD + Flux Applications and Argo CD
-  // ApplicationSets (PR-4e). Both entries are status-gated at screen
-  // mount via `gitOpsStatusProvider` rather than at the drawer level
-  // — operators on a cluster without GitOps see the entries but land
-  // on `FeatureUnavailableState.gitops()` when they tap. This matches
-  // the pattern PR-4b/4c/4d use for monitoring/loki/diagnostics.
+  // ApplicationSets. Both entries are status-gated at screen mount via
+  // `gitOpsStatusProvider` rather than at the drawer level — operators
+  // on a cluster without GitOps see the entries but land on
+  // `FeatureUnavailableState.gitops()` when they tap.
   DomainSection(
     label: 'GitOps',
     pathSegment: 'gitops',

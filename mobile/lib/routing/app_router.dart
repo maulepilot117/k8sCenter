@@ -128,18 +128,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         ),
       ),
 
-      // --- M4 PR-4e: GitOps detail surfaces (Argo + Flux + AppSets) ---
+      // --- GitOps detail surfaces (Argo + Flux + AppSets) ---
       // Applications and ApplicationSets routes are flat under
       // `/clusters/<id>/gitops/{applications,applicationsets}[/<id>]`.
       // The `:id` slot is `Uri.encodeComponent(app.id)` — a composite
       // `tool:ns:name` tuple percent-encoded once. The detail screens
       // round-trip via [GitOpsId.tryParse] in their builders.
       //
-      // Backend's parseCompositeID accepts the segment after a single
-      // URL decode (backend commit e0e2601). Double-encoding via
-      // [GitOpsId.encode] would break this — go_router strips one layer
-      // of encoding from the matched segment before handing it to the
-      // builder, so the builder sees the raw `tool:ns:name` string.
+      // go_router strips one layer of encoding from the matched segment
+      // before handing it to the builder, so the builder sees the raw
+      // `tool:ns:name` string. Double-encoding via [GitOpsId.encode]
+      // would break this.
       GoRoute(
         path: '/clusters/:clusterId/gitops/applications',
         builder: (context, state) => const ApplicationsListScreen(),

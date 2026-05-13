@@ -20,10 +20,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/api_error.dart';
 import '../../api/gitops_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import 'gitops_widgets.dart';
 
 /// Filter values for the tool chip row. `null` means "show all".
 enum _ToolFilter { all, argocd, fluxcd }
@@ -60,12 +62,25 @@ class _ApplicationsListScreenState
       ),
       body: statusAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(e.toString()),
-          ),
-        ),
+        error: (e, _) {
+          if (e is ApiError && (e.statusCode == 401 || e.statusCode == 403)) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Tooltip(
+                  message: e.message,
+                  child: const Text('Access denied'),
+                ),
+              ),
+            );
+          }
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(e.toString()),
+            ),
+          );
+        },
         data: (status) {
           if (!status.isInstalled) {
             return FeatureUnavailableState.gitops();
@@ -457,13 +472,13 @@ class _AppRow extends StatelessWidget {
               runSpacing: 4,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                _StatusBadge(
+                StatusPill(
                   label: app.syncStatus,
-                  color: _syncColor(colors, app.syncStatus),
+                  color: statusColor(colors, app.syncStatus),
                 ),
-                _StatusBadge(
+                StatusPill(
                   label: app.healthStatus,
-                  color: _healthColor(colors, app.healthStatus),
+                  color: statusColor(colors, app.healthStatus),
                 ),
                 if (app.managedResourceCount > 0)
                   _MutedBadge(
@@ -520,32 +535,6 @@ class _ToolBadge extends StatelessWidget {
   }
 }
 
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: color.withValues(alpha: 0.15),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
 class _MutedBadge extends StatelessWidget {
   const _MutedBadge({required this.label, required this.colors});
 
@@ -571,22 +560,3 @@ class _MutedBadge extends StatelessWidget {
   }
 }
 
-Color _syncColor(KubeColors colors, String status) {
-  return switch (status) {
-    'synced' => colors.success,
-    'outofsync' => colors.warning,
-    'progressing' => colors.info,
-    'stalled' || 'failed' => colors.error,
-    _ => colors.textMuted,
-  };
-}
-
-Color _healthColor(KubeColors colors, String status) {
-  return switch (status) {
-    'healthy' => colors.success,
-    'degraded' => colors.error,
-    'progressing' => colors.info,
-    'suspended' => colors.textMuted,
-    _ => colors.textMuted,
-  };
-}

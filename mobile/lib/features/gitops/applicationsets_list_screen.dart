@@ -1,7 +1,8 @@
-// Argo CD ApplicationSets list. Argo-only — gated on
-// `status.argoCD.appSetsAvailable`. When the CRD is not installed the
-// screen renders a `FeatureUnavailableState.gitops()` with an extra
-// hint about the AppSet CRD.
+// Argo CD ApplicationSets list. Argo-only — gated first on
+// `status.isInstalled` (GitOps not detected at all) then on
+// `status.argoCD.appSetsAvailable` (Argo present but AppSet CRD
+// missing). When the CRD is not installed the screen renders
+// `FeatureUnavailableState.gitops()` with a hint about the AppSet CRD.
 //
 // Tap a row → composite-ID detail route. AppSets share the same
 // `tool:ns:name` shape as Applications, with the `argo-as` tool
@@ -15,6 +16,7 @@ import '../../api/gitops_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import 'gitops_widgets.dart';
 
 class ApplicationSetsListScreen extends ConsumerWidget {
   const ApplicationSetsListScreen({super.key});
@@ -30,6 +32,9 @@ class ApplicationSetsListScreen extends ConsumerWidget {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text(e.toString())),
         data: (status) {
+          if (!status.isInstalled) {
+            return FeatureUnavailableState.gitops();
+          }
           if (!status.argoCD.appSetsAvailable) {
             return const _AppSetsUnavailable();
           }
@@ -155,11 +160,11 @@ class _AppSetsBody extends ConsumerWidget {
                       const SizedBox(height: 6),
                       Row(
                         children: [
-                          _StatusPill(
+                          StatusPill(
                             label: set.status.isEmpty
                                 ? 'unknown'
                                 : set.status,
-                            color: _statusColor(colors, set.status),
+                            color: statusColor(colors, set.status),
                           ),
                           const SizedBox(width: 8),
                           Text(
@@ -181,37 +186,3 @@ class _AppSetsBody extends ConsumerWidget {
   }
 }
 
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: color.withValues(alpha: 0.15),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
-Color _statusColor(KubeColors colors, String status) {
-  return switch (status.toLowerCase()) {
-    'healthy' => colors.success,
-    'error' || 'errored' => colors.error,
-    'progressing' => colors.info,
-    _ => colors.textMuted,
-  };
-}

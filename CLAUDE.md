@@ -160,7 +160,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Limits: `GET /limits/{status,namespaces,namespaces/:namespace}` (ResourceQuota + LimitRange)
 - Certificates: `GET /certificates/{status,certificates,certificates/:ns/:name,issuers,clusterissuers,expiring}`, `POST /certificates/certificates/:ns/:name/{renew,reissue}` (cert-manager)
 - Service mesh: `GET /mesh/{status,routing,routing/:id,policies,mtls,golden-signals}` (Istio + Linkerd; mtls/golden-signals require ?namespace=, golden-signals also needs ?service= and optional ?mesh=istio|linkerd)
-- GitOps: `GET /gitops/{status,applications,applications/:id}` (Argo CD + Flux CD)
+- GitOps: `GET /gitops/{status,applications,applications/:id,applicationsets,applicationsets/:id}` (Argo CD + Flux CD)
 - External Secrets: `GET /externalsecrets/{status,externalsecrets,externalsecrets/:ns/:name,clusterexternalsecrets,clusterexternalsecrets/:name,stores,stores/:ns/:name,clusterstores,clusterstores/:name,pushsecrets,pushsecrets/:ns/:name}`
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache)

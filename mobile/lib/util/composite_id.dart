@@ -47,7 +47,12 @@ class GitOpsId {
   static GitOpsId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 3) return null;
-    final decoded = parts.map(Uri.decodeComponent).toList();
+    final List<String> decoded;
+    try {
+      decoded = parts.map(Uri.decodeComponent).toList();
+    } on FormatException {
+      return null;
+    }
     if (decoded[0].isEmpty || decoded[2].isEmpty) return null;
     return GitOpsId(
       tool: decoded[0],
@@ -91,7 +96,12 @@ class PolicyId {
   static PolicyId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 4) return null;
-    final decoded = parts.map(Uri.decodeComponent).toList();
+    final List<String> decoded;
+    try {
+      decoded = parts.map(Uri.decodeComponent).toList();
+    } on FormatException {
+      return null;
+    }
     if (decoded[0].isEmpty || decoded[2].isEmpty || decoded[3].isEmpty) {
       return null;
     }
@@ -141,7 +151,12 @@ class MeshRouteId {
   static MeshRouteId? tryParse(String raw) {
     final parts = raw.split(':');
     if (parts.length != 4) return null;
-    final decoded = parts.map(Uri.decodeComponent).toList();
+    final List<String> decoded;
+    try {
+      decoded = parts.map(Uri.decodeComponent).toList();
+    } on FormatException {
+      return null;
+    }
     if (decoded[0].isEmpty ||
         decoded[1].isEmpty ||
         decoded[2].isEmpty ||

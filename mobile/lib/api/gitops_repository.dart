@@ -3,21 +3,20 @@
 // applicationsets,applicationsets/{id}}`). The wire types mirror
 // `frontend/lib/gitops-types.ts` and `backend/internal/gitops/types.go`.
 //
-// PR-4e read surfaces only — verb actions (sync/suspend/rollback/
-// refresh/delete) are not modelled here. Mobile defers those to a
-// later milestone; this PR ships the Applications list + Application
-// detail (4 tabs) + AppSets list + AppSet detail.
+// Read surfaces only — verb actions (sync/suspend/rollback/
+// refresh/delete) are not modelled here and are deferred to a later
+// milestone.
 //
 // Composite ID:
 //   * The backend assigns each app an opaque tool-prefixed id —
-//     "argocd:ns:name", "flux-ks:ns:name", "flux-hr:ns:name". Mobile
+//     "argo:ns:name", "flux-ks:ns:name", "flux-hr:ns:name". Mobile
 //     never reconstructs this; it round-trips the `id` field through
 //     `GitOpsId.tryParse` / `encode` only for go_router path safety.
-//   * AppSets are Argo CD-only and use the same "argocd:ns:name" shape.
+//   * AppSets are Argo CD-only and use the "argo-as:ns:name" shape.
 //
 // Cluster pinning: every call accepts `clusterIdOverride` and forwards
 // it as an explicit `X-Cluster-ID` header so the family-keyed cache
-// slot and the wire request always agree (PR-3c pin discipline).
+// slot and the wire request always agree.
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

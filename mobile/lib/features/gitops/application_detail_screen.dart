@@ -1,6 +1,6 @@
 // Detail screen for a single GitOps Application. Composite ID-driven —
 // the route segment is `Uri.encodeComponent(app.id)` and is decoded on
-// mount via [GitOpsId.tryParse] (PR-4a's composite-id helper).
+// mount via [GitOpsId.tryParse].
 //
 // Tab visibility is derived from the `id` prefix, not the `tool` field,
 // because the `tool` field collapses `flux-ks` and `flux-hr` to the
@@ -11,23 +11,22 @@
 //   "flux-ks:ns:name"  → Overview, Resources, History, Events
 //   "flux-hr:ns:name"  → Overview, Events
 //
-// PR-4j will add async commit enrichment (`/v1/gitops/commits`) on top
-// of the History tab. Per the plan's "Deferred to Follow-Up Work"
-// section, PR-4e ships the History without commit subjects.
-//
-// Verb actions (sync/suspend/rollback) are out of scope for PR-4e per
-// the plan ("this PR only adds the Detail tab views").
+// Async commit enrichment (`/v1/gitops/commits`) on the History tab is
+// deferred to a follow-up milestone.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../api/api_error.dart';
 import '../../api/gitops_repository.dart';
 import '../../cluster/cluster_provider.dart';
+import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../util/composite_id.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_detail_scaffold.dart';
+import 'gitops_widgets.dart';
 
 class ApplicationDetailScreen extends ConsumerWidget {
   const ApplicationDetailScreen({super.key, required this.id});
@@ -151,24 +150,6 @@ class _OverviewTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final rows = <_KvRow>[
-      _KvRow('Tool', _toolLabel(app.tool)),
-      _KvRow('Kind', app.kind),
-      _KvRow('Namespace', app.namespace.isEmpty ? '—' : app.namespace),
-      _KvRow('Sync', app.syncStatus, color: _syncColor(colors, app.syncStatus)),
-      _KvRow('Health', app.healthStatus,
-          color: _healthColor(colors, app.healthStatus)),
-      if (app.suspended) const _KvRow('Suspended', 'true'),
-      if (app.destinationCluster != null)
-        _KvRow('Destination cluster', app.destinationCluster!),
-      if (app.destinationNamespace != null)
-        _KvRow('Destination namespace', app.destinationNamespace!),
-      _KvRow('Managed resources', '${app.managedResourceCount}'),
-      if (app.currentRevision != null)
-        _KvRow('Current revision', _short(app.currentRevision!)),
-      if (app.lastSyncTime != null)
-        _KvRow('Last sync', app.lastSyncTime!),
-    ];
     final source = app.source;
     final hasSource = source.repoURL != null ||
         source.chartName != null ||
@@ -194,7 +175,45 @@ class _OverviewTab extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                for (final r in rows) _KvLine(row: r),
+                KvLine(label: 'Tool', value: _toolLabel(app.tool)),
+                KvLine(label: 'Kind', value: app.kind),
+                KvLine(
+                  label: 'Namespace',
+                  value: app.namespace.isEmpty ? '—' : app.namespace,
+                ),
+                KvLine(
+                  label: 'Sync',
+                  value: app.syncStatus,
+                  valueColor: statusColor(colors, app.syncStatus),
+                ),
+                KvLine(
+                  label: 'Health',
+                  value: app.healthStatus,
+                  valueColor: statusColor(colors, app.healthStatus),
+                ),
+                if (app.suspended)
+                  const KvLine(label: 'Suspended', value: 'true'),
+                if (app.destinationCluster != null)
+                  KvLine(
+                    label: 'Destination cluster',
+                    value: app.destinationCluster!,
+                  ),
+                if (app.destinationNamespace != null)
+                  KvLine(
+                    label: 'Destination namespace',
+                    value: app.destinationNamespace!,
+                  ),
+                KvLine(
+                  label: 'Managed resources',
+                  value: '${app.managedResourceCount}',
+                ),
+                if (app.currentRevision != null)
+                  KvLine(
+                    label: 'Current revision',
+                    value: _short(app.currentRevision!),
+                  ),
+                if (app.lastSyncTime != null)
+                  KvLine(label: 'Last sync', value: app.lastSyncTime!),
               ],
             ),
           ),
@@ -218,20 +237,20 @@ class _OverviewTab extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   if (source.repoURL != null)
-                    _KvLine(row: _KvRow('Repository', source.repoURL!)),
+                    KvLine(label: 'Repository', value: source.repoURL!),
                   if (source.path != null)
-                    _KvLine(row: _KvRow('Path', source.path!)),
+                    KvLine(label: 'Path', value: source.path!),
                   if (source.targetRevision != null)
-                    _KvLine(
-                        row: _KvRow('Target revision', source.targetRevision!)),
+                    KvLine(
+                      label: 'Target revision',
+                      value: source.targetRevision!,
+                    ),
                   if (source.chartName != null)
-                    _KvLine(
-                      row: _KvRow(
-                        'Chart',
-                        source.chartVersion == null
-                            ? source.chartName!
-                            : '${source.chartName} v${source.chartVersion}',
-                      ),
+                    KvLine(
+                      label: 'Chart',
+                      value: source.chartVersion == null
+                          ? source.chartName!
+                          : '${source.chartName} v${source.chartVersion}',
                     ),
                 ],
               ),
@@ -270,13 +289,13 @@ class _OverviewTab extends StatelessWidget {
   }
 }
 
-class _ResourcesTab extends StatelessWidget {
+class _ResourcesTab extends ConsumerWidget {
   const _ResourcesTab({required this.resources});
 
   final List<ManagedResource> resources;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     if (resources.isEmpty) {
       return Center(
@@ -302,56 +321,73 @@ class _ResourcesTab extends StatelessWidget {
       ),
       itemBuilder: (context, i) {
         final r = resources[i];
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      r.name,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Text(
-                    r.kind,
-                    style: TextStyle(color: colors.textMuted, fontSize: 12),
-                  ),
-                ],
+        // Map CRD kind (PascalCase singular) to the lowercase-plural form
+        // used by kindDetailPath / domainSections. Unknown kinds fall
+        // through to the generic-detail catch-all route.
+        final kindSlug = '${r.kind.toLowerCase()}s';
+        return InkWell(
+          onTap: () {
+            final clusterId = ref.read(activeClusterProvider);
+            context.push(
+              kindDetailPath(
+                clusterId: clusterId,
+                kind: kindSlug,
+                namespace: r.namespace ?? '',
+                name: r.name,
               ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  if (r.namespace != null)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
                       child: Text(
-                        r.namespace!,
+                        r.name,
                         style: TextStyle(
-                            color: colors.textMuted, fontSize: 11),
+                          color: colors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                  if (r.status.isNotEmpty)
-                    _StatusPill(
-                      label: r.status,
-                      color: _syncColor(colors, r.status.toLowerCase()),
-                    ),
-                  if (r.health != null) ...[
-                    const SizedBox(width: 6),
-                    _StatusPill(
-                      label: r.health!,
-                      color: _healthColor(colors, r.health!.toLowerCase()),
+                    Text(
+                      r.kind,
+                      style: TextStyle(color: colors.textMuted, fontSize: 12),
                     ),
                   ],
-                ],
-              ),
-            ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    if (r.namespace != null)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Text(
+                          r.namespace!,
+                          style: TextStyle(
+                              color: colors.textMuted, fontSize: 11),
+                        ),
+                      ),
+                    if (r.status.isNotEmpty)
+                      StatusPill(
+                        label: r.status,
+                        color: statusColor(colors, r.status),
+                      ),
+                    if (r.health != null) ...[
+                      const SizedBox(width: 6),
+                      StatusPill(
+                        label: r.health!,
+                        color: statusColor(colors, r.health),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -406,9 +442,9 @@ class _HistoryTab extends StatelessWidget {
                       ),
                     ),
                   ),
-                  _StatusPill(
+                  StatusPill(
                     label: h.status,
-                    color: _syncColor(colors, h.status.toLowerCase()),
+                    color: statusColor(colors, h.status),
                   ),
                 ],
               ),
@@ -436,77 +472,6 @@ class _HistoryTab extends StatelessWidget {
   }
 }
 
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: color.withValues(alpha: 0.15),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
-class _KvRow {
-  const _KvRow(this.key, this.value, {this.color});
-
-  final String key;
-  final String value;
-  final Color? color;
-}
-
-class _KvLine extends StatelessWidget {
-  const _KvLine({required this.row});
-
-  final _KvRow row;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 132,
-            child: Text(
-              row.key,
-              style: TextStyle(color: colors.textMuted, fontSize: 13),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              row.value,
-              style: TextStyle(
-                color: row.color ?? colors.textPrimary,
-                fontSize: 13,
-                fontWeight:
-                    row.color == null ? FontWeight.w400 : FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 String _toolLabel(String tool) => switch (tool) {
       'argocd' => 'Argo CD',
       'fluxcd' => 'Flux',
@@ -515,25 +480,11 @@ String _toolLabel(String tool) => switch (tool) {
       _ => tool,
     };
 
-String _short(String revision) =>
-    revision.length > 8 ? revision.substring(0, 7) : revision;
-
-Color _syncColor(KubeColors colors, String status) {
-  return switch (status.toLowerCase()) {
-    'synced' => colors.success,
-    'outofsync' || 'out of sync' => colors.warning,
-    'progressing' => colors.info,
-    'stalled' || 'failed' => colors.error,
-    _ => colors.textMuted,
-  };
-}
-
-Color _healthColor(KubeColors colors, String status) {
-  return switch (status.toLowerCase()) {
-    'healthy' => colors.success,
-    'degraded' => colors.error,
-    'progressing' => colors.info,
-    'suspended' => colors.textMuted,
-    _ => colors.textMuted,
-  };
+/// Truncates only 40-char hex git SHAs to 7 chars. Non-SHA revisions
+/// (semver tags, OCI digests) pass through unchanged.
+String _short(String revision) {
+  if (RegExp(r'^[0-9a-f]{40}$').hasMatch(revision)) {
+    return revision.substring(0, 7);
+  }
+  return revision;
 }
