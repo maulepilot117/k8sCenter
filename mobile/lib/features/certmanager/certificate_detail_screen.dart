@@ -27,6 +27,7 @@
 // invariants in CLAUDE.md). Renew uses a simple OK/Cancel since it's
 // non-destructive.
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -36,6 +37,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/confirm_sheet.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/refreshable_controller.dart';
 import '../../widgets/resource_detail_scaffold.dart' show EventsTab;
 import 'cert_badges.dart';
 
@@ -58,6 +60,13 @@ class _CertificateDetailScreenState
     extends ConsumerState<CertificateDetailScreen> {
   bool _busy = false;
   String? _actionMsg;
+  CancelToken? _actionToken;
+
+  @override
+  void dispose() {
+    _actionToken?.cancel('screen disposed');
+    super.dispose();
+  }
 
   CertificateDetailKey _key(String clusterId) => CertificateDetailKey(
         clusterId: clusterId,
@@ -66,68 +75,108 @@ class _CertificateDetailScreenState
       );
 
   Future<void> _handleRenew() async {
-    final ok = await showConfirmSheet(
-      context: context,
-      title: 'Renew certificate',
-      message:
-          'Trigger a renewal of "${widget.name}" in namespace "${widget.namespace}". '
-          'cert-manager will request a new certificate from the issuer; the existing '
-          'Secret stays in place until the new cert is signed.',
-      confirmLabel: 'Renew',
-    );
-    if (ok != true || !mounted) return;
-    await _runAction(
-      action: () async {
-        final clusterId = ref.read(activeClusterProvider);
-        await ref.read(certManagerRepositoryProvider).renew(
-              namespace: widget.namespace,
-              name: widget.name,
-              clusterIdOverride: clusterId,
-            );
-      },
-      successMessage: 'Renewal triggered',
-    );
-  }
-
-  Future<void> _handleReissue(Certificate cert) async {
-    final ok = await showConfirmSheet(
-      context: context,
-      title: 'Re-issue certificate',
-      message:
-          'Re-issue will delete Secret "${cert.secretName}" in "${cert.namespace}". '
-          'Applications using this Secret will briefly lose TLS until '
-          'cert-manager completes re-issuance.',
-      confirmLabel: 'Re-issue',
-      danger: true,
-      // Type-to-confirm gates the destructive verb on the cert name —
-      // mirrors the M2 delete pattern and the mobile invariant that
-      // type-to-confirm is the single destructive confirmation surface.
-      typeToConfirm: widget.name,
-    );
-    if (ok != true || !mounted) return;
-    await _runAction(
-      action: () async {
-        final clusterId = ref.read(activeClusterProvider);
-        await ref.read(certManagerRepositoryProvider).reissue(
-              namespace: widget.namespace,
-              name: widget.name,
-              clusterIdOverride: clusterId,
-            );
-      },
-      successMessage: 'Re-issue triggered',
-    );
-  }
-
-  Future<void> _runAction({
-    required Future<void> Function() action,
-    required String successMessage,
-  }) async {
+    // F2: Set busy BEFORE the confirm sheet to prevent double-tap race.
     setState(() {
       _busy = true;
       _actionMsg = null;
     });
     try {
-      await action();
+      // F1: Capture cluster id before showing the confirm sheet.
+      final pinnedClusterId = ref.read(activeClusterProvider);
+      final ok = await showConfirmSheet(
+        context: context,
+        title: 'Renew certificate',
+        message:
+            'Trigger a renewal of "${widget.name}" in namespace "${widget.namespace}". '
+            'cert-manager will request a new certificate from the issuer; the existing '
+            'Secret stays in place until the new cert is signed.',
+        confirmLabel: 'Renew',
+      );
+      if (ok != true || !mounted) return;
+      // F1: Re-check cluster pin after confirm sheet.
+      if (ref.read(activeClusterProvider) != pinnedClusterId) {
+        setState(() {
+          _actionMsg =
+              'Cluster changed during this action. Aborted to avoid acting on the wrong cluster.';
+        });
+        return;
+      }
+      await _runAction(
+        pinnedClusterId: pinnedClusterId,
+        action: (token) async {
+          await ref.read(certManagerRepositoryProvider).renew(
+                namespace: widget.namespace,
+                name: widget.name,
+                clusterIdOverride: pinnedClusterId,
+                cancelToken: token,
+              );
+        },
+        successMessage: 'Renewal triggered',
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _handleReissue(Certificate cert) async {
+    // F2: Set busy BEFORE the confirm sheet to prevent double-tap race.
+    setState(() {
+      _busy = true;
+      _actionMsg = null;
+    });
+    try {
+      // F1: Capture cluster id before showing the confirm sheet.
+      final pinnedClusterId = ref.read(activeClusterProvider);
+      final ok = await showConfirmSheet(
+        context: context,
+        title: 'Re-issue certificate',
+        message:
+            'Re-issue will delete Secret "${cert.secretName}" in "${cert.namespace}". '
+            'Applications using this Secret will briefly lose TLS until '
+            'cert-manager completes re-issuance.',
+        confirmLabel: 'Re-issue',
+        danger: true,
+        // Type-to-confirm gates the destructive verb on the cert name —
+        // mirrors the M2 delete pattern and the mobile invariant that
+        // type-to-confirm is the single destructive confirmation surface.
+        typeToConfirm: widget.name,
+      );
+      if (ok != true || !mounted) return;
+      // F1: Re-check cluster pin after confirm sheet.
+      if (ref.read(activeClusterProvider) != pinnedClusterId) {
+        setState(() {
+          _actionMsg =
+              'Cluster changed during this action. Aborted to avoid acting on the wrong cluster.';
+        });
+        return;
+      }
+      await _runAction(
+        pinnedClusterId: pinnedClusterId,
+        action: (token) async {
+          await ref.read(certManagerRepositoryProvider).reissue(
+                namespace: widget.namespace,
+                name: widget.name,
+                clusterIdOverride: pinnedClusterId,
+                cancelToken: token,
+              );
+        },
+        successMessage: 'Re-issue triggered',
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _runAction({
+    required String pinnedClusterId,
+    required Future<void> Function(CancelToken token) action,
+    required String successMessage,
+  }) async {
+    // F3: Supersede any prior in-flight action token.
+    _actionToken?.cancel('superseded');
+    _actionToken = CancelToken();
+    try {
+      await action(_actionToken!);
       if (!mounted) return;
       setState(() {
         _actionMsg = '$successMessage · refreshing…';
@@ -135,16 +184,23 @@ class _CertificateDetailScreenState
       // Invalidate the detail provider so the next build re-fetches the
       // updated cert (renew flips Status → Issuing; reissue triggers a
       // CertificateRequest creation that will appear in Sub-Resources).
-      final clusterId = ref.read(activeClusterProvider);
-      ref.invalidate(certificateDetailProvider(_key(clusterId)));
+      // F1: Use pinnedClusterId for invalidation, not the live active cluster.
+      ref.invalidate(certificateDetailProvider(_key(pinnedClusterId)));
+      // F9: Auto-clear the toast after 1500ms (matches web CertificateDetail.tsx).
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (mounted) setState(() => _actionMsg = null);
+      });
+    } on DioException catch (e) {
+      // F3: Silently ignore cancellations.
+      if (RefreshableController.isCancelException(e)) return;
+      if (!mounted) return;
+      setState(() => _actionMsg = 'Action failed: ${e.message}');
     } on ApiError catch (e) {
       if (!mounted) return;
       setState(() => _actionMsg = 'Action failed: ${e.message}');
     } on Object catch (e) {
       if (!mounted) return;
       setState(() => _actionMsg = 'Action failed: $e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -362,12 +418,8 @@ class _OverviewTab extends StatelessWidget {
 
   static String _fmt(String? iso) {
     if (iso == null || iso.isEmpty) return '—';
-    // We preserve the wire ISO-8601 format intentionally: the alternate is
-    // either using DateTime.parse + the device's locale (which would emit
-    // a region-specific string), or going through intl (a heavier
-    // dependency). Operators reading the detail screen typically want
-    // the raw timestamp anyway.
-    return iso;
+    final dt = DateTime.tryParse(iso);
+    return dt == null ? iso : dt.toLocal().toString();
   }
 }
 
@@ -530,7 +582,10 @@ class _SubResourcesTab extends StatelessWidget {
     final s = detail.certificate.status;
     final issuingOrFailing =
         s == CertStatus.issuing || s == CertStatus.failed;
-    return issuingOrFailing && detail.certificateRequests.isEmpty;
+    return issuingOrFailing &&
+        detail.certificateRequests.isEmpty &&
+        detail.orders.isEmpty &&
+        detail.challenges.isEmpty;
   }
 
   @override

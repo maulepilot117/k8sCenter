@@ -168,7 +168,7 @@ class _ExpiringRow extends StatelessWidget {
                 ),
               ),
               child: Text(
-                '${item.daysRemaining}d',
+                item.daysRemaining < 0 ? 'Expired' : '${item.daysRemaining}d',
                 style: TextStyle(
                   color: _severityColor(colors, item.severity),
                   fontSize: 13,
