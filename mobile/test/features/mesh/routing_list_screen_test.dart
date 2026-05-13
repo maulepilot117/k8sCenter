@@ -168,7 +168,19 @@ void main() {
     await tester.tap(istioChip);
     await tester.pumpAndSettle();
 
+    // After selecting Istio chip: only the Istio route "web" remains.
     expect(find.text('web'), findsOneWidget);
     expect(find.text('api'), findsNothing);
+
+    // Strengthen: confirm the Istio chip is now selected (checked).
+    final istioChipWidget =
+        tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Istio'));
+    expect(istioChipWidget.selected, isTrue,
+        reason: 'Istio ChoiceChip should be selected after tap');
+
+    // Linkerd chip is NOT selected.
+    final linkerdChipWidget =
+        tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Linkerd'));
+    expect(linkerdChipWidget.selected, isFalse);
   });
 }

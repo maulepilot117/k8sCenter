@@ -71,14 +71,18 @@ class MeshStatus {
     required this.detected,
     required this.istio,
     required this.linkerd,
-    this.lastChecked,
+    this.lastChecked = '',
   });
 
   /// `""` when neither mesh is detected.
   final String detected;
   final MeshInfo istio;
   final MeshInfo linkerd;
-  final String? lastChecked;
+
+  /// ISO-8601 timestamp of the last mesh discovery probe. Empty string
+  /// when not yet available (e.g. the first poll hasn't completed).
+  /// The backend always populates this field once a probe has run.
+  final String lastChecked;
 
   bool get isInstalled => detected.isNotEmpty;
   bool get hasIstio => detected == 'istio' || detected == 'both';
@@ -96,7 +100,7 @@ class MeshStatus {
       linkerd: linkerd is Map
           ? MeshInfo.fromJson(Map<String, dynamic>.from(linkerd))
           : MeshInfo.empty,
-      lastChecked: json['lastChecked'] as String?,
+      lastChecked: json['lastChecked'] as String? ?? '',
     );
   }
 
@@ -397,7 +401,7 @@ class WorkloadMTLS {
     this.workloadKind,
     this.istioMode,
     this.sourceDetail,
-    this.workloadKindConfident = true,
+    this.workloadKindConfident = false,
   });
 
   final String namespace;
@@ -439,7 +443,7 @@ class WorkloadMTLS {
       source: json['source'] as String? ?? '',
       istioMode: s(json['istioMode']),
       sourceDetail: s(json['sourceDetail']),
-      workloadKindConfident: json['workloadKindConfident'] as bool? ?? true,
+      workloadKindConfident: json['workloadKindConfident'] as bool? ?? false,
     );
   }
 }
@@ -581,6 +585,16 @@ class GoldenSignalsResponse {
             ),
     );
   }
+
+  static const empty = GoldenSignalsResponse(
+    status: MeshStatus.empty,
+    signals: GoldenSignals(
+      mesh: '',
+      namespace: '',
+      service: '',
+      available: false,
+    ),
+  );
 }
 
 /// Mobile wrapper over `/v1/mesh/*`. Stateless — cluster pinning
@@ -664,11 +678,9 @@ class MeshRepository {
       );
       final data = res.data?['data'];
       if (data is Map) {
-        // Detail handler returns either `{"route": {...}}` or the raw
-        // TrafficRoute object depending on the route. Tolerate both.
-        final inner = data['route'];
-        final src = inner is Map ? inner : data;
-        return TrafficRoute.fromJson(Map<String, dynamic>.from(src));
+        // HandleGetRoute (handler.go) writes a flat TrafficRoute into the
+        // standard `{"data": {...}}` envelope — no inner "route" key.
+        return TrafficRoute.fromJson(Map<String, dynamic>.from(data));
       }
       throw ApiError(
         statusCode: 500,
@@ -699,9 +711,13 @@ class MeshRepository {
     );
   }
 
-  /// Fetches mTLS posture for a namespace. Backend hard-requires
-  /// `?namespace=`; passing empty produces a 400 which surfaces as an
-  /// inline error on the namespace selector.
+  /// Fetches mTLS posture for a namespace.
+  ///
+  /// The backend actually supports cluster-wide posture when `?namespace=`
+  /// is omitted — it does NOT 400 on an empty namespace parameter. The
+  /// mobile UI always passes a namespace because per-namespace posture is
+  /// the only UX this screen exposes; the constraint is a product-layer
+  /// choice, not enforced by the backend.
   Future<MTLSPostureResponse> mtlsPosture({
     required String namespace,
     String? clusterIdOverride,
@@ -746,22 +762,28 @@ class MeshRepository {
       if (data is Map) {
         return GoldenSignalsResponse.fromJson(Map<String, dynamic>.from(data));
       }
-      throw ApiError(
-        statusCode: 500,
-        code: 500,
-        message: 'Empty golden-signals response',
-      );
+      return GoldenSignalsResponse.empty;
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
+      final code = e.response?.statusCode ?? 0;
+      if (code >= 500 && code < 600) return GoldenSignalsResponse.empty;
       final err = e.error;
       throw err is ApiError ? err : ApiError.fromDio(e);
     }
   }
 
-  /// Shared envelope unwrapping for the four list-style endpoints
-  /// (routing, policies, mtls — and any future addition that follows
-  /// the `{"data": {...}}` shape). Centralised so a backend envelope
-  /// change touches one place instead of four.
+  /// Shared envelope unwrapping for the three list-style endpoints that
+  /// follow the `{"data": {...}}` envelope: routing ([listRouting]),
+  /// policies ([listPolicies]), and mtls posture ([mtlsPosture]).
+  ///
+  /// [status()] and [getRoute()] are excluded — status() nests an inner
+  /// `{"status": {...}}` key, and getRoute() may return a flat
+  /// TrafficRoute or a nested `{"route": {...}}` depending on the detail
+  /// handler revision; both parse themselves.
+  ///
+  /// Unlike [status()], a 5xx here is rethrown — list endpoints should
+  /// not silently empty on backend errors; the screen surfaces the
+  /// failure via an error state so operators see the problem.
   Future<T> _fetchEnvelope<T>({
     required String path,
     Map<String, String>? query,
@@ -816,11 +838,15 @@ final meshStatusProvider = FutureProvider.autoDispose
 /// routing-list screens with different namespace filters don't share
 /// state).
 class MeshRoutingKey {
-  const MeshRoutingKey({required this.clusterId, this.namespace});
+  /// Normalise [namespace]: empty string is treated as null so that
+  /// `MeshRoutingKey(clusterId: 'c', namespace: '')` and
+  /// `MeshRoutingKey(clusterId: 'c')` resolve to the same provider slot.
+  MeshRoutingKey({required this.clusterId, String? namespace})
+      : namespace = (namespace != null && namespace.isEmpty) ? null : namespace;
 
   final String clusterId;
 
-  /// Empty / null → cluster-wide list. The handler enforces RBAC.
+  /// null → cluster-wide list. The handler enforces RBAC.
   final String? namespace;
 
   @override

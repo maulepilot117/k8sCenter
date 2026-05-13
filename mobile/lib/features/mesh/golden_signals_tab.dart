@@ -56,17 +56,50 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
   @override
   void initState() {
     super.initState();
-    if (widget.status.hasIstio && !widget.status.hasLinkerd) {
-      _mesh = 'istio';
-    } else if (widget.status.hasLinkerd && !widget.status.hasIstio) {
-      _mesh = 'linkerd';
+    _mesh = _deriveMesh(widget.status, null);
+  }
+
+  @override
+  void didUpdateWidget(GoldenSignalsTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.status.detected == widget.status.detected) return;
+    // Re-derive preferred mesh from the new status. If the currently
+    // selected mesh is still installed, keep it; otherwise fall back to
+    // the auto-derived choice (or null when both are still installed).
+    final auto = _deriveMesh(widget.status, null);
+    if (_mesh != null && !_isMeshInstalled(_mesh!, widget.status)) {
+      // Previously selected mesh is no longer detected — clear.
+      setState(() => _mesh = auto);
+    } else if (auto != null && _mesh == null) {
+      // Transitioned from both→one installed: auto-select.
+      setState(() => _mesh = auto);
     }
+  }
+
+  /// Returns the auto-selected mesh when exactly one is installed, or
+  /// null when both (or neither) are installed.
+  static String? _deriveMesh(MeshStatus status, String? current) {
+    if (status.hasIstio && !status.hasLinkerd) return 'istio';
+    if (status.hasLinkerd && !status.hasIstio) return 'linkerd';
+    return null;
+  }
+
+  static bool _isMeshInstalled(String mesh, MeshStatus status) {
+    return mesh == 'istio' ? status.hasIstio : status.hasLinkerd;
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final clusterId = ref.watch(activeClusterProvider);
+    // Reset mesh selection when the user switches clusters so the tab
+    // re-derives from the new cluster's installed meshes instead of
+    // carrying over the previous selection.
+    ref.listen<String>(activeClusterProvider, (previous, next) {
+      if (previous != next) {
+        setState(() => _mesh = _deriveMesh(widget.status, null));
+      }
+    });
 
     return Column(
       children: [
@@ -177,19 +210,24 @@ class _SignalsBody extends ConsumerWidget {
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
             children: [
               if (!s.available)
-                _Banner(
-                  color: colors.warning,
-                  icon: Icons.warning_amber_outlined,
-                  title: 'Metrics unavailable',
-                  body: s.reason ?? 'Prometheus did not respond within 2s.',
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: MeshBanner(
+                    color: colors.warning,
+                    icon: Icons.warning_amber_outlined,
+                    title: 'Metrics unavailable',
+                    body: s.reason ?? 'Prometheus did not respond within 2s.',
+                  ),
                 ),
               if (s.available && s.missingQueries.isNotEmpty)
-                _Banner(
-                  color: colors.warning,
-                  icon: Icons.info_outline,
-                  title:
-                      '${s.missingQueries.length} metric(s) unavailable',
-                  body: s.missingQueries.join(', '),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: MeshBanner(
+                    color: colors.warning,
+                    icon: Icons.info_outline,
+                    title: '${s.missingQueries.length} metric(s) unavailable',
+                    body: s.missingQueries.join(', '),
+                  ),
                 ),
               _TileGrid(signals: s),
               const SizedBox(height: 12),
@@ -250,67 +288,6 @@ class _SignalsBody extends ConsumerWidget {
   }
 }
 
-class _Banner extends StatelessWidget {
-  const _Banner({
-    required this.color,
-    required this.icon,
-    required this.title,
-    required this.body,
-  });
-
-  final Color color;
-  final IconData icon;
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color, size: 16),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (body.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      body,
-                      style: TextStyle(
-                        color: colors.textSecondary,
-                        fontSize: 11,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _TileGrid extends StatelessWidget {
   const _TileGrid({required this.signals});
 
@@ -323,8 +300,8 @@ class _TileGrid extends StatelessWidget {
     return v.toStringAsFixed(2);
   }
 
-  String _value(String key, double raw, String unit) {
-    if (signals.isMetricMissing(key)) return '—';
+  String _value(String key, double raw, String unit, {bool missing = false}) {
+    if (missing || signals.isMetricMissing(key)) return '—';
     return _format(raw, unit);
   }
 
@@ -342,8 +319,21 @@ class _TileGrid extends StatelessWidget {
       ),
       _TileData(
         label: 'Error rate',
-        value: _value('errorRate', signals.errorRate, '%'),
-        color: signals.errorRate > 0.05 ? colors.error : colors.success,
+        value: _value(
+          'errorRate',
+          signals.errorRate,
+          '%',
+          missing: signals.isMetricMissing('errorRate') ||
+              signals.isMetricMissing('errorNum') ||
+              signals.isMetricMissing('errorDen'),
+        ),
+        color: signals.isMetricMissing('errorRate') ||
+                signals.isMetricMissing('errorNum') ||
+                signals.isMetricMissing('errorDen')
+            ? colors.textMuted
+            : signals.errorRate > 0.05
+                ? colors.error
+                : colors.success,
         missing: signals.isMetricMissing('errorRate') ||
             signals.isMetricMissing('errorNum') ||
             signals.isMetricMissing('errorDen'),
@@ -363,7 +353,11 @@ class _TileGrid extends StatelessWidget {
       _TileData(
         label: 'p99 latency',
         value: _value('p99', signals.p99Ms, 'ms'),
-        color: signals.p99Ms > 1000 ? colors.warning : colors.accent,
+        color: signals.isMetricMissing('p99')
+            ? colors.textMuted
+            : signals.p99Ms > 1000
+                ? colors.warning
+                : colors.accent,
         missing: signals.isMetricMissing('p99'),
       ),
     ];

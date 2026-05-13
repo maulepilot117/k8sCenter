@@ -87,10 +87,10 @@ class MeshDashboardScreen extends ConsumerWidget {
                 ),
                 const SizedBox(height: 16),
                 _Actions(clusterId: clusterId),
-                if (status.lastChecked != null)
+                if (status.lastChecked.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 12, left: 4),
-                    child: _LastCheckedLine(timestamp: status.lastChecked!),
+                    child: _LastCheckedLine(timestamp: status.lastChecked),
                   ),
               ],
             );

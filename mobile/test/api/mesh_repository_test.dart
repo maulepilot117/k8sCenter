@@ -401,6 +401,88 @@ void main() {
       expect(res.policies.single.mtlsMode, 'STRICT');
       expect(res.errors, isEmpty);
     });
+
+    test('threads namespace query param when provided', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/mesh/policies',
+        body: {
+          'data': {
+            'status': {'detected': 'istio'},
+            'policies': <Map<String, Object?>>[],
+          },
+        },
+      );
+
+      await container
+          .read(meshRepositoryProvider)
+          .listPolicies(namespace: 'restricted');
+      expect(
+          mock.requests.single.queryParameters['namespace'], 'restricted');
+    });
+
+    test('empty namespace omits query param (cluster-wide pass-through)',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/mesh/policies',
+        body: {
+          'data': {
+            'status': {'detected': 'istio'},
+            'policies': <Map<String, Object?>>[],
+          },
+        },
+      );
+
+      await container.read(meshRepositoryProvider).listPolicies(namespace: '');
+      expect(
+          mock.requests.single.queryParameters.containsKey('namespace'),
+          isFalse);
+    });
+  });
+
+  group('MeshRepository._fetchEnvelope error paths', () {
+    test('listPolicies 503 rethrows as ApiError', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/mesh/policies',
+        (_) => _json({
+          'error': {'code': 503, 'message': 'upstream unavailable'},
+        }, status: 503),
+      );
+
+      await expectLater(
+        container.read(meshRepositoryProvider).listPolicies(),
+        throwsA(isA<ApiError>().having((e) => e.statusCode, 'statusCode', 503)),
+      );
+    });
+
+    test('mtlsPosture 500 rethrows as ApiError', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/mesh/mtls',
+        (_) => _json({
+          'error': {'code': 500, 'message': 'internal error'},
+        }, status: 500),
+      );
+
+      await expectLater(
+        container.read(meshRepositoryProvider).mtlsPosture(namespace: 'app'),
+        throwsA(isA<ApiError>().having((e) => e.statusCode, 'statusCode', 500)),
+      );
+    });
   });
 
   group('MeshRepository.mtlsPosture', () {
@@ -452,6 +534,30 @@ void main() {
       expect(res.workloads.first.workloadKindConfident, isTrue);
       expect(res.workloads.last.workloadKindConfident, isFalse);
       expect(res.errors, {'truncated': 'capped at 500 workloads'});
+    });
+
+    test('403 from RBAC surfaces as ApiError with correct statusCode', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/mesh/mtls',
+        (_) => _json({
+          'error': {
+            'code': 403,
+            'message': 'forbidden: cannot list pods in namespace restricted',
+          },
+        }, status: 403),
+      );
+
+      await expectLater(
+        container.read(meshRepositoryProvider).mtlsPosture(namespace: 'restricted'),
+        throwsA(isA<ApiError>()
+            .having((e) => e.statusCode, 'statusCode', 403)
+            .having((e) => e.message, 'message',
+                contains('forbidden'))),
+      );
     });
 
     test('400 from missing namespace surfaces as ApiError', () async {
@@ -512,8 +618,14 @@ void main() {
       expect(res.signals.missingQueries, ['p99']);
       expect(res.signals.rps, closeTo(42.5, 0.001));
       expect(res.signals.p95Ms, 75.0);
-      expect(res.signals.isMetricMissing('p99'), isTrue);
-      expect(res.signals.isMetricMissing('p95'), isFalse);
+      // Metric in missingQueries returns true regardless of scalar value.
+      expect(res.signals.isMetricMissing('p99'), isTrue,
+          reason: 'p99 is in missingQueries — should report missing');
+      // Metric NOT in missingQueries returns false even when scalar is zero.
+      expect(res.signals.isMetricMissing('p95'), isFalse,
+          reason: 'p95 is not in missingQueries — zero scalar is still valid');
+      expect(res.signals.isMetricMissing('rps'), isFalse,
+          reason: 'rps is not in missingQueries — non-zero scalar is valid');
     });
 
     test('threads mesh disambiguator when both installed', () async {
@@ -579,16 +691,55 @@ void main() {
     });
   });
 
+  group('MeshRepository cluster-switch-mid-fetch', () {
+    test('request carries X-Cluster-ID of the cluster that initiated the fetch',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/mesh/status',
+        body: {
+          'data': {
+            'status': {
+              'detected': 'istio',
+              'istio': {'installed': true},
+              'linkerd': {'installed': false},
+            },
+          },
+        },
+      );
+
+      // Fire the request pinned to clusterA.
+      await container
+          .read(meshRepositoryProvider)
+          .status(clusterIdOverride: 'clusterA');
+
+      // The request on the wire must carry clusterA's header even if the
+      // active cluster was changed to clusterB after the call was made.
+      expect(mock.requests, hasLength(1));
+      expect(mock.requests.single.headers['X-Cluster-ID'], 'clusterA');
+    });
+  });
+
   group('Provider family keys', () {
     test('MeshRoutingKey equality', () {
-      const a = MeshRoutingKey(clusterId: 'c1', namespace: 'app');
-      const b = MeshRoutingKey(clusterId: 'c1', namespace: 'app');
-      const c = MeshRoutingKey(clusterId: 'c1', namespace: 'other');
-      const d = MeshRoutingKey(clusterId: 'c1');
+      final a = MeshRoutingKey(clusterId: 'c1', namespace: 'app');
+      final b = MeshRoutingKey(clusterId: 'c1', namespace: 'app');
+      final c = MeshRoutingKey(clusterId: 'c1', namespace: 'other');
+      final d = MeshRoutingKey(clusterId: 'c1');
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
       expect(a, isNot(equals(c)));
       expect(a, isNot(equals(d)));
+    });
+
+    test('MeshRoutingKey normalises empty namespace to null', () {
+      final empty = MeshRoutingKey(clusterId: 'c1', namespace: '');
+      final nullNs = MeshRoutingKey(clusterId: 'c1');
+      expect(empty, equals(nullNs));
+      expect(empty.namespace, isNull);
     });
 
     test('MeshRouteDetailKey distinguishes by id', () {

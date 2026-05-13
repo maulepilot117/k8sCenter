@@ -155,6 +155,29 @@ void main() {
     expect(find.text('8.0 ms'), findsOneWidget);
   });
 
+  testWidgets('available=false with no reason uses hardcoded fallback string',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/golden-signals', body: {
+        'data': {
+          'status': {'detected': 'istio'},
+          'signals': {
+            'mesh': 'istio',
+            'namespace': 'app',
+            'service': 'web',
+            'available': false,
+            // 'reason' field deliberately omitted
+          },
+        },
+      });
+
+    await _pump(tester, mock, status: _istioStatus);
+
+    expect(find.text('Metrics unavailable'), findsOneWidget);
+    // No reason field → falls back to the hardcoded 2s timeout copy.
+    expect(find.text('Prometheus did not respond within 2s.'), findsOneWidget);
+  });
+
   testWidgets('both meshes installed shows mesh prompt until picked',
       (tester) async {
     // No HTTP mocking needed — the body should not fetch until a mesh
@@ -163,6 +186,11 @@ void main() {
     final mock = MockDioAdapter();
 
     await _pump(tester, mock, status: _bothStatus);
+
+    // Lock the no-eager-fetch invariant: no request should have been made
+    // before the operator selects a mesh.
+    expect(mock.requests, isEmpty,
+        reason: 'golden-signals must not fetch before mesh is selected');
 
     expect(find.textContaining('Both meshes are installed'), findsOneWidget);
     expect(find.text('Requests / s'), findsNothing);

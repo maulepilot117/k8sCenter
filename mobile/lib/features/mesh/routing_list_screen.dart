@@ -62,6 +62,17 @@ class _MeshRoutingListScreenState
   Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final statusAsync = ref.watch(meshStatusProvider(clusterId));
+    // Reset mesh filter and namespace text when the user switches clusters
+    // so stale filter state from the previous cluster is cleared.
+    ref.listen<String>(activeClusterProvider, (previous, next) {
+      if (previous != next) {
+        setState(() {
+          _mesh = _MeshFilter.all;
+          _namespace = '';
+          _namespaceCtl.clear();
+        });
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(title: const Text('Mesh Routing')),
@@ -132,44 +143,55 @@ class _RoutingBody extends ConsumerWidget {
         error: (e, _) => _errorShell(e, handleRefresh, colors),
         data: (response) {
           final filtered = _applyMeshFilter(response.routes);
-          return ListView(
+          return CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            children: [
-              _FilterStrip(
-                mesh: mesh,
-                namespaceCtl: namespaceCtl,
-                onMeshChanged: onMeshChanged,
-                onNamespaceChanged: onNamespaceChanged,
+            slivers: [
+              SliverToBoxAdapter(
+                child: Column(
+                  children: [
+                    _FilterStrip(
+                      mesh: mesh,
+                      namespaceCtl: namespaceCtl,
+                      onMeshChanged: onMeshChanged,
+                      onNamespaceChanged: onNamespaceChanged,
+                    ),
+                    MeshErrorsBanner(errors: response.errors),
+                  ],
+                ),
               ),
-              MeshErrorsBanner(errors: response.errors),
               if (filtered.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 32,
-                  ),
-                  child: Center(
-                    child: Text(
-                      response.routes.isEmpty
-                          ? 'No routing rules. Apply a VirtualService, '
-                              'HTTPRoute, or similar to see entries here.'
-                          : 'No routes match the current filters.',
-                      style: TextStyle(color: colors.textMuted),
-                      textAlign: TextAlign.center,
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 32,
+                    ),
+                    child: Center(
+                      child: Text(
+                        response.routes.isEmpty
+                            ? 'No routing rules. Apply a VirtualService, '
+                                'HTTPRoute, or similar to see entries here.'
+                            : 'No routes match the current filters.',
+                        style: TextStyle(color: colors.textMuted),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   ),
                 )
-              else ...[
-                for (final route in filtered)
-                  _RouteRow(
-                    route: route,
-                    onTap: () => context.push(
-                      '/clusters/$clusterId/mesh/routing/'
-                      '${Uri.encodeComponent(route.id)}',
+              else
+                SliverList(
+                  delegate: SliverChildBuilderDelegate(
+                    (context, index) => _RouteRow(
+                      route: filtered[index],
+                      onTap: () => context.push(
+                        '/clusters/$clusterId/mesh/routing/'
+                        '${Uri.encodeComponent(filtered[index].id)}',
+                      ),
                     ),
+                    childCount: filtered.length,
                   ),
-              ],
+                ),
+              const SliverPadding(padding: EdgeInsets.only(bottom: 8)),
             ],
           );
         },
@@ -336,9 +358,8 @@ class _RouteRow extends StatelessWidget {
                 ),
                 if (destCount > 0) ...[
                   const SizedBox(width: 8),
-                  _MutedBadge(
+                  MeshMutedBadge(
                     label: '$destCount destination${destCount == 1 ? '' : 's'}',
-                    colors: colors,
                   ),
                 ],
               ],
@@ -363,27 +384,3 @@ class _RouteRow extends StatelessWidget {
   }
 }
 
-class _MutedBadge extends StatelessWidget {
-  const _MutedBadge({required this.label, required this.colors});
-
-  final String label;
-  final KubeColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: colors.bgElevated,
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: colors.textMuted,
-          fontSize: 11,
-        ),
-      ),
-    );
-  }
-}

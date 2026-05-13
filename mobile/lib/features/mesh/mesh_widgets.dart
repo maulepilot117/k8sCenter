@@ -80,15 +80,15 @@ class MeshErrorsBanner extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           for (final entry in entries)
-            _BannerRow(
+            MeshBanner(
               icon: kMeshErrorWarnKeys.contains(entry.key)
                   ? Icons.info_outline
                   : Icons.warning_amber_outlined,
               color: kMeshErrorWarnKeys.contains(entry.key)
                   ? colors.warning
                   : colors.error,
-              label: entry.key,
-              message: entry.value,
+              title: entry.key,
+              body: entry.value,
             ),
         ],
       ),
@@ -96,18 +96,26 @@ class MeshErrorsBanner extends StatelessWidget {
   }
 }
 
-class _BannerRow extends StatelessWidget {
-  const _BannerRow({
+/// Inline banner used across mesh screens to surface warnings and
+/// partial-failure messages. [MeshErrorsBanner] uses this internally;
+/// golden signals and other screens can reference it directly.
+///
+/// Named parameters follow the [_Banner] convention from
+/// `golden_signals_tab.dart` (pre-consolidation) so callers do not
+/// need to map `label`/`message` → `title`/`body`.
+class MeshBanner extends StatelessWidget {
+  const MeshBanner({
+    super.key,
     required this.icon,
     required this.color,
-    required this.label,
-    required this.message,
+    required this.title,
+    required this.body,
   });
 
   final IconData icon;
   final Color color;
-  final String label;
-  final String message;
+  final String title;
+  final String body;
 
   @override
   Widget build(BuildContext context) {
@@ -130,18 +138,18 @@ class _BannerRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  label,
+                  title,
                   style: TextStyle(
                     color: color,
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                if (message.isNotEmpty)
+                if (body.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(top: 2),
                     child: Text(
-                      message,
+                      body,
                       style: TextStyle(
                         color: colors.textSecondary,
                         fontSize: 11,
@@ -244,6 +252,32 @@ class MeshSection extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Muted rounded badge — destination-count and scope labels across the
+/// mesh routing and mTLS screens. Unlike [MeshPill], this badge uses a
+/// plain background rather than a tinted colour fill, signalling that
+/// the content is metadata rather than a status value.
+class MeshMutedBadge extends StatelessWidget {
+  const MeshMutedBadge({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: colors.bgElevated,
+      ),
+      child: Text(
+        label,
+        style: TextStyle(color: colors.textMuted, fontSize: 11),
       ),
     );
   }

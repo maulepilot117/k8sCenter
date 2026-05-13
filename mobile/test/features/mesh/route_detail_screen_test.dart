@@ -57,6 +57,25 @@ void main() {
     expect(find.textContaining('Invalid route ID'), findsOneWidget);
   });
 
+  testWidgets('raw=null hides the RAW SPEC panel', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/mesh/routing/istio%3Aapp%3Avs%3Anull-raw',
+          body: {
+            'data': {
+              'id': 'istio:app:vs:null-raw',
+              'mesh': 'istio',
+              'kind': 'VirtualService',
+              'name': 'null-raw',
+              'namespace': 'app',
+            },
+          });
+
+    await _pump(tester, mock, 'istio:app:vs:null-raw');
+
+    // The _RawPanel is only rendered when route.raw != null.
+    expect(find.text('RAW SPEC'), findsNothing);
+  });
+
   testWidgets('happy path renders metadata + matchers', (tester) async {
     final mock = MockDioAdapter()
       ..onJson('GET', '/api/v1/mesh/routing/istio%3Aapp%3Avs%3Aweb', body: {

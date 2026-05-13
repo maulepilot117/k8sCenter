@@ -46,6 +46,12 @@ class _MeshMtlsPostureScreenState
   @override
   Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
+    // Reset namespace selection when the user switches clusters so stale
+    // namespace state from the previous cluster doesn't contaminate the
+    // new cluster's mTLS fetch.
+    ref.listen<String>(activeClusterProvider, (previous, next) {
+      if (previous != next) setState(() => _namespace = null);
+    });
     final statusAsync = ref.watch(meshStatusProvider(clusterId));
 
     return Scaffold(
@@ -115,12 +121,32 @@ class _NamespaceBar extends ConsumerWidget {
                 'Loading namespaces…',
                 style: TextStyle(color: colors.textMuted, fontSize: 13),
               ),
-              error: (_, _) => DropdownButton<String?>(
-                value: value,
-                isExpanded: true,
-                hint: const Text('Namespaces unavailable — type manually'),
-                onChanged: (_) {},
-                items: const [],
+              error: (e, _) => Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        hintText: 'Namespace unavailable — type manually',
+                        hintStyle: TextStyle(fontSize: 13),
+                      ),
+                      onSubmitted: onChanged,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    tooltip: 'Retry namespace list',
+                    onPressed: () => ref.invalidate(
+                      resourceListProvider(
+                        ResourceListKey(
+                          clusterId: clusterId,
+                          kind: 'namespaces',
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
               data: (list) {
                 final names = <String>{};
@@ -252,7 +278,7 @@ class _PostureBody extends ConsumerWidget {
   }
 
   _PostureSummary _summarise(List<WorkloadMTLS> rows) {
-    int active = 0, inactive = 0, mixed = 0, unmeshed = 0;
+    int active = 0, inactive = 0, mixed = 0, unmeshed = 0, unknown = 0;
     for (final w in rows) {
       switch (w.state.toLowerCase()) {
         case 'active':
@@ -267,6 +293,9 @@ class _PostureBody extends ConsumerWidget {
         case 'unmeshed':
           unmeshed++;
           break;
+        default:
+          unknown++;
+          break;
       }
     }
     return _PostureSummary(
@@ -274,6 +303,7 @@ class _PostureBody extends ConsumerWidget {
       inactive: inactive,
       mixed: mixed,
       unmeshed: unmeshed,
+      unknown: unknown,
     );
   }
 
@@ -322,12 +352,17 @@ class _PostureSummary {
     required this.inactive,
     required this.mixed,
     required this.unmeshed,
+    this.unknown = 0,
   });
 
   final int active;
   final int inactive;
   final int mixed;
   final int unmeshed;
+
+  /// Count of workloads with a state value not in the known vocabulary.
+  /// Shown when non-zero so unknown backend states surface visibly.
+  final int unknown;
 }
 
 class _SummaryStrip extends StatelessWidget {
@@ -349,6 +384,9 @@ class _SummaryStrip extends StatelessWidget {
           MeshPill(label: '${summary.inactive} Inactive', color: colors.error),
           MeshPill(
               label: '${summary.unmeshed} Unmeshed', color: colors.textMuted),
+          if (summary.unknown > 0)
+            MeshPill(
+                label: '${summary.unknown} Unknown', color: colors.textMuted),
         ],
       ),
     );
@@ -438,9 +476,8 @@ class _WorkloadRow extends StatelessWidget {
                   color: meshStateColor(colors, workload.istioMode),
                 ),
               if (workload.sourceDetail != null)
-                _MutedBadge(
+                MeshMutedBadge(
                   label: 'Scope: ${workload.sourceDetail}',
-                  colors: colors,
                 ),
             ],
           ),
@@ -469,24 +506,3 @@ class _SourceBadge extends StatelessWidget {
   }
 }
 
-class _MutedBadge extends StatelessWidget {
-  const _MutedBadge({required this.label, required this.colors});
-
-  final String label;
-  final KubeColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: colors.bgElevated,
-      ),
-      child: Text(
-        label,
-        style: TextStyle(color: colors.textMuted, fontSize: 11),
-      ),
-    );
-  }
-}

@@ -14,6 +14,10 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+// Intentional cross-feature import: Service detail surfaces a golden
+// signals tab from the mesh feature when a service mesh is detected on
+// the cluster (added in PR-4f). This is the only mesh dependency in the
+// resources feature.
 import '../mesh/golden_signals_tab.dart';
 import 'k8s_helpers.dart';
 

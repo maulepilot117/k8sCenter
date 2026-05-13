@@ -62,6 +62,15 @@ class MeshRouteDetailScreen extends ConsumerWidget {
     final key = MeshRouteDetailKey(clusterId: clusterId, id: id);
     final async = ref.watch(meshRouteDetailProvider(key));
 
+    Future<void> handleRefresh() async {
+      ref.invalidate(meshRouteDetailProvider(key));
+      try {
+        await ref.read(meshRouteDetailProvider(key).future);
+      } on Object {
+        // surfaces via .when error branch
+      }
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text(parsed.name),
@@ -69,37 +78,56 @@ class MeshRouteDetailScreen extends ConsumerWidget {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: () => ref.invalidate(meshRouteDetailProvider(key)),
+            onPressed: handleRefresh,
           ),
         ],
       ),
-      body: async.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) {
-          if (e is ApiError && e.statusCode == 404) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Route ${parsed.name} not found in namespace '
-                  '${parsed.namespace}. It may have been deleted.',
-                  textAlign: TextAlign.center,
+      body: RefreshIndicator(
+        onRefresh: handleRefresh,
+        child: async.when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) {
+            if (e is ApiError && e.statusCode == 404) {
+              return ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: [
+                  SizedBox(
+                    height: 280,
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'Route ${parsed.name} not found in namespace '
+                          '${parsed.namespace}. It may have been deleted.',
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                SizedBox(
+                  height: 280,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        e is ApiError ? e.message : e.toString(),
+                        style: TextStyle(color: colors.error),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             );
-          }
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Text(
-                e is ApiError ? e.message : e.toString(),
-                style: TextStyle(color: colors.error),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          );
-        },
-        data: (route) => _Body(route: route, parsed: parsed),
+          },
+          data: (route) => _Body(route: route, parsed: parsed),
+        ),
       ),
     );
   }
@@ -115,6 +143,7 @@ class _Body extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(0, 8, 0, 24),
       children: [
         _Header(route: route, parsed: parsed),
@@ -247,10 +276,18 @@ class _DestinationRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
+    // Build host+port as a single token so the display reads
+    // "web.app.svc:80" rather than "web.app.svc : 80".
+    final hostPort = dest.host != null
+        ? dest.port != null
+            ? '${dest.host}:${dest.port}'
+            : dest.host!
+        : dest.port != null
+            ? ':${dest.port}'
+            : null;
     final segments = <String>[
-      if (dest.host != null) dest.host!,
+      ?hostPort,
       if (dest.subset != null) 'subset=${dest.subset}',
-      if (dest.port != null) ':${dest.port}',
       if (dest.weight != null) 'weight=${dest.weight}',
     ];
     return Padding(
