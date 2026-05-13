@@ -11,6 +11,10 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
+import '../features/certmanager/certificate_detail_screen.dart';
+import '../features/certmanager/certificates_list_screen.dart';
+import '../features/certmanager/expiring_screen.dart';
+import '../features/certmanager/issuers_list_screen.dart';
 import '../features/dashboard/dashboard_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
@@ -210,6 +214,45 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
         ],
+      ),
+
+      // --- M4 PR-4g: cert-manager observatory ---
+      // /clusters/<id>/certificates/certificates[?status=expiring|failed]
+      //                                          → list (filter chip)
+      // /clusters/<id>/certificates/certificates/<ns>/<name>
+      //                                          → detail (Overview / Sub /
+      //                                                    Events tabs)
+      // /clusters/<id>/certificates/issuers      → Issuers + ClusterIssuers
+      // /clusters/<id>/certificates/expiring     → expiring soon (sorted
+      //                                            ascending by days)
+      //
+      // Status gating is screen-level (each surface checks
+      // `certManagerStatusProvider` and falls back to
+      // `FeatureUnavailableState.certManager()`). Renew + Reissue verbs
+      // post to the same path namespace as the detail GET — handled by
+      // [CertManagerRepository], not the generic resource-actions layer.
+      GoRoute(
+        path: '/clusters/:clusterId/certificates/certificates',
+        builder: (context, state) => CertificatesListScreen(
+          initialStatusFilter: state.uri.queryParameters['status'],
+        ),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => CertificateDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/certificates/issuers',
+        builder: (context, state) => const IssuersListScreen(),
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/certificates/expiring',
+        builder: (context, state) => const ExpiringCertificatesScreen(),
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---
