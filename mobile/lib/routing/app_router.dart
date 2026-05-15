@@ -16,6 +16,16 @@ import '../features/certmanager/certificates_list_screen.dart';
 import '../features/certmanager/expiring_screen.dart';
 import '../features/certmanager/issuers_list_screen.dart';
 import '../features/dashboard/dashboard_screen.dart';
+import '../features/eso/cluster_external_secret_detail_screen.dart';
+import '../features/eso/cluster_external_secrets_list_screen.dart';
+import '../features/eso/cluster_stores_list_screen.dart';
+import '../features/eso/dashboard_screen.dart' as eso_dashboard;
+import '../features/eso/external_secret_detail_screen.dart';
+import '../features/eso/external_secrets_list_screen.dart';
+import '../features/eso/push_secret_detail_screen.dart';
+import '../features/eso/push_secrets_list_screen.dart';
+import '../features/eso/store_detail_screen.dart';
+import '../features/eso/stores_list_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
 import '../features/gitops/application_detail_screen.dart';
@@ -253,6 +263,94 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/clusters/:clusterId/certificates/expiring',
         builder: (context, state) => const ExpiringCertificatesScreen(),
+      ),
+
+      // --- M4 PR-4h: External Secrets Operator observatory ---
+      // /clusters/<id>/eso                                   → dashboard
+      // /clusters/<id>/eso/externalsecrets[?status=…]        → ES list
+      // /clusters/<id>/eso/externalsecrets/<ns>/<name>       → ES detail
+      // /clusters/<id>/eso/cluster-externalsecrets           → CES list
+      // /clusters/<id>/eso/cluster-externalsecrets/<name>    → CES detail
+      // /clusters/<id>/eso/stores                            → SecretStore list
+      // /clusters/<id>/eso/stores/<ns>/<name>                → SecretStore detail
+      // /clusters/<id>/eso/cluster-stores                    → ClusterSecretStore list
+      // /clusters/<id>/eso/cluster-stores/<name>             → ClusterSecretStore detail
+      // /clusters/<id>/eso/pushsecrets                       → PushSecret list
+      // /clusters/<id>/eso/pushsecrets/<ns>/<name>           → PushSecret detail
+      //
+      // Status gating is screen-level (each surface checks
+      // `esoStatusProvider` and falls back to
+      // `FeatureUnavailableState.eso()`). Drift Revert + bulk-refresh
+      // POSTs are deferred to M5+ per R12 — `DisabledRevertDriftButton`
+      // points operators at desktop.
+      GoRoute(
+        path: '/clusters/:clusterId/eso',
+        builder: (context, state) => const eso_dashboard.EsoDashboardScreen(),
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/eso/externalsecrets',
+        builder: (context, state) => ExternalSecretsListScreen(
+          initialStatusFilter: state.uri.queryParameters['status'],
+        ),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => ExternalSecretDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/eso/cluster-externalsecrets',
+        builder: (context, state) => const ClusterExternalSecretsListScreen(),
+        routes: [
+          GoRoute(
+            path: ':name',
+            builder: (context, state) => ClusterExternalSecretDetailScreen(
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/eso/stores',
+        builder: (context, state) => const StoresListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => StoreDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/eso/cluster-stores',
+        builder: (context, state) => const ClusterStoresListScreen(),
+        routes: [
+          GoRoute(
+            path: ':name',
+            builder: (context, state) => ClusterStoreDetailScreen(
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/clusters/:clusterId/eso/pushsecrets',
+        builder: (context, state) => const PushSecretsListScreen(),
+        routes: [
+          GoRoute(
+            path: ':namespace/:name',
+            builder: (context, state) => PushSecretDetailScreen(
+              namespace: state.pathParameters['namespace']!,
+              name: state.pathParameters['name']!,
+            ),
+          ),
+        ],
       ),
 
       // --- Resource list routes (PR-1d: 6 specialized kinds) ---

@@ -226,6 +226,69 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // External Secrets Operator observatory (PR-4h). Six entries:
+  //   * Dashboard — synced/total gauge + SyncFailed/Stale/Drifted/
+  //     Unknown summary cards + top-N failure table.
+  //   * ExternalSecrets — namespaced list with `lastObservedDriftStatus`
+  //     hint per row; detail screen fetches live `driftStatus`.
+  //   * Cluster ExternalSecrets — fan-out form, cluster-scoped.
+  //   * SecretStores — namespaced + per-store metrics panel (rate +
+  //     cost-tier estimate).
+  //   * Cluster SecretStores — cluster-scoped store variant.
+  //   * PushSecrets — read-only inverse direction (Secret → store).
+  // All six surfaces gate on `esoStatusProvider` and fall back to
+  // `FeatureUnavailableState.eso()` when not installed. Drift Revert +
+  // bulk-refresh write actions are deferred to M5+ per R12.
+  DomainSection(
+    label: 'External Secrets',
+    pathSegment: 'eso',
+    icon: Icons.lock_person_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'eso-dashboard',
+        label: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/eso',
+      ),
+      DomainKind(
+        kind: 'externalsecrets',
+        label: 'ExternalSecrets',
+        icon: Icons.lock_open_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/eso/externalsecrets',
+      ),
+      DomainKind(
+        kind: 'cluster-externalsecrets',
+        label: 'Cluster ExternalSecrets',
+        icon: Icons.public_outlined,
+        namespaced: false,
+        customListPath:
+            '/clusters/{clusterId}/eso/cluster-externalsecrets',
+      ),
+      DomainKind(
+        kind: 'eso-stores',
+        label: 'SecretStores',
+        icon: Icons.account_tree_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/eso/stores',
+      ),
+      DomainKind(
+        kind: 'eso-cluster-stores',
+        label: 'Cluster SecretStores',
+        icon: Icons.public_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/eso/cluster-stores',
+      ),
+      DomainKind(
+        kind: 'pushsecrets',
+        label: 'PushSecrets',
+        icon: Icons.upload_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/eso/pushsecrets',
+      ),
+    ],
+  ),
   // Cert-manager observatory (PR-4g). Three entries:
   //   * Certificates — full list with filter chips (All / Expiring /
   //     Failed) + search. `?status=expiring` URL param pre-filters.
