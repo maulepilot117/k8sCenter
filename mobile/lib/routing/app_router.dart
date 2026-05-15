@@ -40,6 +40,11 @@ import '../features/observability/diagnostics/diagnostics_screen.dart';
 import '../features/observability/diagnostics/namespace_summary_screen.dart';
 import '../features/observability/logs/log_search_screen.dart';
 import '../features/observability/logs/log_tail_screen.dart';
+import '../features/policy/compliance_history_screen.dart';
+import '../features/policy/dashboard_screen.dart' as policy_dashboard;
+import '../features/policy/policies_list_screen.dart';
+import '../features/policy/violation_detail_screen.dart';
+import '../features/policy/violations_list_screen.dart';
 import '../notifications/deep_link_handler.dart';
 import '../notifications/fcm_registration.dart';
 import '../features/resources/configmap_screens.dart';
@@ -518,6 +523,51 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             builder: (context, state) => NamespaceDetailScreen(
               name: state.pathParameters['name']!,
             ),
+          ),
+        ],
+      ),
+
+      // --- M4 PR-4i: policy compliance + violations ---
+      // /clusters/<id>/policy                          → compliance dashboard
+      // /clusters/<id>/policy/policies                 → policies list
+      // /clusters/<id>/policy/violations               → violations list
+      // /clusters/<id>/policy/violations/<stable-key>  → violation detail
+      // /clusters/<id>/policy/compliance-history       → admin-only history
+      //
+      // Status gating is screen-level (each surface checks
+      // `policyStatusProvider` and falls back to
+      // `FeatureUnavailableState.policy()`). Compliance history additionally
+      // gates on `user.isAdmin` at the route body; backend's `RequireAdmin`
+      // middleware enforces server-side.
+      //
+      // Violation `stableKey` is `policy|rule|namespace|kind|name` — the
+      // backend has no GET-by-id endpoint, so detail looks up by stable
+      // key against the cached violations list provider.
+      GoRoute(
+        path: '/clusters/:clusterId/policy',
+        builder: (context, state) => const policy_dashboard.PolicyDashboardScreen(),
+        routes: [
+          GoRoute(
+            path: 'policies',
+            builder: (context, state) => const PoliciesListScreen(),
+          ),
+          GoRoute(
+            path: 'violations',
+            builder: (context, state) => ViolationsListScreen(
+              initialNamespace: state.uri.queryParameters['namespace'],
+            ),
+            routes: [
+              GoRoute(
+                path: ':stableKey',
+                builder: (context, state) => ViolationDetailScreen(
+                  stableKey: state.pathParameters['stableKey']!,
+                ),
+              ),
+            ],
+          ),
+          GoRoute(
+            path: 'compliance-history',
+            builder: (context, state) => const ComplianceHistoryScreen(),
           ),
         ],
       ),
