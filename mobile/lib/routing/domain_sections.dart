@@ -289,6 +289,47 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // Policy compliance browser (PR-4i). Three entries:
+  //   * Dashboard — compliance score (KubeGaugeRing) + by-engine cards
+  //     + by-severity breakdown + browse tiles.
+  //   * Policies — full list with engine / severity / blocking chips +
+  //     search. Engine-availability badges (per PR-3f intersection
+  //     learning) on rows whose engine isn't installed.
+  //   * Violations — RBAC-filtered violations list with namespace +
+  //     severity filters; virtual scroll for 1000+-violation responses.
+  // All three surfaces gate on `policyStatusProvider` and fall back to
+  // `FeatureUnavailableState.policy()` when neither engine is detected.
+  // Compliance history (admin-only) is reachable from the dashboard
+  // browse tiles rather than as a top-level drawer entry — it's a niche
+  // workflow that doesn't deserve permanent drawer real estate.
+  DomainSection(
+    label: 'Policy',
+    pathSegment: 'policy',
+    icon: Icons.policy_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'policy-dashboard',
+        label: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/policy',
+      ),
+      DomainKind(
+        kind: 'policies',
+        label: 'Policies',
+        icon: Icons.list_alt_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/policy/policies',
+      ),
+      DomainKind(
+        kind: 'violations',
+        label: 'Violations',
+        icon: Icons.report_problem_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/policy/violations',
+      ),
+    ],
+  ),
   // Cert-manager observatory (PR-4g). Three entries:
   //   * Certificates — full list with filter chips (All / Expiring /
   //     Failed) + search. `?status=expiring` URL param pre-filters.
