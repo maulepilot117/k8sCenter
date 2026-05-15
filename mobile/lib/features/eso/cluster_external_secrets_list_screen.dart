@@ -11,64 +11,62 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
-import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
-import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/refresh_guard.dart';
 import 'eso_widgets.dart';
 
-class ClusterExternalSecretsListScreen extends ConsumerWidget {
+class ClusterExternalSecretsListScreen extends StatelessWidget {
   const ClusterExternalSecretsListScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final clusterId = ref.watch(activeClusterProvider);
-    final statusAsync = ref.watch(esoStatusProvider(clusterId));
-
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('ClusterExternalSecrets')),
-      body: statusAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
-          onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
-        ),
-        data: (status) {
-          if (!status.detected) return FeatureUnavailableState.eso();
-          return _ListBody(clusterId: clusterId);
-        },
+      body: EsoStatusGate(
+        builder: (clusterId) => _ListBody(clusterId: clusterId),
       ),
     );
   }
 }
 
-class _ListBody extends ConsumerWidget {
+class _ListBody extends ConsumerStatefulWidget {
   const _ListBody({required this.clusterId});
 
   final String clusterId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(clusterExternalSecretListProvider(clusterId));
+  ConsumerState<_ListBody> createState() => _ListBodyState();
+}
 
-    Future<void> handleRefresh() async {
-      ref.invalidate(clusterExternalSecretListProvider(clusterId));
-      try {
-        await ref.read(clusterExternalSecretListProvider(clusterId).future);
-      } on Object {/* surfaces via .when */}
-    }
+class _ListBodyState extends ConsumerState<_ListBody>
+    with RefreshGuardMixin {
+  Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(
+          clusterExternalSecretListProvider(widget.clusterId),
+        );
+        try {
+          await ref.read(
+            clusterExternalSecretListProvider(widget.clusterId).future,
+          );
+        } on Object {/* surfaces via .when */}
+      });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final async =
+        ref.watch(clusterExternalSecretListProvider(widget.clusterId));
 
     return RefreshIndicator(
-      onRefresh: handleRefresh,
+      onRefresh: _handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => ListErrorShell(
           title: 'Failed to load ClusterExternalSecrets',
           error: e,
-          onRetry: handleRefresh,
+          onRetry: _handleRefresh,
         ),
         data: (items) {
           if (items.isEmpty) {
@@ -99,7 +97,7 @@ class _ListBody extends ConsumerWidget {
             itemBuilder: (context, i) => _CesRow(
               ces: items[i],
               onTap: () => context.push(
-                '/clusters/$clusterId/eso/cluster-externalsecrets/'
+                '/clusters/${widget.clusterId}/eso/cluster-externalsecrets/'
                 '${Uri.encodeComponent(items[i].name)}',
               ),
             ),
@@ -119,7 +117,11 @@ class _CesRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final nsCount = ces.namespaces.length + ces.provisionedNamespaces.length;
+    // Dedupe: a namespace can appear in both the configured `namespaces`
+    // list and `provisionedNamespaces` once the controller has reconciled.
+    // Set-union prevents the "12 namespaces" badge from inflating to 24.
+    final nsCount =
+        {...ces.namespaces, ...ces.provisionedNamespaces}.length;
     return InkWell(
       onTap: onTap,
       child: Padding(

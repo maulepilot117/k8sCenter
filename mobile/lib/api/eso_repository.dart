@@ -189,6 +189,7 @@ class EsoDiscoveryStatus {
     this.namespace,
     this.version,
     this.lastChecked = '',
+    this.serviceUnavailable = false,
   });
 
   final bool detected;
@@ -197,6 +198,14 @@ class EsoDiscoveryStatus {
 
   /// RFC-3339 timestamp; empty when the first probe hasn't completed.
   final String lastChecked;
+
+  /// True when the backend status endpoint returned 5xx — distinguishes
+  /// "backend was unreachable" (transient, e.g. mid-rolling-restart) from
+  /// "backend says ESO is not installed". Both flow through `detected:false`
+  /// so the install-guidance UI still renders, but consumers that want
+  /// to nudge the operator toward retry rather than `helm install …` can
+  /// branch on this flag.
+  final bool serviceUnavailable;
 
   factory EsoDiscoveryStatus.fromJson(Map<String, dynamic> json) {
     String? s(Object? v) => v is String && v.isNotEmpty ? v : null;
@@ -209,6 +218,8 @@ class EsoDiscoveryStatus {
   }
 
   static const empty = EsoDiscoveryStatus(detected: false);
+  static const unreachable =
+      EsoDiscoveryStatus(detected: false, serviceUnavailable: true);
 }
 
 /// Reference from an ExternalSecret / ClusterExternalSecret / PushSecret
@@ -676,9 +687,10 @@ class EsoRepository {
 
   final Dio _dio;
 
-  /// Fetches ESO discovery status. Returns [EsoDiscoveryStatus.empty] on
-  /// 5xx so callers route straight to `FeatureUnavailableState.eso()` —
-  /// a flaky reverse-proxy probe shouldn't surface as an error card.
+  /// Fetches ESO discovery status. Returns [EsoDiscoveryStatus.unreachable]
+  /// on 5xx so the surface keeps rendering install-guidance copy without
+  /// flashing an error card; `serviceUnavailable: true` lets the UI add
+  /// a transient-error nuance if it wants (e.g., during rolling restarts).
   Future<EsoDiscoveryStatus> status({
     String? clusterIdOverride,
     CancelToken? cancelToken,
@@ -697,7 +709,7 @@ class EsoRepository {
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) rethrow;
       final code = e.response?.statusCode ?? 0;
-      if (code >= 500 && code < 600) return EsoDiscoveryStatus.empty;
+      if (code >= 500 && code < 600) return EsoDiscoveryStatus.unreachable;
       final err = e.error;
       throw err is ApiError ? err : ApiError.fromDio(e);
     }
@@ -1239,8 +1251,29 @@ final clusterStoreMetricsProvider = FutureProvider.autoDispose
       );
 });
 
+/// List-key for the PushSecret list provider. Structurally identical to
+/// [ExternalSecretListKey] but kept distinct so the provider's type
+/// parameter accurately describes what it lists — preventing the
+/// "ExternalSecretListKey inside a PushSecret screen" confusion at call
+/// sites.
+class PushSecretListKey {
+  const PushSecretListKey({required this.clusterId, this.namespace});
+
+  final String clusterId;
+  final String? namespace;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PushSecretListKey &&
+      other.clusterId == clusterId &&
+      other.namespace == namespace;
+
+  @override
+  int get hashCode => Object.hash(clusterId, namespace);
+}
+
 final pushSecretListProvider = FutureProvider.autoDispose
-    .family<List<PushSecret>, ExternalSecretListKey>((ref, key) async {
+    .family<List<PushSecret>, PushSecretListKey>((ref, key) async {
   ref.watch(activeClusterProvider);
   final cancel = CancelToken();
   ref.onDispose(() {

@@ -5,11 +5,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
-import '../../widgets/empty_states.dart';
 import 'eso_widgets.dart';
 import 'store_metrics_panel.dart';
 
@@ -31,52 +29,13 @@ class StoreDetailScreen extends ConsumerWidget {
       namespace: namespace,
       name: name,
     );
-    final async = ref.watch(storeDetailProvider(key));
-    final metricsAsync = ref.watch(storeMetricsProvider(key));
-
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(name),
-          actions: [
-            IconButton(
-              tooltip: 'Refresh',
-              icon: const Icon(Icons.refresh),
-              onPressed: () {
-                ref.invalidate(storeDetailProvider(key));
-                ref.invalidate(storeMetricsProvider(key));
-              },
-            ),
-          ],
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Overview'),
-              Tab(text: 'Metrics'),
-            ],
-          ),
-        ),
-        body: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => ErrorStateView(
-            message: e is ApiError ? e.message : e.toString(),
-            onRetry: () => ref.invalidate(storeDetailProvider(key)),
-          ),
-          data: (store) => TabBarView(
-            children: [
-              _OverviewTab(store: store),
-              SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: StoreMetricsPanel(
-                  metricsAsync: metricsAsync,
-                  onRetry: () => ref.invalidate(storeMetricsProvider(key)),
-                  storeLabel: '${store.namespace} / ${store.name}',
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return _StoreDetailShell(
+      title: name,
+      detailAsync: ref.watch(storeDetailProvider(key)),
+      metricsAsync: ref.watch(storeMetricsProvider(key)),
+      labelForStore: (s) => '${s.namespace} / ${s.name}',
+      onRefreshDetail: () => ref.invalidate(storeDetailProvider(key)),
+      onRefreshMetrics: () => ref.invalidate(storeMetricsProvider(key)),
     );
   }
 }
@@ -90,22 +49,56 @@ class ClusterStoreDetailScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final clusterId = ref.watch(activeClusterProvider);
     final key = ClusterStoreDetailKey(clusterId: clusterId, name: name);
-    final async = ref.watch(clusterStoreDetailProvider(key));
-    final metricsAsync = ref.watch(clusterStoreMetricsProvider(key));
+    return _StoreDetailShell(
+      title: name,
+      detailAsync: ref.watch(clusterStoreDetailProvider(key)),
+      metricsAsync: ref.watch(clusterStoreMetricsProvider(key)),
+      labelForStore: (s) => s.name,
+      onRefreshDetail: () => ref.invalidate(clusterStoreDetailProvider(key)),
+      onRefreshMetrics: () =>
+          ref.invalidate(clusterStoreMetricsProvider(key)),
+    );
+  }
+}
 
+/// Tab scaffold shared by [StoreDetailScreen] and [ClusterStoreDetailScreen].
+/// The two screens differ only by provider keys + how the metrics panel
+/// labels the store; everything else (AppBar, tabs, error-state mapping,
+/// retry semantics) is identical and lives here.
+class _StoreDetailShell extends StatelessWidget {
+  const _StoreDetailShell({
+    required this.title,
+    required this.detailAsync,
+    required this.metricsAsync,
+    required this.labelForStore,
+    required this.onRefreshDetail,
+    required this.onRefreshMetrics,
+  });
+
+  final String title;
+  final AsyncValue<SecretStore> detailAsync;
+  final AsyncValue<StoreMetrics> metricsAsync;
+  final String Function(SecretStore) labelForStore;
+  final VoidCallback onRefreshDetail;
+  final VoidCallback onRefreshMetrics;
+
+  void _refreshBoth() {
+    onRefreshDetail();
+    onRefreshMetrics();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: Text(name),
+          title: Text(title),
           actions: [
             IconButton(
               tooltip: 'Refresh',
               icon: const Icon(Icons.refresh),
-              onPressed: () {
-                ref.invalidate(clusterStoreDetailProvider(key));
-                ref.invalidate(clusterStoreMetricsProvider(key));
-              },
+              onPressed: _refreshBoth,
             ),
           ],
           bottom: const TabBar(
@@ -115,11 +108,13 @@ class ClusterStoreDetailScreen extends ConsumerWidget {
             ],
           ),
         ),
-        body: async.when(
+        body: detailAsync.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => ErrorStateView(
-            message: e is ApiError ? e.message : e.toString(),
-            onRetry: () => ref.invalidate(clusterStoreDetailProvider(key)),
+          error: (e, _) => esoDetailErrorState(
+            error: e,
+            // Retry both providers; the metrics provider may also be
+            // stuck on a stale error from the first failed fetch.
+            onRetry: _refreshBoth,
           ),
           data: (store) => TabBarView(
             children: [
@@ -128,9 +123,8 @@ class ClusterStoreDetailScreen extends ConsumerWidget {
                 padding: const EdgeInsets.all(16),
                 child: StoreMetricsPanel(
                   metricsAsync: metricsAsync,
-                  onRetry: () =>
-                      ref.invalidate(clusterStoreMetricsProvider(key)),
-                  storeLabel: store.name,
+                  onRetry: onRefreshMetrics,
+                  storeLabel: labelForStore(store),
                 ),
               ),
             ],
@@ -157,7 +151,7 @@ class _OverviewTab extends StatelessWidget {
         _AttributesCard(store: store, colors: colors),
         if (store.readyMessage != null && store.readyMessage!.isNotEmpty) ...[
           const SizedBox(height: 12),
-          _ReadyMessageCard(
+          EsoReadyMessageCard(
             reason: store.readyReason,
             message: store.readyMessage!,
             colors: colors,
@@ -296,45 +290,6 @@ class _AttributesCard extends StatelessWidget {
                 value: '${store.alertOnLifecycle}',
               ),
           ],
-        ],
-      ),
-    );
-  }
-}
-
-class _ReadyMessageCard extends StatelessWidget {
-  const _ReadyMessageCard({
-    required this.reason,
-    required this.message,
-    required this.colors,
-  });
-
-  final String? reason;
-  final String message;
-  final KubeColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            reason ?? 'Status detail',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(message, style: TextStyle(color: colors.textSecondary)),
         ],
       ),
     );

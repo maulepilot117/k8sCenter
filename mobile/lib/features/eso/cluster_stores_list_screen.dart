@@ -6,64 +6,59 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
-import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
-import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/refresh_guard.dart';
 import 'eso_widgets.dart';
 
-class ClusterStoresListScreen extends ConsumerWidget {
+class ClusterStoresListScreen extends StatelessWidget {
   const ClusterStoresListScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final clusterId = ref.watch(activeClusterProvider);
-    final statusAsync = ref.watch(esoStatusProvider(clusterId));
-
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('ClusterSecretStores')),
-      body: statusAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
-          onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
-        ),
-        data: (status) {
-          if (!status.detected) return FeatureUnavailableState.eso();
-          return _ListBody(clusterId: clusterId);
-        },
+      body: EsoStatusGate(
+        builder: (clusterId) => _ListBody(clusterId: clusterId),
       ),
     );
   }
 }
 
-class _ListBody extends ConsumerWidget {
+class _ListBody extends ConsumerStatefulWidget {
   const _ListBody({required this.clusterId});
 
   final String clusterId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(clusterStoresListProvider(clusterId));
+  ConsumerState<_ListBody> createState() => _ListBodyState();
+}
 
-    Future<void> handleRefresh() async {
-      ref.invalidate(clusterStoresListProvider(clusterId));
-      try {
-        await ref.read(clusterStoresListProvider(clusterId).future);
-      } on Object {/* surfaces via .when */}
-    }
+class _ListBodyState extends ConsumerState<_ListBody>
+    with RefreshGuardMixin {
+  Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(clusterStoresListProvider(widget.clusterId));
+        try {
+          await ref.read(
+            clusterStoresListProvider(widget.clusterId).future,
+          );
+        } on Object {/* surfaces via .when */}
+      });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final async = ref.watch(clusterStoresListProvider(widget.clusterId));
 
     return RefreshIndicator(
-      onRefresh: handleRefresh,
+      onRefresh: _handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => ListErrorShell(
           title: 'Failed to load ClusterSecretStores',
           error: e,
-          onRetry: handleRefresh,
+          onRetry: _handleRefresh,
         ),
         data: (items) {
           if (items.isEmpty) {
@@ -94,7 +89,7 @@ class _ListBody extends ConsumerWidget {
             itemBuilder: (context, i) => _StoreRow(
               store: items[i],
               onTap: () => context.push(
-                '/clusters/$clusterId/eso/cluster-stores/'
+                '/clusters/${widget.clusterId}/eso/cluster-stores/'
                 '${Uri.encodeComponent(items[i].name)}',
               ),
             ),

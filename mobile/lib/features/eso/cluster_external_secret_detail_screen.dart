@@ -6,11 +6,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
-import '../../widgets/empty_states.dart';
 import 'eso_widgets.dart';
 
 class ClusterExternalSecretDetailScreen extends ConsumerWidget {
@@ -41,8 +39,8 @@ class ClusterExternalSecretDetailScreen extends ConsumerWidget {
       ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
+        error: (e, _) => esoDetailErrorState(
+          error: e,
           onRetry: () =>
               ref.invalidate(clusterExternalSecretDetailProvider(key)),
         ),
@@ -68,7 +66,7 @@ class _Body extends StatelessWidget {
         _AttributesCard(ces: ces, colors: colors),
         if (ces.readyMessage != null && ces.readyMessage!.isNotEmpty) ...[
           const SizedBox(height: 12),
-          _ReadyMessageCard(
+          EsoReadyMessageCard(
             reason: ces.readyReason,
             message: ces.readyMessage!,
             colors: colors,
@@ -158,45 +156,6 @@ class _AttributesCard extends StatelessWidget {
             EsoKvRow(label: 'Refresh interval', value: ces.refreshInterval!),
           if (ces.externalSecretBaseName != null)
             EsoKvRow(label: 'Child base name', value: ces.externalSecretBaseName!),
-        ],
-      ),
-    );
-  }
-}
-
-class _ReadyMessageCard extends StatelessWidget {
-  const _ReadyMessageCard({
-    required this.reason,
-    required this.message,
-    required this.colors,
-  });
-
-  final String? reason;
-  final String message;
-  final KubeColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            reason ?? 'Status detail',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(message, style: TextStyle(color: colors.textSecondary)),
         ],
       ),
     );

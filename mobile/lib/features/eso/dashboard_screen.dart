@@ -13,76 +13,80 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
-import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
-import '../../widgets/feature_unavailable_state.dart';
 import '../../widgets/kube_gauge_ring.dart';
 import '../../widgets/kube_line_chart.dart' show KubeChartSeverity;
+import '../../widgets/refresh_guard.dart';
 import 'eso_widgets.dart';
 
-class EsoDashboardScreen extends ConsumerWidget {
+class EsoDashboardScreen extends StatelessWidget {
   const EsoDashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final clusterId = ref.watch(activeClusterProvider);
-    final statusAsync = ref.watch(esoStatusProvider(clusterId));
-
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('External Secrets')),
-      body: statusAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
-          onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
-        ),
-        data: (status) {
-          if (!status.detected) return FeatureUnavailableState.eso();
-          return _DashboardBody(clusterId: clusterId);
-        },
+      body: EsoStatusGate(
+        builder: (clusterId) => _DashboardBody(clusterId: clusterId),
       ),
     );
   }
 }
 
-class _DashboardBody extends ConsumerWidget {
+class _DashboardBody extends ConsumerStatefulWidget {
   const _DashboardBody({required this.clusterId});
 
   final String clusterId;
 
+  @override
+  ConsumerState<_DashboardBody> createState() => _DashboardBodyState();
+}
+
+class _DashboardBodyState extends ConsumerState<_DashboardBody>
+    with RefreshGuardMixin {
   ExternalSecretListKey get _listKey =>
-      ExternalSecretListKey(clusterId: clusterId);
+      ExternalSecretListKey(clusterId: widget.clusterId);
+
+  // Refresh entry point shared by the RefreshIndicator pull-down and the
+  // ListErrorShell retry. The guard collapses a second concurrent call
+  // into the in-flight future so rapid pulls don't race two
+  // invalidate+fetch cycles against the same provider slot.
+  Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(externalSecretListProvider(_listKey));
+        ref.invalidate(storesListProvider(widget.clusterId));
+        ref.invalidate(clusterStoresListProvider(widget.clusterId));
+        try {
+          // Wait for all three so the RefreshIndicator stays visible
+          // until the slowest of them resolves; the ES list is the only
+          // one we surface errors for via .when.
+          await Future.wait([
+            ref.read(externalSecretListProvider(_listKey).future),
+            ref.read(storesListProvider(widget.clusterId).future),
+            ref.read(clusterStoresListProvider(widget.clusterId).future),
+          ]);
+        } on Object {
+          // Surfaces via .when error branch.
+        }
+      });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final esAsync = ref.watch(externalSecretListProvider(_listKey));
 
-    Future<void> handleRefresh() async {
-      ref.invalidate(externalSecretListProvider(_listKey));
-      ref.invalidate(storesListProvider(clusterId));
-      ref.invalidate(clusterStoresListProvider(clusterId));
-      try {
-        await ref.read(externalSecretListProvider(_listKey).future);
-      } on Object {
-        // Surfaces via .when error branch.
-      }
-    }
-
     return RefreshIndicator(
-      onRefresh: handleRefresh,
+      onRefresh: _handleRefresh,
       child: esAsync.when(
         loading: () => const _ScrollableShell(child: LoadingState()),
         error: (e, _) => ListErrorShell(
           title: 'Failed to load ExternalSecrets',
           error: e,
-          onRetry: handleRefresh,
+          onRetry: _handleRefresh,
         ),
         data: (items) => _DashboardContent(
-          clusterId: clusterId,
+          clusterId: widget.clusterId,
           items: items,
           colors: colors,
         ),
@@ -127,9 +131,17 @@ class _DashboardContent extends StatelessWidget {
     // distinct and shouldn't double-count here. (The web dashboard
     // tracks drift Unknown in the gauge subtitle rather than a card.)
     final unknown = counts[EsoStatus.unknown] ?? 0;
+    final refreshing = counts[EsoStatus.refreshing] ?? 0;
 
-    final pct = total > 0 ? synced / total : 0.0;
-    final severity = total == 0
+    // Refreshing is a transient state (30-60s during controller restart
+    // / reconcile). Excluding it from the gauge denominator avoids a
+    // fleet-wide red dashboard during routine reconciles — the operator
+    // sees the actual error rate among items that have a settled state.
+    // The hero label still reflects total fleet size; only the
+    // percentage and severity colour use the settled subset.
+    final settled = total - refreshing;
+    final pct = settled > 0 ? synced / settled : 1.0;
+    final severity = total == 0 || settled == 0
         ? KubeChartSeverity.info
         : (pct >= 0.95
             ? KubeChartSeverity.success
@@ -375,7 +387,7 @@ class _FailureTable extends StatelessWidget {
             if (i > 0) Divider(color: colors.borderSubtle, height: 1),
             _FailureRow(
               clusterId: clusterId,
-              cert: broken[i],
+              es: broken[i],
               colors: colors,
             ),
           ],
@@ -396,12 +408,12 @@ class _FailureTable extends StatelessWidget {
 class _FailureRow extends StatelessWidget {
   const _FailureRow({
     required this.clusterId,
-    required this.cert,
+    required this.es,
     required this.colors,
   });
 
   final String clusterId;
-  final ExternalSecret cert;
+  final ExternalSecret es;
   final KubeColors colors;
 
   @override
@@ -409,8 +421,8 @@ class _FailureRow extends StatelessWidget {
     return InkWell(
       onTap: () => context.push(
         '/clusters/$clusterId/eso/externalsecrets/'
-        '${Uri.encodeComponent(cert.namespace)}/'
-        '${Uri.encodeComponent(cert.name)}',
+        '${Uri.encodeComponent(es.namespace)}/'
+        '${Uri.encodeComponent(es.name)}',
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -421,7 +433,7 @@ class _FailureRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    cert.name,
+                    es.name,
                     style: TextStyle(
                       color: colors.textPrimary,
                       fontSize: 13,
@@ -430,19 +442,19 @@ class _FailureRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   Text(
-                    cert.namespace,
+                    es.namespace,
                     style: TextStyle(
                       color: colors.textSecondary,
                       fontSize: 11,
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
-                  if (cert.readyMessage != null &&
-                      cert.readyMessage!.isNotEmpty)
+                  if (es.readyMessage != null &&
+                      es.readyMessage!.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
                       child: Text(
-                        cert.readyMessage!,
+                        es.readyMessage!,
                         style: TextStyle(color: colors.textMuted, fontSize: 11),
                         overflow: TextOverflow.ellipsis,
                         maxLines: 2,
@@ -452,7 +464,7 @@ class _FailureRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            EsoStatusPill(status: cert.status, dense: true),
+            EsoStatusPill(status: es.status, dense: true),
             const SizedBox(width: 6),
             Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
           ],

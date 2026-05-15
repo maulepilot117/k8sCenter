@@ -7,67 +7,60 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
-import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
-import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/refresh_guard.dart';
 import 'eso_widgets.dart';
 
-class PushSecretsListScreen extends ConsumerWidget {
+class PushSecretsListScreen extends StatelessWidget {
   const PushSecretsListScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final clusterId = ref.watch(activeClusterProvider);
-    final statusAsync = ref.watch(esoStatusProvider(clusterId));
-
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('PushSecrets')),
-      body: statusAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
-          onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
-        ),
-        data: (status) {
-          if (!status.detected) return FeatureUnavailableState.eso();
-          return _ListBody(clusterId: clusterId);
-        },
+      body: EsoStatusGate(
+        builder: (clusterId) => _ListBody(clusterId: clusterId),
       ),
     );
   }
 }
 
-class _ListBody extends ConsumerWidget {
+class _ListBody extends ConsumerStatefulWidget {
   const _ListBody({required this.clusterId});
 
   final String clusterId;
 
-  ExternalSecretListKey get _key =>
-      ExternalSecretListKey(clusterId: clusterId);
+  @override
+  ConsumerState<_ListBody> createState() => _ListBodyState();
+}
+
+class _ListBodyState extends ConsumerState<_ListBody>
+    with RefreshGuardMixin {
+  PushSecretListKey get _key =>
+      PushSecretListKey(clusterId: widget.clusterId);
+
+  Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(pushSecretListProvider(_key));
+        try {
+          await ref.read(pushSecretListProvider(_key).future);
+        } on Object {/* surfaces via .when */}
+      });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final async = ref.watch(pushSecretListProvider(_key));
 
-    Future<void> handleRefresh() async {
-      ref.invalidate(pushSecretListProvider(_key));
-      try {
-        await ref.read(pushSecretListProvider(_key).future);
-      } on Object {/* surfaces via .when */}
-    }
-
     return RefreshIndicator(
-      onRefresh: handleRefresh,
+      onRefresh: _handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => ListErrorShell(
           title: 'Failed to load PushSecrets',
           error: e,
-          onRetry: handleRefresh,
+          onRetry: _handleRefresh,
         ),
         data: (items) {
           if (items.isEmpty) {
@@ -98,7 +91,7 @@ class _ListBody extends ConsumerWidget {
             itemBuilder: (context, i) => _PsRow(
               ps: items[i],
               onTap: () => context.push(
-                '/clusters/$clusterId/eso/pushsecrets/'
+                '/clusters/${widget.clusterId}/eso/pushsecrets/'
                 '${Uri.encodeComponent(items[i].namespace)}/'
                 '${Uri.encodeComponent(items[i].name)}',
               ),

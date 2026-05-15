@@ -9,11 +9,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
-import '../../widgets/empty_states.dart';
 import 'eso_widgets.dart';
 
 class ExternalSecretDetailScreen extends ConsumerWidget {
@@ -49,8 +47,8 @@ class ExternalSecretDetailScreen extends ConsumerWidget {
       ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
+        error: (e, _) => esoDetailErrorState(
+          error: e,
           onRetry: () => ref.invalidate(externalSecretDetailProvider(key)),
         ),
         data: (es) => _Body(clusterId: clusterId, es: es),
@@ -76,7 +74,7 @@ class _Body extends StatelessWidget {
         _AttributesCard(es: es, clusterId: clusterId, colors: colors),
         if (es.readyMessage != null && es.readyMessage!.isNotEmpty) ...[
           const SizedBox(height: 12),
-          _ReadyMessageCard(
+          EsoReadyMessageCard(
             reason: es.readyReason,
             message: es.readyMessage!,
             colors: colors,
@@ -286,48 +284,6 @@ class _StoreRefLink extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ReadyMessageCard extends StatelessWidget {
-  const _ReadyMessageCard({
-    required this.reason,
-    required this.message,
-    required this.colors,
-  });
-
-  final String? reason;
-  final String message;
-  final KubeColors colors;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            reason ?? 'Status detail',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            message,
-            style: TextStyle(color: colors.textSecondary, fontSize: 13),
-          ),
-        ],
       ),
     );
   }

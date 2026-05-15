@@ -133,6 +133,68 @@ void main() {
       expect(text.style?.color, colors.textMuted);
       expect(text.style?.color, isNot(colors.error));
     });
+
+    // PR-4h-review #30: Stale + Refreshing arms previously had no tests.
+    // Closing the switch arms guards against a future palette refactor
+    // that drifts them off their expected severity tokens.
+    testWidgets('Stale uses warning token (not error)', (tester) async {
+      await _pumpWith(
+        tester,
+        const EsoStatusPill(status: EsoStatus.stale),
+      );
+      final text = tester.widget<Text>(find.text('Stale'));
+      final ctx = tester.element(find.text('Stale'));
+      final colors = _kubeColors(ctx);
+      expect(text.style?.color, colors.warning);
+      expect(text.style?.color, isNot(colors.error));
+    });
+
+    testWidgets('Refreshing uses an info/transient token, never error',
+        (tester) async {
+      await _pumpWith(
+        tester,
+        const EsoStatusPill(status: EsoStatus.refreshing),
+      );
+      final text = tester.widget<Text>(find.text('Refreshing'));
+      final ctx = tester.element(find.text('Refreshing'));
+      final colors = _kubeColors(ctx);
+      expect(text.style?.color, isNot(colors.error),
+          reason: 'Refreshing is a transient state — fleet-wide '
+              'reconciles must not render the fleet as failed.');
+      expect(text.style?.color, isNot(colors.warning));
+    });
+  });
+
+  // PR-4h-review #6: ChipStrip caps eager-rendered chips so a
+  // ClusterExternalSecret whose namespaceSelector matches hundreds of
+  // namespaces does not freeze the detail screen layout pass.
+  group('ChipStrip', () {
+    testWidgets('renders all items when under the cap', (tester) async {
+      final items =
+          List<String>.generate(8, (i) => 'namespace-$i', growable: false);
+      await _pumpWith(
+        tester,
+        ChipStrip(label: 'Namespaces', items: items),
+      );
+      for (final ns in items) {
+        expect(find.text(ns), findsOneWidget);
+      }
+      expect(find.textContaining('+'), findsNothing);
+    });
+
+    testWidgets('truncates with "+N more" trailing chip when over the cap',
+        (tester) async {
+      final items =
+          List<String>.generate(120, (i) => 'ns-$i', growable: false);
+      await _pumpWith(
+        tester,
+        ChipStrip(label: 'Namespaces', items: items, maxVisible: 50),
+      );
+      expect(find.text('ns-0'), findsOneWidget);
+      expect(find.text('ns-49'), findsOneWidget);
+      expect(find.text('ns-50'), findsNothing);
+      expect(find.text('+70 more'), findsOneWidget);
+    });
   });
 
   group('DisabledRevertDriftButton', () {

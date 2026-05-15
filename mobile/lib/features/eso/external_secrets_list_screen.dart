@@ -13,12 +13,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
-import '../../widgets/feature_unavailable_state.dart';
+import '../../widgets/refresh_guard.dart';
 import 'eso_widgets.dart';
 
 /// Filter chip values for the ExternalSecrets list. Mirrors the
@@ -75,9 +74,6 @@ class _ExternalSecretsListScreenState
 
   @override
   Widget build(BuildContext context) {
-    final clusterId = ref.watch(activeClusterProvider);
-    final statusAsync = ref.watch(esoStatusProvider(clusterId));
-
     ref.listen<String>(activeClusterProvider, (previous, next) {
       if (previous != next) {
         setState(() {
@@ -90,29 +86,21 @@ class _ExternalSecretsListScreenState
 
     return Scaffold(
       appBar: AppBar(title: const Text('ExternalSecrets')),
-      body: statusAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
-          onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
+      body: EsoStatusGate(
+        builder: (clusterId) => _ListBody(
+          clusterId: clusterId,
+          filter: _filter,
+          search: _search,
+          searchCtl: _searchCtl,
+          onFilterChanged: (v) => setState(() => _filter = v),
+          onSearchChanged: (v) => setState(() => _search = v),
         ),
-        data: (status) {
-          if (!status.detected) return FeatureUnavailableState.eso();
-          return _ListBody(
-            clusterId: clusterId,
-            filter: _filter,
-            search: _search,
-            searchCtl: _searchCtl,
-            onFilterChanged: (v) => setState(() => _filter = v),
-            onSearchChanged: (v) => setState(() => _search = v),
-          );
-        },
       ),
     );
   }
 }
 
-class _ListBody extends ConsumerWidget {
+class _ListBody extends ConsumerStatefulWidget {
   const _ListBody({
     required this.clusterId,
     required this.filter,
@@ -129,31 +117,43 @@ class _ListBody extends ConsumerWidget {
   final ValueChanged<EsListFilter> onFilterChanged;
   final ValueChanged<String> onSearchChanged;
 
+  @override
+  ConsumerState<_ListBody> createState() => _ListBodyState();
+}
+
+class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
+  // Cached lower-cased search haystack ("name namespace storeName") parallel
+  // to [_lastItems]. Rebuilt only when the items list reference changes —
+  // the typical keystroke path reuses the cache, dropping the per-keystroke
+  // cost from O(N) `toLowerCase` calls to a constant array lookup.
+  List<ExternalSecret>? _lastItems;
+  List<String>? _haystacks;
+
   ExternalSecretListKey get _key =>
-      ExternalSecretListKey(clusterId: clusterId);
+      ExternalSecretListKey(clusterId: widget.clusterId);
+
+  Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(externalSecretListProvider(_key));
+        try {
+          await ref.read(externalSecretListProvider(_key).future);
+        } on Object {
+          // surfaces via .when
+        }
+      });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final async = ref.watch(externalSecretListProvider(_key));
 
-    Future<void> handleRefresh() async {
-      ref.invalidate(externalSecretListProvider(_key));
-      try {
-        await ref.read(externalSecretListProvider(_key).future);
-      } on Object {
-        // surfaces via .when
-      }
-    }
-
     return RefreshIndicator(
-      onRefresh: handleRefresh,
+      onRefresh: _handleRefresh,
       child: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => ListErrorShell(
           title: 'Failed to load ExternalSecrets',
           error: e,
-          onRetry: handleRefresh,
+          onRetry: _handleRefresh,
         ),
         data: (items) {
           final filtered = _applyFilters(items);
@@ -162,12 +162,12 @@ class _ListBody extends ConsumerWidget {
             slivers: [
               SliverToBoxAdapter(
                 child: _FilterStrip(
-                  filter: filter,
-                  searchCtl: searchCtl,
+                  filter: widget.filter,
+                  searchCtl: widget.searchCtl,
                   totalVisible: filtered.length,
                   totalAll: items.length,
-                  onFilterChanged: onFilterChanged,
-                  onSearchChanged: onSearchChanged,
+                  onFilterChanged: widget.onFilterChanged,
+                  onSearchChanged: widget.onSearchChanged,
                 ),
               ),
               if (filtered.isEmpty)
@@ -196,7 +196,7 @@ class _ListBody extends ConsumerWidget {
                     (context, index) => _EsRow(
                       cert: filtered[index],
                       onTap: () => context.push(
-                        '/clusters/$clusterId/eso/externalsecrets/'
+                        '/clusters/${widget.clusterId}/eso/externalsecrets/'
                         '${Uri.encodeComponent(filtered[index].namespace)}/'
                         '${Uri.encodeComponent(filtered[index].name)}',
                       ),
@@ -213,29 +213,49 @@ class _ListBody extends ConsumerWidget {
   }
 
   List<ExternalSecret> _applyFilters(List<ExternalSecret> items) {
-    final q = search.trim().toLowerCase();
-    return items.where((es) {
-      switch (filter) {
+    final q = widget.search.trim().toLowerCase();
+
+    // Refresh the haystack cache only when the underlying items list
+    // changes identity (refresh, cluster switch). Keystroke rebuilds keep
+    // the cache.
+    if (!identical(_lastItems, items)) {
+      _lastItems = items;
+      _haystacks = List<String>.generate(
+        items.length,
+        (i) {
+          final es = items[i];
+          return '${es.name} ${es.namespace} ${es.storeRef.name}'
+              .toLowerCase();
+        },
+        growable: false,
+      );
+    }
+
+    final haystacks = _haystacks!;
+    final out = <ExternalSecret>[];
+    for (var i = 0; i < items.length; i++) {
+      final es = items[i];
+      switch (widget.filter) {
         case EsListFilter.syncFailed:
-          if (es.status != EsoStatus.syncFailed) return false;
+          if (es.status != EsoStatus.syncFailed) continue;
           break;
         case EsListFilter.stale:
-          if (es.status != EsoStatus.stale) return false;
+          if (es.status != EsoStatus.stale) continue;
           break;
         case EsListFilter.drifted:
-          if (es.status != EsoStatus.drifted) return false;
+          if (es.status != EsoStatus.drifted) continue;
           break;
         case EsListFilter.unknown:
-          if (es.status != EsoStatus.unknown) return false;
+          if (es.status != EsoStatus.unknown) continue;
           break;
         case EsListFilter.all:
           break;
       }
-      if (q.isEmpty) return true;
-      return es.name.toLowerCase().contains(q) ||
-          es.namespace.toLowerCase().contains(q) ||
-          es.storeRef.name.toLowerCase().contains(q);
-    }).toList();
+      if (q.isEmpty || haystacks[i].contains(q)) {
+        out.add(es);
+      }
+    }
+    return out;
   }
 }
 

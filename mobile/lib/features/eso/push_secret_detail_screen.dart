@@ -5,11 +5,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
-import '../../widgets/empty_states.dart';
 import 'eso_widgets.dart';
 
 class PushSecretDetailScreen extends ConsumerWidget {
@@ -45,8 +43,8 @@ class PushSecretDetailScreen extends ConsumerWidget {
       ),
       body: async.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => ErrorStateView(
-          message: e is ApiError ? e.message : e.toString(),
+        error: (e, _) => esoDetailErrorState(
+          error: e,
           onRetry: () => ref.invalidate(pushSecretDetailProvider(key)),
         ),
         data: (ps) => _Body(ps: ps),

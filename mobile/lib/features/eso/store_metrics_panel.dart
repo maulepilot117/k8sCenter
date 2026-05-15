@@ -95,9 +95,10 @@ class _MetricsBody extends StatelessWidget {
           ),
           const SizedBox(height: 8),
         ],
-        if (metrics.isDegraded)
+        if (metrics.isDegraded) ...[
           _DegradedBanner(message: metrics.error!, colors: colors),
-        const SizedBox(height: 8),
+          const SizedBox(height: 8),
+        ],
         _RatePanel(metrics: metrics, colors: colors),
         if (metrics.cost != null) ...[
           const SizedBox(height: 12),

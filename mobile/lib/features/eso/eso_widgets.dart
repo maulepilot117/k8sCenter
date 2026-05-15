@@ -6,9 +6,114 @@
 // #9) would have to land here first.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
+import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/empty_states.dart';
+import '../../widgets/feature_unavailable_state.dart';
+
+/// Wraps a per-cluster ESO surface body in the standard discovery-status
+/// gate. The outer ConsumerWidget watches `esoStatusProvider(clusterId)`,
+/// handles loading / error / not-detected uniformly, and only calls
+/// [builder] when ESO is detected. Six ESO list screens and the dashboard
+/// previously copy-pasted this outer shell; adding a seventh surface no
+/// longer requires duplicating it.
+class EsoStatusGate extends ConsumerWidget {
+  const EsoStatusGate({super.key, required this.builder});
+
+  /// Called with the current activeClusterId once status resolves to
+  /// `detected: true`. Implementations typically return the screen's
+  /// per-cluster `_ListBody`-shaped body.
+  final Widget Function(String clusterId) builder;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clusterId = ref.watch(activeClusterProvider);
+    final statusAsync = ref.watch(esoStatusProvider(clusterId));
+    return statusAsync.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => ErrorStateView(
+        message: e is ApiError ? e.message : e.toString(),
+        onRetry: () => ref.invalidate(esoStatusProvider(clusterId)),
+      ),
+      data: (status) {
+        if (!status.detected) return FeatureUnavailableState.eso();
+        return builder(clusterId);
+      },
+    );
+  }
+}
+
+/// Render the appropriate degraded state for an ESO detail endpoint
+/// failure. List screens gate on `esoStatusProvider` before fetching, but
+/// detail screens are reached directly via deep-link / push notification,
+/// so they have no chance to render `FeatureUnavailableState.eso()` until
+/// the detail endpoint itself responds. A 503 here means the backend has
+/// observed that ESO is no longer detected (cluster restart, CRD
+/// removal); collapse it to the same install-guidance UX the lists use,
+/// not a generic retry-this-error view.
+Widget esoDetailErrorState({
+  required Object error,
+  required VoidCallback onRetry,
+}) {
+  if (error is ApiError && error.statusCode == 503) {
+    return FeatureUnavailableState.eso();
+  }
+  return ErrorStateView(
+    message: error is ApiError ? error.message : error.toString(),
+    onRetry: onRetry,
+  );
+}
+
+/// Surface a non-empty readyMessage from any ESO resource (ExternalSecret /
+/// ClusterExternalSecret / SecretStore / ClusterSecretStore). Three
+/// detail screens previously kept private copies of an identical widget;
+/// this is the canonical one.
+class EsoReadyMessageCard extends StatelessWidget {
+  const EsoReadyMessageCard({
+    super.key,
+    required this.reason,
+    required this.message,
+    required this.colors,
+  });
+
+  final String? reason;
+  final String message;
+  final KubeColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.bgSurface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            reason ?? 'Status detail',
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            message,
+            style: TextStyle(color: colors.textSecondary, fontSize: 13),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 /// Drift indicator pill. Tri-state colour mapping is the only place
 /// drift colour lives — every drift surface across PR-4h reads from
@@ -335,23 +440,33 @@ class EsoKvRow extends StatelessWidget {
 
 /// Renders a wrap of small chips. Used for selector / namespace lists
 /// on ClusterExternalSecret detail.
+///
+/// Caps the visible chip count at [maxVisible] so a `ClusterExternalSecret`
+/// whose namespaceSelector matches hundreds of namespaces does not stall
+/// the detail screen during layout. The remainder is summarised inline
+/// with a "+N more" trailing chip — full visibility is a desktop affordance.
 class ChipStrip extends StatelessWidget {
   const ChipStrip({
     super.key,
     required this.label,
     required this.items,
     this.foreground,
+    this.maxVisible = 50,
   });
 
   final String label;
   final List<String> items;
   final Color? foreground;
+  final int maxVisible;
 
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
     final colors = Theme.of(context).extension<KubeColors>()!;
     final fg = foreground ?? colors.textSecondary;
+    final visible =
+        items.length <= maxVisible ? items : items.sublist(0, maxVisible);
+    final overflow = items.length - visible.length;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
@@ -370,7 +485,7 @@ class ChipStrip extends StatelessWidget {
             spacing: 6,
             runSpacing: 4,
             children: [
-              for (final item in items)
+              for (final item in visible)
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -382,6 +497,24 @@ class ChipStrip extends StatelessWidget {
                   child: Text(
                     item,
                     style: TextStyle(color: fg, fontSize: 11),
+                  ),
+                ),
+              if (overflow > 0)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: colors.bgElevated,
+                    borderRadius: BorderRadius.circular(3),
+                    border: Border.all(color: colors.borderSubtle),
+                  ),
+                  child: Text(
+                    '+$overflow more',
+                    style: TextStyle(
+                      color: colors.textMuted,
+                      fontSize: 11,
+                      fontStyle: FontStyle.italic,
+                    ),
                   ),
                 ),
             ],
