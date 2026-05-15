@@ -113,6 +113,21 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
   List<PolicyViolation>? _lastItems;
   List<String>? _haystacks;
 
+  // Distinct namespaces cached against the items reference — only
+  // rebuilt when the underlying list identity changes (refresh, cluster
+  // switch). Per-keystroke builds reuse the cached list.
+  List<String>? _cachedNamespaces;
+
+  // Filtered result cache: (items, namespace, severity, search) →
+  // filtered list. Invalidated whenever any cache-key field changes.
+  // Without this cache, each rebuild allocates a fresh list and re-runs
+  // 3 predicate checks across every row — O(N) on every keystroke, chip
+  // tap, or scroll frame.
+  List<PolicyViolation>? _cachedFiltered;
+  String? _cachedFilterNamespace;
+  PolicySeverityFilter? _cachedFilterSeverity;
+  String? _cachedFilterSearch;
+
   Future<void> _handleRefresh() => guardedRefresh(() async {
         ref.invalidate(violationsListProvider(widget.clusterId));
         try {
@@ -124,13 +139,19 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
 
   /// Set of distinct namespaces from the unfiltered response. Used to
   /// populate the namespace dropdown. Sorted ascending so the picker
-  /// scans alphabetically.
+  /// scans alphabetically. Cached against [_lastItems] identity so
+  /// keystroke rebuilds don't allocate a fresh Set + sorted List each
+  /// frame.
   List<String> _namespaces(List<PolicyViolation> items) {
+    if (identical(_lastItems, items) && _cachedNamespaces != null) {
+      return _cachedNamespaces!;
+    }
     final set = <String>{};
     for (final v in items) {
       if (v.namespace.isNotEmpty) set.add(v.namespace);
     }
     final out = set.toList()..sort();
+    _cachedNamespaces = out;
     return out;
   }
 
@@ -149,8 +170,22 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
           onRetry: _handleRefresh,
         ),
         data: (items) {
-          final filtered = _applyFilters(items);
           final namespaces = _namespaces(items);
+          // Reset the namespace filter when the post-refresh data no
+          // longer contains the previously-selected namespace (e.g.,
+          // every violation in that namespace was remediated). Without
+          // this, the dropdown guard would render "All" but the filter
+          // would still apply the stale namespace and the list would
+          // show a misleading "no violations match" empty state. Defer
+          // the reset to post-frame so we don't call setState during
+          // build.
+          if (widget.namespaceFilter.isNotEmpty &&
+              !namespaces.contains(widget.namespaceFilter)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) widget.onNamespaceChanged('');
+            });
+          }
+          final filtered = _applyFilters(items);
           return CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
@@ -226,6 +261,21 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
                 v.message,
               ].join(' ').toLowerCase())
           .toList();
+      // Invalidate downstream caches whenever the items identity flips
+      // (refresh, cluster switch).
+      _cachedFiltered = null;
+      _cachedNamespaces = null;
+    }
+
+    // Reuse the previous result when nothing relevant changed —
+    // RefreshIndicator + Riverpod rebuilds re-enter build() many times
+    // per second on a single scroll frame; at 1000 violations the
+    // unfiltered 3000-predicate loop adds up quickly.
+    if (_cachedFiltered != null &&
+        _cachedFilterNamespace == widget.namespaceFilter &&
+        _cachedFilterSeverity == widget.severityFilter &&
+        _cachedFilterSearch == q) {
+      return _cachedFiltered!;
     }
 
     final hs = _haystacks!;
@@ -240,6 +290,11 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
       if (q.isNotEmpty && !hs[i].contains(q)) continue;
       out.add(v);
     }
+
+    _cachedFiltered = out;
+    _cachedFilterNamespace = widget.namespaceFilter;
+    _cachedFilterSeverity = widget.severityFilter;
+    _cachedFilterSearch = q;
     return out;
   }
 

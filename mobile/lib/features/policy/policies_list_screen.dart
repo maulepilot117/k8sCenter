@@ -122,6 +122,16 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
   List<PolicyItem>? _lastItems;
   List<String>? _haystacks;
 
+  // Filtered result cache: (items, engine, severity, blocking, search)
+  // → filtered list. Invalidated whenever any cache-key field changes.
+  // Without this cache, each build allocates a fresh list and re-runs
+  // 4 predicate checks across every row.
+  List<PolicyItem>? _cachedFiltered;
+  PolicyEngineFilter? _cachedFilterEngine;
+  PolicySeverityFilter? _cachedFilterSeverity;
+  PolicyBlockingFilter? _cachedFilterBlocking;
+  String? _cachedFilterSearch;
+
   Future<void> _handleRefresh() => guardedRefresh(() async {
         ref.invalidate(policiesListProvider(widget.clusterId));
         try {
@@ -221,7 +231,8 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
     final q = widget.search.trim().toLowerCase();
 
     // Refresh the haystack cache only when the underlying items list
-    // changes identity (refresh, cluster switch).
+    // changes identity (refresh, cluster switch). Invalidate downstream
+    // filtered-result cache at the same time.
     if (!identical(_lastItems, items)) {
       _lastItems = items;
       _haystacks = items
@@ -233,6 +244,16 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
                 p.description ?? '',
               ].join(' ').toLowerCase())
           .toList();
+      _cachedFiltered = null;
+    }
+
+    // Reuse the previous filtered result when nothing relevant changed.
+    if (_cachedFiltered != null &&
+        _cachedFilterEngine == widget.engineFilter &&
+        _cachedFilterSeverity == widget.severityFilter &&
+        _cachedFilterBlocking == widget.blockingFilter &&
+        _cachedFilterSearch == q) {
+      return _cachedFiltered!;
     }
 
     final hs = _haystacks!;
@@ -245,6 +266,12 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
       if (q.isNotEmpty && !hs[i].contains(q)) continue;
       out.add(p);
     }
+
+    _cachedFiltered = out;
+    _cachedFilterEngine = widget.engineFilter;
+    _cachedFilterSeverity = widget.severityFilter;
+    _cachedFilterBlocking = widget.blockingFilter;
+    _cachedFilterSearch = q;
     return out;
   }
 
@@ -319,78 +346,57 @@ class _FilterStrip extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
+          // Filter chip groups — record-loop pattern keeps the three
+          // groups (engine / severity / blocking) symmetric with
+          // violations_list_screen.dart's inline form rather than
+          // splaying out a private wrapper class per enum.
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _EngineChip(
-                  value: PolicyEngineFilter.all,
-                  current: engineFilter,
-                  label: 'All',
-                  onChanged: onEngineChanged,
-                ),
-                _EngineChip(
-                  value: PolicyEngineFilter.kyverno,
-                  current: engineFilter,
-                  label: 'Kyverno',
-                  onChanged: onEngineChanged,
-                ),
-                _EngineChip(
-                  value: PolicyEngineFilter.gatekeeper,
-                  current: engineFilter,
-                  label: 'Gatekeeper',
-                  onChanged: onEngineChanged,
-                ),
+                for (final tuple in [
+                  (PolicyEngineFilter.all, 'All'),
+                  (PolicyEngineFilter.kyverno, 'Kyverno'),
+                  (PolicyEngineFilter.gatekeeper, 'Gatekeeper'),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      selected: tuple.$1 == engineFilter,
+                      label: Text(tuple.$2),
+                      onSelected: (_) => onEngineChanged(tuple.$1),
+                    ),
+                  ),
                 const SizedBox(width: 12),
-                _SeverityChip(
-                  value: PolicySeverityFilter.all,
-                  current: severityFilter,
-                  label: 'Any severity',
-                  onChanged: onSeverityChanged,
-                ),
-                _SeverityChip(
-                  value: PolicySeverityFilter.critical,
-                  current: severityFilter,
-                  label: 'Critical',
-                  onChanged: onSeverityChanged,
-                ),
-                _SeverityChip(
-                  value: PolicySeverityFilter.high,
-                  current: severityFilter,
-                  label: 'High',
-                  onChanged: onSeverityChanged,
-                ),
-                _SeverityChip(
-                  value: PolicySeverityFilter.medium,
-                  current: severityFilter,
-                  label: 'Medium',
-                  onChanged: onSeverityChanged,
-                ),
-                _SeverityChip(
-                  value: PolicySeverityFilter.low,
-                  current: severityFilter,
-                  label: 'Low',
-                  onChanged: onSeverityChanged,
-                ),
+                for (final tuple in [
+                  (PolicySeverityFilter.all, 'Any severity'),
+                  (PolicySeverityFilter.critical, 'Critical'),
+                  (PolicySeverityFilter.high, 'High'),
+                  (PolicySeverityFilter.medium, 'Medium'),
+                  (PolicySeverityFilter.low, 'Low'),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      selected: tuple.$1 == severityFilter,
+                      label: Text(tuple.$2),
+                      onSelected: (_) => onSeverityChanged(tuple.$1),
+                    ),
+                  ),
                 const SizedBox(width: 12),
-                _BlockingChip(
-                  value: PolicyBlockingFilter.all,
-                  current: blockingFilter,
-                  label: 'All actions',
-                  onChanged: onBlockingChanged,
-                ),
-                _BlockingChip(
-                  value: PolicyBlockingFilter.blocking,
-                  current: blockingFilter,
-                  label: 'Blocking',
-                  onChanged: onBlockingChanged,
-                ),
-                _BlockingChip(
-                  value: PolicyBlockingFilter.audit,
-                  current: blockingFilter,
-                  label: 'Audit',
-                  onChanged: onBlockingChanged,
-                ),
+                for (final tuple in [
+                  (PolicyBlockingFilter.all, 'All actions'),
+                  (PolicyBlockingFilter.blocking, 'Blocking'),
+                  (PolicyBlockingFilter.audit, 'Audit'),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      selected: tuple.$1 == blockingFilter,
+                      label: Text(tuple.$2),
+                      onSelected: (_) => onBlockingChanged(tuple.$1),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -402,84 +408,6 @@ class _FilterStrip extends StatelessWidget {
             style: TextStyle(color: colors.textMuted, fontSize: 11),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _EngineChip extends StatelessWidget {
-  const _EngineChip({
-    required this.value,
-    required this.current,
-    required this.label,
-    required this.onChanged,
-  });
-
-  final PolicyEngineFilter value;
-  final PolicyEngineFilter current;
-  final String label;
-  final ValueChanged<PolicyEngineFilter> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: ChoiceChip(
-        selected: value == current,
-        label: Text(label),
-        onSelected: (_) => onChanged(value),
-      ),
-    );
-  }
-}
-
-class _SeverityChip extends StatelessWidget {
-  const _SeverityChip({
-    required this.value,
-    required this.current,
-    required this.label,
-    required this.onChanged,
-  });
-
-  final PolicySeverityFilter value;
-  final PolicySeverityFilter current;
-  final String label;
-  final ValueChanged<PolicySeverityFilter> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: ChoiceChip(
-        selected: value == current,
-        label: Text(label),
-        onSelected: (_) => onChanged(value),
-      ),
-    );
-  }
-}
-
-class _BlockingChip extends StatelessWidget {
-  const _BlockingChip({
-    required this.value,
-    required this.current,
-    required this.label,
-    required this.onChanged,
-  });
-
-  final PolicyBlockingFilter value;
-  final PolicyBlockingFilter current;
-  final String label;
-  final ValueChanged<PolicyBlockingFilter> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: ChoiceChip(
-        selected: value == current,
-        label: Text(label),
-        onSelected: (_) => onChanged(value),
       ),
     );
   }

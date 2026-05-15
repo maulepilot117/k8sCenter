@@ -25,7 +25,13 @@ class PolicyStatusGate extends ConsumerWidget {
 
   /// Called with the current activeClusterId once status resolves to
   /// `detected: true`. Implementations typically return the screen's
-  /// per-cluster body widget.
+  /// per-cluster body widget. The [PolicyDiscoveryStatus] is exposed
+  /// because two consumers need it: the dashboard renders per-engine
+  /// install state + webhook counts on the engine cards, and the
+  /// policies list applies the engine-availability tooltip via
+  /// [PolicyDiscoveryStatus.kyvernoAvailable] / `gatekeeperAvailable`
+  /// (PR-3f intersection learning). Consumers that don't need the
+  /// status are free to ignore it via the `_` pattern.
   final Widget Function(String clusterId, PolicyDiscoveryStatus status) builder;
 
   @override
@@ -39,6 +45,21 @@ class PolicyStatusGate extends ConsumerWidget {
         onRetry: () => ref.invalidate(policyStatusProvider(clusterId)),
       ),
       data: (status) {
+        // Transient backend 5xx — the repository collapses 5xx to a
+        // detected:false sentinel with serviceUnavailable:true. Distinct
+        // from "engine not installed": the operator needs a retry path
+        // (the backend will return when the rolling restart settles),
+        // not install-guidance copy. Without this branch the dashboard
+        // and lists wedge the operator on install-Kyverno copy until
+        // they kill the app.
+        if (status.serviceUnavailable) {
+          return ErrorStateView(
+            message:
+                'Policy backend temporarily unavailable. Retry once the '
+                'cluster settles.',
+            onRetry: () => ref.invalidate(policyStatusProvider(clusterId)),
+          );
+        }
         if (!status.detected) return FeatureUnavailableState.policy();
         return builder(clusterId, status);
       },

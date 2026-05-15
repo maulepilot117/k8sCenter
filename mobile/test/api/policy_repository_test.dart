@@ -443,32 +443,7 @@ void main() {
     });
   });
 
-  group('PolicyId.tryParse', () {
-    test('parses well-formed engine:namespace:kind:name', () {
-      final id = PolicyId.tryParse('kyverno:default:ClusterPolicy:require');
-      expect(id, isNotNull);
-      expect(id!.engine, 'kyverno');
-      expect(id.namespace, 'default');
-      expect(id.kind, 'ClusterPolicy');
-      expect(id.name, 'require');
-      expect(id.raw, 'kyverno:default:ClusterPolicy:require');
-    });
-
-    test('parses cluster-scoped policy (empty namespace segment)', () {
-      final id = PolicyId.tryParse('kyverno::ClusterPolicy:cluster-policy');
-      expect(id, isNotNull);
-      expect(id!.namespace, '');
-    });
-
-    test('rejects malformed segment count', () {
-      expect(PolicyId.tryParse('kyverno:default'), isNull);
-      expect(PolicyId.tryParse('a:b:c:d:e'), isNull);
-    });
-
-    test('rejects empty engine / kind / name segments', () {
-      expect(PolicyId.tryParse(':default:ClusterPolicy:foo'), isNull);
-      expect(PolicyId.tryParse('kyverno:default::foo'), isNull);
-      expect(PolicyId.tryParse('kyverno:default:ClusterPolicy:'), isNull);
-    });
-  });
+  // PolicyId parsing lives in mobile/lib/util/composite_id.dart; tests for
+  // it live in mobile/test/util/composite_id_test.dart. Do not duplicate
+  // here.
 }

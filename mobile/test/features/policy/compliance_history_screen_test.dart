@@ -155,10 +155,12 @@ void main() {
         );
       await _pump(tester, mock);
 
-      // The FeatureUnavailableState wording.
+      // The FeatureUnavailableState wording: the database-not-configured
+      // helpMessage MUST appear so operators see the actual remediation
+      // (configure PostgreSQL), not the generic install-Kyverno guidance.
       expect(find.text('Compliance history'), findsAtLeastNWidgets(1));
       expect(find.textContaining('database storage'), findsOneWidget);
-      expect(find.textContaining('is not installed'), findsOneWidget);
+      expect(find.textContaining('PostgreSQL'), findsOneWidget);
 
       // The critical contract: NO Retry button. A retry button would
       // deterministically hit 503 again until the operator configures

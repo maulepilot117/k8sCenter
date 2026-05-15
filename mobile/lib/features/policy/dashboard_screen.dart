@@ -58,18 +58,52 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody>
   /// Refresh entry point shared by the RefreshIndicator pull-down and the
   /// ListErrorShell retry. The guard collapses concurrent calls into the
   /// in-flight future so rapid pulls don't stack invalidations.
+  ///
+  /// `policyStatusProvider` is invalidated here so the dashboard reflects
+  /// engine-availability changes (engine uninstalled, second engine added)
+  /// on pull-to-refresh — without this, the engine cards stay stale until
+  /// provider autodispose tears down the cache.
+  ///
+  /// Partial-failure surfacing: the dashboard's `.when` only watches
+  /// `complianceScoreProvider` so a violations or policies fetch failure
+  /// would otherwise be silent. Track per-provider failure names and
+  /// surface them in a SnackBar so the operator knows the underlying
+  /// dataset is stale even though the dashboard rendered cleanly.
   Future<void> _handleRefresh() => guardedRefresh(() async {
+        ref.invalidate(policyStatusProvider(widget.clusterId));
         ref.invalidate(complianceScoreProvider(_scoreKey));
         ref.invalidate(policiesListProvider(widget.clusterId));
         ref.invalidate(violationsListProvider(widget.clusterId));
-        try {
-          await Future.wait([
-            ref.read(complianceScoreProvider(_scoreKey).future),
-            ref.read(policiesListProvider(widget.clusterId).future),
-            ref.read(violationsListProvider(widget.clusterId).future),
-          ]);
-        } on Object {
-          // Surfaces via .when error branch.
+        final fetches = <(String, Future<Object>)>[
+          ('status', ref.read(policyStatusProvider(widget.clusterId).future)),
+          ('compliance', ref.read(complianceScoreProvider(_scoreKey).future)),
+          ('policies', ref.read(policiesListProvider(widget.clusterId).future)),
+          ('violations', ref.read(violationsListProvider(widget.clusterId).future)),
+        ];
+        final failed = <String>[];
+        for (final (name, fut) in fetches) {
+          try {
+            await fut;
+          } on Object {
+            failed.add(name);
+          }
+        }
+        if (failed.isNotEmpty && mounted) {
+          // Compliance score failure already surfaces via the scoreAsync
+          // .when branch as a ListErrorShell; if compliance was the only
+          // failure, suppress the SnackBar (it would be redundant).
+          final extras =
+              failed.where((n) => n != 'compliance').toList();
+          if (extras.isNotEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Some data is stale — ${extras.join(', ')} fetch failed.',
+                ),
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
         }
       });
 
@@ -462,6 +496,13 @@ class _BrowseLinks extends StatelessWidget {
           ),
         );
 
+    // Compliance history is admin-only — backend route guard returns 403
+    // for non-admins. Hiding the tile rather than rendering a disabled card
+    // keeps the dashboard from advertising a feature the operator cannot
+    // reach. Admins still tap through to the 503-distinguished-error path
+    // when the database isn't configured. The spread-conditional omits the
+    // tile entirely for non-admins so the remaining two tiles each get 1/2
+    // of the row width instead of 1/3 with a phantom flex slot.
     return Row(
       children: [
         tile('Policies', Icons.list_alt_outlined,
@@ -469,22 +510,11 @@ class _BrowseLinks extends StatelessWidget {
         const SizedBox(width: 8),
         tile('Violations', Icons.report_problem_outlined,
             '/clusters/$clusterId/policy/violations'),
-        const SizedBox(width: 8),
-        // Compliance history is admin-only — backend route guard returns
-        // 403 for non-admins. Hiding the tile rather than rendering a
-        // disabled card keeps the dashboard from advertising a feature
-        // the operator cannot reach. Admins still tap through to the
-        // 503-distinguished-error path when the database isn't configured.
-        if (isAdmin)
+        if (isAdmin) ...[
+          const SizedBox(width: 8),
           tile('History', Icons.timeline_outlined,
-              '/clusters/$clusterId/policy/compliance-history')
-        else
-          Expanded(
-            child: SizedBox(
-              height: 0,
-              child: const SizedBox.shrink(),
-            ),
-          ),
+              '/clusters/$clusterId/policy/compliance-history'),
+        ],
       ],
     );
   }

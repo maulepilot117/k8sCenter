@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kubecenter/api/dio_client.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
+import 'package:kubecenter/cluster/cluster_provider.dart';
 import 'package:kubecenter/features/policy/violations_list_screen.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 
@@ -225,4 +226,116 @@ void main() {
         reason: 'Virtual scroll must not construct the entire list '
             'eagerly — only viewport rows.');
   });
+
+  testWidgets(
+    'cluster switch resets namespace + severity filters mid-screen '
+    '(plan §U9 line 644 cluster-pin discipline)',
+    (tester) async {
+      // The provider is keyed on clusterId via family, so each cluster
+      // gets its own slot. The screen's ref.listen<String>(active...) is
+      // the discipline being tested — when active cluster changes, the
+      // screen MUST reset the filter chips to avoid applying a stale
+      // namespace filter from cluster A against cluster B's data.
+      await tester.binding.setSurfaceSize(const Size(1600, 1600));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final mock = MockDioAdapter()
+        ..onJson('GET', '/api/v1/policies/status', body: _detected())
+        // Both clusters' /policies/status mocked above (any X-Cluster-ID
+        // hits the same handler). Per-cluster violations:
+        ..onJson('GET', '/api/v1/policies/violations', body: {
+          'data': [
+            {
+              'policy': 'cluster-A-policy',
+              'kind': 'Pod',
+              'name': 'a-pod',
+              'severity': 'critical',
+              'action': 'enforce',
+              'message': '',
+              'engine': 'kyverno',
+              'blocking': true,
+              'namespace': 'team-a',
+            },
+            {
+              'policy': 'cluster-B-policy',
+              'kind': 'Pod',
+              'name': 'b-pod',
+              'severity': 'low',
+              'action': 'audit',
+              'message': '',
+              'engine': 'kyverno',
+              'blocking': false,
+              'namespace': 'team-b',
+            },
+          ],
+        });
+
+      final router = GoRouter(
+        initialLocation: '/',
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const ViolationsListScreen(initialNamespace: 'team-a'),
+          ),
+          GoRoute(
+            path: '/clusters/:clusterId/policy/violations/:stableKey',
+            builder: (context, state) =>
+                const Scaffold(body: Text('detail')),
+          ),
+        ],
+      );
+
+      final container = ProviderContainer(
+        overrides: [
+          backendUrlProvider.overrideWithValue('http://test'),
+          secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.read(dioProvider).httpClientAdapter = mock;
+      // Start on cluster A with the screen seeded to namespace=team-a.
+      container.read(activeClusterProvider.notifier).setCluster('cluster-a');
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp.router(
+            theme: buildKubeTheme('nexus'),
+            routerConfig: router,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+      // Filter was seeded to team-a → cluster-A-policy visible,
+      // cluster-B-policy hidden.
+      expect(find.text('cluster-A-policy'), findsOneWidget);
+      expect(find.text('cluster-B-policy'), findsNothing);
+
+      // Flip the active cluster — ref.listen<String>(activeClusterProvider)
+      // fires inside ViolationsListScreen and must reset _namespaceFilter
+      // to '' so the new cluster's violations aren't filtered against the
+      // stale team-a namespace.
+      container.read(activeClusterProvider.notifier).setCluster('cluster-b');
+      await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+      // Both violations now visible (filter cleared) — the screen is
+      // showing cluster B's data with no namespace filter applied.
+      expect(find.text('cluster-A-policy'), findsOneWidget);
+      expect(find.text('cluster-B-policy'), findsOneWidget);
+
+      // Confirm the dispatched X-Cluster-ID headers reflect the two
+      // different cluster IDs — the repository was called once per
+      // cluster, never under the wrong pin.
+      final clusterIds = mock.requests
+          .where((r) => r.path == '/api/v1/policies/violations')
+          .map((r) => r.headers['X-Cluster-ID'])
+          .toSet();
+      expect(clusterIds, containsAll(<String>['cluster-a', 'cluster-b']),
+          reason:
+              'Each cluster slot must fetch under its own pin — never '
+              'mix a request for cluster B under cluster A\'s pin.');
+    },
+  );
 }

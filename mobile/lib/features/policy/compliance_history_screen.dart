@@ -137,12 +137,19 @@ class _HistoryChart extends StatelessWidget {
     // dashboard gauge).
     final latest = points.isNotEmpty ? points.last.score : 100.0;
     final tier = complianceScoreTier(latest, colors);
+    // Build the chart points and track how many were silently dropped
+    // due to unparseable dates. Surfacing the drop count below the
+    // chart prevents the operator from misreading a gapped chart as a
+    // sparse-data signal when the real cause is malformed backend output.
+    final chartPoints = <MetricsPoint>[];
+    for (final p in points) {
+      final t = _tryParseDate(p.date);
+      if (t != null) chartPoints.add((t: t, v: p.score));
+    }
+    final droppedDates = points.length - chartPoints.length;
     final scoreSeries = (
       label: 'Compliance %',
-      points: <MetricsPoint>[
-        for (final p in points)
-          if (_tryParseDate(p.date) case final t?) (t: t, v: p.score),
-      ],
+      points: chartPoints,
       severity: latest >= 90
           ? KubeChartSeverity.success
           : (latest >= 70
@@ -186,6 +193,18 @@ class _HistoryChart extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               KubeLineChart(series: [scoreSeries], height: 200),
+              if (droppedDates > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    droppedDates == 1
+                        ? '1 datapoint dropped from the chart due to an '
+                            'unparseable date.'
+                        : '$droppedDates datapoints dropped from the '
+                            'chart due to unparseable dates.',
+                    style: TextStyle(color: colors.warning, fontSize: 11),
+                  ),
+                ),
             ],
           ),
         ),
@@ -261,9 +280,14 @@ class _HistoryChart extends StatelessWidget {
 /// Parses a `yyyy-MM-dd` string into UTC midnight. Returns null on
 /// malformed input rather than throwing, so a single corrupt datapoint
 /// from the backend doesn't blank the entire chart.
+///
+/// `DateTime.parse('2026-05-01')` without a timezone suffix yields a
+/// local-time DateTime — on a device in UTC+8 the point nominally for
+/// `2026-05-01` becomes 2026-04-30T16:00Z, misaligning the chart axis
+/// against the label row. Anchoring with a `T00:00:00Z` suffix forces UTC.
 DateTime? _tryParseDate(String s) {
   try {
-    return DateTime.parse(s);
+    return DateTime.parse('${s}T00:00:00Z');
   } on FormatException {
     return null;
   }

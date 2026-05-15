@@ -380,7 +380,14 @@ class ComplianceScore {
     final bs = <String, PolicySeverityCounts>{};
     if (raw is Map) {
       for (final entry in raw.entries) {
-        final k = entry.key.toString();
+        // PolicyItem.severity / PolicyViolation.severity lowercase on
+        // parse so `kPolicySeverityWeights` lookups and `kSeverityOrder`
+        // comparisons work consistently. Mirror that here — without the
+        // lowercase a future engine emitting `Critical` would sort to
+        // the end of the by-severity breakdown via the unknown-key
+        // alphabetic-tiebreaker branch, contradicting the rest of the
+        // pipeline.
+        final k = entry.key.toString().toLowerCase();
         final v = entry.value;
         if (v is Map) {
           bs[k] = PolicySeverityCounts.fromJson(Map<String, dynamic>.from(v));
@@ -449,46 +456,6 @@ class ComplianceHistoryPoint {
       total: i(json['total']),
     );
   }
-}
-
-// ---------------------------------------------------------------------------
-// Composite-ID helper
-// ---------------------------------------------------------------------------
-
-/// Composite policy id parser. The backend's [PolicyItem.id] field is
-/// `engine:namespace:kind:name` (with empty namespace segment for
-/// cluster-scoped policies). [PolicyId.tryParse] handles malformed input
-/// without throwing so callers can short-circuit to a "not found" detail
-/// screen rather than 500-ing.
-class PolicyId {
-  const PolicyId({
-    required this.engine,
-    required this.namespace,
-    required this.kind,
-    required this.name,
-  });
-
-  final String engine;
-  final String namespace;
-  final String kind;
-  final String name;
-
-  /// Parses `engine:namespace:kind:name`. Returns null on any segment
-  /// shape mismatch. The namespace segment may be empty (cluster-scoped
-  /// policies); name + kind + engine must all be non-empty.
-  static PolicyId? tryParse(String raw) {
-    final parts = raw.split(':');
-    if (parts.length != 4) return null;
-    if (parts[0].isEmpty || parts[2].isEmpty || parts[3].isEmpty) return null;
-    return PolicyId(
-      engine: parts[0],
-      namespace: parts[1],
-      kind: parts[2],
-      name: parts[3],
-    );
-  }
-
-  String get raw => '$engine:$namespace:$kind:$name';
 }
 
 // ---------------------------------------------------------------------------
@@ -609,7 +576,9 @@ class PolicyRepository {
   }
 
   /// Admin-only. Fetches historical compliance snapshots over a sliding
-  /// window. Backend clamps [days] to [1, 90]; 30 is the default.
+  /// window. Backend clamps [days] to [1, 90]; 30 is the default. The
+  /// client-side assertion documents the constraint so a future caller
+  /// passing 0 or 365 fails loud rather than getting silently remapped.
   ///
   /// 503 with "requires a database" body indicates the ComplianceStore
   /// PostgreSQL persistence isn't configured — surface via
@@ -619,14 +588,20 @@ class PolicyRepository {
     int days = 30,
     String? clusterIdOverride,
     CancelToken? cancelToken,
-  }) =>
-      _fetchList<ComplianceHistoryPoint>(
-        path: '/api/v1/policies/compliance/history',
-        query: {'days': '$days'},
-        parse: ComplianceHistoryPoint.fromJson,
-        clusterIdOverride: clusterIdOverride,
-        cancelToken: cancelToken,
-      );
+  }) {
+    assert(
+      days >= 1 && days <= 90,
+      'complianceHistory(days:) must be in [1, 90]; backend clamps '
+      'silently otherwise. Got $days.',
+    );
+    return _fetchList<ComplianceHistoryPoint>(
+      path: '/api/v1/policies/compliance/history',
+      query: {'days': '$days'},
+      parse: ComplianceHistoryPoint.fromJson,
+      clusterIdOverride: clusterIdOverride,
+      cancelToken: cancelToken,
+    );
+  }
 
   // -------------------------------------------------------------------------
   // Internals
