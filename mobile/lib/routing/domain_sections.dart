@@ -365,6 +365,36 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
+  // Vulnerability scanning (PR-4j). Two entries:
+  //   * Dashboard — scanner status + browse tile.
+  //   * Vulnerabilities — workload-level CVE counts per namespace
+  //     (mandatory namespace picker on first visit).
+  // Both surfaces gate on `scanningStatusProvider` and fall back to
+  // `FeatureUnavailableState.scanning()` when neither scanner is
+  // detected. CVE detail is reachable from a list row tap rather than
+  // a top-level drawer entry — the namespace/kind/name tuple isn't a
+  // drawer-level identifier.
+  DomainSection(
+    label: 'Vulnerabilities',
+    pathSegment: 'scanning',
+    icon: Icons.security_outlined,
+    kinds: [
+      DomainKind(
+        kind: 'scanning-dashboard',
+        label: 'Dashboard',
+        icon: Icons.dashboard_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/scanning',
+      ),
+      DomainKind(
+        kind: 'vulnerabilities',
+        label: 'Vulnerabilities',
+        icon: Icons.bug_report_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/scanning/vulnerabilities',
+      ),
+    ],
+  ),
 ];
 
 /// Substitutes `{clusterId}` (and any future placeholder) in a

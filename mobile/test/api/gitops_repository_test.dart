@@ -555,4 +555,113 @@ void main() {
       expect(fluxHr.hidesResourcesAndHistory, isTrue);
     });
   });
+
+  // ---------------------------------------------------------------------
+  // PR-4j: async commit enrichment (deferred from PR-4e)
+  // ---------------------------------------------------------------------
+
+  group('GitOpsRepository.getCommits (PR-4j)', () {
+    test('parses sha → commit metadata map', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson('GET', '/api/v1/gitops/commits', body: {
+        'data': {
+          'commits': {
+            'abc1234': {
+              'sha': 'abc1234abc1234abc1234abc1234abc1234abc12',
+              'title': 'Bump nginx to 1.25.3',
+              'message': 'Bump nginx to 1.25.3\n\nCloses #42',
+              'authorName': 'Operator',
+              'authorDate': '2026-05-10T09:30:00Z',
+              'webUrl': 'https://github.com/org/repo/commit/abc1234',
+            },
+          },
+          'unavailable': <String>[],
+        },
+      });
+
+      final out = await container
+          .read(gitOpsRepositoryProvider)
+          .getCommits(
+            repoURL: 'https://github.com/org/repo',
+            shas: ['abc1234abc1234abc1234abc1234abc1234abc12'],
+          );
+      expect(out, hasLength(1));
+      expect(out['abc1234']?.title, 'Bump nginx to 1.25.3');
+      expect(out['abc1234']?.authorName, 'Operator');
+    });
+
+    test('empty repoURL or shas skips the network call entirely', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      final out = await container
+          .read(gitOpsRepositoryProvider)
+          .getCommits(repoURL: '', shas: ['abc']);
+      expect(out, isEmpty);
+      expect(mock.requests, isEmpty,
+          reason:
+              'Skipping the call when inputs are empty avoids triggering '
+              'the backend 400-on-missing-params path.');
+    });
+
+    test('403 (RBAC) collapses to empty map (best-effort)', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson('GET', '/api/v1/gitops/commits', status: 403, body: {
+        'error': {
+          'code': 403,
+          'message': 'no visible application uses this repository',
+        },
+      });
+
+      final out = await container
+          .read(gitOpsRepositoryProvider)
+          .getCommits(
+            repoURL: 'https://github.com/private/repo',
+            shas: ['abc1234abc1234abc1234abc1234abc1234abc12'],
+          );
+      expect(out, isEmpty,
+          reason:
+              'Commit enrichment is informational; any non-cancel error '
+              'must degrade to an empty map so the History tab keeps '
+              'rendering without commit subjects.');
+    });
+
+    test('5xx collapses to empty map', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson('GET', '/api/v1/gitops/commits', status: 503, body: {
+        'error': {'code': 503, 'message': 'github offline'},
+      });
+
+      final out = await container
+          .read(gitOpsRepositoryProvider)
+          .getCommits(
+            repoURL: 'https://github.com/org/repo',
+            shas: ['abc1234abc1234abc1234abc1234abc1234abc12'],
+          );
+      expect(out, isEmpty);
+    });
+
+    test('GitCommitEnrichmentKey canonicalises SHA list', () async {
+      // Order-independent + case-folded so the cache slot doesn't
+      // proliferate on identical input.
+      final a = GitCommitEnrichmentKey(
+        clusterId: 'local',
+        repoURL: 'https://github.com/org/repo',
+        shas: ['ABC', 'def', 'abc'],
+      );
+      final b = GitCommitEnrichmentKey(
+        clusterId: 'local',
+        repoURL: 'https://github.com/org/repo',
+        shas: ['def', 'abc'],
+      );
+      expect(a, equals(b),
+          reason: 'Duplicate + case-folded + sorted SHAs collapse.');
+    });
+  });
 }

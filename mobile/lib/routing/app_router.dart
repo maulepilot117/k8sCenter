@@ -47,6 +47,9 @@ import '../features/policy/violation_detail_screen.dart';
 import '../features/policy/violations_list_screen.dart';
 import '../notifications/deep_link_handler.dart';
 import '../notifications/fcm_registration.dart';
+import '../features/scanning/dashboard_screen.dart' as scanning_dashboard;
+import '../features/scanning/vulnerabilities_list_screen.dart';
+import '../features/scanning/vulnerability_detail_screen.dart';
 import '../features/resources/configmap_screens.dart';
 import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
@@ -568,6 +571,44 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'compliance-history',
             builder: (context, state) => const ComplianceHistoryScreen(),
+          ),
+        ],
+      ),
+
+      // --- M4 PR-4j: vulnerability scanning (Trivy + Kubescape) ---
+      // /clusters/<id>/scanning                          → dashboard
+      // /clusters/<id>/scanning/vulnerabilities          → list
+      // /clusters/<id>/scanning/vulnerabilities/<ns>/<kind>/<name>
+      //                                                  → CVE detail
+      //
+      // Status gating is screen-level (each surface checks
+      // `scanningStatusProvider` and falls back to
+      // `FeatureUnavailableState.scanning()`). The list endpoint
+      // requires `?namespace=`; the screen prompts via a bottom-sheet
+      // picker on first visit. CVE detail is Trivy-only on the backend
+      // (Kubescape's CRD shape doesn't expose per-CVE data under
+      // impersonation); a 501 response renders targeted help copy at
+      // the detail screen rather than a retry-able generic error.
+      GoRoute(
+        path: '/clusters/:clusterId/scanning',
+        builder: (context, state) =>
+            const scanning_dashboard.ScanningDashboardScreen(),
+        routes: [
+          GoRoute(
+            path: 'vulnerabilities',
+            builder: (context, state) => VulnerabilitiesListScreen(
+              initialNamespace: state.uri.queryParameters['namespace'],
+            ),
+            routes: [
+              GoRoute(
+                path: ':namespace/:kind/:name',
+                builder: (context, state) => VulnerabilityDetailScreen(
+                  namespace: state.pathParameters['namespace']!,
+                  kind: state.pathParameters['kind']!,
+                  name: state.pathParameters['name']!,
+                ),
+              ),
+            ],
           ),
         ],
       ),

@@ -271,6 +271,40 @@ class RevisionEntry {
   }
 }
 
+/// Git commit metadata for a single revision. Mirrors
+/// `backend/internal/gitprovider/cache.go::commitResponseEntry`.
+/// Backend only populates these for GitHub when the commits cache is
+/// configured; the History tab treats absence as informational, not as
+/// an error.
+class GitCommit {
+  const GitCommit({
+    required this.sha,
+    required this.title,
+    required this.message,
+    required this.authorName,
+    required this.authorDate,
+    this.webUrl = '',
+  });
+
+  final String sha;
+  final String title;
+  final String message;
+  final String authorName;
+  final String authorDate;
+  final String webUrl;
+
+  factory GitCommit.fromJson(Map<String, dynamic> json) {
+    return GitCommit(
+      sha: json['sha'] as String? ?? '',
+      title: json['title'] as String? ?? '',
+      message: json['message'] as String? ?? '',
+      authorName: json['authorName'] as String? ?? '',
+      authorDate: json['authorDate'] as String? ?? '',
+      webUrl: json['webUrl'] as String? ?? '',
+    );
+  }
+}
+
 /// Full detail envelope returned from `/v1/gitops/applications/{id}`.
 /// `resources` + `history` are nullable rather than empty for
 /// HelmRelease detail responses, where the backend omits the fields
@@ -661,6 +695,63 @@ class GitOpsRepository {
     }
   }
 
+  /// Fetches git commit metadata for a set of SHAs against a repo URL.
+  /// Used by the History tab to enrich revision rows with the commit
+  /// author + subject. Backend response carries `{commits: {sha: …},
+  /// unavailable: [sha]}`.
+  ///
+  /// All error modes degrade silently to an empty map — commit
+  /// enrichment is informational, never a blocker for revision history:
+  ///   * 200 with `commits == null` / missing → empty map (GitHub
+  ///     provider not configured on the backend).
+  ///   * 400 (bad `repoURL` or malformed SHAs) → empty map.
+  ///   * 403 (RBAC reject, repo not visible to user) → empty map.
+  ///   * 5xx / cancel / network failure → empty map (the same revision
+  ///     row still renders without commit subjects).
+  ///
+  /// Backend caps the SHA list at 50; callers MUST pre-truncate before
+  /// passing more.
+  Future<Map<String, GitCommit>> getCommits({
+    required String repoURL,
+    required List<String> shas,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) async {
+    if (repoURL.isEmpty || shas.isEmpty) return <String, GitCommit>{};
+    try {
+      final res = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/gitops/commits',
+        queryParameters: {'repoURL': repoURL, 'shas': shas.join(',')},
+        options: clusterIdOverride == null
+            ? null
+            : Options(headers: {'X-Cluster-ID': clusterIdOverride}),
+        cancelToken: cancelToken,
+      );
+      final data = res.data?['data'];
+      if (data is Map) {
+        final raw = data['commits'];
+        if (raw is Map) {
+          final out = <String, GitCommit>{};
+          for (final entry in raw.entries) {
+            final v = entry.value;
+            if (v is Map) {
+              out[entry.key.toString()] =
+                  GitCommit.fromJson(Map<String, dynamic>.from(v));
+            }
+          }
+          return out;
+        }
+      }
+      return <String, GitCommit>{};
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) rethrow;
+      // Enrichment is best-effort — collapse any non-cancel error into
+      // an empty map so the history tab keeps rendering without commit
+      // subjects.
+      return <String, GitCommit>{};
+    }
+  }
+
   /// Fetches a single AppSet's detail.
   Future<AppSetDetail> getApplicationSet({
     required String id,
@@ -782,6 +873,71 @@ final gitOpsApplicationSetDetailProvider = FutureProvider.autoDispose
   });
   return ref.read(gitOpsRepositoryProvider).getApplicationSet(
         id: key.id,
+        clusterIdOverride: key.clusterId,
+        cancelToken: cancel,
+      );
+});
+
+/// Family key for the commit-enrichment provider. Combines the cluster
+/// id, the repo URL, and a sorted-and-joined SHA tuple so two history
+/// tabs against different apps don't collide on the cache slot. The
+/// SHA list is canonicalised (trim, lowercase, sort) before being used
+/// as part of the key so identical SHA sets in different orderings
+/// share one slot.
+class GitCommitEnrichmentKey {
+  GitCommitEnrichmentKey({
+    required this.clusterId,
+    required this.repoURL,
+    required List<String> shas,
+  }) : shaKey = _canonicaliseShas(shas);
+
+  final String clusterId;
+  final String repoURL;
+  final String shaKey;
+
+  static String _canonicaliseShas(List<String> shas) {
+    final canonical = shas
+        .map((s) => s.trim().toLowerCase())
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    // Backend caps the parameter at 50 SHAs; mirror that here so the
+    // key doesn't bloat with an arbitrarily long join.
+    final capped = canonical.length > 50 ? canonical.sublist(0, 50) : canonical;
+    return capped.join(',');
+  }
+
+  /// Returns the SHA list this key represents — used by the provider
+  /// body so the canonicalisation happens once at construction.
+  List<String> get shas => shaKey.isEmpty ? const [] : shaKey.split(',');
+
+  @override
+  bool operator ==(Object other) =>
+      other is GitCommitEnrichmentKey &&
+      other.clusterId == clusterId &&
+      other.repoURL == repoURL &&
+      other.shaKey == shaKey;
+
+  @override
+  int get hashCode => Object.hash(clusterId, repoURL, shaKey);
+}
+
+/// Maps SHA → commit metadata for a given app's revision history.
+/// Best-effort: any failure (404 / 403 / 5xx / no GitHub provider)
+/// collapses to an empty map at the repository layer, so this
+/// provider's value is the only branch the UI needs to handle (a
+/// missing SHA in the map just means "no enrichment for this row").
+final gitOpsCommitEnrichmentProvider = FutureProvider.autoDispose
+    .family<Map<String, GitCommit>, GitCommitEnrichmentKey>((ref, key) async {
+  ref.watch(activeClusterProvider);
+  final cancel = CancelToken();
+  ref.onDispose(() {
+    if (!cancel.isCancelled) cancel.cancel('commit enrichment invalidated');
+  });
+  return ref.read(gitOpsRepositoryProvider).getCommits(
+        repoURL: key.repoURL,
+        shas: key.shas,
         clusterIdOverride: key.clusterId,
         cancelToken: cancel,
       );

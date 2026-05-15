@@ -318,11 +318,13 @@ Keep below the static sections so the prompt cache prefix stays warm.
 
 ## Build Progress
 
-**Status:** Web phases 1–14 complete. Mobile M1 + M2 + M3 complete (all 28 wizards shipped with parity to web). Mobile M4 in progress per `plans/mobile-app.md`; M5 next.
+**Status:** Web phases 1–14 complete. Mobile M1 + M2 + M3 + M4 complete (all 28 wizards + full M4 observability + advanced-CRD read parity shipped). M5 next.
 
 **Web — shipped:** Phases 1–14. Resource CRUD + multi-cluster + RBAC + 18 wizards, observability (Loki + topology + diagnostics), policy (Kyverno + Gatekeeper), GitOps (Argo CD + Flux CD), security (Trivy + Kubescape), cert-manager (observatory + wizards + configurable thresholds), service mesh (Istio + Linkerd, mTLS, golden signals, mesh overlay), ESO (observatory + drift + sync history + bulk refresh + 8 wizards + 11-provider YAML template registry + chain overlay).
 
 **Mobile — shipped (M1–M3):** Flutter 3.41/Dart 3.11 under `mobile/`, Riverpod 2.x + go_router + Dio. Theme parity enforced via `make check-themes`. Adaptive shell (768px breakpoint), Dio interceptor stack with body-mode `/v1/auth/refresh`, cluster pill + picker invalidating per-cluster providers, 12 specialized resource screens + generic catch-all, log tail WebSocket, FCM + deep links, CI + Fastlane TestFlight/Play Internal lanes. M2 added writes via `executeAction` + YAML editor (`yaml_apply_controller.dart`); M3 added all 28 wizards via generic `WizardController<TForm>`.
+
+**Mobile — shipped (M4):** Read-side observability + CRD-detail parity over 10 PRs (PR-4a → PR-4j). PR-4a shipped shared primitives (`RefreshableController` mixin, `KubeLineChart`/`BarChart`/`GaugeRing`, `TimeRangePicker`, `DomainListScaffold`, `FeatureUnavailableState`, `CompositeId` helper, optional `extraTabs` on `ResourceDetailScaffold`). PR-4b ported the per-resource Metrics tab over `/v1/monitoring/query_range`. PR-4c shipped the LogQL editor + label browser + volume histogram. PR-4d ported the diagnostics blast-radius surface (checklist + flat-list, no graph). PR-4e shipped GitOps detail parity (Argo + Flux + AppSets, composite-id-driven, HelmRelease hides Resources/History). PR-4f shipped service-mesh detail (mesh dashboard + routing + mTLS + golden signals on Service detail only). PR-4g shipped cert-manager observatory (certs list with `?status=expiring`, threshold-attribution detail, Issuers/ClusterIssuers, expiring summary). PR-4h shipped ESO read-side parity (ES/CES/SecretStore/ClusterSecretStore/PushSecret detail + per-store metrics + drift tri-state). PR-4i shipped policy compliance + violations browser (gauge + by-engine cards + by-severity breakdown + 503-distinguished-error path for compliance history). PR-4j shipped Trivy/Kubescape vulnerability reports (scanner status + namespace-scoped workload list with severity chip filters + virtual scroll + Trivy-only CVE detail with 501-targeted help copy), GitOps async commit enrichment via `/v1/gitops/commits`, and final integration pass. No new backend across M4.
 
 ### Mobile invariants (M3+ work must respect)
 
@@ -341,7 +343,7 @@ Keep below the static sections so the prompt cache prefix stays warm.
 
 Priority order from 2026-04-09 brainstorm. Items 1–8 shipped (Notification Center, Git commit display, GitOps diff view, ResourceQuota/LimitRange, Velero, Service Mesh observability, Cert-Manager + wizards + thresholds, ESO).
 
-- [ ] **9. k8sCenter Mobile App (Flutter, iOS + Android)** — full-parity native app over five milestones. **M1 + M2 + M3 complete.** M4 (advanced observability) in progress; M5 (polish + public store launch) remains. OIDC mobile flow deferred — cookie-exchange doesn't work in in-app browsers; needs its own backend body-mode endpoint PR. See `plans/mobile-app.md`.
+- [ ] **9. k8sCenter Mobile App (Flutter, iOS + Android)** — full-parity native app over five milestones. **M1 + M2 + M3 + M4 complete.** M5 (polish + public store launch) remains. OIDC mobile flow deferred — cookie-exchange doesn't work in in-app browsers; needs its own backend body-mode endpoint PR. See `plans/mobile-app.md`.
 - [ ] **10. Saved Views & Custom Dashboards** *(deferred behind the mobile app)* — per-user persistence for filter presets, pinned favorites, arrangeable dashboard widgets.
   - **Why**: today every visit to `/workloads/pods` re-applies the default sort + filter set. Power users running a dozen tabs across namespaces re-create the same scopes by hand.
   - **Likely shape**:

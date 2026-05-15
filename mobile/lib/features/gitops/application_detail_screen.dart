@@ -115,7 +115,10 @@ class _DetailBody extends StatelessWidget {
       if (!hidesResourcesHistory)
         _ResourcesTab(resources: detail.resources ?? const <ManagedResource>[]),
       if (!hidesResourcesHistory)
-        _HistoryTab(history: detail.history ?? const <RevisionEntry>[]),
+        _HistoryTab(
+          history: detail.history ?? const <RevisionEntry>[],
+          repoURL: app.source.repoURL ?? '',
+        ),
       EventsTab(
         kind: app.kind,
         namespace: app.namespace.isEmpty ? namespaceHint : app.namespace,
@@ -395,13 +398,23 @@ class _ResourcesTab extends ConsumerWidget {
   }
 }
 
-class _HistoryTab extends StatelessWidget {
-  const _HistoryTab({required this.history});
+/// Revision history list with optional async commit-subject + author
+/// enrichment per row. When `repoURL` is set and the history contains
+/// 40-char hex SHAs, the tab kicks off a [gitOpsCommitEnrichmentProvider]
+/// fetch and overlays subject + author + date once the response lands.
+/// Enrichment failure is silent — the row keeps rendering the bare SHA.
+class _HistoryTab extends ConsumerWidget {
+  const _HistoryTab({required this.history, required this.repoURL});
 
   final List<RevisionEntry> history;
 
+  /// Empty when the app source isn't backed by a git repo (Helm chart
+  /// from an OCI registry, for example). The tab skips enrichment in
+  /// that case.
+  final String repoURL;
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     if (history.isEmpty) {
       return Center(
@@ -414,6 +427,31 @@ class _HistoryTab extends StatelessWidget {
         ),
       );
     }
+
+    // Collect 40-char hex SHAs for enrichment. Non-SHA revisions
+    // (semver tags, OCI digests) pass through without a commits call.
+    final shas = <String>[];
+    for (final h in history) {
+      if (RegExp(r'^[0-9a-f]{40}$').hasMatch(h.revision)) {
+        shas.add(h.revision);
+      }
+    }
+
+    Map<String, GitCommit> enrichment = const {};
+    if (repoURL.isNotEmpty && shas.isNotEmpty) {
+      final clusterId = ref.watch(activeClusterProvider);
+      final async = ref.watch(gitOpsCommitEnrichmentProvider(
+        GitCommitEnrichmentKey(
+          clusterId: clusterId,
+          repoURL: repoURL,
+          shas: shas,
+        ),
+      ));
+      // Pre-merge data (loading / error stays empty — repository
+      // collapses all failures to an empty map so error is unlikely).
+      enrichment = async.maybeWhen(data: (m) => m, orElse: () => const {});
+    }
+
     return ListView.separated(
       padding: const EdgeInsets.symmetric(vertical: 8),
       itemCount: history.length,
@@ -425,6 +463,7 @@ class _HistoryTab extends StatelessWidget {
       ),
       itemBuilder: (context, i) {
         final h = history[i];
+        final commit = enrichment[h.revision.toLowerCase()];
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           child: Column(
@@ -448,7 +487,32 @@ class _HistoryTab extends StatelessWidget {
                   ),
                 ],
               ),
-              if (h.message != null && h.message!.isNotEmpty) ...[
+              if (commit != null && commit.title.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  commit.title,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (commit.authorName.isNotEmpty ||
+                    commit.authorDate.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      [
+                        if (commit.authorName.isNotEmpty) commit.authorName,
+                        if (commit.authorDate.isNotEmpty) commit.authorDate,
+                      ].join(' · '),
+                      style:
+                          TextStyle(color: colors.textMuted, fontSize: 11),
+                    ),
+                  ),
+              ] else if (h.message != null && h.message!.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(
                   h.message!,
