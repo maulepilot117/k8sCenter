@@ -22,11 +22,24 @@ import 'oidc_controller.dart';
 /// Wires app_links to OIDCController.completeFlow. Holds the
 /// subscription so callers can dispose it on logout / test teardown.
 class UniversalLinkListener {
-  UniversalLinkListener(this._ref, {AppLinks? appLinks})
-      : _appLinks = appLinks ?? AppLinks();
+  UniversalLinkListener(
+    this._ref, {
+    AppLinks? appLinks,
+    String? universalLinkHost,
+  })  : _appLinks = appLinks ?? AppLinks(),
+        _universalLinkHostOverride = universalLinkHost;
 
   final Ref _ref;
   final AppLinks _appLinks;
+  // Override seam for tests — the const `kUniversalLinkHost` is empty in
+  // the test binary (no --dart-define), so tests need a way to supply a
+  // host without rebuilding the whole notification module. Production
+  // wiring goes through the Provider below and passes null, which keeps
+  // the dart-define source of truth.
+  final String? _universalLinkHostOverride;
+
+  String get _host => _universalLinkHostOverride ?? kUniversalLinkHost;
+
   StreamSubscription<Uri>? _sub;
   bool _initialDrained = false;
 
@@ -37,7 +50,7 @@ class UniversalLinkListener {
   ///      arrived while the app was terminated) — same dispatch path.
   Future<void> start() async {
     if (_sub != null) return;
-    if (kUniversalLinkHost.isEmpty) {
+    if (_host.isEmpty) {
       // No universal link host configured — OIDC mobile flow is
       // disabled for this build. No-op to avoid platform-channel
       // exceptions on a build that has no link mapping.
@@ -54,7 +67,13 @@ class UniversalLinkListener {
     if (!_initialDrained) {
       _initialDrained = true;
       try {
-        final initial = await _appLinks.getInitialLink();
+        // Bound the platform-channel call — a hanging getInitialLink
+        // would block the post-bootstrap chain in main.dart from ever
+        // completing. 5s is generous; in practice this is a millisecond
+        // call against the platform side.
+        final initial = await _appLinks
+            .getInitialLink()
+            .timeout(const Duration(seconds: 5), onTimeout: () => null);
         if (initial != null) _maybeDispatch(initial);
       } catch (e) {
         debugPrint('UniversalLinkListener initial-link drain failed: $e');
@@ -76,7 +95,7 @@ class UniversalLinkListener {
     // Only consume the OIDC callback path. Notification deep-links and
     // any other /m/* paths flow through their own handlers.
     if (uri.scheme != 'https' && uri.scheme != 'http') return;
-    if (uri.host != kUniversalLinkHost) return;
+    if (uri.host != _host) return;
     if (uri.path != oidcCallbackPath) return;
 
     await _ref.read(oidcControllerProvider.notifier).completeFlow(uri);

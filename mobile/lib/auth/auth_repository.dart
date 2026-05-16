@@ -165,6 +165,15 @@ class AuthRepository extends Notifier<AuthState> {
     ref.read(authTokenHolderProvider).set(accessToken);
     await ref.read(secureTokenStoreProvider).writeRefreshToken(refreshToken);
     await _hydrateUser();
+    // Rollback on hydration failure — don't leave the user "silently
+    // signed in" via persisted tokens after a flow they were told failed.
+    // Without this, the refresh token survives in secure_storage and the
+    // access token survives in authTokenHolder → next cold-start silently
+    // re-authenticates against /v1/auth/refresh.
+    if (state is AuthUnauthenticated) {
+      ref.read(authTokenHolderProvider).clear();
+      await ref.read(secureTokenStoreProvider).deleteRefreshToken();
+    }
   }
 
   Future<void> _hydrateUser() async {

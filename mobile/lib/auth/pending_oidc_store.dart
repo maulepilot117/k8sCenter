@@ -73,7 +73,11 @@ class PendingOidc {
 
   bool isExpired(DateTime now) {
     final created = DateTime.fromMillisecondsSinceEpoch(createdAtMillis);
-    return now.difference(created) > pendingOidcTtl;
+    final age = now.difference(created);
+    // Negative age = clock moved backwards (NTP correction, user
+    // changed system time). Treat as expired — better to re-prompt
+    // than risk replaying stale state with the wrong PKCE.
+    return age.isNegative || age > pendingOidcTtl;
   }
 }
 
@@ -87,7 +91,20 @@ abstract class PendingOidcStore {
 
 class FlutterSecurePendingOidcStore implements PendingOidcStore {
   FlutterSecurePendingOidcStore({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+      : _storage = storage ??
+            const FlutterSecureStorage(
+              // Keychain entries are readable after first device unlock and
+              // are NOT synced to iCloud or restored from backups — the
+              // pending PKCE+state blob is tied to this device only.
+              // (Keychain still survives app uninstall on iOS; that is an
+              // Apple-side behaviour separate from these options.)
+              iOptions: IOSOptions(
+                accessibility: KeychainAccessibility.first_unlock_this_device,
+              ),
+              // EncryptedSharedPreferences uses the Android Keystore for
+              // key material so the blob is encrypted at rest.
+              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+            );
 
   final FlutterSecureStorage _storage;
 

@@ -26,13 +26,30 @@ class OIDCMobileAuthConfig {
   });
 
   factory OIDCMobileAuthConfig.fromJson(Map<String, dynamic> json) {
+    // Load-bearing fields — empty/missing values would cause silent
+    // misbehaviour (auth URL built against empty endpoint, blank
+    // client_id sent to IdP). Throw a FormatException so the repository
+    // can wrap as a 502 ApiError and the controller surfaces a real
+    // error to the user instead of launching a broken auth flow.
+    final endpoint = json['authorizationEndpoint'] as String?;
+    final clientId = json['clientID'] as String?;
+    if (endpoint == null || endpoint.isEmpty) {
+      throw const FormatException(
+        'mobile-config response missing authorizationEndpoint',
+      );
+    }
+    if (clientId == null || clientId.isEmpty) {
+      throw const FormatException(
+        'mobile-config response missing clientID',
+      );
+    }
     final scopesRaw = json['scopes'];
     final scopes = scopesRaw is List
         ? scopesRaw.whereType<String>().toList(growable: false)
         : const <String>[];
     return OIDCMobileAuthConfig(
-      authorizationEndpoint: json['authorizationEndpoint'] as String? ?? '',
-      clientID: json['clientID'] as String? ?? '',
+      authorizationEndpoint: endpoint,
+      clientID: clientId,
       scopes: scopes,
     );
   }
@@ -42,9 +59,16 @@ class OIDCMobileAuthConfig {
   final List<String> scopes;
 }
 
-/// Result of the POST .../mobile-exchange call. Mirrors the backend
-/// response shape after issue #277 cleanup — username only; no separate
-/// displayName field.
+/// Full token + user payload from POST /v1/auth/oidc/{id}/mobile-exchange.
+///
+/// `accessToken` + `refreshToken` are consumed by [OIDCController.completeFlow]
+/// via [AuthRepository.applyAuthTokens]; the user fields (`expiresIn`,
+/// `refreshExpiresIn`, `username`, `groups`, `provider`) are exposed for
+/// future surfaces — proactive re-auth scheduling via `refreshExpiresIn`,
+/// login-screen debug UI, telemetry — and validated by
+/// `oidc_repository_test.dart` against the wire contract. Mirrors the
+/// backend response shape after issue #277 cleanup — username only; no
+/// separate displayName field.
 class OIDCExchangeResult {
   const OIDCExchangeResult({
     required this.accessToken,
@@ -107,6 +131,12 @@ class OIDCRepository {
       return OIDCMobileAuthConfig.fromJson(data);
     } on DioException catch (e) {
       throw ApiError.fromDio(e);
+    } on FormatException catch (e) {
+      throw ApiError(
+        statusCode: 502,
+        code: 502,
+        message: 'malformed mobile-config response: ${e.message}',
+      );
     }
   }
 

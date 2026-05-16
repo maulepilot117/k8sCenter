@@ -10,6 +10,7 @@ import '../../auth/auth_repository.dart';
 import '../../auth/auth_state.dart';
 import '../../auth/oidc_controller.dart';
 import '../../auth/oidc_widgets.dart';
+import '../../notifications/deep_link_handler.dart' show kUniversalLinkHost;
 import '../../theme/kube_theme_builder.dart';
 import 'login_controller.dart';
 
@@ -111,14 +112,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           .where((p) => !p.isCredentialProvider)
                           .toList(growable: false);
 
+                      // Mobile OIDC flow depends on the build carrying
+                      // --dart-define=UNIVERSAL_LINK_HOST; without it
+                      // there's no callback domain and startFlow short-
+                      // circuits to universalLinkNotConfigured. Hide the
+                      // buttons entirely on those builds so users don't
+                      // tap into a guaranteed error.
+                      final oidcEnabled = kUniversalLinkHost.isNotEmpty;
+                      final visibleOidcProviders = oidcEnabled
+                          ? oidcProviders
+                          : const <AuthProvider>[];
+
                       // Hide the credential form ONLY when the backend
                       // reports OIDC providers without any credential
                       // providers (OIDC-only deployment). The implicit
                       // local provider in homelab + an empty providers
                       // list (network failure / fresh setup) both fall
-                      // back to the credential form.
+                      // back to the credential form. Uses the visible
+                      // OIDC list so a build with no universal link host
+                      // can't accidentally hide the credential form.
                       final hideCredentialForm =
-                          oidcProviders.isNotEmpty &&
+                          visibleOidcProviders.isNotEmpty &&
                               credentialProviders.isEmpty;
 
                       return Column(
@@ -140,13 +154,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               isDisabled: formsDisabled,
                               onSubmit: formsDisabled ? null : _submit,
                             ),
-                          if (oidcProviders.isNotEmpty && !hideCredentialForm)
+                          if (visibleOidcProviders.isNotEmpty &&
+                              !hideCredentialForm)
                             _orDivider(colors),
-                          if (oidcProviders.isNotEmpty) ...[
+                          if (visibleOidcProviders.isNotEmpty) ...[
                             if (oidcError != null)
                               _errorBanner(colors, oidcError.message,
                                   keyValue: 'oidc-error'),
-                            for (final p in oidcProviders) ...[
+                            for (final p in visibleOidcProviders) ...[
                               OIDCProviderButton(
                                 provider: p,
                                 onTap: () => _startOidc(p.id),

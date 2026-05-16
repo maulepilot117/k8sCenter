@@ -6,6 +6,7 @@ import 'package:kubecenter/api/dio_client.dart';
 import 'package:kubecenter/auth/auth_repository.dart';
 import 'package:kubecenter/auth/auth_state.dart';
 import 'package:kubecenter/auth/oidc_controller.dart';
+import 'package:kubecenter/auth/oidc_repository.dart';
 import 'package:kubecenter/auth/pending_oidc_store.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
 
@@ -22,6 +23,26 @@ class _StubLauncher {
       throw e;
     }
     launched.add(uri);
+  }
+}
+
+/// Stub repository that throws a plain Exception from exchangeMobile —
+/// exercises the catch-all branch in [OIDCController.completeFlow] that
+/// handles errors not translated to [ApiError] (parse failures, etc.).
+class _ThrowingOIDCRepository implements OIDCRepository {
+  @override
+  Future<OIDCMobileAuthConfig> fetchMobileConfig(String providerID) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<OIDCExchangeResult> exchangeMobile({
+    required String providerID,
+    required String code,
+    required String codeVerifier,
+    required String nonce,
+  }) async {
+    throw Exception('boom');
   }
 }
 
@@ -361,6 +382,86 @@ void main() {
       final state =
           s.container.read(oidcControllerProvider) as OIDCFlowError;
       expect(state.reason, OIDCFlowErrorReason.domainNotAllowed);
+    });
+
+    test('exchange 404: providerUnknown error', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now());
+
+      s.mock.onJson(
+        'POST',
+        '/api/v1/auth/oidc/authelia/mobile-exchange',
+        status: 404,
+        body: {
+          'error': {'code': 404, 'message': 'unknown OIDC provider'},
+        },
+      );
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.providerUnknown);
+    });
+
+    test('exchange 500: networkError', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now());
+
+      s.mock.onJson(
+        'POST',
+        '/api/v1/auth/oidc/authelia/mobile-exchange',
+        status: 500,
+        body: {
+          'error': {'code': 500, 'message': 'boom'},
+        },
+      );
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.networkError);
+    });
+
+    test('non-ApiError exception from repo: internalError', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now());
+
+      // Override the repository with a throwing stub so completeFlow
+      // hits the catch-all `catch (e)` branch (not the `on ApiError`
+      // branch). Mirrors a parse-failure or programmer-error inside the
+      // repo that didn't get translated to ApiError upstream.
+      final throwingContainer = ProviderContainer(overrides: [
+        pendingOidcStoreProvider.overrideWithValue(s.pending),
+        secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        oidcControllerProvider.overrideWith(() => OIDCController(
+              universalLinkHost: 'k8scenter.test',
+              now: s.now,
+            )),
+        oidcRepositoryProvider
+            .overrideWithValue(_ThrowingOIDCRepository()),
+      ]);
+      addTearDown(throwingContainer.dispose);
+
+      await throwingContainer
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123'));
+
+      final state =
+          throwingContainer.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.internalError);
+      expect(state.detail, contains('boom'));
     });
 
     test('happy path: writes tokens + transitions auth state', () async {

@@ -22,7 +22,6 @@
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_custom_tabs/flutter_custom_tabs.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -201,16 +200,27 @@ class OIDCController extends Notifier<OIDCFlowState> {
     final redirectUri = 'https://$_universalLinkHost$oidcCallbackPath';
 
     // Persist BEFORE launching so a process kill during launch doesn't
-    // leave the pending state half-written.
-    await pendingStore.write(PendingOidc(
-      providerID: providerID,
-      state: stateParam,
-      codeVerifier: verifier,
-      nonce: nonce,
-      createdAtMillis: _now().millisecondsSinceEpoch,
-    ));
+    // leave the pending state half-written. A write failure here means
+    // the cold-start re-entry path is broken anyway — surface as an
+    // internal error rather than launching the IdP into a flow we
+    // cannot complete.
+    try {
+      await pendingStore.write(PendingOidc(
+        providerID: providerID,
+        state: stateParam,
+        codeVerifier: verifier,
+        nonce: nonce,
+        createdAtMillis: _now().millisecondsSinceEpoch,
+      ));
+    } catch (e) {
+      state = OIDCFlowError(
+        reason: OIDCFlowErrorReason.internalError,
+        detail: e.toString(),
+      );
+      return;
+    }
 
-    final authUrl = _buildAuthUrl(
+    final authUrl = buildAuthUrl(
       authorizationEndpoint: cfg.authorizationEndpoint,
       clientID: cfg.clientID,
       scopes: cfg.scopes,
@@ -256,14 +266,27 @@ class OIDCController extends Notifier<OIDCFlowState> {
     }
 
     // IdP cancellation surfaces as `?error=access_denied`. Inspect
-    // BEFORE pulling `code` so we route the right error.
+    // BEFORE pulling `code` so we route the right error. RFC 6749 §4.1.2.1
+    // OAuth error codes + OIDC core §3.1.2.6 mapped to controller reasons
+    // so the inline banner reflects the actual condition.
     final errorParam = callback.queryParameters['error'];
     if (errorParam != null && errorParam.isNotEmpty) {
       await pendingStore.clear();
+      final reason = switch (errorParam) {
+        'access_denied' => OIDCFlowErrorReason.consentDenied,
+        // User not signed in at IdP / interaction prompt suppressed —
+        // surfaces the same "Sign-in cancelled" UX since the next attempt
+        // will succeed once the user authenticates.
+        'login_required' => OIDCFlowErrorReason.consentDenied,
+        'interaction_required' => OIDCFlowErrorReason.consentDenied,
+        // Transient IdP-side failures get the network bucket so the user
+        // is told to retry rather than seeing "rejected by IdP".
+        'temporarily_unavailable' => OIDCFlowErrorReason.networkError,
+        'server_error' => OIDCFlowErrorReason.networkError,
+        _ => OIDCFlowErrorReason.exchangeRejected,
+      };
       state = OIDCFlowError(
-        reason: errorParam == 'access_denied'
-            ? OIDCFlowErrorReason.consentDenied
-            : OIDCFlowErrorReason.exchangeRejected,
+        reason: reason,
         detail: callback.queryParameters['error_description'],
       );
       return;
@@ -317,11 +340,30 @@ class OIDCController extends Notifier<OIDCFlowState> {
     // without losing the OIDC flow context. In practice applyAuthTokens
     // always returns (it sets state to Unauthenticated on hydration
     // failure), so this is belt-and-braces.
+    //
+    // The 30s timeout bounds the worst case where the backend hangs on
+    // /v1/auth/me — without it the OIDC controller could sit in
+    // [OIDCFlowExchanging] forever and lock the login screen out of
+    // retries. Times out to networkError so the user is told to retry.
     try {
-      await ref.read(authRepositoryProvider.notifier).applyAuthTokens(
+      await ref
+          .read(authRepositoryProvider.notifier)
+          .applyAuthTokens(
             accessToken: result.accessToken,
             refreshToken: result.refreshToken,
+          )
+          .timeout(
+            const Duration(seconds: 30),
+            onTimeout: () =>
+                throw TimeoutException('applyAuthTokens timeout'),
           );
+    } on TimeoutException {
+      // finally below clears pending; just surface the error here.
+      state = const OIDCFlowError(
+        reason: OIDCFlowErrorReason.networkError,
+        detail: 'auth/me hydration timeout',
+      );
+      return;
     } finally {
       await pendingStore.clear();
     }
@@ -341,28 +383,10 @@ class OIDCController extends Notifier<OIDCFlowState> {
     }
   }
 
-  @visibleForTesting
-  static Uri buildAuthUrlForTest({
-    required String authorizationEndpoint,
-    required String clientID,
-    required List<String> scopes,
-    required String redirectUri,
-    required String codeChallenge,
-    required String state,
-    required String nonce,
-  }) {
-    return _buildAuthUrl(
-      authorizationEndpoint: authorizationEndpoint,
-      clientID: clientID,
-      scopes: scopes,
-      redirectUri: redirectUri,
-      codeChallenge: codeChallenge,
-      state: state,
-      nonce: nonce,
-    );
-  }
-
-  static Uri _buildAuthUrl({
+  /// Constructs the IdP authorization URL with PKCE + state + nonce.
+  /// Public so tests can verify URL composition without driving the full
+  /// flow; production callers use [startFlow].
+  static Uri buildAuthUrl({
     required String authorizationEndpoint,
     required String clientID,
     required List<String> scopes,
