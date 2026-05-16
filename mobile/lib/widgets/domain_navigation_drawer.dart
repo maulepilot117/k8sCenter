@@ -64,6 +64,16 @@ class DomainNavigationDrawer extends ConsumerWidget {
               context.go('/notifications');
             },
           ),
+          // --- M5 PR-5a: Settings (theme picker, Sentry opt-in, About).
+          ListTile(
+            key: const ValueKey('drawer-settings'),
+            leading: Icon(Icons.settings_outlined, color: colors.accent),
+            title: const Text('Settings'),
+            onTap: () {
+              Navigator.of(context).pop();
+              context.go('/settings');
+            },
+          ),
           // --- M3 PR-3a: "Create" submenu — RBAC-gated wizard launcher.
           // Renders only when the operator has at least one wizard
           // entry permitted by their RBAC summary. PR-3a registers

@@ -1,6 +1,7 @@
 // Entry point. Hydrates SharedPreferences before runApp so the theme
-// controller reads synchronously, then triggers the auth bootstrap so
-// the redirect guard sees Authenticated/Unauthenticated by the time the
+// controller reads synchronously, initializes Sentry only when the user
+// has opted in (default off), then triggers the auth bootstrap so the
+// redirect guard sees Authenticated/Unauthenticated by the time the
 // first frame paints.
 
 import 'package:flutter/material.dart';
@@ -11,11 +12,17 @@ import 'app.dart';
 import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
 import 'notifications/fcm_registration.dart';
+import 'observability/sentry_init.dart';
 import 'theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
+
+  // Lazy Sentry bootstrap. Returns false (no work) when the user has
+  // not opted in, when the build doesn't carry --dart-define=SENTRY_DSN,
+  // or on any init error. The opt-out path is a single prefs read.
+  await initSentryIfOptedIn();
 
   final container = ProviderContainer(
     overrides: [

@@ -51,6 +51,7 @@ import '../notifications/fcm_registration.dart';
 import '../features/scanning/dashboard_screen.dart' as scanning_dashboard;
 import '../features/scanning/vulnerabilities_list_screen.dart';
 import '../features/scanning/vulnerability_detail_screen.dart';
+import '../features/settings/settings_screen.dart';
 import '../features/resources/configmap_screens.dart';
 import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
@@ -109,6 +110,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/notifications',
         builder: (context, state) => const NotificationFeedScreen(),
+      ),
+
+      // --- M5 PR-5a: Settings (theme picker, Sentry opt-in, About). ---
+      // Cluster-agnostic — settings persist per-user across clusters.
+      GoRoute(
+        path: '/settings',
+        builder: (context, state) => const SettingsScreen(),
       ),
       GoRoute(
         path: '/clusters/:clusterId/workloads/pods/:namespace/:name/logs/:container',

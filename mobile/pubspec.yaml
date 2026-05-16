@@ -49,6 +49,26 @@ dependencies:
   # In-app browser for OIDC (PR-1g).
   flutter_custom_tabs: ^2.2.0
 
+  # Crash reporting — opt-in only, default off. Initialized lazily from
+  # observability/sentry_init.dart when the sentry_opt_in shared_preferences
+  # flag is true AND a DSN is provided via --dart-define=SENTRY_DSN.
+  sentry_flutter: ^8.13.0
+
+  # Android FLAG_SECURE for the Secret detail screen (PR-5d). Exact-pinned
+  # because the platform-channel surface is small and accidental upgrades on
+  # a security primitive are not worth the risk of silent behavioural drift.
+  flutter_windowmanager: 0.2.0
+
+  # External URLs from the Settings "About" tiles + the onboarding "How to
+  # set up your server" CTA (PR-5g).
+  url_launcher: ^6.3.0
+
+  # Version + build-number lookup. Sentry tags events with the release id
+  # so the project-level inbound filter can drop events whose release
+  # doesn't match the published binary. Also surfaced on the Settings →
+  # About row.
+  package_info_plus: ^8.0.0
+
   # Internationalization scaffolding (English only through M5).
   intl: ^0.19.0
 
