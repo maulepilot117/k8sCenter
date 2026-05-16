@@ -26,10 +26,8 @@ class _ServiceRow {
   final Map<String, dynamic> raw;
   final K8sMeta meta;
 
-  String get type =>
-      readPath(raw, 'spec.type') as String? ?? 'ClusterIP';
-  String get clusterIP =>
-      readPath(raw, 'spec.clusterIP') as String? ?? '—';
+  String get type => readPath(raw, 'spec.type') as String? ?? 'ClusterIP';
+  String get clusterIP => readPath(raw, 'spec.clusterIP') as String? ?? '—';
 
   /// External IP/hostname. Joins all entries from `spec.externalIPs` and
   /// `status.loadBalancer.ingress` (post-fix: previously dropped all but
@@ -55,15 +53,18 @@ class _ServiceRow {
   String get ports {
     final list = readPath(raw, 'spec.ports') as List?;
     if (list == null || list.isEmpty) return '—';
-    return list.whereType<Map<dynamic, dynamic>>().map((p) {
-      final name = p['name'] as String?;
-      final port = p['port'];
-      final nodePort = p['nodePort'];
-      final protocol = (p['protocol'] as String?) ?? 'TCP';
-      final base = nodePort == null ? '$port' : '$port:$nodePort';
-      final body = '$base/$protocol';
-      return name == null || name.isEmpty ? body : '$name:$body';
-    }).join(', ');
+    return list
+        .whereType<Map<dynamic, dynamic>>()
+        .map((p) {
+          final name = p['name'] as String?;
+          final port = p['port'];
+          final nodePort = p['nodePort'];
+          final protocol = (p['protocol'] as String?) ?? 'TCP';
+          final base = nodePort == null ? '$port' : '$port:$nodePort';
+          final body = '$base/$protocol';
+          return name == null || name.isEmpty ? body : '$name:$body';
+        })
+        .join(', ');
   }
 }
 
@@ -91,7 +92,10 @@ class ServiceListScreen extends ConsumerWidget {
             items: rows,
             columns: [
               ResourceColumn(label: 'Name', value: (r) => r.meta.name),
-              ResourceColumn(label: 'Namespace', value: (r) => r.meta.namespace),
+              ResourceColumn(
+                label: 'Namespace',
+                value: (r) => r.meta.namespace,
+              ),
               ResourceColumn(label: 'Type', value: (r) => r.type),
               ResourceColumn(label: 'Cluster IP', value: (r) => r.clusterIP),
               ResourceColumn(label: 'External IP', value: (r) => r.externalIP),
@@ -116,7 +120,7 @@ class ServiceListScreen extends ConsumerWidget {
   }
 }
 
-class ServiceDetailScreen extends ConsumerWidget {
+class ServiceDetailScreen extends ConsumerStatefulWidget {
   const ServiceDetailScreen({
     super.key,
     required this.namespace,
@@ -127,19 +131,46 @@ class ServiceDetailScreen extends ConsumerWidget {
   final String name;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ServiceDetailScreen> createState() =>
+      _ServiceDetailScreenState();
+}
+
+class _ServiceDetailScreenState extends ConsumerState<ServiceDetailScreen> {
+  // Latches the first observed `isInstalled` mesh status and keeps the
+  // Golden Signals tab visible for the rest of this screen's lifetime,
+  // even if subsequent mesh status polls transiently 5xx and report
+  // `MeshStatus.empty`. See issue #260: without this, an active tab
+  // selection vanishes mid-incident on a passing backend hiccup.
+  //
+  // Trade-off: a deliberate mesh uninstall while the screen is open
+  // still shows the tab until the user navigates away and back. That
+  // surface is rare and self-correcting; tab-flicker on transient 5xx
+  // is the common case and harms operator UX during incidents.
+  MeshStatus? _stableMeshStatus;
+
+  @override
+  Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
       kind: 'services',
-      namespace: namespace,
-      name: name,
+      namespace: widget.namespace,
+      name: widget.name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
+
+    // Latch the first non-empty mesh status, then keep subsequent
+    // non-empty updates for fresh data in the tab body. Empty/null
+    // emits are ignored once we've latched, preserving tab visibility.
+    final currentMesh = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    if (currentMesh != null && currentMesh.isInstalled) {
+      _stableMeshStatus = currentMesh;
+    }
+
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text(name)),
+        appBar: AppBar(title: Text(widget.name)),
         body: ErrorStateView(
           message: e.toString(),
           onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
@@ -152,16 +183,15 @@ class ServiceDetailScreen extends ConsumerWidget {
         // is installed on the cluster. The mesh status drives both tab
         // visibility and (in the tab itself) the mesh disambiguation
         // when both Istio and Linkerd are present.
-        final meshStatus =
-            ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+        final stableMesh = _stableMeshStatus;
         final extraTabs = <DetailExtraTab>[
-          if (meshStatus != null && meshStatus.isInstalled)
+          if (stableMesh != null)
             DetailExtraTab(
               label: 'Golden signals',
               body: GoldenSignalsTab(
                 namespace: s.meta.namespace,
                 service: s.meta.name,
-                status: meshStatus,
+                status: stableMesh,
               ),
             ),
         ];
