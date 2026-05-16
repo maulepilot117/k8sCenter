@@ -171,17 +171,29 @@ class SeverityCountChip extends StatelessWidget {
   }
 }
 
-/// CVE severity badge — used inside the detail-screen CVE table.
+/// CVE severity badge — used inside the detail-screen CVE table and as
+/// the severity chip on workload list rows.
+///
+/// [label] overrides the default `scanSeverityLabel(severity)` text —
+/// pass a short form like `'C 5'` for compact count chips in the list.
+/// When [label] is non-null the text renders with tabular figures and
+/// w700 weight for numeric readability.
 class CVESeverityBadge extends StatelessWidget {
-  const CVESeverityBadge({super.key, required this.severity});
+  const CVESeverityBadge({super.key, required this.severity, this.label});
 
   final String severity;
+
+  /// Optional override for the display text. When non-null, [FontWeight.w700]
+  /// and [FontFeature.tabularFigures] are applied for numeric legibility.
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final fg = scanSeverityColor(severity, colors);
     final bg = scanSeverityDim(severity, colors);
+    final displayLabel = label ?? scanSeverityLabel(severity);
+    final isCount = label != null;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -190,11 +202,12 @@ class CVESeverityBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        scanSeverityLabel(severity),
+        displayLabel,
         style: TextStyle(
           color: fg,
           fontSize: 10,
-          fontWeight: FontWeight.w600,
+          fontWeight: isCount ? FontWeight.w700 : FontWeight.w600,
+          fontFeatures: isCount ? const [FontFeature.tabularFigures()] : null,
         ),
       ),
     );
@@ -297,8 +310,8 @@ class StaleScanBanner extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Latest scan is more than 7 days old. Findings may not '
-              'reflect recently-deployed images.',
+              'Latest scan is more than ${kScanStaleThreshold.inDays} days old. '
+              'Findings may not reflect recently-deployed images.',
               style: TextStyle(color: colors.textPrimary, fontSize: 12),
             ),
           ),

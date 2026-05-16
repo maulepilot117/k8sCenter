@@ -452,6 +452,13 @@ class WorkloadVulnDetail {
 
   /// Roll-up across all images. Computed client-side — backend doesn't
   /// emit a top-level summary on this envelope, only per-image.
+  ///
+  /// CVEs with severity `'unknown'` (the open-enum fallback) are
+  /// included in the `low` bucket so `summary.total` stays consistent
+  /// with `fixableCount`'s "iterate every CVE" semantics. The
+  /// `unknown` case is intentionally folded into `low` rather than
+  /// surfaced as a separate chip — the UI has no chip for `unknown`
+  /// and this keeps `total == critical + high + medium + low` invariant.
   SeveritySummary get summary {
     int c = 0, h = 0, m = 0, l = 0;
     for (final img in images) {
@@ -464,6 +471,11 @@ class WorkloadVulnDetail {
           case 'medium':
             m++;
           case 'low':
+            l++;
+          default:
+            // 'unknown' + any future open-enum value count towards the
+            // total so callers can reason about completeness without a
+            // separate bucket.
             l++;
         }
       }
@@ -582,8 +594,11 @@ class ScanningRepository {
   /// access is gated separately — a user with Trivy access but not
   /// Kubescape will see Trivy rows only.
   ///
-  /// Returns [VulnListResponse.empty] on 5xx so refresh shows a banner
-  /// rather than wiping out a stale-but-useful render.
+  /// Unlike [status], this rethrows all non-cancel [DioException]s
+  /// (including 5xx) as [ApiError]. The list view is a data endpoint —
+  /// silently swallowing backend errors here would mask real outages
+  /// (cf. the policy compliance-history anti-pattern). 5xx →
+  /// unreachable applies only to feature-detection endpoints.
   Future<VulnListResponse> listVulnerabilities({
     required String namespace,
     String? clusterIdOverride,

@@ -191,6 +191,13 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
   Scanner? _cachedFilterScanner;
   String? _cachedFilterSearch;
 
+  // Cached derived booleans — `showScannerChips` and `staleTimestamp`
+  // each iterate the full items list. They change only when `items`
+  // identity changes (a new fetch), not on filter-chip taps.
+  List<WorkloadVulnSummary>? _lastItemsForDerived;
+  bool _cachedShowScannerChips = false;
+  String? _cachedStaleTimestamp;
+
   VulnListKey get _key =>
       VulnListKey(clusterId: widget.clusterId, namespace: widget.namespace);
 
@@ -219,19 +226,34 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
         ),
         data: (resp) {
           final filtered = _applyFilters(resp.vulnerabilities);
-          // Show the scanner discriminator chip row only when both
-          // scanners actually contributed rows in this response. With a
-          // single scanner the chips would be a no-op widget that
-          // wastes vertical real estate.
-          final showScannerChips = resp.vulnerabilities.any(
-                (w) => w.scanner == Scanner.trivy,
-              ) &&
-              resp.vulnerabilities.any(
-                (w) => w.scanner == Scanner.kubescape,
-              );
-          final stale = resp.vulnerabilities.any(
-            (w) => isScanStale(w.lastScanned),
-          );
+          // Recompute derived booleans only when items identity changes.
+          if (!identical(_lastItemsForDerived, resp.vulnerabilities)) {
+            _lastItemsForDerived = resp.vulnerabilities;
+            // Show the scanner discriminator chip row only when both
+            // scanners actually contributed rows in this response. With a
+            // single scanner the chips would be a no-op widget that
+            // wastes vertical real estate.
+            _cachedShowScannerChips = resp.vulnerabilities.any(
+                  (w) => w.scanner == Scanner.trivy,
+                ) &&
+                resp.vulnerabilities.any(
+                  (w) => w.scanner == Scanner.kubescape,
+                );
+            // Use the stale row's own timestamp for the StaleScanBanner so
+            // the age shown matches the reason the banner appeared. Pick
+            // the oldest stale timestamp when multiple rows are stale.
+            String? st;
+            for (final w in resp.vulnerabilities) {
+              if (isScanStale(w.lastScanned)) {
+                if (st == null || w.lastScanned.compareTo(st) < 0) {
+                  st = w.lastScanned;
+                }
+              }
+            }
+            _cachedStaleTimestamp = st;
+          }
+          final showScannerChips = _cachedShowScannerChips;
+          final staleTimestamp = _cachedStaleTimestamp;
           return CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
@@ -250,15 +272,10 @@ class _ListBodyState extends ConsumerState<_ListBody> with RefreshGuardMixin {
                   onSearchChanged: widget.onSearchChanged,
                 ),
               ),
-              if (stale)
+              if (staleTimestamp != null)
                 SliverToBoxAdapter(
                   child: StaleScanBanner(
-                    lastScannedIso: resp.vulnerabilities
-                        .map((w) => w.lastScanned)
-                        .firstWhere(
-                          (s) => s.isNotEmpty,
-                          orElse: () => '',
-                        ),
+                    lastScannedIso: staleTimestamp,
                   ),
                 ),
               if (filtered.isEmpty)
@@ -607,13 +624,13 @@ class _WorkloadRow extends StatelessWidget {
                     runSpacing: 4,
                     children: [
                       if (t.critical > 0)
-                        _SeverityChip(label: 'C ${t.critical}', severity: 'critical'),
+                        CVESeverityBadge(severity: 'critical', label: 'C ${t.critical}'),
                       if (t.high > 0)
-                        _SeverityChip(label: 'H ${t.high}', severity: 'high'),
+                        CVESeverityBadge(severity: 'high', label: 'H ${t.high}'),
                       if (t.medium > 0)
-                        _SeverityChip(label: 'M ${t.medium}', severity: 'medium'),
+                        CVESeverityBadge(severity: 'medium', label: 'M ${t.medium}'),
                       if (t.low > 0)
-                        _SeverityChip(label: 'L ${t.low}', severity: 'low'),
+                        CVESeverityBadge(severity: 'low', label: 'L ${t.low}'),
                       if (t.total == 0)
                         Text(
                           'No CVEs',
@@ -631,37 +648,6 @@ class _WorkloadRow extends StatelessWidget {
             ),
             Icon(Icons.chevron_right, color: colors.textMuted, size: 16),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SeverityChip extends StatelessWidget {
-  const _SeverityChip({required this.label, required this.severity});
-
-  final String label;
-  final String severity;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
-    final fg = scanSeverityColor(severity, colors);
-    final bg = scanSeverityDim(severity, colors);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: fg,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
     );

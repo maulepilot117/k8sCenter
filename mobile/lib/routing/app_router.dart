@@ -72,6 +72,11 @@ import '../widgets/empty_states.dart';
 import 'domain_sections.dart';
 import 'wizard_routes.dart';
 
+/// DNS-1123 label regex. Namespace query params that don't match are
+/// coerced to null so the bottom-sheet picker fires rather than
+/// forwarding an invalid value to the backend's mandatory ?namespace= param.
+final _kNamespaceRe = RegExp(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$');
+
 final appRouterProvider = Provider<GoRouter>((ref) {
   // Listening to authRepositoryProvider rebuilds the router on transitions.
   final authState = ref.watch(authRepositoryProvider);
@@ -596,9 +601,17 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         routes: [
           GoRoute(
             path: 'vulnerabilities',
-            builder: (context, state) => VulnerabilitiesListScreen(
-              initialNamespace: state.uri.queryParameters['namespace'],
-            ),
+            builder: (context, state) {
+              final raw = state.uri.queryParameters['namespace'];
+              // Validate namespace: must match DNS-1123 label format.
+              // An empty string or invalid value coerces to null so the
+              // bottom-sheet picker fires instead of passing a bad namespace
+              // to the backend's mandatory ?namespace= parameter.
+              final ns = (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
+                  ? raw
+                  : null;
+              return VulnerabilitiesListScreen(initialNamespace: ns);
+            },
             routes: [
               GoRoute(
                 path: ':namespace/:kind/:name',

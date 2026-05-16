@@ -15,7 +15,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:kubecenter/api/dio_client.dart';
+import 'package:kubecenter/api/scanning_repository.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
+import 'package:kubecenter/features/scanning/scanning_widgets.dart';
 import 'package:kubecenter/features/scanning/vulnerabilities_list_screen.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 
@@ -238,6 +240,210 @@ void main() {
         reason:
             'Discriminator chips are only rendered when both Trivy and '
             'Kubescape contributed rows.');
+  });
+
+  // #27 — StaleScanBanner renders for stale timestamp.
+  testWidgets('StaleScanBanner renders when a workload scan is stale',
+      (tester) async {
+    // 8 days ago → stale.
+    final staleDt = DateTime.now().toUtc().subtract(const Duration(days: 8));
+    final staleTs = staleDt.toIso8601String();
+
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/scanning/status', body: _statusBoth())
+      ..onJson(
+        'GET',
+        '/api/v1/scanning/vulnerabilities',
+        body: {
+          'data': {
+            'vulnerabilities': [
+              {
+                'namespace': 'app',
+                'kind': 'Deployment',
+                'name': 'web',
+                'images': <Map<String, Object?>>[],
+                'total': {
+                  'critical': 1,
+                  'high': 0,
+                  'medium': 0,
+                  'low': 0,
+                },
+                'lastScanned': staleTs,
+                'scanner': 'trivy',
+              },
+            ],
+            'summary': {
+              'total': 1,
+              'severity': {'critical': 1, 'high': 0, 'medium': 0, 'low': 0},
+            },
+          },
+        },
+      );
+
+    await _pump(tester, mock);
+    expect(find.byType(StaleScanBanner), findsOneWidget,
+        reason: 'A scan timestamp 8 days old must surface the stale banner.');
+    expect(
+      find.textContaining(
+          'more than ${kScanStaleThreshold.inDays} days old'),
+      findsOneWidget,
+      reason:
+          'Banner text must reference the configured threshold, not a '
+          'hardcoded literal.',
+    );
+  });
+
+  // #28 — null initialNamespace triggers picker prompt.
+  testWidgets('null initialNamespace triggers bottom-sheet picker',
+      (tester) async {
+    // Build with null initialNamespace — the screen should show the
+    // namespace prompt and open the picker bottom sheet.
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/scanning/status', body: _statusBoth())
+      ..onJson(
+        'GET',
+        '/api/v1/scanning/vulnerabilities',
+        body: _vulnEnvelope([]),
+      );
+
+    await tester.binding.setSurfaceSize(const Size(800, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) =>
+              // null initialNamespace — picker must open.
+              const VulnerabilitiesListScreen(),
+        ),
+        GoRoute(
+          path: '/clusters/:clusterId/scanning/vulnerabilities/'
+              ':namespace/:kind/:name',
+          builder: (context, state) => const Scaffold(body: Text('detail')),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        backendUrlProvider.overrideWithValue('http://test'),
+        secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+      ],
+      child: _DioInstaller(
+        mock: mock,
+        child: MaterialApp.router(
+          theme: buildKubeTheme('nexus'),
+          routerConfig: router,
+        ),
+      ),
+    ));
+    await tester.pump();
+    await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+    // The namespace prompt screen shows a "pick namespace" button.
+    // Verify the prompt state appears (the screen text and button).
+    // The bottom sheet header and the prompt screen hint may both render
+    // "Choose a namespace", so use findsWidgets (>=1).
+    expect(find.textContaining('Choose a namespace'), findsWidgets,
+        reason:
+            'Null initialNamespace must trigger the namespace picker '
+            'bottom sheet on first visit.');
+
+    // A second pump+settle must NOT open a second bottom sheet
+    // (_promptShown guard). We verify this by confirming the count
+    // doesn't grow beyond what was found on the first frame.
+    final countAfterFirst =
+        tester.widgetList(find.textContaining('Choose a namespace')).length;
+    await tester.pumpAndSettle(const Duration(milliseconds: 200));
+    final countAfterSecond =
+        tester.widgetList(find.textContaining('Choose a namespace')).length;
+    expect(countAfterSecond, countAfterFirst,
+        reason:
+            '_promptShown guard must prevent a second picker from '
+            'stacking on subsequent rebuilds.');
+  });
+
+  // #29 — free-text search filter.
+  testWidgets('free-text search hides non-matching workloads', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/scanning/status', body: _statusBoth())
+      ..onJson(
+        'GET',
+        '/api/v1/scanning/vulnerabilities',
+        body: _vulnEnvelope([
+          _row(name: 'alpha', scanner: 'trivy', critical: 1),
+          _row(name: 'beta', scanner: 'trivy', high: 1),
+          _row(name: 'gamma', scanner: 'trivy', medium: 1),
+        ]),
+      );
+
+    await _pump(tester, mock);
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('gamma'), findsOneWidget);
+
+    // Type a substring that only matches 'alpha'. Use the hint-text
+    // TextField to avoid ambiguity from the existing search content.
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Search workloads or image refs'),
+        'alpha');
+    await tester.pumpAndSettle();
+
+    // After filtering, 'beta' and 'gamma' workload rows must disappear.
+    // For 'alpha': the search field itself also shows 'alpha' as entered
+    // text (EditableText), so there are 2 matches. Verify at least one
+    // non-EditableText match remains (the workload row's Text widget).
+    expect(
+      find.descendant(
+          of: find.byType(CustomScrollView),
+          matching: find.byWidgetPredicate(
+              (w) => w is Text && w.data == 'alpha')),
+      findsOneWidget,
+      reason: 'Matching workload Text node must remain visible in the list.',
+    );
+    expect(
+      find.descendant(
+          of: find.byType(CustomScrollView), matching: find.text('beta')),
+      findsNothing,
+      reason: 'Non-matching workload must be hidden.',
+    );
+    expect(
+      find.descendant(
+          of: find.byType(CustomScrollView), matching: find.text('gamma')),
+      findsNothing,
+      reason: 'Non-matching workload must be hidden.',
+    );
+  });
+
+  // #30 — scanner discriminator filter.
+  testWidgets('Trivy chip hides Kubescape rows', (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/scanning/status', body: _statusBoth())
+      ..onJson(
+        'GET',
+        '/api/v1/scanning/vulnerabilities',
+        body: _vulnEnvelope([
+          _row(name: 'trivy-workload', scanner: 'trivy', critical: 2),
+          _row(name: 'kubescape-workload', scanner: 'kubescape', high: 1),
+        ]),
+      );
+
+    await _pump(tester, mock);
+    expect(find.text('trivy-workload'), findsOneWidget);
+    expect(find.text('kubescape-workload'), findsOneWidget);
+    // Both scanners present → discriminator chips render.
+    expect(find.text('Trivy'), findsWidgets);
+
+    // Tap the "Trivy" scanner discriminator chip.
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Trivy'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('trivy-workload'), findsOneWidget,
+        reason: 'Trivy workload must remain after Trivy chip tap.');
+    expect(find.text('kubescape-workload'), findsNothing,
+        reason: 'Kubescape row must be hidden after Trivy scanner filter.');
   });
 
   testWidgets('virtual scroll: large response only mounts visible window',

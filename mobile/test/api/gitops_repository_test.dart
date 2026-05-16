@@ -560,6 +560,84 @@ void main() {
   // PR-4j: async commit enrichment (deferred from PR-4e)
   // ---------------------------------------------------------------------
 
+  // #20 — GitCommitEnrichmentKey ordering invariance.
+  group('GitCommitEnrichmentKey ordering invariance', () {
+    test('two keys with shas in different order are equal', () {
+      final a = GitCommitEnrichmentKey(
+        clusterId: 'local',
+        repoURL: 'https://github.com/org/repo',
+        shas: ['abc1234abc1234abc1234abc1234abc1234abc12',
+               'def5678def5678def5678def5678def5678def56'],
+      );
+      final b = GitCommitEnrichmentKey(
+        clusterId: 'local',
+        repoURL: 'https://github.com/org/repo',
+        shas: ['def5678def5678def5678def5678def5678def56',
+               'abc1234abc1234abc1234abc1234abc1234abc12'],
+      );
+      expect(a, equals(b),
+          reason:
+              'shaKey is sorted so insertion-order differences do not '
+              'produce different cache slots.');
+      expect(a.hashCode, equals(b.hashCode));
+      // shas getter preserves insertion order of the first key.
+      expect(a.shas.first, 'abc1234abc1234abc1234abc1234abc1234abc12',
+          reason:
+              'shas preserves insertion order while shaKey is sorted.');
+    });
+  });
+
+  // #21 — getCommits 200 with missing commits key → empty map.
+  group('GitOpsRepository.getCommits missing commits key', () {
+    test('200 with no commits field returns empty map', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson('GET', '/api/v1/gitops/commits', body: {
+        'data': {'errors': <String, Object?>{}},
+      });
+
+      final out = await container
+          .read(gitOpsRepositoryProvider)
+          .getCommits(
+            repoURL: 'https://github.com/org/repo',
+            shas: ['abc1234abc1234abc1234abc1234abc1234abc12'],
+          );
+      expect(out, isEmpty,
+          reason:
+              '200 with no commits key (GitHub provider not configured) '
+              'must return an empty map, not throw.');
+    });
+  });
+
+  // #22 — GitCommitEnrichmentKey >50 SHA cap.
+  group('GitCommitEnrichmentKey 50-SHA cap', () {
+    test('60 unique SHAs are capped to 50, dropping entries 51-60', () {
+      final shas = List.generate(
+        60,
+        (i) => i.toString().padLeft(2, '0') * 20,
+      );
+      // Ensure all generated values are exactly 40 chars.
+      final validShas = shas
+          .map((s) => s.substring(0, 40))
+          .toList();
+
+      final key = GitCommitEnrichmentKey(
+        clusterId: 'local',
+        repoURL: 'https://example.com',
+        shas: validShas,
+      );
+      expect(key.shas.length, 50,
+          reason: 'Backend caps at 50; key must mirror this.');
+      // After fix #10 the dropped entries are the last insertion-order
+      // ones (indices 50-59), not the alphabetically-last.
+      expect(key.shas.first, validShas.first,
+          reason: 'First inserted SHA must be first in shas.');
+      expect(key.shas.last, validShas[49],
+          reason: 'Entries 51-60 must be dropped, not alphabetical tail.');
+    });
+  });
+
   group('GitOpsRepository.getCommits (PR-4j)', () {
     test('parses sha → commit metadata map', () async {
       final (:container, :mock) = _make();
@@ -568,7 +646,9 @@ void main() {
       mock.onJson('GET', '/api/v1/gitops/commits', body: {
         'data': {
           'commits': {
-            'abc1234': {
+            // Real backend keys by the full SHA the request supplied,
+            // not by an abbreviated form.
+            'abc1234abc1234abc1234abc1234abc1234abc12': {
               'sha': 'abc1234abc1234abc1234abc1234abc1234abc12',
               'title': 'Bump nginx to 1.25.3',
               'message': 'Bump nginx to 1.25.3\n\nCloses #42',
@@ -588,8 +668,12 @@ void main() {
             shas: ['abc1234abc1234abc1234abc1234abc1234abc12'],
           );
       expect(out, hasLength(1));
-      expect(out['abc1234']?.title, 'Bump nginx to 1.25.3');
-      expect(out['abc1234']?.authorName, 'Operator');
+      expect(
+          out['abc1234abc1234abc1234abc1234abc1234abc12']?.title,
+          'Bump nginx to 1.25.3');
+      expect(
+          out['abc1234abc1234abc1234abc1234abc1234abc12']?.authorName,
+          'Operator');
     });
 
     test('empty repoURL or shas skips the network call entirely', () async {

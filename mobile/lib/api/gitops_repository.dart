@@ -749,6 +749,10 @@ class GitOpsRepository {
       // an empty map so the history tab keeps rendering without commit
       // subjects.
       return <String, GitCommit>{};
+    } catch (_) {
+      // FormatException from GitCommit.fromJson (malformed server
+      // response) must also degrade gracefully rather than propagate.
+      return <String, GitCommit>{};
     }
   }
 
@@ -889,28 +893,53 @@ class GitCommitEnrichmentKey {
     required this.clusterId,
     required this.repoURL,
     required List<String> shas,
-  }) : shaKey = _canonicaliseShas(shas);
+  }) : _shas = _canonicaliseShas(shas),
+       shaKey = _sortedKey(_canonicaliseShas(shas));
 
   final String clusterId;
   final String repoURL;
+
+  /// Sorted comma-joined SHA list for stable equality / hashCode.
+  /// Sorted so two keys with the same SHAs in different insertion orders
+  /// compare equal. See [shas] for the insertion-order list.
   final String shaKey;
 
-  static String _canonicaliseShas(List<String> shas) {
-    final canonical = shas
-        .map((s) => s.trim().toLowerCase())
-        .where((s) => s.isNotEmpty)
-        .toSet()
-        .toList()
-      ..sort();
-    // Backend caps the parameter at 50 SHAs; mirror that here so the
-    // key doesn't bloat with an arbitrarily long join.
-    final capped = canonical.length > 50 ? canonical.sublist(0, 50) : canonical;
-    return capped.join(',');
+  /// Insertion-order (oldest 50) SHA list. Used by the provider body so
+  /// the 50-cap drops the *last* entries (oldest discovery order), not
+  /// the alphabetically-last.
+  ///
+  /// Asymmetry: [shaKey] is sorted for hashCode/== stability while [shas]
+  /// preserves insertion order so the network request drops trailing
+  /// entries in a predictable way.
+  final List<String> _shas;
+
+  static List<String> _canonicaliseShas(List<String> shas) {
+    // LinkedHashSet (Dart's default Set) preserves insertion order +
+    // deduplicates. Normalise then cap at 50 before collecting so the
+    // truncation drops the *last-seen* entries (those beyond position 50),
+    // not the alphabetically-last ones.
+    final seen = <String>{};
+    final out = <String>[];
+    for (final s in shas) {
+      final n = s.trim().toLowerCase();
+      if (n.isNotEmpty && seen.add(n)) {
+        out.add(n);
+        if (out.length == 50) break;
+      }
+    }
+    return out;
+  }
+
+  static String _sortedKey(List<String> canonical) {
+    final sorted = List<String>.from(canonical)..sort();
+    return sorted.join(',');
   }
 
   /// Returns the SHA list this key represents — used by the provider
   /// body so the canonicalisation happens once at construction.
-  List<String> get shas => shaKey.isEmpty ? const [] : shaKey.split(',');
+  /// Preserves insertion order (up to 50 entries) so the network
+  /// request drops trailing entries predictably.
+  List<String> get shas => _shas;
 
   @override
   bool operator ==(Object other) =>

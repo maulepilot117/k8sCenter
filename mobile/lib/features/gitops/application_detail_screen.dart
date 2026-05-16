@@ -430,9 +430,12 @@ class _HistoryTab extends ConsumerWidget {
 
     // Collect 40-char hex SHAs for enrichment. Non-SHA revisions
     // (semver tags, OCI digests) pass through without a commits call.
+    // Accept both lower and upper hex — Argo CD revisions from
+    // GitLab/Bitbucket can be uppercase. The map lookup lowercases
+    // before the key lookup so the two passes stay consistent.
     final shas = <String>[];
     for (final h in history) {
-      if (RegExp(r'^[0-9a-f]{40}$').hasMatch(h.revision)) {
+      if (_kShaRe.hasMatch(h.revision)) {
         shas.add(h.revision);
       }
     }
@@ -544,10 +547,16 @@ String _toolLabel(String tool) => switch (tool) {
       _ => tool,
     };
 
+/// Module-level SHA regex — hoisted so `_HistoryTab.build()` doesn't
+/// allocate a new [RegExp] on every build. Accepts both lower and
+/// uppercase hex so Argo CD revisions from GitLab/Bitbucket don't
+/// slip through the filter.
+final _kShaRe = RegExp(r'^[0-9A-Fa-f]{40}$');
+
 /// Truncates only 40-char hex git SHAs to 7 chars. Non-SHA revisions
 /// (semver tags, OCI digests) pass through unchanged.
 String _short(String revision) {
-  if (RegExp(r'^[0-9a-f]{40}$').hasMatch(revision)) {
+  if (_kShaRe.hasMatch(revision)) {
     return revision.substring(0, 7);
   }
   return revision;

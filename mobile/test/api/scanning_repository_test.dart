@@ -413,6 +413,33 @@ void main() {
     });
   });
 
+  // #18 — listVulnerabilities 5xx path must throw, not swallow.
+  group('ScanningRepository.listVulnerabilities 5xx', () {
+    test('503 throws ApiError (throw-on-5xx contract)', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/scanning/vulnerabilities',
+        (_) => _json({
+          'error': {'code': 503, 'message': 'backend offline'},
+        }, status: 503),
+      );
+
+      await expectLater(
+        container
+            .read(scanningRepositoryProvider)
+            .listVulnerabilities(namespace: 'app'),
+        throwsA(isA<ApiError>()),
+        reason:
+            'The list endpoint is a data endpoint — 5xx must propagate '
+            'so the list screen banner appears rather than silently '
+            'rendering a stale or empty state.',
+      );
+    });
+  });
+
   group('isScanStale', () {
     test('empty timestamp is not stale', () {
       expect(isScanStale(''), isFalse);
@@ -430,6 +457,25 @@ void main() {
     test('8 days old is stale', () {
       final t = DateTime.now().toUtc().subtract(const Duration(days: 8));
       expect(isScanStale(t.toIso8601String()), isTrue);
+    });
+
+    // #19 — exact boundary for isScanStale.
+    test('exactly 7 days (threshold) is NOT stale', () {
+      // Duration comparison is strictly-greater-than the threshold,
+      // so the exact boundary is not stale.
+      final t = DateTime.now().toUtc().subtract(kScanStaleThreshold);
+      expect(isScanStale(t.toIso8601String()), isFalse,
+          reason:
+              'diff == threshold uses >, not >=, so the boundary itself '
+              'is not stale.');
+    });
+
+    test('7 days + 1 second is stale', () {
+      final t = DateTime.now()
+          .toUtc()
+          .subtract(kScanStaleThreshold + const Duration(seconds: 1));
+      expect(isScanStale(t.toIso8601String()), isTrue,
+          reason: 'One second past the threshold must be stale.');
     });
   });
 
