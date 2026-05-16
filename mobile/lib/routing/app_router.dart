@@ -34,6 +34,7 @@ import '../features/gitops/applicationset_detail_screen.dart';
 import '../features/gitops/applicationsets_list_screen.dart';
 import '../features/mesh/mesh_dashboard_screen.dart';
 import '../features/mesh/mtls_posture_screen.dart';
+import '../features/mesh/policies_list_screen.dart';
 import '../features/mesh/route_detail_screen.dart';
 import '../features/mesh/routing_list_screen.dart';
 import '../features/observability/diagnostics/diagnostics_screen.dart';
@@ -234,6 +235,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: 'mtls',
             builder: (context, state) => MeshMtlsPostureScreen(
               initialNamespace: state.uri.queryParameters['namespace'],
+            ),
+          ),
+          GoRoute(
+            path: 'policies',
+            builder: (context, state) => MeshPoliciesListScreen(
+              initialMesh: state.uri.queryParameters['mesh'],
             ),
           ),
         ],

@@ -190,12 +190,14 @@ const List<DomainSection> domainSections = [
       ),
     ],
   ),
-  // Service mesh surfaces (PR-4f). Three entries:
+  // Service mesh surfaces (PR-4f, policies in #259). Four entries:
   //   * Mesh dashboard — Istio + Linkerd side-by-side status cards.
   //   * Routing — list of every TrafficRoute across both meshes.
   //   * mTLS posture — per-namespace workload encryption state.
+  //   * Policies — list of every MeshedPolicy (PeerAuthentication,
+  //     AuthorizationPolicy, MeshTLSAuthentication, Server, etc.).
   // Golden signals tab is rendered inline on Service detail screens
-  // rather than as a drawer entry. All three surfaces gate on
+  // rather than as a drawer entry. All four surfaces gate on
   // `meshStatusProvider` and fall back to
   // `FeatureUnavailableState.mesh()` when neither mesh is installed.
   DomainSection(
@@ -223,6 +225,13 @@ const List<DomainSection> domainSections = [
         icon: Icons.lock_outline,
         namespaced: false,
         customListPath: '/clusters/{clusterId}/mesh/mtls',
+      ),
+      DomainKind(
+        kind: 'policies',
+        label: 'Policies',
+        icon: Icons.policy_outlined,
+        namespaced: false,
+        customListPath: '/clusters/{clusterId}/mesh/policies',
       ),
     ],
   ),

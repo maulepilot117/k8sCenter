@@ -199,6 +199,12 @@ class _Actions extends StatelessWidget {
             icon: const Icon(Icons.lock_outline),
             label: const Text('mTLS posture'),
           ),
+          OutlinedButton.icon(
+            onPressed: () =>
+                context.push('/clusters/$clusterId/mesh/policies'),
+            icon: const Icon(Icons.policy_outlined),
+            label: const Text('Policies'),
+          ),
         ],
       ),
     );
