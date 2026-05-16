@@ -57,6 +57,11 @@ func (s *Server) registerRoutes() {
 			// OIDC routes — redirect-based flow, rate limited
 			ar.With(middleware.RateLimit(s.RateLimiter)).Get("/oidc/{providerID}/login", s.handleOIDCLogin)
 			ar.With(middleware.RateLimit(s.RateLimiter)).Get("/oidc/{providerID}/callback", s.handleOIDCCallback)
+			// Mobile body-mode exchange — mobile clients generate PKCE +
+			// nonce + state client-side and POST the authorization code
+			// here. Response is JSON-only (no Set-Cookie). Shares the
+			// login rate-limit bucket.
+			ar.With(middleware.RateLimit(s.RateLimiter)).Post("/oidc/{providerID}/mobile-exchange", s.handleOIDCMobileExchange)
 		})
 
 		// Setup — rate limited, no auth

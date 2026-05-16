@@ -12,11 +12,33 @@ import (
 const (
 	// AccessTokenLifetime is the duration an access token is valid.
 	AccessTokenLifetime = 15 * time.Minute
-	// RefreshTokenLifetime is the duration a refresh token is valid.
+	// RefreshTokenLifetime is the duration a refresh token is valid for
+	// local + LDAP providers.
 	RefreshTokenLifetime = 7 * 24 * time.Hour
+	// OIDCRefreshTokenLifetime caps refresh tokens issued for OIDC-sourced
+	// sessions. The shorter window means IdP-side revocation (account
+	// disabled, group removed) takes effect within the hour rather than
+	// waiting for the full 7-day rotation cycle.
+	//
+	// The alternative — re-validating each refresh against the IdP's
+	// revocation_endpoint — would require persisting the IdP refresh token,
+	// add per-refresh IdP latency, and tie the platform's availability to
+	// the IdP's. The 1h cap is a pragmatic middle ground: documented as the
+	// session-lifetime guarantee for OIDC users.
+	OIDCRefreshTokenLifetime = 1 * time.Hour
 	// RefreshTokenBytes is the length of random refresh tokens.
 	RefreshTokenBytes = 32
 )
+
+// RefreshLifetimeFor returns the refresh token TTL for a given auth
+// provider. OIDC sessions get the shorter cap; everything else gets the
+// standard window.
+func RefreshLifetimeFor(provider string) time.Duration {
+	if provider == "oidc" {
+		return OIDCRefreshTokenLifetime
+	}
+	return RefreshTokenLifetime
+}
 
 // TokenClaims are the JWT claims for access tokens.
 type TokenClaims struct {

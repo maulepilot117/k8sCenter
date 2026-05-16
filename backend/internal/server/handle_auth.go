@@ -63,7 +63,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, _, err := s.issueTokenPair(w, user)
+	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -137,7 +137,10 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	accessToken, newRefreshToken, err := s.issueTokenPair(w, user)
+	// In body-mode (mobile) we skip setting the cookie — the new refresh
+	// token is echoed in the JSON response. In cookie-mode (web) we keep
+	// the existing httpOnly cookie behaviour.
+	accessToken, newRefreshToken, err := s.issueTokenPair(w, user, !bodyMode)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
@@ -265,8 +268,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue k8sCenter JWT + refresh cookie
-	accessToken, _, err := s.issueTokenPair(w, user)
+	// Issue k8sCenter JWT + refresh cookie (web redirect flow → cookie-mode)
+	accessToken, _, err := s.issueTokenPair(w, user, true /* cookieMode */)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens after OIDC callback", "error", err)
 		http.Redirect(w, r, "/login?error=token_failed", http.StatusFound)

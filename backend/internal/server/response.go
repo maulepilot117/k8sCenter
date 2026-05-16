@@ -53,14 +53,18 @@ func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Ac
 }
 
 // issueTokenPair creates a new access + refresh token pair, stores the
-// session, and sets the refresh cookie. Returns the access token and the
-// raw refresh token.
+// session, and conditionally sets the refresh cookie. Returns the access
+// token and the raw refresh token.
 //
-// The raw refresh token is returned alongside so body-mode clients (mobile,
-// where cookies don't carry cleanly across native HTTP stacks) can echo it
-// back in JSON. Web callers ignore the second return value and rely on the
-// httpOnly cookie this function also sets — behaviour for them is unchanged.
-func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string, string, error) {
+// cookieMode=true (web flow): sets the refresh_token httpOnly cookie.
+// cookieMode=false (mobile/body-mode flow): no cookie is set; the caller
+// must echo the refresh token in the JSON response body.
+//
+// OIDC-sourced sessions get a shorter refresh TTL ([auth.OIDCRefreshTokenLifetime]).
+// The shorter window propagates IdP revocation (account disabled, group
+// removed) within the hour rather than the standard 7-day window — see
+// the constant's doc comment for the rationale.
+func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMode bool) (string, string, error) {
 	accessToken, err := s.TokenManager.IssueAccessToken(user)
 	if err != nil {
 		return "", "", err
@@ -71,11 +75,13 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string,
 		return "", "", err
 	}
 
+	refreshLifetime := auth.RefreshLifetimeFor(user.Provider)
+
 	session := auth.RefreshSession{
 		Token:     refreshToken,
 		UserID:    user.ID,
 		Provider:  user.Provider,
-		ExpiresAt: time.Now().Add(auth.RefreshTokenLifetime),
+		ExpiresAt: time.Now().Add(refreshLifetime),
 	}
 	// Cache user data for non-local providers (OIDC has no local store,
 	// LDAP would require reconnecting to the directory on refresh).
@@ -85,7 +91,9 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User) (string,
 	}
 	s.Sessions.Store(session)
 
-	s.setRefreshCookie(w, refreshToken, int(auth.RefreshTokenLifetime.Seconds()))
+	if cookieMode {
+		s.setRefreshCookie(w, refreshToken, int(refreshLifetime.Seconds()))
+	}
 
 	return accessToken, refreshToken, nil
 }
