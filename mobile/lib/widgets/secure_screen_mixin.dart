@@ -13,6 +13,7 @@
 // screen-record bug reproductions without rebuilding. Tests bypass this
 // via [SecureScreenMixin.kIgnoreDebugForTests].
 
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
@@ -36,14 +37,25 @@ import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 /// ```
 mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   /// Visible-for-test override that disables the [kDebugMode] no-op.
-  /// Set to `true` in widget tests that need to assert on FLAG_SECURE
-  /// or blur-overlay behaviour.
+  /// Defaults to `kDebugMode` so widget tests get the production code
+  /// path automatically — tests that explicitly want to verify the
+  /// debug-mode gate set this back to `false` for that one case. (The
+  /// default-`false`-and-flip-in-setUp pattern used to work but was
+  /// load-bearing for every secure-screen test, which made it easy to
+  /// forget when adding new ones.)
   @visibleForTesting
-  static bool kIgnoreDebugForTests = false;
+  static bool kIgnoreDebugForTests = kDebugMode;
 
   bool _sensitive = false;
   OverlayEntry? _blurOverlay;
   _LifecycleObserver? _observer;
+
+  /// Serializes platform-channel calls so dispose can chain a clear
+  /// onto any in-flight add (or vice versa). Without this, dispose's
+  /// fire-and-forget clearFlags could race a still-running addFlags
+  /// and leave the FLAG_SECURE set on the window after the screen is
+  /// gone, blocking screenshots app-wide until the next add/clear.
+  Future<void>? _inflightPlatformCall;
 
   /// Current sensitive state. Visible for tests.
   @visibleForTesting
@@ -68,8 +80,15 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     }
     _removeBlurOverlay();
     if (_sensitive) {
-      // Fire-and-forget — dispose cannot await.
-      unawaited(_clearFlagSecure());
+      // Fire-and-forget but chained onto any in-flight platform call so
+      // a clearFlags() can't overlap an addFlags() that's still in
+      // transit. dispose cannot await its own work, so we hand the
+      // serialized future to the runtime.
+      _inflightPlatformCall =
+          (_inflightPlatformCall ?? Future.value()).then((_) {
+        return _clearFlagSecure();
+      });
+      unawaited(_inflightPlatformCall!);
     }
     super.dispose();
   }
@@ -84,10 +103,24 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     if (_isNoOpEnvironment) return;
     if (_sensitive == sensitive) return;
     _sensitive = sensitive;
-    if (sensitive) {
-      await _addFlagSecure();
-    } else {
-      await _clearFlagSecure();
+    // Chain onto any in-flight platform call so two rapid setSensitive
+    // calls don't race the platform side.
+    final next = (_inflightPlatformCall ?? Future.value()).then((_) {
+      if (sensitive) {
+        return _addFlagSecure();
+      } else {
+        return _clearFlagSecure();
+      }
+    });
+    _inflightPlatformCall = next;
+    try {
+      await next;
+    } finally {
+      if (identical(_inflightPlatformCall, next)) {
+        _inflightPlatformCall = null;
+      }
+    }
+    if (!sensitive) {
       _removeBlurOverlay();
     }
   }
@@ -110,8 +143,14 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   void _onLifecycleStateChanged(AppLifecycleState state) {
     if (!_sensitive) return;
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    // `hidden` was added in Flutter 3.13 as the state delivered when the
+    // app is moved to the background on iOS via a system-driven path
+    // (e.g., Stage Manager) without first transitioning through
+    // `inactive`. We treat it the same as inactive/paused so the blur
+    // cover lands BEFORE the OS captures the app-switcher snapshot.
     if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused) {
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
       _insertBlurOverlay();
     } else if (state == AppLifecycleState.resumed) {
       _removeBlurOverlay();
@@ -161,6 +200,3 @@ class _LifecycleObserver with WidgetsBindingObserver {
   }
 }
 
-/// Local fire-and-forget helper; mirrors the same shape used elsewhere
-/// in `mobile/lib/main.dart` so we don't pull in `package:async`.
-void unawaited(Future<void> future) {}

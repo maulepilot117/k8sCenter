@@ -26,8 +26,8 @@
 //      scrubbed. They contain Dart source paths, not runtime k8s state, and
 //      scrubbing them destroys crash debuggability for no privacy gain.
 //
-// Drops debug-mode events entirely (kDebugMode == true) so developer
-// sessions don't pollute the shared project.
+// Drops non-release events entirely (profile + debug) so developer and
+// integration sessions don't pollute the shared project.
 
 import 'package:flutter/foundation.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
@@ -58,6 +58,23 @@ final RegExp _k8sPathSegmentPattern = RegExp(
   r'(/v1/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)(?:/([A-Za-z0-9._-]+))?',
 );
 
+/// Matches `/v1/diagnostics/<namespace>/<kind>/<name>`. The diagnostics
+/// API uses a different shape than the resources API — the namespace is
+/// the FIRST segment after the endpoint name, not the third — so it needs
+/// its own pattern. Applied before [_k8sPathSegmentPattern] in [_scrubText]
+/// to take precedence over the generic shape.
+final RegExp _k8sDiagnosticsPathPattern = RegExp(
+  r'(/v1/diagnostics)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)',
+);
+
+/// Matches WebSocket endpoints that embed `<namespace>/<pod>/<container>`
+/// after `/ws/<endpoint>`. Covers both `/ws/logs/...` and `/ws/exec/...`.
+/// Replaced with `<namespace>/<pod>/<container>` placeholders, preserving
+/// the endpoint name for debuggability.
+final RegExp _wsPathPattern = RegExp(
+  r'(/ws/[A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)',
+);
+
 /// Matches `namespace=<value>` and `name=<value>` key-value pairs in
 /// messages. Value is captured as one segment of non-delimiter characters
 /// so we don't over-eat surrounding text or trailing brackets/quotes.
@@ -71,10 +88,12 @@ final RegExp _k8sKeyValuePattern = RegExp(
 /// `null` to drop the event entirely (debug mode); returns a sanitized
 /// event otherwise.
 SentryEvent? scrubEvent(SentryEvent event, Hint hint) {
-  // Drop debug-session events on the floor. Developer-built APKs and
+  // Drop non-release-mode events on the floor. Developer-built APKs and
   // simulator runs share the same DSN as TestFlight builds in dev, so
-  // this is what keeps the shared project clean.
-  if (kDebugMode) return null;
+  // this is what keeps the shared project clean. Profile-mode runs are
+  // also dropped — they're used for performance harnesses and shouldn't
+  // pollute the shared project either.
+  if (!kReleaseMode) return null;
 
   return _scrubEventBody(event);
 }
@@ -122,9 +141,19 @@ SentryEvent _scrubEventBody(SentryEvent event) {
           template: origMessage.template == null
               ? null
               : _scrubText(origMessage.template!),
-          params: origMessage.params,
+          // SentryMessage.params is List<dynamic>?. Strings need scrubbing;
+          // numeric/bool params pass through.
+          params: _scrubMessageParams(origMessage.params),
         );
 
+  // SentryEvent.contexts is a typed `Contexts` object (device, app,
+  // runtime, OS, gpu, browser, response, etc.) — almost all platform
+  // metadata, not user PII. Sentry's `sendDefaultPii: false` already
+  // strips the IP-bearing fields. Scrubbing the typed sub-fields would
+  // require constructing each Contexts.* component by hand for negligible
+  // privacy gain, so we pass contexts through unchanged. Revisit if a
+  // future SDK upgrade starts carrying request bodies under
+  // Contexts.response — see OBSERVABILITY.md.
   return SentryEvent(
     eventId: event.eventId,
     timestamp: event.timestamp,
@@ -136,15 +165,17 @@ SentryEvent _scrubEventBody(SentryEvent event) {
     environment: event.environment,
     modules: event.modules,
     message: message,
-    transaction: event.transaction,
+    transaction:
+        event.transaction == null ? null : _scrubText(event.transaction!),
     throwable: event.throwableMechanism,
     level: event.level,
-    culprit: event.culprit,
+    culprit: event.culprit == null ? null : _scrubText(event.culprit!),
     // user intentionally omitted (defaults to null).
-    tags: event.tags,
+    tags: _scrubTags(event.tags),
     // ignore: deprecated_member_use
-    extra: event.extra,
-    fingerprint: event.fingerprint,
+    extra: _scrubExtra(event.extra),
+    fingerprint:
+        event.fingerprint?.map(_scrubText).toList(growable: false),
     contexts: event.contexts,
     breadcrumbs: breadcrumbs,
     sdk: event.sdk,
@@ -156,6 +187,34 @@ SentryEvent _scrubEventBody(SentryEvent event) {
   );
 }
 
+Map<String, String>? _scrubTags(Map<String, String>? tags) {
+  if (tags == null) return null;
+  return tags.map((k, v) => MapEntry(k, _scrubText(v)));
+}
+
+Map<String, dynamic>? _scrubExtra(Map<String, dynamic>? extra) {
+  if (extra == null) return null;
+  final clean = <String, dynamic>{};
+  extra.forEach((key, value) {
+    if (value is String) {
+      clean[key] = _scrubText(value);
+    } else {
+      // Non-string payloads (numbers, bools, maps) pass through. Maps of
+      // strings would also benefit from scrubbing, but `extra` is
+      // deprecated SDK-side and we don't generate it ourselves.
+      clean[key] = value;
+    }
+  });
+  return clean;
+}
+
+List<dynamic>? _scrubMessageParams(List<dynamic>? params) {
+  if (params == null) return null;
+  return params
+      .map<dynamic>((p) => p is String ? _scrubText(p) : p)
+      .toList(growable: false);
+}
+
 Map<String, String>? _scrubHeaders(Map<String, String>? headers) {
   if (headers == null) return null;
   // Authorization / cookies / X-CSRF-Token might leak session credentials.
@@ -164,10 +223,12 @@ Map<String, String>? _scrubHeaders(Map<String, String>? headers) {
   headers.forEach((key, value) {
     final lower = key.toLowerCase();
     if (lower == 'authorization' ||
+        lower == 'proxy-authorization' ||
         lower == 'cookie' ||
         lower == 'set-cookie' ||
         lower.startsWith('x-csrf') ||
-        lower == 'x-requested-with') {
+        lower == 'x-requested-with' ||
+        lower == 'x-cluster-id') {
       return;
     }
     clean[key] = value;
@@ -228,6 +289,25 @@ String _scrubText(String input) {
   // floor (100+ chars) means we won't accidentally scrub Dart symbols
   // or URL fragments.
   out = out.replaceAll(_fcmTokenPattern, kScrubbedToken);
+
+  // Diagnostics paths first — their `/v1/diagnostics/<ns>/<kind>/<name>`
+  // shape differs from the resources API (`/v1/<bucket>/<kind>/<ns>...`)
+  // so we apply the diagnostics pattern BEFORE the generic resources
+  // pattern. Otherwise the generic regex would absorb it and treat the
+  // namespace as a kind.
+  out = out.replaceAllMapped(_k8sDiagnosticsPathPattern, (m) {
+    final prefix = m.group(1)!; // "/v1/diagnostics"
+    return '$prefix/$kScrubbedNamespace/<kind>/$kScrubbedName';
+  });
+
+  // WebSocket endpoints embedding namespace/pod/container after the
+  // endpoint name. Covers `/ws/logs/<ns>/<pod>/<container>` and
+  // `/ws/exec/<ns>/<pod>/<container>`. Other `/ws/...` shapes
+  // (notifications, alerts) lack the trailing tuple so they pass through.
+  out = out.replaceAllMapped(_wsPathPattern, (m) {
+    final endpoint = m.group(1)!; // "/ws/logs" or "/ws/exec"
+    return '$endpoint/$kScrubbedNamespace/<pod>/<container>';
+  });
 
   // Positional k8s path segments — `/v1/<bucket>/<kind>/<ns>[/<name>]`.
   // `m.group(2)` is the namespace segment (always present per the regex);

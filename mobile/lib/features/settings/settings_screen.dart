@@ -18,6 +18,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../observability/sentry_init.dart' show kSentryDsn;
 import '../../theme/kube_theme_builder.dart';
 import 'sentry_controller.dart';
 import 'theme_picker_sheet.dart';
@@ -58,14 +59,21 @@ class SettingsScreen extends ConsumerWidget {
             key: const ValueKey('settings-sentry-opt-in'),
             secondary: Icon(Icons.bug_report_outlined, color: colors.accent),
             title: const Text('Send crash reports'),
-            subtitle: const Text(
-              'Send anonymous crash reports to help us fix bugs. '
-              'Resource names, namespaces, and credentials are stripped '
-              'before reports leave the device.',
+            subtitle: Text(
+              kSentryDsn.isEmpty
+                  ? 'Crash reporting is not configured in this build.'
+                  : 'Send anonymous crash reports to help us fix bugs. '
+                      'Resource names, namespaces, and credentials are stripped '
+                      'before reports leave the device.',
             ),
             value: optedIn,
-            onChanged: (v) =>
-                ref.read(sentryControllerProvider.notifier).setOptIn(v),
+            // Disable the switch entirely when no DSN was wired into the
+            // build — otherwise toggling silently does nothing and the
+            // operator thinks crash reporting is on.
+            onChanged: kSentryDsn.isEmpty
+                ? null
+                : (v) =>
+                    ref.read(sentryControllerProvider.notifier).setOptIn(v),
           ),
           const Divider(height: 1),
 
@@ -140,9 +148,12 @@ class _VersionTileState extends State<_VersionTile> {
     try {
       final info = await PackageInfo.fromPlatform();
       if (mounted) setState(() => _info = info);
-    } catch (_) {
+    } catch (error) {
       // PackageInfo plugin not registered (e.g., golden-test
-      // environments). Leave the placeholder in place.
+      // environments). Leave the placeholder in place. debugPrint so
+      // operators see something in `flutter logs` if it fails on a real
+      // device — silent failure here is too easy to miss.
+      debugPrint('PackageInfo.fromPlatform failed: $error');
     }
   }
 

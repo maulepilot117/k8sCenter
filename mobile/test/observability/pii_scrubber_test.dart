@@ -67,6 +67,56 @@ void main() {
       final out = scrubText('Namespace=Production failed');
       expect(out, 'Namespace=<namespace> failed');
     });
+
+    test('scrubs diagnostics path shape', () {
+      // Diagnostics paths embed namespace as the FIRST segment after the
+      // endpoint name, not the third — distinct from the resources API
+      // shape. This pattern is applied before the generic regex.
+      final out = scrubText(
+        'GET /v1/diagnostics/team-payments/Deployment/checkout failed',
+      );
+      expect(
+        out,
+        'GET /v1/diagnostics/<namespace>/<kind>/<name> failed',
+      );
+    });
+
+    test('scrubs /ws/logs/<ns>/<pod>/<container> shape', () {
+      final out =
+          scrubText('connecting /ws/logs/team-x/redis-0/redis to backend');
+      expect(
+        out,
+        'connecting /ws/logs/<namespace>/<pod>/<container> to backend',
+      );
+    });
+
+    test('scrubs /ws/exec/<ns>/<pod>/<container> shape', () {
+      final out = scrubText('opened /ws/exec/team-y/app-7d4c-abcd/sidecar');
+      expect(
+        out,
+        'opened /ws/exec/<namespace>/<pod>/<container>',
+      );
+    });
+
+    test('empty input passes through', () {
+      expect(scrubText(''), '');
+    });
+
+    test('whitespace-only input passes through unchanged', () {
+      expect(scrubText('   '), '   ');
+    });
+
+    test('two independent /v1/ paths in one message both scrub', () {
+      final out = scrubText(
+        'rolling /v1/resources/secrets/team-a/cred-1 then '
+        '/v1/resources/pods/team-b/runner-2',
+      );
+      expect(
+        out,
+        'rolling /v1/resources/secrets/<namespace>/<name> then '
+        '/v1/resources/pods/<namespace>/<name>',
+      );
+    });
   });
 
   group('scrubEvent', () {
@@ -175,6 +225,153 @@ void main() {
       final scrubbed = scrubEventForTest(event);
       expect(scrubbed.exceptions!.single.type, 'StateError');
       expect(scrubbed.exceptions!.single.value, 'Bad state');
+    });
+
+    test('scrubs event.transaction', () {
+      final event = SentryEvent(
+        transaction: 'GET /v1/resources/secrets/ns-a/cred-x',
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.transaction,
+        'GET /v1/resources/secrets/<namespace>/<name>',
+      );
+    });
+
+    test('scrubs event.fingerprint entries', () {
+      final event = SentryEvent(
+        fingerprint: [
+          'namespace=team-x',
+          '/v1/resources/secrets/team-y/cred-z',
+        ],
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(scrubbed.fingerprint, [
+        'namespace=<namespace>',
+        '/v1/resources/secrets/<namespace>/<name>',
+      ]);
+    });
+
+    test('scrubs event.culprit', () {
+      final event = SentryEvent(
+        culprit: 'crash in /v1/resources/pods/team-x/runner-1',
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.culprit,
+        'crash in /v1/resources/pods/<namespace>/<name>',
+      );
+    });
+
+    test('scrubs event.tags values', () {
+      final event = SentryEvent(
+        tags: {
+          'env': 'prod',
+          'route': '/v1/resources/secrets/ns/v',
+        },
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(scrubbed.tags!['env'], 'prod');
+      expect(scrubbed.tags!['route'], '/v1/resources/secrets/<namespace>/<name>');
+    });
+
+    test('scrubs string values in event.extra; non-strings pass through', () {
+      final event = SentryEvent(
+        // ignore: deprecated_member_use
+        extra: {
+          'path': '/v1/resources/pods/team-x/runner-1',
+          'retry_count': 3,
+          'success': false,
+        },
+      );
+      final scrubbed = scrubEventForTest(event);
+      // ignore: deprecated_member_use
+      expect(scrubbed.extra!['path'],
+          '/v1/resources/pods/<namespace>/<name>');
+      // ignore: deprecated_member_use
+      expect(scrubbed.extra!['retry_count'], 3);
+      // ignore: deprecated_member_use
+      expect(scrubbed.extra!['success'], false);
+    });
+
+    test('scrubs string SentryMessage.params; non-strings pass', () {
+      final event = SentryEvent(
+        message: SentryMessage(
+          'lookup failed for %s in %s after %d tries',
+          template: 'lookup failed for %s in %s after %d tries',
+          params: [
+            'name=vault-token',
+            'namespace=team-x',
+            3,
+          ],
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      final params = scrubbed.message!.params!;
+      expect(params[0], 'name=<name>');
+      expect(params[1], 'namespace=<namespace>');
+      expect(params[2], 3);
+    });
+
+    test('SentryMessage with null template does not throw', () {
+      final event = SentryEvent(
+        message: SentryMessage(
+          'GET /v1/resources/secrets/ns/v failed',
+          template: null,
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.message!.formatted,
+        'GET /v1/resources/secrets/<namespace>/<name> failed',
+      );
+      expect(scrubbed.message!.template, isNull);
+    });
+
+    test('SentryException(value: null) does not throw', () {
+      final event = SentryEvent(
+        exceptions: [SentryException(type: 'StateError', value: null)],
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(scrubbed.exceptions!.single.value, isNull);
+    });
+
+    test('scrubs string values in non-http breadcrumb data', () {
+      final event = SentryEvent(
+        breadcrumbs: [
+          Breadcrumb(
+            type: 'navigation',
+            category: 'navigation',
+            data: {
+              'from': '/v1/resources/secrets/ns/name',
+              'to': '/v1/resources/pods/ns/name',
+            },
+          ),
+        ],
+      );
+      final scrubbed = scrubEventForTest(event);
+      final data = scrubbed.breadcrumbs!.single.data!;
+      expect(data['from'], '/v1/resources/secrets/<namespace>/<name>');
+      expect(data['to'], '/v1/resources/pods/<namespace>/<name>');
+    });
+
+    test('drops x-cluster-id and proxy-authorization headers', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url: 'https://kubecenter.local/v1/auth/me',
+          method: 'GET',
+          headers: {
+            'X-Cluster-Id': 'prod-east',
+            'Proxy-Authorization': 'Basic abc',
+            'Content-Type': 'application/json',
+          },
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      final headers = scrubbed.request!.headers;
+      expect(headers.containsKey('X-Cluster-Id'), isFalse);
+      expect(headers.containsKey('Proxy-Authorization'), isFalse);
+      expect(headers['Content-Type'], 'application/json');
     });
   });
 }

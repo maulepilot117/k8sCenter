@@ -59,4 +59,56 @@ void main() {
     expect(didFail, isTrue,
         reason: 'unlabeled tap target should fail labeledTapTarget guideline');
   });
+
+  testWidgets('findSemanticsFor returns the SemanticsNode for a label',
+      (tester) async {
+    await tester.pumpWidget(
+      a11yHarness(
+        theme: ThemeData.light(),
+        child: Semantics(
+          label: 'foo',
+          container: true,
+          child: const SizedBox(width: 80, height: 80),
+        ),
+      ),
+    );
+    final node = findSemanticsFor(tester, find.bySemanticsLabel('foo'));
+    expect(node.label, 'foo');
+  });
+
+  testWidgets('findSemanticsFor fails the test when the finder is empty',
+      (tester) async {
+    await tester.pumpWidget(
+      a11yHarness(theme: ThemeData.light(), child: const SizedBox()),
+    );
+    var didFail = false;
+    try {
+      findSemanticsFor(tester, find.text('does-not-exist'));
+    } on TestFailure {
+      didFail = true;
+    }
+    expect(didFail, isTrue,
+        reason: 'a missing finder should fail the assertion');
+  });
+
+  testWidgets('skip-flag actually disables the corresponding check',
+      (tester) async {
+    // Build a tree known to fail labeledTapTarget (an unlabeled gesture).
+    // expectMeetsAllGuidelines with labeledTapTargets: false should
+    // NOT throw — confirming the flag short-circuits that specific check.
+    await tester.pumpWidget(
+      a11yHarness(
+        theme: ThemeData.light(),
+        child: Center(
+          child: GestureDetector(
+            onTap: () {},
+            child: const SizedBox(width: 80, height: 80),
+          ),
+        ),
+      ),
+    );
+    // Default call fails — verified by the prior test.
+    // This call must succeed since the failing guideline is skipped.
+    await expectMeetsAllGuidelines(tester, labeledTapTargets: false);
+  });
 }

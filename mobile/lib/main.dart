@@ -13,7 +13,7 @@ import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
-import 'theme/theme_controller.dart';
+import 'providers/shared_preferences_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,7 +22,14 @@ Future<void> main() async {
   // Lazy Sentry bootstrap. Returns false (no work) when the user has
   // not opted in, when the build doesn't carry --dart-define=SENTRY_DSN,
   // or on any init error. The opt-out path is a single prefs read.
-  await initSentryIfOptedIn();
+  // Wrapped a second time at the call site so even a wildly unanticipated
+  // throw (e.g., the Dart isolate's zone is in a weird state) cannot
+  // prevent runApp from being reached.
+  try {
+    await initSentryIfOptedIn(prefs);
+  } catch (error) {
+    debugPrint('initSentryIfOptedIn threw: $error');
+  }
 
   final container = ProviderContainer(
     overrides: [

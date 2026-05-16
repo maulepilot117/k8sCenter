@@ -44,26 +44,33 @@ const String kSentryDsn = String.fromEnvironment('SENTRY_DSN');
 /// Returns `true` if Sentry was actually initialized, `false` if either
 /// gate was closed. Callers (`main.dart`) ignore the return value; tests
 /// inspect it.
-Future<bool> initSentryIfOptedIn() async {
-  final prefs = await SharedPreferences.getInstance();
+Future<bool> initSentryIfOptedIn(SharedPreferences prefs) async {
   final optedIn = prefs.getBool(kSentryOptInPrefsKey) ?? false;
   if (!optedIn) return false;
   if (kSentryDsn.isEmpty) return false;
 
-  await SentryFlutter.init((options) {
-    options.dsn = kSentryDsn;
-    // Defence-in-depth on top of [scrubEvent]: Sentry's own PII filter
-    // strips IPs + Cookie headers when this is false.
-    options.sendDefaultPii = false;
-    // We capture crashes, not performance — disable tracing so
-    // performance-span breadcrumbs don't bypass [scrubEvent]'s targeted
-    // scrub. Profiling is off by default at 8.x and is left unset (the
-    // SDK marks `profilesSampleRate` experimental).
-    options.tracesSampleRate = 0.0;
-    options.attachStacktrace = true;
-    options.beforeSend = scrubEvent;
-    options.environment = kReleaseMode ? 'production' : 'development';
-  });
+  // Wrapped in try/catch so a Sentry-side init failure (transport
+  // refusing the DSN, native channel panic, etc.) cannot block the app
+  // from launching. Documented in OBSERVABILITY.md.
+  try {
+    await SentryFlutter.init((options) {
+      options.dsn = kSentryDsn;
+      // Defence-in-depth on top of [scrubEvent]: Sentry's own PII filter
+      // strips IPs + Cookie headers when this is false.
+      options.sendDefaultPii = false;
+      // We capture crashes, not performance — disable tracing so
+      // performance-span breadcrumbs don't bypass [scrubEvent]'s targeted
+      // scrub. Profiling is off by default at 8.x and is left unset (the
+      // SDK marks `profilesSampleRate` experimental).
+      options.tracesSampleRate = 0.0;
+      options.attachStacktrace = true;
+      options.beforeSend = scrubEvent;
+      options.environment = kReleaseMode ? 'production' : 'development';
+    });
+  } catch (error) {
+    debugPrint('SentryFlutter.init failed: $error');
+    return false;
+  }
 
   // Tag the release so Sentry's project-level inbound filter can drop
   // events whose `release` doesn't match the published binary's version.
@@ -74,9 +81,10 @@ Future<bool> initSentryIfOptedIn() async {
       scope.setTag('release', 'kubecenter-mobile@${info.version}');
       scope.setTag('build', info.buildNumber);
     });
-  } catch (_) {
+  } catch (error) {
     // PackageInfo can throw on platforms without the plugin registered
     // (e.g., some test contexts). Init is already done — swallow.
+    debugPrint('PackageInfo.fromPlatform failed: $error');
   }
 
   return true;

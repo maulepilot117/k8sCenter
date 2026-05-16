@@ -81,6 +81,13 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # Test-only: directly imported by settings_screen_test.dart to stub
+  # the url_launcher platform interface. Brought in transitively by
+  # url_launcher above; listed here so `depend_on_referenced_packages`
+  # stays clean.
+  plugin_platform_interface: ^2.1.0
+  url_launcher_platform_interface: ^2.3.0
+
   # Code generation for Riverpod, Freezed, JSON.
   build_runner: ^2.4.13
   riverpod_generator: ^2.6.3

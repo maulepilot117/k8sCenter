@@ -22,13 +22,10 @@ Future<void> _withPlatform(
 }
 
 void main() {
-  setUp(() {
-    SecureScreenMixin.kIgnoreDebugForTests = true;
-  });
-
-  tearDown(() {
-    SecureScreenMixin.kIgnoreDebugForTests = false;
-  });
+  // `kIgnoreDebugForTests` defaults to `kDebugMode`, which is `true` in
+  // `flutter test`, so the production code path runs without any setup
+  // here. The debug-gate test below explicitly flips it back to `false`
+  // for that one case.
 
   group('SecureScreenMixin Android', () {
     late List<MethodCall> calls;
@@ -194,6 +191,41 @@ void main() {
         await tester.pump();
 
         expect(state.isBlurOverlayShown, isTrue);
+      });
+    });
+
+    testWidgets('hidden fires the same insertion as inactive',
+        (tester) async {
+      await _withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        _fireLifecycle(AppLifecycleState.hidden);
+        await tester.pump();
+
+        expect(state.isBlurOverlayShown, isTrue);
+      });
+    });
+
+    testWidgets(
+        'lifecycle event after dispose does not insert overlay or throw',
+        (tester) async {
+      await _withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+        await state.setSensitive(true);
+
+        await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+        await tester.pump();
+
+        // After dispose, firing inactive must not insert a new overlay
+        // or throw. The observer was removed; this exercises the safety
+        // net for any lingering scheduler callbacks.
+        _fireLifecycle(AppLifecycleState.inactive);
+        await tester.pump();
+
+        expect(find.byType(BackdropFilter), findsNothing);
       });
     });
   });

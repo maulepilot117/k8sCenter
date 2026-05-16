@@ -89,11 +89,24 @@ test. The scrubber's test file lives at
 
 ## Debug-build guard
 
-`scrubEvent` returns `null` (drop event) when `kDebugMode == true`.
-This is what keeps developer simulator/emulator runs out of the shared
-project, since release and debug builds share the same DSN provisioned
-at build time. Production binaries (TestFlight, App Store, Play
-production) build with `--release` so the gate stays open.
+`scrubEvent` returns `null` (drop event) when `!kReleaseMode` — i.e., in
+both debug and profile builds. This is what keeps developer
+simulator/emulator runs AND performance-harness profile builds out of
+the shared project, since release/debug/profile builds all share the
+same DSN provisioned at build time. Only production binaries
+(TestFlight, App Store, Play production), which build with `--release`,
+pass the gate.
+
+## App-launch safety
+
+`initSentryIfOptedIn` is wrapped in try/catch at TWO layers (the SDK
+init itself in `sentry_init.dart`, and the call site in `main.dart`).
+Even if the Sentry SDK throws during init — DSN parse error, native
+channel panic, transport refusing the handshake — the app continues to
+launch. The init function returns `false` and `runApp` proceeds. This is
+verified by the unit tests in `test/observability/sentry_init_test.dart`
+and the documented "app does not fail to launch even when init throws"
+contract; if you change init behaviour, do not weaken this gate.
 
 ## Deferred from PR-5a
 
@@ -111,3 +124,9 @@ production) build with `--release` so the gate stays open.
 - **Synthetic test event before public release.** PR-5j fires a real
   crash on a real device and audits the Sentry event payload for
   unexpected PII before submitting to stores.
+- **Production-track DSN gating.** PR-5j Fastlane lanes (`promote_ios`,
+  `promote_android`) must NOT pass `--dart-define=SENTRY_DSN` until the
+  Sentry project-side inbound filter + release tag filter + rate cap
+  are configured. Until then, the DSN should only be wired into the
+  internal-beta TestFlight / Play Internal lanes so a misconfigured
+  filter can't burn project quota from production builds.
