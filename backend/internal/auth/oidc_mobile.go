@@ -2,11 +2,19 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
+
+// ErrOIDCExchangeTimeout is the canonical error message returned when the
+// authorization-code exchange to the IdP times out (context deadline or
+// transport-level Timeout). Distinct from a 4xx IdP rejection so the
+// caller can map it to 503 (retry) rather than 401 (re-auth).
+const ErrOIDCExchangeTimeout = "oidc token exchange timeout"
 
 // ExchangeMobile is the mobile counterpart to [OIDCProvider.HandleCallback].
 //
@@ -42,6 +50,15 @@ func (p *OIDCProvider) ExchangeMobile(ctx context.Context, code, codeVerifier, e
 
 	oauth2Token, err := p.oauth2Config.Exchange(exchangeCtx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
+		// Distinguish transport timeout from an IdP-side rejection so the
+		// HTTP layer can choose 503 (retry) over 401 (re-auth). Both
+		// context.DeadlineExceeded and net/url.Error.Timeout() count as
+		// timeouts here; net errors from the custom httpClient surface
+		// through the latter.
+		var urlErr *url.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &urlErr) && urlErr.Timeout()) {
+			return nil, fmt.Errorf("%s: %w", ErrOIDCExchangeTimeout, err)
+		}
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
 
@@ -60,7 +77,7 @@ func (p *OIDCProvider) ExchangeMobile(ctx context.Context, code, codeVerifier, e
 
 	// Validate nonce. go-oidc does not validate this automatically.
 	if idToken.Nonce != expectedNonce {
-		return nil, fmt.Errorf("oidc id token nonce mismatch")
+		return nil, fmt.Errorf("%s", ErrOIDCNonceMismatch)
 	}
 
 	var claims oidcClaims

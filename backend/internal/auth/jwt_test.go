@@ -123,3 +123,27 @@ func TestRefreshTokenLifetime(t *testing.T) {
 		t.Errorf("expected 7 day lifetime, got %v", RefreshTokenLifetime)
 	}
 }
+
+// TestRefreshLifetimeFor asserts the provider-aware refresh TTL switch:
+// OIDC sessions are capped at the shorter [OIDCRefreshTokenLifetime] so
+// IdP-side revocation propagates within the hour; everything else (local,
+// LDAP, future credential providers via the default branch) keeps the
+// standard [RefreshTokenLifetime] window.
+func TestRefreshLifetimeFor(t *testing.T) {
+	cases := []struct {
+		provider string
+		want     time.Duration
+	}{
+		{"oidc", OIDCRefreshTokenLifetime},
+		{"local", RefreshTokenLifetime},
+		{"ldap", RefreshTokenLifetime},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			got := RefreshLifetimeFor(tc.provider)
+			if got != tc.want {
+				t.Errorf("RefreshLifetimeFor(%q) = %v, want %v", tc.provider, got, tc.want)
+			}
+		})
+	}
+}

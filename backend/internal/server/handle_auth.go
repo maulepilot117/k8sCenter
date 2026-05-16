@@ -157,6 +157,12 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	if bodyMode {
 		respData["refreshToken"] = newRefreshToken
+		// Mirror the mobile-exchange response shape so mobile clients can
+		// schedule their next refresh without re-deriving the TTL. Cookie-
+		// mode callers learn the lifetime from the Set-Cookie Max-Age and
+		// shouldn't need to read it from the JSON body, so we keep the web
+		// shape unchanged.
+		respData["refreshExpiresIn"] = int(auth.RefreshLifetimeFor(user.Provider).Seconds())
 	}
 	writeJSON(w, http.StatusOK, api.Response{Data: respData})
 }

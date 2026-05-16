@@ -57,8 +57,12 @@ func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Ac
 // token and the raw refresh token.
 //
 // cookieMode=true (web flow): sets the refresh_token httpOnly cookie.
-// cookieMode=false (mobile/body-mode flow): no cookie is set; the caller
-// must echo the refresh token in the JSON response body.
+// cookieMode=false (body-mode flow): no cookie is set; the caller MUST
+// echo the refresh token in the JSON response body. This is a wire-format
+// difference from the cookie-mode path — body-mode responses do NOT
+// include a Set-Cookie header — and mobile clients cannot persist refresh
+// tokens any other way because in-app browsers don't share their cookie
+// jar with the embedded Dio client.
 //
 // OIDC-sourced sessions get a shorter refresh TTL ([auth.OIDCRefreshTokenLifetime]).
 // The shorter window propagates IdP revocation (account disabled, group

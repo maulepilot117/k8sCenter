@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -395,6 +396,115 @@ func TestHandleRefresh_BodyMode(t *testing.T) {
 	}
 	if resp.Data.RefreshToken == refreshToken {
 		t.Error("rotated refresh token should differ from original")
+	}
+}
+
+// TestHandleRefresh_BodyMode_NoSetCookie confirms the body-mode refresh
+// path does NOT echo a `refresh_token` cookie back to mobile callers (PR-5b
+// wire-format guarantee). The rotated refresh token must arrive in the JSON
+// body only — web cookie semantics would be a no-op for mobile clients and
+// surface as a confusing duplicate to operators reading raw HTTP traces.
+func TestHandleRefresh_BodyMode_NoSetCookie(t *testing.T) {
+	srv := testServer(t)
+	_, cookies := loginAdmin(t, srv)
+
+	var refreshToken string
+	for _, c := range cookies {
+		if c.Name == "refresh_token" {
+			refreshToken = c.Value
+		}
+	}
+	if refreshToken == "" {
+		t.Fatalf("login did not return refresh_token cookie")
+	}
+
+	body := `{"refreshToken":"` + refreshToken + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w := httptest.NewRecorder()
+
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "refresh_token" && c.Value != "" {
+			t.Errorf("body-mode refresh must not set a refresh_token cookie; got %+v", c)
+		}
+	}
+}
+
+// TestIssueTokenPair_OIDCRefreshLifetime asserts the session row stored by
+// issueTokenPair carries the provider-aware refresh TTL: OIDC sessions get
+// the 1h cap, local sessions get the 7d default. Drift here silently
+// extends the IdP revocation window — the change that motivated PR-5b — so
+// the test reads the stored ExpiresAt directly instead of inferring it
+// from cookie Max-Age (which is absent in body-mode).
+func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
+	cases := []struct {
+		name     string
+		user     *auth.User
+		wantTTL  time.Duration
+		tolerance time.Duration
+	}{
+		{
+			name:      "oidc user gets 1h cap",
+			user:      &auth.User{ID: "oidc:authelia:sub-1", Username: "u@example.com", Provider: "oidc"},
+			wantTTL:   auth.OIDCRefreshTokenLifetime,
+			tolerance: 5 * time.Second,
+		},
+		{
+			name:      "local user keeps 7d default",
+			user:      &auth.User{ID: "local-1", Username: "admin", Provider: "local"},
+			wantTTL:   auth.RefreshTokenLifetime,
+			tolerance: 5 * time.Second,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+
+			before := time.Now()
+			w := httptest.NewRecorder()
+			_, refreshToken, err := srv.issueTokenPair(w, tc.user, false /* cookieMode */)
+			if err != nil {
+				t.Fatalf("issueTokenPair: %v", err)
+			}
+			if refreshToken == "" {
+				t.Fatal("expected non-empty refresh token")
+			}
+
+			// Locate the stored session by its token. We can't read SessionStore
+			// internals, so re-Validate (which is single-use). The returned
+			// ValidatedSession doesn't expose ExpiresAt; instead, we walk the
+			// internal sessions map via reflection-free sync.Map iteration by
+			// re-storing a marker before Validate consumes the row. Simpler:
+			// re-issue + Range the sync.Map BEFORE consuming.
+			var found bool
+			var got time.Time
+			srv.Sessions.RangeSessions(func(s auth.RefreshSession) bool {
+				if s.Token == refreshToken {
+					found = true
+					got = s.ExpiresAt
+					return false
+				}
+				return true
+			})
+			if !found {
+				t.Fatalf("issued refresh token not in SessionStore")
+			}
+
+			wantMin := before.Add(tc.wantTTL).Add(-tc.tolerance)
+			wantMax := time.Now().Add(tc.wantTTL).Add(tc.tolerance)
+			if got.Before(wantMin) || got.After(wantMax) {
+				t.Errorf("session ExpiresAt = %v, want within [%v, %v] (TTL %v)",
+					got, wantMin, wantMax, tc.wantTTL)
+			}
+		})
 	}
 }
 

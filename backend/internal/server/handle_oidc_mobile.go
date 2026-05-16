@@ -2,7 +2,7 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -13,9 +13,14 @@ import (
 )
 
 // oidcMobileExchangeRequest is the JSON body POSTed by the mobile client.
+//
+// State is generated and validated client-side per RFC 8252; the server
+// does not re-validate it and silently ignores it if present in the
+// request JSON (json.Decoder discards unknown fields). It is intentionally
+// omitted from the struct to make the contract explicit at the type level
+// rather than relying on a documented-but-unused field.
 type oidcMobileExchangeRequest struct {
 	Code         string `json:"code"`
-	State        string `json:"state"`
 	CodeVerifier string `json:"codeVerifier"`
 	Nonce        string `json:"nonce"`
 }
@@ -27,9 +32,9 @@ type oidcMobileExchangeRequest struct {
 // open the IdP authorization URL in flutter_custom_tabs /
 // SFSafariViewController, intercept the redirect via Universal Link / App
 // Link, validate state client-side (it's the mobile CSRF token), and POST
-// {code, state, codeVerifier, nonce} here. Response is body-mode — no
-// cookies are set — because in-app browsers can't share their cookie jar
-// with the embedded Dio client.
+// {code, codeVerifier, nonce} here. Response is body-mode — no cookies are
+// set — because in-app browsers can't share their cookie jar with the
+// embedded Dio client.
 //
 // State is NOT re-validated server-side; the mobile client is the only one
 // that can validate it (the value was generated on-device). The nonce IS
@@ -85,6 +90,11 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 
 	provider, ok := s.AuthRegistry.GetOIDC(providerID)
 	if !ok {
+		// Audit unknown-provider attempts too — they're a low-cost signal
+		// for misconfigured clients or scanning probes hitting the auth
+		// surface. Detail string follows the same shape as the rest of the
+		// mobile-exchange audit entries.
+		s.auditOIDCMobileFailure(r, providerID, fmt.Errorf("unknown OIDC provider"))
 		writeJSON(w, http.StatusNotFound, api.Response{
 			Error: &api.APIError{Code: 404, Message: "unknown OIDC provider"},
 		})
@@ -109,6 +119,14 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 	accessToken, refreshToken, err := s.issueTokenPair(w, user, false /* cookieMode */)
 	if err != nil {
 		s.Logger.Error("failed to issue tokens", "error", err)
+		// Audit the post-exchange failure so operators can correlate a
+		// successful IdP token exchange that nonetheless produced no
+		// k8sCenter session (e.g. JWT signing failure, session store
+		// pressure). Without this, the prior success-only audit hid the
+		// 500.
+		entry := s.newAuditEntry(r, user.Username, audit.ActionLogin, audit.ResultFailure)
+		entry.Detail = "oidc/" + providerID + "/mobile: token issuance failed"
+		s.AuditLogger.Log(r.Context(), entry)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
 			Error: &api.APIError{Code: 500, Message: "failed to issue token"},
 		})
@@ -119,6 +137,10 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 	entry.Detail = "oidc/" + providerID + "/mobile"
 	s.AuditLogger.Log(r.Context(), entry)
 
+	// Mobile clients should call /v1/auth/me post-exchange to hydrate the
+	// canonical user model (roles, kubernetesGroups, namespace permissions).
+	// This summary payload is for the initial login-screen render only and
+	// intentionally omits fields a 5KB-JSON login round-trip doesn't need.
 	writeJSON(w, http.StatusOK, api.Response{
 		Data: map[string]any{
 			"accessToken":      accessToken,
@@ -140,69 +162,112 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 // human-readable classification that does NOT include token, nonce, or
 // verifier contents.
 func (s *Server) auditOIDCMobileFailure(r *http.Request, providerID string, err error) {
+	cat := categorizeOIDCMobileError(err)
 	entry := s.newAuditEntry(r, "", audit.ActionLogin, audit.ResultFailure)
-	entry.Detail = "oidc/" + providerID + "/mobile: " + classifyOIDCMobileError(err)
+	entry.Detail = "oidc/" + providerID + "/mobile: " + cat.auditLabel
 	s.AuditLogger.Log(r.Context(), entry)
 }
 
 // writeOIDCMobileExchangeError maps an ExchangeMobile error to an HTTP
 // response. Specific failure modes get specific status codes; everything
-// else falls through to 401.
+// else falls through to 401. Status + response message come from the
+// shared categorizer so the audit label and HTTP envelope cannot drift.
 func (s *Server) writeOIDCMobileExchangeError(w http.ResponseWriter, err error) {
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "domain not allowed"):
-		writeJSON(w, http.StatusForbidden, api.Response{
-			Error: &api.APIError{Code: 403, Message: "email domain not allowed"},
-		})
-	case strings.Contains(msg, "nonce mismatch"):
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "oidc id token nonce mismatch"},
-		})
-	case strings.Contains(msg, "not verified by identity provider"):
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "email address not verified by identity provider"},
-		})
-	case strings.Contains(msg, "ID token verification failed"):
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "oidc id token verification failed"},
-		})
-	default:
-		writeJSON(w, http.StatusUnauthorized, api.Response{
-			Error: &api.APIError{Code: 401, Message: "oidc exchange failed"},
-		})
-	}
+	cat := categorizeOIDCMobileError(err)
+	writeJSON(w, cat.httpStatus, api.Response{
+		Error: &api.APIError{Code: cat.httpStatus, Message: cat.responseMessage},
+	})
 }
 
-// classifyOIDCMobileError returns a stable label suitable for an audit
-// entry. The label is sanitized — no token, nonce, or verifier content.
-func classifyOIDCMobileError(err error) string {
+// oidcMobileErrorCategory bundles the three derived facts about an
+// ExchangeMobile error: the sanitised audit label, the HTTP status the
+// client should see, and the response message body. Keeping them in one
+// struct (and one switch) prevents the audit-label / HTTP-status drift
+// that the previous two-function arrangement allowed.
+type oidcMobileErrorCategory struct {
+	auditLabel      string
+	httpStatus      int
+	responseMessage string
+}
+
+// categorizeOIDCMobileError classifies an ExchangeMobile error into the
+// shared audit + HTTP shape. Matching is by canonical substring; nonce
+// mismatch matches against the shared [auth.ErrOIDCNonceMismatch]
+// constant rather than the bare "nonce mismatch" fragment.
+func categorizeOIDCMobileError(err error) oidcMobileErrorCategory {
 	if err == nil {
-		return "unknown"
+		return oidcMobileErrorCategory{
+			auditLabel:      "unknown",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc exchange failed",
+		}
 	}
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "domain not allowed"):
-		return "domain not allowed"
-	case strings.Contains(msg, "nonce mismatch"):
-		return "id token nonce mismatch"
+		return oidcMobileErrorCategory{
+			auditLabel:      "domain not allowed",
+			httpStatus:      http.StatusForbidden,
+			responseMessage: "email domain not allowed",
+		}
+	case strings.Contains(msg, auth.ErrOIDCNonceMismatch):
+		return oidcMobileErrorCategory{
+			auditLabel:      "id token nonce mismatch",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc id token nonce mismatch",
+		}
 	case strings.Contains(msg, "not verified by identity provider"):
-		return "email not verified"
+		return oidcMobileErrorCategory{
+			auditLabel:      "email not verified",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "email address not verified by identity provider",
+		}
 	case strings.Contains(msg, "ID token verification failed"):
-		return "id token verification failed"
+		return oidcMobileErrorCategory{
+			auditLabel:      "id token verification failed",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc id token verification failed",
+		}
 	case strings.Contains(msg, "no id_token"):
-		return "no id_token in response"
+		return oidcMobileErrorCategory{
+			auditLabel:      "no id_token in response",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc exchange failed",
+		}
+	case strings.Contains(msg, auth.ErrOIDCExchangeTimeout):
+		return oidcMobileErrorCategory{
+			auditLabel:      "code exchange timeout",
+			httpStatus:      http.StatusServiceUnavailable,
+			responseMessage: "oidc exchange timeout",
+		}
 	case strings.Contains(msg, "token exchange failed"):
-		return "code exchange rejected"
+		return oidcMobileErrorCategory{
+			auditLabel:      "code exchange rejected",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc exchange failed",
+		}
 	case strings.Contains(msg, "extracting claims"):
-		return "claims extraction failed"
+		return oidcMobileErrorCategory{
+			auditLabel:      "claims extraction failed",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc exchange failed",
+		}
 	case strings.Contains(msg, "map OIDC claims"):
-		return "claims mapping failed"
+		return oidcMobileErrorCategory{
+			auditLabel:      "claims mapping failed",
+			httpStatus:      http.StatusUnauthorized,
+			responseMessage: "oidc exchange failed",
+		}
+	case strings.Contains(msg, "unknown OIDC provider"):
+		return oidcMobileErrorCategory{
+			auditLabel:      "unknown provider",
+			httpStatus:      http.StatusNotFound,
+			responseMessage: "unknown OIDC provider",
+		}
 	}
-	// `errors.Is`-style typed sentinel could be added later; for now string
-	// classification is good enough and avoids false-positive logging.
-	if errors.Is(err, http.ErrAbortHandler) {
-		return "transport aborted"
+	return oidcMobileErrorCategory{
+		auditLabel:      "unspecified failure",
+		httpStatus:      http.StatusUnauthorized,
+		responseMessage: "oidc exchange failed",
 	}
-	return "unspecified failure"
 }
