@@ -3,20 +3,18 @@
 // provider — picker writes, MaterialApp watches.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
+import '../providers/shared_preferences_provider.dart';
 import 'themes.g.dart';
 
-const String _prefsKey = 'kc_theme_id';
+// Re-exported so existing imports of
+// `package:kubecenter/theme/theme_controller.dart' show sharedPreferencesProvider`
+// keep working. New code should import directly from
+// `providers/shared_preferences_provider.dart`.
+export '../providers/shared_preferences_provider.dart'
+    show sharedPreferencesProvider;
 
-/// SharedPreferences instance, initialized once at app start. Override in
-/// widget tests with `ProviderScope(overrides: [sharedPreferencesProvider
-/// .overrideWithValue(await SharedPreferences.getInstance())])`.
-final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
-  throw UnimplementedError(
-    'sharedPreferencesProvider must be overridden in main() and tests',
-  );
-});
+const String _prefsKey = 'kc_theme_id';
 
 class ThemeController extends Notifier<String> {
   @override
