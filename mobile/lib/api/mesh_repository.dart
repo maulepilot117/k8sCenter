@@ -936,6 +936,46 @@ final meshMtlsPostureProvider = FutureProvider.autoDispose
       );
 });
 
+/// Family key for the policies list provider. Same shape as
+/// [MeshRoutingKey] — cluster id pins the provider slot to the active
+/// cluster, and the optional namespace lets two open policy screens
+/// with different namespace filters share no state.
+class MeshPoliciesKey {
+  /// Normalise [namespace]: empty string is treated as null so
+  /// `MeshPoliciesKey(clusterId: 'c', namespace: '')` and
+  /// `MeshPoliciesKey(clusterId: 'c')` resolve to the same provider slot.
+  MeshPoliciesKey({required this.clusterId, String? namespace})
+      : namespace = (namespace != null && namespace.isEmpty) ? null : namespace;
+
+  final String clusterId;
+
+  /// null → cluster-wide list. The handler enforces RBAC.
+  final String? namespace;
+
+  @override
+  bool operator ==(Object other) =>
+      other is MeshPoliciesKey &&
+      other.clusterId == clusterId &&
+      other.namespace == namespace;
+
+  @override
+  int get hashCode => Object.hash(clusterId, namespace);
+}
+
+final meshPoliciesProvider = FutureProvider.autoDispose
+    .family<PoliciesResponse, MeshPoliciesKey>((ref, key) async {
+  ref.watch(activeClusterProvider);
+  final cancel = CancelToken();
+  ref.onDispose(() {
+    if (!cancel.isCancelled) cancel.cancel('mesh policies invalidated');
+  });
+  return ref.read(meshRepositoryProvider).listPolicies(
+        namespace: key.namespace,
+        clusterIdOverride: key.clusterId,
+        cancelToken: cancel,
+      );
+});
+
 /// Family key for the golden-signals provider. Carries every parameter
 /// the wire request needs so a service swap on the same screen produces
 /// a fresh cache slot rather than overwriting the prior one.
