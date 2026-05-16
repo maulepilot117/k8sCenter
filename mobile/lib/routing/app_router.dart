@@ -47,6 +47,9 @@ import '../features/policy/violation_detail_screen.dart';
 import '../features/policy/violations_list_screen.dart';
 import '../notifications/deep_link_handler.dart';
 import '../notifications/fcm_registration.dart';
+import '../features/scanning/dashboard_screen.dart' as scanning_dashboard;
+import '../features/scanning/vulnerabilities_list_screen.dart';
+import '../features/scanning/vulnerability_detail_screen.dart';
 import '../features/resources/configmap_screens.dart';
 import '../features/resources/daemonset_screens.dart';
 import '../features/resources/deployment_screens.dart';
@@ -68,6 +71,11 @@ import '../widgets/domain_navigation_drawer.dart';
 import '../widgets/empty_states.dart';
 import 'domain_sections.dart';
 import 'wizard_routes.dart';
+
+/// DNS-1123 label regex. Namespace query params that don't match are
+/// coerced to null so the bottom-sheet picker fires rather than
+/// forwarding an invalid value to the backend's mandatory ?namespace= param.
+final _kNamespaceRe = RegExp(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$');
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   // Listening to authRepositoryProvider rebuilds the router on transitions.
@@ -568,6 +576,52 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'compliance-history',
             builder: (context, state) => const ComplianceHistoryScreen(),
+          ),
+        ],
+      ),
+
+      // --- M4 PR-4j: vulnerability scanning (Trivy + Kubescape) ---
+      // /clusters/<id>/scanning                          → dashboard
+      // /clusters/<id>/scanning/vulnerabilities          → list
+      // /clusters/<id>/scanning/vulnerabilities/<ns>/<kind>/<name>
+      //                                                  → CVE detail
+      //
+      // Status gating is screen-level (each surface checks
+      // `scanningStatusProvider` and falls back to
+      // `FeatureUnavailableState.scanning()`). The list endpoint
+      // requires `?namespace=`; the screen prompts via a bottom-sheet
+      // picker on first visit. CVE detail is Trivy-only on the backend
+      // (Kubescape's CRD shape doesn't expose per-CVE data under
+      // impersonation); a 501 response renders targeted help copy at
+      // the detail screen rather than a retry-able generic error.
+      GoRoute(
+        path: '/clusters/:clusterId/scanning',
+        builder: (context, state) =>
+            const scanning_dashboard.ScanningDashboardScreen(),
+        routes: [
+          GoRoute(
+            path: 'vulnerabilities',
+            builder: (context, state) {
+              final raw = state.uri.queryParameters['namespace'];
+              // Validate namespace: must match DNS-1123 label format.
+              // An empty string or invalid value coerces to null so the
+              // bottom-sheet picker fires instead of passing a bad namespace
+              // to the backend's mandatory ?namespace= parameter.
+              final ns = (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
+                  ? raw
+                  : null;
+              return VulnerabilitiesListScreen(initialNamespace: ns);
+            },
+            routes: [
+              GoRoute(
+                path: ':namespace/:kind/:name',
+                builder: (context, state) => VulnerabilityDetailScreen(
+                  namespace: state.pathParameters['namespace']!,
+                  kind: state.pathParameters['kind']!,
+                  name: state.pathParameters['name']!,
+                ),
+              ),
+            ],
           ),
         ],
       ),

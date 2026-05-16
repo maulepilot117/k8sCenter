@@ -43,6 +43,8 @@ PR-0 is mergeable on its own — even if PRs 1+ never land, the body-token refre
 
 PR-1 begins the Flutter project: `flutter create mobile/`, pubspec deps, theme/auth/api/cluster/routing scaffolding, login + dashboard + resource list, FCM device registration. CI workflow `.github/workflows/mobile.yml` and Fastlane lanes follow in PR-2.
 
+M1 + M2 + M3 + M4 complete (M4 shipped per `plans/mobile-app-m4-pr-sequence.md` — 10 PRs covering monitoring metrics, LogQL editor, diagnostics, GitOps detail, service mesh, cert-manager observatory, ESO read-side parity, policy compliance + violations, and Trivy/Kubescape vulnerability reports).
+
 ## Open deferrals
 
 - **Custom themes via `/v1/themes`** — runtime user-defined themes from the generator JSON pipeline. Defer to v2.

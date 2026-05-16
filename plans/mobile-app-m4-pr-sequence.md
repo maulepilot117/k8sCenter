@@ -1,7 +1,7 @@
 ---
 title: "Mobile M4 PR Sequence — Observability + Advanced Surfaces"
 type: feat
-status: active
+status: completed
 date: 2026-05-09
 origin: plans/mobile-app.md
 ---
