@@ -23,6 +23,14 @@ import (
 // that references auth.OIDCProviderConfig.
 type OIDCProviderConfig = config.OIDCConfig
 
+// ErrOIDCNonceMismatch is the canonical error message returned when an ID
+// token's `nonce` claim does not match the value the client committed at
+// auth-request time. Shared between the web callback and mobile-exchange
+// paths so the audit classifier and error mapper can match by exact string
+// (cheaper and less brittle than substring matching). Exported so the
+// server package can reference the same literal when categorizing errors.
+const ErrOIDCNonceMismatch = "oidc id token nonce mismatch"
+
 // OIDCProvider wraps the go-oidc provider and oauth2 config for a single OIDC identity provider.
 type OIDCProvider struct {
 	Config       OIDCProviderConfig
@@ -170,7 +178,7 @@ func (p *OIDCProvider) HandleCallback(ctx context.Context, code string, flowStat
 
 	// Validate nonce (go-oidc does NOT validate this automatically)
 	if idToken.Nonce != flowState.Nonce {
-		return nil, fmt.Errorf("ID token nonce mismatch")
+		return nil, fmt.Errorf("%s", ErrOIDCNonceMismatch)
 	}
 
 	// Extract claims

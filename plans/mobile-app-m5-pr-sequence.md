@@ -90,6 +90,13 @@ Each gap blocks a specific operator persona: OIDC blocks the corporate user, wri
 - **Apple Watch / Wear OS.** Out of scope per `mobile-app.md`.
 - **Custom themes via `/v1/themes`.** Deferred to v2 per `mobile-app.md`.
 
+#### Surfaced by PR-5b code review (2026-05-16)
+
+- **#275 — `/auth/refresh` singleflight (multi-tab thundering herd).** Pre-existing race; amplified ~168x by the 1h OIDC refresh cap that landed in PR-5b. With N tabs open, the first 401 wins the refresh and the other N-1 cascade into forced re-auth. **Mobile half belongs in PR-5c** (U3 — wire singleflight into `mobile/lib/api/dio_client.dart`'s `AuthInterceptor._refresh`); web half is a separate post-M5 fix-pr on `frontend/lib/api.ts`.
+- **#277 — `displayName` vs `username` on OIDC mobile-exchange response.** Backend currently returns both keys pointing at the same string (`user.Username`). **Decide during PR-5c** when the mobile login screen lands: either drop `displayName` (option a, one-line) or add a real `DisplayName` field to `auth.User` populated from the OIDC `name` claim (option b, cross-cutting). Option (b) would also need to land before PR-5j public launch so the login header doesn't ship looking like a raw email.
+- **#274 — `SessionStore.Validate` rotation-rollback gap.** Pre-existing: `Validate` deletes the row before `issueTokenPair` can fail; on failure the user is silently logged out. Amplified by the 1h cap (~168x more refresh events per OIDC user). Fix shape: split into `Peek` + `Consume`, commit deletion only after rotation succeeds. **Post-M5 backend reliability pass** — not folded into M5 unless real-world impact materialises.
+- **#276 — Rate-limited 429s leave no audit trail.** Pre-existing pattern across all rate-limited auth routes; surfaced fresh by PR-5b's new mobile-exchange endpoint. Brute-force probing is invisible in the audit table. Fix shape: inject `AuditLogger` into the `RateLimit` middleware (option 1) or layer a `RateLimitAudit` middleware on top (option 2). **Post-M5 backend security/reliability pass.**
+
 ---
 
 ## Context & Research
@@ -446,6 +453,10 @@ SecretDetailScreen extends StatefulWidget with SecureScreenMixin
 **Requirements:** R1 (OIDC mobile parity), R11 (web isomorphism), R12 (cluster-pin doesn't apply here — auth pre-cluster).
 
 **Dependencies:** U2 (backend endpoint), U1 (Settings + observability scaffolding for any auth errors that get logged to Sentry).
+
+**Carried-over scope from PR-5b code review:**
+- **#275 — singleflight `/auth/refresh` in `AuthInterceptor`.** When wiring the Dio interceptor stack for OIDC, deduplicate concurrent 401-driven refresh attempts: in-flight refresh requests share a single `Future`; the interceptor queues retries until the in-flight refresh resolves. Without this, N concurrent requests that hit a stale access token will each fire `/auth/refresh` independently; `SessionStore.Validate` is single-use, so N-1 of them will see `refresh token not found` and force a logout. The 1h OIDC cap from U2 fires this race ~168x more often than the prior 7d cap.
+- **#277 — decide `displayName` vs `username` in the exchange response.** Backend currently returns both keys, both `= user.Username`. When U3 wires the login screen, audit what's actually rendered. If both fields are read the same way, request a backend cleanup (drop `displayName`) before PR-5j. If a richer display is wanted, file a backend PR to add a real `DisplayName` field from the OIDC `name` claim — must land before public-store launch so the header doesn't ship looking like a raw email.
 
 **Files:**
 - Create: `mobile/lib/auth/oidc_controller.dart` — `OIDCController` notifier handling PKCE+nonce+state generation, custom-tabs launch, Universal Link callback intercept, code exchange. State: `({String? providerID, String? state, String? codeVerifier, String? nonce, AsyncStatus status, Object? error})`.

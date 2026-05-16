@@ -72,6 +72,17 @@ func (s *SessionStore) Revoke(token string) {
 	s.sessions.Delete(token)
 }
 
+// RangeSessions iterates stored sessions, invoking fn for each. fn returns
+// false to stop iteration. Exposed for tests that need to inspect stored
+// expiry values without consuming the token via Validate (which is single-
+// use and would also strip the row). Production callers should prefer
+// Validate / Revoke.
+func (s *SessionStore) RangeSessions(fn func(RefreshSession) bool) {
+	s.sessions.Range(func(_, val any) bool {
+		return fn(val.(RefreshSession))
+	})
+}
+
 // StartCleanup runs a background goroutine to evict expired sessions.
 func (s *SessionStore) StartCleanup(ctx context.Context, interval time.Duration) {
 	go func() {
