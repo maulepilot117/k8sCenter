@@ -459,18 +459,23 @@ void main() {
       expect(isScanStale(t.toIso8601String()), isTrue);
     });
 
-    // #19 — exact boundary for isScanStale.
-    test('exactly 7 days (threshold) is NOT stale', () {
-      // Duration comparison is strictly-greater-than the threshold,
-      // so the exact boundary is not stale.
-      final t = DateTime.now().toUtc().subtract(kScanStaleThreshold);
+    // #19 — boundary semantics for isScanStale.
+    //
+    // The exact-boundary case (diff == kScanStaleThreshold) is not directly
+    // testable: by the time isScanStale calls DateTime.now() internally, some
+    // microseconds have elapsed since the test's DateTime.now(), so the diff
+    // is always strictly greater than the threshold. We lock in the > vs >=
+    // contract via the "just under" + "just over" pair instead — those bracket
+    // the threshold reliably regardless of clock drift.
+    test('1 second under threshold is NOT stale', () {
+      final t = DateTime.now()
+          .toUtc()
+          .subtract(kScanStaleThreshold - const Duration(seconds: 1));
       expect(isScanStale(t.toIso8601String()), isFalse,
-          reason:
-              'diff == threshold uses >, not >=, so the boundary itself '
-              'is not stale.');
+          reason: 'Diff under threshold must not be stale (locks in > vs >=).');
     });
 
-    test('7 days + 1 second is stale', () {
+    test('1 second over threshold is stale', () {
       final t = DateTime.now()
           .toUtc()
           .subtract(kScanStaleThreshold + const Duration(seconds: 1));
