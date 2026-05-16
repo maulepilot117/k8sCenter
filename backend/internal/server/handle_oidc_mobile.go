@@ -147,11 +147,15 @@ func (s *Server) handleOIDCMobileExchange(w http.ResponseWriter, r *http.Request
 			"refreshToken":     refreshToken,
 			"expiresIn":        int(auth.AccessTokenLifetime.Seconds()),
 			"refreshExpiresIn": int(auth.OIDCRefreshTokenLifetime.Seconds()),
+			// Mobile login screen reads `user.username` directly. A real
+			// DisplayName field on auth.User (sourced from the OIDC `name`
+			// claim) is the future direction if richer display semantics
+			// are wanted — until then we don't ship a duplicate field that
+			// mirrors username verbatim. See issue #277.
 			"user": map[string]any{
-				"username":    user.Username,
-				"displayName": user.Username,
-				"groups":      user.KubernetesGroups,
-				"provider":    user.Provider,
+				"username": user.Username,
+				"groups":   user.KubernetesGroups,
+				"provider": user.Provider,
 			},
 		},
 	})

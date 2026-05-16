@@ -215,7 +215,10 @@ void main() {
     );
   });
 
-  test('login providers: filters non-credential providers', () async {
+  test('login providers: returns all providers (credential + OIDC)', () async {
+    // PR-5c update: listProviders no longer filters out OIDC providers.
+    // The login screen filters by `kind` itself: credential providers
+    // feed the dropdown, OIDC providers render as separate buttons.
     final (:container, :mock) = _makeContainer();
     addTearDown(container.dispose);
 
@@ -233,7 +236,12 @@ void main() {
 
     final providers =
         await container.read(authRepositoryProvider.notifier).listProviders();
-    expect(providers, hasLength(2));
-    expect(providers.map((p) => p.id), containsAll(['local', 'ldap']));
+    expect(providers, hasLength(3));
+    expect(providers.map((p) => p.id),
+        containsAll(['local', 'ldap', 'oidc-google']));
+    // Helper-property still tagged correctly for the login-screen filter.
+    expect(providers.where((p) => p.isCredentialProvider), hasLength(2));
+    expect(providers.where((p) => !p.isCredentialProvider).single.id,
+        'oidc-google');
   });
 }

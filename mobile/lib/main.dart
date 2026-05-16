@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app.dart';
 import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
+import 'auth/universal_link_listener.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
 import 'providers/shared_preferences_provider.dart';
@@ -49,6 +50,13 @@ Future<void> main() async {
       unawaited(container.read(fcmRegistrationProvider).ensureRegistered());
     }
   }, fireImmediately: true);
+
+  // Start the universal-link listener so the IdP OIDC redirect via
+  // https://<universalLinkHost>/m/auth/callback routes to the OIDC
+  // controller. No-op when the build was not produced with
+  // --dart-define=UNIVERSAL_LINK_HOST. Drains the initial link (cold
+  // start: redirect arrived while app was terminated) on the same call.
+  unawaited(container.read(universalLinkListenerProvider).start());
 
   runApp(
     UncontrolledProviderScope(

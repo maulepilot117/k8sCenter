@@ -454,9 +454,9 @@ SecretDetailScreen extends StatefulWidget with SecureScreenMixin
 
 **Dependencies:** U2 (backend endpoint), U1 (Settings + observability scaffolding for any auth errors that get logged to Sentry).
 
-**Carried-over scope from PR-5b code review:**
-- **#275 — singleflight `/auth/refresh` in `AuthInterceptor`.** When wiring the Dio interceptor stack for OIDC, deduplicate concurrent 401-driven refresh attempts: in-flight refresh requests share a single `Future`; the interceptor queues retries until the in-flight refresh resolves. Without this, N concurrent requests that hit a stale access token will each fire `/auth/refresh` independently; `SessionStore.Validate` is single-use, so N-1 of them will see `refresh token not found` and force a logout. The 1h OIDC cap from U2 fires this race ~168x more often than the prior 7d cap.
-- **#277 — decide `displayName` vs `username` in the exchange response.** Backend currently returns both keys, both `= user.Username`. When U3 wires the login screen, audit what's actually rendered. If both fields are read the same way, request a backend cleanup (drop `displayName`) before PR-5j. If a richer display is wanted, file a backend PR to add a real `DisplayName` field from the OIDC `name` claim — must land before public-store launch so the header doesn't ship looking like a raw email.
+**Carried-over scope from PR-5b code review (resolved during PR-5c):**
+- **#275 — mobile half is already shipped.** Verified during PR-5c implementation: `mobile/lib/api/dio_client.dart`'s `AuthInterceptor._attemptRefresh` (lines 181-205) already uses a Completer-based singleflight, so concurrent 401-driven refreshes share a single in-flight Future. The PR-5b reviewer's "mobile half" framing was based on incomplete code reading. Issue #275 is now scoped to the WEB half only (`frontend/lib/api.ts` has per-tab singleflight, so N browser tabs = N concurrent refreshes); not blocking M5.
+- **#277 — resolved.** PR-5c drops the duplicate `displayName` field from `handle_oidc_mobile.go`'s response. The mobile login screen never read it; the dashboard reads `user.username`. If richer display semantics are wanted later, they go via a real `DisplayName` field on `auth.User` sourced from the OIDC `name` claim.
 
 **Files:**
 - Create: `mobile/lib/auth/oidc_controller.dart` — `OIDCController` notifier handling PKCE+nonce+state generation, custom-tabs launch, Universal Link callback intercept, code exchange. State: `({String? providerID, String? state, String? codeVerifier, String? nonce, AsyncStatus status, Object? error})`.

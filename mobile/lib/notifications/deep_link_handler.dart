@@ -140,8 +140,10 @@ class DeepLinkHandler {
 /// Universal Link host wired in at compile time via
 /// `--dart-define=UNIVERSAL_LINK_HOST=<domain>`. Empty in homelab
 /// builds; CI release builds substitute the operator's host. Single
-/// source of truth consumed by `kDeepLinkHandler` below.
-const String _kUniversalLinkHost = String.fromEnvironment(
+/// source of truth consumed by [kDeepLinkHandler] below AND the OIDC
+/// controller (which builds the `https://<host>/m/auth/callback`
+/// redirect URI from the same value).
+const String kUniversalLinkHost = String.fromEnvironment(
   'UNIVERSAL_LINK_HOST',
 );
 
@@ -150,5 +152,5 @@ const String _kUniversalLinkHost = String.fromEnvironment(
 /// so the Universal Link host is configured once.
 final DeepLinkHandler kDeepLinkHandler = DeepLinkHandler(
   universalLinkHosts:
-      _kUniversalLinkHost.isEmpty ? const {} : {_kUniversalLinkHost},
+      kUniversalLinkHost.isEmpty ? const {} : {kUniversalLinkHost},
 );
