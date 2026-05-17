@@ -4,22 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/widgets/secure_screen_mixin.dart';
 
-/// Runs [body] with [debugDefaultTargetPlatformOverride] set, restoring
-/// the prior value in a `finally` block so the test framework's
-/// invariant check (which runs BEFORE `tearDown`) sees the original
-/// state.
-Future<void> _withPlatform(
-  TargetPlatform platform,
-  Future<void> Function() body,
-) async {
-  final prior = debugDefaultTargetPlatformOverride;
-  debugDefaultTargetPlatformOverride = platform;
-  try {
-    await body();
-  } finally {
-    debugDefaultTargetPlatformOverride = prior;
-  }
-}
+import '../support/platform_helpers.dart';
 
 void main() {
   // `kIgnoreDebugForTests` defaults to `kDebugMode`, which is `true` in
@@ -51,7 +36,7 @@ void main() {
     });
 
     testWidgets('setSensitive(true) adds FLAG_SECURE', (tester) async {
-      await _withPlatform(TargetPlatform.android, () async {
+      await withPlatform(TargetPlatform.android, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -65,7 +50,7 @@ void main() {
     });
 
     testWidgets('setSensitive(false) clears FLAG_SECURE', (tester) async {
-      await _withPlatform(TargetPlatform.android, () async {
+      await withPlatform(TargetPlatform.android, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -80,7 +65,7 @@ void main() {
 
     testWidgets('idempotent — repeat setSensitive(true) is a no-op',
         (tester) async {
-      await _withPlatform(TargetPlatform.android, () async {
+      await withPlatform(TargetPlatform.android, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -94,7 +79,7 @@ void main() {
 
     testWidgets('dispose clears FLAG_SECURE if sensitive was true',
         (tester) async {
-      await _withPlatform(TargetPlatform.android, () async {
+      await withPlatform(TargetPlatform.android, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -113,7 +98,7 @@ void main() {
     testWidgets(
         'AppLifecycleState.inactive inserts blur overlay when sensitive',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -131,7 +116,7 @@ void main() {
     testWidgets(
         'AppLifecycleState.resumed removes the blur overlay',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -149,7 +134,7 @@ void main() {
 
     testWidgets('no blur when sensitive == false and app backgrounded',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -164,7 +149,7 @@ void main() {
     testWidgets(
         'rapid inactive-resumed-inactive cycles leave no orphans',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -182,7 +167,7 @@ void main() {
     });
 
     testWidgets('paused fires the same insertion as inactive', (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -196,7 +181,7 @@ void main() {
 
     testWidgets('hidden fires the same insertion as inactive',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
@@ -211,7 +196,7 @@ void main() {
     testWidgets(
         'lifecycle event after dispose does not insert overlay or throw',
         (tester) async {
-      await _withPlatform(TargetPlatform.iOS, () async {
+      await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
         await state.setSensitive(true);
@@ -246,7 +231,7 @@ void main() {
         return;
       }
 
-      await _withPlatform(TargetPlatform.android, () async {
+      await withPlatform(TargetPlatform.android, () async {
         final platformCalls = <MethodCall>[];
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(

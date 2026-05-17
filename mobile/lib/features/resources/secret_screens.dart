@@ -8,6 +8,8 @@
 // The detail GET still returns the masked Secret (the YAML tab redacts
 // `data`/`stringData` for kind == 'Secret' — see resource_detail_scaffold.dart).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +26,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../../widgets/secure_screen_mixin.dart';
 import 'k8s_helpers.dart';
 
 class _SecretRow {
@@ -101,14 +104,15 @@ class SecretDetailScreen extends ConsumerStatefulWidget {
   ConsumerState<SecretDetailScreen> createState() => _SecretDetailScreenState();
 }
 
-class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
+class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
+    with SecureScreenMixin<SecretDetailScreen> {
   /// Per-key revealed value cache. State is widget-scoped — back-button
   /// out of the screen disposes State, so re-entering the detail starts
   /// fresh with everything masked again.
   final Map<String, String> _revealed = {};
   final Set<String> _revealing = {};
 
-  Future<void> _reveal(String key) async {
+  Future<void> _revealKey(String key) async {
     setState(() => _revealing.add(key));
     try {
       final value =
@@ -122,6 +126,7 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
         _revealed[key] = value;
         _revealing.remove(key);
       });
+      _syncSensitivity();
     } on ApiError catch (e) {
       if (!mounted) return;
       setState(() => _revealing.remove(key));
@@ -131,9 +136,17 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
     }
   }
 
-  void _hide(String key) {
+  void _concealKey(String key) {
     setState(() => _revealed.remove(key));
+    _syncSensitivity();
   }
+
+  /// Flips FLAG_SECURE / iOS blur cover from `_revealed.isNotEmpty`. Stays
+  /// armed while any key is revealed; clears once the last one is hidden.
+  /// Mixin guards idempotency and serializes platform-channel calls — call
+  /// site stays fire-and-forget so widget rebuilds don't stall on the
+  /// FLAG_SECURE roundtrip.
+  void _syncSensitivity() => unawaited(setSensitive(_revealed.isNotEmpty));
 
   @override
   Widget build(BuildContext context) {
@@ -208,8 +221,8 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
                               keyName: entry.key,
                               revealed: _revealed[entry.key],
                               loading: _revealing.contains(entry.key),
-                              onReveal: () => _reveal(entry.key),
-                              onHide: () => _hide(entry.key),
+                              onReveal: () => _revealKey(entry.key),
+                              onHide: () => _concealKey(entry.key),
                             ),
                         ],
                       ),
