@@ -1,13 +1,19 @@
 // Compliance history — admin-only line chart over
-// `GET /v1/policies/compliance/history`. Fixed 30-day window in M4 (per
-// Scope Boundaries — custom ranges deferred to M5 polish).
+// `GET /v1/policies/compliance/history`. PR-5f adds a ?days=N preset
+// picker (1 / 7 / 30 / 90) above the chart. The picker is the only
+// time-range surface here; a custom date-range picker is out of scope
+// for M5 because the backend's compliance history endpoint accepts
+// `?days=N` only — adding `?start=`/`?end=` is a separate backend
+// addendum.
 //
 // 503 distinguished-error path: when the backend responds 503 with body
 // "requires a database", that's the ComplianceStore PostgreSQL persistence
 // being unconfigured. Surface as a permanent (non-retry-able) empty state
 // — pointing the operator at desktop setup rather than offering a Retry
 // button that will deterministically fail again. Other 503s (rolling
-// restarts, network blips) stay retry-able.
+// restarts, network blips) stay retry-able. When previous data is
+// already on screen, the picker disables and the chart fades to 50%
+// during a refresh so transient backend hiccups don't blank the view.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,6 +27,10 @@ import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
 import '../../widgets/kube_line_chart.dart';
 import 'policy_widgets.dart';
+
+/// Preset day windows accepted by the backend's compliance history
+/// endpoint (capped at 90 by `complianceHistory(days:)`).
+const List<int> kCompliancePresetDays = [1, 7, 30, 90];
 
 class ComplianceHistoryScreen extends ConsumerWidget {
   const ComplianceHistoryScreen({super.key});
@@ -52,82 +62,317 @@ class ComplianceHistoryScreen extends ConsumerWidget {
   }
 }
 
-class _HistoryBody extends ConsumerWidget {
+class _HistoryBody extends ConsumerStatefulWidget {
   const _HistoryBody({required this.clusterId});
 
   final String clusterId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_HistoryBody> createState() => _HistoryBodyState();
+}
+
+class _HistoryBodyState extends ConsumerState<_HistoryBody> {
+  int _days = 30;
+
+  // Last successfully fetched datapoints. Holding the previous values
+  // across a refresh lets the chart stay visible (faded) while the new
+  // ?days=N response loads, and lets us show "Couldn't refresh" with
+  // the last-known chart on transient errors instead of blanking to
+  // an error state.
+  List<ComplianceHistoryPoint>? _lastSuccess;
+
+  void _setDays(int next) {
+    if (next == _days) return;
+    setState(() => _days = next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(
-      complianceHistoryProvider(ComplianceHistoryKey(clusterId: clusterId)),
+    final key = ComplianceHistoryKey(
+      clusterId: widget.clusterId,
+      days: _days,
     );
+    final async = ref.watch(complianceHistoryProvider(key));
 
     return async.when(
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => _ErrorOrUnconfigured(
-        error: e,
-        onRetry: () => ref.invalidate(
-          complianceHistoryProvider(ComplianceHistoryKey(clusterId: clusterId)),
-        ),
-      ),
-      data: (points) {
-        if (points.isEmpty) {
-          return const EmptyState(
-            title: 'No compliance snapshots yet',
-            message:
-                'The compliance store is configured but has not recorded any '
-                'snapshots yet. The first datapoint will appear on the next '
-                'daily aggregation.',
-            icon: Icons.timeline_outlined,
+      loading: () {
+        if (_lastSuccess != null) {
+          return _StaleHistoryView(
+            points: _lastSuccess!,
+            colors: colors,
+            days: _days,
+            isLoading: true,
+            errorMessage: null,
+            onRetry: null,
+            onDaysChanged: _setDays,
           );
         }
-        return _HistoryChart(points: points, colors: colors);
+        return _FreshLoadingView(
+          colors: colors,
+          days: _days,
+        );
+      },
+      error: (e, _) {
+        if (isComplianceHistoryNotConfigured(e)) {
+          // Permanent empty state — no Retry button, no picker either.
+          // The backend deterministically returns 503 with the same
+          // message until PostgreSQL is configured server-side, which
+          // the operator cannot fix from the phone.
+          return const FeatureUnavailableState(
+            featureName: 'Compliance history',
+            helpMessage:
+                'Compliance history requires database storage on the k8sCenter '
+                'backend. Configure PostgreSQL persistence in the Helm values '
+                'to enable historical trend tracking.',
+            icon: Icons.storage_outlined,
+          );
+        }
+        if (_lastSuccess != null) {
+          return _StaleHistoryView(
+            points: _lastSuccess!,
+            colors: colors,
+            days: _days,
+            isLoading: false,
+            errorMessage: e is ApiError ? e.message : e.toString(),
+            onRetry: () => ref.invalidate(complianceHistoryProvider(key)),
+            onDaysChanged: _setDays,
+          );
+        }
+        return _FreshErrorView(
+          message: e is ApiError ? e.message : e.toString(),
+          colors: colors,
+          days: _days,
+          onRetry: () => ref.invalidate(complianceHistoryProvider(key)),
+          onDaysChanged: _setDays,
+        );
+      },
+      data: (points) {
+        _lastSuccess = points;
+        return _LoadedHistoryView(
+          points: points,
+          colors: colors,
+          days: _days,
+          onDaysChanged: _setDays,
+        );
       },
     );
   }
 }
 
-/// Routes the error envelope to either the permanent "database not
-/// configured" empty state or the retry-able generic error view. The
-/// discriminator is the substring match exposed by
-/// [isComplianceHistoryNotConfigured] — both forms hit 503 but only one
-/// should be retried.
-class _ErrorOrUnconfigured extends StatelessWidget {
-  const _ErrorOrUnconfigured({required this.error, required this.onRetry});
+/// SegmentedButton row over [kCompliancePresetDays]. Pulls its
+/// visual treatment from the shared time-range picker (also a
+/// `SegmentedButton`) so the picker reads consistently across the
+/// app's observability surfaces.
+class _DaysPicker extends StatelessWidget {
+  const _DaysPicker({
+    required this.days,
+    required this.enabled,
+    required this.onChanged,
+  });
 
-  final Object error;
-  final VoidCallback onRetry;
+  final int days;
+  final bool enabled;
+  final ValueChanged<int> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    if (isComplianceHistoryNotConfigured(error)) {
-      // Permanent empty state — no Retry button. The backend will
-      // deterministically return 503 with the same message until
-      // PostgreSQL is configured server-side, which the operator cannot
-      // fix from the phone.
-      return const FeatureUnavailableState(
-        featureName: 'Compliance history',
-        helpMessage:
-            'Compliance history requires database storage on the k8sCenter '
-            'backend. Configure PostgreSQL persistence in the Helm values '
-            'to enable historical trend tracking.',
-        icon: Icons.storage_outlined,
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: SegmentedButton<int>(
+        segments: const [
+          ButtonSegment(value: 1, label: Text('1d')),
+          ButtonSegment(value: 7, label: Text('7d')),
+          ButtonSegment(value: 30, label: Text('30d')),
+          ButtonSegment(value: 90, label: Text('90d')),
+        ],
+        selected: {days},
+        onSelectionChanged: enabled ? (s) => onChanged(s.first) : null,
+        showSelectedIcon: false,
+        style: const ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+      ),
+    );
+  }
+}
+
+/// First-load loading view — no previous chart to keep visible, so
+/// render a centered spinner with the picker disabled.
+class _FreshLoadingView extends StatelessWidget {
+  const _FreshLoadingView({required this.colors, required this.days});
+
+  final KubeColors colors;
+  final int days;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: _DaysPicker(days: days, enabled: false, onChanged: (_) {}),
+        ),
+        const Expanded(child: Center(child: CircularProgressIndicator())),
+      ],
+    );
+  }
+}
+
+/// First-load error view — no previous chart, so render a full error
+/// surface with Retry. The picker stays enabled so the operator can try
+/// a shorter window if the larger one is too expensive.
+class _FreshErrorView extends StatelessWidget {
+  const _FreshErrorView({
+    required this.message,
+    required this.colors,
+    required this.days,
+    required this.onRetry,
+    required this.onDaysChanged,
+  });
+
+  final String message;
+  final KubeColors colors;
+  final int days;
+  final VoidCallback onRetry;
+  final ValueChanged<int> onDaysChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: _DaysPicker(
+            days: days,
+            enabled: true,
+            onChanged: onDaysChanged,
+          ),
+        ),
+        Expanded(
+          child: ErrorStateView(message: message, onRetry: onRetry),
+        ),
+      ],
+    );
+  }
+}
+
+/// Steady-state view: backend returned a fresh response. The picker is
+/// enabled; the chart renders as the original M4 layout.
+class _LoadedHistoryView extends StatelessWidget {
+  const _LoadedHistoryView({
+    required this.points,
+    required this.colors,
+    required this.days,
+    required this.onDaysChanged,
+  });
+
+  final List<ComplianceHistoryPoint> points;
+  final KubeColors colors;
+  final int days;
+  final ValueChanged<int> onDaysChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (points.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: _DaysPicker(
+              days: days,
+              enabled: true,
+              onChanged: onDaysChanged,
+            ),
+          ),
+          const Expanded(
+            child: EmptyState(
+              title: 'No compliance snapshots yet',
+              message:
+                  'The compliance store is configured but has not recorded '
+                  'any snapshots yet. The first datapoint will appear on '
+                  'the next daily aggregation.',
+              icon: Icons.timeline_outlined,
+            ),
+          ),
+        ],
       );
     }
-    return ErrorStateView(
-      message: error is ApiError ? (error as ApiError).message : error.toString(),
+    return _HistoryChart(
+      points: points,
+      colors: colors,
+      days: days,
+      onDaysChanged: onDaysChanged,
+      stale: false,
+      isLoading: false,
+      errorMessage: null,
+      onRetry: null,
+    );
+  }
+}
+
+/// Stale view: a previous response is on screen while a new one loads
+/// (fade + spinner overlay) or after a transient error (banner + retry).
+/// Keeping the previous chart visible avoids a flash-of-blank when the
+/// user picks a different `?days` window or pulls to refresh.
+class _StaleHistoryView extends StatelessWidget {
+  const _StaleHistoryView({
+    required this.points,
+    required this.colors,
+    required this.days,
+    required this.isLoading,
+    required this.errorMessage,
+    required this.onRetry,
+    required this.onDaysChanged,
+  });
+
+  final List<ComplianceHistoryPoint> points;
+  final KubeColors colors;
+  final int days;
+  final bool isLoading;
+  final String? errorMessage;
+  final VoidCallback? onRetry;
+  final ValueChanged<int> onDaysChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return _HistoryChart(
+      points: points,
+      colors: colors,
+      days: days,
+      onDaysChanged: onDaysChanged,
+      stale: true,
+      isLoading: isLoading,
+      errorMessage: errorMessage,
       onRetry: onRetry,
     );
   }
 }
 
 class _HistoryChart extends StatelessWidget {
-  const _HistoryChart({required this.points, required this.colors});
+  const _HistoryChart({
+    required this.points,
+    required this.colors,
+    required this.days,
+    required this.onDaysChanged,
+    required this.stale,
+    required this.isLoading,
+    required this.errorMessage,
+    required this.onRetry,
+  });
 
   final List<ComplianceHistoryPoint> points;
   final KubeColors colors;
+  final int days;
+  final ValueChanged<int> onDaysChanged;
+  final bool stale;
+  final bool isLoading;
+  final String? errorMessage;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -157,57 +402,112 @@ class _HistoryChart extends StatelessWidget {
               : KubeChartSeverity.error),
     );
 
+    // While loading, the picker is disabled so the operator can't
+    // queue up multiple ?days changes mid-fetch. Errors re-enable
+    // the picker — the operator may want to try a smaller window.
+    final pickerEnabled = !isLoading;
+
+    final chartCard = Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.bgSurface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colors.borderSubtle),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                'Last ${points.length} ${points.length == 1 ? 'day' : 'days'}',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                'Latest: ${latest.toStringAsFixed(0)}% · ${tier.label}',
+                style: TextStyle(
+                  color: tier.fg,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          KubeLineChart(series: [scoreSeries], height: 200),
+          if (droppedDates > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                droppedDates == 1
+                    ? '1 datapoint dropped from the chart due to an '
+                        'unparseable date.'
+                    : '$droppedDates datapoints dropped from the '
+                        'chart due to unparseable dates.',
+                style: TextStyle(color: colors.warning, fontSize: 11),
+              ),
+            ),
+        ],
+      ),
+    );
+
+    final Widget chartWithOverlay = isLoading
+        ? Stack(
+            children: [
+              Opacity(opacity: 0.5, child: chartCard),
+              const Positioned.fill(
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ],
+          )
+        : chartCard;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: colors.bgSurface,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: colors.borderSubtle),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    'Last ${points.length} ${points.length == 1 ? 'day' : 'days'}',
+        _DaysPicker(
+          days: days,
+          enabled: pickerEnabled,
+          onChanged: onDaysChanged,
+        ),
+        const SizedBox(height: 12),
+        if (errorMessage != null && onRetry != null) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: colors.warning.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: colors.warning.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.warning_amber_rounded,
+                    color: colors.warning, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "Couldn't refresh — showing previous data.",
                     style: TextStyle(
                       color: colors.textPrimary,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    'Latest: ${latest.toStringAsFixed(0)}% · ${tier.label}',
-                    style: TextStyle(
-                      color: tier.fg,
                       fontSize: 12,
-                      fontWeight: FontWeight.w600,
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              KubeLineChart(series: [scoreSeries], height: 200),
-              if (droppedDates > 0)
-                Padding(
-                  padding: const EdgeInsets.only(top: 8),
-                  child: Text(
-                    droppedDates == 1
-                        ? '1 datapoint dropped from the chart due to an '
-                            'unparseable date.'
-                        : '$droppedDates datapoints dropped from the '
-                            'chart due to unparseable dates.',
-                    style: TextStyle(color: colors.warning, fontSize: 11),
                   ),
                 ),
-            ],
+                TextButton(
+                  onPressed: onRetry,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 12),
+        ],
+        chartWithOverlay,
         const SizedBox(height: 12),
         Container(
           padding: const EdgeInsets.all(14),
