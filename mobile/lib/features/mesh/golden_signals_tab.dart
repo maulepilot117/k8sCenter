@@ -29,17 +29,46 @@ import 'mesh_widgets.dart';
 
 /// Body of the Metrics-style tab on Service detail. The host
 /// [Widget.build] is reached only when `meshStatus.isInstalled`
-/// — the Service detail screen gates the tab visibility.
+/// — the parent detail screen gates the tab visibility.
+///
+/// PR-5f: Pod and Deployment detail screens also surface this tab
+/// when [findServicesForResource] returns one or more matching
+/// Services. When multiple Services match a single Pod/Deployment, the
+/// tab shows an in-tab picker so the operator can switch which
+/// Service's signals they're inspecting without leaving the detail
+/// route.
 class GoldenSignalsTab extends ConsumerStatefulWidget {
-  const GoldenSignalsTab({
+  /// Single-service entry point — used by Service detail. Equivalent to
+  /// passing `candidates: [service]` but kept distinct so existing
+  /// call sites don't need to wrap their service name in a list.
+  GoldenSignalsTab({
     super.key,
     required this.namespace,
-    required this.service,
+    required String service,
     required this.status,
-  });
+  }) : effectiveCandidates = <String>[service];
+
+  /// Multi-service entry point — used by Pod and Deployment detail.
+  /// When [effectiveCandidates] has 2+ entries, the tab renders a
+  /// picker so the operator can switch between candidate Services
+  /// derived from the resource's labels.
+  GoldenSignalsTab.fromCandidates({
+    super.key,
+    required this.namespace,
+    required List<String> candidates,
+    required this.status,
+  })  : assert(candidates.isNotEmpty,
+            'GoldenSignalsTab.fromCandidates requires at least one candidate'),
+        effectiveCandidates = List<String>.unmodifiable(candidates);
 
   final String namespace;
-  final String service;
+
+  /// Non-empty list of Service names this tab can render signals for,
+  /// in display order. Single-service callers get a 1-element list;
+  /// multi-candidate callers pass the list directly. Always at least
+  /// one element — both constructors enforce this without relying on a
+  /// debug-only assert.
+  final List<String> effectiveCandidates;
 
   /// Resolved mesh status; carries `detected` so the tab knows
   /// whether to render the mesh picker (both installed) or auto-
@@ -52,21 +81,34 @@ class GoldenSignalsTab extends ConsumerStatefulWidget {
 
 class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
   String? _mesh;
+  // Active Service when the tab carries multiple candidates. For
+  // single-service callers this stays equal to the only candidate and
+  // the picker UI is hidden.
+  late String _activeService;
 
   @override
   void initState() {
     super.initState();
-    _mesh = _deriveMesh(widget.status, null);
+    _mesh = _deriveMesh(widget.status);
+    _activeService = widget.effectiveCandidates.first;
   }
 
   @override
   void didUpdateWidget(GoldenSignalsTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // If the parent re-derives candidates (e.g. labels changed under a
+    // running detail screen), preserve the active selection when it's
+    // still in the new candidate list; otherwise fall back to the new
+    // first entry so the tab never points at a vanished Service.
+    final newCandidates = widget.effectiveCandidates;
+    if (!newCandidates.contains(_activeService)) {
+      _activeService = newCandidates.first;
+    }
     if (oldWidget.status.detected == widget.status.detected) return;
     // Re-derive preferred mesh from the new status. If the currently
     // selected mesh is still installed, keep it; otherwise fall back to
     // the auto-derived choice (or null when both are still installed).
-    final auto = _deriveMesh(widget.status, null);
+    final auto = _deriveMesh(widget.status);
     if (_mesh != null && !_isMeshInstalled(_mesh!, widget.status)) {
       // Previously selected mesh is no longer detected — clear.
       setState(() => _mesh = auto);
@@ -78,7 +120,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
 
   /// Returns the auto-selected mesh when exactly one is installed, or
   /// null when both (or neither) are installed.
-  static String? _deriveMesh(MeshStatus status, String? current) {
+  static String? _deriveMesh(MeshStatus status) {
     if (status.hasIstio && !status.hasLinkerd) return 'istio';
     if (status.hasLinkerd && !status.hasIstio) return 'linkerd';
     return null;
@@ -97,12 +139,49 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
     // carrying over the previous selection.
     ref.listen<String>(activeClusterProvider, (previous, next) {
       if (previous != next) {
-        setState(() => _mesh = _deriveMesh(widget.status, null));
+        setState(() => _mesh = _deriveMesh(widget.status));
       }
     });
 
+    final candidates = widget.effectiveCandidates;
+    final showServicePicker = candidates.length > 1;
+
     return Column(
       children: [
+        if (showServicePicker)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(
+              children: [
+                Text(
+                  'Service',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    key: const ValueKey('goldenSignals-service-picker'),
+                    initialValue: _activeService,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                    items: [
+                      for (final s in candidates)
+                        DropdownMenuItem<String>(value: s, child: Text(s)),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setState(() => _activeService = v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (widget.status.hasBoth)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
@@ -136,7 +215,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
               : _SignalsBody(
                   clusterId: clusterId,
                   namespace: widget.namespace,
-                  service: widget.service,
+                  service: _activeService,
                   mesh: _mesh,
                 ),
         ),
@@ -309,7 +388,11 @@ class _TileGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     // Backend's missing-query keys match the JSON tag basenames; we
-    // pre-compute one source-of-truth bag here.
+    // pre-compute one source-of-truth bag here. errorRate is missing
+    // when any of its three contributing series fail to evaluate.
+    final errorMissing = signals.isMetricMissing('errorRate') ||
+        signals.isMetricMissing('errorNum') ||
+        signals.isMetricMissing('errorDen');
     final tiles = <_TileData>[
       _TileData(
         label: 'Requests / s',
@@ -323,20 +406,14 @@ class _TileGrid extends StatelessWidget {
           'errorRate',
           signals.errorRate,
           '%',
-          missing: signals.isMetricMissing('errorRate') ||
-              signals.isMetricMissing('errorNum') ||
-              signals.isMetricMissing('errorDen'),
+          missing: errorMissing,
         ),
-        color: signals.isMetricMissing('errorRate') ||
-                signals.isMetricMissing('errorNum') ||
-                signals.isMetricMissing('errorDen')
+        color: errorMissing
             ? colors.textMuted
             : signals.errorRate > 0.05
                 ? colors.error
                 : colors.success,
-        missing: signals.isMetricMissing('errorRate') ||
-            signals.isMetricMissing('errorNum') ||
-            signals.isMetricMissing('errorDen'),
+        missing: errorMissing,
       ),
       _TileData(
         label: 'p50 latency',

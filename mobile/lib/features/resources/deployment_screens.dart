@@ -4,15 +4,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/mesh_repository.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../util/service_derivation.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+// PR-5f: Deployment detail mirrors the Pod-side Golden Signals tab
+// when a Service targets the Deployment's pod template labels.
+import '../mesh/golden_signals_tab.dart';
 import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
@@ -30,6 +35,20 @@ class _DeploymentRow {
   String get strategy =>
       readPath(raw, 'spec.strategy.type') as String? ?? 'RollingUpdate';
   bool get healthy => desired > 0 && ready == desired;
+
+  /// Labels on the pod template (`spec.template.metadata.labels`).
+  /// These — not the Deployment's own labels — are what Services
+  /// select against, so use this map when deriving the Golden Signals
+  /// tab via [findServicesForResource].
+  Map<String, String> get podTemplateLabels {
+    final raw = readPath(this.raw, 'spec.template.metadata.labels');
+    if (raw is! Map) return const {};
+    final out = <String, String>{};
+    raw.forEach((k, v) {
+      if (k is String && v is String) out[k] = v;
+    });
+    return out;
+  }
 }
 
 class DeploymentListScreen extends ConsumerWidget {
@@ -87,7 +106,7 @@ class DeploymentListScreen extends ConsumerWidget {
   }
 }
 
-class DeploymentDetailScreen extends ConsumerWidget {
+class DeploymentDetailScreen extends ConsumerStatefulWidget {
   const DeploymentDetailScreen({
     super.key,
     required this.namespace,
@@ -98,19 +117,36 @@ class DeploymentDetailScreen extends ConsumerWidget {
   final String name;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DeploymentDetailScreen> createState() =>
+      _DeploymentDetailScreenState();
+}
+
+class _DeploymentDetailScreenState
+    extends ConsumerState<DeploymentDetailScreen> {
+  // Latch mesh status once detected so a transient autoDispose null
+  // doesn't shrink extraTabs while the user is focused on the Golden
+  // Signals tab. Mirrors PodDetailScreen + ServiceDetailScreen.
+  MeshStatus? _stableMeshStatus;
+
+  @override
+  Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
       kind: 'deployments',
-      namespace: namespace,
-      name: name,
+      namespace: widget.namespace,
+      name: widget.name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
+    final currentMesh = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    if (currentMesh != null && currentMesh.isInstalled) {
+      _stableMeshStatus = currentMesh;
+    }
+    final stableMesh = _stableMeshStatus;
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text(name)),
+        appBar: AppBar(title: Text(widget.name)),
         body: ErrorStateView(
           message: e.toString(),
           onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
@@ -119,6 +155,18 @@ class DeploymentDetailScreen extends ConsumerWidget {
       data: (raw) {
         final d = _DeploymentRow(raw);
         final colors = Theme.of(context).extension<KubeColors>()!;
+        // Use the pod template's labels (not the Deployment's own
+        // labels) — Services target the pods this Deployment manages,
+        // and those pods carry the template labels. derivedServices
+        // is computed via the memoized provider so identical-rebuild
+        // calls hit the cache.
+        final derivedServices = stableMesh != null
+            ? ref.watch(derivedServicesProvider(DerivedServicesKey(
+                clusterId: clusterId,
+                namespace: d.meta.namespace,
+                resourceLabels: d.podTemplateLabels,
+              )))
+            : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Deployment',
           name: d.meta.name,
@@ -144,6 +192,16 @@ class DeploymentDetailScreen extends ConsumerWidget {
                 name: d.meta.name,
               ),
             ),
+            if (derivedServices.isNotEmpty && stableMesh != null)
+              DetailExtraTab(
+                label: 'Golden signals',
+                body: GoldenSignalsTab.fromCandidates(
+                  namespace: d.meta.namespace,
+                  candidates:
+                      derivedServices.map((s) => s.name).toList(),
+                  status: stableMesh,
+                ),
+              ),
           ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

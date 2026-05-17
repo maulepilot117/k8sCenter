@@ -6,15 +6,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/mesh_repository.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../util/service_derivation.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+// Intentional cross-feature import: Pod detail surfaces a Golden
+// Signals tab from the mesh feature when a service mesh is detected
+// and a Service targets this Pod's labels. PR-5f service-name
+// autoderivation.
+import '../mesh/golden_signals_tab.dart';
 import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
@@ -191,7 +198,7 @@ class PodListScreen extends ConsumerWidget {
   }
 }
 
-class PodDetailScreen extends ConsumerWidget {
+class PodDetailScreen extends ConsumerStatefulWidget {
   const PodDetailScreen({
     super.key,
     required this.namespace,
@@ -202,20 +209,37 @@ class PodDetailScreen extends ConsumerWidget {
   final String name;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PodDetailScreen> createState() => _PodDetailScreenState();
+}
+
+class _PodDetailScreenState extends ConsumerState<PodDetailScreen> {
+  // Latch mesh status once detected so a transient autoDispose null
+  // from `meshStatusProvider` doesn't shrink `extraTabs` while the
+  // user is focused on the Golden Signals tab — the TabController
+  // would otherwise see an out-of-bounds index. Mirrors the latching
+  // pattern in ServiceDetailScreen.
+  MeshStatus? _stableMeshStatus;
+
+  @override
+  Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
       kind: 'pods',
-      namespace: namespace,
-      name: name,
+      namespace: widget.namespace,
+      name: widget.name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
+    final currentMesh = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    if (currentMesh != null && currentMesh.isInstalled) {
+      _stableMeshStatus = currentMesh;
+    }
+    final stableMesh = _stableMeshStatus;
 
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text(name)),
+        appBar: AppBar(title: Text(widget.name)),
         body: ErrorStateView(
           message: e.toString(),
           onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
@@ -230,6 +254,17 @@ class PodDetailScreen extends ConsumerWidget {
           'Failed' => colors.error,
           _ => colors.textMuted,
         };
+        // Derive candidate Services from this Pod's labels via the
+        // memoized provider — same algorithm as before but cached on
+        // (clusterId, namespace, labels) so detail-screen rebuilds
+        // with identical inputs don't re-walk the Service list.
+        final derivedServices = stableMesh != null
+            ? ref.watch(derivedServicesProvider(DerivedServicesKey(
+                clusterId: clusterId,
+                namespace: pod.meta.namespace,
+                resourceLabels: pod.meta.labels,
+              )))
+            : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Pod',
           name: pod.meta.name,
@@ -255,6 +290,16 @@ class PodDetailScreen extends ConsumerWidget {
                 name: pod.meta.name,
               ),
             ),
+            if (derivedServices.isNotEmpty && stableMesh != null)
+              DetailExtraTab(
+                label: 'Golden signals',
+                body: GoldenSignalsTab.fromCandidates(
+                  namespace: pod.meta.namespace,
+                  candidates:
+                      derivedServices.map((s) => s.name).toList(),
+                  status: stableMesh,
+                ),
+              ),
           ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
