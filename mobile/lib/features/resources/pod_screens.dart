@@ -6,15 +6,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/mesh_repository.dart';
 import '../../api/resource_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../util/service_derivation.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+// Intentional cross-feature import: Pod detail surfaces a Golden
+// Signals tab from the mesh feature when a service mesh is detected
+// and a Service targets this Pod's labels. PR-5f service-name
+// autoderivation.
+import '../mesh/golden_signals_tab.dart';
 import '../observability/metrics/metrics_tab.dart';
 import 'k8s_helpers.dart';
 
@@ -211,6 +218,18 @@ class PodDetailScreen extends ConsumerWidget {
       name: name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
+    // Mesh detection + service list drive whether the Golden Signals
+    // tab appears. Both are watched at the top of build so a transition
+    // from "no mesh" → "mesh installed" surfaces the tab without
+    // requiring the operator to reopen the detail route.
+    final meshStatus = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    final servicesAsync = ref.watch(resourceListProvider(
+      ResourceListKey(
+        clusterId: clusterId,
+        kind: 'services',
+        namespace: namespace,
+      ),
+    ));
 
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
@@ -230,6 +249,19 @@ class PodDetailScreen extends ConsumerWidget {
           'Failed' => colors.error,
           _ => colors.textMuted,
         };
+        // Derive candidate Services from this Pod's labels — the
+        // Service detail's existing per-service Golden Signals tab is
+        // mirrored here for Pods so operators don't have to bounce out
+        // to find the matching Service.
+        final derivedServices =
+            meshStatus != null && meshStatus.isInstalled
+                ? findServicesForResource(
+                    services: servicesAsync.valueOrNull?.items ??
+                        const <Map<String, dynamic>>[],
+                    namespace: pod.meta.namespace,
+                    resourceLabels: pod.meta.labels,
+                  )
+                : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Pod',
           name: pod.meta.name,
@@ -255,6 +287,16 @@ class PodDetailScreen extends ConsumerWidget {
                 name: pod.meta.name,
               ),
             ),
+            if (derivedServices.isNotEmpty && meshStatus != null)
+              DetailExtraTab(
+                label: 'Golden signals',
+                body: GoldenSignalsTab.fromCandidates(
+                  namespace: pod.meta.namespace,
+                  candidates:
+                      derivedServices.map((s) => s.name).toList(),
+                  status: meshStatus,
+                ),
+              ),
           ],
           overview: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

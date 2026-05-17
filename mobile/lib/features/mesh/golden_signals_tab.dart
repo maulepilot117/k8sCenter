@@ -29,22 +29,59 @@ import 'mesh_widgets.dart';
 
 /// Body of the Metrics-style tab on Service detail. The host
 /// [Widget.build] is reached only when `meshStatus.isInstalled`
-/// — the Service detail screen gates the tab visibility.
+/// — the parent detail screen gates the tab visibility.
+///
+/// PR-5f: Pod and Deployment detail screens also surface this tab
+/// when [findServicesForResource] returns one or more matching
+/// Services. When multiple Services match a single Pod/Deployment, the
+/// tab shows an in-tab picker so the operator can switch which
+/// Service's signals they're inspecting without leaving the detail
+/// route.
 class GoldenSignalsTab extends ConsumerStatefulWidget {
+  /// Single-service entry point — used by Service detail. Equivalent to
+  /// passing `candidates: [service]` but kept distinct so existing
+  /// call sites don't need to wrap their service name in a list.
   const GoldenSignalsTab({
     super.key,
     required this.namespace,
-    required this.service,
+    required String service,
     required this.status,
-  });
+  })  : candidates = const [],
+        _explicitService = service;
+
+  /// Multi-service entry point — used by Pod and Deployment detail.
+  /// When [candidates] has 2+ entries, the tab renders a picker so the
+  /// operator can switch between the candidate Services derived from
+  /// the resource's labels.
+  const GoldenSignalsTab.fromCandidates({
+    super.key,
+    required this.namespace,
+    required this.candidates,
+    required this.status,
+  })  : _explicitService = null,
+        assert(candidates.length > 0,
+            'GoldenSignalsTab.fromCandidates requires at least one candidate');
 
   final String namespace;
-  final String service;
+
+  /// Candidate Service names for the picker. Empty when the tab was
+  /// constructed via the single-service constructor.
+  final List<String> candidates;
+
+  /// Original single-service value, if the tab was built via the
+  /// single-service constructor.
+  final String? _explicitService;
 
   /// Resolved mesh status; carries `detected` so the tab knows
   /// whether to render the mesh picker (both installed) or auto-
   /// select the single installed mesh.
   final MeshStatus status;
+
+  /// All Service names this tab can render signals for, in display
+  /// order. Single-service callers get a list of length 1; multi-
+  /// candidate callers pass the list directly.
+  List<String> get effectiveCandidates =>
+      candidates.isNotEmpty ? candidates : <String>[_explicitService!];
 
   @override
   ConsumerState<GoldenSignalsTab> createState() => _GoldenSignalsTabState();
@@ -52,16 +89,29 @@ class GoldenSignalsTab extends ConsumerStatefulWidget {
 
 class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
   String? _mesh;
+  // Active Service when the tab carries multiple candidates. For
+  // single-service callers this stays equal to the only candidate and
+  // the picker UI is hidden.
+  late String _activeService;
 
   @override
   void initState() {
     super.initState();
     _mesh = _deriveMesh(widget.status, null);
+    _activeService = widget.effectiveCandidates.first;
   }
 
   @override
   void didUpdateWidget(GoldenSignalsTab oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // If the parent re-derives candidates (e.g. labels changed under a
+    // running detail screen), preserve the active selection when it's
+    // still in the new candidate list; otherwise fall back to the new
+    // first entry so the tab never points at a vanished Service.
+    final newCandidates = widget.effectiveCandidates;
+    if (!newCandidates.contains(_activeService)) {
+      _activeService = newCandidates.first;
+    }
     if (oldWidget.status.detected == widget.status.detected) return;
     // Re-derive preferred mesh from the new status. If the currently
     // selected mesh is still installed, keep it; otherwise fall back to
@@ -101,8 +151,45 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
       }
     });
 
+    final candidates = widget.effectiveCandidates;
+    final showServicePicker = candidates.length > 1;
+
     return Column(
       children: [
+        if (showServicePicker)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(
+              children: [
+                Text(
+                  'Service',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    key: const ValueKey('goldenSignals-service-picker'),
+                    initialValue: _activeService,
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                    items: [
+                      for (final s in candidates)
+                        DropdownMenuItem<String>(value: s, child: Text(s)),
+                    ],
+                    onChanged: (v) {
+                      if (v == null) return;
+                      setState(() => _activeService = v);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
         if (widget.status.hasBoth)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
@@ -136,7 +223,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
               : _SignalsBody(
                   clusterId: clusterId,
                   namespace: widget.namespace,
-                  service: widget.service,
+                  service: _activeService,
                   mesh: _mesh,
                 ),
         ),
