@@ -198,7 +198,7 @@ class PodListScreen extends ConsumerWidget {
   }
 }
 
-class PodDetailScreen extends ConsumerWidget {
+class PodDetailScreen extends ConsumerStatefulWidget {
   const PodDetailScreen({
     super.key,
     required this.namespace,
@@ -209,32 +209,44 @@ class PodDetailScreen extends ConsumerWidget {
   final String name;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<PodDetailScreen> createState() => _PodDetailScreenState();
+}
+
+class _PodDetailScreenState extends ConsumerState<PodDetailScreen> {
+  // Latch mesh status once detected so a transient autoDispose null
+  // from `meshStatusProvider` doesn't shrink `extraTabs` while the
+  // user is focused on the Golden Signals tab — the TabController
+  // would otherwise see an out-of-bounds index. Mirrors the latching
+  // pattern in ServiceDetailScreen.
+  MeshStatus? _stableMeshStatus;
+
+  @override
+  Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
       kind: 'pods',
-      namespace: namespace,
-      name: name,
+      namespace: widget.namespace,
+      name: widget.name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
-    // Mesh detection + service list drive whether the Golden Signals
-    // tab appears. Both are watched at the top of build so a transition
-    // from "no mesh" → "mesh installed" surfaces the tab without
-    // requiring the operator to reopen the detail route.
-    final meshStatus = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    final currentMesh = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    if (currentMesh != null && currentMesh.isInstalled) {
+      _stableMeshStatus = currentMesh;
+    }
     final servicesAsync = ref.watch(resourceListProvider(
       ResourceListKey(
         clusterId: clusterId,
         kind: 'services',
-        namespace: namespace,
+        namespace: widget.namespace,
       ),
     ));
+    final stableMesh = _stableMeshStatus;
 
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text(name)),
+        appBar: AppBar(title: Text(widget.name)),
         body: ErrorStateView(
           message: e.toString(),
           onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
@@ -252,16 +264,16 @@ class PodDetailScreen extends ConsumerWidget {
         // Derive candidate Services from this Pod's labels — the
         // Service detail's existing per-service Golden Signals tab is
         // mirrored here for Pods so operators don't have to bounce out
-        // to find the matching Service.
-        final derivedServices =
-            meshStatus != null && meshStatus.isInstalled
-                ? findServicesForResource(
-                    services: servicesAsync.valueOrNull?.items ??
-                        const <Map<String, dynamic>>[],
-                    namespace: pod.meta.namespace,
-                    resourceLabels: pod.meta.labels,
-                  )
-                : const <DerivedService>[];
+        // to find the matching Service. Uses the latched mesh status
+        // so tab count stays stable across autoDispose flickers.
+        final derivedServices = stableMesh != null
+            ? findServicesForResource(
+                services: servicesAsync.valueOrNull?.items ??
+                    const <Map<String, dynamic>>[],
+                namespace: pod.meta.namespace,
+                resourceLabels: pod.meta.labels,
+              )
+            : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Pod',
           name: pod.meta.name,
@@ -287,14 +299,14 @@ class PodDetailScreen extends ConsumerWidget {
                 name: pod.meta.name,
               ),
             ),
-            if (derivedServices.isNotEmpty && meshStatus != null)
+            if (derivedServices.isNotEmpty && stableMesh != null)
               DetailExtraTab(
                 label: 'Golden signals',
                 body: GoldenSignalsTab.fromCandidates(
                   namespace: pod.meta.namespace,
                   candidates:
                       derivedServices.map((s) => s.name).toList(),
-                  status: meshStatus,
+                  status: stableMesh,
                 ),
               ),
           ],

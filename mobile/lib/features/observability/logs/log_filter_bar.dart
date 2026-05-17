@@ -289,6 +289,19 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
     if (_mode == LogQueryMode.logql && _rawLogql.trim().isEmpty) {
       return false;
     }
+    // Admin "All namespaces" without any other filter would emit a bare
+    // `{}` selector, which Loki rejects with a parse error and the
+    // backend surfaces as an opaque 502. Require at least one additional
+    // matcher (pod/container/severity/contains) so the operator gets a
+    // disabled-button signal instead of a failed query.
+    if (_mode == LogQueryMode.search &&
+        _allNamespaces &&
+        (_pod == null || _pod!.isEmpty) &&
+        (_container == null || _container!.isEmpty) &&
+        _severity == null &&
+        _freeText.isEmpty) {
+      return false;
+    }
     return true;
   }
 
@@ -334,6 +347,7 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
             if (_isAdmin)
               _AllNamespacesCheckbox(
                 value: _allNamespaces,
+                enabled: !widget.inFlight,
                 onChanged: (v) {
                   setState(() {
                     _allNamespaces = v;
@@ -553,17 +567,22 @@ class _AllNamespacesCheckbox extends StatelessWidget {
   const _AllNamespacesCheckbox({
     required this.value,
     required this.onChanged,
+    this.enabled = true,
   });
 
   final bool value;
   final ValueChanged<bool> onChanged;
+
+  /// Gates user interaction during in-flight log submissions so a tap
+  /// can't silently widen the query scope between submissions.
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     return InkWell(
       key: const ValueKey('logFilter-allNamespaces'),
-      onTap: () => onChanged(!value),
+      onTap: enabled ? () => onChanged(!value) : null,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Row(
@@ -573,7 +592,7 @@ class _AllNamespacesCheckbox extends StatelessWidget {
               height: 24,
               child: Checkbox(
                 value: value,
-                onChanged: (v) => onChanged(v ?? false),
+                onChanged: enabled ? (v) => onChanged(v ?? false) : null,
                 visualDensity: VisualDensity.compact,
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
@@ -583,7 +602,7 @@ class _AllNamespacesCheckbox extends StatelessWidget {
               child: Text(
                 'All namespaces (admin)',
                 style: TextStyle(
-                  color: colors.textPrimary,
+                  color: enabled ? colors.textPrimary : colors.textMuted,
                   fontSize: 14,
                 ),
               ),

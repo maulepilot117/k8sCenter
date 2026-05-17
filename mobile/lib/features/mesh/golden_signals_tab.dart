@@ -97,7 +97,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
   @override
   void initState() {
     super.initState();
-    _mesh = _deriveMesh(widget.status, null);
+    _mesh = _deriveMesh(widget.status);
     _activeService = widget.effectiveCandidates.first;
   }
 
@@ -116,7 +116,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
     // Re-derive preferred mesh from the new status. If the currently
     // selected mesh is still installed, keep it; otherwise fall back to
     // the auto-derived choice (or null when both are still installed).
-    final auto = _deriveMesh(widget.status, null);
+    final auto = _deriveMesh(widget.status);
     if (_mesh != null && !_isMeshInstalled(_mesh!, widget.status)) {
       // Previously selected mesh is no longer detected — clear.
       setState(() => _mesh = auto);
@@ -128,7 +128,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
 
   /// Returns the auto-selected mesh when exactly one is installed, or
   /// null when both (or neither) are installed.
-  static String? _deriveMesh(MeshStatus status, String? current) {
+  static String? _deriveMesh(MeshStatus status) {
     if (status.hasIstio && !status.hasLinkerd) return 'istio';
     if (status.hasLinkerd && !status.hasIstio) return 'linkerd';
     return null;
@@ -147,7 +147,7 @@ class _GoldenSignalsTabState extends ConsumerState<GoldenSignalsTab> {
     // carrying over the previous selection.
     ref.listen<String>(activeClusterProvider, (previous, next) {
       if (previous != next) {
-        setState(() => _mesh = _deriveMesh(widget.status, null));
+        setState(() => _mesh = _deriveMesh(widget.status));
       }
     });
 
@@ -396,7 +396,11 @@ class _TileGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     // Backend's missing-query keys match the JSON tag basenames; we
-    // pre-compute one source-of-truth bag here.
+    // pre-compute one source-of-truth bag here. errorRate is missing
+    // when any of its three contributing series fail to evaluate.
+    final errorMissing = signals.isMetricMissing('errorRate') ||
+        signals.isMetricMissing('errorNum') ||
+        signals.isMetricMissing('errorDen');
     final tiles = <_TileData>[
       _TileData(
         label: 'Requests / s',
@@ -410,20 +414,14 @@ class _TileGrid extends StatelessWidget {
           'errorRate',
           signals.errorRate,
           '%',
-          missing: signals.isMetricMissing('errorRate') ||
-              signals.isMetricMissing('errorNum') ||
-              signals.isMetricMissing('errorDen'),
+          missing: errorMissing,
         ),
-        color: signals.isMetricMissing('errorRate') ||
-                signals.isMetricMissing('errorNum') ||
-                signals.isMetricMissing('errorDen')
+        color: errorMissing
             ? colors.textMuted
             : signals.errorRate > 0.05
                 ? colors.error
                 : colors.success,
-        missing: signals.isMetricMissing('errorRate') ||
-            signals.isMetricMissing('errorNum') ||
-            signals.isMetricMissing('errorDen'),
+        missing: errorMissing,
       ),
       _TileData(
         label: 'p50 latency',

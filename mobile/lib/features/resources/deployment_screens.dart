@@ -106,7 +106,7 @@ class DeploymentListScreen extends ConsumerWidget {
   }
 }
 
-class DeploymentDetailScreen extends ConsumerWidget {
+class DeploymentDetailScreen extends ConsumerStatefulWidget {
   const DeploymentDetailScreen({
     super.key,
     required this.namespace,
@@ -117,27 +117,43 @@ class DeploymentDetailScreen extends ConsumerWidget {
   final String name;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DeploymentDetailScreen> createState() =>
+      _DeploymentDetailScreenState();
+}
+
+class _DeploymentDetailScreenState
+    extends ConsumerState<DeploymentDetailScreen> {
+  // Latch mesh status once detected so a transient autoDispose null
+  // doesn't shrink extraTabs while the user is focused on the Golden
+  // Signals tab. Mirrors PodDetailScreen + ServiceDetailScreen.
+  MeshStatus? _stableMeshStatus;
+
+  @override
+  Widget build(BuildContext context) {
     final clusterId = ref.watch(activeClusterProvider);
     final getKey = ResourceGetKey(
       clusterId: clusterId,
       kind: 'deployments',
-      namespace: namespace,
-      name: name,
+      namespace: widget.namespace,
+      name: widget.name,
     );
     final get = ref.watch(resourceGetProvider(getKey));
-    final meshStatus = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    final currentMesh = ref.watch(meshStatusProvider(clusterId)).valueOrNull;
+    if (currentMesh != null && currentMesh.isInstalled) {
+      _stableMeshStatus = currentMesh;
+    }
     final servicesAsync = ref.watch(resourceListProvider(
       ResourceListKey(
         clusterId: clusterId,
         kind: 'services',
-        namespace: namespace,
+        namespace: widget.namespace,
       ),
     ));
+    final stableMesh = _stableMeshStatus;
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
       error: (e, _) => Scaffold(
-        appBar: AppBar(title: Text(name)),
+        appBar: AppBar(title: Text(widget.name)),
         body: ErrorStateView(
           message: e.toString(),
           onRetry: () => ref.invalidate(resourceGetProvider(getKey)),
@@ -149,15 +165,14 @@ class DeploymentDetailScreen extends ConsumerWidget {
         // Use the pod template's labels (not the Deployment's own
         // labels) — Services target the pods this Deployment manages,
         // and those pods carry the template labels.
-        final derivedServices =
-            meshStatus != null && meshStatus.isInstalled
-                ? findServicesForResource(
-                    services: servicesAsync.valueOrNull?.items ??
-                        const <Map<String, dynamic>>[],
-                    namespace: d.meta.namespace,
-                    resourceLabels: d.podTemplateLabels,
-                  )
-                : const <DerivedService>[];
+        final derivedServices = stableMesh != null
+            ? findServicesForResource(
+                services: servicesAsync.valueOrNull?.items ??
+                    const <Map<String, dynamic>>[],
+                namespace: d.meta.namespace,
+                resourceLabels: d.podTemplateLabels,
+              )
+            : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Deployment',
           name: d.meta.name,
@@ -183,14 +198,14 @@ class DeploymentDetailScreen extends ConsumerWidget {
                 name: d.meta.name,
               ),
             ),
-            if (derivedServices.isNotEmpty && meshStatus != null)
+            if (derivedServices.isNotEmpty && stableMesh != null)
               DetailExtraTab(
                 label: 'Golden signals',
                 body: GoldenSignalsTab.fromCandidates(
                   namespace: d.meta.namespace,
                   candidates:
                       derivedServices.map((s) => s.name).toList(),
-                  status: meshStatus,
+                  status: stableMesh,
                 ),
               ),
           ],

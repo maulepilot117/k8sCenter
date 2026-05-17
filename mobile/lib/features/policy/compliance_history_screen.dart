@@ -78,12 +78,27 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
   // across a refresh lets the chart stay visible (faded) while the new
   // ?days=N response loads, and lets us show "Couldn't refresh" with
   // the last-known chart on transient errors instead of blanking to
-  // an error state.
+  // an error state. Cleared on cluster change so cluster A's data
+  // never bleeds into cluster B's loading view.
   List<ComplianceHistoryPoint>? _lastSuccess;
 
   void _setDays(int next) {
     if (next == _days) return;
     setState(() => _days = next);
+  }
+
+  @override
+  void didUpdateWidget(_HistoryBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.clusterId != widget.clusterId) {
+      // The State is preserved across cluster switches (PolicyStatusGate
+      // rebuilds _HistoryBody with a new clusterId, same widget identity
+      // by type position). Without this clear, _lastSuccess would render
+      // cluster A's chart under cluster B's spinner during the new key's
+      // loading phase.
+      _lastSuccess = null;
+      _days = 30;
+    }
   }
 
   @override
@@ -93,6 +108,15 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
       clusterId: widget.clusterId,
       days: _days,
     );
+    // Update _lastSuccess outside build() so the assignment stays out
+    // of Flutter's pure-build contract. ref.listen is idempotent across
+    // rebuilds and fires only on value transitions.
+    ref.listen(complianceHistoryProvider(key), (prev, next) {
+      next.whenData((points) {
+        if (!mounted) return;
+        setState(() => _lastSuccess = points);
+      });
+    });
     final async = ref.watch(complianceHistoryProvider(key));
 
     return async.when(
@@ -108,10 +132,7 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
             onDaysChanged: _setDays,
           );
         }
-        return _FreshLoadingView(
-          colors: colors,
-          days: _days,
-        );
+        return _FreshLoadingView(days: _days);
       },
       error: (e, _) {
         if (isComplianceHistoryNotConfigured(e)) {
@@ -148,7 +169,8 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
         );
       },
       data: (points) {
-        _lastSuccess = points;
+        // _lastSuccess is updated via ref.listen above — no side-effect
+        // assignment inside the build pure-function path.
         return _LoadedHistoryView(
           points: points,
           colors: colors,
@@ -201,9 +223,8 @@ class _DaysPicker extends StatelessWidget {
 /// First-load loading view — no previous chart to keep visible, so
 /// render a centered spinner with the picker disabled.
 class _FreshLoadingView extends StatelessWidget {
-  const _FreshLoadingView({required this.colors, required this.days});
+  const _FreshLoadingView({required this.days});
 
-  final KubeColors colors;
   final int days;
 
   @override

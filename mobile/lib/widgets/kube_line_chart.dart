@@ -84,6 +84,15 @@ class KubeLineChartState extends State<KubeLineChart> {
   double? _scaleStartMinX;
   double? _scaleStartMaxX;
 
+  // Gesture-local snapshot of the data's initial X range, frozen at
+  // _handleScaleStart and consumed by _handleScaleUpdate. Without this
+  // a Riverpod-driven build pass mid-pinch would write fresh values
+  // into _lastInitialMinX/MaxX while startSpan was captured from the
+  // old range — clamping math would be internally inconsistent for
+  // that gesture frame. Cleared in _handleScaleEnd.
+  double? _gestureInitialMinX;
+  double? _gestureInitialMaxX;
+
   // Cached during the most recent build so gesture handlers can clamp
   // without recomputing point-min/max on every onScaleUpdate.
   double? _lastInitialMinX;
@@ -112,15 +121,26 @@ class KubeLineChartState extends State<KubeLineChart> {
   }
 
   void _handleScaleStart(ScaleStartDetails details) {
-    _scaleStartMinX = _zoomMinX ?? _lastInitialMinX;
-    _scaleStartMaxX = _zoomMaxX ?? _lastInitialMaxX;
+    final initMin = _lastInitialMinX;
+    final initMax = _lastInitialMaxX;
+    if (initMin == null || initMax == null) return;
+    // Clamp the held zoom into current data bounds so a data refresh
+    // that shrunk the X range doesn't make startSpan disagree with the
+    // rendered chart. The build()-time clamp ensures the display is
+    // correct; this clamp keeps the gesture math correct too.
+    _scaleStartMinX = (_zoomMinX ?? initMin).clamp(initMin, initMax);
+    _scaleStartMaxX = (_zoomMaxX ?? initMax).clamp(initMin, initMax);
+    _gestureInitialMinX = initMin;
+    _gestureInitialMaxX = initMax;
   }
 
   void _handleScaleUpdate(ScaleUpdateDetails details) {
     final startMin = _scaleStartMinX;
     final startMax = _scaleStartMaxX;
-    final initialMin = _lastInitialMinX;
-    final initialMax = _lastInitialMaxX;
+    // Read the gesture-local snapshot, not the live build cache, so a
+    // mid-pinch rebuild can't shift initialMin/Max out from under us.
+    final initialMin = _gestureInitialMinX;
+    final initialMax = _gestureInitialMaxX;
     if (startMin == null ||
         startMax == null ||
         initialMin == null ||
@@ -188,6 +208,8 @@ class KubeLineChartState extends State<KubeLineChart> {
   void _handleScaleEnd(ScaleEndDetails details) {
     _scaleStartMinX = null;
     _scaleStartMaxX = null;
+    _gestureInitialMinX = null;
+    _gestureInitialMaxX = null;
   }
 
   @override
@@ -393,6 +415,12 @@ class _LineChartBody extends StatelessWidget {
     required this.maxX,
   });
 
+  // Hoisted DateFormat instances. Constructing them inside build() at
+  // 60-120 Hz during a sustained pinch gesture is wasted allocation;
+  // these are immutable and isolate-safe so the static cache is sound.
+  static final DateFormat _fmtShort = DateFormat('HH:mm');
+  static final DateFormat _fmtLong = DateFormat('MM/dd HH:mm');
+
   final List<MetricsSeries> cleanedSeries;
   final KubeColors colors;
   final bool showGrid;
@@ -416,9 +444,7 @@ class _LineChartBody extends StatelessWidget {
     final minTs = DateTime.fromMillisecondsSinceEpoch(minX.toInt());
     final rangeHours = maxTs.difference(minTs).inHours;
     // Short ranges: show HH:mm; longer ranges: include date.
-    final labelFmt = rangeHours <= 24
-        ? DateFormat('HH:mm')
-        : DateFormat('MM/dd HH:mm');
+    final labelFmt = rangeHours <= 24 ? _fmtShort : _fmtLong;
 
     final yValues = yPoints.map((p) => p.v);
     final rawMinY = yValues.reduce((a, b) => a < b ? a : b);
