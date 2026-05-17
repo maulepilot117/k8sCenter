@@ -1,7 +1,7 @@
 // OnboardingScreen widget contract:
 //   - 3 cards in the documented order (Intro → ClusterPin → Notifications).
-//   - "Next" advances; the last card's "Enable notifications" completes
-//     even if the FCM permission call throws (it does in tests).
+//   - "Next" advances; the last card's "Get started" completes even if
+//     the FCM permission call throws (it does in tests).
 //   - "Skip" on any card flips `onboarded_v1` and navigates to /login.
 //   - Page indicator semantics announce "Step N of 3".
 //
@@ -25,7 +25,10 @@ import 'package:url_launcher_platform_interface/url_launcher_platform_interface.
 
 class _StubLauncher extends UrlLauncherPlatform
     with MockPlatformInterfaceMixin {
-  _StubLauncher();
+  _StubLauncher({this.launchResult = true});
+
+  /// Control whether [launch] reports success or failure.
+  final bool launchResult;
   final List<String> launched = [];
 
   @override
@@ -49,7 +52,7 @@ class _StubLauncher extends UrlLauncherPlatform
     String? webOnlyWindowName,
   }) async {
     launched.add(url);
-    return true;
+    return launchResult;
   }
 }
 
@@ -80,6 +83,11 @@ Future<void> _pump(
   SharedPreferences prefs, {
   UrlLauncherPlatform? launcher,
 }) async {
+  // Restore the previous launcher instance after the test to prevent
+  // cross-test pollution.
+  final prevLauncher = UrlLauncherPlatform.instance;
+  addTearDown(() => UrlLauncherPlatform.instance = prevLauncher);
+
   if (launcher != null) {
     UrlLauncherPlatform.instance = launcher;
   }
@@ -135,8 +143,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Stay on top of alerts'), findsOneWidget);
 
-    await tester
-        .tap(find.byKey(const ValueKey('onboarding-notifications-enable')));
+    await tester.tap(
+        find.byKey(const ValueKey('onboarding-notifications-get-started')));
     await tester.pumpAndSettle();
 
     expect(find.text('LOGIN_PLACEHOLDER'), findsOneWidget);
@@ -167,7 +175,29 @@ void main() {
     expect(prefs.getBool(kOnboardedPrefsKey), isTrue);
   });
 
-  testWidgets('Notifications "Enable" still completes when FCM throws',
+  testWidgets('Skip on card 3 completes and routes to /login', (tester) async {
+    // Navigate to card 3, then verify Skip works from there.
+    // PageView keeps offscreen pages in the tree; find.byKey finds the
+    // Skip button in the active card because they all share the same key
+    // and tester.tap hits the first-found (rendered) widget.
+    final prefs = await SharedPreferences.getInstance();
+    await _pump(tester, prefs);
+
+    await tester.tap(find.byKey(const ValueKey('onboarding-intro-have-server')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('onboarding-cluster-next')));
+    await tester.pumpAndSettle();
+    expect(find.text('Stay on top of alerts'), findsOneWidget);
+
+    // Tap Skip on card 3 (Notifications).
+    await tester.tap(find.byKey(const ValueKey('onboarding-skip')).last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('LOGIN_PLACEHOLDER'), findsOneWidget);
+    expect(prefs.getBool(kOnboardedPrefsKey), isTrue);
+  });
+
+  testWidgets('Notifications "Get started" still completes when FCM throws',
       (tester) async {
     // Firebase.initializeApp() throws in widget tests (no platform
     // channels). The card swallows the error and advances. We assert
@@ -179,8 +209,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('onboarding-cluster-next')));
     await tester.pumpAndSettle();
-    await tester
-        .tap(find.byKey(const ValueKey('onboarding-notifications-enable')));
+    await tester.tap(
+        find.byKey(const ValueKey('onboarding-notifications-get-started')));
     await tester.pumpAndSettle();
 
     expect(find.text('LOGIN_PLACEHOLDER'), findsOneWidget);
@@ -199,6 +229,20 @@ void main() {
     expect(launcher.launched, contains('https://kubecenter.io/install'));
     // External link does NOT complete onboarding — flag still absent.
     expect(prefs.containsKey(kOnboardedPrefsKey), isFalse);
+  });
+
+  testWidgets('install-guide CTA shows snackbar on launch failure',
+      (tester) async {
+    final prefs = await SharedPreferences.getInstance();
+    final launcher = _StubLauncher(launchResult: false);
+    await _pump(tester, prefs, launcher: launcher);
+
+    await tester
+        .tap(find.byKey(const ValueKey('onboarding-intro-install-guide')));
+    await tester.pump(); // trigger async
+    await tester.pump(const Duration(milliseconds: 100)); // settle snackbar
+
+    expect(find.textContaining('Could not open'), findsOneWidget);
   });
 
   testWidgets('page indicator announces "Step N of 3"', (tester) async {

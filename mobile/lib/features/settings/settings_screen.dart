@@ -23,8 +23,10 @@ import '../../theme/kube_theme_builder.dart';
 import 'sentry_controller.dart';
 import 'theme_picker_sheet.dart';
 
-/// Public so the privacy policy and store-listing URLs can be referenced
-/// elsewhere (PR-5g onboarding intro card, PR-5j App Privacy doc).
+/// Public so these URLs can be referenced elsewhere (PR-5g onboarding
+/// cards, PR-5j App Privacy doc). All external URL constants live here so
+/// there is a single place to update when domains change.
+const String kInstallGuideUrl = 'https://kubecenter.io/install';
 const String kPrivacyPolicyUrl = 'https://kubecenter.io/privacy';
 const String kSupportUrl = 'https://github.com/kubecenter-io/k8scenter/issues';
 const String kAppStoreListingUrl =

@@ -24,6 +24,11 @@ import '../../providers/shared_preferences_provider.dart';
 const String kOnboardedPrefsKey = 'onboarded_v1';
 
 class OnboardingController extends Notifier<bool> {
+  /// Serializes concurrent complete() calls so a rapid double-tap can't
+  /// produce duplicate prefs writes or interleaved state transitions.
+  /// Pattern mirrors [SentryController._inflight].
+  Future<void>? _inflight;
+
   @override
   bool build() {
     final prefs = ref.read(sharedPreferencesProvider);
@@ -31,9 +36,24 @@ class OnboardingController extends Notifier<bool> {
   }
 
   /// Persists completion. Called on Skip / Get-started taps. Idempotent
-  /// when already true.
+  /// when already true. Concurrent calls are serialized via [_inflight].
   Future<void> complete() async {
+    // Drain any prior call before evaluating the no-op fast path to
+    // prevent comparing against stale `state` mid-transition.
+    final prior = _inflight;
+    if (prior != null) await prior;
     if (state) return;
+
+    final pending = _doComplete();
+    _inflight = pending;
+    try {
+      await pending;
+    } finally {
+      if (identical(_inflight, pending)) _inflight = null;
+    }
+  }
+
+  Future<void> _doComplete() async {
     final prefs = ref.read(sharedPreferencesProvider);
     await prefs.setBool(kOnboardedPrefsKey, true);
     state = true;

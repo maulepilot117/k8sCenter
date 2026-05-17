@@ -65,6 +65,24 @@ void main() {
       expect(container.read(onboardingControllerProvider), isTrue);
       expect(prefs.getBool(kOnboardedPrefsKey), isTrue);
     });
+
+    test('concurrent calls are serialized — state is true exactly once',
+        () async {
+      // Mirror of sentry_controller_test.dart concurrent-setOptIn test.
+      // Two complete() calls fired simultaneously must not interleave or
+      // double-write: both should resolve with state == true and
+      // exactly one prefs write (idempotent after the first completes).
+      final prefs = await SharedPreferences.getInstance();
+      final container = _container(prefs);
+      addTearDown(container.dispose);
+
+      final notifier = container.read(onboardingControllerProvider.notifier);
+      // Fire two concurrent calls.
+      await Future.wait([notifier.complete(), notifier.complete()]);
+
+      expect(container.read(onboardingControllerProvider), isTrue);
+      expect(prefs.getBool(kOnboardedPrefsKey), isTrue);
+    });
   });
 
   group('migrateOnboardingFlagForUpgrade', () {

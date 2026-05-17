@@ -1,7 +1,7 @@
 // PageView shell that hosts the three onboarding cards and drives
-// completion. The Skip button on every card and the "Enable
-// notifications" / "Get started" CTA on the last card both go through
-// `_complete`, so flag flips are routed through a single path.
+// completion. The Skip button on every card and the "Get started" CTA
+// on the last card both go through `_complete`, so flag flips are routed
+// through a single path.
 //
 // After `complete()`, the screen navigates explicitly to `/login`. The
 // router redirect re-evaluates and now passes (`onboarded == true`)
@@ -27,8 +27,6 @@ class OnboardingScreen extends ConsumerStatefulWidget {
 }
 
 class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
-  static const int _kPageCount = 3;
-
   final PageController _pageController = PageController();
   int _page = 0;
 
@@ -39,7 +37,10 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _advance() async {
-    if (_page < _kPageCount - 1) {
+    // Build the card list locally so we can derive the page count from
+    // the actual list length rather than a divergable constant.
+    final pageCount = _buildCards().length;
+    if (_page < pageCount - 1) {
       await _pageController.nextPage(
         duration: const Duration(milliseconds: 240),
         curve: Curves.easeOut,
@@ -50,19 +51,41 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   }
 
   Future<void> _complete() async {
-    await ref.read(onboardingControllerProvider.notifier).complete();
+    try {
+      await ref.read(onboardingControllerProvider.notifier).complete();
+    } catch (e, s) {
+      // Prefs write failed. Navigate to /login in degraded mode so the
+      // user isn't permanently trapped. The tour may reappear on the next
+      // cold-start if the flag wasn't persisted; the SnackBar explains it.
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: e,
+        stack: s,
+        library: 'onboarding/complete',
+      ));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not save onboarding state — please retry from Settings '
+            'if the tour reappears.',
+          ),
+        ),
+      );
+    }
     if (!mounted) return;
     context.go('/login');
   }
 
+  List<Widget> _buildCards() => [
+        OnboardingCard.intro(onAdvance: _advance, onSkip: _complete),
+        OnboardingCard.clusterPin(onAdvance: _advance, onSkip: _complete),
+        OnboardingCard.notifications(onAdvance: _advance, onSkip: _complete),
+      ];
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final cards = <Widget>[
-      IntroCard(onAdvance: _advance, onSkip: _complete),
-      ClusterPinCard(onAdvance: _advance, onSkip: _complete),
-      NotificationsCard(onAdvance: _advance, onSkip: _complete),
-    ];
+    final cards = _buildCards();
 
     return Scaffold(
       body: Column(
@@ -70,7 +93,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           Expanded(
             child: PageView.builder(
               controller: _pageController,
-              itemCount: _kPageCount,
+              itemCount: cards.length,
               onPageChanged: (i) => setState(() => _page = i),
               itemBuilder: (_, i) => cards[i],
             ),
@@ -78,7 +101,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
             child: _PageIndicator(
-              count: _kPageCount,
+              count: cards.length,
               activeIndex: _page,
               colors: colors,
             ),

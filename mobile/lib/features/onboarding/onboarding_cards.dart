@@ -1,45 +1,167 @@
-// Three onboarding card widgets, one per page of the tour.
+// Onboarding card widget with three static factory methods, one per page of
+// the tour.
 //
-//   IntroCard         — public-store strangers: "you need a self-hosted
-//                       backend"; primary CTA advances, secondary CTA
-//                       opens the install guide in the system browser.
-//   ClusterPinCard    — orients new users on the cluster pill.
-//   NotificationsCard — fires the OS push-permission prompt, advances
-//                       regardless of the user's choice.
+//   OnboardingCard.intro(...)          — public-store strangers: "you need a
+//                                        self-hosted backend"; primary CTA
+//                                        advances, secondary CTA opens the
+//                                        install guide in the system browser.
+//   OnboardingCard.clusterPin(...)     — orients new users on the cluster pill.
+//   OnboardingCard.notifications(...) — fires the OS push-permission prompt via
+//                                        [requestFcmPermission], then advances.
+//                                        Primary CTA label is "Get started" per
+//                                        the plan spec.
 //
-// Cards are pure widgets; they expose `onAdvance` and `onSkip`
-// callbacks so the screen owns the PageView / completion state and the
-// cards stay testable in isolation.
+// Cards are pure widgets; they expose `onAdvance` and `onSkip` callbacks so
+// the screen owns the PageView / completion state and the cards stay testable
+// in isolation.
+//
+// Callback typing: `FutureOr<void> Function()` so async screen callbacks
+// (`_advance`, `_complete`) are accepted without a wrapper. Any exception
+// thrown by the callback is caught at the card boundary and forwarded to
+// [FlutterError.reportError] so it surfaces in crash reports without
+// trapping the user on the current page.
 
-import 'dart:io' show Platform;
+import 'dart:async' show FutureOr;
 
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../theme/kube_theme_builder.dart';
+import '../settings/settings_screen.dart' show kInstallGuideUrl;
+import '../../notifications/fcm_registration_helpers.dart'
+    show requestFcmPermission;
 
-/// Public-marketing landing page for users who installed the app
-/// without a server to point it at. PR-5j may move this to a versioned
-/// URL; for M5 the path is stable.
-const String kInstallGuideUrl = 'https://kubecenter.io/install';
+/// Namespace for the three onboarding card factory methods.  Each factory
+/// returns the correctly-configured [Widget] for its page of the tour.
+///
+/// ```dart
+/// OnboardingCard.intro(onAdvance: _advance, onSkip: _complete)
+/// OnboardingCard.clusterPin(onAdvance: _advance, onSkip: _complete)
+/// OnboardingCard.notifications(onAdvance: _advance, onSkip: _complete)
+/// ```
+abstract final class OnboardingCard {
+  // ── factory: intro ──────────────────────────────────────────────────────────
 
-class IntroCard extends StatelessWidget {
-  const IntroCard({
+  static Widget intro({
+    Key? key,
+    required FutureOr<void> Function() onAdvance,
+    required FutureOr<void> Function() onSkip,
+  }) =>
+      _IntroCard(key: key, onAdvance: onAdvance, onSkip: onSkip);
+
+  // ── factory: clusterPin ─────────────────────────────────────────────────────
+
+  static Widget clusterPin({
+    Key? key,
+    required FutureOr<void> Function() onAdvance,
+    required FutureOr<void> Function() onSkip,
+  }) =>
+      _SimpleCard(
+        key: key,
+        icon: Icons.hub_outlined,
+        iconSemanticsLabel: 'Cluster icon',
+        headline: 'Pick your cluster',
+        body: 'The cluster pill at the top of every screen switches between '
+            'connected clusters. Tap it any time to add another or to view '
+            'a different one.',
+        primaryKey: const ValueKey('onboarding-cluster-next'),
+        primaryLabel: 'Next',
+        onPrimaryPressed: onAdvance,
+        onSkip: onSkip,
+      );
+
+  // ── factory: notifications ───────────────────────────────────────────────────
+
+  static Widget notifications({
+    Key? key,
+    required FutureOr<void> Function() onAdvance,
+    required FutureOr<void> Function() onSkip,
+  }) =>
+      _SimpleCard(
+        key: key,
+        icon: Icons.notifications_outlined,
+        iconSemanticsLabel: 'Notifications bell icon',
+        headline: 'Stay on top of alerts',
+        body: 'Push notifications let k8sCenter wake your phone when a '
+            'cluster needs attention. Tap "Get started" to allow notifications '
+            '— you can change this later in Settings.',
+        primaryKey: const ValueKey('onboarding-notifications-get-started'),
+        primaryLabel: 'Get started',
+        onPrimaryPressed: () async {
+          // requestFcmPermission is defined in fcm_registration_helpers.dart.
+          // It swallows all errors so a missing Firebase config in CI never
+          // traps the user.
+          await requestFcmPermission();
+          await onAdvance();
+        },
+        onSkip: onSkip,
+      );
+}
+
+// ── _SimpleCard ────────────────────────────────────────────────────────────────
+//
+// Handles the two cards (ClusterPin, Notifications) that have no secondary CTA.
+
+class _SimpleCard extends StatelessWidget {
+  const _SimpleCard({
+    super.key,
+    required this.icon,
+    required this.iconSemanticsLabel,
+    required this.headline,
+    required this.body,
+    required this.primaryKey,
+    required this.primaryLabel,
+    required this.onPrimaryPressed,
+    required this.onSkip,
+  });
+
+  final IconData icon;
+  final String iconSemanticsLabel;
+  final String headline;
+  final String body;
+  final Key primaryKey;
+  final String primaryLabel;
+  final FutureOr<void> Function() onPrimaryPressed;
+  final FutureOr<void> Function() onSkip;
+
+  @override
+  Widget build(BuildContext context) {
+    return _OnboardingCardLayout(
+      icon: icon,
+      iconSemanticsLabel: iconSemanticsLabel,
+      headline: headline,
+      body: body,
+      primary: _PrimaryButton(
+        key: primaryKey,
+        label: primaryLabel,
+        onPressed: onPrimaryPressed,
+      ),
+      onSkip: onSkip,
+    );
+  }
+}
+
+// ── _IntroCard ─────────────────────────────────────────────────────────────────
+//
+// Intro is the only card with a secondary "install guide" CTA and the
+// associated SnackBar fallback. It keeps its own widget class so the
+// `_launchInstallGuide` helper can capture BuildContext without it being passed
+// as a constructor parameter.
+
+class _IntroCard extends StatelessWidget {
+  const _IntroCard({
     super.key,
     required this.onAdvance,
     required this.onSkip,
   });
 
-  final VoidCallback onAdvance;
-  final VoidCallback onSkip;
+  final FutureOr<void> Function() onAdvance;
+  final FutureOr<void> Function() onSkip;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return OnboardingCardLayout(
+    return _OnboardingCardLayout(
       icon: Icons.dns_outlined,
       iconSemanticsLabel: 'Self-hosted server icon',
       headline: 'k8sCenter Mobile needs a home',
@@ -72,99 +194,14 @@ class IntroCard extends StatelessWidget {
   }
 }
 
-class ClusterPinCard extends StatelessWidget {
-  const ClusterPinCard({
-    super.key,
-    required this.onAdvance,
-    required this.onSkip,
-  });
-
-  final VoidCallback onAdvance;
-  final VoidCallback onSkip;
-
-  @override
-  Widget build(BuildContext context) {
-    return OnboardingCardLayout(
-      icon: Icons.hub_outlined,
-      iconSemanticsLabel: 'Cluster icon',
-      headline: 'Pick your cluster',
-      body: 'The cluster pill at the top of every screen switches between '
-          'connected clusters. Tap it any time to add another or to view '
-          'a different one.',
-      primary: _PrimaryButton(
-        key: const ValueKey('onboarding-cluster-next'),
-        label: 'Next',
-        onPressed: onAdvance,
-      ),
-      onSkip: onSkip,
-    );
-  }
-}
-
-class NotificationsCard extends StatelessWidget {
-  const NotificationsCard({
-    super.key,
-    required this.onAdvance,
-    required this.onSkip,
-  });
-
-  final VoidCallback onAdvance;
-  final VoidCallback onSkip;
-
-  @override
-  Widget build(BuildContext context) {
-    return OnboardingCardLayout(
-      icon: Icons.notifications_outlined,
-      iconSemanticsLabel: 'Notifications bell icon',
-      headline: 'Stay on top of alerts',
-      body: 'Push notifications let k8sCenter wake your phone when a '
-          'cluster needs attention. You can change this later in Settings.',
-      primary: _PrimaryButton(
-        key: const ValueKey('onboarding-notifications-enable'),
-        label: 'Enable notifications',
-        onPressed: () async {
-          await _requestNotificationPermission();
-          onAdvance();
-        },
-      ),
-      onSkip: onSkip,
-    );
-  }
-
-  /// Surfaces the OS push-permission prompt by initialising Firebase
-  /// and calling `requestPermission`. Any failure (missing
-  /// google-services.json / GoogleService-Info.plist, web or desktop
-  /// build, sandboxed CI) is swallowed — the card still advances so a
-  /// user without a configured FCM build isn't trapped on the last
-  /// page.
-  Future<void> _requestNotificationPermission() async {
-    if (kIsWeb) return;
-    try {
-      if (!Platform.isIOS && !Platform.isAndroid) return;
-    } catch (_) {
-      return;
-    }
-    try {
-      await Firebase.initializeApp();
-      await FirebaseMessaging.instance.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-    } catch (e) {
-      debugPrint('[onboarding] notifications init skipped: $e');
-    }
-  }
-}
-
 /// Shared visual scaffold for every card. Top-right Skip, centered
 /// icon, headline + body, primary CTA at the bottom, optional ghost
-/// secondary below it. Exposed (non-private) so widget tests can pump
-/// the layout standalone without a Firebase/url_launcher detour.
-@visibleForTesting
-class OnboardingCardLayout extends StatelessWidget {
-  const OnboardingCardLayout({
-    super.key,
+/// secondary below it.
+///
+/// Private: external code (including tests) pumps [OnboardingCard] factory
+/// instances rather than this layout directly.
+class _OnboardingCardLayout extends StatelessWidget {
+  const _OnboardingCardLayout({
     required this.icon,
     required this.iconSemanticsLabel,
     required this.headline,
@@ -180,7 +217,7 @@ class OnboardingCardLayout extends StatelessWidget {
   final String body;
   final Widget primary;
   final Widget? secondary;
-  final VoidCallback onSkip;
+  final FutureOr<void> Function() onSkip;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +232,17 @@ class OnboardingCardLayout extends StatelessWidget {
               alignment: Alignment.topRight,
               child: TextButton(
                 key: const ValueKey('onboarding-skip'),
-                onPressed: onSkip,
+                onPressed: () async {
+                  try {
+                    await onSkip();
+                  } catch (e, s) {
+                    FlutterError.reportError(FlutterErrorDetails(
+                      exception: e,
+                      stack: s,
+                      library: 'onboarding',
+                    ));
+                  }
+                },
                 child: Text(
                   'Skip',
                   style: TextStyle(color: colors.textMuted),
@@ -260,14 +307,24 @@ class _PrimaryButton extends StatelessWidget {
   });
 
   final String label;
-  final VoidCallback onPressed;
+  final FutureOr<void> Function() onPressed;
 
   @override
   Widget build(BuildContext context) {
     return SizedBox(
       height: 48,
       child: FilledButton(
-        onPressed: onPressed,
+        onPressed: () async {
+          try {
+            await onPressed();
+          } catch (e, s) {
+            FlutterError.reportError(FlutterErrorDetails(
+              exception: e,
+              stack: s,
+              library: 'onboarding',
+            ));
+          }
+        },
         child: Text(label),
       ),
     );
