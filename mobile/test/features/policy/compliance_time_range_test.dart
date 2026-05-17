@@ -165,6 +165,58 @@ void main() {
   });
 
   testWidgets(
+      'empty datapoints renders the "No compliance snapshots yet" EmptyState',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/policies/status', body: _statusBody())
+      ..onJson('GET', '/api/v1/policies/compliance/history',
+          body: {'data': <Object>[]});
+    await _pump(tester, mock);
+
+    expect(find.text('No compliance snapshots yet'), findsOneWidget);
+  });
+
+  testWidgets(
+      'stale-error banner: previous chart stays visible with "Couldn\'t '
+      'refresh" + Retry when the second fetch errors',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/policies/status', body: _statusBody())
+      ..onJson('GET', '/api/v1/policies/compliance/history',
+          body: _historyBody(30))
+      ..onJson('GET', '/api/v1/policies/compliance/history',
+          status: 500,
+          body: {'error': {'code': 500, 'message': 'transient backend error'}});
+    await _pump(tester, mock);
+
+    // First load succeeds. Switching to 7d fires the queued 500 response.
+    await tester.tap(find.text('7d'));
+    await tester.pumpAndSettle(const Duration(milliseconds: 200));
+
+    // Stale-overlay path: previous chart is still on screen + banner
+    // appears with a Retry button. We can't assert Opacity-around-the-
+    // card directly across the whole subtree, so check the user-visible
+    // signals: banner text + Retry CTA + chart title from the previous
+    // (5-point) response.
+    expect(find.textContaining("Couldn't refresh"), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Retry'), findsOneWidget);
+    expect(find.textContaining('Last 5 days'), findsOneWidget);
+
+    // Tapping Retry re-fires the request (the mock's queue is exhausted,
+    // so this surfaces the same 500 — but the request count must rise).
+    final before = mock.requests
+        .where((r) => r.path == '/api/v1/policies/compliance/history')
+        .length;
+    await tester.tap(find.widgetWithText(TextButton, 'Retry'));
+    await tester.pumpAndSettle(const Duration(milliseconds: 200));
+    final after = mock.requests
+        .where((r) => r.path == '/api/v1/policies/compliance/history')
+        .length;
+    expect(after, greaterThan(before),
+        reason: 'Retry button must re-fire the history request');
+  });
+
+  testWidgets(
       'custom date-range picker is intentionally absent in M5',
       (tester) async {
     final mock = MockDioAdapter()

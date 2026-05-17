@@ -161,6 +161,78 @@ void main() {
   });
 
   testWidgets(
+      'Run button disabled when all-NS checked AND no other filter set',
+      (tester) async {
+    // The fix for the `{}` LogQL emission: admin all-NS without any
+    // other matcher must keep Run disabled instead of submitting a
+    // query Loki will reject.
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/logs/labels/namespace/values',
+          body: {'data': <String>[]});
+    await _pump(tester, mock: mock, admin: true);
+
+    // Enable all-namespaces.
+    await tester.tap(find.byKey(const ValueKey('logFilter-allNamespaces')));
+    await tester.pumpAndSettle();
+
+    final runBtn = find.byKey(const ValueKey('logFilter-runButton'));
+    final pressedFn = (tester.widget(runBtn) as FilledButton).onPressed;
+    expect(pressedFn, isNull,
+        reason: 'Run must stay disabled to prevent emitting `{}` LogQL');
+  });
+
+  testWidgets(
+      'Run button enabled once all-NS + a Contains filter are set',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/logs/labels/namespace/values',
+          body: {'data': <String>[]});
+    await _pump(tester, mock: mock, admin: true);
+
+    await tester.tap(find.byKey(const ValueKey('logFilter-allNamespaces')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('logFilter-freeText')),
+      'timeout',
+    );
+    await tester.pumpAndSettle();
+
+    final pressedFn = (tester.widget(
+            find.byKey(const ValueKey('logFilter-runButton'))) as FilledButton)
+        .onPressed;
+    expect(pressedFn, isNotNull,
+        reason: 'A free-text filter is sufficient to unblock submission');
+  });
+
+  testWidgets(
+      'LogQL escapes double-quote and backslash in free-text Contains',
+      (tester) async {
+    final mock = MockDioAdapter()
+      ..onJson('GET', '/api/v1/logs/labels/namespace/values',
+          body: {'data': const ['app']})
+      ..onJson('GET', '/api/v1/logs/labels/pod/values',
+          body: {'data': <String>[]});
+    final submitted = await _pump(tester, mock: mock, admin: false);
+
+    await tester.tap(find.byKey(const ValueKey('logFilter-namespace')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('app').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('logFilter-freeText')),
+      r'a"b\c',
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('logFilter-runButton')));
+    await tester.pumpAndSettle();
+
+    expect(submitted, hasLength(1));
+    // Backslash escaped first, then double-quote, matching the
+    // escapeLogQLLiteral implementation order.
+    expect(submitted.single.query, r'{namespace="app"} |= "a\"b\\c"');
+  });
+
+  testWidgets(
       'unchecking the box re-enables the namespace dropdown',
       (tester) async {
     final mock = MockDioAdapter()

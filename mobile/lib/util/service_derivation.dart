@@ -7,6 +7,17 @@
 // Used by Pod and Deployment detail screens to decide whether to
 // surface the Golden Signals tab — and, when more than one Service
 // matches, to feed the in-tab picker.
+//
+// Two surface layers:
+//   - The pure function `findServicesForResource` is the algorithm.
+//   - The Riverpod `derivedServicesProvider` family caches the result
+//     keyed on (clusterId, namespace, resourceLabels) so the O(services
+//     × selector_keys) work only re-runs when its inputs actually
+//     change, not on every detail-screen rebuild.
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../api/resource_repository.dart';
 
 /// A Service-name match for the Golden Signals derivation. Carries
 /// [selectorSize] so consumers (the tab picker, sort-stability tests)
@@ -114,3 +125,63 @@ List<DerivedService> findServicesForResource({
   });
   return matches;
 }
+
+/// Composite key for [derivedServicesProvider]. The labels map is
+/// hashed by entry — two Pods with the same `{app: web, tier: web}`
+/// share a cache slot regardless of insertion order.
+class DerivedServicesKey {
+  DerivedServicesKey({
+    required this.clusterId,
+    required this.namespace,
+    required Map<String, String> resourceLabels,
+  }) : resourceLabels = Map<String, String>.unmodifiable(resourceLabels);
+
+  final String clusterId;
+  final String namespace;
+  final Map<String, String> resourceLabels;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! DerivedServicesKey) return false;
+    if (other.clusterId != clusterId) return false;
+    if (other.namespace != namespace) return false;
+    if (other.resourceLabels.length != resourceLabels.length) return false;
+    for (final entry in resourceLabels.entries) {
+      if (other.resourceLabels[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode {
+    var labelHash = 0;
+    for (final entry in resourceLabels.entries) {
+      // XOR per-entry hashes so map ordering doesn't affect the result.
+      labelHash ^= Object.hash(entry.key, entry.value);
+    }
+    return Object.hash(clusterId, namespace, labelHash);
+  }
+}
+
+/// Watches the namespace's Service list and runs [findServicesForResource]
+/// against the current labels. Returns the empty list while the Service
+/// list is loading or errored so consumers can use `.isNotEmpty` as the
+/// gate for "show Golden Signals tab". The provider recomputes only
+/// when the upstream Service list or any key field changes — the same
+/// detail-screen rebuilding repeatedly with identical inputs hits the
+/// Riverpod cache, not the O(services × selector_keys) loop.
+final derivedServicesProvider = Provider.autoDispose
+    .family<List<DerivedService>, DerivedServicesKey>((ref, key) {
+  final servicesAsync = ref.watch(resourceListProvider(ResourceListKey(
+    clusterId: key.clusterId,
+    kind: 'services',
+    namespace: key.namespace,
+  )));
+  final items =
+      servicesAsync.valueOrNull?.items ?? const <Map<String, dynamic>>[];
+  return findServicesForResource(
+    services: items,
+    namespace: key.namespace,
+    resourceLabels: key.resourceLabels,
+  );
+});

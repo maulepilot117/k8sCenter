@@ -142,13 +142,6 @@ class _DeploymentDetailScreenState
     if (currentMesh != null && currentMesh.isInstalled) {
       _stableMeshStatus = currentMesh;
     }
-    final servicesAsync = ref.watch(resourceListProvider(
-      ResourceListKey(
-        clusterId: clusterId,
-        kind: 'services',
-        namespace: widget.namespace,
-      ),
-    ));
     final stableMesh = _stableMeshStatus;
     return get.when(
       loading: () => const Scaffold(body: LoadingState()),
@@ -164,14 +157,15 @@ class _DeploymentDetailScreenState
         final colors = Theme.of(context).extension<KubeColors>()!;
         // Use the pod template's labels (not the Deployment's own
         // labels) — Services target the pods this Deployment manages,
-        // and those pods carry the template labels.
+        // and those pods carry the template labels. derivedServices
+        // is computed via the memoized provider so identical-rebuild
+        // calls hit the cache.
         final derivedServices = stableMesh != null
-            ? findServicesForResource(
-                services: servicesAsync.valueOrNull?.items ??
-                    const <Map<String, dynamic>>[],
+            ? ref.watch(derivedServicesProvider(DerivedServicesKey(
+                clusterId: clusterId,
                 namespace: d.meta.namespace,
                 resourceLabels: d.podTemplateLabels,
-              )
+              )))
             : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Deployment',

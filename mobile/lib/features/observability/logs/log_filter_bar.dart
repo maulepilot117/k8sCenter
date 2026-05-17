@@ -55,6 +55,16 @@ extension on LogSeverity {
 /// Callback invoked when the operator presses Run on the filter bar.
 typedef LogSearchSubmit = void Function(LogSearchParams params);
 
+/// Escapes a literal value for safe embedding inside a double-quoted
+/// LogQL string. Backslash and double-quote are the two characters
+/// that need escaping inside `"..."` matchers — without this, a `"` in
+/// operator-supplied input breaks out of the quoted region and can
+/// inject adjacent matchers into the query. Exported so tests and any
+/// future LogQL-building call site can share the same contract.
+String escapeLogQLLiteral(String input) {
+  return input.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+}
+
 class LogFilterBar extends ConsumerStatefulWidget {
   const LogFilterBar({
     required this.onSubmit,
@@ -105,6 +115,15 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
   bool _loadingPods = false;
   bool _loadingContainers = false;
 
+  // Last fetch error per cascade level. Surfacing these in dropdown
+  // helper text lets non-admin users distinguish "no namespaces exist
+  // in this cluster" from "the label-values API call failed", and
+  // gives them a tap-to-retry affordance instead of a permanently
+  // disabled Run button with no signal.
+  String? _namespaceFetchError;
+  String? _podFetchError;
+  String? _containerFetchError;
+
   @override
   void initState() {
     super.initState();
@@ -134,7 +153,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
 
   Future<void> _fetchNamespaces() async {
     if (!mounted) return;
-    setState(() => _loadingNamespaces = true);
+    setState(() {
+      _loadingNamespaces = true;
+      _namespaceFetchError = null;
+    });
     final clusterId = ref.read(activeClusterProvider);
     try {
       final values = await ref
@@ -144,11 +166,19 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
       setState(() {
         _namespaces = values;
       });
+    } catch (e) {
+      // Surface the failure to the dropdown so the operator can
+      // distinguish "no namespaces" from "fetch failed". The repository
+      // soft-degrades 403/502/503 to empty lists already; this catch
+      // covers the harder failures (timeout, 401, 500).
+      if (mounted) {
+        setState(() => _namespaceFetchError = 'Could not load namespaces');
+      }
     } finally {
-      // Reset the loading flag even on non-graceful errors (401, 500,
-      // network timeout). Without this, the repository's narrow
-      // 403/502/503 soft-degrade leaves the dropdown stuck on
-      // "Loading…" indefinitely for any other failure mode.
+      // Reset the loading flag even on non-graceful errors. Without
+      // this, the repository's narrow 403/502/503 soft-degrade leaves
+      // the dropdown stuck on "Loading…" indefinitely for any other
+      // failure mode.
       if (mounted) {
         setState(() => _loadingNamespaces = false);
       }
@@ -165,7 +195,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
       return;
     }
     if (!mounted) return;
-    setState(() => _loadingPods = true);
+    setState(() {
+      _loadingPods = true;
+      _podFetchError = null;
+    });
     final clusterId = ref.read(activeClusterProvider);
     try {
       final values = await ref.read(lokiRepositoryProvider).labelValues(
@@ -184,6 +217,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
         _pods = values;
         _containers = const [];
       });
+    } catch (e) {
+      if (mounted && _namespace == ns) {
+        setState(() => _podFetchError = 'Could not load pods');
+      }
     } finally {
       if (mounted && _namespace == ns) {
         setState(() => _loadingPods = false);
@@ -199,7 +236,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
       return;
     }
     if (!mounted) return;
-    setState(() => _loadingContainers = true);
+    setState(() {
+      _loadingContainers = true;
+      _containerFetchError = null;
+    });
     final clusterId = ref.read(activeClusterProvider);
     try {
       final values = await ref.read(lokiRepositoryProvider).labelValues(
@@ -216,6 +256,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
       setState(() {
         _containers = values;
       });
+    } catch (e) {
+      if (mounted && _namespace == ns && _pod == pod) {
+        setState(() => _containerFetchError = 'Could not load containers');
+      }
     } finally {
       if (mounted && _namespace == ns && _pod == pod) {
         setState(() => _loadingContainers = false);
@@ -239,17 +283,21 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
       matchers.add('namespace="${_namespace!}"');
     }
     if (_pod != null && _pod!.isNotEmpty) {
-      matchers.add('pod=~"${_pod!}.*"');
+      matchers.add('pod=~"${escapeLogQLLiteral(_pod!)}.*"');
     }
     if (_container != null && _container!.isNotEmpty) {
-      matchers.add('container="${_container!}"');
+      matchers.add('container="${escapeLogQLLiteral(_container!)}"');
     }
     var q = '{${matchers.join(',')}}';
     if (_severity != null) {
       q += ' | level=~"(?i)${_severity!.value}"';
     }
     if (_freeText.isNotEmpty) {
-      q += ' |= "$_freeText"';
+      // PR-5f review fix #29: escape free-text Contains. A literal `"`
+      // or `\` in the operator's input would otherwise break the LogQL
+      // string and at minimum return a parse error, at worst inject
+      // adjacent matchers into the query.
+      q += ' |= "${escapeLogQLLiteral(_freeText)}"';
     }
     return q;
   }
@@ -274,6 +322,13 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
     });
   }
 
+  /// Single source of truth for whether the form requires the operator
+  /// to pick a namespace before submitting. Used by both [_runEnabled]
+  /// and the bottom-row UI hint so a future condition can be added in
+  /// one place rather than the two-branches-170-lines-apart layout.
+  bool get _requiresNamespaceSelection =>
+      !_isAdmin && (_namespace == null || _namespace!.isEmpty);
+
   bool get _runEnabled {
     // While a prior submission is still in flight, gate further taps
     // so the operator can't stack concurrent queries with a fast double
@@ -282,7 +337,7 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
     // Non-admin without a namespace can't submit — backend hard-403s
     // and the UX is clearer with a disabled button than a
     // post-submit error card.
-    if (!_isAdmin && (_namespace == null || _namespace!.isEmpty)) {
+    if (_requiresNamespaceSelection) {
       return false;
     }
     // LogQL mode requires non-empty query text.
@@ -373,6 +428,8 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
               loading: _loadingNamespaces,
               isAdmin: _isAdmin,
               enabled: !_allNamespaces,
+              fetchError: _namespaceFetchError,
+              onRetry: _fetchNamespaces,
               onChanged: (v) {
                 setState(() {
                   _namespace = v;
@@ -388,6 +445,8 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
               value: _pod,
               loading: _loadingPods,
               enabled: _namespace != null && _namespace!.isNotEmpty,
+              fetchError: _podFetchError,
+              onRetry: _fetchPods,
               onChanged: (v) {
                 setState(() {
                   _pod = v;
@@ -402,6 +461,8 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
               value: _container,
               loading: _loadingContainers,
               enabled: _pod != null && _pod!.isNotEmpty,
+              fetchError: _containerFetchError,
+              onRetry: _fetchContainers,
               onChanged: (v) => setState(() => _container = v),
             ),
             const SizedBox(height: 12),
@@ -454,8 +515,7 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
           const SizedBox(height: 12),
           Row(
             children: [
-              if (!_isAdmin &&
-                  (_namespace == null || _namespace!.isEmpty)) ...[
+              if (_requiresNamespaceSelection) ...[
                 Icon(Icons.info_outline, size: 14, color: colors.warning),
                 const SizedBox(width: 4),
                 Expanded(
@@ -516,7 +576,9 @@ class _NamespaceDropdown extends StatelessWidget {
     required this.loading,
     required this.isAdmin,
     required this.onChanged,
+    required this.onRetry,
     this.enabled = true,
+    this.fetchError,
   });
 
   final List<String> namespaces;
@@ -524,7 +586,9 @@ class _NamespaceDropdown extends StatelessWidget {
   final bool loading;
   final bool isAdmin;
   final ValueChanged<String?> onChanged;
+  final VoidCallback onRetry;
   final bool enabled;
+  final String? fetchError;
 
   @override
   Widget build(BuildContext context) {
@@ -536,29 +600,76 @@ class _NamespaceDropdown extends StatelessWidget {
       if (value != null && value!.isNotEmpty) value!,
     }.toList()
       ..sort();
-    return DropdownButtonFormField<String?>(
-      key: const ValueKey('logFilter-namespace'),
-      initialValue: value,
-      isExpanded: true,
-      decoration: InputDecoration(
-        labelText: 'Namespace${isAdmin ? '' : ' *'}',
-        helperText: loading
-            ? 'Loading…'
-            : (!enabled ? 'Disabled — using all namespaces' : null),
-        border: const OutlineInputBorder(),
-        isDense: true,
+    return _DropdownWithRetry(
+      fetchError: fetchError,
+      onRetry: onRetry,
+      child: DropdownButtonFormField<String?>(
+        key: const ValueKey('logFilter-namespace'),
+        initialValue: value,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: 'Namespace${isAdmin ? '' : ' *'}',
+          helperText: loading
+              ? 'Loading…'
+              : (!enabled
+                  ? 'Disabled — using all namespaces'
+                  : (fetchError != null ? '$fetchError — tap retry' : null)),
+          border: const OutlineInputBorder(),
+          isDense: true,
+        ),
+        hint: Text(isAdmin ? 'All namespaces' : 'Pick a namespace'),
+        items: [
+          if (isAdmin)
+            const DropdownMenuItem<String?>(
+              value: null,
+              child: Text('All namespaces'),
+            ),
+          for (final ns in items)
+            DropdownMenuItem<String?>(value: ns, child: Text(ns)),
+        ],
+        onChanged: enabled ? onChanged : null,
       ),
-      hint: Text(isAdmin ? 'All namespaces' : 'Pick a namespace'),
-      items: [
-        if (isAdmin)
-          const DropdownMenuItem<String?>(
-            value: null,
-            child: Text('All namespaces'),
+    );
+  }
+}
+
+/// Wraps a fetch-backed dropdown with a small Retry button when the
+/// most recent fetch failed. Keeps the dropdown selectable for any
+/// already-loaded values; the button re-fires the fetch the caller
+/// supplies.
+class _DropdownWithRetry extends StatelessWidget {
+  const _DropdownWithRetry({
+    required this.child,
+    required this.fetchError,
+    required this.onRetry,
+  });
+
+  final Widget child;
+  final String? fetchError;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    if (fetchError == null) return child;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: child),
+        const SizedBox(width: 4),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: TextButton(
+            key: const ValueKey('logFilter-retryFetch'),
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              minimumSize: const Size(48, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Retry'),
           ),
-        for (final ns in items)
-          DropdownMenuItem<String?>(value: ns, child: Text(ns)),
+        ),
       ],
-      onChanged: enabled ? onChanged : null,
     );
   }
 }
@@ -621,6 +732,8 @@ class _PodDropdown extends StatelessWidget {
     required this.loading,
     required this.enabled,
     required this.onChanged,
+    required this.onRetry,
+    this.fetchError,
   });
 
   final List<String> pods;
@@ -628,6 +741,8 @@ class _PodDropdown extends StatelessWidget {
   final bool loading;
   final bool enabled;
   final ValueChanged<String?> onChanged;
+  final VoidCallback onRetry;
+  final String? fetchError;
 
   @override
   Widget build(BuildContext context) {
@@ -636,25 +751,31 @@ class _PodDropdown extends StatelessWidget {
       if (value != null && value!.isNotEmpty) value!,
     }.toList()
       ..sort();
-    return DropdownButtonFormField<String?>(
-      key: const ValueKey('logFilter-pod'),
-      initialValue: value,
-      isExpanded: true,
-      decoration: InputDecoration(
-        labelText: 'Pod (optional)',
-        helperText: loading
-            ? 'Loading…'
-            : (!enabled ? 'Pick a namespace first' : null),
-        border: const OutlineInputBorder(),
-        isDense: true,
+    return _DropdownWithRetry(
+      fetchError: enabled ? fetchError : null,
+      onRetry: onRetry,
+      child: DropdownButtonFormField<String?>(
+        key: const ValueKey('logFilter-pod'),
+        initialValue: value,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: 'Pod (optional)',
+          helperText: loading
+              ? 'Loading…'
+              : (!enabled
+                  ? 'Pick a namespace first'
+                  : (fetchError != null ? '$fetchError — tap retry' : null)),
+          border: const OutlineInputBorder(),
+          isDense: true,
+        ),
+        hint: const Text('All pods'),
+        items: [
+          const DropdownMenuItem<String?>(value: null, child: Text('All pods')),
+          for (final p in items)
+            DropdownMenuItem<String?>(value: p, child: Text(p)),
+        ],
+        onChanged: enabled ? onChanged : null,
       ),
-      hint: const Text('All pods'),
-      items: [
-        const DropdownMenuItem<String?>(value: null, child: Text('All pods')),
-        for (final p in items)
-          DropdownMenuItem<String?>(value: p, child: Text(p)),
-      ],
-      onChanged: enabled ? onChanged : null,
     );
   }
 }
@@ -666,6 +787,8 @@ class _ContainerDropdown extends StatelessWidget {
     required this.loading,
     required this.enabled,
     required this.onChanged,
+    required this.onRetry,
+    this.fetchError,
   });
 
   final List<String> containers;
@@ -673,6 +796,8 @@ class _ContainerDropdown extends StatelessWidget {
   final bool loading;
   final bool enabled;
   final ValueChanged<String?> onChanged;
+  final VoidCallback onRetry;
+  final String? fetchError;
 
   @override
   Widget build(BuildContext context) {
@@ -681,25 +806,32 @@ class _ContainerDropdown extends StatelessWidget {
       if (value != null && value!.isNotEmpty) value!,
     }.toList()
       ..sort();
-    return DropdownButtonFormField<String?>(
-      key: const ValueKey('logFilter-container'),
-      initialValue: value,
-      isExpanded: true,
-      decoration: InputDecoration(
-        labelText: 'Container (optional)',
-        helperText:
-            loading ? 'Loading…' : (!enabled ? 'Pick a pod first' : null),
-        border: const OutlineInputBorder(),
-        isDense: true,
+    return _DropdownWithRetry(
+      fetchError: enabled ? fetchError : null,
+      onRetry: onRetry,
+      child: DropdownButtonFormField<String?>(
+        key: const ValueKey('logFilter-container'),
+        initialValue: value,
+        isExpanded: true,
+        decoration: InputDecoration(
+          labelText: 'Container (optional)',
+          helperText: loading
+              ? 'Loading…'
+              : (!enabled
+                  ? 'Pick a pod first'
+                  : (fetchError != null ? '$fetchError — tap retry' : null)),
+          border: const OutlineInputBorder(),
+          isDense: true,
+        ),
+        hint: const Text('All containers'),
+        items: [
+          const DropdownMenuItem<String?>(
+              value: null, child: Text('All containers')),
+          for (final c in items)
+            DropdownMenuItem<String?>(value: c, child: Text(c)),
+        ],
+        onChanged: enabled ? onChanged : null,
       ),
-      hint: const Text('All containers'),
-      items: [
-        const DropdownMenuItem<String?>(
-            value: null, child: Text('All containers')),
-        for (final c in items)
-          DropdownMenuItem<String?>(value: c, child: Text(c)),
-      ],
-      onChanged: enabled ? onChanged : null,
     );
   }
 }

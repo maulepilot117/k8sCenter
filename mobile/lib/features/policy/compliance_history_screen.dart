@@ -122,14 +122,17 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
     return async.when(
       loading: () {
         if (_lastSuccess != null) {
-          return _StaleHistoryView(
+          // Stale-overlay path: keep the previous chart on screen
+          // (faded with a spinner) while the new ?days window loads.
+          return _HistoryChart(
             points: _lastSuccess!,
             colors: colors,
             days: _days,
+            onDaysChanged: _setDays,
+            stale: true,
             isLoading: true,
             errorMessage: null,
             onRetry: null,
-            onDaysChanged: _setDays,
           );
         }
         return _FreshLoadingView(days: _days);
@@ -150,14 +153,17 @@ class _HistoryBodyState extends ConsumerState<_HistoryBody> {
           );
         }
         if (_lastSuccess != null) {
-          return _StaleHistoryView(
+          // Stale-overlay path: keep the previous chart with a
+          // "Couldn't refresh" banner + Retry CTA.
+          return _HistoryChart(
             points: _lastSuccess!,
             colors: colors,
             days: _days,
+            onDaysChanged: _setDays,
+            stale: true,
             isLoading: false,
             errorMessage: e is ApiError ? e.message : e.toString(),
             onRetry: () => ref.invalidate(complianceHistoryProvider(key)),
-            onDaysChanged: _setDays,
           );
         }
         return _FreshErrorView(
@@ -340,40 +346,6 @@ class _LoadedHistoryView extends StatelessWidget {
 /// (fade + spinner overlay) or after a transient error (banner + retry).
 /// Keeping the previous chart visible avoids a flash-of-blank when the
 /// user picks a different `?days` window or pulls to refresh.
-class _StaleHistoryView extends StatelessWidget {
-  const _StaleHistoryView({
-    required this.points,
-    required this.colors,
-    required this.days,
-    required this.isLoading,
-    required this.errorMessage,
-    required this.onRetry,
-    required this.onDaysChanged,
-  });
-
-  final List<ComplianceHistoryPoint> points;
-  final KubeColors colors;
-  final int days;
-  final bool isLoading;
-  final String? errorMessage;
-  final VoidCallback? onRetry;
-  final ValueChanged<int> onDaysChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return _HistoryChart(
-      points: points,
-      colors: colors,
-      days: days,
-      onDaysChanged: onDaysChanged,
-      stale: true,
-      isLoading: isLoading,
-      errorMessage: errorMessage,
-      onRetry: onRetry,
-    );
-  }
-}
-
 class _HistoryChart extends StatelessWidget {
   const _HistoryChart({
     required this.points,

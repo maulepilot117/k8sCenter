@@ -20,6 +20,13 @@ import 'package:intl/intl.dart';
 
 import '../theme/kube_theme_builder.dart';
 
+/// Width reserved by fl_chart on the left for Y-axis tick labels.
+/// Mirrored on both the chart's `leftTitles.sideTitles.reservedSize`
+/// and the pinch focal-fraction math so the gesture pivot stays under
+/// the user's fingers (the focal point lands in the plot region, not
+/// the label gutter).
+const double _kYAxisReservedWidth = 40;
+
 /// Severity → KubeColors mapping that drives line colors. Kept in one
 /// enum so the caller declares intent ("this series is an error metric")
 /// and the chart resolves the token, avoiding per-callsite color
@@ -77,6 +84,17 @@ class KubeLineChartState extends State<KubeLineChart> {
   double? _zoomMinX;
   double? _zoomMaxX;
 
+  // Cached per-build derivation. cleanedSeries is the result of the
+  // NaN/Infinity filter + per-series timestamp sort; the initial X
+  // range comes from min/max across all points. Both are pure
+  // functions of widget.series, so the cache is invalidated only when
+  // widget.series identity changes (see didUpdateWidget). Without the
+  // cache, every pinch-induced setState would re-run the sort + flat
+  // pass at 60-120 Hz.
+  List<MetricsSeries> _cachedCleanedSeries = const [];
+  double? _cachedInitialMinX;
+  double? _cachedInitialMaxX;
+
   // Captured at scale gesture start so each onScaleUpdate computes
   // relative to the fingers-down range. Without this we'd compound
   // multiplicative scale onto whatever we already mutated mid-pinch
@@ -111,6 +129,58 @@ class KubeLineChartState extends State<KubeLineChart> {
 
   @visibleForTesting
   double? get zoomMaxX => _zoomMaxX;
+
+  @override
+  void initState() {
+    super.initState();
+    _recomputeSeriesCache();
+  }
+
+  @override
+  void didUpdateWidget(KubeLineChart oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Recompute the cleaned series + initial range only when the
+    // upstream series reference changes. Providers return stable
+    // references between polls, so identical-data refreshes are a no-op.
+    if (!identical(oldWidget.series, widget.series)) {
+      _recomputeSeriesCache();
+    }
+  }
+
+  /// Re-derives `_cachedCleanedSeries`, `_cachedInitialMinX/MaxX`. Called
+  /// from initState and didUpdateWidget — never from build, so the
+  /// sort/filter/min-max work doesn't run on pinch-induced setState
+  /// rebuilds.
+  void _recomputeSeriesCache() {
+    final cleaned = widget.series
+        .map((s) => (
+              label: s.label,
+              points: _sortByTime(
+                  s.points.where((p) => p.v.isFinite).toList()),
+              severity: s.severity,
+            ))
+        .toList();
+    _cachedCleanedSeries = cleaned;
+
+    final allPoints = cleaned.expand((s) => s.points).toList();
+    if (allPoints.isEmpty) {
+      _cachedInitialMinX = null;
+      _cachedInitialMaxX = null;
+      return;
+    }
+    final minTs = allPoints
+        .map((p) => p.t)
+        .reduce((a, b) => a.isBefore(b) ? a : b);
+    final maxTs = allPoints
+        .map((p) => p.t)
+        .reduce((a, b) => a.isAfter(b) ? a : b);
+    final rawMinX = minTs.millisecondsSinceEpoch.toDouble();
+    final rawMaxX = maxTs.millisecondsSinceEpoch.toDouble();
+    // Pad zero-range axes (single-point series) — the SideTitlesWidget
+    // OOM guard from the original implementation.
+    _cachedInitialMinX = rawMinX == rawMaxX ? rawMinX - 1 : rawMinX;
+    _cachedInitialMaxX = rawMinX == rawMaxX ? rawMaxX + 1 : rawMaxX;
+  }
 
   void _handleDoubleTap() {
     if (_zoomMinX == null && _zoomMaxX == null) return;
@@ -158,12 +228,18 @@ class KubeLineChartState extends State<KubeLineChart> {
 
     // Translate the focal point into chart-local x so the data value
     // under the user's pinch focus stays fixed while the visible
-    // window narrows or widens around it.
+    // window narrows or widens around it. fl_chart reserves
+    // `_kYAxisReservedWidth` px on the left for the Y-axis label
+    // gutter — subtracting it makes focalFraction correspond to the
+    // plotted data region, not the full widget box, so the pivot
+    // lands where the user's fingers actually are.
     final box = _chartBoxKey.currentContext?.findRenderObject() as RenderBox?;
     double focalFraction = 0.5;
-    if (box != null && box.hasSize && box.size.width > 0) {
+    if (box != null && box.hasSize && box.size.width > _kYAxisReservedWidth) {
       final localFocal = box.globalToLocal(details.focalPoint);
-      focalFraction = (localFocal.dx / box.size.width).clamp(0.0, 1.0);
+      final plotWidth = box.size.width - _kYAxisReservedWidth;
+      final plotDx = (localFocal.dx - _kYAxisReservedWidth).clamp(0.0, plotWidth);
+      focalFraction = (plotDx / plotWidth).clamp(0.0, 1.0);
     }
     final focalDataX = startMin + focalFraction * startSpan;
     double newMin = focalDataX - focalFraction * newSpan;
@@ -216,52 +292,32 @@ class KubeLineChartState extends State<KubeLineChart> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
 
-    // Pre-clean the series and compute the data's natural X range here
-    // so the gesture handlers can clamp against a value the same build
-    // pass derived. Doing it in _LineChartBody would force the handlers
-    // to re-walk every point on each onScaleUpdate.
-    final cleanedSeries = widget.series
-        .map((s) => (
-              label: s.label,
-              points: _sortByTime(
-                  s.points.where((p) => p.v.isFinite).toList()),
-              severity: s.severity,
-            ))
-        .toList();
-    final allPoints = cleanedSeries.expand((s) => s.points).toList();
-    final hasData = allPoints.isNotEmpty;
-
-    double? initialMinX;
-    double? initialMaxX;
-    if (hasData) {
-      final minTs = allPoints.map((p) => p.t).reduce(
-            (a, b) => a.isBefore(b) ? a : b,
-          );
-      final maxTs = allPoints.map((p) => p.t).reduce(
-            (a, b) => a.isAfter(b) ? a : b,
-          );
-      // Pad zero-range axes (single-point series) — the SideTitlesWidget
-      // OOM guard from the original implementation.
-      final rawMinX = minTs.millisecondsSinceEpoch.toDouble();
-      final rawMaxX = maxTs.millisecondsSinceEpoch.toDouble();
-      initialMinX = rawMinX == rawMaxX ? rawMinX - 1 : rawMinX;
-      initialMaxX = rawMinX == rawMaxX ? rawMaxX + 1 : rawMaxX;
-    }
+    // Use cached cleanedSeries + initial range from initState /
+    // didUpdateWidget. Pinch-induced setStates land here at 60-120 Hz
+    // during sustained gestures — without the cache, each rebuild
+    // would re-run the sort/filter/min-max pass over every series.
+    final cleanedSeries = _cachedCleanedSeries;
+    final initialMinX = _cachedInitialMinX;
+    final initialMaxX = _cachedInitialMaxX;
+    final hasData = initialMinX != null && initialMaxX != null;
     _lastInitialMinX = initialMinX;
     _lastInitialMaxX = initialMaxX;
 
     // Clamp any held zoom into the current data's bounds so a refresh
     // that shrinks the dataset can't leave us pointing off-chart.
-    final effectiveMinX = hasData
-        ? (_zoomMinX != null
-            ? _zoomMinX!.clamp(initialMinX!, initialMaxX!)
-            : initialMinX!)
-        : null;
-    final effectiveMaxX = hasData
-        ? (_zoomMaxX != null
-            ? _zoomMaxX!.clamp(initialMinX!, initialMaxX!)
-            : initialMaxX!)
-        : null;
+    final double? effectiveMinX;
+    final double? effectiveMaxX;
+    if (initialMinX != null && initialMaxX != null) {
+      effectiveMinX = _zoomMinX != null
+          ? _zoomMinX!.clamp(initialMinX, initialMaxX)
+          : initialMinX;
+      effectiveMaxX = _zoomMaxX != null
+          ? _zoomMaxX!.clamp(initialMinX, initialMaxX)
+          : initialMaxX;
+    } else {
+      effectiveMinX = null;
+      effectiveMaxX = null;
+    }
 
     Widget chartContent = SizedBox(
       height: widget.height,
@@ -405,7 +461,7 @@ class _Legend extends StatelessWidget {
   }
 }
 
-class _LineChartBody extends StatelessWidget {
+class _LineChartBody extends StatefulWidget {
   const _LineChartBody({
     super.key,
     required this.cleanedSeries,
@@ -428,23 +484,71 @@ class _LineChartBody extends StatelessWidget {
   final double maxX;
 
   @override
+  State<_LineChartBody> createState() => _LineChartBodyState();
+}
+
+class _LineChartBodyState extends State<_LineChartBody> {
+  // Flat list of every point across all series. Stable across pinch
+  // events for the same input series, so cached and only rebuilt when
+  // cleanedSeries reference changes.
+  List<MetricsPoint> _cachedAllPoints = const [];
+  // Per-series FlSpot lists — only rebuilt when cleanedSeries changes.
+  List<List<FlSpot>> _cachedSpots = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _recomputeFromSeries();
+  }
+
+  @override
+  void didUpdateWidget(_LineChartBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.cleanedSeries, widget.cleanedSeries)) {
+      _recomputeFromSeries();
+    }
+  }
+
+  void _recomputeFromSeries() {
+    _cachedAllPoints =
+        widget.cleanedSeries.expand((s) => s.points).toList(growable: false);
+    _cachedSpots = widget.cleanedSeries
+        .map((s) => s.points
+            .map((p) => FlSpot(
+                  p.t.millisecondsSinceEpoch.toDouble(),
+                  p.v,
+                ))
+            .toList(growable: false))
+        .toList(growable: false);
+  }
+
+  @override
   Widget build(BuildContext context) {
     // Re-derive an effective Y range from points inside the visible
     // window so a zoom-in re-fits Y to the local extrema. If the window
     // contains no points (zoomed into a gap between samples) fall back
     // to the full-dataset Y so the chart doesn't collapse to a line.
-    final allPoints = cleanedSeries.expand((s) => s.points).toList();
+    final allPoints = _cachedAllPoints;
+    final minX = widget.minX;
+    final maxX = widget.maxX;
+    final colors = widget.colors;
+    final showGrid = widget.showGrid;
+    final cleanedSeries = widget.cleanedSeries;
+    // The visible-window filter still runs per build because it depends
+    // on minX/maxX which change with every pinch event. Allocation cost
+    // is small (no inner sorts, just a filter pass).
     final visiblePoints = allPoints.where((p) {
       final tx = p.t.millisecondsSinceEpoch.toDouble();
       return tx >= minX && tx <= maxX;
-    }).toList();
+    }).toList(growable: false);
     final yPoints = visiblePoints.isEmpty ? allPoints : visiblePoints;
 
     final maxTs = DateTime.fromMillisecondsSinceEpoch(maxX.toInt());
     final minTs = DateTime.fromMillisecondsSinceEpoch(minX.toInt());
     final rangeHours = maxTs.difference(minTs).inHours;
     // Short ranges: show HH:mm; longer ranges: include date.
-    final labelFmt = rangeHours <= 24 ? _fmtShort : _fmtLong;
+    final labelFmt =
+        rangeHours <= 24 ? _LineChartBody._fmtShort : _LineChartBody._fmtLong;
 
     final yValues = yPoints.map((p) => p.v);
     final rawMinY = yValues.reduce((a, b) => a < b ? a : b);
@@ -452,14 +556,13 @@ class _LineChartBody extends StatelessWidget {
     final minY = rawMinY == rawMaxY ? rawMinY - 1 : rawMinY;
     final maxY = rawMinY == rawMaxY ? rawMaxY + 1 : rawMaxY;
 
-    final barData = cleanedSeries.map((s) {
+    final cachedSpots = _cachedSpots;
+    final barData = List<LineChartBarData>.generate(cleanedSeries.length, (i) {
+      final s = cleanedSeries[i];
       final color = kubeChartSeverityColor(s.severity, colors);
-      final spots = s.points
-          .map((p) => FlSpot(
-                p.t.millisecondsSinceEpoch.toDouble(),
-                p.v,
-              ))
-          .toList();
+      // Reuse cached FlSpot lists — they only change when cleanedSeries
+      // changes identity, not on every pinch event.
+      final spots = cachedSpots[i];
       return LineChartBarData(
         spots: spots,
         color: color,
@@ -470,7 +573,7 @@ class _LineChartBody extends StatelessWidget {
           color: color.withValues(alpha: 0.08),
         ),
       );
-    }).toList();
+    });
 
     return LineChart(
       LineChartData(
@@ -526,7 +629,7 @@ class _LineChartBody extends StatelessWidget {
           leftTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              reservedSize: 40,
+              reservedSize: _kYAxisReservedWidth,
               interval: (maxY - minY) / 4,
               getTitlesWidget: (value, meta) => SideTitleWidget(
                 axisSide: meta.axisSide,

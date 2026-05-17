@@ -234,13 +234,6 @@ class _PodDetailScreenState extends ConsumerState<PodDetailScreen> {
     if (currentMesh != null && currentMesh.isInstalled) {
       _stableMeshStatus = currentMesh;
     }
-    final servicesAsync = ref.watch(resourceListProvider(
-      ResourceListKey(
-        clusterId: clusterId,
-        kind: 'services',
-        namespace: widget.namespace,
-      ),
-    ));
     final stableMesh = _stableMeshStatus;
 
     return get.when(
@@ -261,18 +254,16 @@ class _PodDetailScreenState extends ConsumerState<PodDetailScreen> {
           'Failed' => colors.error,
           _ => colors.textMuted,
         };
-        // Derive candidate Services from this Pod's labels — the
-        // Service detail's existing per-service Golden Signals tab is
-        // mirrored here for Pods so operators don't have to bounce out
-        // to find the matching Service. Uses the latched mesh status
-        // so tab count stays stable across autoDispose flickers.
+        // Derive candidate Services from this Pod's labels via the
+        // memoized provider — same algorithm as before but cached on
+        // (clusterId, namespace, labels) so detail-screen rebuilds
+        // with identical inputs don't re-walk the Service list.
         final derivedServices = stableMesh != null
-            ? findServicesForResource(
-                services: servicesAsync.valueOrNull?.items ??
-                    const <Map<String, dynamic>>[],
+            ? ref.watch(derivedServicesProvider(DerivedServicesKey(
+                clusterId: clusterId,
                 namespace: pod.meta.namespace,
                 resourceLabels: pod.meta.labels,
-              )
+              )))
             : const <DerivedService>[];
         return ResourceDetailScaffold(
           kindLabel: 'Pod',

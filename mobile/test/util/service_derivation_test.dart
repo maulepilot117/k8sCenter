@@ -142,6 +142,49 @@ void main() {
               'a stringified compare would mask backend bugs.');
     });
 
+    test('skips services with no metadata key (defensive guard)', () {
+      final result = findServicesForResource(
+        services: [
+          {
+            'spec': {'selector': {'app': 'web'}},
+          },
+        ],
+        namespace: 'web',
+        resourceLabels: const {'app': 'web'},
+      );
+      expect(result, isEmpty,
+          reason: 'Service with missing metadata must not match');
+    });
+
+    test('skips services with no spec key (defensive guard)', () {
+      final result = findServicesForResource(
+        services: [
+          {
+            'metadata': {'namespace': 'web', 'name': 'svc'},
+          },
+        ],
+        namespace: 'web',
+        resourceLabels: const {'app': 'web'},
+      );
+      expect(result, isEmpty,
+          reason: 'Service with missing spec must not match');
+    });
+
+    test('skips services with empty name (defensive guard)', () {
+      final result = findServicesForResource(
+        services: [
+          {
+            'metadata': {'namespace': 'web', 'name': ''},
+            'spec': {'selector': {'app': 'web'}},
+          },
+        ],
+        namespace: 'web',
+        resourceLabels: const {'app': 'web'},
+      );
+      expect(result, isEmpty,
+          reason: 'Service with empty name must not match');
+    });
+
     test('requires every selector key/value to be present on the resource',
         () {
       final result = findServicesForResource(

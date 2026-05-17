@@ -128,6 +128,32 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
   });
 
+  testWidgets('enableZoom: false skips the gesture wrapper', (tester) async {
+    await tester.pumpWidget(_wrap(SizedBox(
+      width: 400,
+      height: 240,
+      child: KubeLineChart(series: sampleSeries, enableZoom: false),
+    )));
+    final state = tester.state<KubeLineChartState>(find.byType(KubeLineChart));
+
+    final chartCenter = tester.getCenter(find.byType(KubeLineChart));
+    final gesture1 = await tester.createGesture();
+    final gesture2 = await tester.createGesture();
+    await gesture1.down(chartCenter + const Offset(-40, 0));
+    await gesture2.down(chartCenter + const Offset(40, 0));
+    await tester.pump();
+    await gesture1.moveTo(chartCenter + const Offset(-160, 0));
+    await gesture2.moveTo(chartCenter + const Offset(160, 0));
+    await tester.pump();
+    await gesture1.up();
+    await gesture2.up();
+    await tester.pump();
+
+    expect(state.isZoomed, isFalse,
+        reason: 'enableZoom: false must not produce any zoom state');
+    await tester.pump(const Duration(milliseconds: 500));
+  });
+
   testWidgets('pinch-in past the initial range stays clamped',
       (tester) async {
     await tester.pumpWidget(_wrap(SizedBox(

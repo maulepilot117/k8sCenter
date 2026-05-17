@@ -41,47 +41,39 @@ class GoldenSignalsTab extends ConsumerStatefulWidget {
   /// Single-service entry point — used by Service detail. Equivalent to
   /// passing `candidates: [service]` but kept distinct so existing
   /// call sites don't need to wrap their service name in a list.
-  const GoldenSignalsTab({
+  GoldenSignalsTab({
     super.key,
     required this.namespace,
     required String service,
     required this.status,
-  })  : candidates = const [],
-        _explicitService = service;
+  }) : effectiveCandidates = <String>[service];
 
   /// Multi-service entry point — used by Pod and Deployment detail.
-  /// When [candidates] has 2+ entries, the tab renders a picker so the
-  /// operator can switch between the candidate Services derived from
-  /// the resource's labels.
-  const GoldenSignalsTab.fromCandidates({
+  /// When [effectiveCandidates] has 2+ entries, the tab renders a
+  /// picker so the operator can switch between candidate Services
+  /// derived from the resource's labels.
+  GoldenSignalsTab.fromCandidates({
     super.key,
     required this.namespace,
-    required this.candidates,
+    required List<String> candidates,
     required this.status,
-  })  : _explicitService = null,
-        assert(candidates.length > 0,
-            'GoldenSignalsTab.fromCandidates requires at least one candidate');
+  })  : assert(candidates.isNotEmpty,
+            'GoldenSignalsTab.fromCandidates requires at least one candidate'),
+        effectiveCandidates = List<String>.unmodifiable(candidates);
 
   final String namespace;
 
-  /// Candidate Service names for the picker. Empty when the tab was
-  /// constructed via the single-service constructor.
-  final List<String> candidates;
-
-  /// Original single-service value, if the tab was built via the
-  /// single-service constructor.
-  final String? _explicitService;
+  /// Non-empty list of Service names this tab can render signals for,
+  /// in display order. Single-service callers get a 1-element list;
+  /// multi-candidate callers pass the list directly. Always at least
+  /// one element — both constructors enforce this without relying on a
+  /// debug-only assert.
+  final List<String> effectiveCandidates;
 
   /// Resolved mesh status; carries `detected` so the tab knows
   /// whether to render the mesh picker (both installed) or auto-
   /// select the single installed mesh.
   final MeshStatus status;
-
-  /// All Service names this tab can render signals for, in display
-  /// order. Single-service callers get a list of length 1; multi-
-  /// candidate callers pass the list directly.
-  List<String> get effectiveCandidates =>
-      candidates.isNotEmpty ? candidates : <String>[_explicitService!];
 
   @override
   ConsumerState<GoldenSignalsTab> createState() => _GoldenSignalsTabState();
