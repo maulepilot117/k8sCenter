@@ -8,6 +8,8 @@
 // The detail GET still returns the masked Secret (the YAML tab redacts
 // `data`/`stringData` for kind == 'Secret' — see resource_detail_scaffold.dart).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +26,7 @@ import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
 import '../../widgets/resource_table.dart';
+import '../../widgets/secure_screen_mixin.dart';
 import 'k8s_helpers.dart';
 
 class _SecretRow {
@@ -101,7 +104,8 @@ class SecretDetailScreen extends ConsumerStatefulWidget {
   ConsumerState<SecretDetailScreen> createState() => _SecretDetailScreenState();
 }
 
-class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
+class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
+    with SecureScreenMixin<SecretDetailScreen> {
   /// Per-key revealed value cache. State is widget-scoped — back-button
   /// out of the screen disposes State, so re-entering the detail starts
   /// fresh with everything masked again.
@@ -122,6 +126,10 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
         _revealed[key] = value;
         _revealing.remove(key);
       });
+      // Screen carries plaintext now — flip FLAG_SECURE / arm iOS blur
+      // cover. Mixin handles idempotency, so re-entry with multiple keys
+      // already revealed is a no-op on the second call.
+      unawaited(setSensitive(_revealed.isNotEmpty));
     } on ApiError catch (e) {
       if (!mounted) return;
       setState(() => _revealing.remove(key));
@@ -133,6 +141,9 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen> {
 
   void _hide(String key) {
     setState(() => _revealed.remove(key));
+    // Recompute sensitivity: stay armed while ANY other key is still
+    // revealed. Only clears once the last revealed key is hidden.
+    unawaited(setSensitive(_revealed.isNotEmpty));
   }
 
   @override
