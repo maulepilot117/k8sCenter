@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app.dart';
 import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
+import 'auth/universal_link_listener.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
 import 'providers/shared_preferences_provider.dart';
@@ -37,10 +38,6 @@ Future<void> main() async {
     ],
   );
 
-  // Bootstrap auth in the background — the router renders the splash
-  // (AuthInitializing) until this resolves.
-  unawaited(container.read(authRepositoryProvider.notifier).bootstrap());
-
   // Register for FCM the first time auth lands on Authenticated.
   // Conditional Firebase init means this is a no-op when the operator
   // hasn't dropped in google-services.json / GoogleService-Info.plist.
@@ -49,6 +46,18 @@ Future<void> main() async {
       unawaited(container.read(fcmRegistrationProvider).ensureRegistered());
     }
   }, fireImmediately: true);
+
+  // Bootstrap first; the universal-link listener only starts after auth
+  // state has settled, so a queued OIDC callback can't race bootstrap
+  // and clobber the identity. Both run in the background — the router
+  // renders the splash (AuthInitializing) until bootstrap resolves; the
+  // listener is a no-op when the build was not produced with
+  // --dart-define=UNIVERSAL_LINK_HOST. Drains the initial link (cold
+  // start: redirect arrived while app was terminated) on the same call.
+  unawaited(() async {
+    await container.read(authRepositoryProvider.notifier).bootstrap();
+    await container.read(universalLinkListenerProvider).start();
+  }());
 
   runApp(
     UncontrolledProviderScope(

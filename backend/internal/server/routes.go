@@ -62,6 +62,11 @@ func (s *Server) registerRoutes() {
 			// here. Response is JSON-only (no Set-Cookie). Shares the
 			// login rate-limit bucket.
 			ar.With(middleware.RateLimit(s.RateLimiter)).Post("/oidc/{providerID}/mobile-exchange", s.handleOIDCMobileExchange)
+			// Mobile auth-config — returns the OIDC authorization endpoint,
+			// client id, and scopes the mobile client needs to build the
+			// authorization URL with its own PKCE + state + nonce. No
+			// client secret is returned. Shares the login rate-limit bucket.
+			ar.With(middleware.RateLimit(s.RateLimiter)).Get("/oidc/{providerID}/mobile-config", s.handleOIDCMobileConfig)
 		})
 
 		// Setup — rate limited, no auth

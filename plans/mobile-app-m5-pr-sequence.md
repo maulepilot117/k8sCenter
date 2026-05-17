@@ -97,6 +97,13 @@ Each gap blocks a specific operator persona: OIDC blocks the corporate user, wri
 - **#274 — `SessionStore.Validate` rotation-rollback gap.** Pre-existing: `Validate` deletes the row before `issueTokenPair` can fail; on failure the user is silently logged out. Amplified by the 1h cap (~168x more refresh events per OIDC user). Fix shape: split into `Peek` + `Consume`, commit deletion only after rotation succeeds. **Post-M5 backend reliability pass** — not folded into M5 unless real-world impact materialises.
 - **#276 — Rate-limited 429s leave no audit trail.** Pre-existing pattern across all rate-limited auth routes; surfaced fresh by PR-5b's new mobile-exchange endpoint. Brute-force probing is invisible in the audit table. Fix shape: inject `AuditLogger` into the `RateLimit` middleware (option 1) or layer a `RateLimitAudit` middleware on top (option 2). **Post-M5 backend security/reliability pass.**
 
+#### Surfaced by PR-5c code review (2026-05-16)
+
+- **#279 — `login()` has the same applyAuthTokens-style token-leak gap that PR-5c fixed for OIDC.** Pre-existing: when `_hydrateUser()` errors after `/v1/auth/login` returns tokens, the state transitions to `AuthUnauthenticated` but the refresh token persists in secure_storage → next cold-start silently re-authenticates. The OIDC path got the rollback in PR-5c; the credential `login()` path mirrors the same shape and needs the same fix. **Post-M5 backend hygiene** — not blocking any M5 PR. Could ship as a small standalone fix-pr or alongside the credential-side polish item if one materializes.
+- **#280 — `kUniversalLinkHost` Provider extraction.** PR-5c made the universal-link host a compile-time const consumed across `login_screen.dart`, `oidc_controller.dart`, and `universal_link_listener.dart`. Widget tests for the login screen's OIDC integration cannot reach the OIDC button section in `flutter test` (no `--dart-define`, const is `""`, OIDC section hides). Wrap in `universalLinkHostProvider` so tests can override. **Fold into PR-5h (U8) as a pre-step** — PR-5h needs the same login-screen widget tests for the a11y traversal scenarios.
+- **#281 — `secure_storage` key naming convention.** `kc_refresh_token` (no version) vs `kc_oidc_pending_v1` (versioned). PR-5c established the `_v1` suffix on a new key without a project-wide decision on whether to backfill existing keys. **Post-M5 mobile hygiene** — purely a style/migration-strategy question.
+- **#282 — `clientID` (capital D) vs JSON-ecosystem `clientId` convention.** New `GET /v1/auth/oidc/{providerID}/mobile-config` endpoint returns `clientID` per Go style. Convention across the rest of the API surface is `clientId`. Both sides agree on `clientID` today (zero breakage); future SDK generators will silently miss the field. **Fold into PR-5j (U10) — decide before public-store launch locks the API contract**, or land as a small standalone fix-pr before then.
+
 ---
 
 ## Context & Research
@@ -454,9 +461,9 @@ SecretDetailScreen extends StatefulWidget with SecureScreenMixin
 
 **Dependencies:** U2 (backend endpoint), U1 (Settings + observability scaffolding for any auth errors that get logged to Sentry).
 
-**Carried-over scope from PR-5b code review:**
-- **#275 — singleflight `/auth/refresh` in `AuthInterceptor`.** When wiring the Dio interceptor stack for OIDC, deduplicate concurrent 401-driven refresh attempts: in-flight refresh requests share a single `Future`; the interceptor queues retries until the in-flight refresh resolves. Without this, N concurrent requests that hit a stale access token will each fire `/auth/refresh` independently; `SessionStore.Validate` is single-use, so N-1 of them will see `refresh token not found` and force a logout. The 1h OIDC cap from U2 fires this race ~168x more often than the prior 7d cap.
-- **#277 — decide `displayName` vs `username` in the exchange response.** Backend currently returns both keys, both `= user.Username`. When U3 wires the login screen, audit what's actually rendered. If both fields are read the same way, request a backend cleanup (drop `displayName`) before PR-5j. If a richer display is wanted, file a backend PR to add a real `DisplayName` field from the OIDC `name` claim — must land before public-store launch so the header doesn't ship looking like a raw email.
+**Carried-over scope from PR-5b code review (resolved during PR-5c):**
+- **#275 — mobile half is already shipped.** Verified during PR-5c implementation: `mobile/lib/api/dio_client.dart`'s `AuthInterceptor._attemptRefresh` (lines 181-205) already uses a Completer-based singleflight, so concurrent 401-driven refreshes share a single in-flight Future. The PR-5b reviewer's "mobile half" framing was based on incomplete code reading. Issue #275 is now scoped to the WEB half only (`frontend/lib/api.ts` has per-tab singleflight, so N browser tabs = N concurrent refreshes); not blocking M5.
+- **#277 — resolved.** PR-5c drops the duplicate `displayName` field from `handle_oidc_mobile.go`'s response. The mobile login screen never read it; the dashboard reads `user.username`. If richer display semantics are wanted later, they go via a real `DisplayName` field on `auth.User` sourced from the OIDC `name` claim.
 
 **Files:**
 - Create: `mobile/lib/auth/oidc_controller.dart` — `OIDCController` notifier handling PKCE+nonce+state generation, custom-tabs launch, Universal Link callback intercept, code exchange. State: `({String? providerID, String? state, String? codeVerifier, String? nonce, AsyncStatus status, Object? error})`.
@@ -706,6 +713,9 @@ SecretDetailScreen extends StatefulWidget with SecureScreenMixin
 
 **Dependencies:** U1 (a11y test helpers).
 
+**Carried-over scope from PR-5c code review:**
+- **#280 — `kUniversalLinkHost` Provider extraction.** PR-5c made `kUniversalLinkHost` a compile-time const consumed by `login_screen.dart`, `oidc_controller.dart`, and `universal_link_listener.dart`. The login-screen widget tests PR-5h needs to write (OIDC button traversal order, OIDCFlowError banner render, formsDisabled propagation, hideCredentialForm branch) cannot reach those code paths because `flutter test` runs without `--dart-define=UNIVERSAL_LINK_HOST` → const is `""` → OIDC section hides. **Fold into PR-5h as a pre-step:** wrap the const in a `universalLinkHostProvider`, update the three consumers to read via `ref.watch`, override in widget tests. ~6 small consumer edits + the new provider.
+
 **Files (high-level — actual change spreads across ~40 screens):**
 - Modify: every `mobile/lib/features/*/widgets/*.dart` and `mobile/lib/features/*/screens/*.dart` to add `semanticsLabel` parameters on icon-only buttons, status chips (e.g., `HealthyChip`, `DegradedChip`, drift state pills), and any `Icon(...)` used as a UI affordance without an adjacent text label.
 - Modify: `mobile/lib/widgets/kube_theme_builder.dart` — add documented contrast guarantees in the doc comment of each `KubeColors` token (e.g., `/// textPrimary on bgBase: ≥4.5:1 across all 7 themes`).
@@ -807,6 +817,9 @@ SecretDetailScreen extends StatefulWidget with SecureScreenMixin
 **Requirements:** R10 (public-store launch infra).
 
 **Dependencies:** U1 (Settings + Sentry scaffold + SecureScreenMixin + a11y helpers) + U8 (a11y pass) + U9 (perf pass). **Crucially, NOT U2/U3 (OIDC), U4 (FLAG_SECURE), U5 (ESO writes), U6 (polish bundle), or U7 (onboarding).** If any of those slip, PR-5j can still ship the public-store launch on the origin's stated scope (a11y + perf + Sentry + store listing) and the feature work ships as a v1.1 patch update once it lands. This decouples launch timing from feature-completion timing and bounds the schedule risk of any single PR slipping. The feature PRs that DO complete before PR-5j submission are included in the launch build; ones that slip ship in the first patch release.
+
+**Carried-over scope from PR-5c code review:**
+- **#282 — `clientID` (capital D) vs JSON-ecosystem `clientId` convention.** The new `GET /v1/auth/oidc/{providerID}/mobile-config` endpoint returns `clientID` per Go style. Convention across the rest of the k8sCenter API surface (`displayName`, `loginURL`, etc.) is camelCase with no uppercase-after-prefix abbreviations. Both sides agree on `clientID` today (zero breakage), but a future web frontend or OpenAPI generator that normalizes to camelCase will silently parse it as missing. **Decide before public-store launch locks the API contract.** Either rename to `clientId` here (single-PR change, zero deployed consumers) or document `clientID` as the project convention in CLAUDE.md.
 
 **Files:**
 - Create: `mobile/fastlane/metadata/en-US/name.txt` — "k8sCenter".

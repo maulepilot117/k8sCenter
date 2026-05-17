@@ -125,8 +125,13 @@ class AuthRepository extends Notifier<AuthState> {
     state = const AuthUnauthenticated();
   }
 
-  /// Lists configured credential providers for the login form. Empty list
-  /// means default to local-only behavior.
+  /// Lists ALL configured auth providers (credential + OIDC). The login
+  /// screen filters by `kind` to decide which UI surface to render:
+  /// credential-style providers feed the dropdown next to the form;
+  /// OIDC providers render as separate "Sign in with X" buttons.
+  ///
+  /// Empty list means the backend is unreachable or no providers are
+  /// configured — the login screen falls back to local-only behaviour.
   Future<List<AuthProvider>> listProviders() async {
     final dio = ref.read(refreshDioProvider);
     try {
@@ -136,13 +141,39 @@ class AuthRepository extends Notifier<AuthState> {
         return data
             .whereType<Map<String, dynamic>>()
             .map(AuthProvider.fromJson)
-            .where((p) => p.isCredentialProvider)
             .toList();
       }
     } on DioException {
       // Network or backend down — login screen falls back to local-only.
     }
     return const [];
+  }
+
+  /// Public entry point for token-bearing auth flows that bypass
+  /// [login] (currently: the OIDC mobile body-mode exchange). Persists
+  /// the tokens and triggers a /v1/auth/me hydration so the rest of the
+  /// app sees [AuthAuthenticated] with user + RBAC populated.
+  ///
+  /// Mirrors the post-login tail of [login] without forcing the caller
+  /// to also reimplement token storage. On hydration failure the state
+  /// transitions to [AuthUnauthenticated] with an error message.
+  Future<void> applyAuthTokens({
+    required String accessToken,
+    required String refreshToken,
+  }) async {
+    state = const AuthAuthenticating();
+    ref.read(authTokenHolderProvider).set(accessToken);
+    await ref.read(secureTokenStoreProvider).writeRefreshToken(refreshToken);
+    await _hydrateUser();
+    // Rollback on hydration failure — don't leave the user "silently
+    // signed in" via persisted tokens after a flow they were told failed.
+    // Without this, the refresh token survives in secure_storage and the
+    // access token survives in authTokenHolder → next cold-start silently
+    // re-authenticates against /v1/auth/refresh.
+    if (state is AuthUnauthenticated) {
+      ref.read(authTokenHolderProvider).clear();
+      await ref.read(secureTokenStoreProvider).deleteRefreshToken();
+    }
   }
 
   Future<void> _hydrateUser() async {

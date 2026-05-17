@@ -46,8 +46,20 @@ dependencies:
   # materializes every row eagerly, which jank-locks 500-pod clusters.
   data_table_2: ^2.5.16
 
-  # In-app browser for OIDC (PR-1g).
+  # In-app browser for OIDC (PR-5c).
   flutter_custom_tabs: ^2.2.0
+
+  # Universal Link / App Link receiver. Surfaces OS-routed deep links
+  # (including the OIDC /m/auth/callback redirect from the IdP) as a
+  # Stream<Uri> the controller subscribes to. FCM-routed deep links use
+  # the separate firebase_messaging plumbing; app_links is the
+  # non-notification path. PR-5c.
+  app_links: ^6.4.0
+
+  # SHA256 + base64url for PKCE code challenge generation. The sentry
+  # SDK pulls crypto in transitively; listing it as a direct dep keeps
+  # depend_on_referenced_packages clean. PR-5c.
+  crypto: ^3.0.0
 
   # Crash reporting — opt-in only, default off. Initialized lazily from
   # observability/sentry_init.dart when the sentry_opt_in shared_preferences
