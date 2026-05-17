@@ -28,6 +28,8 @@ import '../features/eso/store_detail_screen.dart';
 import '../features/eso/stores_list_screen.dart';
 import '../features/login/login_screen.dart';
 import '../features/notifications_center/feed_screen.dart';
+import '../features/onboarding/onboarding_controller.dart';
+import '../features/onboarding/onboarding_screen.dart';
 import '../features/gitops/application_detail_screen.dart';
 import '../features/gitops/applications_list_screen.dart';
 import '../features/gitops/applicationset_detail_screen.dart';
@@ -90,16 +92,36 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       final loggedIn = authState is AuthAuthenticated;
       final initializing = authState is AuthInitializing;
       final atLogin = state.matchedLocation == '/login';
+      final atOnboarding = state.matchedLocation == '/onboarding';
 
       if (initializing) return null; // splash screen handles this state
-      if (!loggedIn && !atLogin) return '/login';
-      if (loggedIn && atLogin) return '/';
+
+      if (!loggedIn) {
+        // M5 PR-5g: fresh installs (no refresh token, no prior tour
+        // completion) see `/onboarding` first. Internal-beta upgrades
+        // skip silently because migrateOnboardingFlagForUpgrade() flips
+        // the flag at boot before the router runs its first redirect.
+        final onboarded = ref.read(onboardingControllerProvider);
+        if (!onboarded) {
+          return atOnboarding ? null : '/onboarding';
+        }
+        return atLogin ? null : '/login';
+      }
+
+      if (atLogin || atOnboarding) return '/';
       return null;
     },
     routes: [
       GoRoute(
         path: '/login',
         builder: (context, state) => const LoginScreen(),
+      ),
+      // M5 PR-5g: first-launch onboarding tour. Guarded by
+      // `onboardingControllerProvider` in the redirect above so
+      // returning users never land here.
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const OnboardingScreen(),
       ),
       GoRoute(
         path: '/',
