@@ -6,6 +6,19 @@
 //
 // Action verbs hit `POST /api/v1/resources/:kind/:ns/:name/<verb>` (or
 // `DELETE` for delete) — see `backend/internal/server/routes.go:758-762`.
+//
+// Domain-specific writes intentionally OUTSIDE this map (PR-5e-review #20):
+//   - ESO Force Sync — `lib/features/eso/force_sync_controller.dart`
+//     (web parallel: `frontend/islands/ESOExternalSecretDetail.tsx`)
+//   - ESO Bulk Refresh — `lib/features/eso/bulk_refresh_controller.dart`
+//     (web parallel: `frontend/islands/ESOBulkRefreshDialog.tsx`)
+// These live on their own `AutoDisposeFamilyNotifier`-based controllers
+// mixed with `RefreshableController` and are launched from per-detail
+// surfaces / dashboard buttons rather than the generic kebab menu. The
+// rationale is documented in the CLAUDE.md mobile invariant covering
+// domain-specific write controllers. Do NOT migrate them into
+// `actionsByKind` — the scope-resolve + poll-loop shape doesn't fit
+// the single-shot `executeAction` contract.
 
 import 'package:dio/dio.dart';
 

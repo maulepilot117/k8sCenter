@@ -334,7 +334,7 @@ Keep below the static sections so the prompt cache prefix stays warm.
 
 ### Mobile invariants (M3+ work must respect)
 
-- All writes route through `executeAction` or YAML/wizard controllers and **pin the active cluster**; mismatch aborts. Wizard preview + apply requests send explicit `X-Cluster-ID`; `ClusterInterceptor` only injects when header is absent.
+- All writes route through `executeAction`, YAML/wizard controllers, **OR** domain-specific `AutoDisposeFamilyNotifier` controllers mixing in `RefreshableController` (e.g., ESO Force Sync, ESO Bulk Refresh) and **pin the active cluster**; mismatch aborts. Domain-specific controllers MUST: (1) accept a cluster identity at construction (typically via the family key) and pass it on every backend call as `clusterIdOverride`; (2) call `clusterStillPinned(ref)` after every async await and surface `pinnedMismatchMessage(PinPhase.postEmission)` on mismatch before any state write; (3) document the cluster-pinning contract in their class docstring. Wizard preview + apply requests send explicit `X-Cluster-ID`; `ClusterInterceptor` only injects when header is absent.
 - Type-to-confirm sheet (`confirm_sheet.dart`) is the single confirmation surface; mirrors web `ConfirmDialog.tsx`.
 - Web/Dart action maps must stay isomorphic — `frontend/lib/action-handlers.ts` is the parallel-edit target for `resource_actions.dart`.
 - **Secret-data destruction defense:** `data`/`stringData` are masked on Secret GETs; any Secret edit path MUST `stripSensitiveDataFields: true` on the editor seed before SSA, or apply will overwrite real credentials with `"****"`.

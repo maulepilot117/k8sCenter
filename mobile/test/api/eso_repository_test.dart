@@ -609,6 +609,29 @@ void main() {
         throwsA(isA<ApiError>()),
       );
     });
+
+    // PR-5e-review #11: bulk-refresh scope picker now requests a
+    // namespace-scoped store list rather than fetching cluster-wide and
+    // filtering client-side. Confirm the repo passes the `?namespace=`
+    // query param through to the backend.
+    test('listStores threads namespace through as ?namespace= query',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/externalsecrets/stores',
+        body: <String, Object?>{'data': <Object?>[]},
+      );
+
+      await container
+          .read(esoRepositoryProvider)
+          .listStores(namespace: 'prod');
+
+      expect(mock.requests, hasLength(1));
+      expect(mock.requests.first.queryParameters['namespace'], 'prod');
+    });
   });
 
   // PR-4h-review #23: cluster-pinning header was previously tested only
@@ -713,6 +736,49 @@ void main() {
           .read(esoRepositoryProvider)
           .getExternalSecret(namespace: 'app', name: 'edge');
       expect(es.driftStatus, DriftStatus.notObserved);
+    });
+  });
+
+  // PR-5e-review #4: BulkRefreshAction's open-enum parser used to throw
+  // ArgumentError on unknown wire values, propagating as an unhandled
+  // exception (Sentry crash) when the backend introduces a new variant
+  // before mobile catches up. The fallback now returns
+  // BulkRefreshAction.unknown — same pattern as every other open-enum
+  // parser in this file (EsoStatus, DriftStatus, EsoThresholdSource).
+  group('BulkScopeResponse open-enum parsing', () {
+    test('unknown action wire value collapses to BulkRefreshAction.unknown',
+        () {
+      final resp = BulkScopeResponse.fromJson({
+        'action': 'refresh_push_secret', // not a recognized mobile variant
+        'scopeTarget': 'prod/vault',
+        'totalCount': 1,
+        'totalNamespaces': 1,
+        'visibleCount': 1,
+        'restricted': false,
+        'targets': [
+          {'namespace': 'prod', 'name': 'es1', 'uid': 'u1'},
+        ],
+        'byNamespace': [
+          {'namespace': 'prod', 'count': 1},
+        ],
+      });
+      expect(resp.action, BulkRefreshAction.unknown,
+          reason: 'unknown wire enum must collapse to the sentinel — '
+              'throwing here would propagate as a Sentry crash');
+    });
+
+    test('recognized wire values still parse correctly', () {
+      final resp = BulkScopeResponse.fromJson({
+        'action': 'refresh_store',
+        'scopeTarget': 'prod/vault',
+        'totalCount': 0,
+        'totalNamespaces': 0,
+        'visibleCount': 0,
+        'restricted': false,
+        'targets': <Object>[],
+        'byNamespace': <Object>[],
+      });
+      expect(resp.action, BulkRefreshAction.store);
     });
   });
 }

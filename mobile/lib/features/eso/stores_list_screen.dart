@@ -38,17 +38,19 @@ class _ListBody extends ConsumerStatefulWidget {
 
 class _ListBodyState extends ConsumerState<_ListBody>
     with RefreshGuardMixin {
+  StoresListKey get _key => StoresListKey(clusterId: widget.clusterId);
+
   Future<void> _handleRefresh() => guardedRefresh(() async {
-        ref.invalidate(storesListProvider(widget.clusterId));
+        ref.invalidate(storesListProvider(_key));
         try {
-          await ref.read(storesListProvider(widget.clusterId).future);
+          await ref.read(storesListProvider(_key).future);
         } on Object {/* surfaces via .when */}
       });
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(storesListProvider(widget.clusterId));
+    final async = ref.watch(storesListProvider(_key));
 
     return RefreshIndicator(
       onRefresh: _handleRefresh,

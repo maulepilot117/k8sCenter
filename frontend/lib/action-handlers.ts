@@ -1,6 +1,22 @@
 /**
  * Resource action handlers — maps action IDs to API calls.
  * Used by ResourceTable's kebab menu.
+ *
+ * Isomorphism contract: this file is the parallel-edit target for
+ * `mobile/lib/api/resource_actions.dart`. ActionId variants and the
+ * `ACTIONS_BY_KIND` map must stay in sync across both files.
+ *
+ * Domain-specific writes intentionally OUTSIDE this map (PR-5e-review #20):
+ *   - ESO Force Sync (`ESOExternalSecretDetail.tsx` → `esoApi.forceSync*`)
+ *   - ESO Bulk Refresh (`ESOBulkRefreshDialog.tsx` → bulk-refresh routes)
+ * These live on their own domain controllers (mobile equivalents:
+ * `force_sync_controller.dart`, `bulk_refresh_controller.dart`) and
+ * are launched from per-detail / per-dashboard buttons rather than the
+ * generic kebab menu. The rationale is documented in the CLAUDE.md
+ * mobile invariant covering domain-specific `AutoDisposeFamilyNotifier`
+ * write controllers. Do NOT migrate them into the action map — the
+ * scope-resolve + poll-loop shape doesn't fit the single-shot
+ * `executeAction` contract.
  */
 import { apiDelete, apiPost } from "@/lib/api.ts";
 import type { K8sResource, RBACSummary } from "@/lib/k8s-types.ts";

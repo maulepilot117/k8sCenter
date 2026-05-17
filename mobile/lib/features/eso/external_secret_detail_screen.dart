@@ -1,9 +1,12 @@
 // ExternalSecret detail — fetches the live `driftStatus` (the list
 // endpoint only emits `lastObservedDriftStatus`; this screen is the
 // source of truth for drift). Renders a read-only attribute dump, the
-// store reference (tappable → store detail), and a disabled "Revert
-// drift" button per R12. Drift-Unknown surfaces with the backend's
-// reason tooltip so operators understand WHY drift wasn't resolvable.
+// store reference (tappable → store detail), and the Force Sync button
+// (PR-5e). Drift-Unknown surfaces with the backend's reason tooltip so
+// operators understand WHY drift wasn't resolvable. The Force Sync
+// button is disabled on non-local clusters (backend returns 501 for
+// remote ESO writes); on success it triggers a snackbar and the drift
+// chip refreshes via `externalSecretDetailProvider` invalidation.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -117,9 +120,9 @@ class _HeaderCard extends StatelessWidget {
               if (drift != DriftStatus.notObserved)
                 DriftPill(status: drift, reason: es.driftUnknownReason),
               const Spacer(),
-              // Disabled per R12 — write surface defers to desktop. The
-              // tooltip carries the desktop-redirect copy.
-              const DisabledRevertDriftButton(),
+              // Force Sync (PR-5e). Disabled on non-local clusters; the
+              // tooltip on the disabled state explains why.
+              ForceSyncButton(namespace: es.namespace, name: es.name),
             ],
           ),
           const SizedBox(height: 12),
