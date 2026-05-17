@@ -51,14 +51,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ListTile), findsNWidgets(2));
-    expect(find.byType(DataTable2), findsNothing);
+    expect(find.byType(PaginatedDataTable2), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('resource-row-1')));
     await tester.pumpAndSettle();
     expect(tapped?.name, 'beta');
   });
 
-  testWidgets('tablet layout renders DataTable', (tester) async {
+  testWidgets('tablet layout renders PaginatedDataTable2', (tester) async {
     tester.view.physicalSize = const Size(900 * 2, 700 * 2);
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.resetPhysicalSize);
@@ -79,8 +79,10 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    expect(find.byType(DataTable2), findsOneWidget);
+    expect(find.byType(PaginatedDataTable2), findsOneWidget);
     expect(find.byType(ListTile), findsNothing);
+    // The cell text should be rendered through the source's getRow path.
+    expect(find.text('alpha'), findsOneWidget);
   });
 
   testWidgets('empty list shows "No resources found"', (tester) async {

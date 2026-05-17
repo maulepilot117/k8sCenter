@@ -1,12 +1,13 @@
 // Generic resource list adapter. Phone renders a card list; tablet
-// (>= 768px) renders a DataTable. Column config is per-kind so the
-// shared widget handles layout and the kind-specific screens specify
-// what to show.
+// (>= 768px) renders a paginated DataTable. Column config is per-kind
+// so the shared widget handles layout and the kind-specific screens
+// specify what to show.
 
 import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/kube_theme_builder.dart';
+import 'kube_data_table_source.dart';
 
 /// One column in the resource table.
 class ResourceColumn<T> {
@@ -58,7 +59,11 @@ class ResourceTable<T> extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         if (constraints.maxWidth >= 768) {
-          return _buildTabletTable(context);
+          return _TabletTable<T>(
+            items: items,
+            columns: columns,
+            onTap: onTap,
+          );
         }
         return _buildPhoneList(context);
       },
@@ -107,23 +112,71 @@ class ResourceTable<T> extends StatelessWidget {
       },
     );
   }
+}
 
-  Widget _buildTabletTable(BuildContext context) {
+// Tablet layout. Owns a long-lived [KubeDataTableSource] so
+// PaginatedDataTable2 can request rows lazily via `getRow(index)`
+// instead of the previous eager `rows: [for (item in items) ...]`
+// path. 96px per column hits a comfortable median for k8s names +
+// numeric status cells; wide tables (8+ columns like PVC) overflow
+// `minWidth` and DataTable2 enables horizontal scroll automatically.
+class _TabletTable<T> extends StatefulWidget {
+  const _TabletTable({
+    required this.items,
+    required this.columns,
+    required this.onTap,
+  });
+
+  final List<T> items;
+  final List<ResourceColumn<T>> columns;
+  final ValueChanged<T> onTap;
+
+  @override
+  State<_TabletTable<T>> createState() => _TabletTableState<T>();
+}
+
+class _TabletTableState<T> extends State<_TabletTable<T>> {
+  late final KubeDataTableSource<T> _source;
+
+  @override
+  void initState() {
+    super.initState();
+    _source = KubeDataTableSource<T>(
+      items: widget.items,
+      columns: widget.columns,
+      onTap: widget.onTap,
+      context: context,
+    );
+  }
+
+  @override
+  void didUpdateWidget(_TabletTable<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.items, widget.items) ||
+        !identical(oldWidget.columns, widget.columns) ||
+        oldWidget.onTap != widget.onTap) {
+      _source.update(
+        items: widget.items,
+        columns: widget.columns,
+        onTap: widget.onTap,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _source.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    // DataTable2 lazy-builds rows as they scroll into view, which keeps
-    // memory + first-frame latency flat for 500-row clusters. Stock
-    // DataTable wrapped in nested SingleChildScrollViews materialized
-    // every row eagerly — fine for 20 rows, jank for 200.
-    // 96px per column hits a comfortable median for k8s names + numeric
-    // status cells. Wide tables (8+ columns like PVC) push past viewport
-    // and DataTable2 enables horizontal scroll automatically.
-    final minWidth = (columns.length * 96).toDouble();
-    return DataTable2(
-      columnSpacing: 16,
-      horizontalMargin: 12,
-      minWidth: minWidth,
+    final minWidth = (widget.columns.length * 96).toDouble();
+    return PaginatedDataTable2(
+      source: _source,
       columns: [
-        for (final col in columns)
+        for (final col in widget.columns)
           DataColumn2(
             label: Text(
               col.label,
@@ -134,24 +187,12 @@ class ResourceTable<T> extends StatelessWidget {
             ),
           ),
       ],
-      rows: [
-        for (final item in items)
-          DataRow2(
-            onTap: () => onTap(item),
-            cells: [
-              for (final col in columns)
-                DataCell(
-                  Text(
-                    col.value(item),
-                    style: TextStyle(
-                      color: col.color?.call(context, item) ??
-                          colors.textPrimary,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-      ],
+      columnSpacing: 16,
+      horizontalMargin: 12,
+      minWidth: minWidth,
+      rowsPerPage: 50,
+      showCheckboxColumn: false,
+      wrapInCard: false,
     );
   }
 }
