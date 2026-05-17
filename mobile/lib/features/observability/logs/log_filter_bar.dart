@@ -86,6 +86,10 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
   String? _namespace;
   String? _pod;
   String? _container;
+  // PR-5f: explicit admin-only toggle that emits a query without the
+  // namespace selector. The dropdown's null option still works for
+  // backwards-compat; this checkbox is the discoverable surface.
+  bool _allNamespaces = false;
   LogSeverity? _severity;
   String _freeText = '';
   String _rawLogql = '';
@@ -225,7 +229,13 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
     if (_mode == LogQueryMode.logql) return _rawLogql;
 
     final matchers = <String>[];
-    if (_namespace != null && _namespace!.isNotEmpty) {
+    // The all-namespaces checkbox takes precedence — when on, the
+    // namespace matcher is skipped regardless of what the dropdown
+    // value happens to be (we also force it to null when the checkbox
+    // toggles, but defending against drift is cheap).
+    if (!_allNamespaces &&
+        _namespace != null &&
+        _namespace!.isNotEmpty) {
       matchers.add('namespace="${_namespace!}"');
     }
     if (_pod != null && _pod!.isNotEmpty) {
@@ -321,11 +331,34 @@ class _LogFilterBarState extends ConsumerState<LogFilterBar> {
           ),
           const SizedBox(height: 12),
           if (_mode == LogQueryMode.search) ...[
+            if (_isAdmin)
+              _AllNamespacesCheckbox(
+                value: _allNamespaces,
+                onChanged: (v) {
+                  setState(() {
+                    _allNamespaces = v;
+                    if (v) {
+                      // Clearing namespace and the cascaded selectors
+                      // when switching to all-NS prevents a stale pod
+                      // dropdown from leaking into the next un-toggle
+                      // — the operator's intent is "ignore namespace
+                      // scope", not "remember it under the toggle".
+                      _namespace = null;
+                      _pod = null;
+                      _container = null;
+                      _pods = const [];
+                      _containers = const [];
+                    }
+                  });
+                },
+              ),
+            if (_isAdmin) const SizedBox(height: 4),
             _NamespaceDropdown(
               namespaces: _namespaces,
               value: _namespace,
               loading: _loadingNamespaces,
               isAdmin: _isAdmin,
+              enabled: !_allNamespaces,
               onChanged: (v) {
                 setState(() {
                   _namespace = v;
@@ -469,6 +502,7 @@ class _NamespaceDropdown extends StatelessWidget {
     required this.loading,
     required this.isAdmin,
     required this.onChanged,
+    this.enabled = true,
   });
 
   final List<String> namespaces;
@@ -476,6 +510,7 @@ class _NamespaceDropdown extends StatelessWidget {
   final bool loading;
   final bool isAdmin;
   final ValueChanged<String?> onChanged;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -493,7 +528,9 @@ class _NamespaceDropdown extends StatelessWidget {
       isExpanded: true,
       decoration: InputDecoration(
         labelText: 'Namespace${isAdmin ? '' : ' *'}',
-        helperText: loading ? 'Loading…' : null,
+        helperText: loading
+            ? 'Loading…'
+            : (!enabled ? 'Disabled — using all namespaces' : null),
         border: const OutlineInputBorder(),
         isDense: true,
       ),
@@ -507,7 +544,53 @@ class _NamespaceDropdown extends StatelessWidget {
         for (final ns in items)
           DropdownMenuItem<String?>(value: ns, child: Text(ns)),
       ],
-      onChanged: onChanged,
+      onChanged: enabled ? onChanged : null,
+    );
+  }
+}
+
+class _AllNamespacesCheckbox extends StatelessWidget {
+  const _AllNamespacesCheckbox({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    return InkWell(
+      key: const ValueKey('logFilter-allNamespaces'),
+      onTap: () => onChanged(!value),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 24,
+              height: 24,
+              child: Checkbox(
+                value: value,
+                onChanged: (v) => onChanged(v ?? false),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'All namespaces (admin)',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
