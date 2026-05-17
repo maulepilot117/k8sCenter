@@ -12,6 +12,27 @@ import 'themes.g.dart';
 /// Tokens that don't map cleanly onto [ColorScheme]. Carried as a
 /// [ThemeExtension] so widgets can read them via
 /// `Theme.of(context).extension<KubeColors>()!`.
+///
+/// ## WCAG 2.2 AA contrast contract
+///
+/// The contract enforced by `mobile/test/a11y/contrast_test.dart` across
+/// all 7 generated themes:
+///   - [textPrimary] on [bgBase], [bgSurface], [bgElevated] — ≥4.5:1
+///     (Normal text per WCAG 2.2 AA).
+///   - [textSecondary] on [bgBase], [bgSurface] — ≥4.5:1 (Normal text).
+///
+/// Tokens NOT in the contract:
+///   - [textMuted] is caption-grade (rendered at fontSize 10–12 in
+///     timestamps/bylines); it satisfies WCAG AA Large at 3:1 only.
+///   - [accent], [accentSecondary] are typically rendered as button
+///     labels on [accentDim] backgrounds (composite contrast — verified
+///     visually at design time, not automated).
+///   - [success], [warning], [error], [info] are status pill labels
+///     rendered on their own `*Dim` companion backgrounds. The composite
+///     foreground/background pair determined at runtime, so an
+///     automated test against raw [bgSurface] is misleading.
+///   - [accentGlow], [borderPrimary], [borderSubtle] are non-text UI
+///     components (hairlines, focus rings) — minimum 3:1 by WCAG 1.4.11.
 @immutable
 class KubeColors extends ThemeExtension<KubeColors> {
   const KubeColors({
@@ -37,25 +58,74 @@ class KubeColors extends ThemeExtension<KubeColors> {
     required this.info,
   });
 
+  /// Canvas background. Scaffold body, app root.
   final Color bgBase;
+
+  /// Card / surface tier. Tab bodies, list rows, dialog backgrounds.
   final Color bgSurface;
+
+  /// Elevated tier. Bottom sheets, drawer, popovers.
   final Color bgElevated;
+
+  /// Hover/pressed state overlay for surface-tier interactive elements.
   final Color bgHover;
+
+  /// Primary divider / outline. Visible at small sizes; 3:1 minimum
+  /// against the adjacent surface per WCAG 1.4.11 (non-text contrast).
   final Color borderPrimary;
+
+  /// Subtle separator. Decorative only — no contrast guarantee.
   final Color borderSubtle;
+
+  /// Primary content text. ≥4.5:1 on [bgBase], [bgSurface], [bgElevated]
+  /// across all 7 themes (enforced by `test/a11y/contrast_test.dart`).
   final Color textPrimary;
+
+  /// Subtitle / secondary content text. ≥4.5:1 on [bgBase] and
+  /// [bgSurface] across all 7 themes (enforced by contrast test).
   final Color textSecondary;
+
+  /// Caption-grade tertiary text. Rendered at fontSize 10–12 in
+  /// timestamp/byline contexts. AA Large only (3:1) — NOT in the
+  /// 4.5:1 contract.
   final Color textMuted;
+
+  /// Primary accent. Typically paired with [bgSurface] (filled button on
+  /// surface) or [accentDim] (tonal button). Composite contrast — not
+  /// in the automated 4.5:1 contract.
   final Color accent;
+
+  /// Glow halo for focused / pressed interactive elements. Decorative.
   final Color accentGlow;
+
+  /// Dim companion for [accent]. Used as the BACKGROUND of tonal
+  /// affordances where [accent] is the foreground.
   final Color accentDim;
+
+  /// Secondary accent. Used for the "Or" divider tint, secondary chips.
   final Color accentSecondary;
+
+  /// Success state colour. Used as both icon fill (3:1 non-text) and as
+  /// pill text on [successDim] background — composite ≥4.5:1 by design,
+  /// verified visually rather than via automated test.
   final Color success;
+
+  /// Dim companion for [success]. Used as pill background.
   final Color successDim;
+
+  /// Warning state. Same composite policy as [success].
   final Color warning;
+
+  /// Dim companion for [warning].
   final Color warningDim;
+
+  /// Error state. Same composite policy as [success].
   final Color error;
+
+  /// Dim companion for [error].
   final Color errorDim;
+
+  /// Info state. Same composite policy as [success].
   final Color info;
 
   @override

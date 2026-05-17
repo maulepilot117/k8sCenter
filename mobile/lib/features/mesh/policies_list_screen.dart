@@ -281,7 +281,9 @@ class _FilterStrip extends StatelessWidget {
           TextField(
             controller: namespaceCtl,
             decoration: InputDecoration(
-              prefixIcon: const Icon(Icons.folder_outlined, size: 18),
+              prefixIcon: ExcludeSemantics(
+                child: const Icon(Icons.folder_outlined, size: 18),
+              ),
               labelText: 'Namespace filter',
               hintText: 'Empty = all namespaces',
               hintStyle: TextStyle(color: colors.textMuted, fontSize: 12),

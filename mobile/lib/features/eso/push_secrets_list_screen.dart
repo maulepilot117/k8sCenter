@@ -112,51 +112,56 @@ class _PsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    ps.name,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+    return Semantics(
+      label: '${ps.name}, namespace ${ps.namespace}, '
+          'status ${ps.status.name}',
+      button: true,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      ps.name,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    overflow: TextOverflow.ellipsis,
+                  ),
+                  EsoStatusPill(status: ps.status, dense: true),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                ps.namespace,
+                style: TextStyle(color: colors.textSecondary, fontSize: 12),
+              ),
+              if (ps.sourceSecretName != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'source: ${ps.sourceSecretName}',
+                  style: TextStyle(color: colors.textMuted, fontSize: 11),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              if (ps.storeRefs.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '→ ${ps.storeRefs.length} store${ps.storeRefs.length == 1 ? '' : 's'}',
+                    style: TextStyle(color: colors.textMuted, fontSize: 11),
                   ),
                 ),
-                EsoStatusPill(status: ps.status, dense: true),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              ps.namespace,
-              style: TextStyle(color: colors.textSecondary, fontSize: 12),
-            ),
-            if (ps.sourceSecretName != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                'source: ${ps.sourceSecretName}',
-                style: TextStyle(color: colors.textMuted, fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
             ],
-            if (ps.storeRefs.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(
-                  '→ ${ps.storeRefs.length} store${ps.storeRefs.length == 1 ? '' : 's'}',
-                  style: TextStyle(color: colors.textMuted, fontSize: 11),
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );

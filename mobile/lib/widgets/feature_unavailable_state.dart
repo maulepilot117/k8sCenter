@@ -111,7 +111,7 @@ class FeatureUnavailableState extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 40, color: colors.textMuted),
+                ExcludeSemantics(child: Icon(icon, size: 40, color: colors.textMuted)),
                 const SizedBox(height: 16),
                 Text(
                   featureName,

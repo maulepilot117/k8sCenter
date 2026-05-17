@@ -144,23 +144,27 @@ class _Body extends StatelessWidget {
                 for (final ref in ps.storeRefs)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      children: [
-                        Icon(
-                          ref.kind == 'ClusterSecretStore'
-                              ? Icons.public_outlined
-                              : Icons.account_tree_outlined,
-                          size: 14,
-                          color: colors.accent,
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '${ref.kind} / ${ref.name}',
-                            style: TextStyle(color: colors.textPrimary),
+                    child: MergeSemantics(
+                      child: Row(
+                        children: [
+                          ExcludeSemantics(
+                            child: Icon(
+                              ref.kind == 'ClusterSecretStore'
+                                  ? Icons.public_outlined
+                                  : Icons.account_tree_outlined,
+                              size: 14,
+                              color: colors.accent,
+                            ),
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              '${ref.kind} / ${ref.name}',
+                              style: TextStyle(color: colors.textPrimary),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
               ],

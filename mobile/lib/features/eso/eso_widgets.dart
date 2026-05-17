@@ -155,22 +155,27 @@ class DriftPill extends StatelessWidget {
       // type (LastObservedDriftStatus omitempty).
       return const SizedBox.shrink();
     }
-    final pill = Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: theme.background,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: theme.foreground),
-      ),
-      child: Text(
-        theme.label,
-        style: TextStyle(
-          color: theme.foreground,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    final pill = Semantics(
+      container: true,
+      label: 'Drift state: ${theme.label}',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: theme.background,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: theme.foreground),
+        ),
+        child: Text(
+          theme.label,
+          style: TextStyle(
+            color: theme.foreground,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -260,22 +265,27 @@ class EsoStatusPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final theme = _statusPillTheme(status, colors);
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: theme.background,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: theme.foreground),
-      ),
-      child: Text(
-        theme.label,
-        style: TextStyle(
-          color: theme.foreground,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    return Semantics(
+      container: true,
+      label: 'ESO status: ${theme.label}',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: theme.background,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: theme.foreground),
+        ),
+        child: Text(
+          theme.label,
+          style: TextStyle(
+            color: theme.foreground,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -336,19 +346,24 @@ class ProviderChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final label = provider.isEmpty ? 'no provider' : provider;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: colors.bgElevated,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: colors.textSecondary,
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
+    return Semantics(
+      container: true,
+      label: 'Provider: $label',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: colors.bgElevated,
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: colors.borderSubtle),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: colors.textSecondary,
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

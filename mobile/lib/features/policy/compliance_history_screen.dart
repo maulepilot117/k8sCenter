@@ -477,25 +477,29 @@ class _HistoryChart extends StatelessWidget {
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: colors.warning.withValues(alpha: 0.5)),
             ),
-            child: Row(
-              children: [
-                Icon(Icons.warning_amber_rounded,
-                    color: colors.warning, size: 18),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    "Couldn't refresh — showing previous data.",
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 12,
+            child: MergeSemantics(
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child: Icon(Icons.warning_amber_rounded,
+                        color: colors.warning, size: 18),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Couldn't refresh — showing previous data.",
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
-                ),
-                TextButton(
-                  onPressed: onRetry,
-                  child: const Text('Retry'),
-                ),
-              ],
+                  TextButton(
+                    onPressed: onRetry,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 12),

@@ -19,18 +19,23 @@ class MeshPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: color.withValues(alpha: 0.15),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
+    return Semantics(
+      container: true,
+      label: 'Mesh state: $label',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: color.withValues(alpha: 0.15),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -131,7 +136,7 @@ class MeshBanner extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 16),
+          ExcludeSemantics(child: Icon(icon, color: color, size: 16)),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -269,15 +274,17 @@ class MeshMutedBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: colors.bgElevated,
-      ),
-      child: Text(
-        label,
-        style: TextStyle(color: colors.textMuted, fontSize: 11),
+    return MergeSemantics(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(10),
+          color: colors.bgElevated,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(color: colors.textMuted, fontSize: 11),
+        ),
       ),
     );
   }

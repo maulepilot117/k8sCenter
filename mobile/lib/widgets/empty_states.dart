@@ -53,7 +53,7 @@ class EmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 48, color: colors.textMuted),
+            ExcludeSemantics(child: Icon(icon, size: 48, color: colors.textMuted)),
             const SizedBox(height: 16),
             Text(
               title,
@@ -164,7 +164,7 @@ class ErrorStateView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 48, color: colors.error),
+            ExcludeSemantics(child: Icon(Icons.error_outline, size: 48, color: colors.error)),
             const SizedBox(height: 16),
             Text(
               message,

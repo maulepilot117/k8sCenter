@@ -115,7 +115,7 @@ class _ActionTile extends StatelessWidget {
     final meta = getActionMeta(id, resource);
     final tone = meta.danger ? colors.error : colors.textPrimary;
     return ListTile(
-      leading: Icon(_iconFor(id), color: tone),
+      leading: ExcludeSemantics(child: Icon(_iconFor(id), color: tone)),
       title: Text(
         meta.label,
         style: TextStyle(

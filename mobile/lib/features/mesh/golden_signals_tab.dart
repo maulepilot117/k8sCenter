@@ -484,31 +484,38 @@ class _Tile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            data.label,
-            style: TextStyle(color: colors.textMuted, fontSize: 11),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            data.value,
-            style: TextStyle(
-              color: data.missing ? colors.textMuted : data.color,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              fontFamily: 'monospace',
+    return Semantics(
+      label: 'Golden signal: ${data.label}, current ${data.value}',
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: colors.bgSurface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.borderSubtle),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ExcludeSemantics(
+              child: Text(
+                data.label,
+                style: TextStyle(color: colors.textMuted, fontSize: 11),
+              ),
             ),
-          ),
-        ],
+            const SizedBox(height: 6),
+            ExcludeSemantics(
+              child: Text(
+                data.value,
+                style: TextStyle(
+                  color: data.missing ? colors.textMuted : data.color,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

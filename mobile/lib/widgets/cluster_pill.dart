@@ -33,7 +33,11 @@ class ClusterPill extends ConsumerWidget {
       orElse: () => '…',
     );
 
-    return InkWell(
+    return Semantics(
+      button: true,
+      label: 'Active cluster: $label. Tap to switch cluster.',
+      excludeSemantics: true,
+      child: InkWell(
       key: const ValueKey('cluster-pill'),
       borderRadius: BorderRadius.circular(18),
       onTap: () => ClusterPickerSheet.show(context, ref),
@@ -63,6 +67,7 @@ class ClusterPill extends ConsumerWidget {
           ],
         ),
       ),
+    ),
     );
   }
 }

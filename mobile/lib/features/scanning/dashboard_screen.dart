@@ -118,21 +118,25 @@ class _HeaderCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.security_outlined, color: colors.accent, size: 22),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  summary,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
+          MergeSemantics(
+            child: Row(
+              children: [
+                ExcludeSemantics(
+                  child: Icon(Icons.security_outlined, color: colors.accent, size: 22),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    summary,
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 6),
           Text(
@@ -213,10 +217,12 @@ class _ScannerCard extends StatelessWidget {
             children: [
               ScannerBadge(scanner: scanner, dense: true),
               const Spacer(),
-              Icon(
-                available ? Icons.check_circle_outline : Icons.cancel_outlined,
-                size: 16,
-                color: available ? colors.success : colors.textMuted,
+              ExcludeSemantics(
+                child: Icon(
+                  available ? Icons.check_circle_outline : Icons.cancel_outlined,
+                  size: 16,
+                  color: available ? colors.success : colors.textMuted,
+                ),
               ),
             ],
           ),
@@ -284,7 +290,9 @@ class _BrowseLink extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(Icons.list_alt_outlined, color: colors.accent, size: 22),
+            ExcludeSemantics(
+              child: Icon(Icons.list_alt_outlined, color: colors.accent, size: 22),
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -307,7 +315,9 @@ class _BrowseLink extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, color: colors.textMuted, size: 18),
+            ExcludeSemantics(
+              child: Icon(Icons.chevron_right, color: colors.textMuted, size: 18),
+            ),
           ],
         ),
       ),

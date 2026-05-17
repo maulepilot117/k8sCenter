@@ -501,7 +501,9 @@ class _ViolationRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
+            ExcludeSemantics(
+              child: Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
+            ),
           ],
         ),
       ),

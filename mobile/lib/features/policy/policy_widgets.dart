@@ -143,22 +143,28 @@ class SeverityBadge extends StatelessWidget {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final fg = policySeverityColor(severity, colors);
     final bg = policySeverityDim(severity, colors);
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        policySeverityLabel(severity),
-        style: TextStyle(
-          color: fg,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    final displayLabel = policySeverityLabel(severity);
+    return Semantics(
+      container: true,
+      label: 'Severity: $displayLabel',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          displayLabel,
+          style: TextStyle(
+            color: fg,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -193,22 +199,28 @@ class EngineBadge extends StatelessWidget {
       PolicyEngine.gatekeeper => (colors.accent, colors.accentDim),
       PolicyEngine.unknown => (colors.textMuted, colors.bgSurface),
     };
-    final pill = Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        policyEngineLabel(engine),
-        style: TextStyle(
-          color: fg,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    final engineLabel = policyEngineLabel(engine);
+    final pill = Semantics(
+      container: true,
+      label: 'Policy engine: $engineLabel',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          engineLabel,
+          style: TextStyle(
+            color: fg,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -239,22 +251,28 @@ class BlockingBadge extends StatelessWidget {
     final (fg, bg) = blocking
         ? (colors.error, colors.errorDim)
         : (colors.textMuted, colors.bgSurface);
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        blocking ? 'Blocking' : 'Audit',
-        style: TextStyle(
-          color: fg,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    final modeLabel = blocking ? 'Blocking' : 'Audit';
+    return Semantics(
+      container: true,
+      label: 'Policy mode: $modeLabel',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          modeLabel,
+          style: TextStyle(
+            color: fg,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

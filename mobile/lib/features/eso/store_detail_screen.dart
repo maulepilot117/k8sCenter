@@ -191,20 +191,25 @@ class _HeaderCard extends StatelessWidget {
               ProviderChip(provider: store.provider),
               const SizedBox(width: 8),
               if (store.isCluster)
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: colors.bgElevated,
-                    borderRadius: BorderRadius.circular(3),
-                    border: Border.all(color: colors.accent),
-                  ),
-                  child: Text(
-                    'Cluster',
-                    style: TextStyle(
-                      color: colors.accent,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
+                Semantics(
+                  label: 'Cluster-scoped store',
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: colors.bgElevated,
+                      borderRadius: BorderRadius.circular(3),
+                      border: Border.all(color: colors.accent),
+                    ),
+                    child: ExcludeSemantics(
+                      child: Text(
+                        'Cluster',
+                        style: TextStyle(
+                          color: colors.accent,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ),
                 ),

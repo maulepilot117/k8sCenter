@@ -133,8 +133,10 @@ class _DegradedBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.warning_amber_outlined,
-              size: 16, color: colors.warning),
+          ExcludeSemantics(
+            child: Icon(Icons.warning_amber_outlined,
+                size: 16, color: colors.warning),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -172,36 +174,43 @@ class _RatePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colors.bgElevated,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Sync rate',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
+    final rateLabel = 'Sync rate: ${_fmtRate(metrics.ratePerMin)} per minute, '
+        '${_fmtCount(metrics.last24h)} syncs in last 24 hours';
+    return Semantics(
+      label: rateLabel,
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colors.bgElevated,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: colors.borderSubtle),
           ),
-          const SizedBox(height: 6),
-          EsoKvRow(
-            label: 'Rate / min',
-            value: _fmtRate(metrics.ratePerMin),
-            valueColor: metrics.ratePerMin == null ? colors.textMuted : null,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Sync rate',
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 6),
+              EsoKvRow(
+                label: 'Rate / min',
+                value: _fmtRate(metrics.ratePerMin),
+                valueColor: metrics.ratePerMin == null ? colors.textMuted : null,
+              ),
+              EsoKvRow(
+                label: 'Last 24h',
+                value: _fmtCount(metrics.last24h),
+                valueColor: metrics.last24h == null ? colors.textMuted : null,
+              ),
+            ],
           ),
-          EsoKvRow(
-            label: 'Last 24h',
-            value: _fmtCount(metrics.last24h),
-            valueColor: metrics.last24h == null ? colors.textMuted : null,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -221,49 +230,56 @@ class _CostPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cur = cost.currency ?? 'USD';
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colors.bgElevated,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final costLabel = 'Cost estimate for ${cost.billingProvider}: '
+        'estimated 24-hour cost ${_fmtMoney(cost.estimated24h, cur)}';
+    return Semantics(
+      label: costLabel,
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colors.bgElevated,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: colors.borderSubtle),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Cost estimate',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
+              Row(
+                children: [
+                  Text(
+                    'Cost estimate',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ProviderChip(provider: cost.billingProvider),
+                ],
               ),
-              const SizedBox(width: 8),
-              ProviderChip(provider: cost.billingProvider),
+              const SizedBox(height: 6),
+              EsoKvRow(
+                label: 'USD / 1M',
+                value: cost.usdPerMillion == null
+                    ? '—'
+                    : cost.usdPerMillion!.toStringAsFixed(2),
+              ),
+              EsoKvRow(
+                label: 'Est. 24h',
+                value: _fmtMoney(cost.estimated24h, cur),
+              ),
+              if (cost.lastUpdated != null)
+                EsoKvRow(label: 'Rate card date', value: cost.lastUpdated!),
+              const SizedBox(height: 4),
+              Text(
+                'Not connected to live billing — public list price snapshot.',
+                style: TextStyle(color: colors.textMuted, fontSize: 11),
+              ),
             ],
           ),
-          const SizedBox(height: 6),
-          EsoKvRow(
-            label: 'USD / 1M',
-            value: cost.usdPerMillion == null
-                ? '—'
-                : cost.usdPerMillion!.toStringAsFixed(2),
-          ),
-          EsoKvRow(
-            label: 'Est. 24h',
-            value: _fmtMoney(cost.estimated24h, cur),
-          ),
-          if (cost.lastUpdated != null)
-            EsoKvRow(label: 'Rate card date', value: cost.lastUpdated!),
-          const SizedBox(height: 4),
-          Text(
-            'Not connected to live billing — public list price snapshot.',
-            style: TextStyle(color: colors.textMuted, fontSize: 11),
-          ),
-        ],
+        ),
       ),
     );
   }

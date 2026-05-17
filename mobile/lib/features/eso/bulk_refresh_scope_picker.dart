@@ -95,17 +95,23 @@ class _BulkRefreshScopePickerState
             ButtonSegment(
               value: _ScopeVariant.namespace,
               label: Text('Namespace'),
-              icon: Icon(Icons.folder_outlined, size: 16),
+              icon: ExcludeSemantics(
+                child: Icon(Icons.folder_outlined, size: 16),
+              ),
             ),
             ButtonSegment(
               value: _ScopeVariant.store,
               label: Text('Store'),
-              icon: Icon(Icons.inventory_2_outlined, size: 16),
+              icon: ExcludeSemantics(
+                child: Icon(Icons.inventory_2_outlined, size: 16),
+              ),
             ),
             ButtonSegment(
               value: _ScopeVariant.clusterStore,
               label: Text('Cluster store'),
-              icon: Icon(Icons.public, size: 16),
+              icon: ExcludeSemantics(
+                child: Icon(Icons.public, size: 16),
+              ),
             ),
           ],
           selected: {_variant},

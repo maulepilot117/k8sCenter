@@ -233,6 +233,7 @@ class _CertificateDetailScreenState
           ),
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
+            tooltip: 'Back',
             onPressed: () => Navigator.of(context).maybePop(),
           ),
           actions: [
@@ -486,11 +487,14 @@ class _ThresholdAttribution extends StatelessWidget {
                   border:
                       Border.all(color: colors.warning.withValues(alpha: 0.4)),
                 ),
+                child: MergeSemantics(
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.warning_amber_outlined,
-                        size: 14, color: colors.warning),
+                    ExcludeSemantics(
+                      child: Icon(Icons.warning_amber_outlined,
+                          size: 14, color: colors.warning),
+                    ),
                     const SizedBox(width: 6),
                     Text(
                       'Conflict — using defaults',
@@ -502,6 +506,7 @@ class _ThresholdAttribution extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
               ),
             ),
           ],
@@ -622,23 +627,27 @@ class _SubResourcesTab extends StatelessWidget {
                   color: colors.warning.withValues(alpha: 0.4),
                 ),
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline,
-                      size: 16, color: colors.warning),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Some sub-resources may be hidden by RBAC. '
-                      'Your role may not include cert-manager '
-                      'CertificateRequests in this namespace.',
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 12,
+              child: MergeSemantics(
+                child: Row(
+                  children: [
+                    ExcludeSemantics(
+                      child: Icon(Icons.info_outline,
+                          size: 16, color: colors.warning),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Some sub-resources may be hidden by RBAC. '
+                        'Your role may not include cert-manager '
+                        'CertificateRequests in this namespace.',
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 12,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 12),

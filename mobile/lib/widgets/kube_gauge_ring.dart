@@ -39,6 +39,7 @@ class KubeGaugeRing extends StatelessWidget {
     this.subtitle,
     this.severity = KubeChartSeverity.success,
     this.size = 120,
+    this.semanticsLabel,
     super.key,
   });
 
@@ -56,6 +57,10 @@ class KubeGaugeRing extends StatelessWidget {
   /// Outer diameter of the ring widget in logical pixels.
   final double size;
 
+  /// Optional accessibility label announced to screen readers. When null,
+  /// defaults to "$centerLabel${subtitle != null ? ', $subtitle' : ''}".
+  final String? semanticsLabel;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
@@ -67,8 +72,13 @@ class KubeGaugeRing extends StatelessWidget {
     // Substitute a 0 fill so the operator sees an empty ring with
     // whatever no-data copy the caller supplies in centerLabel.
     final safePct = percentage.isFinite ? percentage.clamp(0.0, 1.0) : 0.0;
+    final resolvedLabel = semanticsLabel ??
+        '$centerLabel${subtitle != null ? ', $subtitle' : ''}';
 
-    return SizedBox(
+    return Semantics(
+      label: resolvedLabel,
+      excludeSemantics: true,
+      child: SizedBox(
       width: size,
       height: size,
       child: CustomPaint(
@@ -105,6 +115,7 @@ class KubeGaugeRing extends StatelessWidget {
           ),
         ),
       ),
+    ),
     );
   }
 

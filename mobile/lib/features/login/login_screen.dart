@@ -10,7 +10,7 @@ import '../../auth/auth_repository.dart';
 import '../../auth/auth_state.dart';
 import '../../auth/oidc_controller.dart';
 import '../../auth/oidc_widgets.dart';
-import '../../notifications/deep_link_handler.dart' show kUniversalLinkHost;
+import '../../notifications/deep_link_handler.dart' show universalLinkHostProvider;
 import '../../theme/kube_theme_builder.dart';
 import 'login_controller.dart';
 
@@ -117,8 +117,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       // there's no callback domain and startFlow short-
                       // circuits to universalLinkNotConfigured. Hide the
                       // buttons entirely on those builds so users don't
-                      // tap into a guaranteed error.
-                      final oidcEnabled = kUniversalLinkHost.isNotEmpty;
+                      // tap into a guaranteed error. Read through the
+                      // provider seam so widget tests can override.
+                      final oidcEnabled =
+                          ref.watch(universalLinkHostProvider).isNotEmpty;
                       final visibleOidcProviders = oidcEnabled
                           ? oidcProviders
                           : const <AuthProvider>[];
@@ -210,16 +212,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       {required String keyValue}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: colors.errorDim,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          message,
-          key: ValueKey(keyValue),
-          style: TextStyle(color: colors.error),
+      child: Semantics(
+        liveRegion: true,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colors.errorDim,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Text(
+            message,
+            key: ValueKey(keyValue),
+            style: TextStyle(color: colors.error),
+          ),
         ),
       ),
     );
@@ -228,16 +233,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget _orDivider(KubeColors colors) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Row(
-        children: [
-          Expanded(child: Divider(color: colors.borderSubtle)),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Text('OR',
-                style: TextStyle(color: colors.textMuted, fontSize: 12)),
-          ),
-          Expanded(child: Divider(color: colors.borderSubtle)),
-        ],
+      child: ExcludeSemantics(
+        child: Row(
+          children: [
+            Expanded(child: Divider(color: colors.borderSubtle)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text('OR',
+                  style: TextStyle(color: colors.textMuted, fontSize: 12)),
+            ),
+            Expanded(child: Divider(color: colors.borderSubtle)),
+          ],
+        ),
       ),
     );
   }
@@ -327,7 +334,10 @@ class _CredentialForm extends StatelessWidget {
               ? const SizedBox(
                   height: 20,
                   width: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    semanticsLabel: 'Signing in',
+                  ),
                 )
               : const Text('Sign in'),
         ),

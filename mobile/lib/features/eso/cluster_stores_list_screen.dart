@@ -109,48 +109,56 @@ class _StoreRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  Icons.public_outlined,
-                  size: 16,
-                  color: colors.accent,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    store.name,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+    return Semantics(
+      label: '${store.name}, cluster-scoped, '
+          'provider ${store.provider.isEmpty ? 'unknown' : store.provider}, '
+          'status ${store.status.name}',
+      button: true,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  ExcludeSemantics(
+                    child: Icon(
+                      Icons.public_outlined,
+                      size: 16,
+                      color: colors.accent,
                     ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      store.name,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  EsoStatusPill(status: store.status, dense: true),
+                ],
+              ),
+              const SizedBox(height: 4),
+              ProviderChip(provider: store.provider),
+              if (store.readyMessage != null && store.readyMessage!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    store.readyMessage!,
+                    style: TextStyle(color: colors.textMuted, fontSize: 11),
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                EsoStatusPill(status: store.status, dense: true),
-              ],
-            ),
-            const SizedBox(height: 4),
-            ProviderChip(provider: store.provider),
-            if (store.readyMessage != null && store.readyMessage!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  store.readyMessage!,
-                  style: TextStyle(color: colors.textMuted, fontSize: 11),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

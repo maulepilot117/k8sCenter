@@ -345,16 +345,20 @@ class _PodDetailScreenState extends ConsumerState<PodDetailScreen> {
                         ListTile(
                           dense: true,
                           contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            Icons.terminal_outlined,
-                            color: colors.accent,
-                            size: 18,
+                          leading: ExcludeSemantics(
+                            child: Icon(
+                              Icons.terminal_outlined,
+                              color: colors.accent,
+                              size: 18,
+                            ),
                           ),
                           title: Text(c,
-                              style:
-                                  TextStyle(color: colors.textPrimary, fontSize: 13)),
-                          trailing: Icon(Icons.chevron_right,
-                              color: colors.textMuted, size: 18),
+                              style: TextStyle(
+                                  color: colors.textPrimary, fontSize: 13)),
+                          trailing: ExcludeSemantics(
+                            child: Icon(Icons.chevron_right,
+                                color: colors.textMuted, size: 18),
+                          ),
                           onTap: () => context.push(
                             '/clusters/$clusterId/workloads/pods/'
                             '${Uri.encodeComponent(pod.meta.namespace)}/'

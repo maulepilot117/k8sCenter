@@ -361,10 +361,12 @@ class _CertRow extends StatelessWidget {
                   criticalThresholdDays: cert.criticalThresholdDays,
                 ),
                 const Spacer(),
-                Icon(
-                  Icons.chevron_right,
-                  size: 16,
-                  color: colors.textMuted,
+                ExcludeSemantics(
+                  child: Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: colors.textMuted,
+                  ),
                 ),
               ],
             ),

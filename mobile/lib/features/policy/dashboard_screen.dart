@@ -170,12 +170,18 @@ class _DashboardContent extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       children: [
         Center(
-          child: KubeGaugeRing(
-            percentage: pctFraction,
-            centerLabel: '${score.score.toStringAsFixed(0)}%',
-            subtitle: tier.label,
-            severity: chartSeverity,
-            size: 160,
+          child: Semantics(
+            label:
+                'Policy compliance: ${score.score.toStringAsFixed(0)}%, ${tier.label}',
+            child: ExcludeSemantics(
+              child: KubeGaugeRing(
+                percentage: pctFraction,
+                centerLabel: '${score.score.toStringAsFixed(0)}%',
+                subtitle: tier.label,
+                severity: chartSeverity,
+                size: 160,
+              ),
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -299,10 +305,14 @@ class _EngineCard extends StatelessWidget {
             children: [
               EngineBadge(engine: engine, dense: true),
               const Spacer(),
-              Icon(
-                available ? Icons.check_circle_outline : Icons.cancel_outlined,
-                size: 16,
-                color: available ? colors.success : colors.textMuted,
+              ExcludeSemantics(
+                child: Icon(
+                  available
+                      ? Icons.check_circle_outline
+                      : Icons.cancel_outlined,
+                  size: 16,
+                  color: available ? colors.success : colors.textMuted,
+                ),
               ),
             ],
           ),
@@ -422,13 +432,17 @@ class _SeverityRow extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: LinearProgressIndicator(
-              value: pct,
-              minHeight: 6,
-              backgroundColor: colors.bgElevated,
-              valueColor: AlwaysStoppedAnimation<Color>(fg),
+          child: Semantics(
+            label:
+                '${policySeverityLabel(severity)} severity: ${counts.pass} of ${counts.total} passing',
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                value: pct,
+                minHeight: 6,
+                backgroundColor: colors.bgElevated,
+                valueColor: AlwaysStoppedAnimation<Color>(fg),
+              ),
             ),
           ),
         ),
@@ -479,7 +493,9 @@ class _BrowseLinks extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  Icon(icon, color: colors.accent, size: 22),
+                  ExcludeSemantics(
+                    child: Icon(icon, color: colors.accent, size: 22),
+                  ),
                   const SizedBox(height: 6),
                   Text(
                     label,
