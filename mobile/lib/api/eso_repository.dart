@@ -676,6 +676,222 @@ class StoreMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Phase E bulk-refresh wire types (PR-5e)
+// ---------------------------------------------------------------------------
+//
+// Mirror `backend/internal/externalsecrets/bulk.go` BulkScopeResponse,
+// BulkScopeTarget, BulkNamespaceCount, BulkRefreshJobResponse, and
+// `frontend/lib/eso-types.ts` BulkScope* / BulkRefresh* / BulkRefreshAction.
+// Drift between these three definitions is a wire-shape bug.
+
+/// Which bulk-refresh endpoint family a request targets. Wire enum on
+/// `BulkScopeResponse.action`; the mobile controller also uses it to
+/// pick the matching submit endpoint.
+enum BulkRefreshAction {
+  store,
+  clusterStore,
+  namespace,
+}
+
+BulkRefreshAction _bulkRefreshActionFromJson(Object? v) {
+  switch (v) {
+    case 'refresh_store':
+      return BulkRefreshAction.store;
+    case 'refresh_cluster_store':
+      return BulkRefreshAction.clusterStore;
+    case 'refresh_namespace':
+      return BulkRefreshAction.namespace;
+    default:
+      // Defensive: an unknown wire value would be a backend bug, but
+      // collapsing to `namespace` would silently mis-route. Throw so
+      // the parse error surfaces clearly in the failure state.
+      throw ArgumentError(
+        'Unknown BulkRefreshAction: $v',
+      );
+  }
+}
+
+/// One ExternalSecret entry in a resolved scope. UID is what the bulk
+/// submit POST echoes back to pin scope; namespace + name are for the
+/// confirm-phase breakdown rendering.
+class BulkScopeTarget {
+  const BulkScopeTarget({
+    required this.namespace,
+    required this.name,
+    required this.uid,
+  });
+
+  final String namespace;
+  final String name;
+  final String uid;
+
+  factory BulkScopeTarget.fromJson(Map<String, dynamic> json) =>
+      BulkScopeTarget(
+        namespace: json['namespace'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        uid: json['uid'] as String? ?? '',
+      );
+}
+
+/// Per-namespace breakdown row used by the confirm-phase UI.
+class BulkNamespaceCount {
+  const BulkNamespaceCount({required this.namespace, required this.count});
+
+  final String namespace;
+  final int count;
+
+  factory BulkNamespaceCount.fromJson(Map<String, dynamic> json) =>
+      BulkNamespaceCount(
+        namespace: json['namespace'] as String? ?? '',
+        count: (json['count'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// GET refresh-scope payload. `restricted` is true when SA-view total
+/// exceeds what the operator can refresh; the confirm-phase UI surfaces
+/// this as the "Showing only resources you can refresh" RBAC notice.
+class BulkScopeResponse {
+  const BulkScopeResponse({
+    required this.action,
+    required this.scopeTarget,
+    required this.totalCount,
+    required this.totalNamespaces,
+    required this.visibleCount,
+    required this.restricted,
+    required this.targets,
+    required this.byNamespace,
+  });
+
+  final BulkRefreshAction action;
+  final String scopeTarget;
+  final int totalCount;
+  final int totalNamespaces;
+  final int visibleCount;
+  final bool restricted;
+  final List<BulkScopeTarget> targets;
+  final List<BulkNamespaceCount> byNamespace;
+
+  factory BulkScopeResponse.fromJson(Map<String, dynamic> json) {
+    final targets = (json['targets'] as List?)
+            ?.whereType<Map<dynamic, dynamic>>()
+            .map((m) => BulkScopeTarget.fromJson(Map<String, dynamic>.from(m)))
+            .toList() ??
+        const <BulkScopeTarget>[];
+    final byNs = (json['byNamespace'] as List?)
+            ?.whereType<Map<dynamic, dynamic>>()
+            .map((m) =>
+                BulkNamespaceCount.fromJson(Map<String, dynamic>.from(m)))
+            .toList() ??
+        const <BulkNamespaceCount>[];
+    return BulkScopeResponse(
+      action: _bulkRefreshActionFromJson(json['action']),
+      scopeTarget: json['scopeTarget'] as String? ?? '',
+      totalCount: (json['totalCount'] as num?)?.toInt() ?? 0,
+      totalNamespaces: (json['totalNamespaces'] as num?)?.toInt() ?? 0,
+      visibleCount: (json['visibleCount'] as num?)?.toInt() ?? 0,
+      restricted: json['restricted'] as bool? ?? false,
+      targets: targets,
+      byNamespace: byNs,
+    );
+  }
+}
+
+/// 202 response from a bulk-refresh submit POST.
+class BulkRefreshSubmitResponse {
+  const BulkRefreshSubmitResponse({
+    required this.jobId,
+    required this.targetCount,
+  });
+
+  final String jobId;
+  final int targetCount;
+
+  factory BulkRefreshSubmitResponse.fromJson(Map<String, dynamic> json) =>
+      BulkRefreshSubmitResponse(
+        jobId: json['jobId'] as String? ?? '',
+        targetCount: (json['targetCount'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// One entry in `BulkRefreshJob.failed` / `BulkRefreshJob.skipped`.
+class BulkRefreshOutcome {
+  const BulkRefreshOutcome({required this.uid, required this.reason});
+
+  final String uid;
+  final String reason;
+
+  factory BulkRefreshOutcome.fromJson(Map<String, dynamic> json) =>
+      BulkRefreshOutcome(
+        uid: json['uid'] as String? ?? '',
+        reason: json['reason'] as String? ?? '',
+      );
+}
+
+/// GET bulk-refresh-jobs/{jobId} payload. `completedAt != null` is the
+/// terminal signal; the poll loop stops then.
+class BulkRefreshJob {
+  const BulkRefreshJob({
+    required this.jobId,
+    required this.clusterId,
+    required this.requestedBy,
+    required this.action,
+    required this.scopeTarget,
+    required this.targetCount,
+    required this.createdAt,
+    this.completedAt,
+    required this.succeeded,
+    required this.failed,
+    required this.skipped,
+  });
+
+  final String jobId;
+  final String clusterId;
+  final String requestedBy;
+  final BulkRefreshAction action;
+  final String scopeTarget;
+  final int targetCount;
+  final String createdAt;
+  final String? completedAt;
+  final List<String> succeeded;
+  final List<BulkRefreshOutcome> failed;
+  final List<BulkRefreshOutcome> skipped;
+
+  bool get isDone => completedAt != null && completedAt!.isNotEmpty;
+
+  /// Total processed = succeeded + failed + skipped. Used for the poll-
+  /// phase progress UI (`processed / targetCount`).
+  int get processed => succeeded.length + failed.length + skipped.length;
+
+  factory BulkRefreshJob.fromJson(Map<String, dynamic> json) {
+    List<T> parseList<T>(Object? raw, T Function(Map<String, dynamic>) fromJson) {
+      if (raw is! List) return <T>[];
+      return raw
+          .whereType<Map<dynamic, dynamic>>()
+          .map((m) => fromJson(Map<String, dynamic>.from(m)))
+          .toList();
+    }
+
+    final completed = json['completedAt'];
+    return BulkRefreshJob(
+      jobId: json['jobId'] as String? ?? '',
+      clusterId: json['clusterId'] as String? ?? '',
+      requestedBy: json['requestedBy'] as String? ?? '',
+      action: _bulkRefreshActionFromJson(json['action']),
+      scopeTarget: json['scopeTarget'] as String? ?? '',
+      targetCount: (json['targetCount'] as num?)?.toInt() ?? 0,
+      createdAt: json['createdAt'] as String? ?? '',
+      completedAt: completed is String && completed.isNotEmpty ? completed : null,
+      succeeded: (json['succeeded'] as List?)
+              ?.whereType<String>()
+              .toList() ??
+          const <String>[],
+      failed: parseList(json['failed'], BulkRefreshOutcome.fromJson),
+      skipped: parseList(json['skipped'], BulkRefreshOutcome.fromJson),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
 
@@ -904,6 +1120,193 @@ class EsoRepository {
         clusterIdOverride: clusterIdOverride,
         cancelToken: cancelToken,
       );
+
+  // -------------------------------------------------------------------------
+  // Phase E writes (PR-5e)
+  // -------------------------------------------------------------------------
+  //
+  // Force-sync + bulk-refresh routes are local-cluster only on the backend
+  // (`backend/internal/externalsecrets/actions.go:66` rejects X-Cluster-ID
+  // != "local" with 501). Mobile gates the buttons up front; these methods
+  // still forward `clusterIdOverride` so the 501 surfaces as a clean
+  // ApiError if the gate is bypassed.
+
+  /// POST /externalsecrets/externalsecrets/{ns}/{name}/force-sync.
+  /// Returns immediately (202); ESO performs the actual sync async. The
+  /// backend response body is `{ "data": { "status": "force-syncing" } }`
+  /// and there are no fields the UI needs — success is signaled by the
+  /// absence of an [ApiError]. Caller invalidates
+  /// [externalSecretDetailProvider] to surface the new drift state.
+  ///
+  /// 409 with `reason: "already_refreshing"` means a sync landed within
+  /// the backend's 30s in-flight window; the controller surfaces this
+  /// without re-triggering.
+  Future<void> forceSync({
+    required String namespace,
+    required String name,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      await _dio.post<Map<String, dynamic>>(
+        '/api/v1/externalsecrets/externalsecrets/'
+        '${Uri.encodeComponent(namespace)}/${Uri.encodeComponent(name)}/'
+        'force-sync',
+        options: _opts(clusterIdOverride),
+        cancelToken: cancelToken,
+      );
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) rethrow;
+      final err = e.error;
+      throw err is ApiError ? err : ApiError.fromDio(e);
+    }
+  }
+
+  /// GET /externalsecrets/stores/{ns}/{name}/refresh-scope.
+  Future<BulkScopeResponse> resolveStoreScope({
+    required String namespace,
+    required String name,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _getOne<BulkScopeResponse>(
+        path: '/api/v1/externalsecrets/stores/'
+            '${Uri.encodeComponent(namespace)}/'
+            '${Uri.encodeComponent(name)}/refresh-scope',
+        parse: BulkScopeResponse.fromJson,
+        notFoundMessage:
+            'Could not resolve refresh scope for store $namespace/$name',
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// GET /externalsecrets/clusterstores/{name}/refresh-scope.
+  Future<BulkScopeResponse> resolveClusterStoreScope({
+    required String name,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _getOne<BulkScopeResponse>(
+        path: '/api/v1/externalsecrets/clusterstores/'
+            '${Uri.encodeComponent(name)}/refresh-scope',
+        parse: BulkScopeResponse.fromJson,
+        notFoundMessage:
+            'Could not resolve refresh scope for cluster store $name',
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// GET /externalsecrets/refresh-namespace/{namespace}/refresh-scope.
+  Future<BulkScopeResponse> resolveNamespaceScope({
+    required String namespace,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _getOne<BulkScopeResponse>(
+        path: '/api/v1/externalsecrets/refresh-namespace/'
+            '${Uri.encodeComponent(namespace)}/refresh-scope',
+        parse: BulkScopeResponse.fromJson,
+        notFoundMessage:
+            'Could not resolve refresh scope for namespace $namespace',
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// POST /externalsecrets/stores/{ns}/{name}/refresh-all.
+  /// `targetUIDs` MUST be the UIDs from a fresh resolveStoreScope; the
+  /// backend rejects empty / drifted bodies with 400 / 409 scope_changed.
+  Future<BulkRefreshSubmitResponse> bulkRefreshStore({
+    required String namespace,
+    required String name,
+    required List<String> targetUIDs,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _submitBulkRefresh(
+        path: '/api/v1/externalsecrets/stores/'
+            '${Uri.encodeComponent(namespace)}/'
+            '${Uri.encodeComponent(name)}/refresh-all',
+        targetUIDs: targetUIDs,
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// POST /externalsecrets/clusterstores/{name}/refresh-all.
+  Future<BulkRefreshSubmitResponse> bulkRefreshClusterStore({
+    required String name,
+    required List<String> targetUIDs,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _submitBulkRefresh(
+        path: '/api/v1/externalsecrets/clusterstores/'
+            '${Uri.encodeComponent(name)}/refresh-all',
+        targetUIDs: targetUIDs,
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// POST /externalsecrets/refresh-namespace/{namespace} (no trailing path).
+  Future<BulkRefreshSubmitResponse> bulkRefreshNamespace({
+    required String namespace,
+    required List<String> targetUIDs,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _submitBulkRefresh(
+        path: '/api/v1/externalsecrets/refresh-namespace/'
+            '${Uri.encodeComponent(namespace)}',
+        targetUIDs: targetUIDs,
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  /// GET /externalsecrets/bulk-refresh-jobs/{jobId}. Caller polls every
+  /// 2s until `completedAt` is non-null.
+  Future<BulkRefreshJob> getBulkRefreshJob({
+    required String jobId,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) =>
+      _getOne<BulkRefreshJob>(
+        path: '/api/v1/externalsecrets/bulk-refresh-jobs/'
+            '${Uri.encodeComponent(jobId)}',
+        parse: BulkRefreshJob.fromJson,
+        notFoundMessage: 'Bulk refresh job $jobId not found',
+        clusterIdOverride: clusterIdOverride,
+        cancelToken: cancelToken,
+      );
+
+  Future<BulkRefreshSubmitResponse> _submitBulkRefresh({
+    required String path,
+    required List<String> targetUIDs,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) async {
+    try {
+      final res = await _dio.post<Map<String, dynamic>>(
+        path,
+        data: {'targetUIDs': targetUIDs},
+        options: _opts(clusterIdOverride),
+        cancelToken: cancelToken,
+      );
+      final data = res.data?['data'];
+      if (data is Map) {
+        return BulkRefreshSubmitResponse.fromJson(
+          Map<String, dynamic>.from(data),
+        );
+      }
+      throw ApiError(
+        statusCode: 500,
+        code: 500,
+        message: 'Empty response from bulk refresh submit',
+      );
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) rethrow;
+      final err = e.error;
+      throw err is ApiError ? err : ApiError.fromDio(e);
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Internals

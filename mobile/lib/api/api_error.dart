@@ -17,6 +17,7 @@ class ApiError implements Exception {
     required this.message,
     this.detail,
     this.reason,
+    this.extra,
   });
 
   final int statusCode;
@@ -28,11 +29,25 @@ class ApiError implements Exception {
   /// "scope_changed"). Mirrors the frontend's `ApiError.reason`.
   final String? reason;
 
+  /// Endpoint-specific structured detail (e.g. `{jobId: "..."}` on
+  /// `active_job_exists`, `{added: [...], removed: [...]}` on
+  /// `scope_changed`). Mirrors the frontend's `ApiError.body.error.extra`.
+  /// Prefer the [extraString] helper over reading the map directly.
+  final Map<String, dynamic>? extra;
+
+  /// Returns the `extra[key]` value as a String, or null when the key is
+  /// missing or non-string. Mirrors `errorExtra(err, key)` in the web
+  /// `api.ts`. Use for 409 `active_job_exists.jobId` and similar.
+  String? extraString(String key) {
+    final v = extra?[key];
+    return v is String ? v : null;
+  }
+
   /// Builds an ApiError from a DioException by inspecting the response body.
   /// Tolerates three body shapes; everything else falls back to a friendly
   /// status-derived message:
-  ///   1. Canonical envelope: `{error: {code, message, detail, reason}}`
-  ///   2. Top-level fields: `{message, code, detail, reason}`
+  ///   1. Canonical envelope: `{error: {code, message, detail, reason, extra}}`
+  ///   2. Top-level fields: `{message, code, detail, reason, extra}`
   ///   3. Plain string body — used as-is when short and not HTML
   factory ApiError.fromDio(DioException e) {
     final res = e.response;
@@ -50,6 +65,7 @@ class ApiError implements Exception {
             message: msg,
             detail: _asString(nested['detail']),
             reason: _asString(nested['reason']),
+            extra: _asExtra(nested['extra']),
           );
         }
       }
@@ -62,6 +78,7 @@ class ApiError implements Exception {
           message: topMessage,
           detail: _asString(body['detail']),
           reason: _asString(body['reason']),
+          extra: _asExtra(body['extra']),
         );
       }
     }
@@ -102,6 +119,8 @@ class ApiError implements Exception {
 
   static String? _asString(Object? v) => v is String ? v : null;
   static int? _asInt(Object? v) => v is int ? v : null;
+  static Map<String, dynamic>? _asExtra(Object? v) =>
+      v is Map ? Map<String, dynamic>.from(v) : null;
 
   // Dio's default badResponse message is the internal validateStatus blurb;
   // surface friendly status text instead.
