@@ -147,4 +147,57 @@ void main() {
     expect(find.byKey(const ValueKey('login-username')), findsOneWidget,
         reason: 'credential form must still render');
   });
+
+  testWidgets(
+      'OIDC-only deployment (no credential providers): credential form is hidden, OIDC buttons render',
+      (tester) async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    // Backend returns ONLY OIDC providers — operator runs Authelia or
+    // Keycloak with the local provider disabled. hideCredentialForm
+    // gate fires when visibleOidcProviders.isNotEmpty AND
+    // credentialProviders.isEmpty (login_screen.dart:136-138).
+    mock.onJson('GET', '/api/v1/auth/providers', body: {
+      'data': [
+        {'id': 'authelia', 'name': 'Authelia', 'kind': 'oidc'},
+        {'id': 'keycloak', 'name': 'Keycloak', 'kind': 'oidc'},
+      ],
+    });
+
+    await tester.pumpWidget(_harness(container));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('login-username')), findsNothing,
+        reason: 'credential form must be hidden in OIDC-only deployment');
+    expect(find.byKey(const ValueKey('login-password')), findsNothing,
+        reason: 'password field must be hidden in OIDC-only deployment');
+    expect(find.byKey(const ValueKey('login-oidc-authelia')), findsOneWidget,
+        reason: 'OIDC providers must render in OIDC-only deployment');
+    expect(find.byKey(const ValueKey('login-oidc-keycloak')), findsOneWidget);
+  });
+
+  testWidgets(
+      'providers-fetch network failure: credential form still renders, no OIDC section',
+      (tester) async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    // Backend reachable but returns 500. The login screen's
+    // providersAsync.when routes to the error branch and falls back to
+    // a credential form with an empty provider list. OIDC section stays
+    // hidden because visibleOidcProviders is empty.
+    mock.onJson('GET', '/api/v1/auth/providers',
+        status: 500, body: {'error': {'code': 500, 'message': 'unavailable'}});
+
+    await tester.pumpWidget(_harness(container));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('login-username')), findsOneWidget,
+        reason: 'credential form must fall back on providers-fetch error');
+    expect(find.byKey(const ValueKey('login-password')), findsOneWidget);
+    expect(find.byKey(const ValueKey('login-submit')), findsOneWidget);
+    expect(find.byKey(const ValueKey('login-oidc-authelia')), findsNothing,
+        reason: 'no OIDC section without provider list');
+  });
 }

@@ -362,8 +362,10 @@ class _UtilCard extends StatelessWidget {
                 ),
               ),
             ),
-            Semantics(
-              label: '$label utilization ${pct.toStringAsFixed(0)}%',
+            // Progress bar is purely visual — the outer Semantics already
+            // announces the percentage in the card label. ExcludeSemantics
+            // prevents a doubled read on TalkBack/VoiceOver.
+            ExcludeSemantics(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(

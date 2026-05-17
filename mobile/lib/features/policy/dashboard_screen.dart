@@ -170,18 +170,14 @@ class _DashboardContent extends ConsumerWidget {
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       children: [
         Center(
-          child: Semantics(
-            label:
+          child: KubeGaugeRing(
+            percentage: pctFraction,
+            centerLabel: '${score.score.toStringAsFixed(0)}%',
+            subtitle: tier.label,
+            severity: chartSeverity,
+            size: 160,
+            semanticsLabel:
                 'Policy compliance: ${score.score.toStringAsFixed(0)}%, ${tier.label}',
-            child: ExcludeSemantics(
-              child: KubeGaugeRing(
-                percentage: pctFraction,
-                centerLabel: '${score.score.toStringAsFixed(0)}%',
-                subtitle: tier.label,
-                severity: chartSeverity,
-                size: 160,
-              ),
-            ),
           ),
         ),
         const SizedBox(height: 8),

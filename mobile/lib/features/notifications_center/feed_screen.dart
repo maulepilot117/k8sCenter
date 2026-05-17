@@ -134,44 +134,52 @@ class _NotificationTile extends ConsumerWidget {
             ),
           );
 
+    // Extracted so the outer Semantics can expose the tap action to the
+    // accessibility tree without duplicating the closure. ExcludeSemantics
+    // below hides the InkWell's own tap from the a11y tree (avoiding a
+    // doubled announce of the inner Text children), so the Semantics
+    // wrapper's onTap is the sole AT-reachable activation path.
+    Future<void> onTap() async {
+      if (!item.read) {
+        await ref.read(notificationsRepositoryProvider).markRead(item.id);
+        ref.invalidate(notificationsFeedProvider);
+        ref.invalidate(unreadCountProvider);
+      }
+      if (!context.mounted) return;
+      if (item.hasResourceTarget) {
+        final clusterId = item.clusterId ?? 'local';
+        final ns = item.resourceNamespace ?? '';
+        final canonicalKind = item.resourceKind ?? '';
+        // If the notification points at a different cluster than the
+        // active one, switch clusters before navigating — otherwise
+        // the X-Cluster-ID header on the detail fetch would carry
+        // the active cluster and silently 404. Cross-cluster
+        // notifications normally don't appear in the feed (the
+        // backend filters server-side), so this is defensive.
+        final activeCluster = ref.read(activeClusterProvider);
+        if (clusterId != activeCluster) {
+          ref.read(activeClusterProvider.notifier).setCluster(clusterId);
+        }
+        // Use the kind segment as-is; kindDetailPath() falls back to
+        // the generic-detail catch-all when the canonical Kind isn't
+        // a registered specialized screen.
+        final path = kindDetailPath(
+          clusterId: clusterId,
+          kind: canonicalKind.toLowerCase(),
+          namespace: ns,
+          name: item.resourceName ?? '',
+        );
+        context.push(path);
+      }
+    }
+
     return Semantics(
       button: item.hasResourceTarget,
       label: '${item.read ? '' : 'Unread. '}${item.severity} notification: ${item.title}${item.message.isNotEmpty ? '. ${item.message}' : ''}${item.hasResourceTarget ? '. Tap to view resource.' : ''}',
+      onTap: item.hasResourceTarget ? onTap : null,
       child: ExcludeSemantics(
         child: InkWell(
-          onTap: () async {
-            if (!item.read) {
-              await ref.read(notificationsRepositoryProvider).markRead(item.id);
-              ref.invalidate(notificationsFeedProvider);
-              ref.invalidate(unreadCountProvider);
-            }
-            if (!context.mounted) return;
-            if (item.hasResourceTarget) {
-              final clusterId = item.clusterId ?? 'local';
-              final ns = item.resourceNamespace ?? '';
-              final canonicalKind = item.resourceKind ?? '';
-              // If the notification points at a different cluster than the
-              // active one, switch clusters before navigating — otherwise
-              // the X-Cluster-ID header on the detail fetch would carry
-              // the active cluster and silently 404. Cross-cluster
-              // notifications normally don't appear in the feed (the
-              // backend filters server-side), so this is defensive.
-              final activeCluster = ref.read(activeClusterProvider);
-              if (clusterId != activeCluster) {
-                ref.read(activeClusterProvider.notifier).setCluster(clusterId);
-              }
-              // Use the kind segment as-is; kindDetailPath() falls back to
-              // the generic-detail catch-all when the canonical Kind isn't
-              // a registered specialized screen.
-              final path = kindDetailPath(
-                clusterId: clusterId,
-                kind: canonicalKind.toLowerCase(),
-                namespace: ns,
-                name: item.resourceName ?? '',
-              );
-              context.push(path);
-            }
-          },
+          onTap: onTap,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
             color: item.read ? null : colors.bgElevated,
@@ -258,7 +266,7 @@ class _SeverityChip extends StatelessWidget {
     // the severity domain prefix rather than just the bare label text.
     return Semantics(
       container: true,
-      label: 'severity: ${label.toLowerCase()}',
+      label: 'Severity: $label',
       child: ExcludeSemantics(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

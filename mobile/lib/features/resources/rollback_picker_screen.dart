@@ -334,11 +334,16 @@ class _RevisionTile extends StatelessWidget {
         : revision.changeCause != null
             ? 'Roll back to revision ${revision.revision}, ${revision.changeCause}, deployed $age ago'
             : 'Roll back to revision ${revision.revision}, deployed $age ago';
+    // The outer Semantics owns both the label AND the tap action.
+    // excludeSemantics: true hides the ListTile's tap from the
+    // accessibility tree, so onTap must be exposed at this level — the
+    // current-revision row is non-interactive so it stays null.
     return Semantics(
       button: !isCurrent,
       enabled: !isCurrent,
       label: semanticsLabel,
       excludeSemantics: true,
+      onTap: isCurrent ? null : onTap,
       child: ListTile(
         enabled: !isCurrent,
         leading: ExcludeSemantics(

@@ -37,6 +37,28 @@ Widget _harness({List<DetailExtraTab> extraTabs = const []}) {
   );
 }
 
+Widget _namespacedHarness() {
+  // Deployment is in kDiagnosticsKinds and is namespaced, so the
+  // Diagnose IconButton renders in the AppBar actions slot.
+  return ProviderScope(
+    child: MaterialApp(
+      theme: buildKubeTheme('nexus'),
+      home: const ResourceDetailScaffold(
+        kindLabel: 'Deployment',
+        name: 'frontend',
+        namespace: 'default',
+        statusLabel: 'Available',
+        resource: {
+          'apiVersion': 'apps/v1',
+          'kind': 'Deployment',
+          'metadata': {'name': 'frontend', 'namespace': 'default'},
+        },
+        overview: Text('overview body'),
+      ),
+    ),
+  );
+}
+
 void main() {
   testWidgets('canonical 3-tab traversal: back → title → Overview → YAML → Events',
       (tester) async {
@@ -117,6 +139,31 @@ void main() {
         reason: 'Events must precede the first extra tab');
     expect(metricsX, lessThan(logsX),
         reason: 'Metrics must precede Logs (declaration order)');
+
+    handle.dispose();
+  });
+
+  testWidgets(
+      'namespaced diagnosable kind: Diagnose action renders with tooltip and tap semantics',
+      (tester) async {
+    await tester.pumpWidget(_namespacedHarness());
+    await tester.pumpAndSettle();
+
+    final handle = tester.ensureSemantics();
+
+    // The Diagnose button is keyed by the kDiagnosticsKinds gate +
+    // namespace-non-null gate in ResourceDetailScaffold. Find it via
+    // its tooltip — that doubles as the semantics label.
+    final diagnose = find.byTooltip('Diagnose');
+    expect(diagnose, findsOneWidget,
+        reason:
+            'Diagnose IconButton must render for namespaced diagnosable kinds '
+            '(Deployment is in kDiagnosticsKinds).');
+
+    final data = tester.getSemantics(diagnose).getSemanticsData();
+    expect(data.hasAction(SemanticsAction.tap), isTrue,
+        reason: 'Diagnose button must expose SemanticsAction.tap so '
+            'screen-reader users can double-tap to open diagnostics.');
 
     handle.dispose();
   });

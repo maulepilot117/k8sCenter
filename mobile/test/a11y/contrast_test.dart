@@ -55,9 +55,10 @@ class _BodyTextMatrix extends StatelessWidget {
             Text('Primary body on elevated',
                 style: TextStyle(color: colors.textPrimary, fontSize: 16)),
           ]),
-          // textSecondary at info-row subtitle size on the two surfaces
+          // textSecondary at info-row subtitle size on the three surfaces
           // where it actually renders (bgBase under section headers,
-          // bgSurface under card titles).
+          // bgSurface under card titles, bgElevated in unread-notification
+          // message bodies at feed_screen.dart:218).
           _row(colors.bgBase, [
             Text('Secondary subtitle on base',
                 style: TextStyle(color: colors.textSecondary, fontSize: 14)),
@@ -65,6 +66,10 @@ class _BodyTextMatrix extends StatelessWidget {
           _row(colors.bgSurface, [
             Text('Secondary subtitle on surface',
                 style: TextStyle(color: colors.textSecondary, fontSize: 14)),
+          ]),
+          _row(colors.bgElevated, [
+            Text('Secondary subtitle on elevated',
+                style: TextStyle(color: colors.textSecondary, fontSize: 12)),
           ]),
         ],
       ),
