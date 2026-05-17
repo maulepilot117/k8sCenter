@@ -422,21 +422,25 @@ class _FilterStrip extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(Icons.folder_outlined, color: colors.textMuted, size: 16),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Namespace: $namespace',
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+          MergeSemantics(
+            child: Row(
+              children: [
+                ExcludeSemantics(
+                  child: Icon(Icons.folder_outlined, color: colors.textMuted, size: 16),
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Namespace: $namespace',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           const SizedBox(height: 8),
           // Aggregate severity row — comes from the backend `summary`
@@ -520,36 +524,56 @@ class _FilterStrip extends StatelessWidget {
                 ])
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
+                    child: Semantics(
+                      button: true,
                       selected: tuple.$1 == severityFilter,
-                      label: Text(tuple.$2),
-                      onSelected: (_) => onSeverityChanged(tuple.$1),
+                      label: '${tuple.$2} filter',
+                      child: ChoiceChip(
+                        selected: tuple.$1 == severityFilter,
+                        label: Text(tuple.$2),
+                        onSelected: (_) => onSeverityChanged(tuple.$1),
+                      ),
                     ),
                   ),
                 if (showScannerChips) ...[
                   const SizedBox(width: 6),
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
+                    child: Semantics(
+                      button: true,
                       selected: scannerFilter == null,
-                      label: const Text('All scanners'),
-                      onSelected: (_) => onScannerChanged(null),
+                      label: 'All scanners filter',
+                      child: ChoiceChip(
+                        selected: scannerFilter == null,
+                        label: const Text('All scanners'),
+                        onSelected: (_) => onScannerChanged(null),
+                      ),
                     ),
                   ),
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
+                    child: Semantics(
+                      button: true,
                       selected: scannerFilter == Scanner.trivy,
-                      label: const Text('Trivy'),
-                      onSelected: (_) => onScannerChanged(Scanner.trivy),
+                      label: 'Trivy filter',
+                      child: ChoiceChip(
+                        selected: scannerFilter == Scanner.trivy,
+                        label: const Text('Trivy'),
+                        onSelected: (_) => onScannerChanged(Scanner.trivy),
+                      ),
                     ),
                   ),
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
+                    child: Semantics(
+                      button: true,
                       selected: scannerFilter == Scanner.kubescape,
-                      label: const Text('Kubescape'),
-                      onSelected: (_) => onScannerChanged(Scanner.kubescape),
+                      label: 'Kubescape filter',
+                      child: ChoiceChip(
+                        selected: scannerFilter == Scanner.kubescape,
+                        label: const Text('Kubescape'),
+                        onSelected: (_) => onScannerChanged(Scanner.kubescape),
+                      ),
                     ),
                   ),
                 ],
@@ -646,7 +670,9 @@ class _WorkloadRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, color: colors.textMuted, size: 16),
+            ExcludeSemantics(
+              child: Icon(Icons.chevron_right, color: colors.textMuted, size: 16),
+            ),
           ],
         ),
       ),
@@ -783,10 +809,12 @@ class _NamespacePickerSheetState extends ConsumerState<_NamespacePickerSheet> {
                           ),
                           child: Row(
                             children: [
-                              Icon(
-                                Icons.folder_outlined,
-                                color: colors.textMuted,
-                                size: 18,
+                              ExcludeSemantics(
+                                child: Icon(
+                                  Icons.folder_outlined,
+                                  color: colors.textMuted,
+                                  size: 18,
+                                ),
                               ),
                               const SizedBox(width: 8),
                               Expanded(
@@ -798,10 +826,12 @@ class _NamespacePickerSheetState extends ConsumerState<_NamespacePickerSheet> {
                                   ),
                                 ),
                               ),
-                              Icon(
-                                Icons.chevron_right,
-                                color: colors.textMuted,
-                                size: 16,
+                              ExcludeSemantics(
+                                child: Icon(
+                                  Icons.chevron_right,
+                                  color: colors.textMuted,
+                                  size: 16,
+                                ),
                               ),
                             ],
                           ),

@@ -309,10 +309,12 @@ class _FilterStrip extends StatelessWidget {
             controller: searchCtl,
             decoration: InputDecoration(
               hintText: 'Filter by name, namespace, store…',
-              prefixIcon: Icon(
-                Icons.search,
-                size: 18,
-                color: colors.textMuted,
+              prefixIcon: ExcludeSemantics(
+                child: Icon(
+                  Icons.search,
+                  size: 18,
+                  color: colors.textMuted,
+                ),
               ),
               isDense: true,
               border: OutlineInputBorder(
@@ -344,71 +346,79 @@ class _EsRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final drift = cert.effectiveDriftStatus;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    cert.name,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                EsoStatusPill(status: cert.status, dense: true),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${cert.namespace} · ${cert.storeRef.kind}/${cert.storeRef.name}',
-              style: TextStyle(color: colors.textSecondary, fontSize: 12),
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (cert.refreshInterval != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                'refresh every ${cert.refreshInterval}',
-                style: TextStyle(color: colors.textMuted, fontSize: 11),
-              ),
-            ],
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                if (drift != DriftStatus.notObserved) ...[
-                  DriftPill(
-                    status: drift,
-                    reason: cert.driftUnknownReason,
-                    dense: true,
-                  ),
-                  const SizedBox(width: 6),
-                ],
-                if (cert.targetSecretName != null)
-                  Flexible(
+    return Semantics(
+      label: '${cert.name}, namespace ${cert.namespace}, '
+          'store ${cert.storeRef.kind} ${cert.storeRef.name}, '
+          'status ${cert.status.name}',
+      button: true,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
                     child: Text(
-                      '→ ${cert.targetSecretName}',
-                      style: TextStyle(color: colors.textMuted, fontSize: 11),
+                      cert.name,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                const Spacer(),
-                Icon(
-                  Icons.chevron_right,
-                  size: 16,
-                  color: colors.textMuted,
+                  const SizedBox(width: 8),
+                  EsoStatusPill(status: cert.status, dense: true),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${cert.namespace} · ${cert.storeRef.kind}/${cert.storeRef.name}',
+                style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (cert.refreshInterval != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  'refresh every ${cert.refreshInterval}',
+                  style: TextStyle(color: colors.textMuted, fontSize: 11),
                 ),
               ],
-            ),
-          ],
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  if (drift != DriftStatus.notObserved) ...[
+                    DriftPill(
+                      status: drift,
+                      reason: cert.driftUnknownReason,
+                      dense: true,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  if (cert.targetSecretName != null)
+                    Flexible(
+                      child: Text(
+                        '→ ${cert.targetSecretName}',
+                        style: TextStyle(color: colors.textMuted, fontSize: 11),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  const Spacer(),
+                  ExcludeSemantics(
+                    child: Icon(
+                      Icons.chevron_right,
+                      size: 16,
+                      color: colors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

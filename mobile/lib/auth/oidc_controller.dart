@@ -26,7 +26,7 @@ import 'package:flutter_custom_tabs/flutter_custom_tabs.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/api_error.dart';
-import '../notifications/deep_link_handler.dart' show kUniversalLinkHost;
+import '../notifications/deep_link_handler.dart' show universalLinkHostProvider;
 import 'auth_repository.dart';
 import 'oidc_repository.dart';
 import 'pending_oidc_store.dart';
@@ -148,8 +148,11 @@ class OIDCController extends Notifier<OIDCFlowState> {
   final String? _universalLinkHostOverride;
   final DateTime Function() _now;
 
+  // Constructor override seam preserved for unit tests; production reads
+  // through the provider so widget tests can override the host without
+  // rebuilding the controller.
   String get _universalLinkHost =>
-      _universalLinkHostOverride ?? kUniversalLinkHost;
+      _universalLinkHostOverride ?? ref.read(universalLinkHostProvider);
 
   @override
   OIDCFlowState build() => const OIDCFlowIdle();

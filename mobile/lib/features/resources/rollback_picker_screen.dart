@@ -328,54 +328,80 @@ class _RevisionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return ListTile(
+    final age = formatAge(revision.creationTimestamp);
+    final semanticsLabel = isCurrent
+        ? 'Revision ${revision.revision}, current, deployed $age ago'
+        : revision.changeCause != null
+            ? 'Roll back to revision ${revision.revision}, ${revision.changeCause}, deployed $age ago'
+            : 'Roll back to revision ${revision.revision}, deployed $age ago';
+    // The outer Semantics owns both the label AND the tap action.
+    // excludeSemantics: true hides the ListTile's tap from the
+    // accessibility tree, so onTap must be exposed at this level — the
+    // current-revision row is non-interactive so it stays null.
+    return Semantics(
+      button: !isCurrent,
       enabled: !isCurrent,
-      leading: CircleAvatar(
-        backgroundColor: colors.accent.withValues(alpha: 0.16),
-        child: Text(
-          '${revision.revision}',
-          style: TextStyle(color: colors.accent, fontWeight: FontWeight.w600),
-        ),
-      ),
-      title: Row(
-        children: [
-          Text(
-            'Revision ${revision.revision}',
-            style: TextStyle(color: colors.textPrimary),
+      label: semanticsLabel,
+      excludeSemantics: true,
+      onTap: isCurrent ? null : onTap,
+      child: ListTile(
+        enabled: !isCurrent,
+        leading: ExcludeSemantics(
+          child: CircleAvatar(
+            backgroundColor: colors.accent.withValues(alpha: 0.16),
+            child: Text(
+              '${revision.revision}',
+              style:
+                  TextStyle(color: colors.accent, fontWeight: FontWeight.w600),
+            ),
           ),
-          if (isCurrent) ...[
-            const SizedBox(width: 8),
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: colors.accent.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Text(
-                'Current',
-                style: TextStyle(
-                  color: colors.accent,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
+        ),
+        title: Row(
+          children: [
+            Text(
+              'Revision ${revision.revision}',
+              style: TextStyle(color: colors.textPrimary),
+            ),
+            if (isCurrent) ...[
+              const SizedBox(width: 8),
+              // Feature-local "Current" pill — labeled so screen readers
+              // announce it as part of the merged tile semantics above.
+              ExcludeSemantics(
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: colors.accent.withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    'Current',
+                    style: TextStyle(
+                      color: colors.accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
-        ],
+        ),
+        subtitle: Text(
+          revision.changeCause != null
+              ? '${revision.changeCause}  ·  $age ago'
+              : '$age ago',
+          style: TextStyle(color: colors.textSecondary, fontSize: 12),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: isCurrent
+            ? null
+            : ExcludeSemantics(
+                child: Icon(Icons.chevron_right, color: colors.textMuted),
+              ),
+        onTap: onTap,
       ),
-      subtitle: Text(
-        revision.changeCause != null
-            ? '${revision.changeCause}  ·  ${formatAge(revision.creationTimestamp)} ago'
-            : '${formatAge(revision.creationTimestamp)} ago',
-        style: TextStyle(color: colors.textSecondary, fontSize: 12),
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: isCurrent
-          ? null
-          : Icon(Icons.chevron_right, color: colors.textMuted),
-      onTap: onTap,
     );
   }
 }

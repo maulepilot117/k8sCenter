@@ -262,14 +262,28 @@ class _SecretKeyTile extends StatelessWidget {
       ),
       subtitle: Padding(
         padding: const EdgeInsets.only(top: 4),
-        child: Text(
-          isRevealed ? sanitizeSecretValue(revealed!) : '•' * 12,
-          style: TextStyle(
-            color: colors.textSecondary,
-            fontSize: 12,
-            fontFamily: 'monospace',
-          ),
-        ),
+        child: isRevealed
+            ? Text(
+                sanitizeSecretValue(revealed!),
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                ),
+              )
+            : Semantics(
+                label: 'masked value',
+                child: ExcludeSemantics(
+                  child: Text(
+                    '•' * 12,
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                ),
+              ),
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

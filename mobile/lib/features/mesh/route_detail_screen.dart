@@ -234,7 +234,7 @@ class _Header extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
       child: Row(
         children: [
-          Icon(Icons.alt_route, color: colors.accent),
+          ExcludeSemantics(child: Icon(Icons.alt_route, color: colors.accent)),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -392,21 +392,23 @@ class _RawPanelState extends State<_RawPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              children: [
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 18,
-                  color: colors.textMuted,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  _expanded ? 'Hide' : 'Show',
-                  style: TextStyle(color: colors.textMuted, fontSize: 12),
-                ),
-              ],
+          MergeSemantics(
+            child: InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: Row(
+                children: [
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 18,
+                    color: colors.textMuted,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _expanded ? 'Hide' : 'Show',
+                    style: TextStyle(color: colors.textMuted, fontSize: 12),
+                  ),
+                ],
+              ),
             ),
           ),
           if (_expanded) ...[

@@ -24,6 +24,7 @@
 // case-insensitive) — kindDetailPath() owns the canonicalization.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../routing/domain_sections.dart';
@@ -146,6 +147,12 @@ class DeepLinkHandler {
 const String kUniversalLinkHost = String.fromEnvironment(
   'UNIVERSAL_LINK_HOST',
 );
+
+/// Riverpod seam over [kUniversalLinkHost]. Production reads the
+/// compile-time const; widget tests override this provider to render
+/// OIDC affordances that the bare const would hide (the test binary
+/// runs without `--dart-define`, so the const evaluates to `""`).
+final universalLinkHostProvider = Provider<String>((ref) => kUniversalLinkHost);
 
 /// Process-wide DeepLinkHandler used by FCM listeners and the router's
 /// pendingDeepLinkProvider drain. Both call sites share this instance

@@ -172,50 +172,54 @@ class _AppSetBodyState extends ConsumerState<_AppSetBody> {
             margin: const EdgeInsets.only(bottom: 8),
             child: Column(
               children: [
-                InkWell(
-                  onTap: () => setState(() {
-                    if (isExpanded) {
-                      _expandedGenerators.remove(idx);
-                    } else {
-                      _expandedGenerators.add(idx);
-                    }
-                  }),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12),
-                    child: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(10),
-                            color: colors.accent.withValues(alpha: 0.12),
-                          ),
-                          child: Text(
-                            type,
-                            style: TextStyle(
-                              color: colors.accent,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
+                MergeSemantics(
+                  child: InkWell(
+                    onTap: () => setState(() {
+                      if (isExpanded) {
+                        _expandedGenerators.remove(idx);
+                      } else {
+                        _expandedGenerators.add(idx);
+                      }
+                    }),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              color: colors.accent.withValues(alpha: 0.12),
+                            ),
+                            child: Text(
+                              type,
+                              style: TextStyle(
+                                color: colors.accent,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Generator ${idx + 1}',
-                            style: TextStyle(
-                                color: colors.textSecondary, fontSize: 13),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Generator ${idx + 1}',
+                              style: TextStyle(
+                                  color: colors.textSecondary, fontSize: 13),
+                            ),
                           ),
-                        ),
-                        Icon(
-                          isExpanded
-                              ? Icons.expand_less
-                              : Icons.expand_more,
-                          color: colors.textMuted,
-                        ),
-                      ],
+                          ExcludeSemantics(
+                            child: Icon(
+                              isExpanded
+                                  ? Icons.expand_less
+                                  : Icons.expand_more,
+                              color: colors.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -285,44 +289,48 @@ class _AppSetBodyState extends ConsumerState<_AppSetBody> {
     final footerItems = <Widget>[
       if (detail.conditions.isNotEmpty) ...[
         const SizedBox(height: 12),
-        InkWell(
-          onTap: () =>
-              setState(() => _conditionsExpanded = !_conditionsExpanded),
-          child: Row(
-            children: [
-              Text(
-                'Conditions (${detail.conditions.length})',
-                style: TextStyle(
-                  color: colors.textPrimary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (detail.conditions.any((c) => c.isError))
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(10),
-                    color: colors.error.withValues(alpha: 0.15),
+        MergeSemantics(
+          child: InkWell(
+            onTap: () =>
+                setState(() => _conditionsExpanded = !_conditionsExpanded),
+            child: Row(
+              children: [
+                Text(
+                  'Conditions (${detail.conditions.length})',
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontWeight: FontWeight.w600,
                   ),
-                  child: Text(
-                    'errors',
-                    style: TextStyle(
-                      color: colors.error,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                ),
+                const SizedBox(width: 8),
+                if (detail.conditions.any((c) => c.isError))
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      color: colors.error.withValues(alpha: 0.15),
+                    ),
+                    child: Text(
+                      'errors',
+                      style: TextStyle(
+                        color: colors.error,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
+                const Spacer(),
+                ExcludeSemantics(
+                  child: Icon(
+                    _conditionsExpanded
+                        ? Icons.expand_less
+                        : Icons.expand_more,
+                    color: colors.textMuted,
+                  ),
                 ),
-              const Spacer(),
-              Icon(
-                _conditionsExpanded
-                    ? Icons.expand_less
-                    : Icons.expand_more,
-                color: colors.textMuted,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         if (_conditionsExpanded) ...[

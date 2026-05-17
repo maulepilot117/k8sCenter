@@ -238,54 +238,62 @@ class _StoreRefLink extends StatelessWidget {
         : '/clusters/$clusterId/eso/stores/'
             '${Uri.encodeComponent(esNamespace)}/'
             '${Uri.encodeComponent(ref.name)}';
-    return InkWell(
-      onTap: () => context.push(path),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 120,
-              child: Text(
-                'Store',
-                style: TextStyle(
-                  color: colors.textMuted,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
+    return Semantics(
+      label: 'Open ${ref.kind} ${ref.name}',
+      button: true,
+      child: InkWell(
+        onTap: () => context.push(path),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 120,
+                child: Text(
+                  'Store',
+                  style: TextStyle(
+                    color: colors.textMuted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ),
-            ),
-            Expanded(
-              child: Row(
-                children: [
-                  Icon(
-                    isCluster ? Icons.public_outlined : Icons.account_tree_outlined,
-                    size: 14,
-                    color: colors.accent,
-                  ),
-                  const SizedBox(width: 6),
-                  Flexible(
-                    child: Text(
-                      '${ref.kind} / ${ref.name}',
-                      style: TextStyle(
+              Expanded(
+                child: Row(
+                  children: [
+                    ExcludeSemantics(
+                      child: Icon(
+                        isCluster ? Icons.public_outlined : Icons.account_tree_outlined,
+                        size: 14,
                         color: colors.accent,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
-                  ),
-                  const SizedBox(width: 4),
-                  Icon(
-                    Icons.open_in_new,
-                    size: 12,
-                    color: colors.accent,
-                  ),
-                ],
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${ref.kind} / ${ref.name}',
+                        style: TextStyle(
+                          color: colors.accent,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    ExcludeSemantics(
+                      child: Icon(
+                        Icons.open_in_new,
+                        size: 12,
+                        color: colors.accent,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

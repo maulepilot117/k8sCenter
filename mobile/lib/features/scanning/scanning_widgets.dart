@@ -166,8 +166,14 @@ class SeverityCountChip extends StatelessWidget {
         ],
       ),
     );
-    if (onTap == null) return pill;
-    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(4), child: pill);
+    final wrapped = Semantics(
+      container: true,
+      label: '$label severity: $count',
+      excludeSemantics: true,
+      child: pill,
+    );
+    if (onTap == null) return wrapped;
+    return InkWell(onTap: onTap, borderRadius: BorderRadius.circular(4), child: wrapped);
   }
 }
 
@@ -194,20 +200,25 @@ class CVESeverityBadge extends StatelessWidget {
     final bg = scanSeverityDim(severity, colors);
     final displayLabel = label ?? scanSeverityLabel(severity);
     final isCount = label != null;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        displayLabel,
-        style: TextStyle(
-          color: fg,
-          fontSize: 10,
-          fontWeight: isCount ? FontWeight.w700 : FontWeight.w600,
-          fontFeatures: isCount ? const [FontFeature.tabularFigures()] : null,
+    return Semantics(
+      container: true,
+      label: '${scanSeverityLabel(severity)} severity: $displayLabel',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          displayLabel,
+          style: TextStyle(
+            color: fg,
+            fontSize: 10,
+            fontWeight: isCount ? FontWeight.w700 : FontWeight.w600,
+            fontFeatures: isCount ? const [FontFeature.tabularFigures()] : null,
+          ),
         ),
       ),
     );
@@ -226,20 +237,26 @@ class FixAvailableBadge extends StatelessWidget {
     final hasFix = fixedVersion.isNotEmpty;
     final fg = hasFix ? colors.success : colors.textMuted;
     final bg = hasFix ? colors.successDim : colors.bgSurface;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(3),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        hasFix ? fixedVersion : 'No fix',
-        style: TextStyle(
-          color: fg,
-          fontSize: 10,
-          fontFamily: hasFix ? 'monospace' : null,
-          fontWeight: FontWeight.w600,
+    final displayLabel = hasFix ? fixedVersion : 'No fix';
+    return Semantics(
+      container: true,
+      label: hasFix ? 'Fix available: $fixedVersion' : 'No fix available',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(3),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          displayLabel,
+          style: TextStyle(
+            color: fg,
+            fontSize: 10,
+            fontFamily: hasFix ? 'monospace' : null,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -262,22 +279,28 @@ class ScannerBadge extends StatelessWidget {
       Scanner.kubescape => (colors.accent, colors.accentDim),
       Scanner.unknown => (colors.textMuted, colors.bgSurface),
     };
-    return Container(
-      padding: EdgeInsets.symmetric(
-        horizontal: dense ? 6 : 8,
-        vertical: dense ? 2 : 3,
-      ),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(dense ? 3 : 4),
-        border: Border.all(color: fg),
-      ),
-      child: Text(
-        scannerLabel(scanner),
-        style: TextStyle(
-          color: fg,
-          fontSize: dense ? 10 : 11,
-          fontWeight: FontWeight.w600,
+    final label = scannerLabel(scanner);
+    return Semantics(
+      container: true,
+      label: 'Scanner: $label',
+      excludeSemantics: true,
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: dense ? 6 : 8,
+          vertical: dense ? 2 : 3,
+        ),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(dense ? 3 : 4),
+          border: Border.all(color: fg),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: fg,
+            fontSize: dense ? 10 : 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );
@@ -306,7 +329,7 @@ class StaleScanBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.schedule, color: colors.warning, size: 18),
+          ExcludeSemantics(child: Icon(Icons.schedule, color: colors.warning, size: 18)),
           const SizedBox(width: 8),
           Expanded(
             child: Text(

@@ -181,6 +181,9 @@ class _DashboardContent extends StatelessWidget {
             subtitle: 'ExternalSecrets synced',
             severity: severity,
             size: 160,
+            semanticsLabel:
+                '$synced of $total ExternalSecrets synced '
+                '(${(pct * 100).toStringAsFixed(0)}%)',
           ),
         ),
         const SizedBox(height: 16),
@@ -271,36 +274,41 @@ class _SummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: colors.textMuted,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
+    return Semantics(
+      label: '$count $label ExternalSecrets',
+      child: ExcludeSemantics(
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colors.bgSurface,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: colors.borderSubtle),
           ),
-          const SizedBox(height: 4),
-          Text(
-            '$count',
-            style: TextStyle(
-              color: color,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  color: colors.textMuted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '$count',
+                style: TextStyle(
+                  color: color,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -315,28 +323,36 @@ class _BrowseLinks extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget tile(String label, IconData icon, String path) => Expanded(
-          child: InkWell(
-            onTap: () => context.push(path),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: colors.bgSurface,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: colors.borderSubtle),
-              ),
-              child: Column(
-                children: [
-                  Icon(icon, color: colors.accent, size: 22),
-                  const SizedBox(height: 6),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
+          child: Semantics(
+            label: 'Browse $label',
+            button: true,
+            child: InkWell(
+              onTap: () => context.push(path),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: colors.bgSurface,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: colors.borderSubtle),
+                ),
+                child: Column(
+                  children: [
+                    ExcludeSemantics(
+                      child: Icon(icon, color: colors.accent, size: 22),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 6),
+                    ExcludeSemantics(
+                      child: Text(
+                        label,
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -427,56 +443,67 @@ class _FailureRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: () => context.push(
-        '/clusters/$clusterId/eso/externalsecrets/'
-        '${Uri.encodeComponent(es.namespace)}/'
-        '${Uri.encodeComponent(es.name)}',
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    es.name,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    es.namespace,
-                    style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 11,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  if (es.readyMessage != null &&
-                      es.readyMessage!.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        es.readyMessage!,
-                        style: TextStyle(color: colors.textMuted, fontSize: 11),
-                        overflow: TextOverflow.ellipsis,
-                        maxLines: 2,
+    return Semantics(
+      label: '${es.name}, namespace ${es.namespace}, '
+          'status ${es.status.name}',
+      button: true,
+      child: InkWell(
+        onTap: () => context.push(
+          '/clusters/$clusterId/eso/externalsecrets/'
+          '${Uri.encodeComponent(es.namespace)}/'
+          '${Uri.encodeComponent(es.name)}',
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      es.name,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
                       ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                ],
+                    Text(
+                      es.namespace,
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 11,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (es.readyMessage != null &&
+                        es.readyMessage!.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          es.readyMessage!,
+                          style: TextStyle(color: colors.textMuted, fontSize: 11),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 2,
+                        ),
+                      ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            EsoStatusPill(status: es.status, dense: true),
-            const SizedBox(width: 6),
-            Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
-          ],
+              const SizedBox(width: 8),
+              EsoStatusPill(status: es.status, dense: true),
+              const SizedBox(width: 6),
+              ExcludeSemantics(
+                child: Icon(
+                  Icons.chevron_right,
+                  size: 16,
+                  color: colors.textMuted,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

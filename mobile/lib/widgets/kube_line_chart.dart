@@ -437,23 +437,27 @@ class _Legend extends StatelessWidget {
         runSpacing: 4,
         children: series.map((s) {
           final color = kubeChartSeverityColor(s.severity, colors);
-          return Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 12,
-                height: 3,
-                decoration: BoxDecoration(
-                  color: color,
-                  borderRadius: BorderRadius.circular(2),
+          return MergeSemantics(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ExcludeSemantics(
+                  child: Container(
+                    width: 12,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: color,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 4),
-              Text(
-                s.label,
-                style: TextStyle(color: colors.textMuted, fontSize: 11),
-              ),
-            ],
+                const SizedBox(width: 4),
+                Text(
+                  s.label,
+                  style: TextStyle(color: colors.textMuted, fontSize: 11),
+                ),
+              ],
+            ),
           );
         }).toList(),
       ),

@@ -151,7 +151,6 @@ class _TimeRangePickerState extends State<TimeRangePicker> {
         showSelectedIcon: false,
         style: const ButtonStyle(
           visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
       ),
     );

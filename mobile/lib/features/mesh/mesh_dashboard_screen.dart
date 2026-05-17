@@ -131,7 +131,7 @@ class _EngineCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(accentIcon, color: accent),
+                ExcludeSemantics(child: Icon(accentIcon, color: accent)),
                 const SizedBox(width: 8),
                 Text(
                   name,

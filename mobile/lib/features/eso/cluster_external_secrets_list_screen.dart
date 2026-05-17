@@ -122,49 +122,54 @@ class _CesRow extends StatelessWidget {
     // Set-union prevents the "12 namespaces" badge from inflating to 24.
     final nsCount =
         {...ces.namespaces, ...ces.provisionedNamespaces}.length;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    ces.name,
-                    style: TextStyle(
-                      color: colors.textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
+    return Semantics(
+      label: '${ces.name}, store ${ces.storeRef.kind} ${ces.storeRef.name}, '
+          'status ${ces.status.name}',
+      button: true,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      ces.name,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    overflow: TextOverflow.ellipsis,
+                  ),
+                  EsoStatusPill(status: ces.status, dense: true),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${ces.storeRef.kind}/${ces.storeRef.name}',
+                style: TextStyle(color: colors.textSecondary, fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (nsCount > 0) ...[
+                const SizedBox(height: 2),
+                Text(
+                  '$nsCount namespace${nsCount == 1 ? '' : 's'}'
+                  "${ces.failedNamespaces.isEmpty ? '' : '  ·  ${ces.failedNamespaces.length} failed'}",
+                  style: TextStyle(
+                    color: ces.failedNamespaces.isEmpty
+                        ? colors.textMuted
+                        : colors.warning,
+                    fontSize: 11,
                   ),
                 ),
-                EsoStatusPill(status: ces.status, dense: true),
               ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${ces.storeRef.kind}/${ces.storeRef.name}',
-              style: TextStyle(color: colors.textSecondary, fontSize: 12),
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (nsCount > 0) ...[
-              const SizedBox(height: 2),
-              Text(
-                '$nsCount namespace${nsCount == 1 ? '' : 's'}'
-                "${ces.failedNamespaces.isEmpty ? '' : '  ·  ${ces.failedNamespaces.length} failed'}",
-                style: TextStyle(
-                  color: ces.failedNamespaces.isEmpty
-                      ? colors.textMuted
-                      : colors.warning,
-                  fontSize: 11,
-                ),
-              ),
             ],
-          ],
+          ),
         ),
       ),
     );

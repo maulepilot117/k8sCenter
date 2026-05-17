@@ -140,7 +140,7 @@ class _ClusterList extends StatelessWidget {
             ),
             child: Row(
               children: [
-                Icon(Icons.cloud_off, size: 16, color: colors.warning),
+                ExcludeSemantics(child: Icon(Icons.cloud_off, size: 16, color: colors.warning)),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -176,9 +176,11 @@ class _ClusterList extends StatelessWidget {
                           ),
                         )
                       : null,
-                  secondary: Icon(
-                    c.isLocal ? Icons.home_outlined : Icons.cloud_outlined,
-                    color: colors.textSecondary,
+                  secondary: ExcludeSemantics(
+                    child: Icon(
+                      c.isLocal ? Icons.home_outlined : Icons.cloud_outlined,
+                      color: colors.textSecondary,
+                    ),
                   ),
                   activeColor: colors.accent,
                 );

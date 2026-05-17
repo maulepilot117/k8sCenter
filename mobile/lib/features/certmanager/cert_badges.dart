@@ -47,7 +47,7 @@ class CertStatusPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final tone = _color(colors);
-    return _Pill(label: certStatusLabel(status), color: tone);
+    return _Pill(label: certStatusLabel(status), color: tone, semanticsPrefix: 'Certificate status');
   }
 }
 
@@ -72,6 +72,7 @@ class IssuerTypeBadge extends StatelessWidget {
     return _Pill(
       label: type.isEmpty ? 'Unknown' : type,
       color: _color(colors),
+      semanticsPrefix: 'Issuer type',
     );
   }
 }
@@ -101,10 +102,10 @@ class ExpiryBadge extends StatelessWidget {
     }
     final warn = warningThresholdDays ?? kDefaultWarningThresholdDays;
     final crit = criticalThresholdDays ?? kDefaultCriticalThresholdDays;
-    if (d < 0) return _Pill(label: 'Expired', color: colors.error);
-    if (d <= crit) return _Pill(label: '${d}d left', color: colors.error);
-    if (d <= warn) return _Pill(label: '${d}d left', color: colors.warning);
-    return _Pill(label: '${d}d', color: colors.success);
+    if (d < 0) return _Pill(label: 'Expired', color: colors.error, semanticsPrefix: 'Expiry');
+    if (d <= crit) return _Pill(label: '${d}d left', color: colors.error, semanticsPrefix: 'Expiry');
+    if (d <= warn) return _Pill(label: '${d}d left', color: colors.warning, semanticsPrefix: 'Expiry');
+    return _Pill(label: '${d}d', color: colors.success, semanticsPrefix: 'Expiry');
   }
 }
 
@@ -119,33 +120,49 @@ class ReadyBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final tone = ready ? colors.success : colors.error;
-    return _Pill(label: ready ? 'Ready' : 'Not ready', color: tone);
+    return _Pill(label: ready ? 'Ready' : 'Not ready', color: tone, semanticsPrefix: 'Issuer status');
   }
 }
 
 /// Pill chrome — same shape used by every cert-manager badge so colors
 /// vary but the geometry stays consistent.
+///
+/// [semanticsPrefix] lets callers supply a context prefix (e.g. "Status",
+/// "Issuer type", "Expiry") so screen readers announce
+/// "Status: Ready" rather than just "Ready".
 class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.color});
+  const _Pill({
+    required this.label,
+    required this.color,
+    this.semanticsPrefix,
+  });
 
   final String label;
   final Color color;
+  final String? semanticsPrefix;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
+    final announcedLabel =
+        semanticsPrefix != null ? '$semanticsPrefix: $label' : label;
+    return Semantics(
+      container: true,
+      label: announcedLabel,
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

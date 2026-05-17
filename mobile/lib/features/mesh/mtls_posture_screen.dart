@@ -113,7 +113,9 @@ class _NamespaceBar extends ConsumerWidget {
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       child: Row(
         children: [
-          Icon(Icons.folder_outlined, color: colors.textMuted, size: 18),
+          ExcludeSemantics(
+            child: Icon(Icons.folder_outlined, color: colors.textMuted, size: 18),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: listAsync.when(
@@ -189,7 +191,9 @@ class _NamespacePrompt extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.lock_outline, size: 40, color: colors.textMuted),
+            ExcludeSemantics(
+              child: Icon(Icons.lock_outline, size: 40, color: colors.textMuted),
+            ),
             const SizedBox(height: 12),
             Text(
               'Choose a namespace',
@@ -403,86 +407,89 @@ class _WorkloadRow extends StatelessWidget {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final kind = workload.workloadKind;
     final showAsterisk = kind != null && !workload.workloadKindConfident;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      workload.workload,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 14,
+    return Semantics(
+      label: '${workload.workload}: mTLS ${workload.state}',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        workload.workload,
+                        style: TextStyle(
+                          color: colors.textPrimary,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    if (kind != null)
-                      Row(
-                        children: [
-                          Text(
-                            kind,
-                            style:
-                                TextStyle(color: colors.textMuted, fontSize: 12),
-                          ),
-                          if (showAsterisk)
-                            Tooltip(
-                              message:
-                                  'Workload kind inferred from ReplicaSet '
-                                  'name (no owner-reference lookup).',
-                              child: Padding(
-                                padding: const EdgeInsets.only(left: 2),
-                                child: Text(
-                                  '*',
-                                  style: TextStyle(
-                                    color: colors.warning,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w700,
+                      if (kind != null)
+                        Row(
+                          children: [
+                            Text(
+                              kind,
+                              style:
+                                  TextStyle(color: colors.textMuted, fontSize: 12),
+                            ),
+                            if (showAsterisk)
+                              Tooltip(
+                                message:
+                                    'Workload kind inferred from ReplicaSet '
+                                    'name (no owner-reference lookup).',
+                                child: Padding(
+                                  padding: const EdgeInsets.only(left: 2),
+                                  child: Text(
+                                    '*',
+                                    style: TextStyle(
+                                      color: colors.warning,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
-                  ],
+                          ],
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-              MeshPill(
-                label: workload.state,
-                color: meshStateColor(colors, workload.state),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 6,
-            runSpacing: 4,
-            children: [
-              MeshPill(
-                label: meshDisplayName(workload.mesh),
-                color: colors.accent,
-              ),
-              _SourceBadge(source: workload.source),
-              if (workload.istioMode != null)
                 MeshPill(
-                  label: 'Mode: ${workload.istioMode}',
-                  color: meshStateColor(colors, workload.istioMode),
+                  label: workload.state,
+                  color: meshStateColor(colors, workload.state),
                 ),
-              if (workload.sourceDetail != null)
-                MeshMutedBadge(
-                  label: 'Scope: ${workload.sourceDetail}',
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: [
+                MeshPill(
+                  label: meshDisplayName(workload.mesh),
+                  color: colors.accent,
                 ),
-            ],
-          ),
-          Divider(color: colors.borderSubtle, height: 18),
-        ],
+                _SourceBadge(source: workload.source),
+                if (workload.istioMode != null)
+                  MeshPill(
+                    label: 'Mode: ${workload.istioMode}',
+                    color: meshStateColor(colors, workload.istioMode),
+                  ),
+                if (workload.sourceDetail != null)
+                  MeshMutedBadge(
+                    label: 'Scope: ${workload.sourceDetail}',
+                  ),
+              ],
+            ),
+            Divider(color: colors.borderSubtle, height: 18),
+          ],
+        ),
       ),
     );
   }

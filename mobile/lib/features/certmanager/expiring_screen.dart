@@ -97,10 +97,12 @@ class _ExpiringBody extends ConsumerWidget {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(
-                            Icons.verified_outlined,
-                            color: colors.success,
-                            size: 36,
+                          ExcludeSemantics(
+                            child: Icon(
+                              Icons.verified_outlined,
+                              color: colors.success,
+                              size: 36,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           Text(
@@ -204,7 +206,9 @@ class _ExpiringRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
+            ExcludeSemantics(
+              child: Icon(Icons.chevron_right, size: 16, color: colors.textMuted),
+            ),
           ],
         ),
       ),

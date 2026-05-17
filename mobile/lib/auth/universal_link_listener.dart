@@ -16,7 +16,7 @@ import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../notifications/deep_link_handler.dart' show kUniversalLinkHost;
+import '../notifications/deep_link_handler.dart' show universalLinkHostProvider;
 import 'oidc_controller.dart';
 
 /// Wires app_links to OIDCController.completeFlow. Holds the
@@ -31,14 +31,14 @@ class UniversalLinkListener {
 
   final Ref _ref;
   final AppLinks _appLinks;
-  // Override seam for tests — the const `kUniversalLinkHost` is empty in
-  // the test binary (no --dart-define), so tests need a way to supply a
-  // host without rebuilding the whole notification module. Production
-  // wiring goes through the Provider below and passes null, which keeps
-  // the dart-define source of truth.
+  // Constructor override seam — preserved for unit tests that construct
+  // the listener directly with a fixed host. When null, falls back to
+  // [universalLinkHostProvider] so widget-level tests that override that
+  // provider also flow through cleanly. Production wiring passes null.
   final String? _universalLinkHostOverride;
 
-  String get _host => _universalLinkHostOverride ?? kUniversalLinkHost;
+  String get _host =>
+      _universalLinkHostOverride ?? _ref.read(universalLinkHostProvider);
 
   StreamSubscription<Uri>? _sub;
   bool _initialDrained = false;

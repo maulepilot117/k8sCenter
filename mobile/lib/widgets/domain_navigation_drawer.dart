@@ -177,18 +177,23 @@ class _UnreadBadge extends ConsumerWidget {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final count = ref.watch(unreadCountProvider).asData?.value ?? 0;
     if (count == 0) return const SizedBox.shrink();
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      decoration: BoxDecoration(
-        color: colors.accent,
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        count > 99 ? '99+' : '$count',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
+    final displayCount = count > 99 ? '99+' : '$count';
+    return Semantics(
+      label: '$displayCount unread notification${count == 1 ? '' : 's'}',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+        decoration: BoxDecoration(
+          color: colors.accent,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          displayCount,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

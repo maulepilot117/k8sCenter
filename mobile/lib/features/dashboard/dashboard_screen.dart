@@ -104,7 +104,9 @@ class _DashboardLocalOnlyView extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.cloud_off, size: 48, color: colors.textMuted),
+                ExcludeSemantics(
+                  child: Icon(Icons.cloud_off, size: 48, color: colors.textMuted),
+                ),
                 const SizedBox(height: 16),
                 Text(
                   'Dashboard summary is local-cluster only',
@@ -226,47 +228,59 @@ class _SummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: colors.textSecondary),
-              const SizedBox(width: 6),
-              Text(
-                label,
+    return Semantics(
+      container: true,
+      label: '$label: $primary, $secondary',
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colors.bgSurface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.borderSubtle),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            MergeSemantics(
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child: Icon(icon, size: 18, color: colors.textSecondary),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ExcludeSemantics(
+              child: Text(
+                primary,
                 style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+                  color: colors.textPrimary,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ],
-          ),
-          Text(
-            primary,
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 26,
-              fontWeight: FontWeight.w700,
             ),
-          ),
-          Text(
-            secondary,
-            style: TextStyle(
-              color: highlightSecondary ? colors.warning : colors.textMuted,
-              fontSize: 12,
+            ExcludeSemantics(
+              child: Text(
+                secondary,
+                style: TextStyle(
+                  color: highlightSecondary ? colors.warning : colors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -306,60 +320,77 @@ class _UtilCard extends StatelessWidget {
       subtitle.write(' · ${reqLim.join(' · ')}');
     }
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: colors.textSecondary),
-              const SizedBox(width: 6),
-              Text(
-                label,
+    return Semantics(
+      container: true,
+      label: '$label: ${pct.toStringAsFixed(0)}%, ${subtitle.toString()}',
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colors.bgSurface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.borderSubtle),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            MergeSemantics(
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child: Icon(icon, size: 18, color: colors.textSecondary),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ExcludeSemantics(
+              child: Text(
+                '${pct.toStringAsFixed(0)}%',
                 style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+                  color: colors.textPrimary,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ],
-          ),
-          Text(
-            '${pct.toStringAsFixed(0)}%',
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontSize: 26,
-              fontWeight: FontWeight.w700,
             ),
-          ),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: pct / 100,
-              backgroundColor: colors.bgElevated,
-              valueColor: AlwaysStoppedAnimation(
-                pct >= 90
-                    ? colors.error
-                    : pct >= 75
-                        ? colors.warning
-                        : colors.accent,
+            // Progress bar is purely visual — the outer Semantics already
+            // announces the percentage in the card label. ExcludeSemantics
+            // prevents a doubled read on TalkBack/VoiceOver.
+            ExcludeSemantics(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: pct / 100,
+                  backgroundColor: colors.bgElevated,
+                  valueColor: AlwaysStoppedAnimation(
+                    pct >= 90
+                        ? colors.error
+                        : pct >= 75
+                            ? colors.warning
+                            : colors.accent,
+                  ),
+                  minHeight: 6,
+                ),
               ),
-              minHeight: 6,
             ),
-          ),
-          Text(
-            subtitle.toString(),
-            style: TextStyle(color: colors.textMuted, fontSize: 12),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+            ExcludeSemantics(
+              child: Text(
+                subtitle.toString(),
+                style: TextStyle(color: colors.textMuted, fontSize: 12),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -382,50 +413,65 @@ class _UnavailableCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: colors.bgSurface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: colors.borderSubtle),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: colors.textSecondary),
-              const SizedBox(width: 6),
-              Text(
-                label,
+    return Semantics(
+      container: true,
+      label: '$label: unavailable, Prometheus unavailable',
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: colors.bgSurface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: colors.borderSubtle),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            MergeSemantics(
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child: Icon(icon, size: 18, color: colors.textSecondary),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ExcludeSemantics(
+              child: Text(
+                '—',
                 style: TextStyle(
-                  color: colors.textSecondary,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
+                  color: colors.textMuted,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-            ],
-          ),
-          Text(
-            '—',
-            style: TextStyle(
-              color: colors.textMuted,
-              fontSize: 26,
-              fontWeight: FontWeight.w700,
             ),
-          ),
-          Row(
-            children: [
-              Icon(Icons.cloud_off, size: 12, color: colors.textMuted),
-              const SizedBox(width: 4),
-              Text(
-                'Prometheus unavailable',
-                style: TextStyle(color: colors.textMuted, fontSize: 12),
+            MergeSemantics(
+              child: Row(
+                children: [
+                  ExcludeSemantics(
+                    child:
+                        Icon(Icons.cloud_off, size: 12, color: colors.textMuted),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Prometheus unavailable',
+                    style: TextStyle(color: colors.textMuted, fontSize: 12),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

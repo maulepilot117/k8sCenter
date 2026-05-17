@@ -33,7 +33,16 @@ class ClusterPill extends ConsumerWidget {
       orElse: () => '…',
     );
 
-    return InkWell(
+    // The outer Semantics owns both the label AND the tap action. Without
+    // an onTap here, excludeSemantics: true would hide the InkWell's tap
+    // action from the accessibility tree — VoiceOver/TalkBack users would
+    // hear "button" but double-tap would do nothing.
+    return Semantics(
+      button: true,
+      label: 'Active cluster: $label. Tap to switch cluster.',
+      excludeSemantics: true,
+      onTap: () => ClusterPickerSheet.show(context, ref),
+      child: InkWell(
       key: const ValueKey('cluster-pill'),
       borderRadius: BorderRadius.circular(18),
       onTap: () => ClusterPickerSheet.show(context, ref),
@@ -63,6 +72,7 @@ class ClusterPill extends ConsumerWidget {
           ],
         ),
       ),
+    ),
     );
   }
 }

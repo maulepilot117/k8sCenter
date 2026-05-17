@@ -181,6 +181,7 @@ class ResourceDetailScaffold extends ConsumerWidget {
             ],
           ),
           leading: IconButton(
+            tooltip: 'Back',
             icon: const Icon(Icons.arrow_back),
             onPressed: () => Navigator.of(context).maybePop(),
           ),
@@ -250,8 +251,8 @@ class ResourceDetailScaffold extends ConsumerWidget {
                           ),
                           child: Row(
                             children: [
-                              Icon(Icons.lock_outline,
-                                  size: 16, color: colors.warning),
+                              ExcludeSemantics(child: Icon(Icons.lock_outline,
+                                  size: 16, color: colors.warning)),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
@@ -294,19 +295,24 @@ class _StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.16),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: color,
-          fontSize: 12,
-          fontWeight: FontWeight.w500,
+    return Semantics(
+      container: true,
+      label: 'Status: $label',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.4)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+          ),
         ),
       ),
     );

@@ -99,7 +99,9 @@ class ResourceTable<T> extends StatelessWidget {
                   style: TextStyle(color: colors.textSecondary, fontSize: 12),
                   overflow: TextOverflow.ellipsis,
                 ),
-          trailing: Icon(Icons.chevron_right, color: colors.textMuted),
+          trailing: ExcludeSemantics(
+            child: Icon(Icons.chevron_right, color: colors.textMuted),
+          ),
           onTap: () => onTap(item),
         );
       },
