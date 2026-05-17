@@ -239,80 +239,21 @@ class _SecondaryHint extends StatelessWidget {
   }
 }
 
-/// Namespaced SecretStore picker. Reads `storesListProvider`, filters
-/// to the chosen namespace, and renders a dropdown.
-class _StorePicker extends ConsumerWidget {
-  const _StorePicker({
-    required this.clusterId,
-    required this.namespace,
-    required this.selected,
-    required this.onChanged,
-  });
+/// Bordered "labeled box" used by both store pickers. Extracted from
+/// duplicate `_frame` helpers that used to live on `_StorePicker` and
+/// `_ClusterStorePicker` — the cluster-store variant previously
+/// hardcoded its label, which made the two helpers structurally
+/// identical but textually inconsistent. Threading the label through
+/// here removes the duplication and the inconsistency in one move.
+class _LabeledPickerFrame extends StatelessWidget {
+  const _LabeledPickerFrame({required this.label, required this.child});
 
-  final String clusterId;
-  final String namespace;
-  final String selected;
-  final ValueChanged<String> onChanged;
+  final String label;
+  final Widget child;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final async = ref.watch(storesListProvider(clusterId));
-    return async.when(
-      loading: () => _frame(
-        colors,
-        const LinearProgressIndicator(minHeight: 2),
-        label: 'SecretStore',
-      ),
-      error: (e, _) => _frame(
-        colors,
-        Text(
-          'Failed to load stores: $e',
-          style: TextStyle(color: colors.error, fontSize: 12),
-        ),
-        label: 'SecretStore',
-      ),
-      data: (stores) {
-        final filtered = stores
-            .where((s) => s.namespace == namespace)
-            .map((s) => s.name)
-            .toList()
-          ..sort();
-        if (filtered.isEmpty) {
-          return _frame(
-            colors,
-            Text(
-              'No SecretStores in $namespace',
-              style: TextStyle(color: colors.textMuted, fontSize: 12),
-            ),
-            label: 'SecretStore',
-          );
-        }
-        if (selected.isNotEmpty && !filtered.contains(selected)) {
-          filtered.add(selected);
-          filtered.sort();
-        }
-        return DropdownButtonFormField<String>(
-          initialValue: selected.isEmpty ? null : selected,
-          isExpanded: true,
-          decoration: const InputDecoration(
-            labelText: 'SecretStore',
-            border: OutlineInputBorder(),
-          ),
-          items: [
-            for (final v in filtered)
-              DropdownMenuItem(value: v, child: Text(v)),
-          ],
-          onChanged: (v) {
-            if (v == null) return;
-            onChanged(v);
-          },
-        );
-      },
-    );
-  }
-
-  Widget _frame(KubeColors colors, Widget child, {required String label}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -338,6 +279,79 @@ class _StorePicker extends ConsumerWidget {
   }
 }
 
+/// Namespaced SecretStore picker. Reads `storesListProvider` with the
+/// chosen namespace in the family key so the backend filters server-side
+/// via `?namespace=` (no client-side `.where` walk over an unbounded
+/// cluster-wide list — large fleets used to pay the entire payload cost
+/// just to render the dropdown for one namespace).
+class _StorePicker extends ConsumerWidget {
+  const _StorePicker({
+    required this.clusterId,
+    required this.namespace,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final String clusterId;
+  final String namespace;
+  final String selected;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    final async = ref.watch(storesListProvider(
+      StoresListKey(clusterId: clusterId, namespace: namespace),
+    ));
+    return async.when(
+      loading: () => const _LabeledPickerFrame(
+        label: 'SecretStore',
+        child: LinearProgressIndicator(minHeight: 2),
+      ),
+      error: (e, _) => _LabeledPickerFrame(
+        label: 'SecretStore',
+        child: Text(
+          'Failed to load stores: $e',
+          style: TextStyle(color: colors.error, fontSize: 12),
+        ),
+      ),
+      data: (stores) {
+        // Backend already filters by namespace; we just project to names.
+        final filtered = stores.map((s) => s.name).toList()..sort();
+        if (filtered.isEmpty) {
+          return _LabeledPickerFrame(
+            label: 'SecretStore',
+            child: Text(
+              'No SecretStores in $namespace',
+              style: TextStyle(color: colors.textMuted, fontSize: 12),
+            ),
+          );
+        }
+        if (selected.isNotEmpty && !filtered.contains(selected)) {
+          filtered.add(selected);
+          filtered.sort();
+        }
+        return DropdownButtonFormField<String>(
+          initialValue: selected.isEmpty ? null : selected,
+          isExpanded: true,
+          decoration: const InputDecoration(
+            labelText: 'SecretStore',
+            border: OutlineInputBorder(),
+          ),
+          items: [
+            for (final v in filtered)
+              DropdownMenuItem(value: v, child: Text(v)),
+          ],
+          onChanged: (v) {
+            if (v == null) return;
+            onChanged(v);
+          },
+        );
+      },
+    );
+  }
+}
+
 class _ClusterStorePicker extends ConsumerWidget {
   const _ClusterStorePicker({
     required this.clusterId,
@@ -354,13 +368,13 @@ class _ClusterStorePicker extends ConsumerWidget {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final async = ref.watch(clusterStoresListProvider(clusterId));
     return async.when(
-      loading: () => _frame(
-        colors,
-        const LinearProgressIndicator(minHeight: 2),
+      loading: () => const _LabeledPickerFrame(
+        label: 'ClusterSecretStore',
+        child: LinearProgressIndicator(minHeight: 2),
       ),
-      error: (e, _) => _frame(
-        colors,
-        Text(
+      error: (e, _) => _LabeledPickerFrame(
+        label: 'ClusterSecretStore',
+        child: Text(
           'Failed to load cluster stores: $e',
           style: TextStyle(color: colors.error, fontSize: 12),
         ),
@@ -368,9 +382,9 @@ class _ClusterStorePicker extends ConsumerWidget {
       data: (stores) {
         final names = stores.map((s) => s.name).toList()..sort();
         if (names.isEmpty) {
-          return _frame(
-            colors,
-            Text(
+          return _LabeledPickerFrame(
+            label: 'ClusterSecretStore',
+            child: Text(
               'No ClusterSecretStores on this cluster',
               style: TextStyle(color: colors.textMuted, fontSize: 12),
             ),
@@ -396,31 +410,6 @@ class _ClusterStorePicker extends ConsumerWidget {
           },
         );
       },
-    );
-  }
-
-  Widget _frame(KubeColors colors, Widget child) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        border: Border.all(color: colors.borderSubtle),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'ClusterSecretStore',
-            style: TextStyle(
-              color: colors.textMuted,
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
-          child,
-        ],
-      ),
     );
   }
 }

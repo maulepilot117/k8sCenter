@@ -24,6 +24,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/api/dio_client.dart';
+import 'package:kubecenter/api/eso_repository.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
 import 'package:kubecenter/cluster/cluster_provider.dart';
 import 'package:kubecenter/features/eso/force_sync_controller.dart';
@@ -177,6 +178,73 @@ void main() {
 
       ctrl.acknowledge();
       expect(sub.read(), isA<ForceSyncIdle>());
+    });
+
+    // PR-5e-review #27: on success the controller invalidates the
+    // externalSecretDetailProvider for the same key so the drift chip
+    // re-fetches on the next frame. Without an explicit assertion, a
+    // regression that drops the invalidate would silently leave the
+    // detail screen rendering "Drifted" forever.
+    test('success invalidates externalSecretDetailProvider for the same key',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      // Mock the detail endpoint so the provider has something to fetch.
+      // We count hits — the controller's success path must invalidate
+      // the externalSecretDetailProvider, triggering a second fetch.
+      var detailHits = 0;
+      mock.on(
+        'GET',
+        '/api/v1/externalsecrets/externalsecrets/production/db-credentials',
+        (_) {
+          detailHits++;
+          return _json({
+            'data': {
+              'name': 'db-credentials',
+              'namespace': 'production',
+              'uid': 'u1',
+              'status': 'Synced',
+              'storeRef': {'name': 's', 'kind': 'SecretStore'},
+            },
+          });
+        },
+      );
+      mock.onJson(
+        'POST',
+        _path,
+        status: 202,
+        body: {'data': {'status': 'force-syncing'}},
+      );
+
+      // Subscribe to the detail provider so it stays alive (autoDispose
+      // would otherwise tear it down between reads).
+      final detailKey = ExternalSecretDetailKey(
+        clusterId: _key.clusterId,
+        namespace: _key.namespace,
+        name: _key.name,
+      );
+      final detailSub = container.listen(
+        externalSecretDetailProvider(detailKey),
+        (_, _) {},
+      );
+      addTearDown(detailSub.close);
+      // Prime the detail provider.
+      await container.read(externalSecretDetailProvider(detailKey).future);
+      final hitsBeforeForceSync = detailHits;
+
+      final sub = _subscribe(container);
+      addTearDown(sub.close);
+      final ctrl = container.read(forceSyncControllerProvider(_key).notifier);
+      await ctrl.forceSync();
+      await _settle();
+      // Re-read the detail provider to force any pending invalidation
+      // to materialise as a fresh fetch.
+      await container.read(externalSecretDetailProvider(detailKey).future);
+
+      expect(detailHits, greaterThan(hitsBeforeForceSync),
+          reason: 'success path must invalidate externalSecretDetailProvider '
+              'so the drift chip re-fetches');
     });
   });
 

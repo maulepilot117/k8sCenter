@@ -183,9 +183,14 @@ class ForceSyncController
   /// Resets state back to [ForceSyncIdle]. Called from the consuming
   /// screen's `ref.listen` callback after the success snackbar has been
   /// shown so a follow-up tap can re-trigger the action.
+  ///
+  /// Only resets terminal states — if a new forceSync() landed before
+  /// the snackbar's postFrame callback fires, acknowledge() must NOT
+  /// clobber the fresh InFlight back to Idle (that would let a third
+  /// tap fire concurrently with the second's POST).
   void acknowledge() {
     if (isDisposed) return;
-    if (state is ForceSyncIdle) return;
+    if (state is! ForceSyncSuccess && state is! ForceSyncFailure) return;
     RefreshableController.safeSetIfAlive<ForceSyncState>(
       isDisposed,
       (s) => state = s,

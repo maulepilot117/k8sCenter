@@ -691,6 +691,16 @@ enum BulkRefreshAction {
   store,
   clusterStore,
   namespace,
+
+  /// Open-enum sentinel for wire values the mobile client doesn't yet
+  /// recognise (e.g., a newer backend introducing a `refresh_push_secret`
+  /// variant). Surfaces alongside other ESO open-enum parsers
+  /// (`EsoStatus`, `DriftStatus`, `EsoThresholdSource`) rather than
+  /// throwing an `ArgumentError` that propagates to Sentry as an
+  /// unhandled crash. Consumers should treat this as a non-routable
+  /// action (the controller's catch-all surfaces it through the normal
+  /// error state).
+  unknown,
 }
 
 BulkRefreshAction _bulkRefreshActionFromJson(Object? v) {
@@ -702,12 +712,12 @@ BulkRefreshAction _bulkRefreshActionFromJson(Object? v) {
     case 'refresh_namespace':
       return BulkRefreshAction.namespace;
     default:
-      // Defensive: an unknown wire value would be a backend bug, but
-      // collapsing to `namespace` would silently mis-route. Throw so
-      // the parse error surfaces clearly in the failure state.
-      throw ArgumentError(
-        'Unknown BulkRefreshAction: $v',
-      );
+      // Open-enum fallback. Throwing here would propagate as an
+      // unhandled exception (Sentry crash) on any backend that
+      // introduces a new variant before mobile catches up. Mirrors the
+      // EsoStatus / DriftStatus / EsoThresholdSource patterns in this
+      // same file.
+      return BulkRefreshAction.unknown;
   }
 }
 
@@ -1247,6 +1257,10 @@ class EsoRepository {
       );
 
   /// POST /externalsecrets/refresh-namespace/{namespace} (no trailing path).
+  ///
+  // Namespace POST omits /refresh-all suffix (matches backend routes.go:674);
+  // store + clusterstore variants append it. Do NOT "normalize" this — the
+  // asymmetry is intentional and aligns with the web client.
   Future<BulkRefreshSubmitResponse> bulkRefreshNamespace({
     required String namespace,
     required List<String> targetUIDs,
@@ -1263,10 +1277,17 @@ class EsoRepository {
 
   /// GET /externalsecrets/bulk-refresh-jobs/{jobId}. Caller polls every
   /// 2s until `completedAt` is non-null.
+  ///
+  /// [receiveTimeout] caps the per-poll wait — bulk refresh jobs on
+  /// large scopes commonly exceed 30s server-side, so the controller
+  /// passes a tighter 10s window so a wedged kube-apiserver doesn't
+  /// hold the loop hostage. Defaults to Dio's ambient receiveTimeout
+  /// when omitted (most other call sites).
   Future<BulkRefreshJob> getBulkRefreshJob({
     required String jobId,
     String? clusterIdOverride,
     CancelToken? cancelToken,
+    Duration? receiveTimeout,
   }) =>
       _getOne<BulkRefreshJob>(
         path: '/api/v1/externalsecrets/bulk-refresh-jobs/'
@@ -1275,6 +1296,7 @@ class EsoRepository {
         notFoundMessage: 'Bulk refresh job $jobId not found',
         clusterIdOverride: clusterIdOverride,
         cancelToken: cancelToken,
+        receiveTimeout: receiveTimeout,
       );
 
   Future<BulkRefreshSubmitResponse> _submitBulkRefresh({
@@ -1312,9 +1334,15 @@ class EsoRepository {
   // Internals
   // -------------------------------------------------------------------------
 
-  Options? _opts(String? clusterIdOverride) => clusterIdOverride == null
-      ? null
-      : Options(headers: {'X-Cluster-ID': clusterIdOverride});
+  Options? _opts(String? clusterIdOverride, {Duration? receiveTimeout}) {
+    if (clusterIdOverride == null && receiveTimeout == null) return null;
+    return Options(
+      headers: clusterIdOverride == null
+          ? null
+          : {'X-Cluster-ID': clusterIdOverride},
+      receiveTimeout: receiveTimeout,
+    );
+  }
 
   Future<List<T>> _fetchList<T>({
     required String path,
@@ -1351,11 +1379,12 @@ class EsoRepository {
     required String notFoundMessage,
     String? clusterIdOverride,
     CancelToken? cancelToken,
+    Duration? receiveTimeout,
   }) async {
     try {
       final res = await _dio.get<Map<String, dynamic>>(
         path,
-        options: _opts(clusterIdOverride),
+        options: _opts(clusterIdOverride, receiveTimeout: receiveTimeout),
         cancelToken: cancelToken,
       );
       final data = res.data?['data'];
@@ -1523,21 +1552,53 @@ final clusterExternalSecretDetailProvider = FutureProvider.autoDispose.family<
       );
 });
 
-/// Standalone provider for namespaced stores keyed by clusterId — this
-/// is distinct from `wizards/widgets/store_picker.dart`'s
-/// `storeListProvider` (which pairs namespaced + cluster lists into a
-/// `_StoreLists` struct for the picker dropdown). PR-4h's read-side
-/// screens need separate stream slots per scope, so they don't share
-/// the picker's combined family.
+/// Family key for the namespaced SecretStore list provider. Mirrors the
+/// shape of [ExternalSecretListKey] so an empty-string namespace
+/// normalises to null and collapses two ostensibly-equal keys onto the
+/// same slot (avoids splitting cluster-wide list caches across callers
+/// that pass `''` vs `null` for "no namespace filter").
+class StoresListKey {
+  /// Normalise [namespace]: empty string is treated as null so two
+  /// equal keys map to one cache slot.
+  StoresListKey({required this.clusterId, String? namespace})
+      : namespace = (namespace != null && namespace.isEmpty) ? null : namespace;
+
+  final String clusterId;
+
+  /// When non-null, the list is filtered server-side to the given
+  /// namespace via the `?namespace=` query param. Null returns
+  /// cluster-wide stores (subject to RBAC).
+  final String? namespace;
+
+  @override
+  bool operator ==(Object other) =>
+      other is StoresListKey &&
+      other.clusterId == clusterId &&
+      other.namespace == namespace;
+
+  @override
+  int get hashCode => Object.hash(clusterId, namespace);
+}
+
+/// Standalone provider for namespaced stores. Keyed by [StoresListKey] so
+/// callers can request a server-side namespace filter (used by the bulk
+/// refresh scope picker's store variant) or omit it for cluster-wide
+/// listing (dashboard, stores list screen).
+///
+/// Distinct from `wizards/widgets/store_picker.dart`'s `storeListProvider`
+/// (which pairs namespaced + cluster lists into a `_StoreLists` struct
+/// for the picker dropdown). Read-side screens need separate stream slots
+/// per scope, so they don't share the picker's combined family.
 final storesListProvider = FutureProvider.autoDispose
-    .family<List<SecretStore>, String>((ref, clusterId) async {
+    .family<List<SecretStore>, StoresListKey>((ref, key) async {
   ref.watch(activeClusterProvider);
   final cancel = CancelToken();
   ref.onDispose(() {
     if (!cancel.isCancelled) cancel.cancel('stores list invalidated');
   });
   return ref.read(esoRepositoryProvider).listStores(
-        clusterIdOverride: clusterId,
+        namespace: key.namespace,
+        clusterIdOverride: key.clusterId,
         cancelToken: cancel,
       );
 });

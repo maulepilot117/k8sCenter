@@ -474,6 +474,11 @@ class _ForceSyncButtonState extends ConsumerState<ForceSyncButton> {
 /// Dashboard-level entry point for the bulk-refresh modal. Local-cluster
 /// only per R12. Non-local renders disabled with a tooltip matching the
 /// Force Sync button.
+///
+/// Hidden entirely on clusters where ESO is not detected — clicking
+/// "Bulk refresh" against a cluster with no ESO CRDs returns 503 and
+/// confuses the operator. The button lives in the dashboard AppBar
+/// (outside `EsoStatusGate`'s body), so it has to gate itself.
 class BulkRefreshButton extends ConsumerWidget {
   const BulkRefreshButton({super.key});
 
@@ -484,6 +489,16 @@ class BulkRefreshButton extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final clusterId = ref.watch(activeClusterProvider);
+    final statusAsync = ref.watch(esoStatusProvider(clusterId));
+    // Hide the button while ESO status is loading or has resolved to
+    // not-detected. The dashboard's main body renders
+    // FeatureUnavailableState in those cases, so a parallel "Bulk
+    // refresh" button in the AppBar would be misleading.
+    final esoDetected = statusAsync.maybeWhen(
+      data: (s) => s.detected,
+      orElse: () => false,
+    );
+    if (!esoDetected) return const SizedBox.shrink();
     final isLocal = clusterId == 'local';
     return Tooltip(
       message: isLocal ? '' : nonLocalTooltip,

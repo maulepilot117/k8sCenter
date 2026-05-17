@@ -56,6 +56,7 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody>
     with RefreshGuardMixin {
   ExternalSecretListKey get _listKey =>
       ExternalSecretListKey(clusterId: widget.clusterId);
+  StoresListKey get _storesKey => StoresListKey(clusterId: widget.clusterId);
 
   // Refresh entry point shared by the RefreshIndicator pull-down and the
   // ListErrorShell retry. The guard collapses a second concurrent call
@@ -63,7 +64,7 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody>
   // invalidate+fetch cycles against the same provider slot.
   Future<void> _handleRefresh() => guardedRefresh(() async {
         ref.invalidate(externalSecretListProvider(_listKey));
-        ref.invalidate(storesListProvider(widget.clusterId));
+        ref.invalidate(storesListProvider(_storesKey));
         ref.invalidate(clusterStoresListProvider(widget.clusterId));
         try {
           // Wait for all three so the RefreshIndicator stays visible
@@ -71,7 +72,7 @@ class _DashboardBodyState extends ConsumerState<_DashboardBody>
           // one we surface errors for via .when.
           await Future.wait([
             ref.read(externalSecretListProvider(_listKey).future),
-            ref.read(storesListProvider(widget.clusterId).future),
+            ref.read(storesListProvider(_storesKey).future),
             ref.read(clusterStoresListProvider(widget.clusterId).future),
           ]);
         } on Object {

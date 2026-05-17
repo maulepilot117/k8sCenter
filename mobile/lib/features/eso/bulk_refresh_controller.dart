@@ -1,4 +1,4 @@
-// BulkRefreshController — walks the 4-phase modal sheet for ESO bulk
+// BulkRefreshController — walks the 8-phase modal sheet for ESO bulk
 // refresh (Force Sync the entire scope of a SecretStore /
 // ClusterSecretStore / Namespace).
 //
@@ -10,11 +10,22 @@
 //                    Lives entirely client-side; no wire activity.
 //   2. scopeLoad   — GET the variant's `refresh-scope` endpoint to
 //                    enumerate the visible ExternalSecrets.
-//   3. confirm     — render the count + per-namespace breakdown and
-//                    gate on "type REFRESH to confirm".
-//   4. submitPoll  — POST `refresh-all` (with the pinned targetUIDs),
-//                    receive jobId, poll `bulk-refresh-jobs/{jobId}`
-//                    every 2s until `completedAt` lands.
+//   3. preview     — render the count + per-namespace breakdown +
+//                    RBAC restriction notice. "Continue" advances to
+//                    `confirm` (which triggers the shared
+//                    `showConfirmSheet` type-to-confirm modal).
+//   4. confirm     — type-to-confirm REFRESH via the shared
+//                    `confirm_sheet.dart` modal stacked on top. The
+//                    body keeps rendering the preview content so a
+//                    cancel from the inner sheet drops back cleanly.
+//                    On confirmation the controller fires submit.
+//   5. submit      — POST `refresh-all` (with the pinned targetUIDs).
+//                    Transient; resolves to poll on 202 or error on
+//                    409/501/503/etc.
+//   6. poll        — GET `bulk-refresh-jobs/{jobId}` every 2s until
+//                    `completedAt` lands.
+//   7. done        — terminal success surface; summary + outcome lists.
+//   8. error       — terminal failure surface; error copy + retry.
 //
 // Special cases:
 //   * 409 `active_job_exists` on submit — read `error.extra.jobId` and
@@ -32,14 +43,20 @@
 //     dispose or completion.
 //
 // Cluster pinning: the scope picker captures `clusterId` (the pinned
-// cluster) at construction, and every wire call forwards it. Active-
-// cluster switches mid-flow drop the poll loop and surface a clear
-// failure (the worker continues server-side; dismissing the sheet is
-// non-destructive).
+// cluster) at construction, and every wire call forwards it. The poll
+// loop runs against the cluster that was pinned at controller
+// construction — the active cluster can change without affecting the
+// poll because sheet dismissal (autoDispose) is the teardown signal
+// rather than a per-tick active-cluster re-check. The
+// active-cluster-still-pinned re-check lives on beginScopeLoad and
+// submit, where a mismatch would cause the next request to land on
+// the wrong cluster's data. The worker continues server-side; dismissing
+// the sheet is non-destructive.
 
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../api/api_error.dart';
@@ -110,10 +127,12 @@ class BulkRefreshScopeNamespace extends BulkRefreshScope {
   int get hashCode => namespace.hashCode;
 }
 
-/// Phases of the modal sheet. Drives the UI's body switcher.
+/// Phases of the modal sheet. Drives the UI's body switcher. See the
+/// file-top doc comment for the meaning of each phase.
 enum BulkRefreshPhase {
   scopePick,
   scopeLoad,
+  preview,
   confirm,
   submit,
   poll,
@@ -161,6 +180,12 @@ class BulkRefreshSheetState {
   /// still retrying. UI surfaces "Retrying…" inline.
   final bool pollRetrying;
 
+  /// [copyWith] uses a `?? this.field` fall-through for every nullable
+  /// field by default, which means passing `null` to the named parameter
+  /// is indistinguishable from omitting it — both keep the current value.
+  /// To explicitly clear a nullable field, set the matching `clearXxx`
+  /// sentinel to `true`. The sentinel wins over the value parameter, so
+  /// `copyWith(scope: foo, clearScope: true)` clears `scope` to null.
   BulkRefreshSheetState copyWith({
     BulkRefreshPhase? phase,
     BulkRefreshScope? scope,
@@ -173,12 +198,16 @@ class BulkRefreshSheetState {
     bool? pollRetrying,
     bool clearError = false,
     bool clearJob = false,
+    bool clearScope = false,
+    bool clearScopeResponse = false,
+    bool clearJobId = false,
   }) {
     return BulkRefreshSheetState(
       phase: phase ?? this.phase,
-      scope: scope ?? this.scope,
-      scopeResponse: scopeResponse ?? this.scopeResponse,
-      jobId: jobId ?? this.jobId,
+      scope: clearScope ? null : (scope ?? this.scope),
+      scopeResponse:
+          clearScopeResponse ? null : (scopeResponse ?? this.scopeResponse),
+      jobId: clearJobId ? null : (jobId ?? this.jobId),
       job: clearJob ? null : (job ?? this.job),
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       takingLong: takingLong ?? this.takingLong,
@@ -203,6 +232,14 @@ class BulkRefreshController
   DateTime? _pollStartedAt;
   int _consecutivePollErrors = 0;
 
+  /// Reentrancy guard for [_poll]. Timer.periodic fires every 2s
+  /// regardless of whether the previous tick's GET has returned. On a
+  /// slow backend this races: tick 2 starts before tick 1 returns, both
+  /// land near-simultaneously, and both try to write to state.
+  /// `_pollInFlight` lets tick 2 (and 3, etc.) early-return until tick 1
+  /// has finished its turn at the state setter.
+  bool _pollInFlight = false;
+
   /// Surfaced as an instance member so tests can override / stub. Bulk
   /// refresh jobs commonly exceed 30s on large scopes, so we tighten
   /// the receive timeout on poll to 10s — enough to absorb backend
@@ -226,7 +263,16 @@ class BulkRefreshController
 
   /// Phase 1 → 2. Operator confirmed the scope variant + identifier;
   /// fire the GET refresh-scope.
-  Future<void> beginScopeLoad(BulkRefreshScope scope) async {
+  ///
+  /// [preserveError] keeps the previous [errorMessage] visible across
+  /// the transition. Used by the 409 `scope_changed` recovery path so
+  /// the "Scope changed since you confirmed" banner survives the
+  /// auto-re-resolve; the default behavior (false) clears any stale
+  /// error so a fresh scope load starts clean.
+  Future<void> beginScopeLoad(
+    BulkRefreshScope scope, {
+    bool preserveError = false,
+  }) async {
     if (isDisposed) return;
     // Cluster-pin pre-check; cluster switch since the sheet opened
     // means the picker's identifier is for a different cluster's data.
@@ -240,8 +286,8 @@ class BulkRefreshController
       state.copyWith(
         phase: BulkRefreshPhase.scopeLoad,
         scope: scope,
-        scopeResponse: null,
-        clearError: true,
+        clearScopeResponse: true,
+        clearError: !preserveError,
       ),
     );
 
@@ -274,7 +320,7 @@ class BulkRefreshController
         return;
       }
       _setState(state.copyWith(
-        phase: BulkRefreshPhase.confirm,
+        phase: BulkRefreshPhase.preview,
         scopeResponse: resp,
       ));
     } on DioException catch (e) {
@@ -300,7 +346,26 @@ class BulkRefreshController
     _setState(const BulkRefreshSheetState(phase: BulkRefreshPhase.scopePick));
   }
 
-  /// Phase 3 → 4. Operator passed the type-to-confirm; fire the POST.
+  /// Phase 3 → 4 (preview → confirm). Operator tapped "Continue" on the
+  /// preview body; the sheet is about to open the shared
+  /// `confirm_sheet.dart` type-to-confirm modal on top. The body keeps
+  /// rendering the preview content so a cancel-from-inner-sheet drops
+  /// back to a fully-rendered preview rather than a blank flash.
+  void confirmPreview() {
+    if (isDisposed) return;
+    if (state.phase != BulkRefreshPhase.preview) return;
+    _setState(state.copyWith(phase: BulkRefreshPhase.confirm));
+  }
+
+  /// Phase 4 → 3 (confirm → preview). Called by the sheet when the
+  /// stacked confirm modal returns false / null (operator cancelled).
+  void backToPreview() {
+    if (isDisposed) return;
+    if (state.phase != BulkRefreshPhase.confirm) return;
+    _setState(state.copyWith(phase: BulkRefreshPhase.preview));
+  }
+
+  /// Phase 4 → 5. Operator passed the type-to-confirm; fire the POST.
   Future<void> submit() async {
     if (isDisposed) return;
     if (state.phase != BulkRefreshPhase.confirm) return;
@@ -367,13 +432,28 @@ class BulkRefreshController
     }
   }
 
-  /// Caller (typically the sheet's "Run in background" / dismiss
-  /// button) tearing down the poll loop while the worker continues
-  /// server-side. The next bulk-refresh-jobs GET keeps server-side
-  /// accounting honest.
+  /// Test seam — production teardown happens via `ref.onDispose(_cancelPoll)`.
+  /// Kept available so controller-level tests can deterministically stop
+  /// the periodic timer without disposing the whole notifier.
+  @visibleForTesting
   void cancelPoll() {
     if (isDisposed) return;
     _cancelPoll();
+  }
+
+  /// One-shot poll fired from the AppLifecycleListener on iOS resume.
+  /// Re-using `_poll()` means the existing `_pollInFlight` reentrancy
+  /// guard naturally drops the resume tick on the floor if the periodic
+  /// timer was already mid-fetch. Safe to call when phase != poll; the
+  /// inner post-await guard early-returns.
+  ///
+  /// iOS suspends the periodic Timer when the app backgrounds; without
+  /// this nudge the progress bar can sit stale for up to 2s after the
+  /// app comes back to the foreground.
+  Future<void> pollNow() async {
+    if (isDisposed) return;
+    if (state.phase != BulkRefreshPhase.poll) return;
+    await _poll();
   }
 
   void _handleSubmitFailure(ApiError err) {
@@ -397,12 +477,15 @@ class BulkRefreshController
       if (scope != null) {
         _setState(state.copyWith(
           phase: BulkRefreshPhase.scopeLoad,
-          scopeResponse: null,
+          clearScopeResponse: true,
           errorMessage:
               'Scope changed since you confirmed — re-resolving and re-asking.',
         ));
-        // Fire-and-forget; same scope, fresh resolve.
-        unawaited(beginScopeLoad(scope));
+        // Fire-and-forget; same scope, fresh resolve. preserveError
+        // keeps the explanation banner visible across the auto-re-
+        // resolve so the operator understands why they're being asked
+        // to confirm again.
+        unawaited(beginScopeLoad(scope, preserveError: true));
         return;
       }
     }
@@ -458,64 +541,85 @@ class BulkRefreshController
 
   Future<void> _poll() async {
     if (isDisposed) return;
-    final jobId = state.jobId;
-    if (jobId == null) return;
+    // Reentrancy guard — if the previous tick is still awaiting its
+    // GET, drop this tick on the floor. The next Timer.periodic fire
+    // (or the in-flight one's _setState landing) keeps the loop alive.
+    if (_pollInFlight) return;
+    _pollInFlight = true;
     try {
-      final job = await ref.read(esoRepositoryProvider).getBulkRefreshJob(
-            jobId: jobId,
-            clusterIdOverride: _clusterId,
-            cancelToken: currentCancelToken,
-          );
-      if (isDisposed) return;
-      _consecutivePollErrors = 0;
-      final long = _pollStartedAt != null &&
-          DateTime.now().difference(_pollStartedAt!) >= _takingLongThreshold;
-      if (job.isDone) {
-        _cancelPoll();
+      final jobId = state.jobId;
+      if (jobId == null) return;
+      try {
+        final job = await ref.read(esoRepositoryProvider).getBulkRefreshJob(
+              jobId: jobId,
+              clusterIdOverride: _clusterId,
+              cancelToken: currentCancelToken,
+              receiveTimeout: pollReceiveTimeout,
+            );
+        if (isDisposed) return;
+        // Post-await phase guard — a late-arriving response must NOT
+        // clobber a terminal Done/Error state that an earlier tick (or
+        // _emitError) has already landed. Without this, a tick-1 slow
+        // "still in progress" response can downgrade a tick-2 Done.
+        if (state.phase != BulkRefreshPhase.poll) return;
+        _consecutivePollErrors = 0;
+        final long = _pollStartedAt != null &&
+            DateTime.now().difference(_pollStartedAt!) >= _takingLongThreshold;
+        if (job.isDone) {
+          _cancelPoll();
+          _setState(state.copyWith(
+            phase: BulkRefreshPhase.done,
+            job: job,
+            pollRetrying: false,
+            takingLong: long,
+            clearError: true,
+          ));
+          return;
+        }
         _setState(state.copyWith(
-          phase: BulkRefreshPhase.done,
           job: job,
           pollRetrying: false,
           takingLong: long,
           clearError: true,
         ));
-        return;
+      } on DioException catch (e) {
+        if (RefreshableController.isCancelException(e)) return;
+        if (isDisposed) return;
+        // Same post-await guard for the error path — if we already
+        // emitted a terminal Done/Error, don't downgrade it to "retrying".
+        if (state.phase != BulkRefreshPhase.poll) return;
+        _consecutivePollErrors++;
+        // Tolerate transient blips — give up after 3 consecutive
+        // failures so the sheet doesn't lie about the job's state
+        // forever.
+        if (_consecutivePollErrors >= 3) {
+          _cancelPoll();
+          final err = e.error;
+          final apiErr = err is ApiError ? err : ApiError.fromDio(e);
+          _emitError(
+            'Lost track of the refresh job: ${apiErr.message}. The job may '
+            'still complete server-side; check the audit log for status.',
+          );
+          return;
+        }
+        _setState(state.copyWith(pollRetrying: true));
+      } catch (_) {
+        if (isDisposed) return;
+        if (state.phase != BulkRefreshPhase.poll) return;
+        // Same fall-through as DioException for non-Dio errors.
+        _consecutivePollErrors++;
+        if (_consecutivePollErrors >= 3) {
+          _cancelPoll();
+          _emitError(
+            'Lost track of the refresh job. It may still complete '
+            'server-side; check the audit log.',
+          );
+          return;
+        }
+        _setState(state.copyWith(pollRetrying: true));
       }
-      _setState(state.copyWith(
-        job: job,
-        pollRetrying: false,
-        takingLong: long,
-        clearError: true,
-      ));
-    } on DioException catch (e) {
-      if (RefreshableController.isCancelException(e)) return;
-      _consecutivePollErrors++;
-      // Tolerate transient blips — give up after 3 consecutive
-      // failures so the sheet doesn't lie about the job's state
-      // forever.
-      if (_consecutivePollErrors >= 3) {
-        _cancelPoll();
-        final err = e.error;
-        final apiErr = err is ApiError ? err : ApiError.fromDio(e);
-        _emitError(
-          'Lost track of the refresh job: ${apiErr.message}. The job may '
-          'still complete server-side; check the audit log for status.',
-        );
-        return;
-      }
-      _setState(state.copyWith(pollRetrying: true));
-    } catch (_) {
-      // Same fall-through as DioException for non-Dio errors.
-      _consecutivePollErrors++;
-      if (_consecutivePollErrors >= 3) {
-        _cancelPoll();
-        _emitError(
-          'Lost track of the refresh job. It may still complete '
-          'server-side; check the audit log.',
-        );
-        return;
-      }
-      _setState(state.copyWith(pollRetrying: true));
+    } finally {
+      _pollInFlight = false;
     }
   }
 
