@@ -112,7 +112,7 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
   final Map<String, String> _revealed = {};
   final Set<String> _revealing = {};
 
-  Future<void> _reveal(String key) async {
+  Future<void> _revealKey(String key) async {
     setState(() => _revealing.add(key));
     try {
       final value =
@@ -126,10 +126,7 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
         _revealed[key] = value;
         _revealing.remove(key);
       });
-      // Screen carries plaintext now — flip FLAG_SECURE / arm iOS blur
-      // cover. Mixin handles idempotency, so re-entry with multiple keys
-      // already revealed is a no-op on the second call.
-      unawaited(setSensitive(_revealed.isNotEmpty));
+      _syncSensitivity();
     } on ApiError catch (e) {
       if (!mounted) return;
       setState(() => _revealing.remove(key));
@@ -139,12 +136,17 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
     }
   }
 
-  void _hide(String key) {
+  void _concealKey(String key) {
     setState(() => _revealed.remove(key));
-    // Recompute sensitivity: stay armed while ANY other key is still
-    // revealed. Only clears once the last revealed key is hidden.
-    unawaited(setSensitive(_revealed.isNotEmpty));
+    _syncSensitivity();
   }
+
+  /// Flips FLAG_SECURE / iOS blur cover from `_revealed.isNotEmpty`. Stays
+  /// armed while any key is revealed; clears once the last one is hidden.
+  /// Mixin guards idempotency and serializes platform-channel calls — call
+  /// site stays fire-and-forget so widget rebuilds don't stall on the
+  /// FLAG_SECURE roundtrip.
+  void _syncSensitivity() => unawaited(setSensitive(_revealed.isNotEmpty));
 
   @override
   Widget build(BuildContext context) {
@@ -219,8 +221,8 @@ class _SecretDetailScreenState extends ConsumerState<SecretDetailScreen>
                               keyName: entry.key,
                               revealed: _revealed[entry.key],
                               loading: _revealing.contains(entry.key),
-                              onReveal: () => _reveal(entry.key),
-                              onHide: () => _hide(entry.key),
+                              onReveal: () => _revealKey(entry.key),
+                              onHide: () => _concealKey(entry.key),
                             ),
                         ],
                       ),

@@ -7,7 +7,6 @@
 // clears it, and a still-revealed sibling key keeps the flag armed when
 // any one key is hidden.
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,6 +17,7 @@ import 'package:kubecenter/features/resources/secret_screens.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 
 import '../../support/mock_dio_adapter.dart';
+import '../../support/platform_helpers.dart';
 
 void main() {
   group('sanitizeSecretValue', () {
@@ -138,23 +138,6 @@ void main() {
           ),
         ),
       );
-    }
-
-    /// Runs [body] with the target platform overridden — needed because
-    /// the FLAG_SECURE path only fires on Android. Restores the prior
-    /// override in a `finally` block so the test framework's invariant
-    /// check sees the original state.
-    Future<void> withPlatform(
-      TargetPlatform platform,
-      Future<void> Function() body,
-    ) async {
-      final prior = debugDefaultTargetPlatformOverride;
-      debugDefaultTargetPlatformOverride = platform;
-      try {
-        await body();
-      } finally {
-        debugDefaultTargetPlatformOverride = prior;
-      }
     }
 
     /// Mocks the `flutter_windowmanager` MethodChannel and returns the
@@ -285,7 +268,149 @@ void main() {
           await tester.pumpWidget(const MaterialApp(home: SizedBox()));
           await tester.pump();
 
-          expect(calls.any((c) => c.method == 'clearFlags'), isTrue);
+          final clears = calls.where((c) => c.method == 'clearFlags').toList();
+          expect(clears, isNotEmpty);
+          expect(clears.first.arguments['flags'], 0x00002000);
+        });
+      },
+    );
+
+    testWidgets(
+      'reveal failure (500) does NOT arm FLAG_SECURE',
+      (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          final calls = mockWindowManager();
+          final (:container, :mock) = makeContainer();
+          addTearDown(container.dispose);
+
+          mockSecret(mock);
+          // Reveal endpoint returns 500 — Dio's default validateStatus
+          // rejects 5xx → ApiError flows into the screen's catch block.
+          mock.onJson(
+            'GET',
+            '/api/v1/resources/secrets/$namespace/$name/reveal/username',
+            status: 500,
+            body: {
+              'error': {'code': 500, 'message': 'reveal failed'},
+            },
+          );
+
+          await tester.pumpWidget(harness(container));
+          await tester.pumpAndSettle();
+
+          await tester.tap(find.byKey(const ValueKey('secret-toggle-username')));
+          await tester.pumpAndSettle();
+
+          // No platform-channel traffic — sensitivity must stay false.
+          expect(calls.where((c) => c.method == 'addFlags'), isEmpty);
+          expect(calls.where((c) => c.method == 'clearFlags'), isEmpty);
+
+          // The failure snackbar should appear and the toggle button
+          // should still read 'Reveal' (state never advanced to revealed).
+          expect(find.textContaining('Reveal failed'), findsOneWidget);
+        });
+      },
+    );
+
+    testWidgets(
+      'rapid reveal/conceal/reveal toggles leave consistent state',
+      (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          final calls = mockWindowManager();
+          final (:container, :mock) = makeContainer();
+          addTearDown(container.dispose);
+
+          mockSecret(mock);
+          mockReveal(mock, 'username', 'admin');
+
+          await tester.pumpWidget(harness(container));
+          await tester.pumpAndSettle();
+
+          // Three reveal/conceal cycles. Mixin's _inflightPlatformCall
+          // serializes the platform side; the screen must not leak
+          // orphaned addFlags/clearFlags calls.
+          for (var i = 0; i < 3; i++) {
+            await tester.tap(
+              find.byKey(const ValueKey('secret-toggle-username')),
+            );
+            await tester.pumpAndSettle();
+            await tester.tap(
+              find.byKey(const ValueKey('secret-toggle-username')),
+            );
+            await tester.pumpAndSettle();
+          }
+
+          // Final state: nothing revealed → FLAG_SECURE cleared.
+          // Each cycle contributes one addFlags + one clearFlags; mixin
+          // collapses no-op re-entries, so the totals must match.
+          final adds = calls.where((c) => c.method == 'addFlags').toList();
+          final clears = calls.where((c) => c.method == 'clearFlags').toList();
+          expect(adds, hasLength(3));
+          expect(clears, hasLength(3));
+        });
+      },
+    );
+
+    testWidgets(
+      'iOS lifecycle: inactive while revealed inserts blur overlay; '
+      'resumed removes it',
+      (tester) async {
+        await withPlatform(TargetPlatform.iOS, () async {
+          // Channel mock is unused on iOS — the mixin's iOS path uses
+          // the overlay, not platform channels. Registering anyway is
+          // safe and keeps teardown consistent across platform branches.
+          mockWindowManager();
+          final (:container, :mock) = makeContainer();
+          addTearDown(container.dispose);
+
+          mockSecret(mock);
+          mockReveal(mock, 'username', 'admin');
+
+          await tester.pumpWidget(harness(container));
+          await tester.pumpAndSettle();
+
+          // Reveal a key — arms sensitivity (iOS path arms the lifecycle
+          // observer but does not insert overlay until backgrounded).
+          await tester.tap(find.byKey(const ValueKey('secret-toggle-username')));
+          await tester.pumpAndSettle();
+          expect(find.byType(BackdropFilter), findsNothing);
+
+          TestWidgetsFlutterBinding.instance
+              .handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+          await tester.pump();
+
+          expect(find.byType(BackdropFilter), findsOneWidget);
+
+          TestWidgetsFlutterBinding.instance
+              .handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+          await tester.pump();
+
+          expect(find.byType(BackdropFilter), findsNothing);
+        });
+      },
+    );
+
+    testWidgets(
+      'iOS lifecycle: inactive while NOTHING revealed inserts no overlay',
+      (tester) async {
+        await withPlatform(TargetPlatform.iOS, () async {
+          mockWindowManager();
+          final (:container, :mock) = makeContainer();
+          addTearDown(container.dispose);
+
+          mockSecret(mock);
+
+          await tester.pumpWidget(harness(container));
+          await tester.pumpAndSettle();
+
+          // Background the app without revealing anything — the screen
+          // has no plaintext to protect, so the mixin must not insert
+          // a blur overlay.
+          TestWidgetsFlutterBinding.instance
+              .handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+          await tester.pump();
+
+          expect(find.byType(BackdropFilter), findsNothing);
         });
       },
     );
