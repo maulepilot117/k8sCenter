@@ -1,17 +1,18 @@
 // Named-resource picker. Fetches a list of resources of a given kind
 // (and optional namespace) via [resourceListProvider] and presents
 // them as a tap-to-pick dropdown. Used by HPA's `scaleTargetRef.name`
-// (deployments/statefulsets/replicasets) and RoleBinding's
-// `roleRef.name` (roles/clusterroles).
+// (deployments/statefulsets/replicasets), RoleBinding's
+// `roleRef.name` (roles/clusterroles), and the ESO bulk-refresh
+// scope picker (secretstores/clustersecretstores/namespaces).
 //
-// Cluster pinning: the wizard owns the pinned cluster id and threads
+// Cluster pinning: the caller owns the pinned cluster id and threads
 // it in via [clusterId]. We don't read `activeClusterProvider` here;
 // `resourceListProvider` does (so cluster switches force a refetch),
-// but the wizard's own cluster-pin discipline ensures the picker's
-// fetch and the eventual apply target the same cluster.
+// but the caller's own cluster-pin discipline ensures the picker's
+// fetch and the eventual write target the same cluster.
 //
 // Empty state: "No <kind> in <namespace>" — the operator can switch
-// namespace via their wizard's Namespace input, which causes the
+// namespace via the surrounding form, which causes the
 // FutureProvider's family key to change and re-fetches.
 //
 // Loading/error states: thin progress indicator while loading; an
@@ -22,8 +23,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../api/resource_repository.dart';
-import '../../theme/kube_theme_builder.dart';
+import '../api/resource_repository.dart';
+import '../theme/kube_theme_builder.dart';
 
 class NamedResourcePicker extends ConsumerWidget {
   const NamedResourcePicker({

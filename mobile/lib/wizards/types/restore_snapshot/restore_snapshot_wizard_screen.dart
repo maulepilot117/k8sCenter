@@ -7,7 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../cluster/cluster_provider.dart';
 import '../../widgets/list_picker_screen.dart';
-import '../../widgets/named_resource_picker.dart';
+import '../../../widgets/named_resource_picker.dart';
 import '../../widgets/section_header.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';

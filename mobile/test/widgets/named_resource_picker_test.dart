@@ -17,9 +17,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/api/dio_client.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
-import 'package:kubecenter/wizards/widgets/named_resource_picker.dart';
+import 'package:kubecenter/widgets/named_resource_picker.dart';
 
-import '../../support/mock_dio_adapter.dart';
+import '../support/mock_dio_adapter.dart';
 
 ({ProviderContainer container, MockDioAdapter mock}) _makeContainer() {
   final mock = MockDioAdapter();

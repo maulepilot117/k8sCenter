@@ -11,7 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/kind_picker.dart';
-import '../../widgets/named_resource_picker.dart';
+import '../../../widgets/named_resource_picker.dart';
 import '../../widgets/optional_int_field.dart';
 import '../../widgets/repeating_row_group.dart';
 import '../../widgets/section_header.dart';
