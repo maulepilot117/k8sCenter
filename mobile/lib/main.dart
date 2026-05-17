@@ -11,7 +11,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app.dart';
 import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
+import 'auth/secure_storage.dart';
 import 'auth/universal_link_listener.dart';
+import 'features/onboarding/onboarding_controller.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
 import 'providers/shared_preferences_provider.dart';
@@ -37,6 +39,19 @@ Future<void> main() async {
       sharedPreferencesProvider.overrideWithValue(prefs),
     ],
   );
+
+  // M5 PR-5g: internal-beta upgrade detection. Runs before the first
+  // router redirect so the synchronous `onboarded_v1` check sees a
+  // stable value. Errors are non-fatal — worst case is showing the
+  // tour once to an upgrade user.
+  try {
+    await migrateOnboardingFlagForUpgrade(
+      prefs,
+      container.read(secureTokenStoreProvider),
+    );
+  } catch (error) {
+    debugPrint('migrateOnboardingFlagForUpgrade threw: $error');
+  }
 
   // Register for FCM the first time auth lands on Authenticated.
   // Conditional Firebase init means this is a no-op when the operator
