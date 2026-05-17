@@ -308,9 +308,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       //
       // Status gating is screen-level (each surface checks
       // `esoStatusProvider` and falls back to
-      // `FeatureUnavailableState.eso()`). Drift Revert + bulk-refresh
-      // POSTs are deferred to M5+ per R12 — `DisabledRevertDriftButton`
-      // points operators at desktop.
+      // `FeatureUnavailableState.eso()`). PR-5e wired Force Sync (per-ES
+      // on the detail screen) and Bulk Refresh (dashboard button) over
+      // these surfaces — local-cluster only; non-local renders the
+      // disabled state with a tooltip pointing operators at desktop.
       GoRoute(
         path: '/clusters/:clusterId/eso',
         builder: (context, state) => const eso_dashboard.EsoDashboardScreen(),

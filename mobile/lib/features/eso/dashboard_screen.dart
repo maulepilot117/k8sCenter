@@ -27,7 +27,15 @@ class EsoDashboardScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('External Secrets')),
+      appBar: AppBar(
+        title: const Text('External Secrets'),
+        actions: const [
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: Center(child: BulkRefreshButton()),
+          ),
+        ],
+      ),
       body: EsoStatusGate(
         builder: (clusterId) => _DashboardBody(clusterId: clusterId),
       ),

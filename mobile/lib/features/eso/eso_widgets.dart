@@ -12,8 +12,11 @@ import '../../api/api_error.dart';
 import '../../api/eso_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
+import '../../widgets/confirm_sheet.dart';
 import '../../widgets/empty_states.dart';
 import '../../widgets/feature_unavailable_state.dart';
+import 'bulk_refresh_sheet.dart';
+import 'force_sync_controller.dart';
 
 /// Wraps a per-cluster ESO surface body in the standard discovery-status
 /// gate. The outer ConsumerWidget watches `esoStatusProvider(clusterId)`,
@@ -352,38 +355,148 @@ class ProviderChip extends StatelessWidget {
   }
 }
 
-/// Disabled "Revert drift" button with a tooltip pointing to desktop.
-/// Per R12: M4 ships read-only; the drift-revert write action is
-/// deferred to M5+. Rendering the button (rather than omitting it)
-/// signals to operators that the capability exists but isn't available
-/// on this surface — same affordance as the web.
-class DisabledRevertDriftButton extends StatelessWidget {
-  const DisabledRevertDriftButton({super.key});
+/// Force Sync button for the ExternalSecret detail screen. Replaces
+/// the M4-era `DisabledRevertDriftButton` — the web/backend canonical
+/// term is "Force Sync" (the M4 mobile label was wrong; there is no
+/// separate "revert drift" action).
+///
+/// Behavior:
+///   * Disabled with explanatory tooltip when the active cluster is
+///     non-local (backend returns 501 for remote-cluster ESO writes;
+///     the UI gate is the first line of defense).
+///   * Enabled-tap shows the existing `confirm_sheet.dart` with
+///     type-to-confirm against the ExternalSecret's name.
+///   * On confirmed tap, drives [ForceSyncController]; success shows
+///     a snackbar (the controller also invalidates
+///     [externalSecretDetailProvider] so the drift chip refreshes).
+class ForceSyncButton extends ConsumerStatefulWidget {
+  const ForceSyncButton({
+    super.key,
+    required this.namespace,
+    required this.name,
+  });
 
-  /// Snackbar copy is exported so tests can assert on the exact wording
-  /// without duplicating the string literal.
-  static const String desktopMessage = 'Use desktop to revert drift';
+  final String namespace;
+  final String name;
+
+  /// Tooltip surfaced on the disabled (non-local-cluster) state.
+  static const String nonLocalTooltip =
+      'Force Sync is local-cluster only — use the desktop UI for '
+      'remote clusters.';
+
+  @override
+  ConsumerState<ForceSyncButton> createState() => _ForceSyncButtonState();
+}
+
+class _ForceSyncButtonState extends ConsumerState<ForceSyncButton> {
+  int _lastHandledGeneration = 0;
 
   @override
   Widget build(BuildContext context) {
+    final clusterId = ref.watch(activeClusterProvider);
+    final isLocal = clusterId == 'local';
+    final key = ForceSyncKey(
+      clusterId: clusterId,
+      namespace: widget.namespace,
+      name: widget.name,
+    );
+    final state = ref.watch(forceSyncControllerProvider(key));
+
+    // Side-effect: snackbar on success/failure. Guarded against
+    // re-firing on rebuild via the controller's monotonically-increasing
+    // generation field. `addPostFrameCallback` defers messaging until
+    // the current build is committed so we don't violate Flutter's
+    // no-`setState`-during-build rule.
+    _handleStateForSnackbar(state, key);
+
+    final inFlight = state is ForceSyncInFlight;
+    final onPressed = !isLocal || inFlight
+        ? null
+        : () => _onTap(context, key);
+
     return Tooltip(
-      message: desktopMessage,
+      message: isLocal ? '' : ForceSyncButton.nonLocalTooltip,
       child: OutlinedButton.icon(
-        // Null onPressed disables the button. Material's disabled style
-        // automatically dims the foreground using onSurface @ 38%, so
-        // operators can see the button exists but it's clearly inert.
-        onPressed: null,
-        icon: const Icon(Icons.undo_outlined, size: 16),
-        label: const Text('Revert drift'),
+        onPressed: onPressed,
+        icon: inFlight
+            ? const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.sync, size: 16),
+        label: const Text('Force Sync'),
       ),
     );
   }
 
-  /// Convenience for screens that want to surface the desktop message
-  /// as a snackbar (e.g., on a long-press hint).
-  static void showDesktopHint(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text(desktopMessage)),
+  void _handleStateForSnackbar(ForceSyncState state, ForceSyncKey key) {
+    final gen = switch (state) {
+      ForceSyncSuccess(:final generation) => generation,
+      ForceSyncFailure(:final generation) => generation,
+      _ => 0,
+    };
+    if (gen == 0 || gen == _lastHandledGeneration) return;
+    _lastHandledGeneration = gen;
+    final messenger = ScaffoldMessenger.of(context);
+    final colors = Theme.of(context).extension<KubeColors>()!;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (state is ForceSyncSuccess) {
+        messenger.showSnackBar(SnackBar(content: Text(state.message)));
+      } else if (state is ForceSyncFailure) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(state.message),
+          backgroundColor:
+              state.alreadyRefreshing ? null : colors.error,
+        ));
+      }
+      // Acknowledge so a follow-up tap can re-fire.
+      ref.read(forceSyncControllerProvider(key).notifier).acknowledge();
+    });
+  }
+
+  Future<void> _onTap(BuildContext context, ForceSyncKey key) async {
+    final confirmed = await showConfirmSheet(
+      context: context,
+      title: 'Force Sync',
+      message: 'This triggers an immediate sync of '
+          '${widget.namespace}/${widget.name} against its store. '
+          'The current Secret is overwritten with the upstream value.',
+      confirmLabel: 'Force Sync',
+      typeToConfirm: widget.name,
+    );
+    if (confirmed != true) return;
+    await ref.read(forceSyncControllerProvider(key).notifier).forceSync();
+  }
+}
+
+/// Dashboard-level entry point for the bulk-refresh modal. Local-cluster
+/// only per R12. Non-local renders disabled with a tooltip matching the
+/// Force Sync button.
+class BulkRefreshButton extends ConsumerWidget {
+  const BulkRefreshButton({super.key});
+
+  static const String nonLocalTooltip =
+      'Bulk refresh is local-cluster only — use the desktop UI for '
+      'remote clusters.';
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final clusterId = ref.watch(activeClusterProvider);
+    final isLocal = clusterId == 'local';
+    return Tooltip(
+      message: isLocal ? '' : nonLocalTooltip,
+      child: OutlinedButton.icon(
+        onPressed: isLocal
+            ? () => showBulkRefreshSheet(
+                  context: context,
+                  clusterId: clusterId,
+                )
+            : null,
+        icon: const Icon(Icons.cyclone, size: 16),
+        label: const Text('Bulk refresh'),
+      ),
     );
   }
 }

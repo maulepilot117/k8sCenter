@@ -7,8 +7,10 @@
 // drift Unknown onto the error palette, this test fires.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/api/eso_repository.dart';
+import 'package:kubecenter/cluster/cluster_provider.dart';
 import 'package:kubecenter/features/eso/eso_widgets.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 
@@ -197,18 +199,51 @@ void main() {
     });
   });
 
-  group('DisabledRevertDriftButton', () {
-    testWidgets('renders disabled with desktop tooltip', (tester) async {
-      await _pumpWith(tester, const DisabledRevertDriftButton());
-      // The button is disabled when onPressed is null.
-      final btn = tester.widget<OutlinedButton>(find.byType(OutlinedButton));
-      expect(btn.onPressed, isNull,
-          reason:
-              'Revert is disabled per R12 — write actions defer to desktop.');
+  group('BulkRefreshButton', () {
+    testWidgets('renders enabled on local cluster (default ProviderScope)',
+        (tester) async {
+      await tester.pumpWidget(
+        const ProviderScope(
+          child: MaterialApp(
+            home: Scaffold(body: Center(child: BulkRefreshButton())),
+          ),
+        ),
+      );
+      final btn =
+          tester.widget<OutlinedButton>(find.byType(OutlinedButton));
+      expect(btn.onPressed, isNotNull,
+          reason: 'local cluster (default) enables bulk refresh');
+    });
 
+    testWidgets('disabled with explanatory tooltip on remote cluster',
+        (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            activeClusterProvider.overrideWith(
+              () => _StubActiveCluster('prod-east'),
+            ),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(body: Center(child: BulkRefreshButton())),
+          ),
+        ),
+      );
+      await tester.pump();
+      final btn =
+          tester.widget<OutlinedButton>(find.byType(OutlinedButton));
+      expect(btn.onPressed, isNull,
+          reason: 'non-local cluster disables bulk refresh');
       final tooltip = tester.widget<Tooltip>(find.byType(Tooltip));
-      expect(tooltip.message, DisabledRevertDriftButton.desktopMessage);
-      expect(tooltip.message, contains('desktop'));
+      expect(tooltip.message, BulkRefreshButton.nonLocalTooltip);
+      expect(tooltip.message, contains('local-cluster only'));
     });
   });
+}
+
+class _StubActiveCluster extends ActiveClusterController {
+  _StubActiveCluster(this._id);
+  final String _id;
+  @override
+  String build() => _id;
 }
