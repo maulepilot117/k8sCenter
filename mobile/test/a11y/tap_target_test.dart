@@ -16,6 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 import 'package:kubecenter/theme/themes.g.dart';
+import 'package:kubecenter/widgets/resource_table.dart';
 
 import '../a11y_helpers.dart';
 
@@ -123,4 +124,42 @@ void main() {
       );
     });
   }
+
+  testWidgets('tablet ResourceTable paginator buttons meet a11y guidelines',
+      (tester) async {
+    tester.view.physicalSize = const Size(900 * 2, 700 * 2);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(MaterialApp(
+      theme: buildKubeTheme('nexus'),
+      home: MediaQuery(
+        data: const MediaQueryData(size: Size(900, 700)),
+        child: SizedBox(
+          width: 900,
+          height: 700,
+          child: Scaffold(
+            body: ResourceTable<String>(
+              items: List.generate(100, (i) => 'item-$i'),
+              columns: [
+                ResourceColumn(label: 'Name', value: (r) => r),
+              ],
+              onTap: (_) {},
+            ),
+          ),
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await expectMeetsAllGuidelines(
+      tester,
+      // Contrast is exercised by contrast_test.dart over a richer fixture.
+      textContrast: false,
+      iOSTapTarget: true,
+      androidTapTarget: true,
+      labeledTapTargets: true,
+    );
+  });
 }

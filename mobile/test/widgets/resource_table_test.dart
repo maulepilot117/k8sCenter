@@ -102,4 +102,65 @@ void main() {
 
     expect(find.text('No resources found'), findsOneWidget);
   });
+
+  testWidgets('tablet empty list still shows "No resources found" '
+      '(empty short-circuit runs before LayoutBuilder)', (tester) async {
+    tester.view.physicalSize = const Size(900 * 2, 700 * 2);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_harness(
+      size: const Size(900, 700),
+      child: Scaffold(
+        body: ResourceTable<_Row>(
+          items: const [],
+          columns: [
+            ResourceColumn(label: 'Name', value: (r) => r.name),
+          ],
+          onTap: (_) {},
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(find.text('No resources found'), findsOneWidget);
+    expect(find.byType(PaginatedDataTable2), findsNothing);
+  });
+
+  testWidgets('tablet table refreshes when items list reference changes via parent rebuild',
+      (tester) async {
+    tester.view.physicalSize = const Size(900 * 2, 700 * 2);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    var items = [_Row('alpha', 'Running')];
+
+    Widget buildTable() => _harness(
+          size: const Size(900, 700),
+          child: Scaffold(
+            body: ResourceTable<_Row>(
+              items: items,
+              columns: [
+                ResourceColumn(label: 'Name', value: (r) => r.name),
+                ResourceColumn(label: 'Status', value: (r) => r.status),
+              ],
+              onTap: (_) {},
+            ),
+          ),
+        );
+
+    await tester.pumpWidget(buildTable());
+    await tester.pumpAndSettle();
+    expect(find.text('alpha'), findsOneWidget);
+
+    // New list reference → identical() guard fires → source.update() runs.
+    items = [_Row('beta', 'Pending')];
+    await tester.pumpWidget(buildTable());
+    await tester.pumpAndSettle();
+
+    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('alpha'), findsNothing);
+  });
 }

@@ -7,7 +7,17 @@ import 'package:data_table_2/data_table_2.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/kube_theme_builder.dart';
+import 'adaptive_scaffold.dart';
 import 'kube_data_table_source.dart';
+
+/// Median-density column width for k8s name + numeric status cells.
+/// Wide tables (8+ columns, e.g. PVC) overflow and DataTable2 enables
+/// horizontal scroll automatically.
+const double _kColumnWidth = 96.0;
+
+/// Page size for the tablet paginator. Tracked in PERFORMANCE.md;
+/// changing this requires re-measuring against the frame-budget targets.
+const int _kRowsPerPage = 50;
 
 /// One column in the resource table.
 class ResourceColumn<T> {
@@ -58,7 +68,7 @@ class ResourceTable<T> extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (constraints.maxWidth >= 768) {
+        if (constraints.maxWidth >= tabletBreakpoint) {
           return _TabletTable<T>(
             items: items,
             columns: columns,
@@ -71,7 +81,10 @@ class ResourceTable<T> extends StatelessWidget {
   }
 
   Widget _buildPhoneList(BuildContext context) {
-    final colors = Theme.of(context).extension<KubeColors>()!;
+    final kubeColors = Theme.of(context).extension<KubeColors>();
+    assert(kubeColors != null,
+        'KubeColors ThemeExtension missing — wrap your widget in buildKubeTheme()');
+    final colors = kubeColors!;
     return ListView.separated(
       itemCount: items.length,
       padding: const EdgeInsets.symmetric(vertical: 8),
@@ -137,6 +150,7 @@ class _TabletTable<T> extends StatefulWidget {
 
 class _TabletTableState<T> extends State<_TabletTable<T>> {
   late final KubeDataTableSource<T> _source;
+  final PaginatorController _paginator = PaginatorController();
 
   @override
   void initState() {
@@ -152,9 +166,20 @@ class _TabletTableState<T> extends State<_TabletTable<T>> {
   @override
   void didUpdateWidget(_TabletTable<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Clamp page before updating source: if the new list is shorter than
+    // the current page start index, reset to page 0 to avoid an empty
+    // "201–250 of 30" view. Guard isAttached because the controller is
+    // wired on the first build, not on construction.
+    if (_paginator.isAttached &&
+        widget.items.length < _paginator.currentRowIndex) {
+      _paginator.goToFirstPage();
+    }
+    // onTap is intentionally excluded: the source's _onTap will pick up
+    // the latest callback on the next genuine data-driven update() call.
+    // Consumers always rebuild items alongside onTap, so staleness window
+    // is bounded by the next items change.
     if (!identical(oldWidget.items, widget.items) ||
-        !identical(oldWidget.columns, widget.columns) ||
-        oldWidget.onTap != widget.onTap) {
+        !identical(oldWidget.columns, widget.columns)) {
       _source.update(
         items: widget.items,
         columns: widget.columns,
@@ -165,6 +190,13 @@ class _TabletTableState<T> extends State<_TabletTable<T>> {
 
   @override
   void dispose() {
+    // PaginatedDataTable2 is a direct child of this State, so Flutter
+    // disposes it (removing its listener on _source) BEFORE this
+    // dispose() runs. Safe to dispose _source and _paginator here. If
+    // _source is ever hoisted to a sibling or a Riverpod provider,
+    // re-evaluate this ordering — a notifier disposed while still has
+    // listeners throws in debug mode.
+    _paginator.dispose();
     _source.dispose();
     super.dispose();
   }
@@ -172,9 +204,11 @@ class _TabletTableState<T> extends State<_TabletTable<T>> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<KubeColors>()!;
-    final minWidth = (widget.columns.length * 96).toDouble();
+    final minWidth = widget.columns.length * _kColumnWidth;
     return PaginatedDataTable2(
+      key: PageStorageKey<String>('resource_table_${T.toString()}'),
       source: _source,
+      controller: _paginator,
       columns: [
         for (final col in widget.columns)
           DataColumn2(
@@ -190,9 +224,12 @@ class _TabletTableState<T> extends State<_TabletTable<T>> {
       columnSpacing: 16,
       horizontalMargin: 12,
       minWidth: minWidth,
-      rowsPerPage: 50,
+      rowsPerPage: _kRowsPerPage,
       showCheckboxColumn: false,
       wrapInCard: false,
+      // PR-5i review: avoid 40-blank-row allocation + "1-50 of 10" footer on short lists.
+      renderEmptyRowsInTheEnd: false,
+      hidePaginator: widget.items.length <= _kRowsPerPage,
     );
   }
 }

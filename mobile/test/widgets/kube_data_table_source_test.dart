@@ -14,6 +14,37 @@ class _Row {
   final String status;
 }
 
+/// Test-only subclass that counts how many non-null rows `getRow` has
+/// returned. Used to verify that PaginatedDataTable2 only materialises
+/// rows for the visible page (virtualization proof).
+class _CountingKubeDataTableSource<T> extends KubeDataTableSource<T> {
+  _CountingKubeDataTableSource({
+    required super.items,
+    required super.columns,
+    required super.onTap,
+    required super.context,
+  });
+
+  int rowCallCount = 0;
+
+  @override
+  DataRow? getRow(int index) {
+    final row = super.getRow(index);
+    if (row != null) rowCallCount++;
+    return row;
+  }
+
+  @override
+  void update({
+    required List<T> items,
+    required List<ResourceColumn<T>> columns,
+    required ValueChanged<T> onTap,
+  }) {
+    rowCallCount = 0;
+    super.update(items: items, columns: columns, onTap: onTap);
+  }
+}
+
 Widget _harness({required Widget child, required Size size}) {
   return MaterialApp(
     theme: buildKubeTheme('nexus'),
@@ -48,6 +79,21 @@ KubeDataTableSource<_Row> _source(BuildContext context, List<_Row> items, {
   ValueChanged<_Row>? onTap,
 }) {
   return KubeDataTableSource<_Row>(
+    items: items,
+    columns: [
+      ResourceColumn(label: 'Name', value: (r) => r.name),
+      ResourceColumn(label: 'Status', value: (r) => r.status),
+    ],
+    onTap: onTap ?? (_) {},
+    context: context,
+  );
+}
+
+_CountingKubeDataTableSource<_Row> _countingSource(
+    BuildContext context, List<_Row> items, {
+  ValueChanged<_Row>? onTap,
+}) {
+  return _CountingKubeDataTableSource<_Row>(
     items: items,
     columns: [
       ResourceColumn(label: 'Name', value: (r) => r.name),
@@ -106,7 +152,7 @@ void main() {
   testWidgets('update() replaces items, resets rowCallCount, and notifies',
       (tester) async {
     final context = await _pumpContext(tester);
-    final source = _source(context, [const _Row('a', 'Running')]);
+    final source = _countingSource(context, [const _Row('a', 'Running')]);
 
     source.getRow(0);
     expect(source.rowCallCount, 1);
@@ -147,6 +193,29 @@ void main() {
     expect(tapped?.name, 'alpha');
   });
 
+  testWidgets('per-row color callback overrides default text color',
+      (tester) async {
+    final context = await _pumpContext(tester);
+    final source = KubeDataTableSource<_Row>(
+      items: const [_Row('alpha', 'Running')],
+      columns: [
+        ResourceColumn(
+          label: 'Status',
+          value: (r) => r.status,
+          color: (ctx, r) => r.status == 'Running'
+              ? const Color(0xFF00FF00)
+              : null,
+        ),
+      ],
+      onTap: (_) {},
+      context: context,
+    );
+
+    final row = source.getRow(0);
+    final cellText = (row!.cells.first.child as Text);
+    expect(cellText.style?.color, const Color(0xFF00FF00));
+  });
+
   testWidgets(
       'PaginatedDataTable2 only materializes rows for the visible page',
       (tester) async {
@@ -156,14 +225,14 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final items = List.generate(6000, (i) => _Row('name-$i', 'status-$i'));
-    late KubeDataTableSource<_Row> source;
+    late _CountingKubeDataTableSource<_Row> source;
 
     await tester.pumpWidget(_harness(
       size: const Size(900, 700),
       child: Scaffold(
         body: Builder(
           builder: (context) {
-            source = KubeDataTableSource<_Row>(
+            source = _CountingKubeDataTableSource<_Row>(
               items: items,
               columns: [
                 ResourceColumn(label: 'Name', value: (r) => r.name),
@@ -178,7 +247,7 @@ void main() {
                 DataColumn2(label: Text('Name')),
                 DataColumn2(label: Text('Status')),
               ],
-              rowsPerPage: 50,
+              rowsPerPage: 50, // keep in sync with _kRowsPerPage in resource_table.dart
               showCheckboxColumn: false,
               wrapInCard: false,
             );
@@ -192,8 +261,23 @@ void main() {
     // couple extra indices for measurement/empty-row padding, so 60 is
     // the safe bound that still proves virtualization (vs the 6000 a
     // non-lazy implementation would request).
-    expect(source.rowCallCount, lessThan(60),
+    expect(source.rowCallCount, lessThanOrEqualTo(52),
         reason: 'Source requested ${source.rowCallCount} rows '
-            '(must stay bounded by the visible page, not the 6000-item list)');
+            '(must stay bounded by the visible page = 50 + at most 2 for '
+            'paginator overhead, not the 6000-item list)');
+
+    // update() must trigger an actual PaginatedDataTable2 rebuild,
+    // not just notify a raw listener. Replace items and confirm new
+    // data appears in the rendered tree.
+    source.update(
+      items: [const _Row('updated-row', 'Updated')],
+      columns: [
+        ResourceColumn(label: 'Name', value: (r) => r.name),
+        ResourceColumn(label: 'Status', value: (r) => r.status),
+      ],
+      onTap: (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('updated-row'), findsOneWidget);
   });
 }

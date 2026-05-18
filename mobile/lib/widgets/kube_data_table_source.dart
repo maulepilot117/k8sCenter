@@ -31,18 +31,17 @@ class KubeDataTableSource<T> extends DataTableSource {
   /// getRow a context that always reflects the current theme.
   final BuildContext context;
 
-  /// Test-only counter that increments on every non-null `getRow`
-  /// return. Widget tests pump a PaginatedDataTable2 over a synthetic
-  /// 6000-row source and assert this stays bounded by the visible page,
-  /// proving virtualization actually kicks in.
-  @visibleForTesting
-  int rowCallCount = 0;
-
   int get itemCount => _items.length;
 
   /// Swap the backing data + columns + tap callback and notify the
-  /// paginator to rebuild. Called by `_TabletTable.didUpdateWidget`
-  /// when the parent rebuilds with new props.
+  /// paginator to rebuild.
+  ///
+  /// `columns` is expected to be stable across rebuilds (defined as
+  /// compile-time const lists at the caller). It is included in the
+  /// signature for API symmetry, not because it changes frequently.
+  /// The hot field is `items`; `onTap` typically also changes per
+  /// rebuild because consumers pass inline lambdas — see the
+  /// `didUpdateWidget` identity check in `_TabletTableState`.
   void update({
     required List<T> items,
     required List<ResourceColumn<T>> columns,
@@ -51,18 +50,20 @@ class KubeDataTableSource<T> extends DataTableSource {
     _items = items;
     _columns = columns;
     _onTap = onTap;
-    rowCallCount = 0;
     notifyListeners();
   }
 
   @override
   DataRow? getRow(int index) {
     if (index < 0 || index >= _items.length) return null;
-    rowCallCount++;
     final item = _items[index];
-    final colors = Theme.of(context).extension<KubeColors>()!;
+    final onTap = _onTap;
+    final kubeColors = Theme.of(context).extension<KubeColors>();
+    assert(kubeColors != null,
+        'KubeColors ThemeExtension missing — wrap your widget in buildKubeTheme()');
+    final colors = kubeColors!;
     return DataRow2(
-      onTap: () => _onTap(item),
+      onTap: () => onTap(item),
       cells: [
         for (final col in _columns)
           DataCell(
