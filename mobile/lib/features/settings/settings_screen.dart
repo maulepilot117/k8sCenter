@@ -28,11 +28,25 @@ import 'theme_picker_sheet.dart';
 /// there is a single place to update when domains change.
 const String kInstallGuideUrl = 'https://kubecenter.io/install';
 const String kPrivacyPolicyUrl = 'https://kubecenter.io/privacy';
-const String kSupportUrl = 'https://github.com/kubecenter-io/k8scenter/issues';
+const String kSupportUrl = 'https://github.com/maulepilot117/k8sCenter/issues';
+
+/// Marker in [kAppStoreListingUrl] that means "Apple hasn't assigned a
+/// numeric App Store ID yet". The Rate-this-app tile gates on its
+/// absence — see [appStoreListingConfigured] and PR-5j issue #272. Swap
+/// to the real ID at PR-5j App Store Connect record creation.
+const String _kAppStorePlaceholderMarker = 'id0000000000';
 const String kAppStoreListingUrl =
-    'https://apps.apple.com/app/k8scenter/id0000000000';
+    'https://apps.apple.com/app/k8scenter/$_kAppStorePlaceholderMarker';
 const String kPlayStoreListingUrl =
-    'https://play.google.com/store/apps/details?id=io.kubecenter.app';
+    'https://play.google.com/store/apps/details?id=io.kubecenter.kubecenter';
+
+/// True only when [kAppStoreListingUrl] points at a real Apple-assigned
+/// listing. iOS "Rate this app" tile disables itself when this is false —
+/// without the guard, tapping it on a pre-launch build opens an invalid
+/// store URL. Play Store URL is stable by package name so has no
+/// equivalent guard. Issue #272.
+bool get appStoreListingConfigured =>
+    !kAppStoreListingUrl.contains(_kAppStorePlaceholderMarker);
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -41,6 +55,10 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<KubeColors>()!;
     final optedIn = ref.watch(sentryControllerProvider);
+    // Issue #272 — gate iOS "Rate this app" until Apple assigns the
+    // real App Store ID. Play Store URL is stable by package name.
+    final isIOS = Theme.of(context).platform == TargetPlatform.iOS;
+    final rateEnabled = !isIOS || appStoreListingConfigured;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -96,8 +114,14 @@ class SettingsScreen extends ConsumerWidget {
           ListTile(
             leading: Icon(Icons.star_outline, color: colors.accent),
             title: const Text('Rate this app'),
-            trailing: Icon(Icons.open_in_new, color: colors.textMuted, size: 18),
-            onTap: () => _launchStoreListing(context),
+            subtitle: rateEnabled
+                ? null
+                : const Text('Available after public-store launch'),
+            trailing: rateEnabled
+                ? Icon(Icons.open_in_new, color: colors.textMuted, size: 18)
+                : null,
+            enabled: rateEnabled,
+            onTap: rateEnabled ? () => _launchStoreListing(context) : null,
           ),
           const SizedBox(height: 24),
         ],

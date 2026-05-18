@@ -16,7 +16,7 @@ Dio _newDio(MockDioAdapter adapter) {
 
 void main() {
   group('fetchMobileConfig', () {
-    test('parses authorizationEndpoint + clientID + scopes from envelope', () async {
+    test('parses authorizationEndpoint + clientId + scopes from envelope', () async {
       final adapter = MockDioAdapter()
         ..onJson(
           'GET',
@@ -24,7 +24,7 @@ void main() {
           body: {
             'data': {
               'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
-              'clientID': 'kubecenter-mobile',
+              'clientId': 'kubecenter-mobile',
               'scopes': ['openid', 'profile', 'email'],
             },
           },
@@ -34,8 +34,36 @@ void main() {
       final cfg = await repo.fetchMobileConfig('authelia');
 
       expect(cfg.authorizationEndpoint, 'https://idp.example.com/oauth2/auth');
-      expect(cfg.clientID, 'kubecenter-mobile');
+      expect(cfg.clientId, 'kubecenter-mobile');
       expect(cfg.scopes, ['openid', 'profile', 'email']);
+    });
+
+    test('rejects legacy clientID wire key (issue #282 regression guard)', () async {
+      // Backend stopped emitting `clientID` after #282; if it ever
+      // regresses, mobile must surface a clear FormatException-derived
+      // ApiError rather than silently launching the IdP auth URL with a
+      // blank `client_id`.
+      final adapter = MockDioAdapter()
+        ..onJson(
+          'GET',
+          '/api/v1/auth/oidc/legacy/mobile-config',
+          body: {
+            'data': {
+              'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
+              'clientID': 'kubecenter-mobile',
+              'scopes': ['openid'],
+            },
+          },
+        );
+
+      final repo = OIDCRepository(_newDio(adapter));
+      try {
+        await repo.fetchMobileConfig('legacy');
+        fail('expected ApiError from missing clientId');
+      } on ApiError catch (e) {
+        expect(e.statusCode, 502);
+        expect(e.message, contains('clientId'));
+      }
     });
 
     test('routes to the provider-id-scoped path', () async {
@@ -46,7 +74,7 @@ void main() {
           body: {
             'data': {
               'authorizationEndpoint': 'https://corp.okta.com/oauth2/v1/authorize',
-              'clientID': 'abc',
+              'clientId': 'abc',
               'scopes': ['openid'],
             },
           },
@@ -88,7 +116,7 @@ void main() {
           body: {
             'data': {
               'authorizationEndpoint': 'https://idp/x',
-              'clientID': 'y',
+              'clientId': 'y',
               // scopes intentionally omitted
             },
           },

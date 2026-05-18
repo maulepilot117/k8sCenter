@@ -225,4 +225,110 @@ After the first end-to-end deploy:
 - [ ] Tap a Universal Link to a known resource (e.g., a Pod in the homelab). The app should open to the resource detail without bouncing through Safari/Chrome.
 - [ ] Send a test push (`POST /api/v1/notifications/channels/<id>/test`) targeting your registered device. Confirm the notification arrives and tapping it deep-links to the resource.
 
-When all five tick, the mobile pipeline is operational.
+When all five tick, the internal-beta pipeline is operational.
+
+## Public-store promotion
+
+The internal-beta pipeline ships every push to `main`. **Public-store promotion is separate** — manual `workflow_dispatch` against `mobile-ci.yml`, never push-triggered. Apple's 24h–7d review SLA and Play's 10% staged rollout are deliberately decoupled from CI lifecycle.
+
+The `promote_ios` and `promote_android` Fastlane lanes (`mobile/fastlane/Fastfile`) own the App Store + Play Store production submission. This section is the bring-up runbook for first-time public launch and the recurring step-by-step for subsequent releases.
+
+### Promotion prerequisite tracker
+
+| Gate | Required to | Lead time | First-time only? |
+|---|---|---|---|
+| Apple Developer Program enrollment | Submit to App Store | 24–48h Apple approval | Yes |
+| Play Console first manual AAB upload | Promote Internal → Production | Same-day | Yes |
+| Privacy policy URL live (`https://kubecenter.io/privacy`) | Submission accepted by either store | Same-day | Yes |
+| App Privacy questionnaire (App Store Connect) | App Store review approved | Same-day | Yes |
+| Play Data Safety form (Play Console) | Play submission accepted | Same-day | Yes |
+| iOS screenshots populated under `mobile/fastlane/screenshots/en-US/` | `promote_ios` does not fail at submit-for-review | Same-day (real device captures) | Recurring per major release |
+| Sentry DSN provisioned + tested | Crash reporting works once Settings toggle is enabled | Same-day | Yes |
+| Apple Developer team_id matches Appfile | `match` succeeds in CI | Same-day | Yes |
+| App Store Review Notes field populated | Avoids guideline 5.1.2 holds | Same-day | Yes |
+
+All nine gates must clear before `promote_ios` or `promote_android` will succeed end-to-end. The lanes themselves enforce gate-3, gate-6, gate-7, and gate-8 with explicit failure messages; the rest are operator responsibilities.
+
+### iOS public launch (first time)
+
+1. **Apple Developer Program enrollment** — see `iOS setup → 1. Apple Developer Program enrollment`. Required gate before any of the steps below.
+2. **App Store Connect listing record** — see `iOS setup → 2. Create the App Store Connect record`. The Bundle ID must match `io.kubecenter.kubecenter` exactly.
+3. **App Privacy questionnaire** — App Store Connect → App Privacy → fill per the table in `mobile/docs/APP_PRIVACY.md`. Apple validates submissions against this; mismatches between actual data collection and the questionnaire cause reviewer rejections.
+4. **Privacy policy URL** — publish a page at `https://kubecenter.io/privacy`. The page content is checked into `frontend/routes/privacy.tsx`; deploy the docs site (or wire the privacy route into whatever hosts `kubecenter.io`) and confirm `curl -sI https://kubecenter.io/privacy` returns `200 OK` before continuing.
+5. **App Store Review Information notes** — App Store Connect → App Information → App Store Review Information → Notes field. Paste the "What this app is" paragraph from `mobile/docs/APP_PRIVACY.md` verbatim. Pre-empts the most likely reviewer confusion about Kubernetes-credentials handling.
+6. **Screenshots** — capture 5 surfaces per device class on a real iPhone 14 Pro Max + real iPad Pro 12.9, both light and dark themes. Save under `mobile/fastlane/screenshots/en-US/` following the [fastlane deliver layout](https://docs.fastlane.tools/actions/deliver/#screenshots). Verify each screenshot contains no homelab cluster names or other identifiable data before commit.
+7. **Branded app icon** — replace the placeholder Flutter icons under `mobile/ios/Runner/Assets.xcassets/AppIcon.appiconset/` with branded 1024×1024 master + auto-generated sizes. Tools: `fastlane appicon` or any icon generator.
+8. **Sentry DSN** — provision a project at <https://sentry.io>, set the `SENTRY_DSN_MOBILE` GitHub Actions secret. The next `beta_ios` build picks it up via `--dart-define=SENTRY_DSN=...`. Send a synthetic crash from a release build and inspect the Sentry payload to confirm the scrubber catches PII before going live.
+9. **Run `beta_ios`** at least once after gates 1–8 clear, so TestFlight has a current build to submit. The TestFlight build IS the binary that gets submitted to App Store.
+10. **Run `promote_ios`** via `workflow_dispatch` — pushes metadata, screenshots, and submits the latest TestFlight build for App Store review. The lane fails loudly if screenshots/en-US/ is empty.
+11. **Wait** for App Store review. SLA: 24h typical, 7d worst case. Rejection feedback (if any) lands in App Store Connect → Resolution Center. Address feedback in a follow-up PR; re-run `promote_ios`.
+12. **Phased release** — once approved, App Store Connect → Pricing and Availability → manually graduate from "Phased Release" to "Available" after the staged rollout signals are clean.
+
+### Android public launch (first time)
+
+1. **Play Console developer account** — see `Android setup → 1. Google Play Console`. Same record as Internal-track.
+2. **First manual AAB upload to Internal track** — see `Android setup → 5. First manual upload`. Play won't accept programmatic promotion before this is done.
+3. **Data Safety form** — Play Console → Policy → App Content → Data Safety → fill per the Play mapping table in `mobile/docs/APP_PRIVACY.md`.
+4. **Privacy policy URL** — same as iOS step 4. Play validates the URL at submission time; broken URLs reject with reason "Privacy policy".
+5. **Branded app icon + adaptive layers** — replace the placeholder under `mobile/android/app/src/main/res/mipmap-*/ic_launcher.png` with branded foreground (432×432) + background color. Use `flutter pub run flutter_launcher_icons` or any generator.
+6. **Sentry DSN** — same provisioning as iOS step 8. Same `SENTRY_DSN_MOBILE` secret; reused across platforms.
+7. **Run `beta_android`** at least once after gates 1–6 clear, so the Internal track has a current build to promote.
+8. **Run `promote_android`** via `workflow_dispatch` — promotes the most recent Internal AAB to Production at 10% staged rollout. No re-build, no re-upload.
+9. **Monitor crash + ANR rate** for 48h via Play Console → Quality → Android vitals. Acceptable bands: crash rate <1%, ANR rate <0.5%.
+10. **Graduate to 100%** — Play Console → Production → expand the active release → set rollout to 100%. Optional staged graduations at 25% / 50% / 75% if the team prefers slower rollout.
+
+### Subsequent public releases (after first launch)
+
+After the bring-up is done, each subsequent release reduces to:
+
+| Step | iOS | Android |
+|---|---|---|
+| 1 | Update `mobile/fastlane/metadata/en-US/release_notes.txt` | Update `mobile/fastlane/metadata/android/en-US/release_notes.txt` |
+| 2 | Capture fresh screenshots if UI changed | Capture fresh phoneScreenshots/ if UI changed |
+| 3 | Merge to `main` → `beta_ios` ships an updated build to TestFlight | Merge to `main` → `beta_android` ships an updated AAB to Internal |
+| 4 | `workflow_dispatch` → `promote_ios` | `workflow_dispatch` → `promote_android` |
+| 5 | Wait for App Store review (24h–7d), then phased release | Monitor 48h on 10% rollout, then graduate to 100% |
+
+Apple reviews every release. Play reviews are typically waived for established apps with clean rollout history.
+
+### Troubleshooting
+
+**`promote_ios` fails with "missing screenshots"**: `mobile/fastlane/screenshots/en-US/` is empty or missing required device-class subdirectories. Apple rejects submissions without screenshots; the lane defends this gate intentionally. Populate screenshots from a real-device capture, then re-run.
+
+**`promote_ios` fails with HTTP 401 from App Store Connect**: The API key is expired, revoked, or has insufficient role. Generate a new key with App Manager role; update the `APPSTORE_CONNECT_API_KEY` secret. See `Rotating secrets → APPSTORE_CONNECT_API_KEY`.
+
+**`promote_ios` fails with "no TestFlight build to submit"**: Run `beta_ios` first to publish a build to TestFlight. `promote_ios` submits the latest TestFlight build; it doesn't build a new one.
+
+**`promote_ios` rejected by App Store review with guideline 5.1.2 (Data Collection and Storage)**: The Review Information Notes field is missing or doesn't explain Kubernetes-credentials handling. Paste the "What this app is" paragraph from `mobile/docs/APP_PRIVACY.md` into App Store Connect → App Information → Review Information → Notes. Re-run `promote_ios`.
+
+**`promote_android` fails with HTTP 404**: The lane's rescue block already prints the three most likely causes (no AAB on Internal track, missing first manual upload, service-account permissions). Address the relevant one and re-run.
+
+**`promote_android` rejected for "Privacy policy"**: Either `https://kubecenter.io/privacy` isn't reachable, or the Data Safety form contradicts actual data collection. `curl -sI https://kubecenter.io/privacy` must return 200; re-fill the Data Safety form against `mobile/docs/APP_PRIVACY.md`.
+
+**App Store Connect "App Privacy" section won't save**: Apple validates the questionnaire against the actual data the binary collects (their static analysis looks at SDK imports). If you toggle "Collects no data" but the binary imports a Sentry SDK, the form rejects. Either remove the SDK (if not used) or admit collection.
+
+**Sentry events arrive in production with PII visible**: The scrubber didn't catch it. Patch `mobile/lib/observability/pii_scrubber.dart` and ship a hotfix release before any further public rollout. The Sentry-side compensating controls (release-filter + rate-limit) mitigate but don't replace the on-device scrub.
+
+**A Universal Link tap opens Safari instead of the app on a real device**: AASA verification failed. Check `curl -sI https://<universal-link-host>/.well-known/apple-app-site-association` returns `application/json`. See `Universal Links → 6. Verify`.
+
+### Rollback
+
+If a public release introduces a regression:
+
+- **iOS**: App Store Connect → My Apps → version → "Remove from Sale". Reversible within minutes. Ship the fix as a patch release; re-run `promote_ios`.
+- **Android**: Play Console → Production → active release → "Halt rollout". The stop is immediate for users not yet served; users who already received the bad build keep it. Ship the fix as a patch release; re-run `promote_android` at a fresh 10% rollout. The halted release stays in the version history.
+
+Both rollback paths are reversible. Neither requires re-submission for review (the rollback itself doesn't change the app; only the distribution gate).
+
+### Public-launch smoke
+
+After both promotions land in production:
+
+- [ ] App Store listing renders at `https://apps.apple.com/app/k8scenter` with screenshots, description, age rating 4+.
+- [ ] Play Store listing renders at `https://play.google.com/store/apps/details?id=io.kubecenter.kubecenter` with screenshots, full description.
+- [ ] Install the App Store release on a clean iPhone (no TestFlight). Sign in to a real k8sCenter server. Tail Pod logs. Confirm core flow works end-to-end.
+- [ ] Install the Play Store release on a clean Android device (no Internal-track access). Same end-to-end sign-in + log-tail flow.
+- [ ] Sentry receives a synthetic crash event from one of the installed devices (toggle Crash Reporting in Settings → trigger a test exception). Confirm PII scrub worked.
+- [ ] Push notification delivered to one of the installed devices via `POST /api/v1/notifications/channels/<id>/test`. Tap → deep-links to the resource.
+
+When all six tick, the public-store launch is operational.

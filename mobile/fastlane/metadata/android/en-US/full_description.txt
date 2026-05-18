@@ -1,0 +1,31 @@
+k8sCenter Mobile is the native Android companion for the k8sCenter Kubernetes management platform. It is designed for the oncall moment — paged at dinner, on the train, away from a laptop — when you need to triage a cluster fast, scan logs, restart a workload, and get back to your life.
+
+WHAT YOU GET
+
+• Dashboard with at-a-glance cluster health, namespace counts, and active alerts.
+• Browse every standard Kubernetes resource — Pods, Deployments, StatefulSets, DaemonSets, Jobs, Services, Ingresses, ConfigMaps, Secrets, PVCs, Nodes, and more.
+• Tail Pod logs over WebSocket with live filtering.
+• View per-resource metrics charts backed by your own Prometheus.
+• Run safe write actions on the go — scale, restart, suspend, rollback. Every action is RBAC-checked and audit-logged on the server.
+• Apply or edit raw YAML with server-side-apply semantics; preview the diff before commit.
+• Diagnose unhealthy resources with the blast-radius view that surfaces dependent workloads.
+• Multi-cluster ready — switch between every cluster registered in your k8sCenter server with a single tap.
+• Observability surfaces ported from the web app: LogQL editor with Loki, golden-signal latency/error/throughput charts for Istio and Linkerd services, certificate expiry tracking with cert-manager, GitOps state for Argo CD and Flux CD, policy compliance for Kyverno and Gatekeeper.
+• Push notifications for cluster alerts via Firebase Cloud Messaging.
+• Authentication via local accounts, LDAP, or OIDC providers (Authelia, Keycloak, Google, Microsoft, Okta).
+
+WHAT YOU DO NOT GET
+
+k8sCenter Mobile is a thin client for YOUR own k8sCenter server. It does NOT connect directly to Kubernetes API servers. It does NOT store Kubernetes cluster credentials on your device — those stay encrypted with AES-256-GCM on the k8sCenter server you operate. The app stores only its own session token after you sign in, plus a device token for push notifications. If you do not already operate a k8sCenter server, this app will not do anything useful by itself.
+
+WHO THIS IS FOR
+
+Platform engineers, SREs, and DevOps teams who already run k8sCenter and want the same triage workflow on Android phones and tablets. Not a replacement for the web console — the desktop app remains the authoring surface for wizards, RBAC management, multi-cluster registration, and bulk operations.
+
+PRIVACY
+
+Crash reporting via Sentry is opt-in and OFF by default. When enabled, Kubernetes resource names and authentication tokens are scrubbed before any event leaves the device. See our privacy policy for the full data-handling story.
+
+OPEN SOURCE
+
+k8sCenter is open source. Source, issue tracker, and release notes live on GitHub.

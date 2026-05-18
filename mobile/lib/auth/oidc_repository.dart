@@ -1,7 +1,7 @@
 // API client for the body-mode OIDC mobile flow.
 //
 // Two backend endpoints:
-//   GET  /v1/auth/oidc/{providerID}/mobile-config   → {authorizationEndpoint, clientID, scopes}
+//   GET  /v1/auth/oidc/{providerID}/mobile-config   → {authorizationEndpoint, clientId, scopes}
 //   POST /v1/auth/oidc/{providerID}/mobile-exchange → {accessToken, refreshToken, expiresIn, refreshExpiresIn, user}
 //
 // Uses [refreshDioProvider] (no interceptors). The mobile-exchange call
@@ -18,10 +18,13 @@ import '../api/api_error.dart';
 import '../api/dio_client.dart';
 
 /// Result of the GET .../mobile-config call.
+///
+/// JSON wire key is `clientId` (lowercase d) — matches the rest of the
+/// k8sCenter API surface convention. See issue #282.
 class OIDCMobileAuthConfig {
   const OIDCMobileAuthConfig({
     required this.authorizationEndpoint,
-    required this.clientID,
+    required this.clientId,
     required this.scopes,
   });
 
@@ -32,7 +35,7 @@ class OIDCMobileAuthConfig {
     // can wrap as a 502 ApiError and the controller surfaces a real
     // error to the user instead of launching a broken auth flow.
     final endpoint = json['authorizationEndpoint'] as String?;
-    final clientId = json['clientID'] as String?;
+    final clientId = json['clientId'] as String?;
     if (endpoint == null || endpoint.isEmpty) {
       throw const FormatException(
         'mobile-config response missing authorizationEndpoint',
@@ -40,7 +43,7 @@ class OIDCMobileAuthConfig {
     }
     if (clientId == null || clientId.isEmpty) {
       throw const FormatException(
-        'mobile-config response missing clientID',
+        'mobile-config response missing clientId',
       );
     }
     final scopesRaw = json['scopes'];
@@ -49,13 +52,13 @@ class OIDCMobileAuthConfig {
         : const <String>[];
     return OIDCMobileAuthConfig(
       authorizationEndpoint: endpoint,
-      clientID: clientId,
+      clientId: clientId,
       scopes: scopes,
     );
   }
 
   final String authorizationEndpoint;
-  final String clientID;
+  final String clientId;
   final List<String> scopes;
 }
 
