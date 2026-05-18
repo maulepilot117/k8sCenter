@@ -69,7 +69,9 @@ func TestHandleOIDCMobileConfig_RouteRegistration(t *testing.T) {
 
 // TestHandleOIDCMobileConfig_Success asserts the 200 path: a registered
 // provider returns the three load-bearing fields (authorizationEndpoint,
-// clientID, scopes) and never leaks the clientSecret.
+// clientId, scopes) and never leaks the clientSecret. The clientId JSON
+// key uses lowercase-d to match the rest of the API surface convention
+// (see issue #282).
 func TestHandleOIDCMobileConfig_Success(t *testing.T) {
 	srv := testServer(t)
 
@@ -106,7 +108,7 @@ func TestHandleOIDCMobileConfig_Success(t *testing.T) {
 	var resp struct {
 		Data struct {
 			AuthorizationEndpoint string   `json:"authorizationEndpoint"`
-			ClientID              string   `json:"clientID"`
+			ClientID              string   `json:"clientId"`
 			Scopes                []string `json:"scopes"`
 		} `json:"data"`
 	}
@@ -118,7 +120,7 @@ func TestHandleOIDCMobileConfig_Success(t *testing.T) {
 		t.Errorf("authorizationEndpoint: got %q, want %q", got, want)
 	}
 	if got, want := resp.Data.ClientID, "kubecenter-mobile"; got != want {
-		t.Errorf("clientID: got %q, want %q", got, want)
+		t.Errorf("clientId: got %q, want %q", got, want)
 	}
 	if got, want := strings.Join(resp.Data.Scopes, ","), "openid,profile,email"; got != want {
 		t.Errorf("scopes: got %q, want %q", got, want)
@@ -127,5 +129,15 @@ func TestHandleOIDCMobileConfig_Success(t *testing.T) {
 	// Secret must never appear in the response body.
 	if strings.Contains(bodyStr, "must-not-leak") {
 		t.Fatalf("clientSecret leaked into mobile-config response: %s", bodyStr)
+	}
+
+	// Wire-format guard — issue #282. The Go convention `clientID`
+	// must NOT appear as a JSON key; only `clientId` is canonical.
+	// Catches accidental reverts of the JSON tag.
+	if strings.Contains(bodyStr, `"clientID"`) {
+		t.Errorf("response carries legacy clientID JSON key (issue #282 regression): %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"clientId"`) {
+		t.Errorf("response missing canonical clientId JSON key: %s", bodyStr)
 	}
 }
