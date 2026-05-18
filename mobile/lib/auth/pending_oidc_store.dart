@@ -23,6 +23,14 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// secure_storage key namespace. Single JSON-encoded blob is cheaper
 /// (one platform-channel round-trip per read) than four separate keys.
+///
+/// `_v1` suffix is deliberate (see issue #281). This key stores a
+/// versioned JSON blob — adding a field, renaming one, or splitting it
+/// into multiple keys all break compatibility with an older mobile
+/// client mid-rotation. A future `_v2` can coexist briefly during a
+/// migration window. `kc_refresh_token` (secure_storage.dart) has no
+/// suffix because that value is an opaque server-issued string and
+/// cannot evolve from the client's perspective.
 const String pendingOidcStorageKey = 'kc_oidc_pending_v1';
 
 /// Maximum age of a pending flow before it's considered expired.
