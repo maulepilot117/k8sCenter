@@ -113,6 +113,18 @@ jobs:
       - name: Install Semgrep
         run: pip install semgrep==1.162.0
 
+      # Rule selection: Semgrep's open registry has no curated Dart
+      # or Flutter pack (the human-facing /p/dart preview page exists
+      # but the CLI's config-fetch endpoint 404s, and semgrep silently
+      # exits 7 — MISSING_CONFIG — when an unfetchable pack is requested).
+      #   p/default — broad multi-language + regex rules; the regex
+      #     rules apply to .dart files (credentials, hardcoded URLs,
+      #     dangerous patterns) even though semgrep ships no Dart-AST
+      #     rule pack.
+      #   p/secrets — credential / API-key leak detection across all
+      #     file types via regex.
+      # OSV-Scanner (separate job below) handles the pub.dev dep-CVE
+      # surface, which IS Dart-specific.
       # `--metrics=off` keeps run telemetry off public CI. SARIF
       # output lets `upload-sarif` ingest the findings under the
       # `dart-semgrep` category so they slot into the same Security
@@ -121,8 +133,7 @@ jobs:
       - name: Run Semgrep
         run: |
           semgrep scan \
-            --config=p/dart \
-            --config=p/flutter \
+            --config=p/default \
             --config=p/secrets \
             --sarif --output=semgrep.sarif \
             --metrics=off \
