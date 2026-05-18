@@ -107,8 +107,11 @@ jobs:
       # clears the 7-day supply-chain cooldown documented in global
       # CLAUDE.md. Newer Semgrep releases land roughly weekly; only
       # bump after the new release ages past the cooldown window.
+      # Semgrep's own transitive deps (click, etc.) are installed
+      # normally — transitive deps are explicitly exempt from the
+      # 7-day rule because the solver picks them, not us.
       - name: Install Semgrep
-        run: pip install --no-deps semgrep==1.162.0
+        run: pip install semgrep==1.162.0
 
       # `--metrics=off` keeps run telemetry off public CI. SARIF
       # output lets `upload-sarif` ingest the findings under the
