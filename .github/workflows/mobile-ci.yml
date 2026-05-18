@@ -79,6 +79,124 @@ jobs:
         run: deno run --allow-read tools/theme-gen/main.ts --check
 
   # ---------------------------------------------------------------------
+  # Security scans — Semgrep SAST + OSV-Scanner dependency check fill
+  # the role CodeQL plays for the Go/JS halves of the project (CodeQL
+  # has no Dart analyzer). Findings upload as SARIF to the Security
+  # tab; neither job is blocking on day 1 so PRs surface issues
+  # without gating the merge. Flip `fail-on-vuln: true` on osv-scan
+  # and add `--error` to the semgrep call to harden once the baseline
+  # is clean.
+  # ---------------------------------------------------------------------
+
+  semgrep:
+    name: Semgrep SAST (Dart/Flutter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pin Semgrep to 1.162.0 — 10 days old at time of write, which
+      # clears the 7-day supply-chain cooldown documented in global
+      # CLAUDE.md. Newer Semgrep releases land roughly weekly; only
+      # bump after the new release ages past the cooldown window.
+      # Semgrep's own transitive deps (click, etc.) are installed
+      # normally — transitive deps are explicitly exempt from the
+      # 7-day rule because the solver picks them, not us.
+      - name: Install Semgrep
+        run: pip install semgrep==1.162.0
+
+      # Rule selection: Semgrep's open registry has no curated Dart
+      # or Flutter pack (the human-facing /p/dart preview page exists
+      # but the CLI's config-fetch endpoint 404s, and semgrep silently
+      # exits 7 — MISSING_CONFIG — when an unfetchable pack is requested).
+      #   p/default — broad multi-language + regex rules; the regex
+      #     rules apply to .dart files (credentials, hardcoded URLs,
+      #     dangerous patterns) even though semgrep ships no Dart-AST
+      #     rule pack.
+      #   p/secrets — credential / API-key leak detection across all
+      #     file types via regex.
+      # OSV-Scanner (separate job below) handles the pub.dev dep-CVE
+      # surface, which IS Dart-specific.
+      # `--metrics=off` keeps run telemetry off public CI. SARIF
+      # output lets `upload-sarif` ingest the findings under the
+      # `dart-semgrep` category so they slot into the same Security
+      # tab CodeQL writes to without colliding with CodeQL's own
+      # categories.
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=p/default \
+            --config=p/secrets \
+            --sarif --output=semgrep.sarif \
+            --metrics=off \
+            --exclude="mobile/build/**" \
+            --exclude="mobile/.dart_tool/**" \
+            --exclude="mobile/ios/Pods/**" \
+            --exclude="mobile/android/.gradle/**" \
+            mobile/
+
+      - name: Upload SARIF to Security tab
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: "/language:dart-semgrep"
+
+  osv-scan:
+    name: OSV-Scanner (pub.dev advisories)
+    # Reusable workflow handles checkout, scan, SARIF generation, and
+    # upload to the Security tab. Pinned to v2.3.5 (52 days old) to
+    # clear the 7-day cooldown. `fail-on-vuln: false` keeps findings
+    # surfaced without blocking PRs until we baseline the existing
+    # advisory set.
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5
+    with:
+      scan-args: |-
+        --lockfile=mobile/pubspec.lock
+      fail-on-vuln: false
+
+  mobile-security-summary:
+    # Aggregate gate intended as the single required check for branch
+    # protection. Passes when both scans either succeeded or were
+    # skipped by their path filter; fails on any failure or
+    # cancellation. Mirrors the `CodeQL Summary` pattern in
+    # .github/workflows/codeql.yml so branch protection treats both
+    # security gates identically.
+    name: Mobile Security Summary
+    runs-on: ubuntu-latest
+    needs: [semgrep, osv-scan]
+    if: always()
+    permissions: {}
+    steps:
+      - name: Verify all analyses passed or were skipped
+        env:
+          SEMGREP_RESULT: ${{ needs.semgrep.result }}
+          OSV_RESULT: ${{ needs.osv-scan.result }}
+        run: |
+          fail=0
+          for name in SEMGREP OSV; do
+            var="${name}_RESULT"
+            result="${!var}"
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::$name analyze result: $result"; fail=1 ;;
+            esac
+          done
+          exit $fail
+
+  # ---------------------------------------------------------------------
   # Release uploads — only run on push-to-main or workflow_dispatch,
   # gated on analyze. Each job auto-skips with a clear status when its
   # required secrets are absent, so operators bring up the pipeline
