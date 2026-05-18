@@ -1,0 +1,18 @@
+{
+  "alcohol_tobacco_or_drug_use_or_references": "NONE",
+  "contests": "NONE",
+  "gambling_simulated": "NONE",
+  "horror_or_fear_themes": "NONE",
+  "kids_age_band": null,
+  "mature_or_suggestive_themes": "NONE",
+  "medical_or_treatment_information": "NONE",
+  "profanity_or_crude_humor": "NONE",
+  "sexual_content_graphic_and_nudity": "NONE",
+  "sexual_content_or_nudity": "NONE",
+  "violence_cartoon_or_fantasy": "NONE",
+  "violence_realistic": "NONE",
+  "violence_realistic_prolonged_graphic_or_sadistic": "NONE",
+  "gambling": false,
+  "unrestricted_web_access": false,
+  "seventeen_plus": false
+}

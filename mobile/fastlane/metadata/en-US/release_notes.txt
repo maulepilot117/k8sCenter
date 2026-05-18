@@ -1,0 +1,15 @@
+First public release.
+
+k8sCenter Mobile is the native iOS oncall companion for the k8sCenter Kubernetes management platform. Built across five milestones with parity to the desktop app on the surfaces that matter when you are paged.
+
+This release ships:
+
+• Full read-side parity with the web app — every resource kind, logs, metrics, diagnostics, policy, GitOps, service mesh, cert-manager, External Secrets.
+• Safe on-the-go write actions — scale, restart, suspend, rollback, YAML apply, and all 28 wizards from the web app.
+• OIDC sign-in via the system browser with PKCE, plus local and LDAP authentication.
+• WCAG 2.2 AA accessibility across every surface.
+• Opt-in Sentry crash reporting with on-device PII scrub.
+• Screen-recording protection on secret-data screens.
+• Push notifications for cluster alerts.
+
+This is your k8sCenter server, in your pocket. Read the privacy policy and accessibility docs at kubecenter.io.
