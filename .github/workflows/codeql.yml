@@ -1,0 +1,139 @@
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly baseline scan — Mondays 06:00 UTC. Preserves the safety net
+    # Default Setup provided in case path filters skip a language for an
+    # extended stretch of commits.
+    - cron: "0 6 * * 1"
+
+# Deny by default — each job declares minimum permissions
+permissions: {}
+
+concurrency:
+  # Cancel superseded PR runs to save Actions minutes. Never cancel main
+  # or scheduled runs — those populate the security dashboard baseline.
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      actions: ${{ steps.filter.outputs.actions }}
+      go: ${{ steps.filter.outputs.go }}
+      jsTs: ${{ steps.filter.outputs.jsTs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # Each language filter also includes this workflow file so
+          # changes to scan config force every language to run once for
+          # validation. On schedule runs paths-filter has no diff and
+          # emits empty outputs; the per-job `if:` falls back to
+          # event_name == 'schedule' to cover the weekly baseline.
+          filters: |
+            actions:
+              - '.github/workflows/**'
+            go:
+              - 'backend/**'
+              - '.github/workflows/codeql.yml'
+            jsTs:
+              - 'frontend/**'
+              - 'e2e/**'
+              - '.github/workflows/codeql.yml'
+
+  analyze-actions:
+    name: Analyze Actions
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'schedule' || needs.changes.outputs.actions == 'true'
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: actions
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:actions"
+
+  analyze-go:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'schedule' || needs.changes.outputs.go == 'true'
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: backend/go.sum
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:go"
+
+  analyze-js-ts:
+    name: Analyze JS/TS
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name == 'schedule' || needs.changes.outputs.jsTs == 'true'
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"
+
+  codeql-summary:
+    # Aggregate gate intended as the single required check for branch
+    # protection or rulesets. Passes when every language analysis either
+    # succeeded or was skipped by the path filter; fails on any failure
+    # or cancellation.
+    name: CodeQL Summary
+    runs-on: ubuntu-latest
+    needs: [analyze-actions, analyze-go, analyze-js-ts]
+    if: always()
+    permissions: {}
+    steps:
+      - name: Verify all analyses passed or were skipped
+        env:
+          ACTIONS_RESULT: ${{ needs.analyze-actions.result }}
+          GO_RESULT: ${{ needs.analyze-go.result }}
+          JS_TS_RESULT: ${{ needs.analyze-js-ts.result }}
+        run: |
+          fail=0
+          for name in ACTIONS GO JS_TS; do
+            var="${name}_RESULT"
+            result="${!var}"
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::$name analyze result: $result"; fail=1 ;;
+            esac
+          done
+          exit $fail
