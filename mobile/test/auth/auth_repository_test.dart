@@ -113,6 +113,100 @@ void main() {
     expect(container.read(authTokenHolderProvider).accessToken, isNull);
   });
 
+  // Issue #279 — when /v1/auth/login returns 200 but /v1/auth/me errors
+  // (or returns a malformed payload), the credentials path must roll
+  // back the tokens it just wrote. Without rollback, the refresh token
+  // survives in secure_storage and the user gets silently re-auth'd on
+  // next cold-start despite being told "Sign-in failed".
+  test(
+      'login: rolls back tokens when /auth/me fails after /auth/login succeeds',
+      () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    mock.onJson(
+      'POST',
+      '/api/v1/auth/login',
+      body: {
+        'data': {
+          'accessToken': 'leaked-access',
+          'refreshToken': 'leaked-refresh',
+          'expiresIn': 900,
+        },
+      },
+    );
+    mock.on('GET', '/api/v1/auth/me', (_) {
+      return _json(
+        {
+          'error': {'code': 500, 'message': 'hydrate failed'},
+        },
+        status: 500,
+      );
+    });
+
+    await container.read(authRepositoryProvider.notifier).login(
+          username: 'admin',
+          password: 'password1234',
+        );
+
+    final state = container.read(authRepositoryProvider);
+    expect(state, isA<AuthUnauthenticated>());
+
+    // The critical assertion: no token survives the failed login.
+    expect(
+      container.read(authTokenHolderProvider).accessToken,
+      isNull,
+      reason: 'access token must be cleared after hydration failure',
+    );
+    final stored = await container
+        .read(secureTokenStoreProvider)
+        .readRefreshToken();
+    expect(
+      stored,
+      isNull,
+      reason: 'refresh token must be deleted from secure_storage '
+          'after hydration failure (issue #279)',
+    );
+  });
+
+  test(
+      'login: rolls back when /auth/me returns 200 with malformed payload',
+      () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    mock.onJson(
+      'POST',
+      '/api/v1/auth/login',
+      body: {
+        'data': {
+          'accessToken': 'leaked-access',
+          'refreshToken': 'leaked-refresh',
+          'expiresIn': 900,
+        },
+      },
+    );
+    // /auth/me returns 200 but the user object is missing — same
+    // AuthUnauthenticated transition as a 500, must also roll back.
+    mock.onJson(
+      'GET',
+      '/api/v1/auth/me',
+      body: {'data': <String, dynamic>{}},
+    );
+
+    await container.read(authRepositoryProvider.notifier).login(
+          username: 'admin',
+          password: 'password1234',
+        );
+
+    expect(container.read(authRepositoryProvider), isA<AuthUnauthenticated>());
+    expect(container.read(authTokenHolderProvider).accessToken, isNull);
+    final stored = await container
+        .read(secureTokenStoreProvider)
+        .readRefreshToken();
+    expect(stored, isNull);
+  });
+
   test('bootstrap: with no stored token transitions to Unauthenticated',
       () async {
     final (:container, :mock) = _makeContainer();
