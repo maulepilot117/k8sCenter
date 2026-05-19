@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -24,11 +25,16 @@ type bucket struct {
 }
 
 // RateLimiter tracks request counts per IP using a fixed-window algorithm.
+//
+// Optional [audit.Logger] hook surfaces 429 rejections in the audit table.
+// Set via [RateLimiter.SetAuditLogger] at server construction; nil logger
+// means rate-limit hits are silent (the legacy behavior).
 type RateLimiter struct {
-	mu      sync.Mutex
-	buckets map[string]*bucket
-	rate    int
-	window  time.Duration
+	mu          sync.Mutex
+	buckets     map[string]*bucket
+	rate        int
+	window      time.Duration
+	auditLogger audit.Logger
 }
 
 // NewRateLimiter creates a rate limiter with default settings (5 req/min).
@@ -43,6 +49,16 @@ func NewRateLimiterWithRate(rate int, window time.Duration) *RateLimiter {
 		rate:    rate,
 		window:  window,
 	}
+}
+
+// SetAuditLogger attaches an audit logger so 429 rejections emit
+// [audit.ActionRateLimited] entries. Issue #276 — without this, brute-force
+// probing of rate-limited endpoints leaves no trace in the audit table.
+// Safe to call once at startup; not safe to call concurrently with
+// requests in flight (no lock — kept lock-free because typical wiring is
+// "construct + SetAuditLogger + start serving").
+func (rl *RateLimiter) SetAuditLogger(logger audit.Logger) {
+	rl.auditLogger = logger
 }
 
 // Check tests if the given IP is within rate limits and returns the retry-after
@@ -112,6 +128,11 @@ func extractIP(r *http.Request) string {
 }
 
 // RateLimit returns middleware that applies rate limiting per client IP.
+// When the bucket is exhausted, the middleware emits an audit entry
+// (if the limiter has an audit logger attached via [RateLimiter.SetAuditLogger])
+// before returning 429. Audit-log writes do NOT block the response — they
+// fail silently in the same request goroutine; a slow audit backend would
+// only slow down already-rejected requests, never legitimate ones.
 func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +150,19 @@ func RateLimit(limiter *RateLimiter) func(http.Handler) http.Handler {
 						Detail:  fmt.Sprintf("try again in %d seconds", retryAfter),
 					},
 				})
+				if logger := limiter.auditLogger; logger != nil {
+					// Best-effort audit write. We deliberately ignore the
+					// return value — if the audit backend is down, the
+					// 429 response has already been sent and there's
+					// nothing useful to do about a logging failure.
+					_ = logger.Log(r.Context(), audit.Entry{
+						Timestamp: time.Now(),
+						SourceIP:  ip,
+						Action:    audit.ActionRateLimited,
+						Result:    audit.ResultDenied,
+						Detail:    fmt.Sprintf("%s %s: rate limited (retry %ds)", r.Method, r.URL.Path, retryAfter),
+					})
+				}
 				return
 			}
 

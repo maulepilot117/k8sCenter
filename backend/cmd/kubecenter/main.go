@@ -241,8 +241,10 @@ func main() {
 		rateLimiter = middleware.NewRateLimiter() // 5 req/min for production
 	}
 	rateLimiter.StartCleanup(ctx)
+	rateLimiter.SetAuditLogger(auditLogger) // issue #276: surface 429s in audit
 	yamlRateLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
 	yamlRateLimiter.StartCleanup(ctx)
+	yamlRateLimiter.SetAuditLogger(auditLogger)
 
 	// Initialize monitoring discoverer and start background discovery
 	monDiscoverer := monitoring.NewDiscoverer(k8sClient, cfg.Monitoring, logger)
@@ -265,6 +267,7 @@ func main() {
 
 	logQueryLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
 	logQueryLimiter.StartCleanup(ctx)
+	logQueryLimiter.SetAuditLogger(auditLogger)
 
 	// Service Mesh integration (Istio + Linkerd) — hoisted above topology so
 	// the topology builder's mesh-overlay path has a route provider wired in.
@@ -373,6 +376,7 @@ func main() {
 
 	webhookRateLimiter := middleware.NewRateLimiterWithRate(300, time.Minute)
 	webhookRateLimiter.StartCleanup(ctx)
+	webhookRateLimiter.SetAuditLogger(auditLogger)
 
 	// Multi-cluster routing — always construct (nil store = local-only fallback)
 	dbEncKey := cfg.Database.EncryptionKey

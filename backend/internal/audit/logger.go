@@ -48,6 +48,17 @@ const (
 	ActionESOForceSync             Action = "eso_force_sync"
 	ActionESOBulkRefresh           Action = "eso_bulk_refresh"
 	ActionESOBulkRefreshNamespace  Action = "eso_bulk_refresh_namespace"
+
+	// Infrastructure / cross-cutting actions
+	//
+	// ActionRateLimited fires when the rate-limit middleware rejects a
+	// request before the handler runs. Surfaces brute-force probing in
+	// the audit table — previously rate-limited requests left no trace,
+	// which is what issue #276 fixes. Recorded with SourceIP populated;
+	// User is empty (the 429 fires before any auth happens). The Detail
+	// field carries "<METHOD> <path>: rate limited" so investigators can
+	// filter by route.
+	ActionRateLimited Action = "rate_limited"
 )
 
 // Result represents the outcome of an auditable operation.
