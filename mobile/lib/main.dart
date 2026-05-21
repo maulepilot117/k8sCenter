@@ -6,7 +6,6 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'auth/auth_repository.dart';
@@ -16,11 +15,15 @@ import 'auth/universal_link_listener.dart';
 import 'features/onboarding/onboarding_controller.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
+import 'providers/prefs_bootstrap.dart';
 import 'providers/shared_preferences_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final prefs = await SharedPreferences.getInstance();
+  // Bounded hydration so a Before-First-Unlock Android storage hang
+  // can't keep the app on a blank screen. See [hydratePrefsWithTimeout]
+  // for the fallback semantics. #270.
+  final prefs = await hydratePrefsWithTimeout();
 
   // Lazy Sentry bootstrap. Returns false (no work) when the user has
   // not opted in, when the build doesn't carry --dart-define=SENTRY_DSN,

@@ -32,7 +32,12 @@ dependencies:
   flutter_secure_storage: ^9.2.2
 
   # User-preference persistence (active theme id, etc.).
-  shared_preferences: ^2.3.3
+  # Pinned exact to lock the internal `_completer = null` behavior of
+  # `setMockInitialValues` that `lib/boot/prefs_bootstrap.dart` relies on
+  # for its BFU fallback path (#270). The escape hatch is
+  # `@visibleForTesting` and not contractually stable across minor
+  # bumps — pin forces a re-verification step before any upgrade.
+  shared_preferences: 2.5.5
 
   # Push notifications — FCM unifies APNS + Android.
   firebase_core: ^3.8.0
