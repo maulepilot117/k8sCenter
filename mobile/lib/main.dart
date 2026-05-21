@@ -12,10 +12,10 @@ import 'auth/auth_repository.dart';
 import 'auth/auth_state.dart';
 import 'auth/secure_storage.dart';
 import 'auth/universal_link_listener.dart';
-import 'boot/prefs_bootstrap.dart';
 import 'features/onboarding/onboarding_controller.dart';
 import 'notifications/fcm_registration.dart';
 import 'observability/sentry_init.dart';
+import 'providers/prefs_bootstrap.dart';
 import 'providers/shared_preferences_provider.dart';
 
 Future<void> main() async {

@@ -34,12 +34,32 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// timeout firing on legitimate slow boots.
 const Duration kDefaultPrefsHydrationTimeout = Duration(seconds: 10);
 
-/// Hydrates [SharedPreferences] with a [timeout] upper bound. On timeout,
-/// installs an empty in-memory store via
+/// Sentinel set on the in-memory fallback prefs when the cold-start
+/// timeout fires. Consumed by `observability/sentry_init.dart` after
+/// Sentry init to emit a retroactive warning-level breadcrumb — closes
+/// the production-observability gap left by `debugPrint` being a no-op
+/// in release builds and Sentry not yet being initialized at the time
+/// the fallback installs. The fallback prefs are ephemeral (lost on app
+/// close), so the sentinel naturally clears between cold starts and
+/// fresh timeouts get fresh signal. Key prefixed with `_` so casual
+/// prefs dumps surface it distinctly from user-facing preferences.
+const String kPrefsBfuFallbackSentinelKey = '_kc_prefs_bfu_fallback';
+
+/// Hydrates [SharedPreferences] with a [timeout] upper bound. On any
+/// `Exception` — `TimeoutException` from the bound itself, or what the
+/// platform channel surfaces (`PlatformException`, `MissingPluginException`,
+/// etc.) — installs an empty in-memory store via
 /// `SharedPreferences.setMockInitialValues({})` (which resets the
 /// package's cached completer so the next `getInstance()` resolves
 /// against the in-memory backing rather than the still-hung platform
-/// channel) and returns the resulting [SharedPreferences].
+/// channel) and returns the resulting [SharedPreferences]. Boot is
+/// guaranteed a usable prefs handle regardless of failure mode; the
+/// fallback shape is identical and the post-init Sentry breadcrumb
+/// fires once, conditionally on the sentinel.
+///
+/// Programmer-error `Error` subtypes (`StateError`, `AssertionError`,
+/// etc.) are **not** caught — those signal contract violations the
+/// fallback path should not paper over.
 ///
 /// [loadPrefs] defaults to `SharedPreferences.getInstance` and is
 /// overridable in tests so the timeout/fallback branches can be
@@ -51,11 +71,18 @@ Future<SharedPreferences> hydratePrefsWithTimeout({
   final load = loadPrefs ?? SharedPreferences.getInstance;
   try {
     return await load().timeout(timeout);
-  } on TimeoutException catch (error) {
-    debugPrint(
-      'SharedPreferences.getInstance() exceeded ${timeout.inSeconds}s '
-      '— booting with in-memory prefs fallback. $error',
-    );
+  } on Exception catch (error) {
+    if (error is TimeoutException) {
+      debugPrint(
+        'SharedPreferences.getInstance() exceeded ${timeout.inSeconds}s '
+        '— booting with in-memory prefs fallback. $error',
+      );
+    } else {
+      debugPrint(
+        'SharedPreferences.getInstance() threw — booting with in-memory '
+        'prefs fallback. $error',
+      );
+    }
     // `setMockInitialValues` is the package's documented escape hatch
     // for installing an `InMemorySharedPreferencesStore`. Marked
     // `@visibleForTesting` but used here at production runtime because
@@ -66,6 +93,12 @@ Future<SharedPreferences> hydratePrefsWithTimeout({
     // platform-channel future is still pending.
     // ignore: invalid_use_of_visible_for_testing_member
     SharedPreferences.setMockInitialValues(const <String, Object>{});
-    return SharedPreferences.getInstance();
+    final fallback = await SharedPreferences.getInstance();
+    // Mark the fallback so the post-Sentry-init breadcrumb (in
+    // `observability/sentry_init.dart`) knows hydration failed this
+    // boot. setBool on the in-memory store is synchronous in practice
+    // but the API returns Future — await for correctness.
+    await fallback.setBool(kPrefsBfuFallbackSentinelKey, true);
+    return fallback;
   }
 }

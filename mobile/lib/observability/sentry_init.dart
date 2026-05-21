@@ -27,6 +27,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../providers/prefs_bootstrap.dart';
 import 'pii_scrubber.dart';
 
 /// SharedPreferences key used by the Settings toggle and this init path
@@ -85,6 +86,28 @@ Future<bool> initSentryIfOptedIn(SharedPreferences prefs) async {
     // PackageInfo can throw on platforms without the plugin registered
     // (e.g., some test contexts). Init is already done — swallow.
     debugPrint('PackageInfo.fromPlatform failed: $error');
+  }
+
+  // Retroactive breadcrumb for the SharedPreferences cold-start fallback
+  // (#270). `debugPrint` at the fallback site is stripped from release
+  // builds and Sentry isn't initialized yet at the time of the fallback —
+  // emit the signal here so production observability records the BFU
+  // event. Fires only when the user opted in to Sentry; opted-out users
+  // intentionally produce no telemetry. Fire-and-forget — failure to
+  // record the breadcrumb must not break boot.
+  if (prefs.getBool(kPrefsBfuFallbackSentinelKey) == true) {
+    try {
+      Sentry.addBreadcrumb(
+        Breadcrumb(
+          level: SentryLevel.warning,
+          category: 'boot',
+          message: 'SharedPreferences cold-start timed out; booted with '
+              'in-memory fallback (Before-First-Unlock or storage hang)',
+        ),
+      );
+    } catch (error) {
+      debugPrint('Sentry.addBreadcrumb failed: $error');
+    }
   }
 
   return true;
