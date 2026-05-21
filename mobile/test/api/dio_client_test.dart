@@ -157,4 +157,150 @@ void main() {
       isNull,
     );
   });
+
+  // Issue #275 — P1 regression test. N concurrent requests that 401 must
+  // share a single /v1/auth/refresh call, not fire N independent refreshes.
+  // Without singleflight, every concurrent request's 401 handler races to
+  // refresh; the first wins (rotates the refresh token), the rest see
+  // "refresh token not found" and the user is logged out across N-1 tabs.
+  //
+  // PR-5b's 1h OIDC refresh TTL cap turns this from a once-a-week edge
+  // case into an hourly event for OIDC users with multiple open tabs.
+  test(
+      'AuthInterceptor: N concurrent 401s share one /v1/auth/refresh '
+      '(issue #275 singleflight regression)', () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    container.read(authTokenHolderProvider).set('stale-access');
+    await container
+        .read(secureTokenStoreProvider)
+        .writeRefreshToken('valid-refresh');
+
+    // Protected endpoint mock: 401 with stale, 200 with fresh.
+    mock.on('GET', '/api/v1/protected', (req) {
+      final auth = req.headers['Authorization'] as String?;
+      if (auth == 'Bearer stale-access') {
+        return _json(
+          {
+            'error': {'code': 401, 'message': 'expired'},
+          },
+          status: 401,
+        );
+      }
+      return _json({'data': 'ok'});
+    });
+
+    // Refresh endpoint mock: count calls. MockDioAdapter handlers are
+    // sync, so we can't inject a delay — but the singleflight check in
+    // _attemptRefresh fires before any awaits, so concurrent onError
+    // handlers reliably observe the in-flight Completer.
+    var refreshHits = 0;
+    mock.on('POST', '/api/v1/auth/refresh', (_) {
+      refreshHits++;
+      return _json({
+        'data': {
+          'accessToken': 'fresh-access',
+          'refreshToken': 'fresh-refresh',
+          'expiresIn': 900,
+        },
+      });
+    });
+
+    // Fire 8 concurrent GETs. Each will hit /protected with the stale
+    // token, get 401, kick onError → _attemptRefresh. Singleflight
+    // requires exactly one refresh HTTP call to fire across all 8.
+    const concurrentRequests = 8;
+    final results = await Future.wait(
+      List.generate(
+        concurrentRequests,
+        (_) => container.read(dioProvider).get<dynamic>('/api/v1/protected'),
+      ),
+    );
+
+    for (var i = 0; i < concurrentRequests; i++) {
+      expect(
+        results[i].statusCode,
+        200,
+        reason: 'request $i should have succeeded after singleflight refresh',
+      );
+    }
+    expect(
+      refreshHits,
+      1,
+      reason: '$concurrentRequests concurrent 401s must collapse to ONE '
+          '/v1/auth/refresh call (issue #275). Got $refreshHits refresh '
+          'calls — singleflight is broken.',
+    );
+    expect(
+      container.read(authTokenHolderProvider).accessToken,
+      'fresh-access',
+    );
+  });
+
+  // Issue #275 follow-up: after a refresh completes, the singleflight
+  // slot must reset so a SUBSEQUENT 401 (later in the session, e.g. when
+  // the next access token expires) can trigger a fresh refresh cycle.
+  // Without the finally-clear, the second refresh would deadlock on a
+  // stale completed Completer.
+  test(
+      'AuthInterceptor: singleflight slot resets after refresh completes',
+      () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    container.read(authTokenHolderProvider).set('access-1');
+    await container
+        .read(secureTokenStoreProvider)
+        .writeRefreshToken('refresh-1');
+
+    // Two distinct refresh windows: first call rotates access-1 →
+    // access-2; second call (later) rotates access-2 → access-3.
+    var refreshHits = 0;
+    mock.on('POST', '/api/v1/auth/refresh', (_) {
+      refreshHits++;
+      return _json({
+        'data': {
+          'accessToken': 'access-${refreshHits + 1}',
+          'refreshToken': 'refresh-${refreshHits + 1}',
+          'expiresIn': 900,
+        },
+      });
+    });
+
+    // /protected accepts access-2 and access-3; rejects access-1.
+    mock.on('GET', '/api/v1/protected', (req) {
+      final auth = req.headers['Authorization'] as String?;
+      if (auth == 'Bearer access-1') {
+        return _json(
+          {
+            'error': {'code': 401, 'message': 'expired'},
+          },
+          status: 401,
+        );
+      }
+      return _json({'data': 'ok'});
+    });
+
+    // First request triggers refresh 1.
+    final r1 = await container.read(dioProvider).get<dynamic>('/api/v1/protected');
+    expect(r1.statusCode, 200);
+    expect(refreshHits, 1);
+    expect(container.read(authTokenHolderProvider).accessToken, 'access-2');
+
+    // Simulate access-2 expiring later in the session by forcing it
+    // back to access-1 (would-be expired token). A new 401 must
+    // trigger a SECOND refresh, not block on a stale completed slot.
+    container.read(authTokenHolderProvider).set('access-1');
+
+    final r2 = await container.read(dioProvider).get<dynamic>('/api/v1/protected');
+    expect(r2.statusCode, 200);
+    expect(
+      refreshHits,
+      2,
+      reason: 'second 401 must trigger a fresh refresh cycle '
+          '(singleflight slot must reset after completion)',
+    );
+    expect(container.read(authTokenHolderProvider).accessToken, 'access-3');
+  });
 }
