@@ -111,7 +111,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		bodyMode = true
 	}
 
-	session, err := s.Sessions.Validate(refreshTokenIn)
+	// Issue #274 — Peek validates the session without deleting it. We
+	// only Consume the session AFTER issueTokenPair succeeds, so a
+	// transient signing or RNG failure no longer silently logs the
+	// user out (their original refresh token remains valid for retry).
+	session, err := s.Sessions.Peek(refreshTokenIn)
 	if err != nil {
 		entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
 		entry.Detail = "invalid or expired refresh token"
@@ -130,6 +134,13 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	} else {
 		user, err = s.AuthRegistry.GetUserByID(session.Provider, session.UserID)
 		if err != nil {
+			// User no longer exists — the session is stale. Consume
+			// it now so subsequent refreshes with the same token return
+			// 401 (refresh-token-not-found) instead of repeatedly
+			// hitting the same dead user lookup.
+			if cerr := s.Sessions.Consume(refreshTokenIn); cerr != nil && cerr != auth.ErrSessionNotFound {
+				s.Logger.Warn("failed to consume stale session", "error", cerr)
+			}
 			writeJSON(w, http.StatusUnauthorized, api.Response{
 				Error: &api.APIError{Code: 401, Message: "user not found"},
 			})
@@ -142,11 +153,26 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// the existing httpOnly cookie behaviour.
 	accessToken, newRefreshToken, err := s.issueTokenPair(w, user, !bodyMode)
 	if err != nil {
+		// Token mint failed; preserve the session by NOT calling Consume.
+		// The client can retry with the same refresh token. Issue #274.
 		s.Logger.Error("failed to issue tokens", "error", err)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
 			Error: &api.APIError{Code: 500, Message: "failed to issue token"},
 		})
 		return
+	}
+
+	// Token pair successfully minted — consume the original session so
+	// it cannot be replayed. ErrSessionNotFound here means a concurrent
+	// refresh consumed it first; both clients have valid new pairs, so
+	// the rotation is effectively complete either way. Log for
+	// diagnostics but don't fail the response.
+	if cerr := s.Sessions.Consume(refreshTokenIn); cerr != nil {
+		if cerr == auth.ErrSessionNotFound {
+			s.Logger.Debug("refresh consume race — session already gone", "user", user.Username)
+		} else {
+			s.Logger.Warn("refresh consume failed", "error", cerr, "user", user.Username)
+		}
 	}
 
 	s.AuditLogger.Log(r.Context(), s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess))

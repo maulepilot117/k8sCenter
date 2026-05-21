@@ -2,10 +2,18 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
+
+// ErrSessionNotFound is returned by [SessionStore.Consume] when the
+// referenced refresh token row no longer exists — either because a
+// concurrent caller already consumed it or because cleanup removed an
+// expired entry between Peek and Consume. Callers should treat this as
+// non-fatal: the rotation has effectively already happened.
+var ErrSessionNotFound = errors.New("session not found")
 
 // RefreshSession holds a refresh token and its associated user/expiry.
 type RefreshSession struct {
@@ -45,6 +53,12 @@ type ValidatedSession struct {
 // Validate checks if a refresh token is valid (exists and not expired).
 // If valid, it deletes the token (rotation — single use).
 // Returns the session data needed for token refresh.
+//
+// Note: this is the legacy single-call API. Callers that can fail
+// between validation and consumption (e.g., the refresh handler, where
+// issueTokenPair may error after Validate succeeds) should use
+// [Peek] + [Consume] instead — see issue #274. Validate remains for
+// flows where the consumption is unconditional.
 func (s *SessionStore) Validate(token string) (*ValidatedSession, error) {
 	val, ok := s.sessions.Load(token)
 	if !ok {
@@ -65,6 +79,59 @@ func (s *SessionStore) Validate(token string) (*ValidatedSession, error) {
 		Provider:   session.Provider,
 		CachedUser: session.CachedUser,
 	}, nil
+}
+
+// Peek validates a refresh token WITHOUT consuming it. Returns the
+// session payload if the token exists and is not expired. Expired
+// tokens ARE deleted (no value in keeping them), but valid tokens
+// remain in the store — callers MUST follow up with [Consume] on
+// success to enforce single-use rotation.
+//
+// Issue #274 — separating Peek from Consume closes the race window
+// where [Validate] would delete a session BEFORE the caller had
+// successfully minted a replacement. If the post-Peek work (user
+// lookup, token minting) fails, the caller skips Consume and the
+// session remains valid for client retry. Without this split, a
+// transient backend failure between Validate and issueTokenPair
+// silently logs the user out.
+//
+// Concurrency: Peek + Consume is NOT atomic. Two callers can Peek the
+// same token simultaneously and both proceed. The first Consume wins;
+// the second returns [ErrSessionNotFound] (informational — the new
+// pair has already been minted in both branches).
+func (s *SessionStore) Peek(token string) (*ValidatedSession, error) {
+	val, ok := s.sessions.Load(token)
+	if !ok {
+		return nil, fmt.Errorf("refresh token not found")
+	}
+
+	session := val.(RefreshSession)
+
+	if time.Now().After(session.ExpiresAt) {
+		// Expired — purge so it doesn't linger until the next cleanup
+		// tick. Mirrors Validate's behavior on expired tokens.
+		s.sessions.Delete(token)
+		return nil, fmt.Errorf("refresh token expired")
+	}
+
+	return &ValidatedSession{
+		UserID:     session.UserID,
+		Provider:   session.Provider,
+		CachedUser: session.CachedUser,
+	}, nil
+}
+
+// Consume atomically deletes a refresh token. Used by callers that have
+// finished the post-[Peek] work and need to enforce single-use
+// rotation. Returns [ErrSessionNotFound] if the row is already gone
+// (concurrent Peek+Consume race, cleanup race, or explicit Revoke);
+// callers should treat that as non-fatal — the rotation has effectively
+// already happened on the other path.
+func (s *SessionStore) Consume(token string) error {
+	if _, ok := s.sessions.LoadAndDelete(token); !ok {
+		return ErrSessionNotFound
+	}
+	return nil
 }
 
 // Revoke deletes a refresh token (e.g., on logout).
