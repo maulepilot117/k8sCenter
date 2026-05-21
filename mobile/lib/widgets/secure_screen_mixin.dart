@@ -79,16 +79,26 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   /// Whether the blur scrim is currently painted (visible to the user).
   /// After the eager-overlay mitigation, the [OverlayEntry] may be
   /// inserted while the screen is sensitive but the scrim hidden — this
-  /// getter reflects the painted state, not entry presence.
+  /// getter reflects the painted state, not entry presence. Tests that
+  /// need to assert entry-but-not-painted use
+  /// `find.byKey(blurOverlayKey)` against the widget tree.
   @visibleForTesting
   bool get isBlurOverlayShown => _blurOverlay != null && _blurVisible.value;
 
-  /// Whether the blur [OverlayEntry] is currently inserted in the Overlay
-  /// tree, independent of whether the scrim is painting. Always tracks
-  /// `_sensitive` on iOS; always `false` on Android (which uses
-  /// `FLAG_SECURE` instead) and other platforms. Visible for tests.
+  /// Stable key on the overlay's outermost widget so tests can locate
+  /// the entry without depending on widget types that MaterialApp /
+  /// Scaffold / framework internals also use.
   @visibleForTesting
-  bool get isBlurOverlayInserted => _blurOverlay != null;
+  static const Key blurOverlayKey = ValueKey('SecureScreenMixin.blurOverlay');
+
+  /// Test-only handle to the lifecycle observer so the disposed-notifier
+  /// safety net can be exercised directly. The framework's normal
+  /// `removeObserver` in dispose prevents `_fireLifecycle` from reaching
+  /// this State after teardown — tests that want to verify post-dispose
+  /// safety must capture this reference BEFORE the widget is pumped out
+  /// and then invoke `didChangeAppLifecycleState` on it.
+  @visibleForTesting
+  WidgetsBindingObserver? get debugLifecycleObserver => _observer;
 
   @override
   void initState() {
@@ -114,10 +124,17 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
       // Fire-and-forget but chained onto any in-flight platform call so
       // a clearFlags() can't overlap an addFlags() that's still in
       // transit. dispose cannot await its own work, so we hand the
-      // serialized future to the runtime.
+      // serialized future to the runtime. Errors are logged but
+      // swallowed — a thrown PlatformException from `clearFlags` would
+      // otherwise propagate as an unhandled async error and crash the
+      // app on a screen that is already torn down.
       _inflightPlatformCall =
-          (_inflightPlatformCall ?? Future.value()).then((_) {
-        return _clearFlagSecure();
+          (_inflightPlatformCall ?? Future.value()).then((_) async {
+        try {
+          await _clearFlagSecure();
+        } catch (error) {
+          debugPrint('SecureScreenMixin clearFlags during dispose: $error');
+        }
       });
       unawaited(_inflightPlatformCall!);
     }
@@ -160,7 +177,15 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
         _inflightPlatformCall = null;
       }
     }
-    if (!sensitive) {
+    // Read the field, not the local arg: two rapid awaited
+    // setSensitive(true) → setSensitive(false) → setSensitive(true)
+    // calls overlap on the platform-channel chain. The middle call's
+    // post-await tail would otherwise tear down the overlay the third
+    // call relies on, leaving `_sensitive=true` with no entry — a
+    // subsequent lifecycle event would flip `_blurVisible` against an
+    // unmounted ValueListenableBuilder, no scrim paints, and iOS
+    // captures plaintext. Regresses the very race this PR closes.
+    if (!_sensitive) {
       _removeBlurOverlay();
     }
   }
@@ -183,6 +208,18 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   void _onLifecycleStateChanged(AppLifecycleState state) {
     if (!_sensitive) return;
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    // Verify the overlay actually mounted before flipping visibility.
+    // `_insertBlurOverlay` no-ops via the `!mounted` guard if
+    // setSensitive(true) ran before the first frame (initState path) —
+    // in that case _sensitive is true but _blurOverlay is null. Without
+    // this check the notifier flips against an unmounted
+    // ValueListenableBuilder, no scrim paints, and iOS captures
+    // plaintext silently. Re-attempt the insertion as a recovery path
+    // so a late-mounted screen still gets the scrim on the next pump.
+    if (_blurOverlay == null) {
+      _insertBlurOverlay();
+      if (_blurOverlay == null) return;
+    }
     // `hidden` was added in Flutter 3.13 as the state delivered when the
     // app is moved to the background on iOS via a system-driven path
     // (e.g., Stage Manager) without first transitioning through
@@ -212,8 +249,12 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     // Outer wrappers are constant: the overlay always fills the screen,
     // never receives pointer events, and never contributes to the
     // semantics tree of the sensitive screen under it. Only the inner
-    // child swaps between an empty placeholder and the scrim.
+    // child swaps between an empty placeholder and the scrim. The
+    // top-level ValueKey is the anchor tests use to locate this overlay
+    // — `find.byType(IgnorePointer)` is ambiguous because MaterialApp
+    // and framework internals inject their own.
     return Positioned.fill(
+      key: blurOverlayKey,
       child: IgnorePointer(
         ignoring: true,
         child: ExcludeSemantics(

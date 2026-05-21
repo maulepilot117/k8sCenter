@@ -106,15 +106,41 @@ void main() {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
 
-        expect(state.isBlurOverlayInserted, isFalse);
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsNothing);
 
         await state.setSensitive(true);
         await tester.pump();
 
         // OverlayEntry is in the tree; scrim is not yet painted.
-        expect(state.isBlurOverlayInserted, isTrue);
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsOneWidget);
         expect(state.isBlurOverlayShown, isFalse);
         expect(find.byType(BackdropFilter), findsNothing);
+      });
+    });
+
+    testWidgets(
+        'eager insertion happens BEFORE the platform-channel await (#271)',
+        (tester) async {
+      // The PR's central invariant: _insertBlurOverlay runs synchronously
+      // before setSensitive awaits the platform channel. A regression that
+      // moved the insertion to AFTER the await would still pass the
+      // "eagerly inserts" test because that test fully awaits setSensitive
+      // before asserting. This test starts setSensitive WITHOUT awaiting,
+      // pumps once to land the OverlayState rebuild, then asserts the
+      // entry is present, finally awaits the platform call.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        final pending = state.setSensitive(true);
+        // One pump lands the synchronous OverlayEntry insertion + its
+        // first build. The platform-channel mock above always resolves
+        // synchronously in tests, so this assertion is meaningful only
+        // because we have not yet awaited the future returned by
+        // setSensitive — the pre-await invariant is what we are pinning.
+        await tester.pump();
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsOneWidget);
+        await pending;
       });
     });
 
@@ -126,14 +152,58 @@ void main() {
         final state = tester.state<_HostState>(find.byType(_Host));
 
         await state.setSensitive(true);
-        expect(state.isBlurOverlayInserted, isTrue);
+        await tester.pump();
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsOneWidget);
 
         await state.setSensitive(false);
         await tester.pump();
 
-        expect(state.isBlurOverlayInserted, isFalse);
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsNothing);
         expect(state.isBlurOverlayShown, isFalse);
         expect(find.byType(BackdropFilter), findsNothing);
+      });
+    });
+
+    testWidgets(
+        'iOS setSensitive(true) is idempotent — second call does not stack overlays',
+        (tester) async {
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        await state.setSensitive(true);
+        await state.setSensitive(true);
+        _fireLifecycle(AppLifecycleState.inactive);
+        await tester.pump();
+
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsOneWidget);
+        expect(find.byType(BackdropFilter), findsOneWidget);
+      });
+    });
+
+    testWidgets(
+        'rapid true → false → true awaited sequence preserves the overlay (#271 C1)',
+        (tester) async {
+      // Regression test for the rapid-toggle bug surfaced by the code
+      // review: post-await teardown must read the current _sensitive
+      // field, not the local arg captured at call time. Otherwise the
+      // middle call's tail removes the overlay the third call relies on.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        // Issue all three calls without awaiting between — overlap the
+        // chained platform-channel futures.
+        final c1 = state.setSensitive(true);
+        final c2 = state.setSensitive(false);
+        final c3 = state.setSensitive(true);
+        await Future.wait([c1, c2, c3]);
+        _fireLifecycle(AppLifecycleState.inactive);
+        await tester.pump();
+
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsOneWidget);
+        expect(find.byType(BackdropFilter), findsOneWidget);
       });
     });
 
@@ -183,7 +253,7 @@ void main() {
         _fireLifecycle(AppLifecycleState.inactive);
         await tester.pump();
 
-        expect(state.isBlurOverlayInserted, isFalse);
+        expect(find.byKey(SecureScreenMixin.blurOverlayKey), findsNothing);
         expect(state.isBlurOverlayShown, isFalse);
         expect(find.byType(BackdropFilter), findsNothing);
       });
@@ -204,16 +274,23 @@ void main() {
         await state.setSensitive(true);
         await tester.pump();
 
-        // Anchor the assertions on our `IgnorePointer(ignoring: true)`,
-        // then walk down. MaterialApp/Scaffold inject their own
-        // `IgnorePointer(ignoring: false)` and `ExcludeSemantics` widgets
-        // so a top-level type lookup is ambiguous.
-        final overlayIgnore = find.byWidgetPredicate(
-          (w) => w is IgnorePointer && w.ignoring == true,
+        // Anchor on the overlay's ValueKey; MaterialApp/Scaffold inject
+        // their own IgnorePointer/ExcludeSemantics widgets so a top-level
+        // type lookup is ambiguous and the `ignoring: true` predicate is
+        // fragile across Flutter versions.
+        final overlayRoot = find.byKey(SecureScreenMixin.blurOverlayKey);
+        expect(overlayRoot, findsOneWidget);
+        final overlayIgnore = find.descendant(
+          of: overlayRoot,
+          matching: find.byType(IgnorePointer),
         );
         expect(overlayIgnore, findsOneWidget);
         expect(
-          find.descendant(of: overlayIgnore, matching: find.byType(ExcludeSemantics)),
+          tester.widget<IgnorePointer>(overlayIgnore).ignoring,
+          isTrue,
+        );
+        expect(
+          find.descendant(of: overlayRoot, matching: find.byType(ExcludeSemantics)),
           findsOneWidget,
         );
       });
@@ -230,8 +307,21 @@ void main() {
         for (var i = 0; i < 5; i++) {
           _fireLifecycle(AppLifecycleState.inactive);
           await tester.pump();
+          // OverlayEntry must remain mounted across every cycle — the
+          // PR's eager-overlay invariant is that the entry lives for
+          // the duration of the sensitive session, not per lifecycle.
+          expect(
+            find.byKey(SecureScreenMixin.blurOverlayKey),
+            findsOneWidget,
+            reason: 'overlay disappeared on inactive cycle $i',
+          );
           _fireLifecycle(AppLifecycleState.resumed);
           await tester.pump();
+          expect(
+            find.byKey(SecureScreenMixin.blurOverlayKey),
+            findsOneWidget,
+            reason: 'overlay disappeared on resumed cycle $i',
+          );
         }
 
         expect(state.isBlurOverlayShown, isFalse);
@@ -269,18 +359,33 @@ void main() {
     testWidgets(
         'lifecycle event after dispose does not insert overlay or throw',
         (tester) async {
+      // Capture the observer BEFORE dispose so we can actually exercise
+      // the post-dispose safety net. The framework's removeObserver in
+      // dispose() means _fireLifecycle would no longer route through
+      // this State otherwise, making the test vacuous. Invoking
+      // didChangeAppLifecycleState on the observer directly simulates
+      // the scenario where a queued scheduler callback fires against
+      // a disposed mixin (the disposed-ValueNotifier safety net).
       await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
         final state = tester.state<_HostState>(find.byType(_Host));
         await state.setSensitive(true);
+        final observer = state.debugLifecycleObserver;
+        expect(observer, isNotNull);
 
         await tester.pumpWidget(const MaterialApp(home: SizedBox()));
         await tester.pump();
 
-        // After dispose, firing inactive must not insert a new overlay
-        // or throw. The observer was removed; this exercises the safety
-        // net for any lingering scheduler callbacks.
-        _fireLifecycle(AppLifecycleState.inactive);
+        // State is disposed; ValueNotifier is disposed. Direct invocation
+        // of didChangeAppLifecycleState must take the no-overlay-mounted
+        // early-return path (added by review finding #3) without
+        // touching the disposed notifier.
+        expect(
+          () => observer!.didChangeAppLifecycleState(
+            AppLifecycleState.inactive,
+          ),
+          returnsNormally,
+        );
         await tester.pump();
 
         expect(find.byType(BackdropFilter), findsNothing);

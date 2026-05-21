@@ -130,3 +130,45 @@ contract; if you change init behaviour, do not weaken this gate.
   are configured. Until then, the DSN should only be wired into the
   internal-beta TestFlight / Play Internal lanes so a misconfigured
   filter can't burn project quota from production builds.
+
+## SecureScreenMixin — known residuals (#271 follow-ups)
+
+The eager-overlay mitigation in `lib/widgets/secure_screen_mixin.dart`
+narrows the iOS app-switcher snapshot race to a single Flutter rebuild
+between lifecycle delivery and first paint of the scrim. It does not
+eliminate the race entirely. The following residuals are tracked but
+not closed by PR #300:
+
+- **Sub-frame race remains.** Even with eager insertion, the
+  `BackdropFilter`'s subtree builds on the frame after `_blurVisible`
+  flips. iOS can theoretically snapshot during that gap.
+  Definitive closure requires a native `AppDelegate` UIView blocker
+  inserted synchronously in `applicationWillResignActive` (Mitigation 2
+  in #271's issue body). Open as a follow-up before PR-5j ships to
+  public stores if real-device verification reveals the race is
+  exploitable. Filed as a follow-up GitHub issue.
+- **`AppLifecycleState.inactive` over-broad on iOS.** Notification
+  banners, Control Center peek, Siri activation, and the screenshot
+  gesture all deliver `.inactive` without a true backgrounding. The
+  scrim flashes mid-use on those events — UX nit, not a leak. Debounce
+  was considered and rejected because the debounce window introduces
+  its own race against a real fast background gesture.
+- **No real-device snapshot timing test.** All current coverage is
+  `flutter_test` in-memory. Verifying iOS Simulator + real-device
+  snapshot contents (recent-apps thumbnail shows blur, not plaintext)
+  is a manual smoke step in PR-5d's checklist and a candidate for a
+  Springboard-snapshot XCUITest job before PR-5j.
+- **Sigma=30 blur strength.** Empirically chosen during PR-5a/PR-5d
+  work — 24 lets character outlines bleed through on small-font Secret
+  values. Not formally characterized against image-reconstruction
+  techniques (super-resolution / deblurring). High-value low-entropy
+  Secrets on a jailbroken device remain a theoretical offline-attack
+  vector.
+- **Debug-mode no-op contract is broken (pre-existing).** The header
+  comment claims debug builds no-op the platform calls so QA can
+  screen-record. The current `kIgnoreDebugForTests = kDebugMode`
+  default means `_isNoOpEnvironment` returns `false` in both debug
+  and release — the "no-op in debug" intent is unmet. Either the
+  comment should be corrected or the initializer should default to
+  `false` and tests should flip it on explicitly. Predates PR #300
+  (came in with PR-5a's original mixin).
