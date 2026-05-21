@@ -9,6 +9,17 @@
 // overlay when the app lifecycle enters inactive/paused (which fires
 // BEFORE iOS captures the app-switcher snapshot) and remove it on resume.
 //
+// Eager-overlay race mitigation (#271): the OverlayEntry is inserted at
+// `setSensitive(true)` time, not on the lifecycle event. While the screen
+// is sensitive the entry sits in the Overlay tree but renders an empty
+// `SizedBox.expand()` (passing pointer events through via `IgnorePointer`
+// and excluded from the semantics tree). On `inactive`/`paused`/`hidden`
+// a `ValueNotifier<bool>` flips and the `ValueListenableBuilder` swaps in
+// the `BackdropFilter` + scrim. Closes the window in which iOS could
+// snapshot the app-switcher frame before Flutter materialized a brand-new
+// `OverlayEntry` on the lifecycle event — only a single rebuild remains
+// between lifecycle delivery and first paint.
+//
 // Debug-build override: in `kDebugMode`, both paths are no-ops so QA can
 // screen-record bug reproductions without rebuilding. Tests bypass this
 // via [SecureScreenMixin.kIgnoreDebugForTests].
@@ -48,6 +59,10 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
 
   bool _sensitive = false;
   OverlayEntry? _blurOverlay;
+  // Drives the inner `ValueListenableBuilder` that swaps the overlay
+  // child between an empty placeholder and the `BackdropFilter`. Toggled
+  // by the lifecycle observer; never read before the overlay is inserted.
+  final ValueNotifier<bool> _blurVisible = ValueNotifier<bool>(false);
   _LifecycleObserver? _observer;
 
   /// Serializes platform-channel calls so dispose can chain a clear
@@ -61,9 +76,19 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   @visibleForTesting
   bool get isSensitive => _sensitive;
 
-  /// Whether a blur overlay is currently inserted. Visible for tests.
+  /// Whether the blur scrim is currently painted (visible to the user).
+  /// After the eager-overlay mitigation, the [OverlayEntry] may be
+  /// inserted while the screen is sensitive but the scrim hidden — this
+  /// getter reflects the painted state, not entry presence.
   @visibleForTesting
-  bool get isBlurOverlayShown => _blurOverlay != null;
+  bool get isBlurOverlayShown => _blurOverlay != null && _blurVisible.value;
+
+  /// Whether the blur [OverlayEntry] is currently inserted in the Overlay
+  /// tree, independent of whether the scrim is painting. Always tracks
+  /// `_sensitive` on iOS; always `false` on Android (which uses
+  /// `FLAG_SECURE` instead) and other platforms. Visible for tests.
+  @visibleForTesting
+  bool get isBlurOverlayInserted => _blurOverlay != null;
 
   @override
   void initState() {
@@ -79,6 +104,12 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
       _observer = null;
     }
     _removeBlurOverlay();
+    // Dispose AFTER `_removeBlurOverlay` so the overlay child's last
+    // rebuild reads a still-live notifier. Any post-dispose `setSensitive`
+    // tail (already-resolved await chain) short-circuits in
+    // `_removeBlurOverlay` via the `_blurOverlay == null` check before it
+    // can touch the notifier.
+    _blurVisible.dispose();
     if (_sensitive) {
       // Fire-and-forget but chained onto any in-flight platform call so
       // a clearFlags() can't overlap an addFlags() that's still in
@@ -103,6 +134,15 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     if (_isNoOpEnvironment) return;
     if (_sensitive == sensitive) return;
     _sensitive = sensitive;
+    // Eagerly insert the iOS blur overlay BEFORE awaiting the platform
+    // channel so the `OverlayEntry` is in the widget tree well before any
+    // lifecycle event can fire. When iOS hands control to the snapshotter
+    // on `applicationWillResignActive` the BackdropFilter element is
+    // already mounted; a `ValueNotifier` flip is the only remaining work
+    // between lifecycle delivery and first paint of the scrim. #271.
+    if (sensitive) {
+      _insertBlurOverlay();
+    }
     // Chain onto any in-flight platform call so two rapid setSensitive
     // calls don't race the platform side.
     final next = (_inflightPlatformCall ?? Future.value()).then((_) {
@@ -151,30 +191,55 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
-      _insertBlurOverlay();
+      _blurVisible.value = true;
     } else if (state == AppLifecycleState.resumed) {
-      _removeBlurOverlay();
+      _blurVisible.value = false;
     }
   }
 
   void _insertBlurOverlay() {
     if (_blurOverlay != null) return;
     if (!mounted) return;
+    // Only iOS uses the Flutter overlay path. Android relies on
+    // `FLAG_SECURE` and has no overlay; skipping the insertion here
+    // avoids a no-op widget in the Android Overlay tree.
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
     _blurOverlay = OverlayEntry(builder: _blurOverlayBuilder);
     Overlay.of(context, rootOverlay: true).insert(_blurOverlay!);
   }
 
   Widget _blurOverlayBuilder(BuildContext ctx) {
-    // 30px sigma chosen empirically — 24px lets character outlines bleed
-    // through on small-font Secret values in iOS Simulator captures.
-    // The translucent surface-colored scrim renders correctly across all
-    // 7 themes; no per-theme branching needed.
-    final scrimColor =
-        Theme.of(ctx).colorScheme.surface.withValues(alpha: 0.7);
+    // Outer wrappers are constant: the overlay always fills the screen,
+    // never receives pointer events, and never contributes to the
+    // semantics tree of the sensitive screen under it. Only the inner
+    // child swaps between an empty placeholder and the scrim.
     return Positioned.fill(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-        child: ColoredBox(color: scrimColor),
+      child: IgnorePointer(
+        ignoring: true,
+        child: ExcludeSemantics(
+          child: ValueListenableBuilder<bool>(
+            valueListenable: _blurVisible,
+            builder: (innerCtx, visible, _) {
+              if (!visible) {
+                // Inert placeholder. `SizedBox.expand()` matches the
+                // outer `Positioned.fill` constraints so the layout
+                // doesn't re-measure on visibility flip.
+                return const SizedBox.expand();
+              }
+              // 30px sigma chosen empirically — 24px lets character
+              // outlines bleed through on small-font Secret values in
+              // iOS Simulator captures. The translucent surface-colored
+              // scrim renders correctly across all themes; no per-theme
+              // branching needed.
+              final scrimColor =
+                  Theme.of(innerCtx).colorScheme.surface.withValues(alpha: 0.7);
+              return BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                child: ColoredBox(color: scrimColor),
+              );
+            },
+          ),
+        ),
       ),
     );
   }
@@ -183,6 +248,10 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     final overlay = _blurOverlay;
     if (overlay == null) return;
     _blurOverlay = null;
+    // Reset visibility to the hidden default so the next sensitive
+    // session starts clean. Safe before `_blurVisible.dispose()` because
+    // dispose-order in `dispose()` puts overlay removal first.
+    _blurVisible.value = false;
     overlay.remove();
   }
 }

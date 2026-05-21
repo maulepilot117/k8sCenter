@@ -96,7 +96,49 @@ void main() {
 
   group('SecureScreenMixin iOS lifecycle', () {
     testWidgets(
-        'AppLifecycleState.inactive inserts blur overlay when sensitive',
+        'setSensitive(true) eagerly inserts the OverlayEntry (#271)',
+        (tester) async {
+      // Pre-#271 behaviour deferred the OverlayEntry to the lifecycle
+      // handler; iOS could snapshot the app-switcher before Flutter
+      // materialized the entry. The eager pattern keeps the entry in the
+      // tree (hidden) so only a ValueNotifier flip is needed on lifecycle.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        expect(state.isBlurOverlayInserted, isFalse);
+
+        await state.setSensitive(true);
+        await tester.pump();
+
+        // OverlayEntry is in the tree; scrim is not yet painted.
+        expect(state.isBlurOverlayInserted, isTrue);
+        expect(state.isBlurOverlayShown, isFalse);
+        expect(find.byType(BackdropFilter), findsNothing);
+      });
+    });
+
+    testWidgets(
+        'setSensitive(false) removes the eagerly-inserted OverlayEntry',
+        (tester) async {
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        expect(state.isBlurOverlayInserted, isTrue);
+
+        await state.setSensitive(false);
+        await tester.pump();
+
+        expect(state.isBlurOverlayInserted, isFalse);
+        expect(state.isBlurOverlayShown, isFalse);
+        expect(find.byType(BackdropFilter), findsNothing);
+      });
+    });
+
+    testWidgets(
+        'AppLifecycleState.inactive paints the eager overlay when sensitive',
         (tester) async {
       await withPlatform(TargetPlatform.iOS, () async {
         await tester.pumpWidget(const MaterialApp(home: _Host()));
@@ -141,8 +183,39 @@ void main() {
         _fireLifecycle(AppLifecycleState.inactive);
         await tester.pump();
 
+        expect(state.isBlurOverlayInserted, isFalse);
         expect(state.isBlurOverlayShown, isFalse);
         expect(find.byType(BackdropFilter), findsNothing);
+      });
+    });
+
+    testWidgets(
+        'overlay is non-interactive and excluded from semantics tree',
+        (tester) async {
+      // The eager overlay sits on top of the sensitive screen while
+      // hidden — confirm it neither swallows pointer events nor pollutes
+      // the a11y tree of the screen below. MaterialApp/Scaffold inject
+      // their own `IgnorePointer(ignoring: false)` widgets; filter to the
+      // single overlay one with `ignoring: true`.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        await tester.pump();
+
+        // Anchor the assertions on our `IgnorePointer(ignoring: true)`,
+        // then walk down. MaterialApp/Scaffold inject their own
+        // `IgnorePointer(ignoring: false)` and `ExcludeSemantics` widgets
+        // so a top-level type lookup is ambiguous.
+        final overlayIgnore = find.byWidgetPredicate(
+          (w) => w is IgnorePointer && w.ignoring == true,
+        );
+        expect(overlayIgnore, findsOneWidget);
+        expect(
+          find.descendant(of: overlayIgnore, matching: find.byType(ExcludeSemantics)),
+          findsOneWidget,
+        );
       });
     });
 
