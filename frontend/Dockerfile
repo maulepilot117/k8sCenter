@@ -45,7 +45,13 @@ RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
 #     entry is now dynamic: extracts base + installed versions at
 #     build time.
 FROM denoland/deno:distroless-2.7.11 AS runtime-base
-FROM debian:trixie-slim AS security-patch
+# debian:trixie (NOT -slim) — the slim variant ships
+# /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
+# stripping changelog.Debian.gz files. The 7-day cooldown gate below
+# reads libc6's changelog to determine its upload date, so we need the
+# changelogs intact. This is an intermediate build stage; the ~30 MB
+# size delta does not affect the final runtime image.
+FROM debian:trixie AS security-patch
 
 # Pull the base's dpkg status entries first so the consolidated RUN
 # below can read them. Single RUN keeps shell variables (version
@@ -79,6 +85,8 @@ RUN set -e && \
     rm -rf /var/lib/apt/lists/* && \
     LIBC6_VER=$(dpkg-query -W -f='${Version}' libc6) && \
     [ -n "$LIBC6_VER" ] || { echo "ERROR: dpkg-query returned empty libc6 version" >&2; exit 1; } && \
+    [ -f /usr/share/doc/libc6/changelog.Debian.gz ] || \
+        { echo "ERROR: /usr/share/doc/libc6/changelog.Debian.gz missing — the patch stage's base image is stripping docs (slim variant?). The 7-day cooldown gate needs the changelog to read the upload date." >&2; exit 1; } && \
     LIBC6_DATE=$(zcat /usr/share/doc/libc6/changelog.Debian.gz | grep -m1 '^ -- ' | sed -E 's/.*>  //') && \
     [ -n "$LIBC6_DATE" ] || { echo "ERROR: failed to extract libc6 upload date from changelog" >&2; exit 1; } && \
     LIBC6_TS=$(date -d "$LIBC6_DATE" +%s) && \
