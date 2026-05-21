@@ -11,9 +11,14 @@ package auth
 //   - redirect_uri: https://<UNIVERSAL_LINK_HOST>/m/auth/callback
 //   - code_challenge: base64url(sha256(verifier)) — see lib/auth/pkce.dart
 //   - state, nonce: random 32-char hex
+//
+// JSON wire key is `clientId` (lowercase d) to align with the rest of the
+// k8sCenter API surface convention (`displayName`, `loginURL`, etc.).
+// The Go field name stays `ClientID` per Go style; only the JSON tag
+// follows the wire convention. See issue #282.
 type MobileAuthConfig struct {
 	AuthorizationEndpoint string   `json:"authorizationEndpoint"`
-	ClientID              string   `json:"clientID"`
+	ClientID              string   `json:"clientId"`
 	Scopes                []string `json:"scopes"`
 }
 

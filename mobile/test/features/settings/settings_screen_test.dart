@@ -64,17 +64,20 @@ void main() {
     WidgetTester tester,
     SharedPreferences prefs, {
     UrlLauncherPlatform? launcher,
+    TargetPlatform? platform,
   }) async {
     if (launcher != null) {
       UrlLauncherPlatform.instance = launcher;
     }
+    final base = buildKubeTheme('nexus');
+    final theme = platform != null ? base.copyWith(platform: platform) : base;
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
           sharedPreferencesProvider.overrideWithValue(prefs),
         ],
         child: MaterialApp(
-          theme: buildKubeTheme('nexus'),
+          theme: theme,
           home: const SettingsScreen(),
         ),
       ),
@@ -165,5 +168,63 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.textContaining('Could not open'), findsOneWidget);
+  });
+
+  // Issue #272 — Rate-this-app tile gates on App Store ID being assigned.
+  // Without the guard, tapping the tile on iOS pre-launch opens an invalid
+  // App Store URL containing the literal placeholder id0000000000.
+  testWidgets('iOS Rate-this-app tile disables with placeholder App Store ID',
+      (tester) async {
+    final prefs = await SharedPreferences.getInstance();
+    await pumpScreen(tester, prefs, platform: TargetPlatform.iOS);
+
+    expect(
+      appStoreListingConfigured,
+      isFalse,
+      reason: 'placeholder id0000000000 should not count as configured',
+    );
+
+    expect(
+      find.text('Available after public-store launch'),
+      findsOneWidget,
+    );
+    final tile = tester.widget<ListTile>(
+      find.ancestor(
+        of: find.text('Rate this app'),
+        matching: find.byType(ListTile),
+      ),
+    );
+    expect(tile.enabled, isFalse);
+    expect(tile.onTap, isNull);
+  });
+
+  testWidgets(
+      'Android Rate-this-app tile launches the Play URL '
+      '(real package id, issue #272)', (tester) async {
+    final prefs = await SharedPreferences.getInstance();
+    final launcher = _StubLauncher();
+    await pumpScreen(
+      tester,
+      prefs,
+      launcher: launcher,
+      platform: TargetPlatform.android,
+    );
+
+    expect(
+      find.text('Available after public-store launch'),
+      findsNothing,
+      reason: 'Play URL is stable by package id — no placeholder',
+    );
+
+    await tester.tap(find.text('Rate this app'));
+    await tester.pump();
+
+    expect(launcher.launched.single, kPlayStoreListingUrl);
+    expect(
+      kPlayStoreListingUrl,
+      contains('io.kubecenter.kubecenter'),
+      reason:
+          'Play URL must use the actual package id (issue #272 regression)',
+    );
   });
 }

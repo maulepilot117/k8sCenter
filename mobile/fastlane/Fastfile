@@ -86,6 +86,48 @@ platform :ios do
       ipa: "build/ios/kubecenter.ipa"
     )
   end
+
+  desc "Push App Store metadata and submit the latest TestFlight build for review"
+  lane :promote_ios do
+    setup_ci if is_ci
+
+    api_key_path = required_env("APP_STORE_CONNECT_API_KEY_PATH")
+
+    # promote_ios assumes beta_ios has already uploaded a build to
+    # TestFlight; this lane only pushes the App Store listing (metadata
+    # + screenshots) and triggers the submit-for-review action against
+    # that build. Splitting build/upload from submit/review keeps the
+    # 24h–7d Apple-review SLA decoupled from CI lifecycle — the binary
+    # ships on every main merge; the listing only ships on launch.
+    #
+    # Apple rejects submissions without screenshots. metadata/en-US/
+    # carries the listing copy; screenshots/en-US/ stays operator-
+    # supplied (real-device captures, 5 surfaces × phone+tablet ×
+    # light+dark). See mobile/docs/RELEASE.md 'iOS screenshots' for the
+    # capture procedure. submit_for_review FAILS here until the
+    # screenshots directory is populated — that's intentional and
+    # forces the human-in-the-loop step the launch needs.
+
+    upload_to_app_store(
+      api_key_path: api_key_path,
+      app_identifier: "io.kubecenter.kubecenter",
+      skip_binary_upload: true,
+      skip_metadata: false,
+      skip_screenshots: false,
+      force: true,
+      submit_for_review: true,
+      automatic_release: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: true,
+        export_compliance_encryption_updated: false,
+        export_compliance_is_exempt: true,
+        export_compliance_contains_third_party_cryptography: false,
+        export_compliance_contains_proprietary_cryptography: false,
+        export_compliance_available_on_french_store: true
+      }
+    )
+  end
 end
 
 # -----------------------------------------------------------------------
@@ -126,6 +168,61 @@ platform :android do
           "means the first manual AAB upload hasn't been done yet — " \
           "see mobile/docs/RELEASE.md 'Android setup → step 5 First " \
           "manual upload' for the bring-up procedure."
+        )
+      end
+      raise
+    end
+  end
+
+  desc "Promote latest Internal AAB to Production at 10% staged rollout"
+  lane :promote_android do
+    json_key = required_env("PLAY_SERVICE_ACCOUNT_JSON_PATH")
+
+    # promote_android tracks-promotes the most recent Internal-track
+    # AAB to the Production track at 10% rollout. No re-build, no re-
+    # upload — Play preserves the AAB across tracks. After 48h of clean
+    # crash/ANR data, graduate to 100% manually via Play Console.
+    #
+    # Metadata and changelogs ARE re-pushed each invocation so the
+    # public listing reflects the latest copy in mobile/fastlane/
+    # metadata/android/en-US/. Screenshots/icons are operator-supplied
+    # follow-ups; left out here so the lane doesn't fail on missing
+    # phoneScreenshots/ until those land.
+    #
+    # First-time promotion preconditions (Play won't accept programmatic
+    # promotion before all four are met):
+    #   1. Play Console developer account active.
+    #   2. Internal track has at least one published AAB (beta_android
+    #      ran successfully on a previous main merge).
+    #   3. First manual AAB upload to Play Console has happened (Play's
+    #      bring-up gate; see RELEASE.md).
+    #   4. Service account JSON has Release Manager role with
+    #      Production-track write permission.
+
+    begin
+      upload_to_play_store(
+        package_name: "io.kubecenter.kubecenter",
+        json_key: json_key,
+        track: "internal",
+        track_promote_to: "production",
+        rollout: "0.1",
+        skip_upload_apk: true,
+        skip_upload_aab: true,
+        skip_upload_metadata: false,
+        skip_upload_changelogs: false,
+        skip_upload_images: true,
+        skip_upload_screenshots: true
+      )
+    rescue => e
+      if e.message.include?("404") || e.message.include?("Error 404")
+        UI.user_error!(
+          "Play Console rejected the promotion (HTTP 404). Likely " \
+          "causes: (a) no AAB on Internal track to promote — run " \
+          "beta_android first, (b) first manual AAB upload to Play " \
+          "Console hasn't happened, (c) service account lacks " \
+          "production-track write permission. See mobile/docs/" \
+          "RELEASE.md 'Android production rollout' for the bring-up " \
+          "procedure."
         )
       end
       raise

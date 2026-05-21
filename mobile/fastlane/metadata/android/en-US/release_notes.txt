@@ -1,0 +1,5 @@
+First public release. Native Android oncall companion for k8sCenter — your self-hosted Kubernetes management platform.
+
+Full read-side parity with the web app, safe write actions including all 28 wizards, OIDC sign-in via Custom Tabs, live log tail, metrics, diagnostics, policy compliance, GitOps state, cert-manager, External Secrets, service mesh golden signals.
+
+WCAG 2.2 AA accessibility. Opt-in crash reporting only; cluster credentials never stored on-device. Source on GitHub.

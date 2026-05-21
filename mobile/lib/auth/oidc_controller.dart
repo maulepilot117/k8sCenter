@@ -225,7 +225,7 @@ class OIDCController extends Notifier<OIDCFlowState> {
 
     final authUrl = buildAuthUrl(
       authorizationEndpoint: cfg.authorizationEndpoint,
-      clientID: cfg.clientID,
+      clientId: cfg.clientId,
       scopes: cfg.scopes,
       redirectUri: redirectUri,
       codeChallenge: challenge,
@@ -391,7 +391,7 @@ class OIDCController extends Notifier<OIDCFlowState> {
   /// flow; production callers use [startFlow].
   static Uri buildAuthUrl({
     required String authorizationEndpoint,
-    required String clientID,
+    required String clientId,
     required List<String> scopes,
     required String redirectUri,
     required String codeChallenge,
@@ -401,7 +401,7 @@ class OIDCController extends Notifier<OIDCFlowState> {
     final base = Uri.parse(authorizationEndpoint);
     return base.replace(queryParameters: {
       ...base.queryParameters,
-      'client_id': clientID,
+      'client_id': clientId,
       'redirect_uri': redirectUri,
       'response_type': 'code',
       'scope': scopes.isEmpty ? 'openid profile email' : scopes.join(' '),

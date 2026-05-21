@@ -106,7 +106,7 @@ void main() {
         body: {
           'data': {
             'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
-            'clientID': 'kubecenter-mobile',
+            'clientId': 'kubecenter-mobile',
             'scopes': ['openid', 'profile', 'email'],
           },
         },
@@ -208,7 +208,7 @@ void main() {
         body: {
           'data': {
             'authorizationEndpoint': 'https://idp/x',
-            'clientID': 'c',
+            'clientId': 'c',
             'scopes': ['openid'],
           },
         },

@@ -45,6 +45,17 @@ A web-based Kubernetes management platform that delivers vCenter-level functiona
 - Cilium Network Policy editor with rule table, YAML preview, and dangerous policy warnings
 - Hubble network flow visibility with real-time gRPC-to-WebSocket streaming
 
+## Mobile App
+
+Native iOS and Android oncall companion for k8sCenter — full read-side parity with the web app, safe write actions including all 28 wizards, OIDC sign-in, push notifications, WCAG 2.2 AA accessibility, opt-in crash reporting.
+
+<!-- TODO(post-launch): swap placeholder install links once Apple assigns the App Store numeric ID and Play production-track rollout reaches 100%. App Store URL becomes https://apps.apple.com/app/id<numeric>; Play URL is stable today. -->
+
+[![Download on the App Store](https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg)](https://apps.apple.com/app/k8scenter)
+[![Get it on Google Play](https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png)](https://play.google.com/store/apps/details?id=io.kubecenter.kubecenter)
+
+Source under [`mobile/`](mobile/). Build setup and release runbook in [`mobile/docs/RELEASE.md`](mobile/docs/RELEASE.md). Privacy policy at [`mobile/docs/APP_PRIVACY.md`](mobile/docs/APP_PRIVACY.md) and on the web at [/privacy](frontend/routes/privacy.tsx).
+
 ## Architecture
 
 ```
