@@ -107,6 +107,16 @@ class AuthRepository extends Notifier<AuthState> {
         await ref.read(secureTokenStoreProvider).writeRefreshToken(refreshToken);
       }
       await _hydrateUser();
+      // Rollback on hydration failure — mirrors [applyAuthTokens]. Without
+      // this, the refresh token survives in secure_storage and the access
+      // token survives in authTokenHolder when /v1/auth/me errors after
+      // /v1/auth/login succeeds. Next cold-start would silently
+      // re-authenticate via /v1/auth/refresh even though the user was
+      // told "Sign-in failed". Issue #279.
+      if (state is AuthUnauthenticated) {
+        ref.read(authTokenHolderProvider).clear();
+        await ref.read(secureTokenStoreProvider).deleteRefreshToken();
+      }
     } on DioException catch (e) {
       final apiError = ApiError.fromDio(e);
       state = AuthUnauthenticated(errorMessage: apiError.message);
