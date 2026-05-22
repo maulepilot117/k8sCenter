@@ -155,14 +155,26 @@ is swallowed and the mixin degrades to Flutter-overlay-only defense.
 
 The following residuals remain:
 - **`AppLifecycleState.inactive` over-broad on iOS.** Notification
-  banners, Control Center peek, Siri activation, and the screenshot
-  gesture all deliver `.inactive` without a true backgrounding. The
-  Flutter-side scrim flashes mid-use on those events — UX nit, not a
-  leak. The native blocker also installs on these events (because
-  `sceneWillResignActive` is the same hook iOS uses to signal
-  potential snapshot capture). Debounce was considered and rejected
-  because the debounce window introduces its own race against a real
-  fast background gesture.
+  banners, Control Center peek, and Siri activation all deliver
+  `.inactive` without a true backgrounding. The Flutter-side scrim
+  flashes mid-use on those events — UX nit, not a leak. The native
+  blocker installs on the subset of these that route through
+  `sceneWillResignActive` (notification banner pull-down, Control
+  Center peek, incoming call, app-switcher swipe). Debounce was
+  considered and rejected because the debounce window introduces
+  its own race against a real fast background gesture.
+- **AssistiveTouch / hardware-button screenshots bypass
+  `sceneWillResignActive`.** The user-initiated screenshot gesture
+  (side + volume-up on modern iPhones, AssistiveTouch's screenshot
+  shortcut, three-finger drag accessibility) is delivered directly to
+  the iOS screenshot service without a scene-resign event. The native
+  blocker does NOT arm for these paths — only the Flutter overlay
+  defends, and only if it is already in the widget tree (which the
+  eager-overlay pattern ensures for the duration of a sensitive
+  session). A screenshot taken mid-sensitive-session is protected by
+  the Flutter overlay alone; if Flutter has not yet painted the scrim
+  flip, the resulting screenshot can include plaintext. Narrower than
+  the app-switcher race but not closed by #302.
 - **No automated real-device snapshot timing test.** Dart-side coverage
   is `flutter_test` in-memory; native-side coverage is the SceneDelegate
   code path (Swift) which has no unit-test harness. Verifying

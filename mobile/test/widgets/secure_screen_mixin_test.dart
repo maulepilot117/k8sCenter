@@ -483,14 +483,22 @@ void main() {
           find.byKey(SecureScreenMixin.blurOverlayKey),
           findsOneWidget,
         );
+        // Fire the lifecycle event the degraded Flutter-only path
+        // depends on and assert the BackdropFilter actually paints —
+        // overlay presence alone does not prove the scrim materializes.
+        _fireLifecycle(AppLifecycleState.inactive);
+        await tester.pump();
+        expect(find.byType(BackdropFilter), findsOneWidget);
       });
     });
 
     testWidgets(
         'PlatformException is swallowed (degrades to Flutter-overlay only)',
         (tester) async {
+      var callCount = 0;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(kIOSSecureScreenChannel, (_) async {
+        callCount++;
         throw PlatformException(code: 'NATIVE_FAIL');
       });
 
@@ -499,6 +507,78 @@ void main() {
         final state = tester.state<_HostState>(find.byType(_Host));
 
         await expectLater(state.setSensitive(true), completes);
+        // No circuit-breaker: subsequent setSensitive calls must still
+        // attempt the channel even after a throwing call. A future change
+        // adding a "stop trying after first failure" optimization would
+        // silently disable the native defense path forever — pin against
+        // that here.
+        await expectLater(state.setSensitive(false), completes);
+        await expectLater(state.setSensitive(true), completes);
+        expect(callCount, 3,
+            reason: 'channel must be attempted on every setSensitive even '
+                'after a PlatformException — no circuit-breaker on swallow.');
+      });
+    });
+
+    testWidgets(
+        'cold-start: no mock handler installed at all does not throw (#302 cold-start race)',
+        (tester) async {
+      // Simulates the window between Flutter engine start and the
+      // SceneDelegate's `scene(_:willConnectTo:)` running. The Dart side
+      // calls setSensitive before any native handler is registered for
+      // kIOSSecureScreenChannel — the call must complete (the
+      // MissingPluginException swallow keeps the Flutter overlay armed
+      // as primary defense). Distinct from the existing MissingPlugin
+      // test which pre-installs a throwing mock; this one installs no
+      // mock at all to exercise the truly-unregistered path.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, null);
+
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await expectLater(state.setSensitive(true), completes);
+        await tester.pump();
+        expect(
+          find.byKey(SecureScreenMixin.blurOverlayKey),
+          findsOneWidget,
+          reason: 'Flutter overlay must be armed even when the native '
+              'channel is entirely unregistered (cold-start race window).',
+        );
+      });
+    });
+
+    testWidgets(
+        'dispose() while sensitive notifies iOS channel with setSensitive(false) (#302 P1)',
+        (tester) async {
+      // Regression guard: SceneDelegate.sensitive is scene-singleton state
+      // that survives Dart widget teardown. Without an iOS disarm on
+      // dispose, navigating away from a sensitive screen leaves the
+      // native blocker armed for every subsequent sceneWillResignActive.
+      // Mirrors the Android `dispose clears FLAG_SECURE if sensitive was
+      // true` test above.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        nativeCalls.clear();
+
+        await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+        await tester.pump();
+        // The dispose chain is fire-and-forget; pump until idle so its
+        // microtasks land before we assert.
+        await tester.pumpAndSettle();
+
+        final disarms = nativeCalls
+            .where((c) => c.method == 'setSensitive' && c.arguments == false);
+        expect(
+          disarms,
+          hasLength(1),
+          reason: 'dispose() must symmetrically notify the iOS native channel '
+              'so SceneDelegate.sensitive resets when the widget tears down.',
+        );
       });
     });
   });

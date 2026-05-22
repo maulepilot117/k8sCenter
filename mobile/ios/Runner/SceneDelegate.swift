@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import os.log
 
 /// Scene delegate hosting the secure-screen blocker for #302.
 ///
@@ -34,14 +35,28 @@ class SceneDelegate: FlutterSceneDelegate {
   /// test in `mobile/test/widgets/secure_screen_mixin_test.dart`).
   private static let channelName = "kubecenter/secure_screen"
 
+  /// Subsystem-tagged logger so registration failures surface in
+  /// Console.app and unified logging on real-device smoke runs. The Dart
+  /// side cannot observe a missing native registration except through
+  /// `MissingPluginException` on every call — which is swallowed by
+  /// design — so this log is the only on-device signal that the native
+  /// defense-in-depth layer is silently off for the whole session.
+  private static let log = OSLog(
+    subsystem: "io.kubecenter.mobile",
+    category: "secure-screen"
+  )
+
   /// Dart-controlled flag. `true` means a sensitive screen is currently
   /// mounted and the blocker must arm on the next scene-resign-active.
   /// Mirrors `_sensitive` on the Dart `SecureScreenMixin`.
   private var sensitive = false
 
-  /// Single instance of the opaque blocker view. Lazy-initialized on
-  /// first arm so we don't pay the allocation cost during cold start.
-  private lazy var secureBlocker: UIView = makeSecureBlocker()
+  /// Single instance of the opaque blocker view. Allocated on first
+  /// arm so we don't pay the allocation cost during cold start when
+  /// the user never visits a sensitive screen. Stored as an optional
+  /// (not `lazy var`) so `disarmBlocker` on `sceneDidBecomeActive`
+  /// does not force allocation on every foreground transition.
+  private var secureBlocker: UIView?
 
   // MARK: - Method Channel
 
@@ -56,7 +71,16 @@ class SceneDelegate: FlutterSceneDelegate {
     else {
       // Flutter engine attach failed; non-fatal — the Dart side's
       // Flutter overlay still defends the screen, just without the
-      // native belt-and-suspenders layer.
+      // native belt-and-suspenders layer. Log loudly so this isn't a
+      // silent regression — if it ever fires, every subsequent
+      // setSensitive on the Dart side hits MissingPluginException (which
+      // is swallowed by design), making this os_log line the only
+      // visible signal that the native defense is off.
+      os_log(
+        "SceneDelegate: FlutterViewController cast failed — native secure-screen channel NOT registered. Defense degraded to Flutter overlay only.",
+        log: SceneDelegate.log,
+        type: .fault
+      )
       return
     }
     let channel = FlutterMethodChannel(
@@ -90,7 +114,7 @@ class SceneDelegate: FlutterSceneDelegate {
           result(FlutterError(
             code: "BAD_ARG",
             message: "setSensitive requires a Bool argument",
-            details: String(describing: call.arguments)
+            details: "argument type \(type(of: call.arguments)) — expected Bool"
           ))
         }
       default:
@@ -115,13 +139,14 @@ class SceneDelegate: FlutterSceneDelegate {
   // MARK: - Blocker management
 
   private func armBlocker(in window: UIWindow) {
-    secureBlocker.frame = window.bounds
-    window.addSubview(secureBlocker)
-    window.bringSubviewToFront(secureBlocker)
+    let blocker = secureBlocker ?? makeSecureBlocker()
+    secureBlocker = blocker
+    blocker.frame = window.bounds
+    window.addSubview(blocker)
   }
 
   private func disarmBlocker() {
-    secureBlocker.removeFromSuperview()
+    secureBlocker?.removeFromSuperview()
   }
 
   private func makeSecureBlocker() -> UIView {
@@ -138,7 +163,6 @@ class SceneDelegate: FlutterSceneDelegate {
     view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     view.isUserInteractionEnabled = false
     view.accessibilityElementsHidden = true
-    view.isAccessibilityElement = false
     return view
   }
 }

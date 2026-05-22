@@ -39,6 +39,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 /// Channel into `mobile/ios/Runner/SceneDelegate.swift` for the native
 /// iOS UIView blocker added in #302. The native side installs the
@@ -158,6 +159,17 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
         } catch (error) {
           debugPrint('SecureScreenMixin clearFlags during dispose: $error');
         }
+        // Symmetric iOS native disarm — the SceneDelegate.sensitive flag
+        // lives on the scene singleton and survives widget teardown. Without
+        // this call, navigating away from a sensitive screen while sensitive
+        // is true leaves the native blocker armed for every subsequent
+        // sceneWillResignActive — every backgrounding from any screen shows
+        // an opaque cover until the process is restarted. #302 P1 follow-up.
+        try {
+          await _notifyIOSNativeSensitive(false);
+        } catch (error) {
+          debugPrint('SecureScreenMixin iOS disarm during dispose: $error');
+        }
       });
       unawaited(_inflightPlatformCall!);
     }
@@ -191,13 +203,26 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
     // dispatching both inside the same continuation guarantees the
     // native side knows we're sensitive before the next iOS scene-resign
     // can fire (#302).
+    //
+    // The iOS native notification is dispatched concurrently with the
+    // Android FLAG_SECURE call (not sequentially) so the iOS-side flag
+    // is set as early as possible. The Android call short-circuits on
+    // non-Android platforms — on an iOS build it's a synchronous no-op —
+    // but firing them in parallel still cuts the time-to-native-set on
+    // any platform where both channels exist. Both must complete before
+    // the chain resolves so the next setSensitive call's idempotency
+    // guard sees a consistent state. Race-window narrowing only; the
+    // platform-channel round trip is still async so a sub-15ms reveal-
+    // then-background gesture can still beat the native flag. The
+    // Flutter eager-overlay is the primary defense for that window.
     final next = (_inflightPlatformCall ?? Future.value()).then((_) async {
+      final iosCall = _notifyIOSNativeSensitive(sensitive);
       if (sensitive) {
         await _addFlagSecure();
       } else {
         await _clearFlagSecure();
       }
-      await _notifyIOSNativeSensitive(sensitive);
+      await iosCall;
     });
     _inflightPlatformCall = next;
     try {
@@ -252,9 +277,43 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
       );
     } on MissingPluginException {
       // Older binaries or test environments without the channel
-      // registered. Degrade to Flutter-overlay-only defense. Silent.
+      // registered. Degrade to Flutter-overlay-only defense.
+      //
+      // On a healthy post-#302 iOS binary this should never fire — if it
+      // does, the native defense-in-depth layer is silently off for the
+      // whole session. Surface as a Sentry breadcrumb so opted-in users
+      // produce a signal we can investigate. Fire-and-forget — if Sentry
+      // isn't initialized (no DSN, opted out) the SDK no-ops and the
+      // try-catch absorbs anything else.
+      try {
+        Sentry.addBreadcrumb(
+          Breadcrumb(
+            level: SentryLevel.warning,
+            category: 'secure-screen',
+            message: 'iOS native channel missing — degraded to Flutter-overlay '
+                'defense only. Expected on Android, web, and pre-#302 iOS '
+                'binaries; unexpected on a healthy post-#302 iOS build.',
+          ),
+        );
+      } catch (_) {
+        // Sentry not initialized; intentionally silent.
+      }
     } on PlatformException catch (error) {
       debugPrint('SecureScreenMixin iOS channel: $error');
+      // Production builds strip debugPrint output. Mirror to Sentry so
+      // BAD_ARG / SCENE_GONE / native-side exceptions are observable.
+      try {
+        Sentry.addBreadcrumb(
+          Breadcrumb(
+            level: SentryLevel.error,
+            category: 'secure-screen',
+            message:
+                'iOS native channel PlatformException: code=${error.code}',
+          ),
+        );
+      } catch (_) {
+        // Sentry not initialized; intentionally silent.
+      }
     }
   }
 
