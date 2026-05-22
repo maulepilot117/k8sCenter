@@ -393,6 +393,116 @@ void main() {
     });
   });
 
+  group('SecureScreenMixin iOS native channel (#302)', () {
+    late List<MethodCall> nativeCalls;
+
+    setUp(() {
+      nativeCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        kIOSSecureScreenChannel,
+        (call) async {
+          nativeCalls.add(call);
+          return null;
+        },
+      );
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, null);
+    });
+
+    testWidgets('setSensitive(true) calls native setSensitive(true)',
+        (tester) async {
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+
+        expect(
+          nativeCalls.where((c) => c.method == 'setSensitive'),
+          hasLength(1),
+        );
+        expect(nativeCalls.last.arguments, true);
+      });
+    });
+
+    testWidgets('setSensitive(false) calls native setSensitive(false)',
+        (tester) async {
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        nativeCalls.clear();
+        await state.setSensitive(false);
+
+        expect(nativeCalls.single.method, 'setSensitive');
+        expect(nativeCalls.single.arguments, false);
+      });
+    });
+
+    testWidgets('Android setSensitive does NOT call the iOS channel',
+        (tester) async {
+      // Confirms the iOS-only platform guard inside
+      // `_notifyIOSNativeSensitive` — Android relies on `FLAG_SECURE`
+      // for the equivalent defense and must not invoke the iOS channel.
+      await withPlatform(TargetPlatform.android, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        await state.setSensitive(false);
+
+        expect(nativeCalls, isEmpty);
+      });
+    });
+
+    testWidgets(
+        'MissingPluginException is swallowed (degrades to Flutter-overlay only)',
+        (tester) async {
+      // Simulate a binary that predates #302 — the channel is not
+      // registered on the native side. The mixin must NOT throw; the
+      // Flutter eager overlay continues to defend.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, (_) async {
+        throw MissingPluginException('No implementation');
+      });
+
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await expectLater(state.setSensitive(true), completes);
+        // Flutter-side overlay still installed despite the channel
+        // failure — primary defense remains armed.
+        await tester.pump();
+        expect(
+          find.byKey(SecureScreenMixin.blurOverlayKey),
+          findsOneWidget,
+        );
+      });
+    });
+
+    testWidgets(
+        'PlatformException is swallowed (degrades to Flutter-overlay only)',
+        (tester) async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, (_) async {
+        throw PlatformException(code: 'NATIVE_FAIL');
+      });
+
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await expectLater(state.setSensitive(true), completes);
+      });
+    });
+  });
+
   group('SecureScreenMixin debug-mode gate', () {
     testWidgets(
         'in debug build, setSensitive(true) is a no-op (no platform call)',
