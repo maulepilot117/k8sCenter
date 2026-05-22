@@ -131,33 +131,57 @@ contract; if you change init behaviour, do not weaken this gate.
   internal-beta TestFlight / Play Internal lanes so a misconfigured
   filter can't burn project quota from production builds.
 
-## SecureScreenMixin — known residuals (#271 follow-ups)
+## SecureScreenMixin — defense layers and residuals
 
-The eager-overlay mitigation in `lib/widgets/secure_screen_mixin.dart`
-narrows the iOS app-switcher snapshot race to a single Flutter rebuild
-between lifecycle delivery and first paint of the scrim. It does not
-eliminate the race entirely. The following residuals are tracked but
-not closed by PR #300:
+The iOS screen-capture defense is layered. Primary defense is the
+eager `OverlayEntry` insertion in `lib/widgets/secure_screen_mixin.dart`
+(PR #300, issue #271) — keeps an inert `BackdropFilter`-armed overlay
+in the widget tree the entire time a screen is sensitive, so a
+`ValueNotifier` flip on lifecycle is all that's needed for the scrim
+to paint. Defense-in-depth is the native UIView blocker in
+`ios/Runner/SceneDelegate.swift` (PR #303, issue #302) — installed
+synchronously inside `sceneWillResignActive`, which iOS fires before
+capturing the app-switcher snapshot. UIKit lays out and renders the
+blocker before iOS yields to the snapshotter, closing the sub-frame
+race the pure-Flutter path could not guarantee to close.
 
-- **Sub-frame race remains.** Even with eager insertion, the
-  `BackdropFilter`'s subtree builds on the frame after `_blurVisible`
-  flips. iOS can theoretically snapshot during that gap.
-  Definitive closure requires a native `AppDelegate` UIView blocker
-  inserted synchronously in `applicationWillResignActive` (Mitigation 2
-  in #271's issue body). Open as a follow-up before PR-5j ships to
-  public stores if real-device verification reveals the race is
-  exploitable. Filed as a follow-up GitHub issue.
+Both layers arm together via `SecureScreenMixin.setSensitive(true)` —
+the same call adds Android `FLAG_SECURE`, eager-inserts the Flutter
+overlay, and pushes `setSensitive: true` over the
+`kubecenter/secure_screen` `MethodChannel` to the iOS `SceneDelegate`.
+If the iOS channel is not registered (older binary, Android build,
+test environment without the mock), the call's `MissingPluginException`
+is swallowed and the mixin degrades to Flutter-overlay-only defense.
+
+The following residuals remain:
 - **`AppLifecycleState.inactive` over-broad on iOS.** Notification
-  banners, Control Center peek, Siri activation, and the screenshot
-  gesture all deliver `.inactive` without a true backgrounding. The
-  scrim flashes mid-use on those events — UX nit, not a leak. Debounce
-  was considered and rejected because the debounce window introduces
+  banners, Control Center peek, and Siri activation all deliver
+  `.inactive` without a true backgrounding. The Flutter-side scrim
+  flashes mid-use on those events — UX nit, not a leak. The native
+  blocker installs on the subset of these that route through
+  `sceneWillResignActive` (notification banner pull-down, Control
+  Center peek, incoming call, app-switcher swipe). Debounce was
+  considered and rejected because the debounce window introduces
   its own race against a real fast background gesture.
-- **No real-device snapshot timing test.** All current coverage is
-  `flutter_test` in-memory. Verifying iOS Simulator + real-device
-  snapshot contents (recent-apps thumbnail shows blur, not plaintext)
-  is a manual smoke step in PR-5d's checklist and a candidate for a
-  Springboard-snapshot XCUITest job before PR-5j.
+- **AssistiveTouch / hardware-button screenshots bypass
+  `sceneWillResignActive`.** The user-initiated screenshot gesture
+  (side + volume-up on modern iPhones, AssistiveTouch's screenshot
+  shortcut, three-finger drag accessibility) is delivered directly to
+  the iOS screenshot service without a scene-resign event. The native
+  blocker does NOT arm for these paths — only the Flutter overlay
+  defends, and only if it is already in the widget tree (which the
+  eager-overlay pattern ensures for the duration of a sensitive
+  session). A screenshot taken mid-sensitive-session is protected by
+  the Flutter overlay alone; if Flutter has not yet painted the scrim
+  flip, the resulting screenshot can include plaintext. Narrower than
+  the app-switcher race but not closed by #302.
+- **No automated real-device snapshot timing test.** Dart-side coverage
+  is `flutter_test` in-memory; native-side coverage is the SceneDelegate
+  code path (Swift) which has no unit-test harness. Verifying
+  recent-apps thumbnail contents (blocker visible, plaintext not) is a
+  manual smoke step in PR-5d's checklist and a candidate for a
+  Springboard-snapshot XCUITest job before PR-5j. The PR #303 smoke
+  checklist documents the steps.
 - **Sigma=30 blur strength.** Empirically chosen during PR-5a/PR-5d
   work — 24 lets character outlines bleed through on small-font Secret
   values. Not formally characterized against image-reconstruction

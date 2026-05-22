@@ -5,9 +5,17 @@
 // OS hides the screen contents from the recent-apps preview snapshot and
 // blocks screenshots/screen recording.
 //
-// iOS: there is no equivalent system flag. The pattern is to push a blur
-// overlay when the app lifecycle enters inactive/paused (which fires
-// BEFORE iOS captures the app-switcher snapshot) and remove it on resume.
+// iOS: there is no equivalent system flag. The defense is layered.
+// (1) A Flutter-rendered blur OverlayEntry is eagerly inserted at
+// setSensitive(true) time and made visible by a ValueNotifier flip on
+// lifecycle inactive/paused/hidden. (2) A native UIView blocker added in
+// SceneDelegate.sceneWillResignActive (#302) — fires synchronously
+// before iOS captures the app-switcher snapshot, so the recent-apps
+// thumbnail shows the opaque blocker regardless of whether Flutter
+// completes the next pipeline flush in time. The native layer is
+// defense-in-depth; the Flutter overlay is the primary defense for
+// debug builds and any future iOS multitasking modes that change
+// snapshot timing.
 //
 // Eager-overlay race mitigation (#271): the OverlayEntry is inserted at
 // `setSensitive(true)` time, not on the lifecycle event. While the screen
@@ -29,7 +37,23 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
+
+/// Channel into `mobile/ios/Runner/SceneDelegate.swift` for the native
+/// iOS UIView blocker added in #302. The native side installs the
+/// blocker synchronously inside `sceneWillResignActive` — the only
+/// hook iOS guarantees fires before the app-switcher snapshot — which
+/// closes the residual sub-frame race the eager-OverlayEntry Flutter
+/// pattern from PR #300 narrowed but could not fully eliminate.
+///
+/// If the channel is not registered (Android, Flutter test runs, older
+/// iOS builds that predate this PR) the `MissingPluginException` is
+/// swallowed and the mixin degrades to Flutter-overlay-only defense.
+@visibleForTesting
+const MethodChannel kIOSSecureScreenChannel =
+    MethodChannel('kubecenter/secure_screen');
 
 /// Mix into a `State<...>` subclass to opt into screen-capture
 /// suppression. Call [setSensitive] when secure content is revealed
@@ -135,6 +159,17 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
         } catch (error) {
           debugPrint('SecureScreenMixin clearFlags during dispose: $error');
         }
+        // Symmetric iOS native disarm — the SceneDelegate.sensitive flag
+        // lives on the scene singleton and survives widget teardown. Without
+        // this call, navigating away from a sensitive screen while sensitive
+        // is true leaves the native blocker armed for every subsequent
+        // sceneWillResignActive — every backgrounding from any screen shows
+        // an opaque cover until the process is restarted. #302 P1 follow-up.
+        try {
+          await _notifyIOSNativeSensitive(false);
+        } catch (error) {
+          debugPrint('SecureScreenMixin iOS disarm during dispose: $error');
+        }
       });
       unawaited(_inflightPlatformCall!);
     }
@@ -144,8 +179,10 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   /// Toggles secure-screen behaviour. Idempotent.
   ///
   /// - `true` on Android: adds `FLAG_SECURE` to the window.
-  /// - `true` on iOS: arms the blur overlay so the next inactive/paused
-  ///   lifecycle event covers the screen.
+  /// - `true` on iOS: arms the eager blur overlay AND notifies the
+  ///   native `SceneDelegate` via [kIOSSecureScreenChannel] so its
+  ///   UIView blocker arms inside `sceneWillResignActive` before iOS
+  ///   captures the app-switcher snapshot (#302).
   /// - `false`: clears both and removes any active overlay.
   Future<void> setSensitive(bool sensitive) async {
     if (_isNoOpEnvironment) return;
@@ -161,13 +198,31 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
       _insertBlurOverlay();
     }
     // Chain onto any in-flight platform call so two rapid setSensitive
-    // calls don't race the platform side.
-    final next = (_inflightPlatformCall ?? Future.value()).then((_) {
+    // calls don't race the platform side. The chain serializes BOTH the
+    // Android FLAG_SECURE call and the iOS native blocker notification —
+    // dispatching both inside the same continuation guarantees the
+    // native side knows we're sensitive before the next iOS scene-resign
+    // can fire (#302).
+    //
+    // The iOS native notification is dispatched concurrently with the
+    // Android FLAG_SECURE call (not sequentially) so the iOS-side flag
+    // is set as early as possible. The Android call short-circuits on
+    // non-Android platforms — on an iOS build it's a synchronous no-op —
+    // but firing them in parallel still cuts the time-to-native-set on
+    // any platform where both channels exist. Both must complete before
+    // the chain resolves so the next setSensitive call's idempotency
+    // guard sees a consistent state. Race-window narrowing only; the
+    // platform-channel round trip is still async so a sub-15ms reveal-
+    // then-background gesture can still beat the native flag. The
+    // Flutter eager-overlay is the primary defense for that window.
+    final next = (_inflightPlatformCall ?? Future.value()).then((_) async {
+      final iosCall = _notifyIOSNativeSensitive(sensitive);
       if (sensitive) {
-        return _addFlagSecure();
+        await _addFlagSecure();
       } else {
-        return _clearFlagSecure();
+        await _clearFlagSecure();
       }
+      await iosCall;
     });
     _inflightPlatformCall = next;
     try {
@@ -203,6 +258,63 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   Future<void> _clearFlagSecure() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
     await FlutterWindowManager.clearFlags(FlutterWindowManager.FLAG_SECURE);
+  }
+
+  /// Notifies the iOS [SceneDelegate] of the sensitive state via the
+  /// [kIOSSecureScreenChannel] so the native UIView blocker can arm
+  /// synchronously in `sceneWillResignActive` before iOS captures the
+  /// app-switcher snapshot. Fails open: a `MissingPluginException`
+  /// (Android build, test environment, or pre-#302 iOS binary) is
+  /// swallowed because the Flutter overlay still provides primary
+  /// defense. `PlatformException` is logged but not rethrown — a
+  /// native-side failure must not regress the Dart-side sensitive flag.
+  Future<void> _notifyIOSNativeSensitive(bool sensitive) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      await kIOSSecureScreenChannel.invokeMethod<void>(
+        'setSensitive',
+        sensitive,
+      );
+    } on MissingPluginException {
+      // Older binaries or test environments without the channel
+      // registered. Degrade to Flutter-overlay-only defense.
+      //
+      // On a healthy post-#302 iOS binary this should never fire — if it
+      // does, the native defense-in-depth layer is silently off for the
+      // whole session. Surface as a Sentry breadcrumb so opted-in users
+      // produce a signal we can investigate. Fire-and-forget — if Sentry
+      // isn't initialized (no DSN, opted out) the SDK no-ops and the
+      // try-catch absorbs anything else.
+      try {
+        Sentry.addBreadcrumb(
+          Breadcrumb(
+            level: SentryLevel.warning,
+            category: 'secure-screen',
+            message: 'iOS native channel missing — degraded to Flutter-overlay '
+                'defense only. Expected on Android, web, and pre-#302 iOS '
+                'binaries; unexpected on a healthy post-#302 iOS build.',
+          ),
+        );
+      } catch (_) {
+        // Sentry not initialized; intentionally silent.
+      }
+    } on PlatformException catch (error) {
+      debugPrint('SecureScreenMixin iOS channel: $error');
+      // Production builds strip debugPrint output. Mirror to Sentry so
+      // BAD_ARG / SCENE_GONE / native-side exceptions are observable.
+      try {
+        Sentry.addBreadcrumb(
+          Breadcrumb(
+            level: SentryLevel.error,
+            category: 'secure-screen',
+            message:
+                'iOS native channel PlatformException: code=${error.code}',
+          ),
+        );
+      } catch (_) {
+        // Sentry not initialized; intentionally silent.
+      }
+    }
   }
 
   void _onLifecycleStateChanged(AppLifecycleState state) {
