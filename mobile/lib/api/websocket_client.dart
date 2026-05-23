@@ -18,6 +18,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -168,6 +169,12 @@ class KubeWebSocketClient {
     // matching the REST cluster-context middleware on the backend.
     final base = Uri.parse(_backendUrl);
     final scheme = base.scheme == 'https' ? 'wss' : 'ws';
+    if (!kDebugMode && scheme == 'ws') {
+      throw StateError(
+        'WebSocket would use ws:// in a non-debug build (base=$_backendUrl). '
+        'Release and profile builds must use wss:// only. (Finding P1-4)',
+      );
+    }
     final cleanPath = path.startsWith('/') ? path : '/$path';
     final fullPath = '/api/v1$cleanPath';
     return Uri(

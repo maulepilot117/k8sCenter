@@ -15,6 +15,7 @@
 import 'dart:async';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/secure_storage.dart';
@@ -22,14 +23,52 @@ import '../cluster/cluster_provider.dart';
 import 'api_error.dart';
 import 'auth_token_holder.dart';
 
-/// Backend base URL. Defaults to localhost in dev; production builds
-/// override via `--dart-define=BACKEND_URL=https://kubecenter.example.com`.
-const String _defaultBackendUrl = String.fromEnvironment(
+/// Backend base URL. Defaults to localhost in debug builds; release
+/// and profile builds REQUIRE an HTTPS URL via `--dart-define=BACKEND_URL=...`.
+/// Silent fallback to localhost in release was finding P1-4 of the
+/// 2026-05-22 security audit — a missing dart-define would have
+/// pointed release traffic at a local listener (potentially attacker-
+/// controlled on a shared device). The provider now fails loudly at
+/// first read in non-debug builds rather than silently degrading.
+const String _backendUrlFromEnv = String.fromEnvironment(
   'BACKEND_URL',
-  defaultValue: 'http://localhost:8080',
+  defaultValue: '',
 );
 
-final backendUrlProvider = Provider<String>((ref) => _defaultBackendUrl);
+final backendUrlProvider = Provider<String>((ref) {
+  final raw = _backendUrlFromEnv.trim();
+  if (kDebugMode) {
+    // Debug builds default to localhost for fast iteration.
+    return raw.isEmpty ? 'http://localhost:8080' : raw;
+  }
+  // Release + profile: require an explicit, non-localhost HTTPS URL.
+  if (raw.isEmpty) {
+    throw StateError(
+      'BACKEND_URL is required in release/profile builds. '
+      'Pass --dart-define=BACKEND_URL=https://your-backend.example.com '
+      'at build time. (Finding P1-4)',
+    );
+  }
+  final uri = Uri.tryParse(raw);
+  if (uri == null || !uri.hasScheme) {
+    throw StateError('BACKEND_URL is not a valid URL: $raw (Finding P1-4)');
+  }
+  if (uri.scheme != 'https') {
+    throw StateError(
+      'BACKEND_URL must use https in release/profile builds; got "$raw" '
+      '(Finding P1-4)',
+    );
+  }
+  final host = uri.host.toLowerCase();
+  const loopback = {'localhost', '127.0.0.1', '::1', '0.0.0.0'};
+  if (loopback.contains(host)) {
+    throw StateError(
+      'BACKEND_URL must not point at loopback in release/profile builds; '
+      'got "$raw" (Finding P1-4)',
+    );
+  }
+  return raw;
+});
 
 /// Refresh-only Dio. No interceptors so /v1/auth/refresh failures don't
 /// recurse through [AuthInterceptor]. Used by [AuthInterceptor] when the
