@@ -2,9 +2,17 @@ import { define } from "@/utils.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 import PromQLQuery from "@/islands/PromQLQuery.tsx";
+import PromQLAdminGate from "@/islands/PromQLAdminGate.tsx";
 
 const section = DOMAIN_SECTIONS.find((s) => s.id === "observability")!;
 
+// F#4 — raw PromQL access is admin-only. The backend `/v1/monitoring/query`
+// endpoint applies the same gate; the frontend gate here removes the empty
+// query UI for non-admin operators so they land on the curated slug-based
+// metrics surfaces instead. SSR can't read the auth state (the harness has
+// no user context set server-side) — gating runs client-side via
+// PromQLAdminGate, which renders the query island for admins and an
+// explanatory redirect prompt for everyone else.
 export default define.page(function PrometheusPage(ctx) {
   return (
     <>
@@ -18,7 +26,9 @@ export default define.page(function PrometheusPage(ctx) {
             Run PromQL queries against the cluster's Prometheus instance
           </p>
         </div>
-        <PromQLQuery />
+        <PromQLAdminGate>
+          <PromQLQuery />
+        </PromQLAdminGate>
       </div>
     </>
   );

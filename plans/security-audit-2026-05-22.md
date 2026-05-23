@@ -906,6 +906,20 @@ Recommended follow-up:
 - Bind dev PostgreSQL to localhost and remove fixed compose password.
 - Pin mutable supply-chain inputs and make release scans gating.
 
+## Open Items (Process)
+
+- **F#8 — Phase 2 commit `1b76f2c` violated the CLAUDE.md "5-file cap per
+  phase" rule** (Agent Directive 2). The commit touched 17 files in a
+  single change; the cap exists to keep per-phase context tight and to
+  bound the blast radius of a bad merge. The offending commit is already
+  in `feat/security-phase-2-rbac-cluster-routing` history and rebasing it
+  out would invalidate downstream review work — leaving as-is, noting
+  here for the next audit. **Action for future security phases:** break
+  rule-changing sweeps into a sequence of ≤5-file commits per phase, even
+  when the changes are mechanically isomorphic across many files. The
+  follow-up review path stays the same per commit; just the chunking
+  changes.
+
 ## Verification Commands Run During Audit
 
 - `git status --short`
