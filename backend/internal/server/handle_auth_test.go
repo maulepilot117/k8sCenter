@@ -136,6 +136,8 @@ func TestHandleSetupInit_AlreadyDone(t *testing.T) {
 	body := `{"username":"admin","password":"password1234"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/init", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	// P1-1: no setup token configured; Dev=true; must use loopback addr to pass the gate.
+	req.RemoteAddr = "127.0.0.1:54321"
 	w := httptest.NewRecorder()
 
 	srv.Router.ServeHTTP(w, req)
@@ -718,10 +720,13 @@ func TestAuthenticatedEndpoint_InvalidToken(t *testing.T) {
 
 func TestFullAuthFlow(t *testing.T) {
 	srv := testServer(t)
+	// P1-1: supply a setup token so this integration test works from
+	// any remote addr (doRequest uses the default non-loopback httptest addr).
+	srv.Config.Auth.SetupToken = "flow-test-setup-token"
 
 	// 1. Setup
 	setup := doRequest(t, srv, http.MethodPost, "/api/v1/setup/init",
-		`{"username":"admin","password":"password1234"}`, nil)
+		`{"username":"admin","password":"password1234","setupToken":"flow-test-setup-token"}`, nil)
 	if setup.Code != http.StatusCreated {
 		t.Fatalf("setup: expected 201, got %d: %s", setup.Code, setup.Body.String())
 	}
@@ -774,9 +779,9 @@ func TestFullAuthFlow(t *testing.T) {
 		t.Fatalf("logout: expected 200, got %d", logout.Code)
 	}
 
-	// 6. Setup should now return 410
+	// 6. Setup should now return 410 (user already exists)
 	setup2 := doRequest(t, srv, http.MethodPost, "/api/v1/setup/init",
-		`{"username":"admin2","password":"password1234"}`, nil)
+		`{"username":"admin2","password":"password1234","setupToken":"flow-test-setup-token"}`, nil)
 	if setup2.Code != http.StatusGone {
 		t.Fatalf("setup2: expected 410, got %d: %s", setup2.Code, setup2.Body.String())
 	}
