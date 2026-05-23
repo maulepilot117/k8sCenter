@@ -72,6 +72,24 @@ func main() {
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
+	// P0-1: Refuse to start in production with known-leaked homelab secrets.
+	// This guard runs before the JWT auto-generation fallback so a leaked
+	// secret is rejected before the random-key path could mask the problem.
+	if !cfg.Dev {
+		if cfg.Auth.JWTSecret != "" && config.IsKnownLeakedSecret(cfg.Auth.JWTSecret) {
+			logger.Error("refusing to start with leaked homelab JWT secret in production (finding P0-1); "+
+				"replace KUBECENTER_AUTH_JWTSECRET with a securely generated value",
+				"finding", "P0-1")
+			os.Exit(1)
+		}
+		if cfg.Auth.SetupToken != "" && config.IsKnownLeakedSecret(cfg.Auth.SetupToken) {
+			logger.Error("refusing to start with leaked homelab setup token in production (finding P0-1); "+
+				"replace KUBECENTER_AUTH_SETUPTOKEN with a securely generated value",
+				"finding", "P0-1")
+			os.Exit(1)
+		}
+	}
+
 	v := version.Get()
 	logger.Info("starting kubecenter",
 		"version", v.Version,
