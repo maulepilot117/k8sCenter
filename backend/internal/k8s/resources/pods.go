@@ -154,8 +154,14 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 	// HTTP 501 before the WebSocket upgrade so the error is delivered cleanly.
 	execClusterID := middleware.ClusterIDFromContext(r.Context())
 	if !k8s.IsLocalClusterID(execClusterID) {
+		h.Logger.Warn("pod exec rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", execClusterID,
+			"namespace", ns,
+			"pod", name,
+		)
 		h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultFailure)
-		writeError(w, http.StatusNotImplemented, "pod exec not yet supported on remote clusters (Finding P2-5)", "")
+		writeError(w, http.StatusNotImplemented, "pod exec not yet supported on remote clusters", "")
 		return
 	}
 

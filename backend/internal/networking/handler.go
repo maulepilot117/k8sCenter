@@ -113,12 +113,21 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 // non-local cluster and returns false. Returns true when execution may proceed.
 // Use for Cilium-specific endpoints whose data and operations are cluster-install-scoped
 // and cannot be safely proxied through the generic ClusterRouter path.
+//
+// The cluster ID is logged via slog (with user context where available at the
+// call site), never echoed back on the wire — see the Phase 1 precedent
+// (review #13) that established the wire-vs-log separation.
 func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature string) bool {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	if clusterID != "" && clusterID != "local" {
+		h.Logger.Warn("networking handler rejected on remote cluster",
+			"feature", feature,
+			"clusterID", clusterID,
+			"path", r.URL.Path,
+		)
 		httputil.WriteError(w, http.StatusNotImplemented,
 			feature+" is not supported for remote clusters",
-			"X-Cluster-ID="+clusterID+" is not supported; connect to that cluster directly")
+			"Connect to that cluster directly to use this feature")
 		return false
 	}
 	return true
@@ -204,7 +213,21 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 
 	// Cilium config mutations target the local cluster's cilium-config ConfigMap.
 	// Allowing X-Cluster-ID here would cause the audit row to record the remote
-	// cluster ID while the write always hits local — silent desync. Reject non-local.
+	// cluster ID while the write always hits local — silent desync. Reject non-local
+	// AND emit an audit row so the rejected write attempt is recorded.
+	if clusterID := middleware.ClusterIDFromContext(r.Context()); clusterID != "" && clusterID != "local" {
+		h.AuditLogger.Log(r.Context(), audit.Entry{
+			Timestamp:    time.Now().UTC(),
+			ClusterID:    clusterID,
+			User:         user.Username,
+			SourceIP:     r.RemoteAddr,
+			Action:       audit.ActionUpdate,
+			ResourceKind: "CiliumConfig",
+			ResourceName: "cilium-config",
+			Result:       audit.ResultFailure,
+			Detail:       "rejected: remote cluster not supported",
+		})
+	}
 	if !h.rejectNonLocal(w, r, "Cilium CNI configuration update") {
 		return
 	}

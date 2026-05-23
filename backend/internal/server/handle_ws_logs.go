@@ -55,9 +55,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	logWSCount.Add(1)
-	defer logWSCount.Add(-1)
-
 	ns := chi.URLParam(r, "namespace")
 	pod := chi.URLParam(r, "pod")
 	container := chi.URLParam(r, "container")
@@ -97,6 +94,29 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		filter.TailLines = 10000
 	}
 
+	// P2-5: WebSocket log streams against remote clusters are not yet supported
+	// because the watch connection lifecycle differs for remote API servers.
+	// Reject with an error frame BEFORE bumping the connection counter, running
+	// the RBAC check, emitting the audit "subscribed" entry, or opening the k8s
+	// stream — mirrors HandlePodExec ordering in pods.go.
+	wsLogsClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(wsLogsClusterID) {
+		s.Logger.Warn("ws log stream rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", wsLogsClusterID,
+			"namespace", ns,
+			"pod", pod,
+		)
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "WebSocket log streaming not yet supported on remote clusters",
+		})
+		return
+	}
+
+	logWSCount.Add(1)
+	defer logWSCount.Add(-1)
+
 	// RBAC check — get on pods/log subresource
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
 		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
@@ -132,18 +152,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		"pod", pod,
 		"container", filter.Container,
 	)
-
-	// P2-5: WebSocket log streams against remote clusters are not yet supported
-	// because the watch connection lifecycle differs for remote API servers.
-	// Reject with an error frame before opening the k8s stream.
-	wsLogsClusterID := middleware.ClusterIDFromContext(r.Context())
-	if !k8s.IsLocalClusterID(wsLogsClusterID) {
-		conn.WriteJSON(map[string]any{
-			"type":    "error",
-			"message": "WebSocket log streaming not yet supported on remote clusters (Finding P2-5)",
-		})
-		return
-	}
 
 	// Create impersonating client for the log stream
 	rh := s.ResourceHandler
