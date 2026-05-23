@@ -1,0 +1,44 @@
+KubeCenter has been installed.
+
+  Release name: {{ .Release.Name }}
+  Namespace:    {{ .Release.Namespace }}
+
+To access the UI:
+
+{{- if .Values.ingress.enabled }}
+  https://{{ (index .Values.ingress.hosts 0).host | default "<ingress-host>" }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "kubecenter.fullname" . }}-frontend 8080:80
+  Then open http://localhost:8080
+{{- end }}
+
+{{- if .Values.monitoring.grafana.apiToken }}
+
+──────────────────────────────────────────────────────────────────────
+DEPRECATION WARNING — monitoring.grafana.apiToken
+──────────────────────────────────────────────────────────────────────
+You set `monitoring.grafana.apiToken`. This field is DEPRECATED and will be
+removed in KubeCenter v2.0.
+
+Effect right now: KubeCenter maps the single token to the viewer slot.
+Dashboard provisioning is DISABLED until you split the tokens. You will
+see the deprecation WARN once in the backend log at startup.
+
+Migrate to the split-token form:
+
+  monitoring:
+    grafana:
+      apiToken: ""                            # clear this
+      viewerTokenSecret:
+        name: grafana-tokens
+        key: viewer
+      provisioningTokenSecret:
+        name: grafana-tokens
+        key: provisioning
+
+──────────────────────────────────────────────────────────────────────
+{{- end }}
+
+{{- if and .Values.rbac.impersonationEnabled (or (eq (len .Values.rbac.allowedImpersonateUsers) 0) (eq (len .Values.rbac.allowedImpersonateGroups) 0) (eq (len .Values.rbac.allowedImpersonateServiceAccounts) 0)) }}
+{{- /* Render-time guard for impersonationEnabled is in clusterrole-opt-in.yaml; this is the friendly NOTES echo */ -}}
+{{- end }}

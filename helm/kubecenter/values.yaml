@@ -169,7 +169,14 @@ monitoring:
     url: ""              # Override auto-discovery
   grafana:
     url: ""              # Override auto-discovery
-    apiToken: ""         # Deprecated: backward-compat single token (mapped to viewer-only; provisioning disabled). Prefer viewerTokenSecret + provisioningTokenSecret.
+    # WARNING: monitoring.grafana.apiToken is DEPRECATED and will be removed in
+    # v2.0. The single-token form silently degrades to viewer-only mode —
+    # dashboard provisioning is DISABLED when this field is set without the
+    # split tokens below. Use viewerTokenSecret + provisioningTokenSecret
+    # instead so KubeCenter can both render dashboards (viewer) and provision
+    # them on startup (provisioning). NOTES.txt prints an explicit warning at
+    # install/upgrade time when this field is non-empty.
+    apiToken: ""         # DEPRECATED — see WARNING above; prefer viewerTokenSecret + provisioningTokenSecret.
     viewerTokenSecret:
       name: ""           # Kubernetes Secret name containing the Grafana viewer token (KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN)
       key: ""            # Key within the Secret (e.g. grafana-viewer-token)

@@ -342,7 +342,14 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 		mr.Get("/queries/*", h.HandleSlugQuery)
 
 		// Grafana reverse-proxy — admin only (viewer token injected server-side).
-		// Only GET and HEAD are permitted; any other method → 405 via chi's default.
+		//
+		// Method narrowing (Phase 2, F#25): Only GET and HEAD are registered.
+		// POST / PUT / PATCH / DELETE now return 405 via chi's MethodNotAllowed
+		// handler. This is intentional — write operations against Grafana must
+		// go through a typed handler (HandleDashboards, etc.) where input is
+		// validated and audited, not through the opaque reverse-proxy.
+		// Removing a method here is a deliberate API contract change; do not
+		// re-add PATCH/POST without a security review.
 		mr.Route("/grafana/proxy", func(gr chi.Router) {
 			gr.Use(middleware.RequireAdmin)
 			gr.Get("/*", h.GrafanaProxy)

@@ -37,6 +37,44 @@
 */}}
 
 {{- if .Values.rbac.impersonationEnabled }}
+{{- /*
+  F#2 — Empty-allowlists fail-guard.
+
+  If impersonationEnabled is true but every allowlist is empty, the rendered
+  ClusterRole has zero rules and is silently useless. Worse, the ClusterRole
+  binding still attaches, leaving operators believing impersonation works
+  when in fact every per-user RBAC check falls through to the SA. Fail at
+  render time so the misconfiguration surfaces during helm install/upgrade,
+  not at first user login.
+*/}}
+{{- if and (eq (len .Values.rbac.allowedImpersonateUsers) 0)
+           (eq (len .Values.rbac.allowedImpersonateGroups) 0)
+           (eq (len .Values.rbac.allowedImpersonateServiceAccounts) 0) }}
+{{- fail "rbac.impersonationEnabled=true requires at least one entry in allowedImpersonateUsers, allowedImpersonateGroups, or allowedImpersonateServiceAccounts" }}
+{{- end }}
+{{- /*
+  F#21 — system:* allowlist block.
+
+  Allowing impersonation of system:* principals (system:admin, system:masters,
+  system:serviceaccount:kube-system:default, system:anonymous, ...) would let
+  the backend forge a request as a built-in privileged identity. Reject ANY
+  entry that starts with "system:" across all three allowlists at render time.
+*/}}
+{{- range .Values.rbac.allowedImpersonateUsers }}
+{{- if hasPrefix "system:" . }}
+{{- fail (printf "rbac.allowedImpersonateUsers entry %q is forbidden: impersonating system:* principals would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
+{{- range .Values.rbac.allowedImpersonateGroups }}
+{{- if hasPrefix "system:" . }}
+{{- fail (printf "rbac.allowedImpersonateGroups entry %q is forbidden: impersonating system:* groups would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
+{{- range .Values.rbac.allowedImpersonateServiceAccounts }}
+{{- if hasPrefix "system:" . }}
+{{- fail (printf "rbac.allowedImpersonateServiceAccounts entry %q is forbidden: impersonating system:* service accounts would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
