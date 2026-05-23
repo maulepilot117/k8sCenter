@@ -18,6 +18,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -119,7 +120,18 @@ class KubeWebSocketClient {
         ? WebSocketState.connecting
         : WebSocketState.reconnecting);
 
-    final wsUrl = _wsUrl();
+    // _wsUrl() throws StateError when the backend URL is misconfigured at
+    // build time (e.g., http:// in a release build). Retrying such a URL
+    // will never succeed — surface as fatal so the reconnect loop stops.
+    // (Finding P2-12)
+    Uri wsUrl;
+    try {
+      wsUrl = _wsUrl();
+    } on StateError catch (e) {
+      _emitFatal('invalid backend URL: ${e.message}');
+      return;
+    }
+
     try {
       final token = tokenHolder.accessToken;
       if (token == null) {
@@ -166,8 +178,22 @@ class KubeWebSocketClient {
     // dio_client uses http(s); WebSocket uses ws(s). Cluster id is
     // injected via the X-Cluster-ID upgrade header (see _connect),
     // matching the REST cluster-context middleware on the backend.
+    //
+    // The https check is performed BEFORE constructing any Uri so that the
+    // 'ws' literal never appears inside a Uri in release/profile builds.
+    // This satisfies Semgrep's detect-insecure-websocket rule statically,
+    // which pattern-matches the Uri scheme literal. (Finding P2-16)
     final base = Uri.parse(_backendUrl);
-    final scheme = base.scheme == 'https' ? 'wss' : 'ws';
+    final isHttps = base.scheme == 'https';
+    if (!isHttps && !kDebugMode) {
+      throw StateError(
+        'WebSocket would use ws:// in a non-debug build (base=$_backendUrl). '
+        'Release and profile builds must use wss:// only. (Finding P1-4)',
+      );
+    }
+    // The 'ws' scheme literal is only reachable in kDebugMode (guarded
+    // above); release/profile paths always produce 'wss'.
+    final scheme = isHttps ? 'wss' : 'ws';
     final cleanPath = path.startsWith('/') ? path : '/$path';
     final fullPath = '/api/v1$cleanPath';
     return Uri(

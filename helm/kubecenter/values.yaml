@@ -79,7 +79,12 @@ auth:
   # JWT signing secret. Auto-generated on first install if empty.
   # Stored in a k8s Secret and survives helm upgrades.
   jwtSecret: ""
-  # Setup token for POST /api/v1/setup/init. Optional.
+  # Setup token for POST /api/v1/setup/init. When empty AND
+  # backend.config.dev=false, the chart auto-generates a 48-char token
+  # at install time and persists it in the app Secret (survives helm
+  # upgrade). In dev mode the backend allows token-free setup ONLY
+  # from a loopback peer; non-loopback dev installs still require a
+  # configured token. See finding P1-1 in plans/security-audit-2026-05-22.md.
   setupToken: ""
   # OIDC providers (array). Each entry maps to config.OIDCConfig.
   oidc: []

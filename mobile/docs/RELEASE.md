@@ -57,6 +57,8 @@ The CI workflow expects the API key as a JSON blob in the `APPSTORE_CONNECT_API_
 
 In Settings → Secrets and variables → Actions:
 
+**iOS secrets:**
+
 | Secret | Value |
 |---|---|
 | `MATCH_GIT_URL` | `https://github.com/your-org/k8scenter-mobile-certs.git` |
@@ -65,7 +67,22 @@ In Settings → Secrets and variables → Actions:
 | `APPLE_ID` | Apple ID email used for the dev account |
 | `APPLE_TEAM_ID` | 10-char team ID from Apple Developer → Membership |
 
-Once all five are set, the next push to `main` that touches `mobile/` triggers `deploy_ios`. The first build takes ~10 minutes.
+**Android upload-signing secrets (required for release AABs — finding P1-5):**
+
+| Secret | Value |
+|---|---|
+| `ANDROID_UPLOAD_KEYSTORE_BASE64` | `base64 -w0 upload-keystore.jks` output from step 2 above |
+| `ANDROID_UPLOAD_KEY_ALIAS` | `upload` (the alias passed to keytool above) |
+| `ANDROID_UPLOAD_KEY_PASSWORD` | The key password set during `keytool -genkey` |
+| `ANDROID_UPLOAD_STORE_PASSWORD` | The keystore password set during `keytool -genkey` |
+
+**Shared secrets (required for both iOS and Android release builds — finding P1-4):**
+
+| Secret | Value |
+|---|---|
+| `BACKEND_URL` | Operator's production HTTPS backend URL, e.g., `https://k8scenter.example.com`. Required for both iOS and Android release builds; CI fails upfront when missing. |
+
+Once all secrets are set, the next push to `main` that touches `mobile/` triggers `deploy_ios` and `deploy_android`. The first build takes ~10 minutes.
 
 ## Android setup
 
@@ -80,7 +97,7 @@ keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 \
   -validity 10000 -alias upload
 ```
 
-Keep the keystore + password safe. The CI workflow doesn't currently sign release AABs (it uses Gradle's debug signing for first deploy); add `signingConfigs` to `mobile/android/app/build.gradle.kts` once the keystore is available, and provide it via a `KEYSTORE_BASE64` secret.
+Keep the keystore + password safe. CI signs every release AAB with this upload key — finding P1-5 of the 2026-05-22 security audit required removing the legacy debug-signing fallback. CI will refuse to ship a release AAB if any of the four `ANDROID_UPLOAD_*` secrets is absent (see step 5 below).
 
 ### 3. Create a Play Console service account
 
@@ -98,8 +115,11 @@ Play requires a first manual AAB upload before the API will accept programmatic 
 
 ```bash
 cd mobile
-flutter build appbundle --release
+flutter build appbundle --release \
+  --dart-define=BACKEND_URL=https://k8scenter.example.com
 ```
+
+Omitting `--dart-define=BACKEND_URL=...` causes the release build to abort with `StateError: BACKEND_URL is required in release/profile builds` (finding P1-4).
 
 Upload `build/app/outputs/bundle/release/app-release.aab` to Play Console → Internal testing → Create new release. After this completes, subsequent uploads via Fastlane work.
 
@@ -159,6 +179,7 @@ In CI, set the `UNIVERSAL_LINK_HOST` GitHub Actions secret. The `deploy_android`
 ```bash
 flutter build appbundle --release \
   --dart-define=UNIVERSAL_LINK_HOST=kubecenter.example.com \
+  --dart-define=BACKEND_URL=https://k8scenter.example.com \
   -- -PuniversalLinkHost=kubecenter.example.com
 ```
 

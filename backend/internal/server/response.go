@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // dnsLabelRegex matches valid RFC 1123 DNS labels (used for namespace validation).
@@ -41,14 +42,25 @@ func (s *Server) setRefreshCookie(w http.ResponseWriter, value string, maxAge in
 }
 
 // newAuditEntry creates an audit entry pre-filled with common fields.
+//
+// SourceIP is set from r.RemoteAddr (which chi's RealIP may have rewritten
+// from X-Forwarded-For/X-Real-IP headers — useful for the logical client IP
+// behind a trusted load-balancer).
+//
+// ConnectionIP is set from the socket-level peer captured by
+// CaptureSocketPeer before RealIP ran. This is the ground-truth TCP peer
+// and cannot be spoofed by header injection. It is omitted when empty
+// (e.g., in tests that don't route through the full middleware stack).
+// See Finding #1+#8, ce-code-review 2026-05-22.
 func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Action, result audit.Result) audit.Entry {
 	return audit.Entry{
-		Timestamp: time.Now(),
-		ClusterID: s.Config.ClusterID,
-		User:      username,
-		SourceIP:  r.RemoteAddr,
-		Action:    action,
-		Result:    result,
+		Timestamp:    time.Now(),
+		ClusterID:    s.Config.ClusterID,
+		User:         username,
+		SourceIP:     r.RemoteAddr,
+		ConnectionIP: middleware.SocketPeerFromContext(r.Context()),
+		Action:       action,
+		Result:       result,
 	}
 }
 

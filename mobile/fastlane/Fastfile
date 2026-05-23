@@ -55,6 +55,18 @@ platform :ios do
 
     api_key_path = required_env("APP_STORE_CONNECT_API_KEY_PATH")
     match_git_url = required_env("MATCH_GIT_URL")
+    # BACKEND_URL must be baked into the iOS binary at compile time via
+    # --dart-define. Fastlane's build_app invokes Xcode directly and does
+    # NOT forward Flutter dart-defines, so we pre-build the Flutter iOS
+    # bundle here first, then let build_app archive the already-compiled
+    # Runner.app without re-running the Flutter tool. (Finding P1-#6)
+    backend_url = ENV["BACKEND_URL"] or UI.user_error!("BACKEND_URL is required for iOS release (Finding P1-6)")
+    universal_link_host = ENV["UNIVERSAL_LINK_HOST"] || ""
+
+    # Pre-build Flutter iOS bundle with dart-defines before Fastlane archives.
+    sh "cd ../.. && flutter build ios --release --no-codesign " \
+       "--dart-define=BACKEND_URL=#{backend_url} " \
+       "--dart-define=UNIVERSAL_LINK_HOST=#{universal_link_host}"
 
     # Pull production certs + provisioning profile from the private
     # `match` repo. Read-only; CI never writes to that repo.
@@ -72,6 +84,8 @@ platform :ios do
       xcodeproj: "../ios/Runner.xcodeproj"
     )
 
+    # Archive the Flutter-compiled Runner.app rather than letting Xcode
+    # re-trigger the Flutter build (which would lose the dart-defines).
     build_app(
       workspace: "../ios/Runner.xcworkspace",
       scheme: "Runner",

@@ -277,7 +277,7 @@ GitHub Flow. See `CONTRIBUTING.md` for the complete workflow.
 
 **After successful merge:** Delete the local and remote feature branch. Use `gh api -X DELETE` if SSH times out. Clean up stale tracking refs with `git branch -dr`.
 
-Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
+Credentials: provided by the operator at setup time. See `helm/kubecenter/values-homelab.yaml.example` for placeholder names and the auto-generated `setupToken` behavior (finding P0-1 of the 2026-05-22 security audit removed the committed defaults).
 
 ---
 

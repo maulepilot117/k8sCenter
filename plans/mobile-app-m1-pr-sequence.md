@@ -244,7 +244,7 @@ The PR graph is mostly linear. The two parallel branches that meet at PR-1g are:
 
 **Verification:**
 - `flutter analyze && flutter test` clean.
-- Smoke against homelab: `flutter run --dart-define=BACKEND_URL=http://192.168.x.y:8080`. Log in with `admin`/`admin123`. Force-quit and reopen — app skips login screen and lands on the dashboard placeholder.
+- Smoke against homelab: `flutter run --dart-define=BACKEND_URL=http://192.168.x.y:8080`. Log in with `admin`/`<placeholder>`. Force-quit and reopen — app skips login screen and lands on the dashboard placeholder. (originally documented homelab credentials; sanitized 2026-05-23 per finding P0-1)
 - Re-deploy backend (rotates JWT secret server-side, invalidating all refresh tokens). Reopen app — refresh fails, app routes to `/login`, no infinite loop.
 
 ---

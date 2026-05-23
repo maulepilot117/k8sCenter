@@ -1,3 +1,4 @@
+{{- include "kubecenter.validatePlaceholders" . }}
 {{/*
 Mobile-app Universal Link well-known files. Renders only when
 `.Values.mobile.universalLinkDomain` is set — empty default keeps this

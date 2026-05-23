@@ -201,7 +201,7 @@ const authFile = path.join(__dirname, '../playwright/.auth/admin.json');
 setup('create admin and authenticate', async ({ page, request }) => {
   // Idempotent setup — ignore 409 if already initialized
   await request.post('/api/v1/setup/init', {
-    data: { username: 'admin', password: 'admin123', setupToken: 'e2e-setup-token' },
+    data: { username: 'admin', password: '<placeholder>', setupToken: 'e2e-setup-token' },
     headers: { 'X-Requested-With': 'XMLHttpRequest' },
     failOnStatusCode: false,
   });
@@ -209,7 +209,7 @@ setup('create admin and authenticate', async ({ page, request }) => {
   // Log in via UI (required — access token is in-memory signals)
   await page.goto('/login');
   await page.getByLabel('Username').fill('admin');
-  await page.getByLabel('Password').fill('admin123');
+  await page.getByLabel('Password').fill('<placeholder>'); // (originally documented homelab credentials; sanitized 2026-05-23 per finding P0-1)
   await page.getByRole('button', { name: /sign in/i }).click();
 
   // Wait for dashboard to confirm auth
