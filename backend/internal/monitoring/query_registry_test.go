@@ -53,16 +53,19 @@ func TestRegistry_TemplateRenders(t *testing.T) {
 				t.Errorf("rendered output still contains template delimiters: %q", rendered)
 			}
 
-			// If the template used .Namespace, the rendered query should contain
-			// the namespace value.
-			if strings.Contains(def.Template, "{{.Namespace}}") &&
+			// If the template used .Namespace (or .NamespaceRegex), the rendered
+			// query should contain the namespace value (regex-escaped for the
+			// =~ form, but the sample value has no metachars).
+			if (strings.Contains(def.Template, "{{.Namespace}}") ||
+				strings.Contains(def.Template, "{{.NamespaceRegex}}")) &&
 				!strings.Contains(rendered, namespace) {
 				t.Errorf("rendered output missing namespace %q: %q", namespace, rendered)
 			}
 
-			// If the template used .Name, the rendered query should contain
-			// the name value.
-			if strings.Contains(def.Template, "{{.Name}}") &&
+			// If the template used .Name (or .NameRegex), the rendered query
+			// should contain the name value.
+			if (strings.Contains(def.Template, "{{.Name}}") ||
+				strings.Contains(def.Template, "{{.NameRegex}}")) &&
 				!strings.Contains(rendered, name) {
 				t.Errorf("rendered output missing name %q: %q", name, rendered)
 			}
@@ -216,6 +219,47 @@ func TestRenderSlugTemplate_Substitution(t *testing.T) {
 	expected := `container_cpu{namespace="kube-system",pod="coredns"}`
 	if rendered != expected {
 		t.Errorf("got %q, want %q", rendered, expected)
+	}
+}
+
+// TestRenderSlugTemplate_RegexEscape verifies that .NameRegex / .NamespaceRegex
+// escape PromQL regex metacharacters so a validated value like "1.2.3.4:9100"
+// doesn't widen the surrounding =~ pattern. F#30.
+func TestRenderSlugTemplate_RegexEscape(t *testing.T) {
+	tmpl := `node_load5{instance=~"{{.NameRegex}}"}`
+	rendered, err := renderSlugTemplate(tmpl, "", "1.2.3.4:9100")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := `node_load5{instance=~"1\.2\.3\.4:9100"}`
+	if rendered != expected {
+		t.Errorf("got %q, want %q", rendered, expected)
+	}
+}
+
+// TestEscapePromQLRegex_MetacharCoverage checks the escaper handles the
+// full RE2 metaset, not just `.`. Future validator changes might let new
+// metachars through; this test pins the defense.
+func TestEscapePromQLRegex_MetacharCoverage(t *testing.T) {
+	cases := map[string]string{
+		"foo.bar":   `foo\.bar`,
+		"foo+bar":   `foo\+bar`,
+		"foo*bar":   `foo\*bar`,
+		"foo?bar":   `foo\?bar`,
+		"foo(bar)":  `foo\(bar\)`,
+		"foo[bar]":  `foo\[bar\]`,
+		"foo{bar}":  `foo\{bar\}`,
+		"^foo$":     `\^foo\$`,
+		"foo|bar":   `foo\|bar`,
+		`back\slash`: `back\\slash`,
+	}
+	for input, want := range cases {
+		t.Run(input, func(t *testing.T) {
+			got := escapePromQLRegex(input)
+			if got != want {
+				t.Errorf("escapePromQLRegex(%q) = %q, want %q", input, got, want)
+			}
+		})
 	}
 }
 

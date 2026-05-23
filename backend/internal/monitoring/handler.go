@@ -447,9 +447,11 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
 			return
 		}
+		// F#23 — match the /query_range data envelope shape exactly so the
+		// mobile QueryRangeResult parser works without a separate schema. The
+		// slug + rendered PromQL stay server-side (in slog logs) rather than
+		// echoing back to the client.
 		httputil.WriteData(w, map[string]any{
-			"slug":       rawSlug,
-			"query":      rendered,
 			"resultType": result.Type(),
 			"result":     result,
 			"warnings":   warnings,
@@ -487,9 +489,8 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusBadGateway, "Prometheus range query failed", err.Error())
 		return
 	}
+	// F#23 — same shape match as the instant branch above.
 	httputil.WriteData(w, map[string]any{
-		"slug":       rawSlug,
-		"query":      rendered,
 		"resultType": result.Type(),
 		"result":     result,
 		"warnings":   warnings,
@@ -516,21 +517,66 @@ func validateRangeCaps(start, end time.Time, step time.Duration) error {
 	return nil
 }
 
-// slugTemplateVars carries the two supported substitution variables.
+// slugTemplateVars carries the supported substitution variables.
+//
+// NamespaceRegex / NameRegex are the same values pre-escaped for use in regex
+// (=~) positions. Templates that bind a value into an =~ label MUST use the
+// *Regex form so user input cannot inject regex metacharacters into the
+// surrounding pattern. F#30 — validators already restrict allowed chars, but
+// `.` is a regex metachar that fits both the strict ([a-z0-9.-]) and the
+// relaxed ([a-zA-Z0-9._:-]) sets and would otherwise widen the match
+// silently.
 type slugTemplateVars struct {
-	Namespace string
-	Name      string
+	Namespace      string
+	Name           string
+	NamespaceRegex string
+	NameRegex      string
+}
+
+// promQLRegexEscaper escapes the regex metacharacters that can appear in our
+// validated label values. The only metachar reachable through isValidK8sName
+// is `.`; isValidInstanceLabel adds `_` and `:` (both regex-literal) plus
+// uppercase letters. We still escape the full PCRE/RE2 metaset so any future
+// validator loosening doesn't quietly bypass this defense.
+var promQLRegexEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`.`, `\.`,
+	`+`, `\+`,
+	`*`, `\*`,
+	`?`, `\?`,
+	`(`, `\(`,
+	`)`, `\)`,
+	`[`, `\[`,
+	`]`, `\]`,
+	`{`, `\{`,
+	`}`, `\}`,
+	`^`, `\^`,
+	`$`, `\$`,
+	`|`, `\|`,
+)
+
+// escapePromQLRegex escapes regex metachars so a validated label value can be
+// substituted into a Prometheus =~ position without widening the match.
+func escapePromQLRegex(s string) string {
+	return promQLRegexEscaper.Replace(s)
 }
 
 // renderSlugTemplate renders a QueryDef.Template using text/template.
-// The template must only use {{.Namespace}} and {{.Name}}.
+// Templates may use {{.Namespace}} / {{.Name}} in `=` positions and MUST use
+// {{.NamespaceRegex}} / {{.NameRegex}} in `=~` positions.
 func renderSlugTemplate(tmplStr, namespace, name string) (string, error) {
 	t, err := template.New("slug").Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, slugTemplateVars{Namespace: namespace, Name: name}); err != nil {
+	vars := slugTemplateVars{
+		Namespace:      namespace,
+		Name:           name,
+		NamespaceRegex: escapePromQLRegex(namespace),
+		NameRegex:      escapePromQLRegex(name),
+	}
+	if err := t.Execute(&buf, vars); err != nil {
 		return "", fmt.Errorf("executing template: %w", err)
 	}
 	return buf.String(), nil
