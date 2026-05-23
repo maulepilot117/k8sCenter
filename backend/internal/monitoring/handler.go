@@ -20,10 +20,15 @@ import (
 const maxQueryLength = 4096
 
 // Query range caps — Finding P2-4 of the 2026-05-22 security audit.
+//
+// Note: maxQuerySamples was previously enforced separately, but with the
+// active maxQueryRangeDuration (6h) and minQueryStep (10s) caps the worst-case
+// sample count is (6*3600)/10 + 1 = 2161, which is comfortably under any
+// reasonable Prometheus sample bound. The samples cap is implicitly bounded by
+// range/step and is no longer enforced as its own gate.
 const (
 	maxQueryRangeDuration = 6 * time.Hour
 	minQueryStep          = 10 * time.Second
-	maxQuerySamples       = 11000
 )
 
 // Handler serves monitoring HTTP endpoints.
@@ -325,7 +330,9 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 
 	def, ok := Registry[rawSlug]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, "unknown query slug: "+rawSlug, "")
+		// Return same shape as RBAC-denied (F#29) so the response can't be used
+		// as an oracle to enumerate the slug catalog. Don't echo the slug name.
+		httputil.WriteError(w, http.StatusNotFound, "not found or forbidden", "")
 		return
 	}
 
@@ -334,13 +341,24 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 	name := q.Get("name")
 
 	// Validate supplied label values to prevent PromQL injection.
+	// `name` validation uses the relaxed instance-label rules when the slug is
+	// node-scoped — node-exporter instance labels include uppercase letters,
+	// `_`, and `:` (e.g. "gke-cluster-pool-1A2B3C4D", "192.168.1.5:9100") which
+	// the strict k8s DNS-1123 validator rejects. Namespace is always strict.
 	if namespace != "" && !isValidK8sName(namespace) {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace value", "")
 		return
 	}
-	if name != "" && !isValidK8sName(name) {
-		httputil.WriteError(w, http.StatusBadRequest, "invalid name value", "")
-		return
+	if name != "" {
+		isNodeScoped := def.RequiredGVR == "nodes" || strings.HasPrefix(rawSlug, "nodes/")
+		validName := isValidK8sName(name)
+		if !validName && isNodeScoped {
+			validName = isValidInstanceLabel(name)
+		}
+		if !validName {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid name value", "")
+			return
+		}
 	}
 
 	// RBAC check: user must have the required verb on the resource in the
@@ -361,8 +379,15 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 			apiGroup = def.RequiredGVR[idx+1:]
 		}
 
-		// For cluster-scoped resources, pass "" as namespace.
+		// For namespaces/* slugs the target namespace is in `name`, not
+		// `namespace`. Without this, the RBAC check would run cluster-scoped
+		// (rbacNS="") and a viewer with access to namespace A could pull
+		// per-namespace metrics for namespace B. (Finding F#10.)
 		rbacNS := namespace
+		if strings.HasPrefix(rawSlug, "namespaces/") {
+			rbacNS = name
+		}
+		// For cluster-scoped resources, pass "" as namespace.
 		if clusterScopedGVRs[def.RequiredGVR] {
 			rbacNS = ""
 		}
@@ -384,8 +409,10 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !allowed {
-				httputil.WriteError(w, http.StatusForbidden,
-					"access denied: insufficient permissions for "+rawSlug, "")
+				// Return the same shape for unknown-slug vs RBAC-denied so the
+				// 404 vs 403 distinction can't be used as an oracle to enumerate
+				// the slug catalog. The slug name is not echoed back.
+				httputil.WriteError(w, http.StatusNotFound, "not found or forbidden", "")
 				return
 			}
 		}
@@ -472,7 +499,9 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 // validateRangeCaps enforces the P2-4 time-range caps:
 //   - max range = 6h
 //   - min step  = 10s
-//   - max samples ≤ 11000
+//
+// The explicit samples cap was removed — bounded by range/step (worst case
+// 2161 samples). See the const block above.
 func validateRangeCaps(start, end time.Time, step time.Duration) error {
 	if end.Before(start) {
 		return fmt.Errorf("end must be after start")
@@ -483,11 +512,6 @@ func validateRangeCaps(start, end time.Time, step time.Duration) error {
 	}
 	if step < minQueryStep {
 		return fmt.Errorf("step %s is below minimum 10s", step)
-	}
-	samples := int64(rangeDur/step) + 1
-	if samples > maxQuerySamples {
-		return fmt.Errorf("query would return ~%d samples, exceeding maximum %d (reduce range or increase step)",
-			samples, maxQuerySamples)
 	}
 	return nil
 }

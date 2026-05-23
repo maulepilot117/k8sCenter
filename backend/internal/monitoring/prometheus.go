@@ -79,3 +79,34 @@ func isValidK8sName(s string) bool {
 	}
 	return true
 }
+
+// isValidInstanceLabel validates a Prometheus `instance` label value.
+//
+// Node-exporter instance labels do not follow the k8s DNS-1123 name rules:
+//   - GKE/EKS node names contain uppercase letters and hyphens, e.g.
+//     "gke-cluster-pool-1A2B3C4D".
+//   - The label is often a host:port pair, e.g. "192.168.1.5:9100".
+//   - kube-state-metrics may emit `_` separators.
+//
+// We still constrain to a safe character class — ASCII alphanumerics, `.`, `-`,
+// `_`, `:` — so it cannot inject quotes, braces, regex metacharacters, or
+// whitespace into the surrounding PromQL label expression. Length capped at 253
+// to match the strict validator. Used for the `name` parameter on node-scoped
+// slugs (nodes/cpu, nodes/memory, nodes/load, etc.) where .Name maps to the
+// node-exporter `instance` label.
+func isValidInstanceLabel(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == '_' || c == ':':
+		default:
+			return false
+		}
+	}
+	return true
+}

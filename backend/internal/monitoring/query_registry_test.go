@@ -164,29 +164,28 @@ func TestValidateRangeCaps(t *testing.T) {
 	}
 }
 
-// TestValidateRangeCaps_SampleCountBoundary explicitly tests the sample cap.
-func TestValidateRangeCaps_SampleCountBoundary(t *testing.T) {
+// TestValidateRangeCaps_RangeCapBeatsSampleMath confirms that the active
+// range cap (6h) and step cap (10s) bound the sample count implicitly. The
+// previous explicit maxQuerySamples gate was removed (F#28) — it was dead code
+// behind the other two caps. This test pins that property so a future change
+// loosening the range or step cap is forced to revisit sample bounding.
+func TestValidateRangeCaps_RangeCapBeatsSampleMath(t *testing.T) {
 	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
-	// 6h / 2s = 10800 samples — exceeds 11000 at step=2s? No: 6h=21600s, /2=10800 < 11000 — fine
-	// Let's use a range that would hit exactly 11001:
-	// samples = (range/step) + 1 > 11000
-	// range/step > 10999 => range = 10999 * step
-	// Use step=10s, range = 10999 * 10s = 109990s = ~30.5h — exceeds 6h max
-	// So with 6h max and 10s min step: max samples = (21600/10)+1 = 2161 — always under 11000.
-	// The sample cap can only trigger when step is very small AND range is large.
-	// With the other caps, it's defense-in-depth. Test it directly with short step.
-	//
-	// Simulate with mock times that bypass the other caps:
-	// We test the math directly rather than via validateRangeCaps (which would block on step first).
-	step := 10 * time.Second
-	dur := time.Duration(maxQuerySamples) * step // exactly 11000 steps of 10s = 110000s
-	start := now.Add(-dur)
+	// At the legal extremes (range=6h, step=10s) we get (21600/10)+1 = 2161
+	// samples — well under any reasonable Prometheus bound.
+	step := minQueryStep
+	start := now.Add(-maxQueryRangeDuration)
 	end := now
 
+	if err := validateRangeCaps(start, end, step); err != nil {
+		t.Errorf("legal extreme range should pass, got: %v", err)
+	}
+
+	// One second past the range cap → range cap fires (not a sample cap).
+	start = now.Add(-(maxQueryRangeDuration + time.Second))
 	err := validateRangeCaps(start, end, step)
-	// 110000s > 6h (21600s) so the range cap fires before the sample cap.
 	if err == nil {
-		t.Error("expected error for range exceeding 6h, got nil")
+		t.Fatal("expected error for range exceeding 6h, got nil")
 	}
 	if !strings.Contains(err.Error(), "exceeds maximum 6h") {
 		t.Errorf("expected range cap error, got: %v", err)

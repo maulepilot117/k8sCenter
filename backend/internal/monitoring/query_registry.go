@@ -763,8 +763,11 @@ var Registry = map[string]QueryDef{
 
 	// ── services ──────────────────────────────────────────────────────────────
 	"services/endpoint-cpu": {
-		Slug:          "services/endpoint-cpu",
-		Template:      `sum(rate(container_cpu_usage_seconds_total{namespace="{{.Namespace}}",pod=~".*",container!=""}[5m])) by (pod)`,
+		Slug: "services/endpoint-cpu",
+		// .Name is the Service name; endpoint pods are typically labeled with the
+		// service name prefix. Scope to {{.Name}}.* so the query actually filters
+		// to the service's endpoint pods instead of every pod in the namespace.
+		Template:      `sum(rate(container_cpu_usage_seconds_total{namespace="{{.Namespace}}",pod=~"{{.Name}}.*",container!=""}[5m])) by (pod)`,
 		RequiredVerbs: []string{"list"},
 		RequiredGVR:   "services",
 		Description:   "Service endpoint pods CPU usage in cores",
