@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -14,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	fakedynamic "k8s.io/client-go/dynamic/fake"
+
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 func TestExtractImageVersion(t *testing.T) {
@@ -916,5 +919,93 @@ func TestTruncate(t *testing.T) {
 				t.Errorf("truncate result length %d exceeds maxLen %d", len(got), tt.maxLen)
 			}
 		})
+	}
+}
+
+// --- rejectNonLocal tests (P2-5 security fix) ---
+
+// TestRejectNonLocal_LocalCluster verifies that local cluster requests pass through.
+func TestRejectNonLocal_LocalCluster(t *testing.T) {
+	h := &Handler{}
+	req, _ := http.NewRequest("GET", "/test", nil)
+	// No X-Cluster-ID context = local
+	w := httptest.NewRecorder()
+	if !h.rejectNonLocal(w, req, "test feature") {
+		t.Error("expected rejectNonLocal to allow local cluster request")
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for local, got %d", w.Code)
+	}
+}
+
+// TestRejectNonLocal_ExplicitLocal verifies "local" clusterID is treated as local.
+func TestRejectNonLocal_ExplicitLocal(t *testing.T) {
+	h := &Handler{}
+	req, _ := http.NewRequest("GET", "/test", nil)
+	ctx := middleware.WithClusterID(req.Context(), "local")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	if !h.rejectNonLocal(w, req, "test feature") {
+		t.Error("expected rejectNonLocal to allow explicit local cluster request")
+	}
+}
+
+// TestRejectNonLocal_RemoteCluster verifies that remote cluster requests get 501.
+func TestRejectNonLocal_RemoteCluster(t *testing.T) {
+	h := &Handler{}
+	req, _ := http.NewRequest("PUT", "/test", nil)
+	ctx := middleware.WithClusterID(req.Context(), "abc123remoteClusterID")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	if h.rejectNonLocal(w, req, "Cilium CNI configuration update") {
+		t.Error("expected rejectNonLocal to block remote cluster request")
+	}
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501 Not Implemented for remote cluster, got %d", w.Code)
+	}
+}
+
+// TestRejectNonLocal_CNIConfigRead verifies the CNI config read path rejects remote clusters.
+// This is a behavioral integration test for the P2-5 fix: HandleCNIConfig must return 501
+// for any non-local X-Cluster-ID before attempting to read the local Cilium ConfigMap.
+func TestRejectNonLocal_CNIConfigRead(t *testing.T) {
+	h := &Handler{
+		Detector: &Detector{},
+	}
+	h.Detector.cached = &CNIInfo{Name: CNICilium}
+
+	req, _ := http.NewRequest("GET", "/api/v1/networking/cni/config", nil)
+	// Inject a remote cluster ID into the context (simulates middleware having already
+	// validated the admin role and written the cluster ID to context).
+	ctx := middleware.WithClusterID(req.Context(), "remoteCluster42")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	// rejectNonLocal is called at the top of HandleCNIConfig — verify it produces 501.
+	if h.rejectNonLocal(w, req, "Cilium CNI configuration") {
+		t.Error("expected rejectNonLocal to block remote cluster request for CNI config read")
+	}
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501, got %d", w.Code)
+	}
+}
+
+// TestRejectNonLocal_CNIConfigWrite verifies the CNI config write path rejects remote clusters.
+func TestRejectNonLocal_CNIConfigWrite(t *testing.T) {
+	h := &Handler{
+		Detector: &Detector{},
+	}
+	h.Detector.cached = &CNIInfo{Name: CNICilium}
+
+	req, _ := http.NewRequest("PUT", "/api/v1/networking/cni/config", nil)
+	ctx := middleware.WithClusterID(req.Context(), "remoteClusterXYZ")
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	if h.rejectNonLocal(w, req, "Cilium CNI configuration update") {
+		t.Error("expected rejectNonLocal to block remote cluster request for CNI config write")
+	}
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501, got %d", w.Code)
 	}
 }

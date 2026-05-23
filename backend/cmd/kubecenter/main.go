@@ -394,16 +394,6 @@ func main() {
 		logger.Info("cilium agent exec collector enabled")
 	}
 
-	networkingHandler := &networking.Handler{
-		K8sClient:      k8sClient,
-		Detector:       cniDetector,
-		HubbleClient:   hubbleClient,
-		AuditLogger:    auditLogger,
-		Logger:         logger,
-		ClusterID:      cfg.ClusterID,
-		AgentCollector: agentCollector,
-	}
-
 	// Initialize alerting
 	alertStore := alerting.NewMemoryStore()
 	go alertStore.RunPruner(ctx, cfg.Alerting.RetentionDays, logger)
@@ -440,6 +430,17 @@ func main() {
 	}
 	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
 	clusterRouter.StartCacheSweeper(ctx)
+
+	networkingHandler := &networking.Handler{
+		K8sClient:      k8sClient,
+		ClusterRouter:  clusterRouter,
+		Detector:       cniDetector,
+		HubbleClient:   hubbleClient,
+		AuditLogger:    auditLogger,
+		Logger:         logger,
+		ClusterID:      cfg.ClusterID,
+		AgentCollector: agentCollector,
+	}
 
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber
@@ -759,7 +760,7 @@ func main() {
 
 	// Cert-Manager integration
 	cmDisc := certmanager.NewDiscoverer(k8sClient, logger)
-	cmHandler := certmanager.NewHandler(k8sClient, cmDisc, accessChecker, auditLogger, notifService, logger)
+	cmHandler := certmanager.NewHandler(k8sClient, clusterRouter, cmDisc, accessChecker, auditLogger, notifService, logger)
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
 
