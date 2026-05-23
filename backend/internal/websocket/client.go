@@ -197,9 +197,14 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		defer cancel()
 		var allowed bool
 		var err error
+		// WebSocket subscriptions only target the local cluster (informers
+		// run on local only) — pass "local" so the F#9 cache slot and SAR
+		// target match the data stream the subscription will receive.
+		const localClusterID = "local"
 		if apiGroup := crdAPIGroup(normalizedKind); apiGroup != "" {
 			allowed, err = c.hub.accessChecker.CanAccessGroupResource(
 				ctx,
+				localClusterID,
 				c.user.KubernetesUsername,
 				c.user.KubernetesGroups,
 				"list",
@@ -210,6 +215,7 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		} else {
 			allowed, err = c.hub.accessChecker.CanAccess(
 				ctx,
+				localClusterID,
 				c.user.KubernetesUsername,
 				c.user.KubernetesGroups,
 				"list",

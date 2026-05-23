@@ -15,11 +15,11 @@ func testHub() *Hub {
 
 type alwaysAllowChecker struct{}
 
-func (a *alwaysAllowChecker) CanAccess(_ context.Context, _ string, _ []string, _, _, _ string) (bool, error) {
+func (a *alwaysAllowChecker) CanAccess(_ context.Context, _, _ string, _ []string, _, _, _ string) (bool, error) {
 	return true, nil
 }
 
-func (a *alwaysAllowChecker) CanAccessGroupResource(_ context.Context, _ string, _ []string, _, _, _, _ string) (bool, error) {
+func (a *alwaysAllowChecker) CanAccessGroupResource(_ context.Context, _, _ string, _ []string, _, _, _, _ string) (bool, error) {
 	return true, nil
 }
 

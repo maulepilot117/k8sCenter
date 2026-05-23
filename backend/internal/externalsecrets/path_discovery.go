@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // pathDiscoveryLimit caps the number of paths returned in a single response.
@@ -110,8 +111,10 @@ func (h *Handler) HandleListPaths(w http.ResponseWriter, r *http.Request) {
 	// RBAC: user must be allowed to list Secrets in the source namespace.
 	// AccessChecker keys on group/resource; "core/secrets" uses empty
 	// group plus resource "secrets".
+	clusterID := middleware.ClusterIDFromContext(r.Context())
 	can, accErr := h.AccessChecker.CanAccessGroupResource(
 		r.Context(),
+		clusterID,
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		"list",

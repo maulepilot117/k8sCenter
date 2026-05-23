@@ -34,8 +34,11 @@ func (h *Handler) HandleResourceCounts(w http.ResponseWriter, r *http.Request) {
 }
 
 // canList checks if the user has "list" permission for the given resource in the namespace.
+// HandleResourceCounts gates non-local clusters at the route entrance, so this
+// path is local-only — pass "local" to satisfy F#9's clusterID requirement
+// without threading the request context all the way down.
 func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namespace string) bool {
-	allowed, _ := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	allowed, _ := h.AccessChecker.CanAccess(ctx, "local", user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	return allowed
 }
 

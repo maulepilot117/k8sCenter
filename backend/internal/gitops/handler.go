@@ -364,7 +364,7 @@ func (h *Handler) filterAppsByRBAC(ctx context.Context, user *auth.User, apps []
 			if !ok {
 				continue
 			}
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
+			can, err := h.AccessChecker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, ns)
 			allowed = err == nil && can
 			access[key] = allowed
 		}
@@ -494,7 +494,7 @@ func (h *Handler) prepareAction(w http.ResponseWriter, r *http.Request) (toolPre
 	}
 
 	// RBAC pre-check
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", apiGroup, resource, ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", apiGroup, resource, ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this application", "")
 		ok = false
@@ -747,7 +747,7 @@ func (h *Handler) HandleListAppSets(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "argoproj.io", "applicationsets", as.Namespace)
+		can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "list", "argoproj.io", "applicationsets", as.Namespace)
 		if err == nil && can {
 			filtered = append(filtered, as)
 		}
@@ -890,7 +890,7 @@ func (h *Handler) HandleDeleteAppSet(w http.ResponseWriter, r *http.Request) {
 
 	apiGroup, resource, _ := toolGVR(toolPrefix)
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "delete", apiGroup, resource, ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", apiGroup, resource, ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this applicationset", "")
 		return

@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/networking"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // flowSubRequest is the filter message sent by the client after auth.
@@ -67,8 +68,9 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// RBAC check — flow visibility = pod observability (SelfSubjectAccessReview, cached 60s)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+		r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "pods", filter.Namespace,
 	)
 	if err != nil {

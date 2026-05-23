@@ -16,6 +16,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -391,7 +392,8 @@ func (h *Handler) filterViolationsByRBAC(ctx context.Context, user *auth.User, v
 
 		allowed, checked := nsAccess[ns]
 		if !checked {
-			can, err := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ns)
+			clusterID := middleware.ClusterIDFromContext(ctx)
+			can, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", ns)
 			if err != nil {
 				allowed = false
 			} else {
@@ -423,7 +425,8 @@ func (h *Handler) filterPoliciesByRBAC(ctx context.Context, user *auth.User, pol
 
 		allowed, checked := nsAccess[p.Namespace]
 		if !checked {
-			can, err := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", p.Namespace)
+			clusterID := middleware.ClusterIDFromContext(ctx)
+			can, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", p.Namespace)
 			if err != nil {
 				allowed = false
 			} else {

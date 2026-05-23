@@ -12,11 +12,19 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 const accessCacheTTL = 60 * time.Second
 
+// accessCacheKey identifies one cached SAR decision. clusterID is part of
+// the key because a user may have entirely different RBAC on the local
+// cluster vs a remote one — without it, a local "allow" decision would
+// silently leak into a remote check that should have denied. F#9 security
+// audit 2026-05-22.
 type accessCacheKey struct {
+	clusterID string // "" / "local" for the local cluster, otherwise the remote ID
 	username  string
 	groups    string // sorted, comma-joined for deterministic keying
 	resource  string
@@ -41,14 +49,22 @@ type AccessChecker struct {
 	clientFactory interface {
 		ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
 	}
-	cache       sync.Map // map[accessCacheKey]accessCacheEntry
-	logger      *slog.Logger
-	alwaysAllow bool            // for testing only
-	alwaysDeny  bool            // for testing only
-	predicate   AccessPredicate // for testing only
+	// clusterRouter routes SAR clients to remote clusters when a non-local
+	// clusterID is supplied. nil is fine — callers always passing local
+	// clusterID get the pre-F#9 behavior. F#9 security audit 2026-05-22.
+	clusterRouter *k8s.ClusterRouter
+	cache         sync.Map // map[accessCacheKey]accessCacheEntry
+	logger        *slog.Logger
+	alwaysAllow   bool            // for testing only
+	alwaysDeny    bool            // for testing only
+	predicate     AccessPredicate // for testing only
 }
 
 // NewAccessChecker creates an AccessChecker that verifies user permissions.
+// clientFactory is the local cluster's ClientFactory (used when clusterID is
+// "" or "local"). Use SetClusterRouter to wire the multi-cluster router for
+// non-local SARs once ClusterRouter is constructed (it depends on the cluster
+// store, which is built after the AccessChecker in main.go).
 func NewAccessChecker(clientFactory interface {
 	ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
 }, logger *slog.Logger) *AccessChecker {
@@ -58,12 +74,25 @@ func NewAccessChecker(clientFactory interface {
 	}
 }
 
+// SetClusterRouter wires a *k8s.ClusterRouter into the AccessChecker so SARs
+// against non-local clusterIDs route through the right remote API server. Safe
+// to call once at startup before any HTTP traffic; not safe to call
+// concurrently with CanAccess. F#9 security audit 2026-05-22.
+func (ac *AccessChecker) SetClusterRouter(cr *k8s.ClusterRouter) {
+	ac.clusterRouter = cr
+}
+
 // CanAccess checks if a user has a specific verb permission on a resource in a namespace.
 // Empty namespace means cluster-scoped check.
 // The resource can include a subresource separated by "/" (e.g., "pods/log", "pods/exec").
 // The API group is inferred from the resource name via apiGroupForResource.
 // For CRD resources with custom API groups, use CanAccessGroupResource instead.
-func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error) {
+//
+// clusterID selects which cluster's API server runs the SAR. Pass
+// middleware.ClusterIDFromContext(r.Context()) at every call site so remote
+// clusters are checked against their own RBAC rather than the local
+// cluster's. F#9 security audit 2026-05-22.
+func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error) {
 	if ac.alwaysAllow {
 		return true, nil
 	}
@@ -78,6 +107,7 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 		return true, nil
 	}
 	key := accessCacheKey{
+		clusterID: clusterID,
 		username:  username,
 		groups:    sortedGroups(groups),
 		resource:  resource,
@@ -93,7 +123,7 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 		ac.cache.Delete(key)
 	}
 
-	cs, err := ac.clientFactory.ClientForUser(username, groups)
+	cs, err := ac.clientForCluster(ctx, clusterID, username, groups)
 	if err != nil {
 		return false, fmt.Errorf("creating client for access check: %w", err)
 	}
@@ -120,7 +150,7 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 
 	result, err := cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
 	if err != nil {
-		return false, fmt.Errorf("SelfSubjectAccessReview for %s/%s in %q: %w", verb, resource, namespace, err)
+		return false, fmt.Errorf("SelfSubjectAccessReview for %s/%s in %q on cluster %q: %w", verb, resource, namespace, clusterID, err)
 	}
 
 	allowed := result.Status.Allowed
@@ -130,6 +160,7 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 	})
 
 	ac.logger.Debug("access check",
+		"cluster", clusterID,
 		"user", username,
 		"verb", verb,
 		"resource", resource,
@@ -144,7 +175,10 @@ func (ac *AccessChecker) CanAccess(ctx context.Context, username string, groups 
 // resource in a given API group and namespace. Use this for CRD resources where
 // the API group is not in the hardcoded apiGroupForResource map.
 // For core API resources, pass apiGroup="".
-func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error) {
+//
+// clusterID selects which cluster's API server runs the SAR — see CanAccess.
+// F#9 security audit 2026-05-22.
+func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, clusterID, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error) {
 	if ac.alwaysAllow {
 		return true, nil
 	}
@@ -156,6 +190,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 	}
 
 	key := accessCacheKey{
+		clusterID: clusterID,
 		username:  username,
 		groups:    sortedGroups(groups),
 		resource:  apiGroup + "/" + resource,
@@ -171,7 +206,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 		ac.cache.Delete(key)
 	}
 
-	cs, err := ac.clientFactory.ClientForUser(username, groups)
+	cs, err := ac.clientForCluster(ctx, clusterID, username, groups)
 	if err != nil {
 		return false, fmt.Errorf("creating client for access check: %w", err)
 	}
@@ -189,7 +224,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 
 	result, err := cs.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, review, metav1.CreateOptions{})
 	if err != nil {
-		return false, fmt.Errorf("SelfSubjectAccessReview for %s %s/%s in %q: %w", verb, apiGroup, resource, namespace, err)
+		return false, fmt.Errorf("SelfSubjectAccessReview for %s %s/%s in %q on cluster %q: %w", verb, apiGroup, resource, namespace, clusterID, err)
 	}
 
 	allowed := result.Status.Allowed
@@ -199,6 +234,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 	})
 
 	ac.logger.Debug("access check (group resource)",
+		"cluster", clusterID,
 		"user", username,
 		"verb", verb,
 		"group", apiGroup,
@@ -208,6 +244,19 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, username st
 	)
 
 	return allowed, nil
+}
+
+// clientForCluster picks the SAR-issuing clientset for the given cluster.
+// Local cluster ("", "local") routes through the local clientFactory;
+// non-local routes through clusterRouter. F#9 security audit 2026-05-22.
+func (ac *AccessChecker) clientForCluster(ctx context.Context, clusterID, username string, groups []string) (*kubernetes.Clientset, error) {
+	if k8s.IsLocalClusterID(clusterID) {
+		return ac.clientFactory.ClientForUser(username, groups)
+	}
+	if ac.clusterRouter == nil {
+		return nil, fmt.Errorf("non-local clusterID %q requested but AccessChecker has no ClusterRouter — RBAC for remote clusters unavailable", clusterID)
+	}
+	return ac.clusterRouter.ClientForCluster(ctx, clusterID, username, groups)
 }
 
 // NewAlwaysAllowAccessChecker returns an AccessChecker that permits every request.

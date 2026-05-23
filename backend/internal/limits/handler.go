@@ -17,6 +17,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 const cacheTTL = 30 * time.Second
@@ -95,11 +96,12 @@ func (h *Handler) HandleGetNamespace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check RBAC for both resource types — allow if user has permission for either
-	quotaAllowed, err1 := h.AccessChecker.CanAccess(r.Context(), user.Username, user.KubernetesGroups, "get", "resourcequotas", namespace)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	quotaAllowed, err1 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.Username, user.KubernetesGroups, "get", "resourcequotas", namespace)
 	if err1 != nil {
 		h.Logger.Error("RBAC check failed for resourcequotas", "namespace", namespace, "error", err1)
 	}
-	limitRangeAllowed, err2 := h.AccessChecker.CanAccess(r.Context(), user.Username, user.KubernetesGroups, "get", "limitranges", namespace)
+	limitRangeAllowed, err2 := h.AccessChecker.CanAccess(r.Context(), clusterID, user.Username, user.KubernetesGroups, "get", "limitranges", namespace)
 	if err2 != nil {
 		h.Logger.Error("RBAC check failed for limitranges", "namespace", namespace, "error", err2)
 	}
@@ -257,14 +259,15 @@ func (h *Handler) filterByRBAC(ctx context.Context, user *auth.User, summaries [
 	}
 	accessCache := make(map[string]accessResult)
 
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	for _, s := range summaries {
 		result, cached := accessCache[s.Namespace]
 		if !cached {
-			quotaAllowed, err1 := h.AccessChecker.CanAccess(ctx, user.Username, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
+			quotaAllowed, err1 := h.AccessChecker.CanAccess(ctx, clusterID, user.Username, user.KubernetesGroups, "get", "resourcequotas", s.Namespace)
 			if err1 != nil {
 				h.Logger.Warn("RBAC check failed for resourcequotas", "namespace", s.Namespace, "error", err1)
 			}
-			limitRangeAllowed, err2 := h.AccessChecker.CanAccess(ctx, user.Username, user.KubernetesGroups, "get", "limitranges", s.Namespace)
+			limitRangeAllowed, err2 := h.AccessChecker.CanAccess(ctx, clusterID, user.Username, user.KubernetesGroups, "get", "limitranges", s.Namespace)
 			if err2 != nil {
 				h.Logger.Warn("RBAC check failed for limitranges", "namespace", s.Namespace, "error", err2)
 			}

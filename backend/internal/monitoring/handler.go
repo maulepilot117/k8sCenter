@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // maxQueryLength is the maximum allowed PromQL query string length.
@@ -392,9 +393,11 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 			rbacNS = ""
 		}
 
+		clusterID := middleware.ClusterIDFromContext(r.Context())
 		for _, verb := range def.RequiredVerbs {
 			allowed, err := h.AccessChecker.CanAccessGroupResource(
 				r.Context(),
+				clusterID,
 				user.KubernetesUsername,
 				user.KubernetesGroups,
 				verb,

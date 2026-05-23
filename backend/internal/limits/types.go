@@ -93,7 +93,9 @@ type InformerSource interface {
 	LimitRanges() corev1listers.LimitRangeLister
 }
 
-// AccessChecker provides RBAC verification for namespace access.
+// AccessChecker provides RBAC verification for namespace access. clusterID
+// matches the F#9 signature on *resources.AccessChecker so SARs target the
+// right cluster's RBAC.
 type AccessChecker interface {
-	CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error)
+	CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error)
 }

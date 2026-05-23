@@ -117,9 +117,11 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	logWSCount.Add(1)
 	defer logWSCount.Add(-1)
 
-	// RBAC check — get on pods/log subresource
+	// RBAC check — get on pods/log subresource. wsLogsClusterID was already
+	// gated to a local cluster above, so we forward it explicitly rather than
+	// re-reading the context, keeping the F#9 plumbing visible.
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+		r.Context(), wsLogsClusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"get", "pods/log", ns,
 	)
 	if err != nil {

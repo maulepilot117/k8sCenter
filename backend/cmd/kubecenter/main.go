@@ -430,6 +430,11 @@ func main() {
 	}
 	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
 	clusterRouter.StartCacheSweeper(ctx)
+	// F#9 — wire the multi-cluster router into AccessChecker so SARs against
+	// non-local clusterIDs route through the right remote API server. Without
+	// this, AccessChecker would always SAR against the local cluster's RBAC
+	// even when X-Cluster-ID names a remote cluster.
+	accessChecker.SetClusterRouter(clusterRouter)
 
 	networkingHandler := &networking.Handler{
 		K8sClient:      k8sClient,

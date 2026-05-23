@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/loki"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // logSearchSubRequest is the filter message sent by the client after auth.
@@ -72,8 +73,9 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 
 		// P1-4 fix: validate namespace against Kubernetes RBAC (same pattern as handleWSFlows)
 		if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
+			clusterID := middleware.ClusterIDFromContext(r.Context())
 			allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-				r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+				r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
 				"list", "pods", sub.Namespace,
 			)
 			if err != nil {

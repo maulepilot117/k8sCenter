@@ -11,6 +11,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // allowedSteps is the set of valid step durations for volume queries.
@@ -287,8 +288,9 @@ func (h *Handler) enforceQueryNamespaces(r *http.Request, query string) (string,
 
 	// P1-3 fix: validate the requested namespace against Kubernetes RBAC
 	if h.AccessChecker != nil {
+		clusterID := middleware.ClusterIDFromContext(r.Context())
 		allowed, err := h.AccessChecker.CanAccess(
-			r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+			r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
 			"list", "pods", ns,
 		)
 		if err != nil {
@@ -324,8 +326,9 @@ func (h *Handler) buildNamespaceScopeQuery(r *http.Request) (string, error) {
 
 	// Validate namespace against RBAC
 	if h.AccessChecker != nil {
+		clusterID := middleware.ClusterIDFromContext(r.Context())
 		allowed, err := h.AccessChecker.CanAccess(
-			r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+			r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
 			"list", "pods", ns,
 		)
 		if err != nil {

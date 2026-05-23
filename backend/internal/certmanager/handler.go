@@ -120,10 +120,14 @@ func (h *Handler) getTypedClient(ctx context.Context, w http.ResponseWriter, clu
 	return cs, true
 }
 
-// canAccess checks if the user can access a cert-manager resource.
+// canAccess checks if the user can access a cert-manager resource. The
+// cluster routing comes from the request context so RBAC runs against the
+// correct cluster (F#9). Pass ctx derived from the http.Request.
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
+		clusterID,
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,
