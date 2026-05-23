@@ -300,6 +300,74 @@ class MonitoringRepository {
     }
   }
 
+  /// Runs a server-owned PromQL template selected by [slug] via
+  /// `/api/v1/monitoring/queries/{slug}` — the only PromQL surface non-
+  /// admin users can hit. The slug catalog lives in
+  /// `backend/internal/monitoring/query_registry.go`; slugs use the form
+  /// `kind/metric` (e.g. `pods/cpu`, `deployments/replicas`).
+  ///
+  /// Backend per-slug RBAC: the handler runs
+  /// `CanAccessGroupResource(verb=list, gvr=<slug.RequiredGVR>, namespace)`
+  /// for the caller. A 404 here means EITHER the slug is unknown OR the
+  /// caller lacks permission — the backend deliberately collapses the two
+  /// responses to prevent enumerating the slug catalog (F#29).
+  ///
+  /// F#4 (security audit 2026-05-22) — mobile MetricsController previously
+  /// built raw PromQL and hit `/api/v1/monitoring/query_range`, which is
+  /// admin-only on the backend after F#23. Non-admin operators got 403s on
+  /// every metrics tab. Routing through the slug endpoint makes the
+  /// Metrics tab usable for the operators it was built for, and aligns
+  /// mobile with the web's per-resource metrics path.
+  Future<QueryRangeResult> queryRangeSlug({
+    required String slug,
+    required DateTime start,
+    required DateTime end,
+    required int stepSeconds,
+    String? namespace,
+    String? name,
+    String? clusterIdOverride,
+    CancelToken? cancelToken,
+  }) async {
+    final step = _formatStep(stepSeconds);
+    // Path-encode each slug segment so a future slug containing reserved
+    // chars doesn't silently break routing. The current catalog uses
+    // ASCII-only `kind/metric` slugs but defending here is cheap.
+    final encodedSlug =
+        slug.split('/').map(Uri.encodeComponent).join('/');
+    try {
+      final res = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/monitoring/queries/$encodedSlug',
+        queryParameters: <String, dynamic>{
+          'start': start.toUtc().toIso8601String(),
+          'end': end.toUtc().toIso8601String(),
+          'step': step,
+          if (namespace != null && namespace.isNotEmpty) 'namespace': namespace,
+          if (name != null && name.isNotEmpty) 'name': name,
+        },
+        options: Options(
+          receiveTimeout: const Duration(seconds: 30),
+          headers: clusterIdOverride == null
+              ? null
+              : {'X-Cluster-ID': clusterIdOverride},
+        ),
+        cancelToken: cancelToken,
+      );
+      final data = res.data?['data'];
+      if (data is Map) {
+        return QueryRangeResult.fromJson(Map<String, dynamic>.from(data));
+      }
+      return const QueryRangeResult(
+        resultType: 'matrix',
+        series: [],
+        warnings: [],
+      );
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) rethrow;
+      final err = e.error;
+      throw err is ApiError ? err : ApiError.fromDio(e);
+    }
+  }
+
   /// Formats a step duration for the backend's `time.ParseDuration`.
   /// Prefers the largest single unit so `3600` becomes `1h` (cleaner
   /// in logs) while sub-minute durations stay in seconds.

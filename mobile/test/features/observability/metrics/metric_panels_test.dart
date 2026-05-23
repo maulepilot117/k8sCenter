@@ -1,5 +1,12 @@
-// Tests for the per-kind MetricPanel registry — variable substitution,
-// injection guards, and coverage for the six R1-required kinds.
+// Tests for the per-kind MetricPanel registry — coverage parity with
+// the backend monitoring Registry and basic invariants.
+//
+// F#4 (security audit 2026-05-22) — panels now reference server-side
+// slugs instead of carrying raw PromQL templates. PromQL injection
+// guards moved to the backend (which validates `namespace` / `name`
+// against k8s name rules before substituting into the template); these
+// tests cover the slug shape contract that mobile + backend must agree
+// on.
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/features/observability/metrics/metric_panels.dart';
@@ -43,89 +50,46 @@ void main() {
     });
   });
 
-  group('MetricPanel.render', () {
-    test('substitutes declared variables', () {
-      final panel = metricPanelsByKind['pods']!
-          .firstWhere((p) => p.id == 'pod_cpu_usage');
-      final rendered = panel.render({
-        'namespace': 'default',
-        'pod': 'web-abc',
-      });
-      expect(rendered, contains('namespace="default"'));
-      expect(rendered, contains('pod="web-abc"'));
-      // No leftover variables.
-      expect(rendered, isNot(contains(r'$pod')));
-      expect(rendered, isNot(contains(r'$namespace')));
-    });
-
-    test('throws ArgumentError on missing variable', () {
-      final panel = metricPanelsByKind['pods']!.first;
-      expect(
-        () => panel.render(const {'namespace': 'default'}),
-        throwsArgumentError,
-      );
-    });
-
-    test('accepts legitimate names that the backend may still RFC-1123-reject '
-        '(uppercase, underscore) — defers strict validation to backend',
+  group('MetricPanel slug contract', () {
+    test('every panel references a slug in the expected backend namespace',
         () {
-      // Kubelet's --hostname-override historically allowed uppercase and
-      // underscore on on-prem nodes. The client-side guard should not
-      // dead-end such names; backend returns a 400 with a precise error
-      // if the value is actually invalid per RFC 1123.
-      final panel = metricPanelsByKind['nodes']!.first;
-      expect(
-        () => panel.render({'node': 'WORKER_01.corp.local'}),
-        returnsNormally,
-      );
+      // Slug namespaces must match the backend Registry's grouping. The
+      // PVC kind is intentionally `pvcs/*` on the backend even though
+      // the K8s plural in the mobile kind map is `persistentvolumeclaims`.
+      const expectedNamespace = {
+        'pods': 'pods/',
+        'deployments': 'deployments/',
+        'statefulsets': 'statefulsets/',
+        'daemonsets': 'daemonsets/',
+        'nodes': 'nodes/',
+        'persistentvolumeclaims': 'pvcs/',
+      };
+      for (final entry in metricPanelsByKind.entries) {
+        final prefix = expectedNamespace[entry.key];
+        expect(prefix, isNotNull,
+            reason: 'mobile kind ${entry.key} has no expected slug prefix '
+                'wired into this test — add an entry to expectedNamespace');
+        for (final panel in entry.value) {
+          expect(panel.slug, startsWith(prefix!),
+              reason: 'panel ${panel.id} under ${entry.key} references '
+                  'slug ${panel.slug}; expected prefix $prefix');
+        }
+      }
     });
 
-    test('rejects values containing PromQL-breaking characters', () {
-      final panel = metricPanelsByKind['pods']!.first;
-      // Double-quote closes the label-value string — direct injection.
-      expect(
-        () => panel.render({'namespace': 'default', 'pod': 'evil"; up'}),
-        throwsArgumentError,
-      );
-      // Backslash escapes the next char — escape-chain injection.
-      expect(
-        () => panel.render({'namespace': 'default', 'pod': 'a\\b'}),
-        throwsArgumentError,
-      );
-      // Dollar — defence-in-depth against double-substitution.
-      expect(
-        () => panel.render({'namespace': 'default', 'pod': 'a\$b'}),
-        throwsArgumentError,
-      );
-      // Newline — breaks the wire format.
-      expect(
-        () => panel.render({'namespace': 'default', 'pod': 'a\nb'}),
-        throwsArgumentError,
-      );
-      // Empty — still rejected (no substitution target).
-      expect(
-        () => panel.render({'namespace': 'default', 'pod': ''}),
-        throwsArgumentError,
-      );
-      // 254-char name — over length cap.
-      expect(
-        () => panel.render({
-          'namespace': 'default',
-          'pod': 'a' * 254,
-        }),
-        throwsArgumentError,
-      );
-    });
-
-    test('accepts boundary-valid 253-char name', () {
-      final panel = metricPanelsByKind['pods']!.first;
-      expect(
-        () => panel.render({
-          'namespace': 'default',
-          'pod': 'a' * 253,
-        }),
-        returnsNormally,
-      );
+    test('slugs are kebab-cased ASCII', () {
+      // The backend Registry keys are kebab-case ASCII; anything else
+      // would either fail to match or hit URL-encoding ambiguity in the
+      // slug repo wrapper. This catches accidental camelCase or
+      // unicode characters in new panel entries.
+      final slugRegex = RegExp(r'^[a-z][a-z0-9\-/]*[a-z0-9]$');
+      for (final entry in metricPanelsByKind.entries) {
+        for (final panel in entry.value) {
+          expect(slugRegex.hasMatch(panel.slug), isTrue,
+              reason: 'panel ${panel.id} slug ${panel.slug} is not '
+                  'kebab-case ASCII');
+        }
+      }
     });
   });
 }
