@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -37,6 +38,7 @@ const (
 // Handler serves cert-manager HTTP endpoints.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
+	ClusterRouter *k8s.ClusterRouter
 	Discoverer    *Discoverer
 	AccessChecker *resources.AccessChecker
 	AuditLogger   audit.Logger
@@ -59,6 +61,7 @@ type cachedData struct {
 // NewHandler creates a new cert-manager handler.
 func NewHandler(
 	k8sClient *k8s.ClientFactory,
+	clusterRouter *k8s.ClusterRouter,
 	discoverer *Discoverer,
 	accessChecker *resources.AccessChecker,
 	auditLogger audit.Logger,
@@ -67,6 +70,7 @@ func NewHandler(
 ) *Handler {
 	return &Handler{
 		K8sClient:     k8sClient,
+		ClusterRouter: clusterRouter,
 		Discoverer:    discoverer,
 		AccessChecker: accessChecker,
 		AuditLogger:   auditLogger,
@@ -92,15 +96,28 @@ func (h *Handler) InvalidateCache() {
 	}
 }
 
-// getImpersonatingClient creates a dynamic client impersonating the user and handles errors.
-func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User) (dynamic.Interface, bool) {
-	client, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+// getImpersonatingClient creates a dynamic client impersonating the user, routing to the
+// correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
+func (h *Handler) getImpersonatingClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (dynamic.Interface, bool) {
+	client, err := h.ClusterRouter.DynamicClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
-		h.Logger.Error("failed to create impersonating client", "error", err)
+		h.Logger.Error("failed to create impersonating client", "clusterID", clusterID, "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
 		return nil, false
 	}
 	return client, true
+}
+
+// getTypedClient creates a typed Kubernetes clientset impersonating the user, routing to the
+// correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
+func (h *Handler) getTypedClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (*kubernetes.Clientset, bool) {
+	cs, err := h.ClusterRouter.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
+	if err != nil {
+		h.Logger.Error("failed to create typed client", "clusterID", clusterID, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+		return nil, false
+	}
+	return cs, true
 }
 
 // canAccess checks if the user can access a cert-manager resource.
@@ -331,12 +348,13 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	ctx := r.Context()
+	clusterID := middleware.ClusterIDFromContext(ctx)
+
+	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
 	if !ok {
 		return
 	}
-
-	ctx := r.Context()
 
 	// Fetch the certificate
 	certObj, err := dynClient.Resource(CertificateGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
@@ -587,6 +605,7 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	ctx := r.Context()
+	clusterID := middleware.ClusterIDFromContext(ctx)
 
 	// RBAC pre-check
 	if !h.canAccess(ctx, user, "patch", "certificates", ns) {
@@ -594,7 +613,7 @@ func (h *Handler) HandleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
 	if !ok {
 		return
 	}
@@ -695,6 +714,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	ctx := r.Context()
+	clusterID := middleware.ClusterIDFromContext(ctx)
 
 	// RBAC pre-check — need delete on secrets
 	if !h.canAccess(ctx, user, "delete", "secrets", ns) {
@@ -702,7 +722,7 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, ok := h.getImpersonatingClient(w, user)
+	dynClient, ok := h.getImpersonatingClient(ctx, w, clusterID, user)
 	if !ok {
 		return
 	}
@@ -724,11 +744,9 @@ func (h *Handler) HandleReissue(w http.ResponseWriter, r *http.Request) {
 
 	certUID := string(certObj.GetUID())
 
-	// Get the typed clientset for secret operations
-	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
-	if err != nil {
-		h.Logger.Error("failed to create typed client", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal error", "")
+	// Get the typed clientset for secret operations, routed to the correct cluster
+	cs, ok := h.getTypedClient(ctx, w, clusterID, user)
+	if !ok {
 		return
 	}
 

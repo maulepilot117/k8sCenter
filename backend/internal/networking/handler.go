@@ -29,12 +29,13 @@ var k8sNameRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]{0,251}[a-z0-9])?$`
 
 // Handler serves networking-related HTTP endpoints.
 type Handler struct {
-	K8sClient    *k8s.ClientFactory
-	Detector     *Detector
-	HubbleClient *HubbleClient
-	AuditLogger  audit.Logger
-	Logger       *slog.Logger
-	ClusterID    string
+	K8sClient     *k8s.ClientFactory
+	ClusterRouter *k8s.ClusterRouter
+	Detector      *Detector
+	HubbleClient  *HubbleClient
+	AuditLogger   audit.Logger
+	Logger        *slog.Logger
+	ClusterID     string
 
 	// Generation counter — incremented on cache invalidation; fetch functions
 	// capture the value before starting work and discard the result if it changed.
@@ -108,6 +109,21 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 	return clusterID == "" || clusterID == "local"
 }
 
+// rejectNonLocal writes a 501 Not Implemented response when the request targets a
+// non-local cluster and returns false. Returns true when execution may proceed.
+// Use for Cilium-specific endpoints whose data and operations are cluster-install-scoped
+// and cannot be safely proxied through the generic ClusterRouter path.
+func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature string) bool {
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if clusterID != "" && clusterID != "local" {
+		httputil.WriteError(w, http.StatusNotImplemented,
+			feature+" is not supported for remote clusters",
+			"X-Cluster-ID="+clusterID+" is not supported; connect to that cluster directly")
+		return false
+	}
+	return true
+}
+
 // HandleCNIStatus returns the detected CNI plugin information.
 // GET /api/v1/networking/cni
 func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +151,13 @@ func (h *Handler) HandleCNIStatus(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) HandleCNIConfig(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+
+	// Cilium config is tied to the local cluster's installation; proxying it
+	// to a remote cluster via the generic ClusterRouter would read the wrong
+	// cluster's config or silently mutate the wrong target. Reject non-local.
+	if !h.rejectNonLocal(w, r, "Cilium CNI configuration") {
 		return
 	}
 
@@ -176,6 +199,13 @@ type CiliumConfigUpdate struct {
 func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) {
 	user, ok := httputil.RequireUser(w, r)
 	if !ok {
+		return
+	}
+
+	// Cilium config mutations target the local cluster's cilium-config ConfigMap.
+	// Allowing X-Cluster-ID here would cause the audit row to record the remote
+	// cluster ID while the write always hits local — silent desync. Reject non-local.
+	if !h.rejectNonLocal(w, r, "Cilium CNI configuration update") {
 		return
 	}
 
@@ -307,8 +337,10 @@ func (h *Handler) HandleHubbleFlows(w http.ResponseWriter, r *http.Request) {
 		limit = v
 	}
 
-	// RBAC: check user can get pods in the requested namespace (flow visibility = pod observability)
-	cs, err := h.K8sClient.ClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	// RBAC: check user can get pods in the requested namespace (flow visibility = pod observability).
+	// Hubble Relay is always local-cluster-scoped; ClusterRouter resolves to local for clusterID "local".
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	cs, err := h.ClusterRouter.ClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to check permissions", "")
 		return
