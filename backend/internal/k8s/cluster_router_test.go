@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 )
 
 func TestIsLocalClusterID(t *testing.T) {
@@ -141,6 +143,60 @@ func TestRouterFor_RemoteFallsThroughToLocalWhenStoreNil(t *testing.T) {
 	if pair.ClusterID != "some-remote-id" {
 		t.Errorf("ClusterID = %q; want \"some-remote-id\"", pair.ClusterID)
 	}
+}
+
+// TestApplyClusterTLS_FailsClosedWithoutCAData is the F#5 regression test:
+// when no CA data is stored and AllowInsecureTLS is false, building the
+// remote config must error rather than silently disable TLS verification.
+func TestApplyClusterTLS_FailsClosedWithoutCAData(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("no CA + no opt-in → error", func(t *testing.T) {
+		cfg := &rest.Config{}
+		err := applyClusterTLS(cfg, "my-cluster", nil, false, logger)
+		if err == nil {
+			t.Fatal("expected error; got nil")
+		}
+		want := "AllowInsecureTLS is false"
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q; want substring %q", err.Error(), want)
+		}
+		if cfg.TLSClientConfig.Insecure {
+			t.Error("Insecure = true; want false (fail-closed must NOT mutate config)")
+		}
+	})
+
+	t.Run("no CA + admin opt-in → insecure set", func(t *testing.T) {
+		cfg := &rest.Config{}
+		if err := applyClusterTLS(cfg, "homelab", nil, true, logger); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !cfg.TLSClientConfig.Insecure {
+			t.Error("Insecure = false; want true (AllowInsecureTLS opt-in must disable verification)")
+		}
+	})
+
+	t.Run("CA data present → no change", func(t *testing.T) {
+		cfg := &rest.Config{TLSClientConfig: rest.TLSClientConfig{CAData: []byte("-----BEGIN CERTIFICATE-----...")}}
+		if err := applyClusterTLS(cfg, "prod", cfg.TLSClientConfig.CAData, false, logger); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.TLSClientConfig.Insecure {
+			t.Error("Insecure = true; want false (CA data must NOT trigger insecure path)")
+		}
+	})
+
+	t.Run("CA data present + opt-in → no change (CA wins)", func(t *testing.T) {
+		// AllowInsecureTLS is only consulted when CA data is missing.
+		// Operators with both set keep the verified path.
+		cfg := &rest.Config{TLSClientConfig: rest.TLSClientConfig{CAData: []byte("ca")}}
+		if err := applyClusterTLS(cfg, "weird", cfg.TLSClientConfig.CAData, true, logger); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.TLSClientConfig.Insecure {
+			t.Error("Insecure = true; want false — CA data must beat the AllowInsecureTLS flag")
+		}
+	})
 }
 
 func TestLocalFactory(t *testing.T) {

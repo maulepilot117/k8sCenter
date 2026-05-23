@@ -10,21 +10,27 @@ import (
 
 // ClusterRecord represents a registered cluster in the database.
 type ClusterRecord struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	DisplayName   string     `json:"displayName,omitempty"`
-	APIServerURL  string     `json:"apiServerUrl"`
-	CAData        []byte     `json:"-"`
-	AuthType      string     `json:"authType"` // "token", "certificate"
-	AuthData      []byte     `json:"-"`        // encrypted credentials
-	Status        string     `json:"status"`
-	StatusMessage string     `json:"statusMessage,omitempty"`
-	K8sVersion    string     `json:"k8sVersion,omitempty"`
-	NodeCount     int        `json:"nodeCount"`
-	IsLocal       bool       `json:"isLocal"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
-	LastProbedAt  *time.Time `json:"lastProbedAt,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"displayName,omitempty"`
+	APIServerURL  string `json:"apiServerUrl"`
+	CAData        []byte `json:"-"`
+	AuthType      string `json:"authType"` // "token", "certificate"
+	AuthData      []byte `json:"-"`        // encrypted credentials
+	Status        string `json:"status"`
+	StatusMessage string `json:"statusMessage,omitempty"`
+	K8sVersion    string `json:"k8sVersion,omitempty"`
+	NodeCount     int    `json:"nodeCount"`
+	IsLocal       bool   `json:"isLocal"`
+	// AllowInsecureTLS opts a cluster into the legacy "no CA data → skip TLS
+	// verification" behavior. Defaults to false; cluster_router refuses to
+	// build a remote rest.Config when CAData is empty and this is false.
+	// Admin-only at the API layer (handle_clusters). F#5 security audit
+	// 2026-05-22.
+	AllowInsecureTLS bool       `json:"allowInsecureTLS"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	LastProbedAt     *time.Time `json:"lastProbedAt,omitempty"`
 }
 
 // ClusterStore handles CRUD for the clusters table.
@@ -45,6 +51,7 @@ func (s *ClusterStore) List(ctx context.Context) ([]ClusterRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, name, COALESCE(display_name, ''), api_server_url, auth_type, status,
 		       COALESCE(status_message, ''), COALESCE(k8s_version, ''), node_count, is_local,
+		       allow_insecure_tls,
 		       created_at, updated_at, last_probed_at
 		FROM clusters ORDER BY is_local DESC, name ASC`)
 	if err != nil {
@@ -57,6 +64,7 @@ func (s *ClusterStore) List(ctx context.Context) ([]ClusterRecord, error) {
 		var c ClusterRecord
 		if err := rows.Scan(&c.ID, &c.Name, &c.DisplayName, &c.APIServerURL, &c.AuthType,
 			&c.Status, &c.StatusMessage, &c.K8sVersion, &c.NodeCount, &c.IsLocal,
+			&c.AllowInsecureTLS,
 			&c.CreatedAt, &c.UpdatedAt, &c.LastProbedAt); err != nil {
 			return nil, fmt.Errorf("scanning cluster: %w", err)
 		}
@@ -71,10 +79,12 @@ func (s *ClusterStore) Get(ctx context.Context, id string) (*ClusterRecord, erro
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, name, COALESCE(display_name, ''), api_server_url, ca_data, auth_type, auth_data,
 		       status, COALESCE(status_message, ''), COALESCE(k8s_version, ''), node_count, is_local,
+		       allow_insecure_tls,
 		       created_at, updated_at, last_probed_at
 		FROM clusters WHERE id = $1`, id).Scan(
 		&c.ID, &c.Name, &c.DisplayName, &c.APIServerURL, &c.CAData, &c.AuthType, &c.AuthData,
 		&c.Status, &c.StatusMessage, &c.K8sVersion, &c.NodeCount, &c.IsLocal,
+		&c.AllowInsecureTLS,
 		&c.CreatedAt, &c.UpdatedAt, &c.LastProbedAt)
 	if err != nil {
 		return nil, fmt.Errorf("getting cluster %s: %w", id, err)
@@ -97,9 +107,9 @@ func (s *ClusterStore) Create(ctx context.Context, c ClusterRecord) error {
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO clusters (id, name, display_name, api_server_url, ca_data, auth_type, auth_data, is_local)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		c.ID, c.Name, c.DisplayName, c.APIServerURL, encCAData, c.AuthType, encAuthData, c.IsLocal)
+		INSERT INTO clusters (id, name, display_name, api_server_url, ca_data, auth_type, auth_data, is_local, allow_insecure_tls)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		c.ID, c.Name, c.DisplayName, c.APIServerURL, encCAData, c.AuthType, encAuthData, c.IsLocal, c.AllowInsecureTLS)
 	if err != nil {
 		return fmt.Errorf("creating cluster: %w", err)
 	}

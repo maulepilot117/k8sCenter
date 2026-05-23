@@ -302,13 +302,34 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 		Burst: 100,
 	}
 
-	// If no CA data, allow insecure TLS (self-signed certs common in homelabs)
-	if len(caData) == 0 {
-		cfg.TLSClientConfig.Insecure = true
-		cr.logger.Warn("TLS verification disabled for remote cluster — no CA data provided", "clusterID", clusterID)
+	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {
+		return nil, err
 	}
 
 	return cfg, nil
+}
+
+// applyClusterTLS enforces the F#5 fail-closed TLS policy on a remote
+// cluster's rest.Config. When no CA data is stored the previous behaviour
+// was to silently set TLSClientConfig.Insecure = true, which removed the
+// MITM defense for every kubeconfig that happened to omit CA data. Now
+// admins must explicitly opt in by setting AllowInsecureTLS on the cluster
+// record; otherwise we return an error and refuse to build the client.
+//
+// Extracted so the policy is testable without needing a live PostgreSQL
+// ClusterStore. F#5 security audit 2026-05-22.
+func applyClusterTLS(cfg *rest.Config, clusterID string, caData []byte, allowInsecure bool, logger *slog.Logger) error {
+	if len(caData) > 0 {
+		return nil
+	}
+	if !allowInsecure {
+		return fmt.Errorf("cluster %s has no CAData and AllowInsecureTLS is false; reject to prevent silent MITM exposure", clusterID)
+	}
+	cfg.TLSClientConfig.Insecure = true
+	if logger != nil {
+		logger.Warn("TLS verification disabled for remote cluster — operator opted in via AllowInsecureTLS", "clusterID", clusterID)
+	}
+	return nil
 }
 
 // SSRF blocklist: private, loopback, link-local, and CGNAT ranges.

@@ -85,12 +85,30 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		APIServerURL string `json:"apiServerUrl"`
 		CACert       string `json:"caCert"`
 		Token        string `json:"token"`
+		// AllowInsecureTLS opts the cluster into the legacy "no CA → skip TLS
+		// verification" behaviour for self-signed homelab control planes. Admin-
+		// only; the connection test below will reject the registration when set
+		// without an admin role in context. F#5 security audit 2026-05-22.
+		AllowInsecureTLS bool `json:"allowInsecureTLS"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "invalid request body"},
 		})
 		return
+	}
+
+	// F#5 — only admins may register a cluster with TLS verification disabled.
+	// Non-admin contexts get the silent-MITM defense regardless of what they
+	// requested.
+	if req.AllowInsecureTLS {
+		user, _ := auth.UserFromContext(r.Context())
+		if user == nil || !auth.IsAdmin(user) {
+			writeJSON(w, http.StatusForbidden, api.Response{
+				Error: &api.APIError{Code: 403, Message: "allowInsecureTLS requires admin role"},
+			})
+			return
+		}
 	}
 
 	// Validate required fields
@@ -142,6 +160,21 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F#5 — reject registrations that would be unusable. Either pin trust to a
+	// CA or explicitly opt into the silent-MITM behaviour. Without one of these
+	// the cluster_router will refuse to build a remote config later anyway, so
+	// surface the failure at registration time rather than after persistence.
+	if len(req.CACert) == 0 && !req.AllowInsecureTLS {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{
+				Code:    400,
+				Message: "caCert is required unless allowInsecureTLS is true",
+				Detail:  "Provide the cluster's CA certificate, or set allowInsecureTLS=true to opt into unverified TLS (homelab self-signed control planes only).",
+			},
+		})
+		return
+	}
+
 	// Connection test — verify the cluster is reachable before saving (10s timeout)
 	testCfg := &rest.Config{
 		Host:        req.APIServerURL,
@@ -151,7 +184,11 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	if len(req.CACert) > 0 {
 		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
 	} else {
+		// At this point we know req.AllowInsecureTLS is true (admin-gated above).
+		// The connection-test client mirrors the future cluster_router behaviour.
 		testCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+		s.Logger.Warn("cluster registration with TLS verification disabled (admin-approved)",
+			"name", req.Name, "url", req.APIServerURL)
 	}
 	testClient, err := kubernetes.NewForConfig(testCfg)
 	if err != nil {
@@ -197,13 +234,14 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	record := store.ClusterRecord{
-		ID:           id,
-		Name:         req.Name,
-		DisplayName:  req.DisplayName,
-		APIServerURL: req.APIServerURL,
-		CAData:       []byte(req.CACert),
-		AuthType:     "token",
-		AuthData:     []byte(req.Token),
+		ID:               id,
+		Name:             req.Name,
+		DisplayName:      req.DisplayName,
+		APIServerURL:     req.APIServerURL,
+		CAData:           []byte(req.CACert),
+		AuthType:         "token",
+		AuthData:         []byte(req.Token),
+		AllowInsecureTLS: req.AllowInsecureTLS,
 	}
 
 	if err := s.ClusterStore.Create(r.Context(), record); err != nil {
