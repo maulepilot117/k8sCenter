@@ -207,6 +207,30 @@ monitoring-stack:
   nodeExporter:
     enabled: true
 
+# -- RBAC opt-ins. Default chart has NO impersonation grant and NO
+# cluster-wide secret read — finding P1-2 of the 2026-05-22 security audit.
+# Operators that need either capability opt in explicitly.
+rbac:
+  # When true, render kubecenter-impersonator ClusterRole + binding with
+  # the named user/group allowlists. Without this, the backend can't
+  # forward k8s impersonation headers — meaning all per-user RBAC
+  # checks fall through to the SA's own permissions (which are far
+  # narrower than the cluster admin overreach the old chart allowed).
+  impersonationEnabled: false
+  allowedImpersonateUsers: []
+  # - alice@example.com
+  allowedImpersonateGroups: []
+  # - cluster-admins
+  allowedImpersonateServiceAccounts: []
+  # - default/my-sa
+  # When non-empty, render kubecenter-secrets-reader ClusterRole AND
+  # bind it via RoleBinding in each listed namespace. Without this,
+  # the UI's secret-reveal feature returns Forbidden for tenants
+  # outside the install namespace.
+  secretsReaderNamespaces: []
+  # - team-a
+  # - team-b
+
 # -- Mobile app — Universal Link domain hosting (optional)
 #
 # When operators run the mobile app and want to use Universal Links
