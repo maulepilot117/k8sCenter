@@ -37,6 +37,12 @@ frontend/node_analysis_cache_v2
 # Helm
 helm/kubecenter/charts/*.tgz
 
+# Operator-local values files — committed homelab values led to the
+# 2026-05-22 security audit's P0-1 finding. Only the *.example
+# template form is permitted in-tree.
+helm/kubecenter/values-homelab.yaml
+helm/kubecenter/values-*.local.yaml
+
 # Environment and secrets
 .env
 .env.*

@@ -1,4 +1,21 @@
-# Homelab deployment values (k3s ARM64, 3 nodes)
+# ============================================================
+# EXAMPLE homelab values file for k8sCenter (k3s ARM64, 3 nodes)
+#
+# USAGE:
+#   1. Copy this file:  cp values-homelab.yaml.example values-homelab.yaml
+#   2. Replace every REPLACE_ME_* placeholder with a real secret.
+#      Generate secrets with:
+#        openssl rand -base64 48   # for JWT / setup token
+#        openssl rand -base64 32   # for Postgres password
+#   3. Keep values-homelab.yaml out of git — see .gitignore.
+#
+# FAST-FAIL GUARD:
+#   The Helm chart (_validate.tpl) will REFUSE to render if any
+#   REPLACE_ME_* placeholder survives into a rendered release, or if
+#   a known-leaked string from the 2026-05-22 security audit appears.
+#   You MUST replace all placeholders before running helm install/upgrade.
+# ============================================================
+
 replicaCount: 1
 
 backend:
@@ -27,8 +44,8 @@ imagePullSecrets: []
 # For dev/test images, add: imagePullSecrets: [{name: ghcr-pull-secret}]
 
 auth:
-  jwtSecret: "homelab-jwt-secret-for-k8scenter-minimum-32-bytes"
-  setupToken: "homelab-setup-token"
+  jwtSecret: "REPLACE_ME_JWT_SECRET_MIN_32_BYTES"
+  setupToken: "REPLACE_ME_SETUP_TOKEN"
 
 service:
   type: LoadBalancer
@@ -47,7 +64,7 @@ postgresql:
     tag: latest  # latest has ARM64 support; pinned tags may not
   auth:
     username: k8scenter
-    password: "k8sC3nterDB2026"
+    password: "REPLACE_ME_POSTGRES_PASSWORD"
     database: k8scenter
   primary:
     resources:
