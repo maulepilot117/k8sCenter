@@ -120,11 +120,13 @@ func (h *Handler) isCiliumLocal(r *http.Request) bool {
 func (h *Handler) rejectNonLocal(w http.ResponseWriter, r *http.Request, feature string) bool {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	if clusterID != "" && clusterID != "local" {
-		h.Logger.Warn("networking handler rejected on remote cluster",
-			"feature", feature,
-			"clusterID", clusterID,
-			"path", r.URL.Path,
-		)
+		if h.Logger != nil {
+			h.Logger.Warn("networking handler rejected on remote cluster",
+				"feature", feature,
+				"clusterID", clusterID,
+				"path", r.URL.Path,
+			)
+		}
 		httputil.WriteError(w, http.StatusNotImplemented,
 			feature+" is not supported for remote clusters",
 			"Connect to that cluster directly to use this feature")
