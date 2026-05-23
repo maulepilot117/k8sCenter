@@ -16,538 +16,195 @@ interface MetricSeries {
 }
 
 interface QueryRangeResult {
+  slug?: string;
+  query?: string;
   resultType: string;
   result: MetricSeries[];
 }
 
-/** PromQL templates per resource kind */
-const QUERIES: Record<string, { title: string; query: string }[]> = {
+/** Slug-based metric definitions per resource kind.
+ * Each slug maps to a server-owned PromQL template in the backend Registry
+ * (backend/internal/monitoring/query_registry.go).
+ * The backend enforces RBAC per slug — no raw PromQL is sent from the client.
+ * Finding P2-4 of the 2026-05-22 security audit.
+ */
+const QUERIES: Record<string, { title: string; slug: string }[]> = {
   deployments: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
-    {
-      title: "Network Rx (KB/s)",
-      query:
-        'sum(rate(container_network_receive_bytes_total{namespace="{namespace}",pod=~"{name}-.*"}[5m])) / 1024',
-    },
-    {
-      title: "Network Tx (KB/s)",
-      query:
-        'sum(rate(container_network_transmit_bytes_total{namespace="{namespace}",pod=~"{name}-.*"}[5m])) / 1024',
-    },
-    {
-      title: "Replicas",
-      query:
-        'kube_deployment_status_replicas{namespace="{namespace}",deployment="{name}"}',
-    },
-    {
-      title: "Unavailable Replicas",
-      query:
-        'kube_deployment_status_replicas_unavailable{namespace="{namespace}",deployment="{name}"}',
-    },
-    {
-      title: "CPU Request (cores)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
-    },
-    {
-      title: "Memory Request (MB)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
-    },
+    { title: "CPU Usage (cores)", slug: "deployments/cpu" },
+    { title: "Memory Usage (MB)", slug: "deployments/memory" },
+    { title: "Network Rx (KB/s)", slug: "deployments/network-rx" },
+    { title: "Network Tx (KB/s)", slug: "deployments/network-tx" },
+    { title: "Replicas", slug: "deployments/replicas" },
+    { title: "Unavailable Replicas", slug: "deployments/replicas-unavailable" },
+    { title: "CPU Request (cores)", slug: "deployments/cpu-request" },
+    { title: "Memory Request (MB)", slug: "deployments/memory-request" },
   ],
   pods: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod="{name}",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod="{name}",container!=""}) / 1024 / 1024',
-    },
-    {
-      title: "Network Rx (KB/s)",
-      query:
-        'sum(rate(container_network_receive_bytes_total{namespace="{namespace}",pod="{name}"}[5m])) / 1024',
-    },
-    {
-      title: "Network Tx (KB/s)",
-      query:
-        'sum(rate(container_network_transmit_bytes_total{namespace="{namespace}",pod="{name}"}[5m])) / 1024',
-    },
-    {
-      title: "Container Restarts",
-      query:
-        'sum(kube_pod_container_status_restarts_total{namespace="{namespace}",pod="{name}"})',
-    },
-    {
-      title: "Cilium Policy Drops",
-      query:
-        'sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{namespace}/{name}"}[5m]))',
-    },
+    { title: "CPU Usage (cores)", slug: "pods/cpu" },
+    { title: "Memory Usage (MB)", slug: "pods/memory" },
+    { title: "Network Rx (KB/s)", slug: "pods/network-rx" },
+    { title: "Network Tx (KB/s)", slug: "pods/network-tx" },
+    { title: "Container Restarts", slug: "pods/restarts" },
+    { title: "Cilium Policy Drops", slug: "pods/cilium-drops" },
   ],
   nodes: [
-    {
-      title: "CPU Usage %",
-      query:
-        '100 - (avg(rate(node_cpu_seconds_total{mode="idle",instance=~"{nodeInstance}"}[5m])) * 100)',
-    },
-    {
-      title: "Memory Usage %",
-      query:
-        '100 * (1 - node_memory_MemAvailable_bytes{instance=~"{nodeInstance}"} / node_memory_MemTotal_bytes{instance=~"{nodeInstance}"})',
-    },
-    {
-      title: "Load Average (5m)",
-      query: 'node_load5{instance=~"{nodeInstance}"}',
-    },
-    {
-      title: "Network Rx (MB/s)",
-      query:
-        'sum(rate(node_network_receive_bytes_total{instance=~"{nodeInstance}",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
-    },
-    {
-      title: "Network Tx (MB/s)",
-      query:
-        'sum(rate(node_network_transmit_bytes_total{instance=~"{nodeInstance}",device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) / 1024 / 1024',
-    },
-    {
-      title: "Disk Read (MB/s)",
-      query:
-        'sum(rate(node_disk_read_bytes_total{instance=~"{nodeInstance}"}[5m])) / 1024 / 1024',
-    },
-    {
-      title: "Disk Write (MB/s)",
-      query:
-        'sum(rate(node_disk_written_bytes_total{instance=~"{nodeInstance}"}[5m])) / 1024 / 1024',
-    },
+    { title: "CPU Usage %", slug: "nodes/cpu" },
+    { title: "Memory Usage %", slug: "nodes/memory" },
+    { title: "Load Average (5m)", slug: "nodes/load" },
+    { title: "Network Rx (MB/s)", slug: "nodes/network-rx" },
+    { title: "Network Tx (MB/s)", slug: "nodes/network-tx" },
+    { title: "Disk Read (MB/s)", slug: "nodes/disk-read" },
+    { title: "Disk Write (MB/s)", slug: "nodes/disk-write" },
   ],
   statefulsets: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
-    {
-      title: "Network Rx (KB/s)",
-      query:
-        'sum(rate(container_network_receive_bytes_total{namespace="{namespace}",pod=~"{name}-.*"}[5m])) / 1024',
-    },
-    {
-      title: "Network Tx (KB/s)",
-      query:
-        'sum(rate(container_network_transmit_bytes_total{namespace="{namespace}",pod=~"{name}-.*"}[5m])) / 1024',
-    },
-    {
-      title: "Ready Replicas",
-      query:
-        'kube_statefulset_status_replicas_ready{namespace="{namespace}",statefulset="{name}"}',
-    },
-    {
-      title: "CPU Request (cores)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
-    },
-    {
-      title: "Memory Request (MB)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
-    },
+    { title: "CPU Usage (cores)", slug: "statefulsets/cpu" },
+    { title: "Memory Usage (MB)", slug: "statefulsets/memory" },
+    { title: "Network Rx (KB/s)", slug: "statefulsets/network-rx" },
+    { title: "Network Tx (KB/s)", slug: "statefulsets/network-tx" },
+    { title: "Ready Replicas", slug: "statefulsets/replicas-ready" },
+    { title: "CPU Request (cores)", slug: "statefulsets/cpu-request" },
+    { title: "Memory Request (MB)", slug: "statefulsets/memory-request" },
   ],
   daemonsets: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
-    {
-      title: "Network Rx (KB/s)",
-      query:
-        'sum(rate(container_network_receive_bytes_total{namespace="{namespace}",pod=~"{name}-.*"}[5m])) / 1024',
-    },
-    {
-      title: "Ready / Desired",
-      query:
-        'kube_daemonset_status_number_ready{namespace="{namespace}",daemonset="{name}"}',
-    },
-    {
-      title: "CPU Request (cores)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="cpu"})',
-    },
-    {
-      title: "Memory Request (MB)",
-      query:
-        'sum(kube_pod_container_resource_requests{namespace="{namespace}",pod=~"{name}-.*",resource="memory"}) / 1024 / 1024',
-    },
+    { title: "CPU Usage (cores)", slug: "daemonsets/cpu" },
+    { title: "Memory Usage (MB)", slug: "daemonsets/memory" },
+    { title: "Network Rx (KB/s)", slug: "daemonsets/network-rx" },
+    { title: "Ready / Desired", slug: "daemonsets/ready" },
+    { title: "CPU Request (cores)", slug: "daemonsets/cpu-request" },
+    { title: "Memory Request (MB)", slug: "daemonsets/memory-request" },
   ],
   replicasets: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
+    { title: "CPU Usage (cores)", slug: "replicasets/cpu" },
+    { title: "Memory Usage (MB)", slug: "replicasets/memory" },
   ],
   jobs: [
-    {
-      title: "CPU Usage (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Memory Usage (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
+    { title: "CPU Usage (cores)", slug: "jobs/cpu" },
+    { title: "Memory Usage (MB)", slug: "jobs/memory" },
   ],
   cronjobs: [
-    {
-      title: "Last Job CPU (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~"{name}-.*",container!=""}[5m]))',
-    },
-    {
-      title: "Last Job Memory (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{namespace}",pod=~"{name}-.*",container!=""}) / 1024 / 1024',
-    },
+    { title: "Last Job CPU (cores)", slug: "cronjobs/cpu" },
+    { title: "Last Job Memory (MB)", slug: "cronjobs/memory" },
   ],
   services: [
-    {
-      title: "Endpoint Pods CPU (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{namespace}",pod=~".*",container!=""}[5m])) by (pod)',
-    },
+    { title: "Endpoint Pods CPU (cores)", slug: "services/endpoint-cpu" },
   ],
   storageclasses: [
-    {
-      title: "PV Count",
-      query: 'count(kube_persistentvolume_info{storageclass="{name}"})',
-    },
-    {
-      title: "PVC Count",
-      query: 'count(kube_persistentvolumeclaim_info{storageclass="{name}"})',
-    },
-    {
-      title: "Total Provisioned (GiB)",
-      query:
-        'sum(kube_persistentvolume_capacity_bytes{storageclass="{name}"}) / 1024 / 1024 / 1024',
-    },
-    {
-      title: "Total Used (GiB)",
-      query:
-        'sum(kubelet_volume_stats_used_bytes * on(persistentvolumeclaim, namespace) group_left(storageclass) kube_persistentvolumeclaim_info{storageclass="{name}"}) / 1024 / 1024 / 1024',
-    },
+    { title: "PV Count", slug: "storageclasses/pv-count" },
+    { title: "PVC Count", slug: "storageclasses/pvc-count" },
+    { title: "Total Provisioned (GiB)", slug: "storageclasses/provisioned" },
+    { title: "Total Used (GiB)", slug: "storageclasses/used" },
   ],
   pvs: [
-    {
-      title: "Capacity (GiB)",
-      query:
-        'kube_persistentvolume_capacity_bytes{persistentvolume="{name}"} / 1024 / 1024 / 1024',
-    },
-    {
-      title: "Phase",
-      query: 'kube_persistentvolume_status_phase{persistentvolume="{name}"}',
-    },
-    {
-      title: "Bound PVC Usage (GiB)",
-      query:
-        'kubelet_volume_stats_used_bytes{persistentvolumeclaim=~".*"} * on(persistentvolumeclaim, namespace) group_left kube_persistentvolumeclaim_info{volumename="{name}"} / 1024 / 1024 / 1024',
-    },
-    {
-      title: "Bound PVC Inodes Used",
-      query:
-        'kubelet_volume_stats_inodes_used * on(persistentvolumeclaim, namespace) group_left kube_persistentvolumeclaim_info{volumename="{name}"}',
-    },
+    { title: "Capacity (GiB)", slug: "pvs/capacity" },
+    { title: "Phase", slug: "pvs/phase" },
+    { title: "Bound PVC Usage (GiB)", slug: "pvs/pvc-usage" },
+    { title: "Bound PVC Inodes Used", slug: "pvs/pvc-inodes" },
   ],
   pvcs: [
-    {
-      title: "Volume Usage (GiB)",
-      query:
-        'kubelet_volume_stats_used_bytes{namespace="{namespace}",persistentvolumeclaim="{name}"} / 1024 / 1024 / 1024',
-    },
-    {
-      title: "Volume Capacity (GiB)",
-      query:
-        'kubelet_volume_stats_capacity_bytes{namespace="{namespace}",persistentvolumeclaim="{name}"} / 1024 / 1024 / 1024',
-    },
-    {
-      title: "Inodes Used",
-      query:
-        'kubelet_volume_stats_inodes_used{namespace="{namespace}",persistentvolumeclaim="{name}"}',
-    },
+    { title: "Volume Usage (GiB)", slug: "pvcs/usage" },
+    { title: "Volume Capacity (GiB)", slug: "pvcs/capacity" },
+    { title: "Inodes Used", slug: "pvcs/inodes" },
   ],
   hpas: [
-    {
-      title: "Current Replicas",
-      query:
-        'kube_horizontalpodautoscaler_status_current_replicas{namespace="{namespace}",horizontalpodautoscaler="{name}"}',
-    },
-    {
-      title: "Desired Replicas",
-      query:
-        'kube_horizontalpodautoscaler_status_desired_replicas{namespace="{namespace}",horizontalpodautoscaler="{name}"}',
-    },
+    { title: "Current Replicas", slug: "hpas/current-replicas" },
+    { title: "Desired Replicas", slug: "hpas/desired-replicas" },
   ],
   ingresses: [
-    {
-      title: "Request Rate (req/s)",
-      query:
-        'sum(rate(nginx_ingress_controller_requests{namespace="{namespace}",ingress="{name}"}[5m]))',
-    },
-    {
-      title: "Error Rate (5xx/s)",
-      query:
-        'sum(rate(nginx_ingress_controller_requests{namespace="{namespace}",ingress="{name}",status=~"5.."}[5m]))',
-    },
+    { title: "Request Rate (req/s)", slug: "ingresses/request-rate" },
+    { title: "Error Rate (5xx/s)", slug: "ingresses/error-rate" },
   ],
   namespaces: [
-    {
-      title: "Total CPU (cores)",
-      query:
-        'sum(rate(container_cpu_usage_seconds_total{namespace="{name}",container!=""}[5m]))',
-    },
-    {
-      title: "Total Memory (MB)",
-      query:
-        'sum(container_memory_working_set_bytes{namespace="{name}",container!=""}) / 1024 / 1024',
-    },
-    {
-      title: "Network Rx (KB/s)",
-      query:
-        'sum(rate(container_network_receive_bytes_total{namespace="{name}"}[5m])) / 1024',
-    },
-    {
-      title: "Network Tx (KB/s)",
-      query:
-        'sum(rate(container_network_transmit_bytes_total{namespace="{name}"}[5m])) / 1024',
-    },
-    {
-      title: "Pod Count",
-      query: 'count(kube_pod_info{namespace="{name}"})',
-    },
-    {
-      title: "Cilium Policy Drops",
-      query:
-        'sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{name}/.*"}[5m]))',
-    },
+    { title: "Total CPU (cores)", slug: "namespaces/cpu" },
+    { title: "Total Memory (MB)", slug: "namespaces/memory" },
+    { title: "Network Rx (KB/s)", slug: "namespaces/network-rx" },
+    { title: "Network Tx (KB/s)", slug: "namespaces/network-tx" },
+    { title: "Pod Count", slug: "namespaces/pod-count" },
+    { title: "Cilium Policy Drops", slug: "namespaces/cilium-drops" },
   ],
   networkpolicies: [
-    {
-      title: "Cilium Forwarded Flows",
-      query:
-        'sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{namespace}/.*"}[5m]))',
-    },
-    {
-      title: "Cilium Dropped Flows",
-      query:
-        'sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{namespace}/.*"}[5m]))',
-    },
-    {
-      title: "Policy Denied Drops",
-      query:
-        'sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{namespace}/.*"}[5m]))',
-    },
-    {
-      title: "TCP Connections (SYN/s)",
-      query:
-        'sum(rate(hubble_tcp_flags_total{flag="SYN",destination=~"{namespace}/.*"}[5m]))',
-    },
+    { title: "Cilium Forwarded Flows", slug: "networkpolicies/cilium-forwarded" },
+    { title: "Cilium Dropped Flows", slug: "networkpolicies/cilium-dropped" },
+    { title: "Policy Denied Drops", slug: "networkpolicies/policy-denied" },
+    { title: "TCP Connections (SYN/s)", slug: "networkpolicies/tcp-syn" },
   ],
   ciliumnetworkpolicies: [
     {
       title: "Cilium Forwarded Flows",
-      query:
-        'sum(rate(hubble_flows_processed_total{verdict="FORWARDED",destination=~"{namespace}/.*"}[5m]))',
+      slug: "ciliumnetworkpolicies/cilium-forwarded",
     },
     {
       title: "Cilium Dropped Flows",
-      query:
-        'sum(rate(hubble_flows_processed_total{verdict="DROPPED",destination=~"{namespace}/.*"}[5m]))',
+      slug: "ciliumnetworkpolicies/cilium-dropped",
     },
     {
       title: "Policy Denied Drops",
-      query:
-        'sum(rate(hubble_drop_total{reason="Policy denied",destination=~"{namespace}/.*"}[5m]))',
+      slug: "ciliumnetworkpolicies/policy-denied",
     },
     {
       title: "Policy Verdicts",
-      query:
-        'sum(rate(hubble_policy_verdict_total{destination=~"{namespace}/.*"}[5m])) by (action)',
+      slug: "ciliumnetworkpolicies/policy-verdicts",
     },
   ],
   pdbs: [
-    {
-      title: "Current Healthy",
-      query:
-        'kube_poddisruptionbudget_status_current_healthy{namespace="{namespace}",poddisruptionbudget="{name}"}',
-    },
-    {
-      title: "Desired Healthy",
-      query:
-        'kube_poddisruptionbudget_status_desired_healthy{namespace="{namespace}",poddisruptionbudget="{name}"}',
-    },
-    {
-      title: "Disruptions Allowed",
-      query:
-        'kube_poddisruptionbudget_status_pod_disruptions_allowed{namespace="{namespace}",poddisruptionbudget="{name}"}',
-    },
-    {
-      title: "Expected Pods",
-      query:
-        'kube_poddisruptionbudget_status_expected_pods{namespace="{namespace}",poddisruptionbudget="{name}"}',
-    },
+    { title: "Current Healthy", slug: "pdbs/current-healthy" },
+    { title: "Desired Healthy", slug: "pdbs/desired-healthy" },
+    { title: "Disruptions Allowed", slug: "pdbs/disruptions-allowed" },
+    { title: "Expected Pods", slug: "pdbs/expected-pods" },
   ],
   resourcequotas: [
-    {
-      title: "CPU Requests Used",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.cpu",type="used"}',
-    },
-    {
-      title: "CPU Requests Hard Limit",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.cpu",type="hard"}',
-    },
-    {
-      title: "Memory Requests Used (MB)",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.memory",type="used"} / 1024 / 1024',
-    },
+    { title: "CPU Requests Used", slug: "resourcequotas/cpu-used" },
+    { title: "CPU Requests Hard Limit", slug: "resourcequotas/cpu-hard" },
+    { title: "Memory Requests Used (MB)", slug: "resourcequotas/memory-used" },
     {
       title: "Memory Requests Hard Limit (MB)",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="requests.memory",type="hard"} / 1024 / 1024',
+      slug: "resourcequotas/memory-hard",
     },
-    {
-      title: "Pods Used",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="pods",type="used"}',
-    },
-    {
-      title: "Pods Hard Limit",
-      query:
-        'kube_resourcequota{namespace="{namespace}",resourcequota="{name}",resource="pods",type="hard"}',
-    },
+    { title: "Pods Used", slug: "resourcequotas/pods-used" },
+    { title: "Pods Hard Limit", slug: "resourcequotas/pods-hard" },
   ],
   limitranges: [
-    {
-      title: "Default CPU Limit",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="default"}',
-    },
-    {
-      title: "Default Memory Limit (MB)",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="default"} / 1024 / 1024',
-    },
-    {
-      title: "Min CPU Request",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="min"}',
-    },
-    {
-      title: "Max CPU Limit",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="cpu",type="Container",constraint="max"}',
-    },
-    {
-      title: "Min Memory Request (MB)",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="min"} / 1024 / 1024',
-    },
-    {
-      title: "Max Memory Limit (MB)",
-      query:
-        'kube_limitrange{namespace="{namespace}",limitrange="{name}",resource="memory",type="Container",constraint="max"} / 1024 / 1024',
-    },
+    { title: "Default CPU Limit", slug: "limitranges/cpu-default" },
+    { title: "Default Memory Limit (MB)", slug: "limitranges/memory-default" },
+    { title: "Min CPU Request", slug: "limitranges/cpu-min" },
+    { title: "Max CPU Limit", slug: "limitranges/cpu-max" },
+    { title: "Min Memory Request (MB)", slug: "limitranges/memory-min" },
+    { title: "Max Memory Limit (MB)", slug: "limitranges/memory-max" },
   ],
   endpoints: [
-    {
-      title: "Available Addresses",
-      query:
-        'kube_endpoint_address_available{namespace="{namespace}",endpoint="{name}"}',
-    },
-    {
-      title: "Not Ready Addresses",
-      query:
-        'kube_endpoint_address_not_ready{namespace="{namespace}",endpoint="{name}"}',
-    },
+    { title: "Available Addresses", slug: "endpoints/available" },
+    { title: "Not Ready Addresses", slug: "endpoints/not-ready" },
   ],
   endpointslices: [
-    {
-      title: "Ready Endpoints",
-      query:
-        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",ready="true"}',
-    },
-    {
-      title: "Serving Endpoints",
-      query:
-        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",serving="true"}',
-    },
-    {
-      title: "Terminating Endpoints",
-      query:
-        'kube_endpointslice_endpoints{namespace="{namespace}",endpointslice="{name}",terminating="true"}',
-    },
+    { title: "Ready Endpoints", slug: "endpointslices/ready" },
+    { title: "Serving Endpoints", slug: "endpointslices/serving" },
+    { title: "Terminating Endpoints", slug: "endpointslices/terminating" },
   ],
   validatingwebhookconfigurations: [
     {
       title: "Admission Latency (p99, ms)",
-      query:
-        'histogram_quantile(0.99, sum(rate(apiserver_admission_webhook_admission_duration_seconds_bucket{name="{name}",type="validating"}[5m])) by (le)) * 1000',
+      slug: "validatingwebhookconfigurations/latency-p99",
     },
     {
       title: "Request Rate (req/s)",
-      query:
-        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="validating"}[5m]))',
+      slug: "validatingwebhookconfigurations/request-rate",
     },
     {
       title: "Rejection Rate (req/s)",
-      query:
-        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="validating",rejected="true"}[5m]))',
+      slug: "validatingwebhookconfigurations/rejection-rate",
     },
   ],
   mutatingwebhookconfigurations: [
     {
       title: "Admission Latency (p99, ms)",
-      query:
-        'histogram_quantile(0.99, sum(rate(apiserver_admission_webhook_admission_duration_seconds_bucket{name="{name}",type="mutating"}[5m])) by (le)) * 1000',
+      slug: "mutatingwebhookconfigurations/latency-p99",
     },
     {
       title: "Request Rate (req/s)",
-      query:
-        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="mutating"}[5m]))',
+      slug: "mutatingwebhookconfigurations/request-rate",
     },
     {
       title: "Rejection Rate (req/s)",
-      query:
-        'sum(rate(apiserver_admission_webhook_request_total{name="{name}",type="mutating",rejected="true"}[5m]))',
+      slug: "mutatingwebhookconfigurations/rejection-rate",
     },
   ],
 };
@@ -605,15 +262,15 @@ export default function PerformancePanel(
   }, [kind, name, namespace]);
 
   async function loadMetrics() {
-    const templates = QUERIES[kind];
-    if (!templates) return;
+    const slugDefs = QUERIES[kind];
+    if (!slugDefs) return;
 
     const now = new Date();
     const end = now.toISOString();
     const start = new Date(now.getTime() - 3600 * 1000).toISOString();
     const step = "60s";
 
-    const initial: ChartData[] = templates.map((t) => ({
+    const initial: ChartData[] = slugDefs.map((t) => ({
       title: t.title,
       values: [],
       loading: true,
@@ -621,42 +278,47 @@ export default function PerformancePanel(
     }));
     charts.value = initial;
 
-    // For nodes, resolve the node name to node-exporter instance (internal_ip:9100)
-    // kube_node_info has internal_ip label, node-exporter uses instance=IP:9100
+    // For nodes, resolve the internal IP so the backend slug can match
+    // node-exporter metrics (which use instance=IP:9100, not node name).
+    // Uses the RBAC-gated slug endpoint instead of raw PromQL.
     let nodeInstance = "";
     if (kind === "nodes") {
       try {
-        const nodeInfoRes = await apiGet<{
-          result: { metric: { internal_ip: string } }[];
-        }>(
-          `/v1/monitoring/query?query=${
-            encodeURIComponent(
-              `kube_node_info{node="${name}"}`,
-            )
+        const nodeInfoRes = await apiGet<QueryRangeResult>(
+          `/v1/monitoring/queries/nodes/info?name=${
+            encodeURIComponent(name)
           }`,
         );
         const results = nodeInfoRes.data?.result;
         if (results && results.length > 0) {
-          const ip = results[0].metric.internal_ip;
-          nodeInstance = `${ip}:9100`;
+          const ip = results[0].metric?.internal_ip;
+          if (ip) nodeInstance = `${ip}:9100`;
         }
       } catch {
-        // Fall back to name-based matching
-        nodeInstance = `${name}.*`;
+        // Fall back to name-based matching — node-exporter may use the node name
+        nodeInstance = `${name}`;
       }
     }
 
+    // Determine the effective name param for node slugs: use the resolved
+    // node-exporter instance (IP:9100) when available, otherwise the node name.
+    const effectiveName = kind === "nodes" && nodeInstance
+      ? nodeInstance
+      : name;
+
     const results = await Promise.allSettled(
-      templates.map(async (t, i) => {
-        const query = t.query
-          .replaceAll("{namespace}", namespace || "")
-          .replaceAll("{name}", name)
-          .replaceAll("{nodeInstance}", nodeInstance || `${name}.*`);
+      slugDefs.map(async (t, i) => {
+        // For namespaces, the name IS the namespace — pass as name param only.
+        const params = new URLSearchParams({ start, end, step });
+        if (kind === "namespaces") {
+          params.set("name", name);
+        } else {
+          params.set("name", effectiveName);
+          if (namespace) params.set("namespace", namespace);
+        }
 
         const res = await apiGet<QueryRangeResult>(
-          `/v1/monitoring/query_range?query=${
-            encodeURIComponent(query)
-          }&start=${start}&end=${end}&step=${step}`,
+          `/v1/monitoring/queries/${t.slug}?${params}`,
         );
 
         const values =
