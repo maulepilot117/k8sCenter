@@ -214,6 +214,8 @@ jobs:
     outputs:
       ios_ready: ${{ steps.probe.outputs.ios_ready }}
       android_ready: ${{ steps.probe.outputs.android_ready }}
+      release_signing_ready: ${{ steps.probe.outputs.release_signing_ready }}
+      backend_url_set: ${{ steps.probe.outputs.backend_url_set }}
     steps:
       - id: probe
         env:
@@ -222,6 +224,11 @@ jobs:
           APPSTORE_CONNECT_API_KEY: ${{ secrets.APPSTORE_CONNECT_API_KEY }}
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
         run: |
           set -e
           ios_ready=false
@@ -232,8 +239,21 @@ jobs:
           if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
             android_ready=true
           fi
+          release_signing_ready=false
+          if [ -n "$ANDROID_UPLOAD_KEYSTORE_BASE64" ] && \
+             [ -n "$ANDROID_UPLOAD_KEY_ALIAS" ] && \
+             [ -n "$ANDROID_UPLOAD_KEY_PASSWORD" ] && \
+             [ -n "$ANDROID_UPLOAD_STORE_PASSWORD" ]; then
+            release_signing_ready=true
+          fi
+          backend_url_set=false
+          if [ -n "$BACKEND_URL" ]; then
+            backend_url_set=true
+          fi
           echo "ios_ready=$ios_ready" >> "$GITHUB_OUTPUT"
           echo "android_ready=$android_ready" >> "$GITHUB_OUTPUT"
+          echo "release_signing_ready=$release_signing_ready" >> "$GITHUB_OUTPUT"
+          echo "backend_url_set=$backend_url_set" >> "$GITHUB_OUTPUT"
           # Per-platform notices: surface partial-config cases so an
           # operator with iOS configured and Android pending (or vice
           # versa) sees a clear log message rather than silent skip.
@@ -253,10 +273,24 @@ jobs:
           if [ "$ios_ready" = "true" ] && [ -z "$UNIVERSAL_LINK_HOST" ]; then
             echo "::notice::ios_ready but UNIVERSAL_LINK_HOST is empty — iOS Universal Links will not work; only k8scenter:// custom-scheme links resolve."
           fi
+          # P1-4: release builds without BACKEND_URL must NOT ship.
+          if [ "$ios_ready" = "true" ] && [ "$backend_url_set" = "false" ]; then
+            echo "::error::iOS deploy is configured but BACKEND_URL secret is unset. Add an HTTPS BACKEND_URL secret to ship release builds. (Finding P1-4)"
+            exit 1
+          fi
+          if [ "$android_ready" = "true" ] && [ "$backend_url_set" = "false" ]; then
+            echo "::error::Android deploy is configured but BACKEND_URL secret is unset. Add an HTTPS BACKEND_URL secret to ship release builds. (Finding P1-4)"
+            exit 1
+          fi
+          # P1-5: Android release builds without upload-signing secrets must NOT ship.
+          if [ "$android_ready" = "true" ] && [ "$release_signing_ready" = "false" ]; then
+            echo "::error::Android deploy is configured but Android upload signing secrets are incomplete (need all four: ANDROID_UPLOAD_KEYSTORE_BASE64, ANDROID_UPLOAD_KEY_ALIAS, ANDROID_UPLOAD_KEY_PASSWORD, ANDROID_UPLOAD_STORE_PASSWORD). Refusing to ship a debug-signed AAB. (Finding P1-5)"
+            exit 1
+          fi
 
   deploy_ios:
     name: TestFlight upload
-    if: needs.deploy_check.outputs.ios_ready == 'true'
+    if: needs.deploy_check.outputs.ios_ready == 'true' && needs.deploy_check.outputs.backend_url_set == 'true'
     needs: deploy_check
     runs-on: macos-latest
     timeout-minutes: 25
@@ -320,6 +354,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          # BACKEND_URL is forwarded so the beta_ios lane can pass it as
+          # --dart-define when pre-building the Flutter iOS bundle. Without
+          # this, the compiled binary has no BACKEND_URL baked in and
+          # runtime API calls fall back to the empty-string default. (Finding P1-#6)
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: bundle exec fastlane beta_ios
@@ -330,7 +369,7 @@ jobs:
 
   deploy_android:
     name: Play Internal upload
-    if: needs.deploy_check.outputs.android_ready == 'true'
+    if: needs.deploy_check.outputs.android_ready == 'true' && needs.deploy_check.outputs.release_signing_ready == 'true'
     needs: deploy_check
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -360,14 +399,50 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
+      # P1-5 + P2-#15: write the upload keystore + key.properties to
+      # $RUNNER_TEMP so the secret never lives in the workspace tree
+      # (defense against accidental artifact-upload leaks). Gradle reads
+      # the path from ANDROID_KEY_PROPERTIES_PATH when set; local dev
+      # continues to use mobile/android/key.properties relative to
+      # rootProject. The deploy_check job's release_signing_ready output
+      # gates this step.
+      - name: Write Android upload signing key.properties
+        if: needs.deploy_check.outputs.release_signing_ready == 'true'
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          chmod 700 "$RUNNER_TEMP/android-signing"
+          keystore_path="$RUNNER_TEMP/android-signing/upload-keystore.jks"
+          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$keystore_path"
+          chmod 600 "$keystore_path"
+          # printf (not heredoc) keeps the .properties file free of
+          # leading whitespace that Java Properties.load() would otherwise
+          # treat as part of the value on some implementations.
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$keystore_path" \
+            "$ANDROID_UPLOAD_STORE_PASSWORD" \
+            "$ANDROID_UPLOAD_KEY_ALIAS" \
+            "$ANDROID_UPLOAD_KEY_PASSWORD" \
+            > "$RUNNER_TEMP/android-signing/key.properties"
+          chmod 600 "$RUNNER_TEMP/android-signing/key.properties"
+          echo "ANDROID_KEY_PROPERTIES_PATH=$RUNNER_TEMP/android-signing/key.properties" >> "$GITHUB_ENV"
+
       # Discrete flutter build step (mirrors deploy_ios) so build
       # failures surface in their own log section rather than buried
       # inside Fastlane's gradle() output. The dart-define plumbs the
-      # Universal Link host into the DeepLinkHandler at compile time.
+      # Universal Link host and backend URL into the app at compile time.
+      # Gradle reads ANDROID_KEY_PROPERTIES_PATH from the previous step's
+      # GITHUB_ENV export to locate the upload keystore in $RUNNER_TEMP.
       - name: flutter build appbundle
         working-directory: mobile
         env:
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
@@ -377,6 +452,7 @@ jobs:
           version_code=$(( GITHUB_RUN_NUMBER * 10 + GITHUB_RUN_ATTEMPT - 1 ))
           flutter build appbundle --release \
             --dart-define=UNIVERSAL_LINK_HOST="$UNIVERSAL_LINK_HOST" \
+            --dart-define=BACKEND_URL="$BACKEND_URL" \
             -- -PversionCode="$version_code" \
                -PuniversalLinkHost="$UNIVERSAL_LINK_HOST"
 
@@ -394,10 +470,13 @@ jobs:
         working-directory: mobile/fastlane
         env:
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: bundle exec fastlane beta_android
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f "$RUNNER_TEMP/keys/play_sa.json"
+        run: |
+          rm -f "$RUNNER_TEMP/keys/play_sa.json"
+          rm -rf "$RUNNER_TEMP/android-signing"

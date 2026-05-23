@@ -1,3 +1,4 @@
+{{- include "kubecenter.validatePlaceholders" . }}
 {{- if .Values.monitoring.deploy }}
 apiVersion: v1
 kind: ConfigMap

@@ -1,3 +1,4 @@
+{{- include "kubecenter.validatePlaceholders" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,7 +94,7 @@ spec:
                   name: {{ include "kubecenter.fullname" . }}
                   key: database-url
             {{- end }}
-            {{- if .Values.auth.setupToken }}
+            {{- if or .Values.auth.setupToken (not .Values.backend.config.dev) }}
             - name: KUBECENTER_AUTH_SETUPTOKEN
               valueFrom:
                 secretKeyRef:

@@ -4,6 +4,8 @@
 // redirect guard sees Authenticated/Unauthenticated by the time the
 // first frame paints.
 
+import 'dart:developer' as developer;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -72,9 +74,48 @@ Future<void> main() async {
   // listener is a no-op when the build was not produced with
   // --dart-define=UNIVERSAL_LINK_HOST. Drains the initial link (cold
   // start: redirect arrived while app was terminated) on the same call.
+  //
+  // The try/catch ensures that if backendUrlProvider throws a StateError
+  // (release build without --dart-define=BACKEND_URL), the app transitions
+  // off the splash screen instead of freezing on AuthInitializing forever.
+  // (Finding P1-4)
   unawaited(() async {
-    await container.read(authRepositoryProvider.notifier).bootstrap();
-    await container.read(universalLinkListenerProvider).start();
+    try {
+      await container.read(authRepositoryProvider.notifier).bootstrap();
+      await container.read(universalLinkListenerProvider).start();
+    } on StateError catch (e, st) {
+      // backendUrlProvider rejected — release build is misconfigured.
+      // Force the router off the splash screen so the user sees the login
+      // screen (with an error message) rather than being frozen on the
+      // splash indefinitely.
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: e,
+        stack: st,
+        library: 'auth bootstrap',
+        context: ErrorDescription(
+          'backendUrlProvider validation failed; transitioning to '
+          'Unauthenticated so the login screen renders (Finding P1-4)',
+        ),
+      ));
+      container
+          .read(authRepositoryProvider.notifier)
+          .failBootstrap(e.message);
+    } catch (e, st) {
+      developer.log(
+        'bootstrap threw unexpectedly: $e',
+        name: 'main',
+        error: e,
+        stackTrace: st,
+      );
+      FlutterError.reportError(FlutterErrorDetails(
+        exception: e,
+        stack: st,
+        library: 'auth bootstrap',
+      ));
+      container
+          .read(authRepositoryProvider.notifier)
+          .failBootstrap('bootstrap failed: $e');
+    }
   }());
 
   runApp(

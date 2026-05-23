@@ -307,7 +307,14 @@ func New(deps Deps) *Server {
 	// Global middleware chain — order matters.
 	// Auth and CSRF are applied per-route-group in registerRoutes(),
 	// not globally, so public endpoints don't need a skip list.
+	//
+	// CaptureSocketPeer MUST run before chimw.RealIP so we preserve the
+	// ground-truth TCP peer address before chi overwrites r.RemoteAddr
+	// from X-Forwarded-For / X-Real-IP headers. The loopback-setup gate
+	// and the audit ConnectionIP field both read the captured value.
+	// See: Finding #1+#8 (ce-code-review 2026-05-22).
 	s.Router.Use(chimw.RequestID)
+	s.Router.Use(middleware.CaptureSocketPeer)
 	s.Router.Use(chimw.RealIP)
 	s.Router.Use(slogMiddleware(deps.Logger))
 	s.Router.Use(chimw.Recoverer)
