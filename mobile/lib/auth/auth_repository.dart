@@ -186,6 +186,17 @@ class AuthRepository extends Notifier<AuthState> {
     }
   }
 
+  /// Transitions the auth state to [AuthUnauthenticated] with an error
+  /// message derived from the given [message]. Used by main.dart's bootstrap
+  /// try/catch to ensure the router transitions OFF the splash screen when
+  /// [backendUrlProvider] throws a [StateError] in release builds.
+  /// (Finding P1-4)
+  void failBootstrap(String message) {
+    state = AuthUnauthenticated(
+      errorMessage: 'Configuration error: $message',
+    );
+  }
+
   Future<void> _hydrateUser() async {
     final dio = ref.read(dioProvider);
     try {

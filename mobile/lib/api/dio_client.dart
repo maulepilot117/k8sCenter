@@ -13,9 +13,10 @@
 // returns 401 itself (e.g., rotated token).
 
 import 'dart:async';
+import 'dart:io' show InternetAddress;
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart' show kDebugMode, visibleForTesting;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../auth/secure_storage.dart';
@@ -35,39 +36,97 @@ const String _backendUrlFromEnv = String.fromEnvironment(
   defaultValue: '',
 );
 
-final backendUrlProvider = Provider<String>((ref) {
-  final raw = _backendUrlFromEnv.trim();
-  if (kDebugMode) {
-    // Debug builds default to localhost for fast iteration.
-    return raw.isEmpty ? 'http://localhost:8080' : raw;
+/// Returns true when [addr] is any loopback address, including
+/// IPv4-mapped IPv6 forms (e.g. `::ffff:127.0.0.1`) that Dart's
+/// [InternetAddress.isLoopback] does not currently handle.
+///
+/// Layout of an IPv4-mapped IPv6 address (RFC 4291):
+///   bytes 0–9  : zeroes
+///   bytes 10–11: 0xff 0xff
+///   bytes 12–15: IPv4 address
+bool _isLoopbackAddress(InternetAddress? addr) {
+  if (addr == null) return false;
+  if (addr.isLoopback) return true;
+  // Check for IPv4-mapped IPv6 (::ffff:w.x.y.z).
+  final raw = addr.rawAddress;
+  if (raw.length != 16) return false;
+  for (var i = 0; i < 10; i++) {
+    if (raw[i] != 0) return false;
   }
-  // Release + profile: require an explicit, non-localhost HTTPS URL.
-  if (raw.isEmpty) {
+  if (raw[10] != 0xff || raw[11] != 0xff) return false;
+  // Remaining 4 bytes are the IPv4 address — check via InternetAddress
+  // so the 127.0.0.0/8 block is covered, not just 127.0.0.1.
+  final ipv4 = InternetAddress.fromRawAddress(raw.sublist(12));
+  return ipv4.isLoopback;
+}
+
+/// Validates and normalises [raw] as a backend URL.
+///
+/// In debug builds, an empty [raw] defaults to `http://localhost:8080`.
+/// In release/profile builds (when [isDebug] is false) the URL must be
+/// a non-empty HTTPS URL that does NOT resolve to any loopback address.
+///
+/// Loopback detection uses [InternetAddress.tryParse] + [isLoopback] so
+/// that all numeric IPv4 forms (127.0.0.0/8, decimal 2130706433,
+/// hex 0x7f000001, octal 0177.0.0.1) and IPv6-mapped IPv4
+/// (::ffff:127.0.0.1) are rejected canonically.  The string alias
+/// `localhost` and the wildcard `0.0.0.0` are caught by a hostname
+/// fallback set.
+///
+/// NOTE: DNS rebinding (attacker.com resolving to 127.0.0.1 at runtime)
+/// is NOT defended here — this is a build-time guard on the static URL
+/// string, not a runtime DNS-resolution check. (Finding P2-10)
+///
+/// Exposed as `@visibleForTesting` so unit tests can exercise every
+/// branch directly without spinning up a full Riverpod container.
+/// (Finding P3-20)
+@visibleForTesting
+String validateBackendUrl(String raw, {required bool isDebug}) {
+  final trimmed = raw.trim();
+  if (isDebug) {
+    // Debug builds default to localhost for fast iteration.
+    return trimmed.isEmpty ? 'http://localhost:8080' : trimmed;
+  }
+  // Release + profile: require an explicit, non-loopback HTTPS URL.
+  if (trimmed.isEmpty) {
     throw StateError(
       'BACKEND_URL is required in release/profile builds. '
       'Pass --dart-define=BACKEND_URL=https://your-backend.example.com '
       'at build time. (Finding P1-4)',
     );
   }
-  final uri = Uri.tryParse(raw);
+  final uri = Uri.tryParse(trimmed);
   if (uri == null || !uri.hasScheme) {
-    throw StateError('BACKEND_URL is not a valid URL: $raw (Finding P1-4)');
+    throw StateError(
+        'BACKEND_URL is not a valid URL: $trimmed (Finding P1-4)');
   }
   if (uri.scheme != 'https') {
     throw StateError(
-      'BACKEND_URL must use https in release/profile builds; got "$raw" '
+      'BACKEND_URL must use https in release/profile builds; got "$trimmed" '
       '(Finding P1-4)',
     );
   }
   final host = uri.host.toLowerCase();
-  const loopback = {'localhost', '127.0.0.1', '::1', '0.0.0.0'};
-  if (loopback.contains(host)) {
+  // Catch all numeric loopback forms (127.0.0.0/8, ::1, IPv4-mapped IPv6,
+  // decimal/hex/octal integer notation) via InternetAddress, then fall back
+  // to string checks for well-known loopback hostnames.
+  // NOTE: DNS rebinding (https://attacker.com → 127.0.0.1 at runtime) is
+  // NOT defended by this check — that is a runtime concern, not a build-time
+  // guard. (Finding P2-10)
+  final addr = InternetAddress.tryParse(host);
+  final isLoopback = _isLoopbackAddress(addr);
+  const loopbackHostnames = {'localhost', '0.0.0.0'};
+  if (isLoopback || loopbackHostnames.contains(host)) {
     throw StateError(
       'BACKEND_URL must not point at loopback in release/profile builds; '
-      'got "$raw" (Finding P1-4)',
+      'got "$trimmed" (Finding P1-4)',
     );
   }
-  return raw;
+  return trimmed;
+}
+
+final backendUrlProvider = Provider<String>((ref) {
+  return validateBackendUrl(_backendUrlFromEnv, isDebug: kDebugMode);
 });
 
 /// Refresh-only Dio. No interceptors so /v1/auth/refresh failures don't
