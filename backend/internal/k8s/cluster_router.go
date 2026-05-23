@@ -56,6 +56,73 @@ func (cr *ClusterRouter) DynamicClientForCluster(ctx context.Context, clusterID,
 	return cr.remoteDynamicClient(ctx, clusterID, username, groups)
 }
 
+// ClientPair bundles a typed clientset and a dynamic client for a single
+// cluster context. IsLocal is true when the request resolved to the local
+// cluster (empty/missing/"local" X-Cluster-ID). Handlers that don't yet
+// support remote cluster operations should check IsLocal and respond with
+// 501 Not Implemented for non-local requests rather than silently falling
+// through to the local cluster — finding P2-5 of the 2026-05-22 security
+// audit.
+type ClientPair struct {
+	ClusterID string
+	IsLocal   bool
+	Typed     *kubernetes.Clientset
+	Dynamic   dynamic.Interface
+}
+
+// RouterFor resolves the target cluster (local or remote) and returns
+// impersonating clients for the user. Builds both typed and dynamic clients
+// so handlers needing both don't pay two routing round-trips. The clients
+// share an underlying rest.Config that is cached for clientCacheTTL (5
+// minutes) keyed on (clusterID, username, groups), so unused clients are
+// cheap.
+//
+// Handlers must call this rather than f.K8sClient.ClientForUser /
+// f.K8sClient.DynamicClientForUser directly, otherwise X-Cluster-ID is
+// ignored and the request silently routes to the local cluster. The CI
+// guard at scripts/check-cluster-routing.sh enforces this.
+func (cr *ClusterRouter) RouterFor(ctx context.Context, clusterID, username string, groups []string) (*ClientPair, error) {
+	typed, err := cr.ClientForCluster(ctx, clusterID, username, groups)
+	if err != nil {
+		return nil, err
+	}
+	dyn, err := cr.DynamicClientForCluster(ctx, clusterID, username, groups)
+	if err != nil {
+		return nil, err
+	}
+	return &ClientPair{
+		ClusterID: normalizedClusterID(clusterID),
+		IsLocal:   isLocalClusterID(clusterID),
+		Typed:     typed,
+		Dynamic:   dyn,
+	}, nil
+}
+
+// LocalFactory returns the underlying ClientFactory for shared-service-
+// account operations (RESTMapper, DiscoveryClient, BaseDynamicClient).
+// Handlers that need both user-impersonating routing AND SA-shared reads
+// can carry only *ClusterRouter and reach the factory through here.
+func (cr *ClusterRouter) LocalFactory() *ClientFactory {
+	return cr.localFactory
+}
+
+// isLocalClusterID reports whether the given X-Cluster-ID value resolves
+// to the local in-cluster context. Empty, "local", and missing all count
+// as local.
+func isLocalClusterID(clusterID string) bool {
+	return clusterID == "" || clusterID == "local"
+}
+
+// normalizedClusterID returns "local" for empty/missing/"local", otherwise
+// the input value unchanged. Used so handlers logging the resolved cluster
+// see a stable string in audit entries.
+func normalizedClusterID(clusterID string) string {
+	if isLocalClusterID(clusterID) {
+		return "local"
+	}
+	return clusterID
+}
+
 // EvictCluster removes all cached clients for a cluster (call on cluster deletion or credential update).
 func (cr *ClusterRouter) EvictCluster(clusterID string) {
 	prefix := clusterID + "\x00"
