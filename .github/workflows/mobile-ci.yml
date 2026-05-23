@@ -250,8 +250,8 @@ jobs:
           if [ -n "$BACKEND_URL" ]; then
             backend_url_set=true
           fi
-          # Group the four output writes into a single redirect block so
-          # shellcheck SC2129 doesn't flag the individual redirects.
+          # Group the four output writes into a single redirect block to
+          # avoid the SC2129 lint about repeated individual redirects.
           {
             echo "ios_ready=$ios_ready"
             echo "android_ready=$android_ready"
