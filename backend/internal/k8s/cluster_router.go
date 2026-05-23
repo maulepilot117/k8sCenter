@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -26,7 +27,12 @@ type ClusterRouter struct {
 	encryptionKey  string
 	remoteCache    sync.Map // map[string]cachedClient
 	remoteDynCache sync.Map // map[string]cachedDynClient
-	logger         *slog.Logger
+	// configSF gates calls to remoteConfig so that RouterFor's two halves
+	// (typed + dynamic) — and any concurrent first-request burst — collapse
+	// onto a single DB read + decrypt + SSRF re-validate instead of doing
+	// the work twice. F#18.
+	configSF singleflight.Group
+	logger   *slog.Logger
 }
 
 // NewClusterRouter creates a ClusterRouter. clusterStore may be nil for
@@ -233,8 +239,31 @@ func (cr *ClusterRouter) remoteDynamicClient(ctx context.Context, clusterID, use
 	return dc, nil
 }
 
-// remoteConfig builds an impersonating rest.Config from stored cluster credentials.
+// remoteConfig builds an impersonating rest.Config from stored cluster
+// credentials. Calls collapse via singleflight keyed on
+// (clusterID, username, groups) so that RouterFor's two halves (typed +
+// dynamic) and concurrent first-request bursts share a single DB read +
+// decrypt + SSRF re-validate. F#18.
 func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
+	sfKey := clusterID + "\x00" + cacheKey(username, groups)
+	val, err, _ := cr.configSF.Do(sfKey, func() (any, error) {
+		return cr.buildRemoteConfig(ctx, clusterID, username, groups)
+	})
+	if err != nil {
+		return nil, err
+	}
+	cfg, ok := val.(*rest.Config)
+	if !ok {
+		return nil, fmt.Errorf("singleflight returned unexpected type for cluster %s", clusterID)
+	}
+	return rest.CopyConfig(cfg), nil
+}
+
+// buildRemoteConfig is the singleflight-protected body of remoteConfig.
+// rest.Config carries client-go's own internal state and is not safe to
+// mutate concurrently — callers receive a CopyConfig from the cache hit
+// above so each clientset/dynamic-client gets its own instance.
+func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
 	cluster, err := cr.clusterStore.Get(ctx, clusterID)
 	if err != nil {
 		return nil, fmt.Errorf("cluster %s not found: %w", clusterID, err)

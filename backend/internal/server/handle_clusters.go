@@ -168,6 +168,25 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F#22 — Probe whether the stored bearer can impersonate users on the
+	// remote API server. Without this grant, every per-request impersonation
+	// from KubeCenter will fail with 403 once the cluster is registered, but
+	// the registration itself would have succeeded — leaving operators with a
+	// "connected" cluster that can't serve any RBAC-impersonating request.
+	// SelfSubjectAccessReview against the impersonate verb surfaces the gap
+	// immediately, at register-time. (Same probe runs in ClusterProber.ProbeOne
+	// so token rotation / RBAC tightening surfaces as "disconnected" later.)
+	if err := k8s.ProbeImpersonateRights(r.Context(), testClient); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{
+				Code:    400,
+				Message: "the supplied credentials cannot impersonate users on the remote cluster",
+				Detail:  "grant 'impersonate' on users to the bearer token's identity (see docs on RBAC bootstrap): " + err.Error(),
+			},
+		})
+		return
+	}
+
 	id, err := generateClusterID()
 	if err != nil {
 		s.Logger.Error("failed to generate cluster ID", "error", err)
