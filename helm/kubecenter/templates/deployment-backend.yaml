@@ -123,11 +123,26 @@ spec:
             {{- end }}
             {{- end }}
             {{- if .Values.monitoring.grafana.apiToken }}
+            {{- /* Deprecated: backward-compat single token → KUBECENTER_MONITORING_GRAFANATOKEN (viewer-only) */}}
             - name: KUBECENTER_MONITORING_GRAFANATOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "kubecenter.fullname" . }}
                   key: grafana-api-token
+            {{- end }}
+            {{- if and .Values.monitoring.grafana.viewerTokenSecret.name .Values.monitoring.grafana.viewerTokenSecret.key }}
+            - name: KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.monitoring.grafana.viewerTokenSecret.name }}
+                  key: {{ .Values.monitoring.grafana.viewerTokenSecret.key }}
+            {{- end }}
+            {{- if and .Values.monitoring.grafana.provisioningTokenSecret.name .Values.monitoring.grafana.provisioningTokenSecret.key }}
+            - name: KUBECENTER_MONITORING_GRAFANAPROVISIONINGTOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.monitoring.grafana.provisioningTokenSecret.name }}
+                  key: {{ .Values.monitoring.grafana.provisioningTokenSecret.key }}
             {{- end }}
             {{- range $i, $provider := .Values.auth.oidc }}
             - name: KUBECENTER_AUTH_OIDC_{{ $i }}_ID

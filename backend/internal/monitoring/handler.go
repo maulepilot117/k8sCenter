@@ -1,21 +1,36 @@
 package monitoring
 
 import (
+	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"text/template"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
 // maxQueryLength is the maximum allowed PromQL query string length.
 const maxQueryLength = 4096
 
+// Query range caps — Finding P2-4 of the 2026-05-22 security audit.
+const (
+	maxQueryRangeDuration = 6 * time.Hour
+	minQueryStep          = 10 * time.Second
+	maxQuerySamples       = 11000
+)
+
 // Handler serves monitoring HTTP endpoints.
 type Handler struct {
-	Discoverer *Discoverer
-	Logger     *slog.Logger
+	Discoverer    *Discoverer
+	AccessChecker *resources.AccessChecker
+	Logger        *slog.Logger
 }
 
 // HandleStatus returns the current monitoring discovery status.
@@ -32,6 +47,7 @@ func (h *Handler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleQuery proxies an instant PromQL query to Prometheus.
+// Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query?query=...&time=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	pc := h.Discoverer.PrometheusClient()
@@ -76,6 +92,7 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleQueryRange proxies a range PromQL query to Prometheus.
+// Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query_range?query=...&start=...&end=...&step=...
 func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
 	pc := h.Discoverer.PrometheusClient()
@@ -109,6 +126,12 @@ func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
 	step, err := time.ParseDuration(q.Get("step"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid step parameter (use Go duration like 15s, 1m)", err.Error())
+		return
+	}
+
+	// Apply caps even for admin raw queries (P2-4).
+	if err := validateRangeCaps(start, end, step); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 
@@ -274,3 +297,218 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 		"warnings":   warnings,
 	})
 }
+
+// HandleSlugQuery executes a named, server-owned PromQL template from the
+// Registry. Non-admin users call this instead of the raw /query endpoints.
+// RBAC is enforced per-slug using the RequiredGVR field.
+// Finding P2-4 of the 2026-05-22 security audit.
+//
+// GET /api/v1/monitoring/queries/*
+//   - {slug} path segment captured by chi wildcard (e.g. "pods/cpu").
+//   - namespace: Kubernetes namespace (required for namespaced resources).
+//   - name: Resource name used in the PromQL template.
+//   - start / end / step: Optional; omitting runs an instant query at Now().
+func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
+	pc := h.Discoverer.PrometheusClient()
+	if pc == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable,
+			"Prometheus is not available", "")
+		return
+	}
+
+	// chi wildcard route: /monitoring/queries/* — slug is everything after the prefix.
+	rawSlug := chi.URLParam(r, "*")
+	if rawSlug == "" {
+		httputil.WriteError(w, http.StatusNotFound, "slug is required", "")
+		return
+	}
+
+	def, ok := Registry[rawSlug]
+	if !ok {
+		httputil.WriteError(w, http.StatusNotFound, "unknown query slug: "+rawSlug, "")
+		return
+	}
+
+	q := r.URL.Query()
+	namespace := q.Get("namespace")
+	name := q.Get("name")
+
+	// Validate supplied label values to prevent PromQL injection.
+	if namespace != "" && !isValidK8sName(namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace value", "")
+		return
+	}
+	if name != "" && !isValidK8sName(name) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid name value", "")
+		return
+	}
+
+	// RBAC check: user must have the required verb on the resource in the
+	// requested namespace. Cluster-scoped resources use namespace="".
+	if def.RequiredGVR != "" && h.AccessChecker != nil {
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
+			return
+		}
+
+		// Split RequiredGVR into resource + apiGroup.
+		// Format: "resource" (core group) or "resource.group" (named group).
+		apiGroup := ""
+		resource := def.RequiredGVR
+		if idx := strings.Index(def.RequiredGVR, "."); idx != -1 {
+			resource = def.RequiredGVR[:idx]
+			apiGroup = def.RequiredGVR[idx+1:]
+		}
+
+		// For cluster-scoped resources, pass "" as namespace.
+		rbacNS := namespace
+		if clusterScopedGVRs[def.RequiredGVR] {
+			rbacNS = ""
+		}
+
+		for _, verb := range def.RequiredVerbs {
+			allowed, err := h.AccessChecker.CanAccessGroupResource(
+				r.Context(),
+				user.KubernetesUsername,
+				user.KubernetesGroups,
+				verb,
+				apiGroup,
+				resource,
+				rbacNS,
+			)
+			if err != nil {
+				h.Logger.Error("slug query RBAC check failed",
+					"slug", rawSlug, "user", user.Username, "error", err)
+				httputil.WriteError(w, http.StatusInternalServerError, "RBAC check failed", "")
+				return
+			}
+			if !allowed {
+				httputil.WriteError(w, http.StatusForbidden,
+					"access denied: insufficient permissions for "+rawSlug, "")
+				return
+			}
+		}
+	}
+
+	// Render the PromQL template.
+	rendered, err := renderSlugTemplate(def.Template, namespace, name)
+	if err != nil {
+		h.Logger.Error("slug template render failed", "slug", rawSlug, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "template render failed", "")
+		return
+	}
+
+	// Determine instant vs range query.
+	startStr := q.Get("start")
+	endStr := q.Get("end")
+	stepStr := q.Get("step")
+
+	if startStr == "" && endStr == "" {
+		// Instant query.
+		ts := time.Now()
+		if t := q.Get("time"); t != "" {
+			parsed, err := time.Parse(time.RFC3339, t)
+			if err != nil {
+				httputil.WriteError(w, http.StatusBadRequest, "invalid time parameter", err.Error())
+				return
+			}
+			ts = parsed
+		}
+		result, warnings, err := pc.Query(r.Context(), rendered, ts)
+		if err != nil {
+			httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
+			return
+		}
+		httputil.WriteData(w, map[string]any{
+			"slug":       rawSlug,
+			"query":      rendered,
+			"resultType": result.Type(),
+			"result":     result,
+			"warnings":   warnings,
+		})
+		return
+	}
+
+	// Range query — parse and apply caps.
+	if stepStr == "" {
+		stepStr = "60s"
+	}
+	start, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid start parameter", err.Error())
+		return
+	}
+	end, err := time.Parse(time.RFC3339, endStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid end parameter", err.Error())
+		return
+	}
+	step, err := time.ParseDuration(stepStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid step parameter (use Go duration like 15s, 1m)", err.Error())
+		return
+	}
+
+	if err := validateRangeCaps(start, end, step); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+
+	result, warnings, err := pc.QueryRange(r.Context(), rendered, start, end, step)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadGateway, "Prometheus range query failed", err.Error())
+		return
+	}
+	httputil.WriteData(w, map[string]any{
+		"slug":       rawSlug,
+		"query":      rendered,
+		"resultType": result.Type(),
+		"result":     result,
+		"warnings":   warnings,
+	})
+}
+
+// validateRangeCaps enforces the P2-4 time-range caps:
+//   - max range = 6h
+//   - min step  = 10s
+//   - max samples ≤ 11000
+func validateRangeCaps(start, end time.Time, step time.Duration) error {
+	if end.Before(start) {
+		return fmt.Errorf("end must be after start")
+	}
+	rangeDur := end.Sub(start)
+	if rangeDur > maxQueryRangeDuration {
+		return fmt.Errorf("time range %.1fh exceeds maximum 6h", rangeDur.Hours())
+	}
+	if step < minQueryStep {
+		return fmt.Errorf("step %s is below minimum 10s", step)
+	}
+	samples := int64(rangeDur/step) + 1
+	if samples > maxQuerySamples {
+		return fmt.Errorf("query would return ~%d samples, exceeding maximum %d (reduce range or increase step)",
+			samples, maxQuerySamples)
+	}
+	return nil
+}
+
+// slugTemplateVars carries the two supported substitution variables.
+type slugTemplateVars struct {
+	Namespace string
+	Name      string
+}
+
+// renderSlugTemplate renders a QueryDef.Template using text/template.
+// The template must only use {{.Namespace}} and {{.Name}}.
+func renderSlugTemplate(tmplStr, namespace, name string) (string, error) {
+	t, err := template.New("slug").Parse(tmplStr)
+	if err != nil {
+		return "", fmt.Errorf("parsing template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, slugTemplateVars{Namespace: namespace, Name: name}); err != nil {
+		return "", fmt.Errorf("executing template: %w", err)
+	}
+	return buf.String(), nil
+}
+

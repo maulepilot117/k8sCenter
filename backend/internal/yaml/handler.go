@@ -13,6 +13,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,10 +22,11 @@ import (
 
 // Handler provides HTTP handlers for YAML operations.
 type Handler struct {
-	K8sClient   *k8s.ClientFactory
-	AuditLogger audit.Logger
-	Logger      *slog.Logger
-	ClusterID   string
+	K8sClient     *k8s.ClientFactory
+	ClusterRouter *k8s.ClusterRouter
+	AuditLogger   audit.Logger
+	Logger        *slog.Logger
+	ClusterID     string
 }
 
 // HandleValidate validates YAML against the cluster's schema using dry-run apply.
@@ -46,11 +48,13 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	type validationError struct {
@@ -121,11 +125,13 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	force := r.URL.Query().Get("force") == "true"
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
@@ -182,11 +188,13 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	resp := DiffDocuments(r.Context(), dynClient, mapper, docs, h.Logger)
@@ -233,11 +241,13 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	dynClient := pair.Dynamic
 
 	gvr, err := resolveGVR(h.K8sClient, kind)
 	if err != nil {

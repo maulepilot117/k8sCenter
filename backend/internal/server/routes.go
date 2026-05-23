@@ -331,13 +331,23 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 		// No rate limit on monitoring — read-only, behind auth, Prometheus handles load
 		mr.Get("/status", h.HandleStatus)
 		mr.Post("/rediscover", h.HandleRediscover)
-		mr.Get("/query", h.HandleQuery)
-		mr.Get("/query_range", h.HandleQueryRange)
+		// Raw PromQL — admin only (P2-4: unrestricted PromQL is admin-gated).
+		mr.With(middleware.RequireAdmin).Get("/query", h.HandleQuery)
+		mr.With(middleware.RequireAdmin).Get("/query_range", h.HandleQueryRange)
 		mr.Get("/dashboards", h.HandleDashboards)
 		mr.Get("/templates", h.HandleTemplates)
 		mr.Get("/templates/query", h.HandleTemplateQuery)
 		mr.Get("/resource-dashboard", h.HandleResourceDashboard)
-		mr.HandleFunc("/grafana/proxy/*", h.GrafanaProxy)
+		// Slug-based queries — authenticated non-admin users, RBAC-enforced per slug (P2-4).
+		mr.Get("/queries/*", h.HandleSlugQuery)
+
+		// Grafana reverse-proxy — admin only (viewer token injected server-side).
+		// Only GET and HEAD are permitted; any other method → 405 via chi's default.
+		mr.Route("/grafana/proxy", func(gr chi.Router) {
+			gr.Use(middleware.RequireAdmin)
+			gr.Get("/*", h.GrafanaProxy)
+			gr.Head("/*", h.GrafanaProxy)
+		})
 	})
 }
 

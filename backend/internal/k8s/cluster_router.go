@@ -106,11 +106,17 @@ func (cr *ClusterRouter) LocalFactory() *ClientFactory {
 	return cr.localFactory
 }
 
-// isLocalClusterID reports whether the given X-Cluster-ID value resolves
+// IsLocalClusterID reports whether the given X-Cluster-ID value resolves
 // to the local in-cluster context. Empty, "local", and missing all count
-// as local.
-func isLocalClusterID(clusterID string) bool {
+// as local. Exported so handlers can gate unsupported remote operations
+// before constructing a full ClientPair.
+func IsLocalClusterID(clusterID string) bool {
 	return clusterID == "" || clusterID == "local"
+}
+
+// isLocalClusterID is the unexported alias kept for internal package callers.
+func isLocalClusterID(clusterID string) bool {
+	return IsLocalClusterID(clusterID)
 }
 
 // normalizedClusterID returns "local" for empty/missing/"local", otherwise

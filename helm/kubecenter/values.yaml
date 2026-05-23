@@ -169,7 +169,13 @@ monitoring:
     url: ""              # Override auto-discovery
   grafana:
     url: ""              # Override auto-discovery
-    apiToken: ""         # Service account token for dashboard provisioning
+    apiToken: ""         # Deprecated: backward-compat single token (mapped to viewer-only; provisioning disabled). Prefer viewerTokenSecret + provisioningTokenSecret.
+    viewerTokenSecret:
+      name: ""           # Kubernetes Secret name containing the Grafana viewer token (KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN)
+      key: ""            # Key within the Secret (e.g. grafana-viewer-token)
+    provisioningTokenSecret:
+      name: ""           # Kubernetes Secret name containing the Grafana provisioning token (KUBECENTER_MONITORING_GRAFANAPROVISIONINGTOKEN)
+      key: ""            # Key within the Secret (e.g. grafana-provisioning-token)
 
 # -- CORS
 cors:

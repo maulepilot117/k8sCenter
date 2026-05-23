@@ -10,7 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -130,6 +132,18 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		"pod", pod,
 		"container", filter.Container,
 	)
+
+	// P2-5: WebSocket log streams against remote clusters are not yet supported
+	// because the watch connection lifecycle differs for remote API servers.
+	// Reject with an error frame before opening the k8s stream.
+	wsLogsClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(wsLogsClusterID) {
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "WebSocket log streaming not yet supported on remote clusters (Finding P2-5)",
+		})
+		return
+	}
 
 	// Create impersonating client for the log stream
 	rh := s.ResourceHandler

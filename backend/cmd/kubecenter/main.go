@@ -305,8 +305,9 @@ func main() {
 	go monDiscoverer.RunDiscoveryLoop(ctx)
 
 	monHandler := &monitoring.Handler{
-		Discoverer: monDiscoverer,
-		Logger:     logger,
+		Discoverer:    monDiscoverer,
+		AccessChecker: accessChecker,
+		Logger:        logger,
 	}
 
 	// Initialize Loki discoverer and start background discovery

@@ -41,10 +41,12 @@ type DatabaseConfig struct {
 }
 
 type MonitoringConfig struct {
-	Namespace     string `koanf:"namespace"`     // Namespace hint for discovery (empty = search all)
-	PrometheusURL string `koanf:"prometheusurl"` // Override auto-discovery
-	GrafanaURL    string `koanf:"grafanaurl"`    // Override auto-discovery
-	GrafanaToken  string `koanf:"grafanatoken"`  // Grafana service account token
+	Namespace              string `koanf:"namespace"`              // Namespace hint for discovery (empty = search all)
+	PrometheusURL          string `koanf:"prometheusurl"`          // Override auto-discovery
+	GrafanaURL             string `koanf:"grafanaurl"`             // Override auto-discovery
+	GrafanaToken           string `koanf:"grafanatoken"`           // Deprecated: use GrafanaViewerToken. Backward-compat: maps to viewer-only.
+	GrafanaViewerToken     string `koanf:"grafanaviewertoken"`     // Injected into proxy requests (Authorization: Bearer). KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN
+	GrafanaProvisioningToken string `koanf:"grafanaprovisioningtoken"` // Used only for dashboard/folder writes. KUBECENTER_MONITORING_GRAFANAPROVISIONINGTOKEN
 }
 
 type AuthConfig struct {

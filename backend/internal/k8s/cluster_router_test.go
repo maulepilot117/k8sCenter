@@ -29,6 +29,30 @@ func TestIsLocalClusterID(t *testing.T) {
 	}
 }
 
+// TestIsLocalClusterIDExported verifies the exported IsLocalClusterID function
+// produces identical results to the unexported alias. This ensures callers
+// outside the k8s package (e.g. resources, server) see consistent behavior.
+func TestIsLocalClusterIDExported(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"", true},
+		{"local", true},
+		{"abc123", false},
+		{"remote-cluster-1", false},
+	}
+	for _, tc := range cases {
+		if got := IsLocalClusterID(tc.in); got != tc.want {
+			t.Errorf("IsLocalClusterID(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+		// Must agree with the unexported alias
+		if IsLocalClusterID(tc.in) != isLocalClusterID(tc.in) {
+			t.Errorf("IsLocalClusterID(%q) disagrees with isLocalClusterID(%q)", tc.in, tc.in)
+		}
+	}
+}
+
 func TestNormalizedClusterID(t *testing.T) {
 	cases := []struct {
 		in   string
