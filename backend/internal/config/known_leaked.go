@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 // KnownLeakedSecrets are values committed to the repo's homelab values file
 // prior to the 2026-05-22 security audit (finding P0-1). The startup guard
 // (in cmd/kubecenter/main.go) refuses to boot in production with any of
@@ -14,10 +16,5 @@ var KnownLeakedSecrets = []string{
 // homelab values. Constant-time comparison is not required here — leaked
 // strings are public, so the check itself is not a side-channel target.
 func IsKnownLeakedSecret(s string) bool {
-	for _, leaked := range KnownLeakedSecrets {
-		if s == leaked {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(KnownLeakedSecrets, s)
 }
