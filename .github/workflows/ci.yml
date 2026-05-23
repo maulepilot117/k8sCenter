@@ -48,6 +48,15 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: backend/go.sum
 
+      - name: Check cluster-routing discipline
+        # P2-5: fail any handler that calls .ClientForUser / .DynamicClientForUser
+        # directly instead of routing through ClusterRouter.
+        # warn mode during Phase 2 soak — flip to "fail" in a follow-up PR.
+        working-directory: ${{ github.workspace }}
+        env:
+          CHECK_CLUSTER_ROUTING_GATE: warn  # flip to "fail" after Phase 2 rewrites land
+        run: bash scripts/check-cluster-routing.sh
+
       - name: Vet
         run: go vet ./...
 
