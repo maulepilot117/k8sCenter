@@ -320,6 +320,11 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          # BACKEND_URL is forwarded so the beta_ios lane can pass it as
+          # --dart-define when pre-building the Flutter iOS bundle. Without
+          # this, the compiled binary has no BACKEND_URL baked in and
+          # runtime API calls fall back to the empty-string default. (Finding P1-#6)
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: bundle exec fastlane beta_ios
@@ -380,6 +385,37 @@ jobs:
             -- -PversionCode="$version_code" \
                -PuniversalLinkHost="$UNIVERSAL_LINK_HOST"
 
+      # Write upload keystore + key.properties to $RUNNER_TEMP so the
+      # secret never lives in the workspace tree. Gradle reads the path
+      # from ANDROID_KEY_PROPERTIES_PATH when set; local dev continues
+      # to use mobile/android/key.properties. Only runs when
+      # ANDROID_UPLOAD_KEYSTORE_BASE64 is present (android_ready gate
+      # already verified PLAY_SERVICE_ACCOUNT_JSON — upload signing is
+      # an independent secret set that operators may configure later).
+      # (Finding P2-#15)
+      - name: Write Android upload signing key.properties
+        if: ${{ env.ANDROID_UPLOAD_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          chmod 700 "$RUNNER_TEMP/android-signing"
+          keystore_path="$RUNNER_TEMP/android-signing/upload-keystore.jks"
+          printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$keystore_path"
+          chmod 600 "$keystore_path"
+          cat > "$RUNNER_TEMP/android-signing/key.properties" <<EOF
+          storeFile=${keystore_path}
+          storePassword=${ANDROID_UPLOAD_STORE_PASSWORD}
+          keyAlias=${ANDROID_UPLOAD_KEY_ALIAS}
+          keyPassword=${ANDROID_UPLOAD_KEY_PASSWORD}
+          EOF
+          chmod 600 "$RUNNER_TEMP/android-signing/key.properties"
+          echo "ANDROID_KEY_PROPERTIES_PATH=$RUNNER_TEMP/android-signing/key.properties" >> "$GITHUB_ENV"
+
       - name: Write Play service account key
         env:
           PLAY_SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
@@ -400,4 +436,6 @@ jobs:
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f "$RUNNER_TEMP/keys/play_sa.json"
+        run: |
+          rm -f "$RUNNER_TEMP/keys/play_sa.json"
+          rm -rf "$RUNNER_TEMP/android-signing"
