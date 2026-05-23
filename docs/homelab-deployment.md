@@ -47,14 +47,17 @@ Access at `http://<EXTERNAL-IP>:8000`
 ## First Login
 
 ```bash
+# Fetch the auto-generated setup token:
+# kubectl get secret -n kubecenter kubecenter -o jsonpath='{.data.setup-token}' | base64 -d
+
 # Create admin account (only needed once — stored in memory, lost on backend restart)
 curl -X POST http://<EXTERNAL-IP>:8000/api/v1/setup/init \
   -H "Content-Type: application/json" \
   -H "X-Requested-With: XMLHttpRequest" \
-  -d '{"username":"admin","password":"admin123","setupToken":"homelab-setup-token"}'
+  -d '{"username":"admin","password":"<your-chosen-password>","setupToken":"<from-kubectl-get-secret>"}'
 ```
 
-Then login at `http://<EXTERNAL-IP>:8000/login` with `admin` / `admin123`.
+Then login at `http://<EXTERNAL-IP>:8000/login` with `admin` / `<your-chosen-password>`.
 
 > **Note:** Admin accounts are in-memory (LocalProvider). They are lost on backend pod restart. The PostgreSQL database stores audit logs, settings, and cluster registrations — not user accounts. User persistence is planned for a future step.
 

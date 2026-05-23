@@ -1,3 +1,4 @@
+{{- include "kubecenter.validatePlaceholders" . }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 # Backend NetworkPolicy: allow ingress from frontend/ingress, allow egress to k8s API + DNS

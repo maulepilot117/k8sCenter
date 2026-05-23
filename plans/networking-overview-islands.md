@@ -548,7 +548,7 @@ Ensure the Kind cluster in CI has Cilium CRDs available (or the test gracefully 
 
 ### Verification
 - `make test-e2e`
-- Manual homelab smoke test with `admin` / `admin123`
+- Manual homelab smoke test with `admin` / `<placeholder>` (originally documented homelab credentials; sanitized 2026-05-23 per finding P0-1)
 
 ---
 

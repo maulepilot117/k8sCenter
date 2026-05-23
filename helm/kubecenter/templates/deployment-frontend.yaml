@@ -1,3 +1,4 @@
+{{- include "kubecenter.validatePlaceholders" . }}
 {{- if .Values.frontend.enabled }}
 apiVersion: apps/v1
 kind: Deployment

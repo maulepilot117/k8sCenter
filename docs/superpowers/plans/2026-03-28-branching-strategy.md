@@ -1291,7 +1291,7 @@ Full Gitflow with environment-specific CI/CD. See `CONTRIBUTING.md` for the comp
 
 **Every PR to `testing` or `main` requires `/review` before merge.** Smoke test against homelab when backend/frontend changes are in scope.
 
-Credentials: `admin` / `admin123`, setup token: `homelab-setup-token`.
+Credentials: `admin` / `<placeholder>`, setup token: `<placeholder>`. (originally documented homelab credentials; sanitized 2026-05-23 per finding P0-1)
 ```
 
 - [ ] **Step 2: Commit**
