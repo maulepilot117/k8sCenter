@@ -354,6 +354,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           UNIVERSAL_LINK_HOST: ${{ secrets.UNIVERSAL_LINK_HOST }}
+          # BACKEND_URL is forwarded so the beta_ios lane can pass it as
+          # --dart-define when pre-building the Flutter iOS bundle. Without
+          # this, the compiled binary has no BACKEND_URL baked in and
+          # runtime API calls fall back to the empty-string default. (Finding P1-#6)
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -395,9 +399,13 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
-      # P1-5: write the upload-signing key.properties so Gradle's release
-      # task can sign with the real upload key. The file is gitignored;
-      # CI provisions it from secrets at run time and removes it at the end.
+      # P1-5 + P2-#15: write the upload keystore + key.properties to
+      # $RUNNER_TEMP so the secret never lives in the workspace tree
+      # (defense against accidental artifact-upload leaks). Gradle reads
+      # the path from ANDROID_KEY_PROPERTIES_PATH when set; local dev
+      # continues to use mobile/android/key.properties relative to
+      # rootProject. The deploy_check job's release_signing_ready output
+      # gates this step.
       - name: Write Android upload signing key.properties
         if: needs.deploy_check.outputs.release_signing_ready == 'true'
         env:
@@ -407,23 +415,29 @@ jobs:
           ANDROID_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
         run: |
           set -euo pipefail
-          mkdir -p mobile/android
-          # Decode the keystore to a stable path that the .properties points to.
-          keystore_path="$(pwd)/mobile/android/upload-keystore.jks"
+          mkdir -p "$RUNNER_TEMP/android-signing"
+          chmod 700 "$RUNNER_TEMP/android-signing"
+          keystore_path="$RUNNER_TEMP/android-signing/upload-keystore.jks"
           printf '%s' "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 -d > "$keystore_path"
           chmod 600 "$keystore_path"
+          # printf (not heredoc) keeps the .properties file free of
+          # leading whitespace that Java Properties.load() would otherwise
+          # treat as part of the value on some implementations.
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "$keystore_path" \
             "$ANDROID_UPLOAD_STORE_PASSWORD" \
             "$ANDROID_UPLOAD_KEY_ALIAS" \
             "$ANDROID_UPLOAD_KEY_PASSWORD" \
-            > mobile/android/key.properties
-          chmod 600 mobile/android/key.properties
+            > "$RUNNER_TEMP/android-signing/key.properties"
+          chmod 600 "$RUNNER_TEMP/android-signing/key.properties"
+          echo "ANDROID_KEY_PROPERTIES_PATH=$RUNNER_TEMP/android-signing/key.properties" >> "$GITHUB_ENV"
 
       # Discrete flutter build step (mirrors deploy_ios) so build
       # failures surface in their own log section rather than buried
       # inside Fastlane's gradle() output. The dart-define plumbs the
       # Universal Link host and backend URL into the app at compile time.
+      # Gradle reads ANDROID_KEY_PROPERTIES_PATH from the previous step's
+      # GITHUB_ENV export to locate the upload keystore in $RUNNER_TEMP.
       - name: flutter build appbundle
         working-directory: mobile
         env:
@@ -463,10 +477,6 @@ jobs:
 
       - name: Cleanup secrets
         if: always()
-        run: rm -f "$RUNNER_TEMP/keys/play_sa.json"
-
-      - name: Cleanup Android signing material
-        if: always()
         run: |
-          rm -f mobile/android/key.properties
-          rm -f mobile/android/upload-keystore.jks
+          rm -f "$RUNNER_TEMP/keys/play_sa.json"
+          rm -rf "$RUNNER_TEMP/android-signing"

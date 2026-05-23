@@ -8,21 +8,27 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Load upload signing properties from mobile/android/key.properties when
-// present. The file is operator-provided (not in the repo) and lists:
-//   storeFile=upload-keystore.jks   (path relative to mobile/android/app/)
-//   storePassword=...
-//   keyAlias=upload
-//   keyPassword=...
-// CI writes this file from the ANDROID_UPLOAD_* secrets before invoking
-// `flutter build appbundle --release`. Finding P1-5 of the 2026-05-22
-// security audit: release builds must NOT fall back to debug signing.
-val keyPropertiesFile = rootProject.file("key.properties")
+// CI writes key.properties to $RUNNER_TEMP/android-signing/ and exports the
+// path via ANDROID_KEY_PROPERTIES_PATH so the secret never lives in the
+// workspace (defense against accidental artifact-upload leaks per Finding P2-#15
+// of the 2026-05-22 security audit). Local developers continue to use
+// mobile/android/key.properties relative to rootProject. CI provisions the
+// file from the ANDROID_UPLOAD_* secrets at run time; finding P1-5 of the
+// audit: release builds must NOT fall back to debug signing.
+val keyPropertiesFile = System.getenv("ANDROID_KEY_PROPERTIES_PATH")
+    ?.let { java.io.File(it) }
+    ?: rootProject.file("key.properties")
+
 val keyProperties = Properties().apply {
     if (keyPropertiesFile.exists()) {
         load(FileInputStream(keyPropertiesFile))
     }
 }
+
+// Single source of truth for upload-key presence check (Finding P3-#21).
+// Used by both signingConfigs.create("upload") and the tasks.matching guard.
+val uploadConfigured: Boolean = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { keyProperties.getProperty(it) != null }
 
 android {
     namespace = "io.kubecenter.kubecenter"
@@ -68,49 +74,52 @@ android {
 
     signingConfigs {
         create("upload") {
-            val storeFileProp = keyProperties.getProperty("storeFile")
-            val storePasswordProp = keyProperties.getProperty("storePassword")
-            val keyAliasProp = keyProperties.getProperty("keyAlias")
-            val keyPasswordProp = keyProperties.getProperty("keyPassword")
-            if (storeFileProp != null && storePasswordProp != null &&
-                keyAliasProp != null && keyPasswordProp != null) {
-                storeFile = file(storeFileProp)
-                storePassword = storePasswordProp
-                keyAlias = keyAliasProp
-                keyPassword = keyPasswordProp
+            if (uploadConfigured) {
+                storeFile = file(keyProperties.getProperty("storeFile")!!)
+                storePassword = keyProperties.getProperty("storePassword")!!
+                keyAlias = keyProperties.getProperty("keyAlias")!!
+                keyPassword = keyProperties.getProperty("keyPassword")!!
             }
         }
     }
 
     buildTypes {
         release {
-            val uploadConfigured = keyProperties.getProperty("storeFile") != null &&
-                keyProperties.getProperty("storePassword") != null &&
-                keyProperties.getProperty("keyAlias") != null &&
-                keyProperties.getProperty("keyPassword") != null
-            if (uploadConfigured) {
-                signingConfig = signingConfigs.getByName("upload")
+            // Use upload signing when key.properties is fully configured (CI
+            // sets ANDROID_KEY_PROPERTIES_PATH; local devs place key.properties
+            // in mobile/android/). Falls back to debug signing for IDE imports,
+            // `flutter analyze`, and `flutter test`. The tasks.matching block
+            // below throws at execution time if a release-build/sign task runs
+            // without upload signing configured — finding P1-5.
+            signingConfig = if (uploadConfigured) {
+                signingConfigs.getByName("upload")
             } else {
-                // Fail any actual release build, but allow Gradle's
-                // configuration phase to proceed (so `flutter analyze`,
-                // `flutter test`, IDE imports, etc. don't break). The
-                // check fires only when a release variant is being
-                // assembled.
-                gradle.taskGraph.whenReady {
-                    if (allTasks.any { task ->
-                        task.name.contains("Release", ignoreCase = true) &&
-                            (task.name.startsWith("assemble") || task.name.startsWith("bundle") ||
-                             task.name.startsWith("package"))
-                    }) {
-                        throw GradleException(
-                            "Cannot build release variant: mobile/android/key.properties " +
-                                "is missing or incomplete. CI must write it from the " +
-                                "ANDROID_UPLOAD_* secrets before `flutter build " +
-                                "appbundle --release`. (Finding P1-5)"
-                        )
-                    }
-                }
+                signingConfigs.getByName("debug")
             }
+        }
+    }
+}
+
+// Defensive: if any release-variant build/sign task is in the graph and upload
+// signing isn't configured, fail with a clear error attributed to the task
+// itself rather than to a global listener. Targets the Android Gradle Plugin's
+// actual signing task names; flavors like `releaseDebug` produce
+// `signReleaseDebugBundle` not bare `signRelease...`, so the exact-match
+// avoids the substring-matching false-positives flagged by Finding P2-#14.
+tasks.matching { task ->
+    val n = task.name
+    n == "signReleaseBundle" || n == "signReleaseApk" ||
+    n == "validateSigningRelease" || n == "packageRelease" ||
+    n == "bundleRelease"
+}.configureEach {
+    doFirst {
+        if (!uploadConfigured) {
+            throw GradleException(
+                "Cannot run ${this.name}: mobile/android/key.properties is " +
+                "missing or incomplete. CI must write it from ANDROID_UPLOAD_* " +
+                "secrets before `flutter build appbundle --release`. " +
+                "(Finding P1-5)"
+            )
         }
     }
 }
