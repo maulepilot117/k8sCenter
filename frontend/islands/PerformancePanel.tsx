@@ -122,7 +122,10 @@ const QUERIES: Record<string, { title: string; slug: string }[]> = {
     { title: "Cilium Policy Drops", slug: "namespaces/cilium-drops" },
   ],
   networkpolicies: [
-    { title: "Cilium Forwarded Flows", slug: "networkpolicies/cilium-forwarded" },
+    {
+      title: "Cilium Forwarded Flows",
+      slug: "networkpolicies/cilium-forwarded",
+    },
     { title: "Cilium Dropped Flows", slug: "networkpolicies/cilium-dropped" },
     { title: "Policy Denied Drops", slug: "networkpolicies/policy-denied" },
     { title: "TCP Connections (SYN/s)", slug: "networkpolicies/tcp-syn" },
@@ -285,9 +288,7 @@ export default function PerformancePanel(
     if (kind === "nodes") {
       try {
         const nodeInfoRes = await apiGet<QueryRangeResult>(
-          `/v1/monitoring/queries/nodes/info?name=${
-            encodeURIComponent(name)
-          }`,
+          `/v1/monitoring/queries/nodes/info?name=${encodeURIComponent(name)}`,
         );
         const results = nodeInfoRes.data?.result;
         if (results && results.length > 0) {
