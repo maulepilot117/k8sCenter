@@ -1,8 +1,27 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Load upload signing properties from mobile/android/key.properties when
+// present. The file is operator-provided (not in the repo) and lists:
+//   storeFile=upload-keystore.jks   (path relative to mobile/android/app/)
+//   storePassword=...
+//   keyAlias=upload
+//   keyPassword=...
+// CI writes this file from the ANDROID_UPLOAD_* secrets before invoking
+// `flutter build appbundle --release`. Finding P1-5 of the 2026-05-22
+// security audit: release builds must NOT fall back to debug signing.
+val keyPropertiesFile = rootProject.file("key.properties")
+val keyProperties = Properties().apply {
+    if (keyPropertiesFile.exists()) {
+        load(FileInputStream(keyPropertiesFile))
+    }
 }
 
 android {
@@ -47,11 +66,51 @@ android {
             if (universalLinkHost.isNotEmpty()) "true" else "false"
     }
 
+    signingConfigs {
+        create("upload") {
+            val storeFileProp = keyProperties.getProperty("storeFile")
+            val storePasswordProp = keyProperties.getProperty("storePassword")
+            val keyAliasProp = keyProperties.getProperty("keyAlias")
+            val keyPasswordProp = keyProperties.getProperty("keyPassword")
+            if (storeFileProp != null && storePasswordProp != null &&
+                keyAliasProp != null && keyPasswordProp != null) {
+                storeFile = file(storeFileProp)
+                storePassword = storePasswordProp
+                keyAlias = keyAliasProp
+                keyPassword = keyPasswordProp
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            val uploadConfigured = keyProperties.getProperty("storeFile") != null &&
+                keyProperties.getProperty("storePassword") != null &&
+                keyProperties.getProperty("keyAlias") != null &&
+                keyProperties.getProperty("keyPassword") != null
+            if (uploadConfigured) {
+                signingConfig = signingConfigs.getByName("upload")
+            } else {
+                // Fail any actual release build, but allow Gradle's
+                // configuration phase to proceed (so `flutter analyze`,
+                // `flutter test`, IDE imports, etc. don't break). The
+                // check fires only when a release variant is being
+                // assembled.
+                gradle.taskGraph.whenReady {
+                    if (allTasks.any { task ->
+                        task.name.contains("Release", ignoreCase = true) &&
+                            (task.name.startsWith("assemble") || task.name.startsWith("bundle") ||
+                             task.name.startsWith("package"))
+                    }) {
+                        throw GradleException(
+                            "Cannot build release variant: mobile/android/key.properties " +
+                                "is missing or incomplete. CI must write it from the " +
+                                "ANDROID_UPLOAD_* secrets before `flutter build " +
+                                "appbundle --release`. (Finding P1-5)"
+                        )
+                    }
+                }
+            }
         }
     }
 }
