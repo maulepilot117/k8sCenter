@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -88,6 +89,41 @@ func main() {
 				"finding", "P0-1")
 			os.Exit(1)
 		}
+		// Finding #18: k8sC3nterDB2026 appears in the deny-list as a
+		// standalone string but the Postgres password is embedded inside a
+		// DSN (e.g. "postgres://user:k8sC3nterDB2026@host/db"). A plain
+		// IsKnownLeakedSecret equality check misses it — use substring
+		// search against the full DATABASE_URL instead.
+		if cfg.Database.URL != "" {
+			for _, leaked := range config.KnownLeakedSecrets {
+				if strings.Contains(cfg.Database.URL, leaked) {
+					logger.Error("refusing to start with leaked Postgres password embedded in DATABASE_URL (finding P0-1); "+
+						"replace the password in KUBECENTER_DATABASE_URL with a securely generated value",
+						"finding", "P0-1")
+					os.Exit(1)
+				}
+			}
+		}
+	}
+
+	// Finding #5 (P1-1 cascade): a single KUBECENTER_DEV=true env var collapses
+	// the leaked-secret guard (above), the loopback-setup gate, and the
+	// chart's setupToken auto-generation. Running with Dev=true inside a
+	// Kubernetes cluster is almost certainly a misconfiguration that would
+	// silently disable production safeguards. Require an explicit opt-in so
+	// the failure is loud rather than silent.
+	if cfg.Dev && os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		if os.Getenv("KUBECENTER_DEV_IN_CLUSTER_ALLOW") != "true" {
+			logger.Error("refusing to start with KUBECENTER_DEV=true in-cluster without explicit opt-in "+
+				"(P0-1 cascade defense — Dev=true disables the leaked-secret guard, loopback-setup gate, "+
+				"and chart auto-generated token). "+
+				"Set KUBECENTER_DEV_IN_CLUSTER_ALLOW=true to override.",
+				"finding", "P1-1-cascade")
+			os.Exit(1)
+		}
+		logger.Warn("KUBECENTER_DEV=true in-cluster — overridden by KUBECENTER_DEV_IN_CLUSTER_ALLOW=true; "+
+			"production safeguards are degraded",
+			"finding", "P1-1-cascade")
 	}
 
 	v := version.Get()

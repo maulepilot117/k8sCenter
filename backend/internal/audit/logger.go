@@ -75,7 +75,20 @@ type Entry struct {
 	Timestamp         time.Time `json:"timestamp"`
 	ClusterID         string    `json:"clusterID"`
 	User              string    `json:"user"`
+	// SourceIP is the IP as seen after chi's RealIP middleware has applied
+	// X-Forwarded-For / X-Real-IP rewriting. Behind a trusted load-balancer
+	// this is the client's logical IP; without a load-balancer this equals
+	// the TCP peer address. Do not use this field for access-control
+	// decisions — it can be spoofed by an attacker who controls headers.
 	SourceIP          string    `json:"sourceIP"`
+	// ConnectionIP is the raw TCP socket peer address captured by
+	// CaptureSocketPeer BEFORE chi's RealIP rewrote r.RemoteAddr. This is
+	// the ground-truth network peer and is safe to use for access-control
+	// decisions (e.g., the loopback-setup gate). Populated only in-memory
+	// and in the slog output; not persisted to the audit_logs PostgreSQL
+	// table in this version (follow-up: add connection_ip column to
+	// migrations). See Finding #1+#8, ce-code-review 2026-05-22.
+	ConnectionIP      string    `json:"connectionIP,omitempty"`
 	Action            Action    `json:"action"`
 	ResourceKind      string    `json:"resourceKind,omitempty"`
 	ResourceNamespace string    `json:"resourceNamespace,omitempty"`
@@ -105,7 +118,7 @@ func NewSlogLogger(logger *slog.Logger) *SlogLogger {
 
 // Log writes an audit entry to the structured log output.
 func (l *SlogLogger) Log(_ context.Context, e Entry) error {
-	l.logger.Info("audit",
+	args := []any{
 		"timestamp", e.Timestamp,
 		"clusterID", e.ClusterID,
 		"user", e.User,
@@ -116,6 +129,10 @@ func (l *SlogLogger) Log(_ context.Context, e Entry) error {
 		"resourceName", e.ResourceName,
 		"result", e.Result,
 		"detail", e.Detail,
-	)
+	}
+	if e.ConnectionIP != "" {
+		args = append(args, "connectionIP", e.ConnectionIP)
+	}
+	l.logger.Info("audit", args...)
 	return nil
 }

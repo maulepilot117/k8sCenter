@@ -4,12 +4,14 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/pkg/api"
 )
 
@@ -90,27 +92,46 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 	// peers in production — are rejected with 503 so that a freshly deployed
 	// instance without a setup token cannot be taken over from the network.
 	if s.Config.Auth.SetupToken == "" {
-		// Parse the peer IP from r.RemoteAddr (host:port form).
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		// P1-1: loopback + dev gate.
+		//
+		// Use the socket-level peer address captured by CaptureSocketPeer
+		// BEFORE chi's RealIP overwrote r.RemoteAddr. This prevents an
+		// attacker from spoofing loopback via "X-Forwarded-For: 127.0.0.1"
+		// from a non-loopback connection (Finding #1+#8, ce-code-review
+		// 2026-05-22).
+		//
+		// Fall back to r.RemoteAddr when the middleware was not in the
+		// chain (e.g., in tests that construct bare requests without routing
+		// through the full stack), but log a warning so misconfigured order
+		// is visible in production logs.
+		rawPeer := middleware.SocketPeerFromContext(r.Context())
+		if rawPeer == "" {
+			s.Logger.Warn("SocketPeerFromContext returned empty — CaptureSocketPeer may be missing from the middleware chain; falling back to r.RemoteAddr (finding P1-1 defense degraded)",
+				slog.String("remoteAddr", r.RemoteAddr),
+			)
+			rawPeer = r.RemoteAddr
+		}
+
+		host, _, err := net.SplitHostPort(rawPeer)
 		if err != nil {
 			// Fallback: treat the raw string as the IP (covers unit-test
 			// scenarios where RemoteAddr may not include a port).
-			host = r.RemoteAddr
+			host = rawPeer
 		}
 		peerIP := net.ParseIP(host)
 		isLoopback := peerIP != nil && peerIP.IsLoopback()
 
 		if !isLoopback || !s.Config.Dev {
 			s.Logger.Warn("setup init rejected: setup token required for non-loopback setup (finding P1-1)",
-				"remoteAddr", r.RemoteAddr,
+				"socketPeer", rawPeer,
 				"dev", s.Config.Dev,
 				"isLoopback", isLoopback,
 			)
 			s.AuditLogger.Log(r.Context(), s.newAuditEntry(r, "", audit.ActionSetup, audit.ResultFailure))
-			writeJSON(w, http.StatusServiceUnavailable, api.Response{
+			writeJSON(w, http.StatusForbidden, api.Response{
 				Error: &api.APIError{
-					Code:    503,
-					Message: "setup token must be configured for non-loopback setup (finding P1-1)",
+					Code:    403,
+					Message: "setup token required; configure KUBECENTER_AUTH_SETUPTOKEN before remote setup",
 				},
 			})
 			return
