@@ -480,12 +480,10 @@ func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
 				t.Fatal("expected non-empty refresh token")
 			}
 
-			// Locate the stored session by its token. We can't read SessionStore
-			// internals, so re-Validate (which is single-use). The returned
-			// ValidatedSession doesn't expose ExpiresAt; instead, we walk the
-			// internal sessions map via reflection-free sync.Map iteration by
-			// re-storing a marker before Validate consumes the row. Simpler:
-			// re-issue + Range the sync.Map BEFORE consuming.
+			// Locate the stored session by its token without consuming it
+			// (Rotate is single-use and we still want to assert against the
+			// stored ExpiresAt). RangeSessions walks the sync.Map without
+			// mutation, which is exactly the test affordance we need.
 			var found bool
 			var got time.Time
 			srv.Sessions.RangeSessions(func(s auth.RefreshSession) bool {
