@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -121,7 +120,14 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// validateSettingsURL checks that a URL is http/https and not pointing at private/loopback addresses.
+// validateSettingsURL checks that a URL is http/https and resolves to a
+// non-private/non-loopback/non-metadata IP.
+//
+// Phase 4 of the 2026-05-22 security audit (P2-6) — previous implementation
+// only blocked literal-IP loopback/private values, leaving hostnames that
+// resolved to those ranges unchecked. Now delegates to k8s.ValidateRemoteURL
+// so the same DNS-resolving + fail-closed policy applies everywhere
+// user-supplied URLs reach the backend.
 // Returns an error message string, or empty string if valid.
 func validateSettingsURL(raw string) string {
 	if raw == "" {
@@ -135,11 +141,8 @@ func validateSettingsURL(raw string) string {
 	if scheme != "http" && scheme != "https" {
 		return "URL must use http or https scheme"
 	}
-	host := u.Hostname()
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return "URL must not point to private/loopback addresses"
-		}
+	if err := k8s.ValidateRemoteURL(raw); err != nil {
+		return "URL rejected: " + err.Error()
 	}
 	return ""
 }

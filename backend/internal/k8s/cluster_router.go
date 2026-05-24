@@ -457,8 +457,20 @@ var cgnatNet = &net.IPNet{
 }
 
 // ValidateRemoteURL checks that a remote cluster URL does not resolve to
-// private/loopback/CGNAT IP addresses. This prevents SSRF attacks.
-// Called both at registration time and at connection time (DNS rebinding defense).
+// private/loopback/CGNAT/link-local/metadata IP addresses. This prevents
+// SSRF attacks. Called both at registration time and at connection time
+// (DNS rebinding defense).
+//
+// Phase 4 of the 2026-05-22 security audit (P2-6) — fails closed on
+// DNS resolution errors. The previous implementation allowed the
+// connection through on lookup failure, on the theory that the
+// underlying client would produce a more specific error. That left a
+// window where a transient DNS server response (NXDOMAIN intermittently
+// returned for a poisoned response, or a rebinding flip between
+// validation and dial) could let a request reach a private endpoint
+// the IP-based block was supposed to refuse. Fail-closed is the safer
+// posture: operators with broken DNS see an unambiguous error instead
+// of an SSRF-shaped silent success.
 func ValidateRemoteURL(apiServerURL string) error {
 	u, err := url.Parse(apiServerURL)
 	if err != nil {
@@ -470,12 +482,20 @@ func ValidateRemoteURL(apiServerURL string) error {
 		return fmt.Errorf("empty hostname")
 	}
 
-	// Resolve hostname to IPs
+	// If the host is already a literal IP, validate it directly without
+	// going through DNS. Skipping resolution avoids spurious DNS-error
+	// failures in environments without a resolver (in-cluster sidecar
+	// configurations using IP-only endpoints).
+	if ip := net.ParseIP(host); ip != nil {
+		return checkIPNotPrivate(ip)
+	}
+
 	ips, err := net.LookupHost(host)
 	if err != nil {
-		// If DNS resolution fails, allow the connection — the k8s client will
-		// produce a more specific error. We only block known-private IPs.
-		return nil
+		return fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("DNS resolution returned no IPs for %s", host)
 	}
 
 	for _, ipStr := range ips {
@@ -483,13 +503,35 @@ func ValidateRemoteURL(apiServerURL string) error {
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("URL resolves to private/loopback address %s", ipStr)
-		}
-		if cgnatNet.Contains(ip) {
-			return fmt.Errorf("URL resolves to CGNAT address %s", ipStr)
+		if err := checkIPNotPrivate(ip); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// checkIPNotPrivate returns an error when ip is in any range we treat
+// as off-limits for outbound requests built from user-supplied URLs:
+// loopback, private RFC1918, link-local (which includes 169.254.169.254
+// cloud metadata), CGNAT, and the unspecified 0.0.0.0/:: addresses.
+// Centralised so ValidateRemoteURL and the SSRF DialContext share one
+// blocklist — adding a range later automatically tightens both paths.
+func checkIPNotPrivate(ip net.IP) error {
+	if ip.IsLoopback() {
+		return fmt.Errorf("URL resolves to loopback address %s", ip)
+	}
+	if ip.IsPrivate() {
+		return fmt.Errorf("URL resolves to private address %s", ip)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("URL resolves to link-local/metadata address %s", ip)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("URL resolves to unspecified address %s", ip)
+	}
+	if cgnatNet.Contains(ip) {
+		return fmt.Errorf("URL resolves to CGNAT address %s", ip)
+	}
 	return nil
 }
