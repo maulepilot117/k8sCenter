@@ -1,0 +1,37 @@
+Operator-facing migration notes. One section per migration that needs a
+heads-up beyond what the .up.sql comment block already says.
+
+------------------------------------------------------------------------
+000016_cluster_allow_insecure_tls (F#3 + F#5 security audit 2026-05-22)
+------------------------------------------------------------------------
+
+Adds the `allow_insecure_tls` boolean column on `clusters` and replaces the
+silent "no CA → skip TLS verification" fallback in cluster_router with an
+explicit fail-closed check.
+
+Operator action required:
+
+  - If you registered remote clusters BEFORE upgrading to the schema that
+    includes 000016, and those rows had NO CA certificate (auth/storage
+    paths that stored an empty ca_data column), the migration auto-flags
+    them as `allow_insecure_tls = true` to preserve connectivity. This is
+    the same effective security posture they had pre-upgrade (insecure
+    TLS), but it is now visible and opt-out instead of silent and on by
+    default.
+
+  - Review the auto-flagged rows in the cluster list. The UI surfaces a
+    "⚠ Insecure TLS" badge next to each non-local cluster whose
+    `allow_insecure_tls` is true.
+
+  - For each flagged row, either:
+      (a) Provide a CA certificate via re-registration / credential update
+          and then explicitly toggle `allow_insecure_tls = false`; or
+      (b) Accept the insecure flag explicitly (homelab self-signed setups
+          only — bearer tokens travel over the connection).
+
+  - The local cluster row (is_local = true) is skipped by the backfill —
+    in-cluster TLS uses the service-account CA bundle from the pod, not
+    the stored ca_data column.
+
+To revert: see 000016_cluster_allow_insecure_tls.down.sql. Note that the
+down migration drops the column entirely; any operator flags lost.
