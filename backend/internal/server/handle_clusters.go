@@ -175,7 +175,15 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Connection test — verify the cluster is reachable before saving (10s timeout)
+	// Connection test — verify the cluster is reachable before saving (10s timeout).
+	// F#13 (round-3) — route through k8s.ApplyClusterTLS so the registration
+	// test exercises the SAME fail-closed policy that cluster_router and
+	// cluster_prober run. Previously the connection-test built TLS config
+	// inline, which let any future drift in the policy (e.g. a default
+	// CA bundle, a min-TLS-version bump) silently bypass the register-
+	// time check. Pre-conditions above (caCert non-empty OR allowInsecureTLS
+	// admin-approved) mean ApplyClusterTLS will never return an error here,
+	// but plumbing it through keeps the single source of truth.
 	testCfg := &rest.Config{
 		Host:        req.APIServerURL,
 		BearerToken: req.Token,
@@ -183,12 +191,15 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.CACert) > 0 {
 		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
-	} else {
-		// At this point we know req.AllowInsecureTLS is true (admin-gated above).
-		// The connection-test client mirrors the future cluster_router behaviour.
-		testCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
-		s.Logger.Warn("cluster registration with TLS verification disabled (admin-approved)",
-			"name", req.Name, "url", req.APIServerURL)
+	}
+	if err := k8s.ApplyClusterTLS(testCfg, req.Name, []byte(req.CACert), req.AllowInsecureTLS, s.Logger); err != nil {
+		// Should be unreachable given the pre-conditions above; surface
+		// it as a 400 anyway so any future relaxation of those pre-
+		// conditions can't bypass the policy silently.
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "TLS policy rejected the cluster configuration", Detail: err.Error()},
+		})
+		return
 	}
 	testClient, err := kubernetes.NewForConfig(testCfg)
 	if err != nil {

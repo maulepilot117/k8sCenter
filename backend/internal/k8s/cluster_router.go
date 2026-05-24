@@ -33,6 +33,19 @@ type ClusterRouter struct {
 	// the work twice. F#18.
 	configSF singleflight.Group
 	logger   *slog.Logger
+
+	// F#8 (round-3) — eviction callbacks. Subsystems that maintain their
+	// own per-cluster cache (e.g. certmanager.Handler.remoteCache) register
+	// a hook here so EvictCluster propagates to them on cluster deletion
+	// or credential update. Without this, the cert-manager remote cache
+	// would keep serving stale data for up to the next cacheTTL window
+	// even after the cluster is gone from the registry, which means a
+	// re-registered cluster ID could briefly leak the previous tenant's
+	// data through the cert-manager endpoints. Using a callback instead of
+	// a direct import keeps the k8s package free of upward dependencies on
+	// certmanager / eso / future cache-holding subsystems.
+	evictCBMu    sync.RWMutex
+	evictCBs     []func(clusterID string)
 }
 
 // NewClusterRouter creates a ClusterRouter. clusterStore may be nil for
@@ -166,7 +179,11 @@ func normalizedClusterID(clusterID string) string {
 	return NormalizedClusterID(clusterID)
 }
 
-// EvictCluster removes all cached clients for a cluster (call on cluster deletion or credential update).
+// EvictCluster removes all cached clients for a cluster (call on cluster
+// deletion or credential update). F#8 (round-3) — also invokes every
+// registered RegisterEvictHook callback so subsystems that hold their own
+// per-cluster caches (cert-manager remote cache, future ESO/policy caches)
+// drop their entries in the same operation.
 func (cr *ClusterRouter) EvictCluster(clusterID string) {
 	prefix := clusterID + "\x00"
 	cr.remoteCache.Range(func(key, _ any) bool {
@@ -181,6 +198,34 @@ func (cr *ClusterRouter) EvictCluster(clusterID string) {
 		}
 		return true
 	})
+
+	// F#8 — fan out to registered hooks. Each callback is responsible for
+	// its own cache shape and locking. Snapshot under read lock so a hook
+	// that re-registers callbacks (unusual but possible) doesn't deadlock.
+	cr.evictCBMu.RLock()
+	cbs := append([]func(string){}, cr.evictCBs...)
+	cr.evictCBMu.RUnlock()
+	for _, cb := range cbs {
+		// Hooks must not block; if one does, only that subsystem's evict
+		// is delayed (no other hook runs until it returns). Hook authors
+		// own that contract.
+		cb(clusterID)
+	}
+}
+
+// RegisterEvictHook subscribes a callback to EvictCluster. Used by
+// subsystems (cert-manager, ESO, policy) that maintain their own
+// per-cluster caches so a cluster deletion or credential update wipes
+// every layer in one operation. Wiring lives in main.go — keeping the
+// hook list inside ClusterRouter avoids cyclic imports between k8s and
+// the downstream cache holders. F#8.
+func (cr *ClusterRouter) RegisterEvictHook(cb func(clusterID string)) {
+	if cb == nil {
+		return
+	}
+	cr.evictCBMu.Lock()
+	cr.evictCBs = append(cr.evictCBs, cb)
+	cr.evictCBMu.Unlock()
 }
 
 // StartCacheSweeper periodically evicts expired entries from the remote client caches.
@@ -372,6 +417,14 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 	}
 
 	return cfg, nil
+}
+
+// ApplyClusterTLS is the exported alias for applyClusterTLS, so external
+// callers (the registration connection-test in
+// server/handle_clusters.go) can route through the same F#5 fail-closed
+// policy as the runtime router and the probe. F#13 round-3.
+func ApplyClusterTLS(cfg *rest.Config, clusterID string, caData []byte, allowInsecure bool, logger *slog.Logger) error {
+	return applyClusterTLS(cfg, clusterID, caData, allowInsecure, logger)
 }
 
 // applyClusterTLS enforces the F#5 fail-closed TLS policy on a remote

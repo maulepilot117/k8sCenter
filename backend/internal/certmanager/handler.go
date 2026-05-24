@@ -108,6 +108,21 @@ func (h *Handler) InvalidateCache() {
 	}
 }
 
+// EvictRemoteCache drops the per-cluster fetchAllRemote cache entry for
+// the given clusterID. Wired into ClusterRouter.RegisterEvictHook from
+// main.go so a cluster deletion or credential update wipes the cert-
+// manager remote cache in the same operation. Without this hook a
+// re-registered cluster ID could briefly serve the previous tenant's
+// data through HandleListCertificates / HandleGetCertificate /
+// HandleListExpiring until the next cacheTTL expired. F#8 round-3.
+func (h *Handler) EvictRemoteCache(clusterID string) {
+	h.remoteCacheMu.Lock()
+	if h.remoteCache != nil {
+		delete(h.remoteCache, clusterID)
+	}
+	h.remoteCacheMu.Unlock()
+}
+
 // getImpersonatingClient creates a dynamic client impersonating the user, routing to the
 // correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
 func (h *Handler) getImpersonatingClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (dynamic.Interface, bool) {
