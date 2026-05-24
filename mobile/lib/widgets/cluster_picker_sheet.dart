@@ -171,6 +171,11 @@ class _ClusterList extends StatelessWidget {
                   // Bearer tokens travel over the connection; the badge
                   // is intentionally noisy so a misconfigured production
                   // cluster gets noticed before it's used.
+                  // F#14 (round-3) — was colors.warning/warningDim
+                  // (amber). Insecure-TLS clusters leak bearer tokens
+                  // over an unverified connection; red/error tokens
+                  // match the severity operators should perceive when
+                  // scanning the list.
                   title: Row(
                     children: [
                       Flexible(child: Text(c.label)),
@@ -182,13 +187,13 @@ class _ClusterList extends StatelessWidget {
                             vertical: 2,
                           ),
                           decoration: BoxDecoration(
-                            color: colors.warningDim,
+                            color: colors.errorDim,
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(
                             '⚠ Insecure TLS',
                             style: TextStyle(
-                              color: colors.warning,
+                              color: colors.error,
                               fontSize: 10,
                               fontWeight: FontWeight.w600,
                             ),

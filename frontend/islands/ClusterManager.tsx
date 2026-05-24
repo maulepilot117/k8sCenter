@@ -277,7 +277,13 @@ export default function ClusterManager() {
                   )}
                   {c.allowInsecureTLS && !c.isLocal && (
                     <span
-                      class="ml-2 rounded px-1.5 py-0.5 text-xs bg-warning-dim text-warning"
+                      // F#14 (round-3) — was bg-warning-dim/text-warning
+                      // (amber). Insecure-TLS clusters leak bearer tokens
+                      // over an unverified connection; amber under-sells
+                      // the risk relative to a misconfigured-production
+                      // worst case. Red/error tokens match the severity
+                      // operators should perceive when scanning the list.
+                      class="ml-2 rounded px-1.5 py-0.5 text-xs bg-error-dim text-error"
                       title="TLS verification disabled — bearer tokens are sent over an unverified connection"
                     >
                       ⚠ Insecure TLS
