@@ -275,10 +275,28 @@ func (cr *ClusterRouter) remoteDynamicClient(ctx context.Context, clusterID, use
 // (clusterID, username, groups) so that RouterFor's two halves (typed +
 // dynamic) and concurrent first-request bursts share a single DB read +
 // decrypt + SSRF re-validate. F#18.
+//
+// F#17 (round-2) — singleflight ctx-cancel poisoning fix. The previous
+// implementation captured the FIRST caller's context inside the shared Do()
+// closure. If that caller's HTTP request was cancelled mid-flight (client
+// disconnect, request timeout), every coalesced waiter saw the same
+// context.Canceled error even though their own requests were still alive.
+// Now the closure uses a fresh background context with the first caller's
+// deadline preserved, so a cancelled first caller doesn't poison everyone
+// else's read of the shared cluster config.
 func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
 	sfKey := clusterID + "\x00" + cacheKey(username, groups)
 	val, err, _ := cr.configSF.Do(sfKey, func() (any, error) {
-		return cr.buildRemoteConfig(ctx, clusterID, username, groups)
+		// Preserve the deadline so a slow remote DB still respects the
+		// HTTP request budget, but use a non-cancellable parent so a
+		// single caller's disconnect doesn't sink the coalesced batch.
+		bgCtx := context.Background()
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			bgCtx, cancel = context.WithDeadline(bgCtx, deadline)
+			defer cancel()
+		}
+		return cr.buildRemoteConfig(bgCtx, clusterID, username, groups)
 	})
 	if err != nil {
 		return nil, err

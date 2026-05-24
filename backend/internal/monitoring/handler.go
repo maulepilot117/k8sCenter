@@ -333,6 +333,20 @@ func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// Return same shape as RBAC-denied (F#29) so the response can't be used
 		// as an oracle to enumerate the slug catalog. Don't echo the slug name.
+		//
+		// F#15 (round-2 — accepted trade-off, documented): there is still a
+		// timing-side-channel oracle here because the RBAC-denied path runs a
+		// SelfSubjectAccessReview round-trip (10-30ms typical) while the
+		// unknown-slug path returns synchronously (<1ms). An attacker with a
+		// stopwatch can therefore distinguish "slug doesn't exist" from
+		// "slug exists but RBAC denied" by response latency. We accept this
+		// because: (a) slug names are not security-sensitive — they're
+		// product capability identifiers, not secrets; (b) adding an
+		// artificial sleep would slow every legitimate 404 and erode UX;
+		// (c) the catalog is already discoverable from /monitoring/templates
+		// (admin-only) and from the frontend bundle anyway. If slug names
+		// ever do become sensitive, equalize timing by issuing a dummy SAR
+		// on the unknown-slug path. Tracked as F#15 in the audit re-review.
 		httputil.WriteError(w, http.StatusNotFound, "not found or forbidden", "")
 		return
 	}
