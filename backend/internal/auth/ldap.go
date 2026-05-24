@@ -310,11 +310,6 @@ func (p *LDAPProvider) mapToUser(entry *ldap.Entry, groups []string) *User {
 	}
 }
 
-// ID returns the configured provider ID (e.g. "ldap-corp"). Used by the
-// refresh handler to look up the same provider instance the user
-// authenticated against when revalidating their identity.
-func (p *LDAPProvider) ID() string { return p.config.ID }
-
 // Revalidate re-authorizes a previously authenticated LDAP user without
 // re-prompting for their password. It binds as the service account,
 // searches for the user by DN, and returns a freshly mapped [*User] with
@@ -335,7 +330,13 @@ func (p *LDAPProvider) ID() string { return p.config.ID }
 //     evicting every active LDAP user during a brief directory outage.
 //
 // Inputs:
-//   - ctx: cancellation propagates to the LDAP operations via SetTimeout.
+//   - ctx: only checked once, after connect() and before Bind. The
+//     underlying ldap.Conn operations are bounded by
+//     [ldapOperationTimeout] (10s wall-clock deadline set via SetTimeout)
+//     but do NOT propagate ctx cancellation mid-call — a context canceled
+//     while Bind / Search is in flight is observed only after the LDAP
+//     op returns or the 10s deadline expires. Filed as a Phase 3
+//     follow-up; the current bound is acceptable for refresh latency.
 //   - userDN: the user's distinguished name as captured at login time
 //     (the second-colon-separated segment of the session UserID).
 func (p *LDAPProvider) Revalidate(ctx context.Context, userDN string) (*User, error) {

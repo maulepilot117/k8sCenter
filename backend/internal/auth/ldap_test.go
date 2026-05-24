@@ -76,16 +76,6 @@ func TestClassifyLDAPError(t *testing.T) {
 	}
 }
 
-// TestLDAPProvider_ID asserts the public accessor matches the config —
-// the refresh handler uses this to look up the right provider instance
-// from the registry when revalidating an LDAP user.
-func TestLDAPProvider_ID(t *testing.T) {
-	p := &LDAPProvider{config: LDAPProviderConfig{ID: "ldap-corp"}}
-	if got := p.ID(); got != "ldap-corp" {
-		t.Fatalf("ID() = %q, want %q", got, "ldap-corp")
-	}
-}
-
 // TestLDAPProvider_Revalidate_EmptyDN exercises the only Revalidate
 // branch that doesn't require a live LDAP server: an empty DN must
 // short-circuit to ErrInvalidCredentials before any IO. Anything else
