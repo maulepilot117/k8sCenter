@@ -167,6 +167,19 @@ class LogTailController
       case 'end':
         // Server signaled clean stream end — no reconnect.
         state = state.copyWith(connection: WebSocketState.closed);
+      case 'error':
+        // F#13 (round-2) — surface server-side rejection frames to the UI
+        // instead of silently swallowing them. Without this arm, the
+        // remote-cluster gate (handle_ws_logs.go), invalid-namespace gate,
+        // and stream-open failure all wrote a JSON {type: "error", message:
+        // ...} that the controller acked-then-dropped — leaving the UI
+        // stuck on "connecting" with no diagnostic. The error string lands
+        // on `state.errorMessage` so the screen banner picks it up.
+        final message = msg['message'] as String? ?? 'unknown server error';
+        state = state.copyWith(
+          errorMessage: message,
+          connection: WebSocketState.closed,
+        );
     }
   }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 const (
@@ -198,13 +199,14 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		var allowed bool
 		var err error
 		// WebSocket subscriptions only target the local cluster (informers
-		// run on local only) — pass "local" so the F#9 cache slot and SAR
-		// target match the data stream the subscription will receive.
-		const localClusterID = "local"
+		// run on local only). F#20 — pull the canonical local-cluster string
+		// from k8s.LocalClusterID so this stays in lockstep with the rest of
+		// the codebase; cache-key drift would silently bypass the F#9 SAR
+		// cache by storing decisions under a different key.
 		if apiGroup := crdAPIGroup(normalizedKind); apiGroup != "" {
 			allowed, err = c.hub.accessChecker.CanAccessGroupResource(
 				ctx,
-				localClusterID,
+				k8s.LocalClusterID,
 				c.user.KubernetesUsername,
 				c.user.KubernetesGroups,
 				"list",
@@ -215,7 +217,7 @@ func (c *Client) handleSubscribe(msg IncomingMessage) {
 		} else {
 			allowed, err = c.hub.accessChecker.CanAccess(
 				ctx,
-				localClusterID,
+				k8s.LocalClusterID,
 				c.user.KubernetesUsername,
 				c.user.KubernetesGroups,
 				"list",

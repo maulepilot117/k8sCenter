@@ -107,6 +107,20 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 			"namespace", ns,
 			"pod", pod,
 		)
+		// F#7 (round-2) — emit a failure audit entry on the rejection path
+		// so the operator-observable trail isn't just a slog warning. Mirrors
+		// HandlePodExec at pods.go:163 (which has the same rejection pattern
+		// for exec WS on remote clusters). Without this, the only forensic
+		// record of "user attempted remote pod logs" is the JSON log; the
+		// audit table — what compliance reviews actually read — stays blank.
+		if s.AuditLogger != nil {
+			entry := s.newAuditEntry(r, user.Username, audit.ActionReadLogs, audit.ResultFailure)
+			entry.ResourceKind = "Pod"
+			entry.ResourceNamespace = ns
+			entry.ResourceName = pod
+			entry.Detail = "ws log stream rejected: remote clusters not supported"
+			s.AuditLogger.Log(r.Context(), entry)
+		}
 		conn.WriteJSON(map[string]any{
 			"type":    "error",
 			"message": "WebSocket log streaming not yet supported on remote clusters",

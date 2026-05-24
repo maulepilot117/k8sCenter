@@ -127,12 +127,21 @@ func (cr *ClusterRouter) LocalFactory() *ClientFactory {
 	return cr.localFactory
 }
 
+// LocalClusterID is the canonical string used everywhere the local cluster
+// needs to be named: AccessChecker SAR cache keys, audit entries, debug
+// logs, frontend `selectedCluster` defaults. Exported so call sites stop
+// hardcoding the literal "local" — F#20 of the security audit re-review.
+//
+// If this value ever changes, every place that compares against it MUST go
+// through IsLocalClusterID / NormalizedClusterID, never a literal.
+const LocalClusterID = "local"
+
 // IsLocalClusterID reports whether the given X-Cluster-ID value resolves
 // to the local in-cluster context. Empty, "local", and missing all count
 // as local. Exported so handlers can gate unsupported remote operations
 // before constructing a full ClientPair.
 func IsLocalClusterID(clusterID string) bool {
-	return clusterID == "" || clusterID == "local"
+	return clusterID == "" || clusterID == LocalClusterID
 }
 
 // isLocalClusterID is the unexported alias kept for internal package callers.
@@ -140,14 +149,21 @@ func isLocalClusterID(clusterID string) bool {
 	return IsLocalClusterID(clusterID)
 }
 
-// normalizedClusterID returns "local" for empty/missing/"local", otherwise
-// the input value unchanged. Used so handlers logging the resolved cluster
-// see a stable string in audit entries.
-func normalizedClusterID(clusterID string) string {
-	if isLocalClusterID(clusterID) {
-		return "local"
+// NormalizedClusterID returns the canonical string for the local cluster
+// ("local") when the input resolves to local, otherwise the input value
+// unchanged. Exported so cache keys / audit entries / log fields can use
+// a single source of truth instead of separate "local" literals scattered
+// across packages. F#20 of the security audit re-review.
+func NormalizedClusterID(clusterID string) string {
+	if IsLocalClusterID(clusterID) {
+		return LocalClusterID
 	}
 	return clusterID
+}
+
+// normalizedClusterID is the unexported alias kept for internal callers.
+func normalizedClusterID(clusterID string) string {
+	return NormalizedClusterID(clusterID)
 }
 
 // EvictCluster removes all cached clients for a cluster (call on cluster deletion or credential update).

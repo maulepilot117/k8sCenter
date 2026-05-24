@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 // AccessChecker verifies RBAC permissions for WebSocket subscriptions.
@@ -275,13 +277,13 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			var allowed bool
 			var err error
 			// WebSocket fan-out is local-cluster only — informers don't run on
-			// remote clusters. Pass "local" so the F#9 cache slot and SAR
-			// target are unambiguous.
-			const localClusterID = "local"
+			// remote clusters. F#20 — pull the canonical local-cluster string
+			// from k8s.LocalClusterID so this stays in lockstep with
+			// counts.go and client.go cache keys.
 			if apiGroup := crdAPIGroup(key.Kind); apiGroup != "" {
 				allowed, err = h.accessChecker.CanAccessGroupResource(
 					checkCtx,
-					localClusterID,
+					k8s.LocalClusterID,
 					client.user.KubernetesUsername,
 					client.user.KubernetesGroups,
 					"list",
@@ -292,7 +294,7 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			} else {
 				allowed, err = h.accessChecker.CanAccess(
 					checkCtx,
-					localClusterID,
+					k8s.LocalClusterID,
 					client.user.KubernetesUsername,
 					client.user.KubernetesGroups,
 					"list",
