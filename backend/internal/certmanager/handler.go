@@ -49,6 +49,17 @@ type Handler struct {
 	cacheMu    sync.RWMutex
 	cache      *cachedData
 	cacheGen   uint64
+
+	// F#16 (round-2) — per-cluster cache for fetchAllRemote results so a
+	// single page load with N cert-manager widgets doesn't fan out into N
+	// round-trips against the remote API. Coalesces across HandleList*
+	// + HandleGetCertificate + HandleListExpiring concurrent calls in
+	// the same 60s window. Singleflight (fetchRemoteGroup) protects
+	// against concurrent first-loads; the cache + TTL bound the rate
+	// after that.
+	remoteFetchGroup singleflight.Group
+	remoteCacheMu    sync.RWMutex
+	remoteCache      map[string]*cachedData // keyed by clusterID
 }
 
 type cachedData struct {
@@ -283,16 +294,59 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 }
 
 // fetchAllRemote pulls certificates, issuers, and clusterissuers directly
-// from a remote cluster via an impersonating dynamic client. Unlike fetchAll,
-// the result is NOT cached — every call re-issues the three List calls. The
-// local-cluster cache is shared across all users and only safe for the local
-// cluster's data; routing remote calls through it would (a) cross-pollinate
-// data between clusters and (b) leak data between users without RBAC re-eval.
+// from a remote cluster via an impersonating dynamic client.
+//
+// F#16 (round-2): wrapped by a 60s per-cluster cache + singleflight so a
+// single page load that touches three remote endpoints (list certs, list
+// issuers, get expiring) doesn't fan out into 3 sets of List calls against
+// the remote API. The cache is keyed only on clusterID — RBAC filtering
+// remains per-user-per-call via filterByRBAC, so the cached cluster-wide
+// list is still safe to share across users. Per-user RBAC re-evaluation
+// after the cache hit is what makes this safe; F#3's worry about RBAC
+// drift is bounded by the 60s TTL.
 //
 // Callers must already have verified the cluster is non-local via
 // k8s.IsLocalClusterID. Returns (certs, issuers, clusterIssuers, err).
-// F#3 — security audit 2026-05-22.
+// F#3 — security audit 2026-05-22; F#16 — re-review.
 func (h *Handler) fetchAllRemote(ctx context.Context, clusterID string, user *auth.User) ([]Certificate, []Issuer, []Issuer, error) {
+	// Cache check
+	h.remoteCacheMu.RLock()
+	if cached, ok := h.remoteCache[clusterID]; ok && time.Since(cached.fetchedAt) < cacheTTL {
+		h.remoteCacheMu.RUnlock()
+		return cached.certificates, cached.issuers, cached.clusterIssuers, nil
+	}
+	h.remoteCacheMu.RUnlock()
+
+	// Singleflight coalesce — concurrent first-loads share one round-trip.
+	val, err, _ := h.remoteFetchGroup.Do(clusterID, func() (any, error) {
+		certs, issuers, cissuers, ferr := h.fetchAllRemoteDirect(ctx, clusterID, user)
+		if ferr != nil {
+			return nil, ferr
+		}
+		entry := &cachedData{
+			certificates:   certs,
+			issuers:        issuers,
+			clusterIssuers: cissuers,
+			fetchedAt:      time.Now(),
+		}
+		h.remoteCacheMu.Lock()
+		if h.remoteCache == nil {
+			h.remoteCache = map[string]*cachedData{}
+		}
+		h.remoteCache[clusterID] = entry
+		h.remoteCacheMu.Unlock()
+		return entry, nil
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	d := val.(*cachedData)
+	return d.certificates, d.issuers, d.clusterIssuers, nil
+}
+
+// fetchAllRemoteDirect is the un-cached, un-coalesced inner fetch. Exists
+// so the cache-aware fetchAllRemote can compose it with singleflight.
+func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, user *auth.User) ([]Certificate, []Issuer, []Issuer, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -480,13 +534,27 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	// (without it the response would never show Status="Expiring",
 	// since computeStatus no longer overlays Expiring).
 	//
-	// We always run ApplyThresholds — even on cache miss — so the
-	// response shape stays consistent. Cache miss simply means no
-	// issuer/clusterissuer lookup data; the resolver falls through to
-	// package defaults uniformly. This is safer than skipping
-	// resolution and emitting an inconsistent response.
+	// F#9 (round-2): for non-local cluster IDs the local cache holds
+	// local-cluster issuers — applying those thresholds to a remote
+	// certificate would attribute the wrong issuer entirely. Route remote
+	// detail requests through fetchAllRemote so threshold resolution sees
+	// the remote cluster's own Issuers / ClusterIssuers. Local clusters
+	// continue to hit the cache. Cache miss for local falls through to
+	// defaults uniformly — same as before.
 	var issuers, clusterIssuers []Issuer
-	if data, derr := h.getCached(ctx); derr == nil && data != nil {
+	if !k8s.IsLocalClusterID(clusterID) {
+		_, remoteIssuers, remoteCIssuers, ferr := h.fetchAllRemote(ctx, clusterID, user)
+		if ferr != nil {
+			// Don't fail the detail response on issuer-fetch error —
+			// threshold attribution falls through to package defaults
+			// just like a local cache miss. Log so the gap is visible.
+			h.Logger.Warn("remote issuer fetch for cert detail failed; thresholds will fall back to defaults",
+				"clusterID", clusterID, "namespace", ns, "name", name, "error", ferr)
+		} else {
+			issuers = remoteIssuers
+			clusterIssuers = remoteCIssuers
+		}
+	} else if data, derr := h.getCached(ctx); derr == nil && data != nil {
 		issuers = data.issuers
 		clusterIssuers = data.clusterIssuers
 	}

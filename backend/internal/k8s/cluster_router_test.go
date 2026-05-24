@@ -118,30 +118,25 @@ func TestRouterFor_LocalPath(t *testing.T) {
 	}
 }
 
-// TestRouterFor_RemoteFallsThroughToLocalWhenStoreNil verifies the
-// degraded-mode behavior: when clusterStore is nil (local-only deployment
-// without a database), a non-local clusterID silently routes to the local
-// factory. This mirrors the existing ClientForCluster contract — handlers
-// that need stricter behavior (P2-5's 501 for non-local) must check
-// pair.IsLocal themselves.
-func TestRouterFor_RemoteFallsThroughToLocalWhenStoreNil(t *testing.T) {
+// TestRouterFor_RemoteFailsClosedWhenStoreNil verifies F#18: when
+// clusterStore is nil (local-only deployment without a database), a
+// non-local clusterID hard-errors instead of silently routing to the
+// local factory. The previous behavior was a silent downgrade — handlers
+// that didn't double-check pair.IsLocal would execute "remote" requests
+// against the local cluster. AccessChecker already failed closed in the
+// same scenario; both layers now agree.
+func TestRouterFor_RemoteFailsClosedWhenStoreNil(t *testing.T) {
 	stubClient := &kubernetes.Clientset{}
 	stubDyn := fake.NewSimpleDynamicClient(scheme.Scheme)
 	factory := NewTestClientFactoryWithDynamic(stubClient, stubDyn)
 	router := NewClusterRouter(factory, nil, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	pair, err := router.RouterFor(context.Background(), "some-remote-id", "alice", nil)
-	if err != nil {
-		t.Fatalf("RouterFor returned error: %v", err)
+	_, err := router.RouterFor(context.Background(), "some-remote-id", "alice", nil)
+	if err == nil {
+		t.Fatal("RouterFor returned nil error for non-local clusterID with nil clusterStore; want hard-error (F#18 fail-closed)")
 	}
-	// IsLocal reflects the REQUESTED cluster, not the fallback. Handlers
-	// that key behavior on IsLocal will return 501 here, which is the
-	// correct safe default even when the store is misconfigured.
-	if pair.IsLocal {
-		t.Error("IsLocal = true for non-local input; want false (handlers must reject non-local)")
-	}
-	if pair.ClusterID != "some-remote-id" {
-		t.Errorf("ClusterID = %q; want \"some-remote-id\"", pair.ClusterID)
+	if !strings.Contains(err.Error(), "no cluster store") {
+		t.Errorf("error = %q; want substring 'no cluster store'", err.Error())
 	}
 }
 
