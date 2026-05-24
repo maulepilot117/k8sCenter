@@ -3,7 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,38 @@ import (
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"k8s.io/apimachinery/pkg/labels"
 )
+
+// accountThrottle applies a per-username rate-limit bucket on the
+// supplied RateLimiter against the namespaced key "<purpose>:<user>".
+// Username is case-folded so "Admin" / "admin" / "ADMIN" share one
+// bucket — without this an attacker could rotate case to multiply the
+// per-account budget. On rate-limit hit emits an [audit.ActionRateLimited]
+// entry and writes a 429 with Retry-After; returns true so the caller
+// can early-return. Successful login does NOT reset the bucket, so an
+// attacker can't mix valid creds with brute-force attempts to extend
+// the budget. Audit finding P2-1 part 2 (2026-05-22).
+func (s *Server) accountThrottle(w http.ResponseWriter, r *http.Request, purpose, username string, action audit.Action) bool {
+	if username == "" {
+		return false
+	}
+	key := purpose + ":" + strings.ToLower(username)
+	allowed, retry := s.RateLimiter.CheckKey(key)
+	if allowed {
+		return false
+	}
+	entry := s.newAuditEntry(r, username, audit.ActionRateLimited, audit.ResultDenied)
+	entry.Detail = fmt.Sprintf("%s account throttle: %s (retry %ds)", purpose, action, retry)
+	s.AuditLogger.Log(r.Context(), entry)
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeJSON(w, http.StatusTooManyRequests, api.Response{
+		Error: &api.APIError{
+			Code:    429,
+			Message: "too many attempts",
+			Detail:  fmt.Sprintf("try again in %d seconds", retry),
+		},
+	})
+	return true
+}
 
 // ldapGracePeriod bounds how long after the last successful LDAP
 // revalidation the refresh handler will fall back to cached identity
@@ -47,6 +81,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "invalid credentials"},
 		})
+		return
+	}
+
+	// Per-account throttle BEFORE provider lookup so an attacker who
+	// already knows the rate-limit budget can't multiply it by varying
+	// the provider field. Audit finding P2-1 part 2 (2026-05-22).
+	if s.accountThrottle(w, r, "login", creds.Username, audit.ActionLogin) {
 		return
 	}
 

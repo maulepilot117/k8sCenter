@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -801,6 +802,114 @@ func doRequest(t *testing.T, srv *Server, method, path, body string, headers map
 		req.Header.Set(k, v)
 	}
 
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	return w
+}
+
+// ---------------------------------------------------------------------
+// Audit finding P2-1 part 2 (2026-05-22) — per-account login throttle.
+// ---------------------------------------------------------------------
+
+// TestHandleLogin_AccountThrottle_BlocksBruteForce pins the per-account
+// rate-limit: after the configured number of attempts against a single
+// username (even from rotating IPs), the next attempt against the same
+// username returns 429 regardless of IP. The previous IP-only throttle
+// could be bypassed by an attacker rotating source IPs.
+func TestHandleLogin_AccountThrottle_BlocksBruteForce(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	for i := 0; i < 2; i++ {
+		w := postLogin(t, srv, map[string]string{
+			"username": "alice",
+			"password": "wrong-password",
+		}, "192.0.2."+strconv.Itoa(10+i)+":54321")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 invalid-creds, got %d: %s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	// Third attempt against the same username from yet another IP must
+	// hit the account throttle even though no single IP exhausted its
+	// per-IP bucket.
+	w := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong-password",
+	}, "192.0.2.99:54321")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 account-throttled, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Fatal("Retry-After header missing on 429")
+	}
+}
+
+// TestHandleLogin_AccountThrottle_CaseFolded asserts "Alice"/"alice"/
+// "ALICE" share one bucket. Without case-folding an attacker could
+// multiply the per-account budget by varying letter case.
+func TestHandleLogin_AccountThrottle_CaseFolded(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	for _, casing := range []string{"alice", "Alice"} {
+		w := postLogin(t, srv, map[string]string{
+			"username": casing,
+			"password": "wrong",
+		}, "192.0.2.10:54321")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected 401, got %d", casing, w.Code)
+		}
+	}
+
+	// Third attempt with another casing must still be throttled.
+	w := postLogin(t, srv, map[string]string{
+		"username": "ALICE",
+		"password": "wrong",
+	}, "192.0.2.11:54321")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("case-folded throttle missed: got %d, want 429", w.Code)
+	}
+}
+
+// TestHandleLogin_AccountThrottle_IndependentUsernames pins isolation
+// between account buckets: throttling "alice" must not affect "bob".
+func TestHandleLogin_AccountThrottle_IndependentUsernames(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	// Exhaust alice's bucket.
+	for i := 0; i < 3; i++ {
+		postLogin(t, srv, map[string]string{
+			"username": "alice",
+			"password": "wrong",
+		}, "192.0.2.10:54321")
+	}
+
+	// bob must still be allowed past the failure-of-creds path —
+	// expecting 401 invalid-creds, NOT 429.
+	w := postLogin(t, srv, map[string]string{
+		"username": "bob",
+		"password": "wrong",
+	}, "192.0.2.10:54321")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("bob should hit 401 invalid-creds, not 429; got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// postLogin issues a JSON login POST against the server with the
+// supplied remote address, returning the recorder. Helper for the
+// account-throttle tests above.
+func postLogin(t *testing.T, srv *Server, body map[string]string, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(string(raw)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.RemoteAddr = remoteAddr
 	w := httptest.NewRecorder()
 	srv.Router.ServeHTTP(w, req)
 	return w

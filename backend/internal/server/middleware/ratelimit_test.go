@@ -105,6 +105,59 @@ func TestRateLimiter_RetryAfter_UnknownIP(t *testing.T) {
 	}
 }
 
+// TestRateLimiter_CheckKey_NamespaceIsolation pins the design contract
+// that backs audit finding P2-1 part 2 (2026-05-22): IP throttle keys
+// and account throttle keys must NOT collide. The convention is bare
+// IPs for IP throttles, "<purpose>:<account>" for account throttles —
+// this test asserts the underlying bucket map keeps them separate.
+func TestRateLimiter_CheckKey_NamespaceIsolation(t *testing.T) {
+	rl := NewRateLimiterWithRate(2, time.Minute)
+
+	// Exhaust the IP bucket for 192.168.1.1.
+	for i := 0; i < 2; i++ {
+		if allowed, _ := rl.CheckKey("192.168.1.1"); !allowed {
+			t.Fatalf("setup: request %d should be allowed", i+1)
+		}
+	}
+	if allowed, _ := rl.CheckKey("192.168.1.1"); allowed {
+		t.Fatal("IP bucket should be exhausted")
+	}
+
+	// Account-throttle key for the same numeric string must be
+	// independent — different namespace, different bucket.
+	if allowed, _ := rl.CheckKey("login:192.168.1.1"); !allowed {
+		t.Fatal("account bucket 'login:192.168.1.1' must be independent of IP bucket")
+	}
+	// And another namespace should be independent again.
+	if allowed, _ := rl.CheckKey("setup:192.168.1.1"); !allowed {
+		t.Fatal("account bucket 'setup:192.168.1.1' must be independent of 'login:' bucket")
+	}
+}
+
+// TestRateLimiter_CheckKey_BackCompat — Check(ip) and CheckKey(ip)
+// share the bucket so the existing IP-throttle middleware (which still
+// calls Check) and the new account-throttle handler code (which calls
+// CheckKey) interact correctly when wiring overlaps.
+func TestRateLimiter_CheckKey_BackCompat(t *testing.T) {
+	rl := NewRateLimiterWithRate(2, time.Minute)
+
+	// CheckKey via the new name eats 1 token.
+	if allowed, _ := rl.CheckKey("10.0.0.1"); !allowed {
+		t.Fatal("first CheckKey call should be allowed")
+	}
+	// Check via the legacy alias eats the second token.
+	if allowed, _ := rl.Check("10.0.0.1"); !allowed {
+		t.Fatal("second Check call should be allowed")
+	}
+	// Third should be blocked regardless of which alias is used.
+	if allowed, _ := rl.Check("10.0.0.1"); allowed {
+		t.Fatal("third call should be rate limited (Check)")
+	}
+	if allowed, _ := rl.CheckKey("10.0.0.1"); allowed {
+		t.Fatal("third call should still be rate limited via CheckKey alias")
+	}
+}
+
 func TestRateLimiterWithRate_CustomLimit(t *testing.T) {
 	rl := NewRateLimiterWithRate(30, time.Minute)
 

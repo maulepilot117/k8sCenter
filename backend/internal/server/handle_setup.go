@@ -78,6 +78,16 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-account throttle (P2-1 part 2). Setup is one-shot — only the
+	// first call succeeds, every subsequent call returns 410 — but
+	// audit-listed setup-probing benefits from a per-username bucket
+	// so an attacker iterating likely admin names ("admin", "root",
+	// "administrator") is throttled independently of the global IP
+	// bucket.
+	if s.accountThrottle(w, r, "setup", req.Username, audit.ActionSetup) {
+		return
+	}
+
 	// P1-1: Setup token gate.
 	//
 	// If SetupToken is configured, a constant-time comparison is required
