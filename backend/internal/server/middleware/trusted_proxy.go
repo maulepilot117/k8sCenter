@@ -41,18 +41,44 @@ func TrustedProxy(cidrs []string, logger *slog.Logger) func(http.Handler) http.H
 	if logger == nil {
 		logger = slog.Default()
 	}
+	configuredNonEmpty := 0
 	trusted := make([]*net.IPNet, 0, len(cidrs))
 	for _, raw := range cidrs {
 		entry := strings.TrimSpace(raw)
 		if entry == "" {
 			continue
 		}
+		configuredNonEmpty++
 		_, n, err := net.ParseCIDR(entry)
 		if err != nil {
 			logger.Warn("trusted proxy CIDR rejected", "cidr", entry, "error", err)
 			continue
 		}
+		// Loud warning on /0 catch-all CIDRs: they reinstate the
+		// chi-RealIP-style "trust everyone" behaviour that Phase 3 set
+		// out to remove. Surfaced by the adversarial review — an
+		// operator who mis-copies an example template into production
+		// (or expands the trust set to cover an entire pod CIDR) gets
+		// a single startup line they can correlate against the actual
+		// rate-limit-bucket-poisoning behaviour rather than silently
+		// regressing P2-1.
+		ones, bits := n.Mask.Size()
+		if ones == 0 && bits > 0 {
+			logger.Warn("trusted proxy CIDR is a catch-all (/0); this reinstates the pre-Phase-3 blanket-trust behaviour audit finding P2-1 was meant to remove. Narrow to your ingress controller's pod CIDR.",
+				"cidr", entry)
+		}
 		trusted = append(trusted, n)
+	}
+	// If the operator configured CIDR entries but every one was
+	// rejected, the middleware silently degenerates to a no-op (no
+	// header rewrite, fail-closed). A single summary line surfaces the
+	// fact that the deployment-intended forwarded-header behaviour is
+	// not actually in effect, instead of relying on the operator to
+	// correlate N individual per-entry warnings. Reliability review,
+	// conf 85.
+	if configuredNonEmpty > 0 && len(trusted) == 0 {
+		logger.Warn("TrustedProxy: every configured CIDR entry was rejected; forwarded-header rewriting is disabled (fail-closed). Verify KUBECENTER_SERVER_TRUSTEDPROXYCIDRS values.",
+			"configured", configuredNonEmpty)
 	}
 
 	return func(next http.Handler) http.Handler {

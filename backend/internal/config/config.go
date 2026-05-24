@@ -107,8 +107,20 @@ type ServerConfig struct {
 	// at the socket-peer address. Default empty = fail-closed (no proxies
 	// trusted) so rate-limit buckets cannot be poisoned by spoofed
 	// headers from direct LAN/internet attackers (audit finding P2-1,
-	// 2026-05-22). Configure via KUBECENTER_SERVER_TRUSTEDPROXYCIDRS as
-	// a comma-separated list, e.g. "10.0.0.0/8,fd00::/8".
+	// 2026-05-22).
+	//
+	// Configure via KUBECENTER_SERVER_TRUSTEDPROXYCIDRS as a
+	// comma-separated list. Narrow the trust set to the ingress
+	// controller's exact pod or service CIDR — e.g. a single
+	// nginx-ingress pod /32 like "10.42.5.17/32", or the load-
+	// balancer's source range. AVOID broad ranges that include the
+	// full Kubernetes pod CIDR (typically 10.0.0.0/8 or 10.42.0.0/16);
+	// in those configurations any pod in the cluster can spoof
+	// X-Forwarded-For to poison rate-limit buckets and pollute audit
+	// SourceIP fields. The middleware emits a startup warning on /0
+	// catch-all CIDRs that reinstate the pre-Phase-3 blanket-trust
+	// behaviour, but narrower mis-scoping (e.g. /8) is silent — operator
+	// must scope this correctly per deployment.
 	TrustedProxyCIDRs []string `koanf:"trustedproxycidrs"`
 }
 
