@@ -920,6 +920,55 @@ Recommended follow-up:
   follow-up review path stays the same per commit; just the chunking
   changes.
 
+- **F#12 — Phase 2 commit `4cda51c` (28 files) re-offended the same rule.**
+  The round-1 fixer landed the AccessChecker remote-cluster SAR routing in
+  a single 28-file sweep, repeating the F#8 anti-pattern even though F#8
+  had already flagged it. The blast radius is concretely visible in the
+  round-2 audit: F#18 surfaced an AccessChecker / ClusterRouter contract
+  divergence that would have been caught at commit-review time if the
+  changes had been broken into ≤5-file phases. **Reinforced action for
+  future security phases:** even when changes are mechanically isomorphic
+  across many files, the per-commit caps STAY. Don't conflate "easy diff"
+  with "small blast radius" — easy diffs are exactly the ones that ship
+  contract drift unnoticed.
+
+- **F#11 (re-review changelog) — GET `/api/v1/monitoring/queries/{slug}`
+  response shape change.** The data envelope no longer includes the `slug`
+  or `query` fields; the response now matches `/query_range`'s
+  `{resultType, result, warnings}` shape exactly. The slug name + rendered
+  PromQL stay server-side in slog logs rather than echoing back to the
+  client. Mobile QueryRangeResult parser works against both endpoints
+  without a separate schema. This is the F#23 collapse; no client code in
+  this repo depended on the dropped fields. No CHANGELOG.md exists in this
+  repo; the PR description covers the change.
+
+- **F#14 (re-review changelog) — YAML endpoints reject non-local
+  `X-Cluster-ID` with 501.** `POST /api/v1/yaml/{validate,apply,diff}` and
+  `GET /api/v1/yaml/export/...` now return 501 Not Implemented when the
+  request carries a non-local X-Cluster-ID. The wire-handlers for
+  ClusterRouter-aware YAML operations have not been written yet; without
+  the 501 they would silently route to the local cluster, applying
+  manifests / rendering diffs against the wrong control plane. Operators
+  who need cross-cluster YAML apply must keep using `kubectl` against the
+  remote kubeconfig directly until the multi-cluster YAML path lands.
+
+- **F#21 (advisory, not fixed) — PromQLAdminGate has no `<noscript>`
+  fallback.** A user with JS disabled would see only the SSR "Loading…"
+  shell and never the role-gated denial copy. Accepted as a homelab-tier
+  UX gap: k8sCenter requires JS for the rest of the management surfaces
+  (resource lists, wizards, monaco editor), so the no-JS path is already
+  unusable. Worth fixing if the audience ever expands to operators behind
+  enterprise NoScript / CSP policies; until then it's not worth the
+  per-component noscript boilerplate.
+
+- **F#22 (advisory, not fixed) — ClusterRouter singleflight under-collapses
+  on per-user keys.** The singleflight key today is `clusterID + username +
+  groups`, so two different users hitting the same cluster issue two
+  parallel DB reads + decryptions + SSRF validations. A coarser cluster-
+  only key would coalesce more aggressively but would also require holding
+  the impersonation config separately from the rest.Config in the cache.
+  Trade-off documented; future optimization candidate.
+
 ## Verification Commands Run During Audit
 
 - `git status --short`
