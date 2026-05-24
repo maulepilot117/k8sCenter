@@ -12,6 +12,150 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 4 — Network / SSRF / TLS hardening (2026-05 audit)
+
+Phase 4 closes audit findings P2-6 (SSRF DNS rebinding window on
+remote-cluster and monitoring URLs), P2-7 (backend NetworkPolicy
+egress allowed all destinations on sensitive ports), P2-8 (chart
+permitted plaintext exposure of authenticated app traffic), and P3-8
+(dev PostgreSQL compose service bound to LAN with weak fixed
+credentials). The audit report is `plans/security-audit-2026-05-22.md`.
+
+### Breaking changes (operator action required)
+
+- **TLS-by-default chart guard** (audit P2-8). The Helm chart now
+  refuses to render any of three plaintext-exposed configurations
+  unless the new top-level `security.insecureExposureAcknowledged`
+  value is explicitly set to `true`:
+  1. `ingress.enabled=true` with empty `ingress.tls`.
+  2. `service.type=LoadBalancer` or `service.type=NodePort`.
+  3. `backend.config.dev=true` combined with any externally-reachable
+     service mode (LoadBalancer / NodePort / ingress-without-TLS).
+  The acknowledgement is intended for fully internal trust-domain
+  deployments where TLS termination happens upstream (managed LB with
+  cert, service-mesh gateway) and the network path stays inside a
+  trusted boundary. Default is `false` (safest posture). The bundled
+  `values-homelab.yaml.example` opts in explicitly with a comment
+  documenting the LAN-only trust boundary.
+
+- **SSRF DNS resolution fails closed** (audit P2-6 part 1).
+  `k8s.ValidateRemoteURL` previously allowed a connection through when
+  DNS resolution failed; the rationale was that the k8s client would
+  produce a more specific error. That left a window where transient
+  NXDOMAIN, poisoned records, or rebinding flips between validation and
+  dial could deliver requests to private endpoints the IP-block was
+  supposed to refuse. Operators with broken DNS will now see an
+  unambiguous "DNS resolution failed" error at remote-cluster
+  registration / connection time and at admin-UI settings updates,
+  rather than an SSRF-shaped silent success.
+
+- **Dev PostgreSQL compose loopback bind** (audit P3-8). The
+  developer compose file's port mapping changed from `5432:5432` (LAN
+  reachable) to `127.0.0.1:5432:5432` (loopback only). Credentials are
+  now sourced from `POSTGRES_PASSWORD` / `POSTGRES_USER` /
+  `POSTGRES_DB` environment variables (or `.env` file) with the
+  previous weak defaults preserved as fall-throughs for `make dev-db`.
+  Operators whose developer DB was being accessed from other LAN hosts
+  must now configure that connection through SSH tunnels or change the
+  bind explicitly. Production and staging Postgres deployments are
+  unaffected — they use the Helm chart, not this compose file.
+
+### Non-breaking changes
+
+- **SSRF-safe DialContext on long-lived HTTP transports** (audit P2-6
+  part 2). New `k8s.SafeHTTPTransport` and `k8s.SafeDialContext`
+  wired into:
+  - Remote-cluster `rest.Config.Dial` (cluster_router) — every k8s
+    API call through the impersonating clients re-validates the API
+    server IP, defending against DNS rebinding and the cluster URL
+    flipping to an internal address mid-session.
+  - Grafana reverse proxy transport — each Grafana 30x redirect
+    re-runs the IP check, so a misbehaving Grafana returning
+    `Location: http://169.254.169.254/` can't pivot the proxy.
+  - Grafana API client and Prometheus API client transports — same
+    protection for dashboard provisioning and PromQL queries.
+
+  Behaviour: each TCP dial re-resolves the host, pins to the
+  validated IP before dialing (a racy resolver can't substitute a
+  private IP), and rejects any candidate in the loopback / RFC1918 /
+  link-local-metadata / CGNAT / unspecified ranges.
+
+- **Hostname-resolving validation on admin-UI URL inputs** (audit
+  P2-6 part 1). `validateSettingsURL` previously only blocked literal
+  IPs. Settings paths (monitoring Prometheus / Grafana URLs, OIDC
+  issuer test, LDAP server test) now resolve the hostname and apply
+  the full SSRF block-list. Admins who need to point monitoring at
+  an in-cluster service should configure it via Helm values rather
+  than the UI.
+
+- **NetworkPolicy backend egress destinations** (audit P2-7). The
+  previous port-only egress rules let the backend reach any host on
+  the LAN, public internet, or in-cluster on the allowed ports.
+  Tightened to structured `to:` selectors with universal SSRF block:
+  - DNS: `namespaceSelector kube-system + podSelector k8s-app=kube-dns`
+    (tunable via `networkPolicy.egress.dnsNamespace/dnsPodLabel`).
+  - Kubernetes API: `ipBlock` allowlist via
+    `networkPolicy.egress.kubernetesApiCIDRs`, falling back to
+    `0.0.0.0/0 minus link-local/metadata` when empty.
+  - In-cluster Postgres / Prometheus / Grafana: `podSelector` by
+    standard `app.kubernetes.io/name` labels.
+  - External monitoring: `networkPolicy.egress.monitoringCIDRs` (opt-in).
+  - LDAP: `networkPolicy.egress.ldapCIDRs` (opt-in).
+  - Extra allowed: `networkPolicy.egress.extraAllowedCIDRs`.
+  - Extra blocked: `networkPolicy.egress.extraBlockedCIDRs` (appended
+    to the universal link-local + metadata block on every IP rule).
+
+  Default values preserve current reachability for homelab / single-
+  cluster deployments; operators with out-of-cluster dependencies opt
+  into the new knobs.
+
+- **Test seam: `NewPrometheusClientWithTransport`**. Production code
+  continues to use `NewPrometheusClient`, which wires
+  `SafeHTTPTransport` by default. The new variant accepts a caller-
+  supplied `http.RoundTripper` so tests using `httptest.Server` URLs
+  on loopback (which the safe-by-default transport correctly refuses)
+  can construct the client. The doc comment is explicit that
+  production callers must keep using the safe-by-default constructor.
+
+### Known follow-ups (Phase 4 deferred — single review round)
+
+This phase follows the Phase 3 cadence: one round of `/ce-code-review`
+plus this documented follow-up list rather than chasing every regression
+through additional cycles. The deferred items below are tracked here
+for the next audit:
+
+- **SafeDialContext IPv6 dual-stack pinning.** Current implementation
+  pins to `ips[0]` — fine for single-stack hosts, but for dual-stack
+  resolvers returning both an IPv4 and IPv6 candidate, the pin
+  forecloses on the dialer's happy-eyeballs preference. Acceptable
+  trade-off (every candidate is already validated to be non-private)
+  but worth revisiting if dual-stack-only environments report
+  connectivity regressions.
+- **NetworkPolicy egress: subchart Postgres labelSelector assumes
+  bitnami/CrunchyData conventions.** Operators with custom Postgres
+  deployments may need to add `extraAllowedCIDRs` even for in-cluster
+  Postgres. Could be tightened by exposing
+  `networkPolicy.egress.postgresPodLabels` similar to the dns pod
+  label knob.
+- **Cookie Secure flag still gated on global Dev flag, not per-request
+  loopback.** `Secure: !s.Config.Dev` means an admin who bypasses the
+  chart guard with `security.insecureExposureAcknowledged=true` AND
+  runs dev mode will ship non-Secure cookies. Acceptable given the
+  explicit acknowledgement, but a future hardening could tie the
+  Secure flag to the request's TLS state rather than the global Dev
+  config.
+- **Monitoring URL validation at boot-time helm/env path.** The
+  config-override path (`KUBECENTER_MONITORING_PROMETHEUSURL` set via
+  Helm) is not subjected to SafeDialContext at boot — only at first
+  dial. Operators set this consciously at deploy time and the dial-
+  time check still applies, but a boot-time fail-fast would surface
+  misconfiguration earlier.
+- **`internal/monitoring/discovery.go:263` pre-existing unusedparams
+  diagnostic.** Not introduced by Phase 4; flag for a future cleanup
+  PR.
+
+---
+
 ## Phase 3 — Auth primitives hardening (2026-05 audit)
 
 Phase 3 closes audit findings P2-1 (trusted-proxy CIDR boundary +
