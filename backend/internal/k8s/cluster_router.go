@@ -281,19 +281,35 @@ func (cr *ClusterRouter) remoteDynamicClient(ctx context.Context, clusterID, use
 // closure. If that caller's HTTP request was cancelled mid-flight (client
 // disconnect, request timeout), every coalesced waiter saw the same
 // context.Canceled error even though their own requests were still alive.
-// Now the closure uses a fresh background context with the first caller's
-// deadline preserved, so a cancelled first caller doesn't poison everyone
-// else's read of the shared cluster config.
+//
+// F#6 + F#12 + F#15 (round-3) — switched from a manual background-context
+// rebuild to context.WithoutCancel (Go 1.21+). WithoutCancel preserves
+// every value on the caller's context (request_id, trace span, audit
+// identity) while severing the cancel signal — this fixes both the
+// original F#17 poisoning AND the F#15 trace-span drop in one go. When
+// the caller did NOT set a deadline, we cap the singleflight body at
+// 30s to bound a runaway DB or remote API; that 30s default matches the
+// existing remote-cluster connection timeout. When the caller DID set a
+// deadline, we preserve it via context.WithDeadline so a slow remote
+// still respects the HTTP request budget.
 func (cr *ClusterRouter) remoteConfig(ctx context.Context, clusterID, username string, groups []string) (*rest.Config, error) {
 	sfKey := clusterID + "\x00" + cacheKey(username, groups)
 	val, err, _ := cr.configSF.Do(sfKey, func() (any, error) {
-		// Preserve the deadline so a slow remote DB still respects the
-		// HTTP request budget, but use a non-cancellable parent so a
-		// single caller's disconnect doesn't sink the coalesced batch.
-		bgCtx := context.Background()
+		// Preserve caller context VALUES (request_id, trace span) but
+		// drop the cancel signal so one caller's disconnect doesn't
+		// poison every coalesced waiter.
+		bgCtx := context.WithoutCancel(ctx)
 		if deadline, ok := ctx.Deadline(); ok {
 			var cancel context.CancelFunc
 			bgCtx, cancel = context.WithDeadline(bgCtx, deadline)
+			defer cancel()
+		} else {
+			// F#6 — bound the no-deadline case so a hung DB / remote
+			// API doesn't keep the singleflight slot pinned forever
+			// while every concurrent caller hangs waiting on it. 30s
+			// matches the existing remote-cluster connection timeout.
+			var cancel context.CancelFunc
+			bgCtx, cancel = context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 		}
 		return cr.buildRemoteConfig(bgCtx, clusterID, username, groups)

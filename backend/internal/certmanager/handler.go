@@ -54,9 +54,10 @@ type Handler struct {
 	// single page load with N cert-manager widgets doesn't fan out into N
 	// round-trips against the remote API. Coalesces across HandleList*
 	// + HandleGetCertificate + HandleListExpiring concurrent calls in
-	// the same 60s window. Singleflight (fetchRemoteGroup) protects
-	// against concurrent first-loads; the cache + TTL bound the rate
-	// after that.
+	// the same 30s window (cacheTTL above). Singleflight (remoteFetchGroup)
+	// protects against concurrent first-loads; the cache + TTL bound the
+	// rate after that. F#11 (round-3) — was "60s window"; the constant
+	// has always been 30s.
 	remoteFetchGroup singleflight.Group
 	remoteCacheMu    sync.RWMutex
 	remoteCache      map[string]*cachedData // keyed by clusterID
@@ -296,18 +297,28 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 // fetchAllRemote pulls certificates, issuers, and clusterissuers directly
 // from a remote cluster via an impersonating dynamic client.
 //
-// F#16 (round-2): wrapped by a 60s per-cluster cache + singleflight so a
+// F#16 (round-2): wrapped by a 30s per-cluster cache + singleflight so a
 // single page load that touches three remote endpoints (list certs, list
 // issuers, get expiring) doesn't fan out into 3 sets of List calls against
 // the remote API. The cache is keyed only on clusterID — RBAC filtering
 // remains per-user-per-call via filterByRBAC, so the cached cluster-wide
 // list is still safe to share across users. Per-user RBAC re-evaluation
 // after the cache hit is what makes this safe; F#3's worry about RBAC
-// drift is bounded by the 60s TTL.
+// drift is bounded by the 30s TTL (see cacheTTL).
+//
+// F#3 (round-3) — singleflight ctx-cancel poisoning fix. The previous
+// implementation passed the FIRST caller's ctx straight into
+// fetchAllRemoteDirect inside the shared Do() closure. If that caller's
+// HTTP request was cancelled mid-flight (client disconnect, request
+// timeout), every coalesced waiter saw the same context.Canceled error
+// even though their own requests were still alive. Use context.WithoutCancel
+// to preserve caller VALUES (request_id, trace span) while severing the
+// cancel signal; cap at the caller's deadline if set, else default to
+// 30s (matches cluster_router.remoteConfig — F#6 cap).
 //
 // Callers must already have verified the cluster is non-local via
 // k8s.IsLocalClusterID. Returns (certs, issuers, clusterIssuers, err).
-// F#3 — security audit 2026-05-22; F#16 — re-review.
+// F#3 — security audit 2026-05-22; F#16 — re-review; F#3/F#6 round-3.
 func (h *Handler) fetchAllRemote(ctx context.Context, clusterID string, user *auth.User) ([]Certificate, []Issuer, []Issuer, error) {
 	// Cache check
 	h.remoteCacheMu.RLock()
@@ -318,8 +329,23 @@ func (h *Handler) fetchAllRemote(ctx context.Context, clusterID string, user *au
 	h.remoteCacheMu.RUnlock()
 
 	// Singleflight coalesce — concurrent first-loads share one round-trip.
+	// Build a context that cannot be cancelled by any single caller's
+	// disconnect (F#3 round-3) but still respects the caller's deadline
+	// (and falls back to a 30s cap when no deadline was supplied — F#6).
 	val, err, _ := h.remoteFetchGroup.Do(clusterID, func() (any, error) {
-		certs, issuers, cissuers, ferr := h.fetchAllRemoteDirect(ctx, clusterID, user)
+		sfCtx := context.WithoutCancel(ctx)
+		var cancel context.CancelFunc
+		if deadline, ok := ctx.Deadline(); ok {
+			sfCtx, cancel = context.WithDeadline(sfCtx, deadline)
+		} else {
+			// F#6 — bound the no-deadline case so a hung remote API
+			// doesn't pin the singleflight slot indefinitely. 30s
+			// matches cluster_router.remoteConfig's default.
+			sfCtx, cancel = context.WithTimeout(sfCtx, 30*time.Second)
+		}
+		defer cancel()
+
+		certs, issuers, cissuers, ferr := h.fetchAllRemoteDirect(sfCtx, clusterID, user)
 		if ferr != nil {
 			return nil, ferr
 		}
