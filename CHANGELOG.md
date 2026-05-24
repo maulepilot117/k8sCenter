@@ -12,6 +12,105 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 3 — Auth primitives hardening (2026-05 audit)
+
+Phase 3 closes audit findings P2-1 (trusted-proxy CIDR boundary +
+per-account/login-name throttle), P2-2 (atomic refresh-token rotation),
+and P2-3 (LDAP revalidation on refresh + 1h LDAP refresh-token cap).
+The audit report is `plans/security-audit-2026-05-22.md` (same source
+as Phase 2; Phase 3 closes the remaining auth-primitive findings).
+
+### Breaking changes (operator action required)
+
+- **LDAP refresh-token TTL: 7 days → 1 hour** (audit P2-3). LDAP-sourced
+  sessions now cap refresh-token lifetime at 1 hour, mirroring the OIDC
+  cap added in Phase 2. Combined with the new per-refresh revalidation
+  against the directory, this bounds the worst-case revoked-LDAP-user
+  access window to one access-token lifetime (~15 minutes) plus the
+  5-minute transient-outage grace window. Operators relying on long-
+  lived LDAP refresh sessions must adjust client retry / re-login
+  behaviour. See `backend/internal/auth/jwt.go` `LDAPRefreshTokenLifetime`.
+
+- **LDAP revalidation on every refresh** (audit P2-3). The refresh
+  handler now binds to the configured LDAP directory and re-fetches
+  group membership on every refresh attempt for LDAP-sourced sessions.
+  This means: (a) the LDAP server sees one bind+search per active
+  user's refresh interval (~15 minutes); (b) a directory-side LDAP
+  outage longer than 5 minutes evicts all LDAP users until the
+  directory recovers. The 5-minute bounded grace window preserves
+  last-known identity during brief outages. Operators with high LDAP
+  client counts should size the directory accordingly.
+
+- **`KUBECENTER_SERVER_TRUSTEDPROXYCIDRS` config** (audit P2-1). The
+  global middleware no longer trusts X-Forwarded-For / X-Real-IP from
+  every peer (the chi-RealIP default). Operators behind a load
+  balancer or ingress controller MUST configure this CIDR allowlist
+  or rate-limit buckets and audit `SourceIP` fields will key on the
+  proxy's address rather than the client's. Default empty =
+  fail-closed (no proxies trusted). Narrow the trust set to the
+  exact ingress-controller pod or service CIDR — broad ranges (e.g.
+  the full Kubernetes pod CIDR) let any in-cluster workload spoof the
+  header. The middleware emits a startup WARN on `/0` catch-all
+  entries that reinstate the pre-Phase-3 blanket-trust behaviour.
+
+### Non-breaking changes
+
+- **Atomic refresh-token rotation** (audit P2-2). The Peek+Consume
+  split that allowed two concurrent refreshers to each mint a
+  successor pair from one stolen refresh token has been replaced by
+  an atomic `SessionStore.Rotate` (sync.Map.LoadAndDelete-backed).
+  Concurrent refresh attempts on the same token can no longer both
+  succeed; the loser receives 401. Transient post-rotate failures
+  (issueTokenPair signing error, LDAP transient-outside-grace) call
+  `SessionStore.Restore` so the client can retry rather than being
+  silently logged out. No operator action.
+
+- **Per-account login + setup throttle** (audit P2-1 part 2). New
+  per-username rate-limit bucket layered on top of the existing
+  per-IP throttle. An attacker rotating source IPs against a single
+  username (or iterating likely admin names against `/setup/init`)
+  now hits the account bucket regardless of source IP. No operator
+  action; budget shares the global 5/min default.
+
+- **Audit-emit coverage**. handleRefresh body-mode missing-token,
+  user-not-found, and issueTokenPair-failure paths now emit audit
+  entries; handleSetupInit setup-token mismatch now audits the 403.
+  Earlier branches were silent, hiding brute-force probing from the
+  audit table.
+
+### Known follow-ups (filed during Phase 3 ce-code-review)
+
+These are documented review findings deferred to follow-up PRs to
+keep Phase 3 focused. None are blockers for shipping Phase 3.
+
+- Credential-login (`/auth/login`) body-mode is missing — agents using
+  local/LDAP credentials cannot retrieve the refresh token at login
+  time. (agent-native AN-C1, P1, conf 100)
+- `/auth/refresh` 401 responses lack a stable `error.Reason`
+  discriminator across five semantically distinct failure modes.
+  (agent-native AN-W1, P1)
+- Audit query API has no detail-text filter — monitoring agents
+  detecting LDAP-grace-window thrashing must client-side-filter.
+  (agent-native AN-W2, P2)
+- handleLogout revokes only the inbound token; a concurrent refresh
+  can leave an orphaned rotated successor session that survives until
+  ExpiresAt. (adversarial adv-2, P2)
+- Per-account throttle key is case-folded but not Unicode-normalised;
+  trailing whitespace + zero-width characters dilute the throttle.
+  (security sec-2 + adversarial adv-3, P3)
+- `ldapGracePeriod` is a hardcoded 5-minute constant — not
+  config-tunable. (maintainability MAINT-003, P2)
+- LDAP `Revalidate` context cancellation does not propagate to the
+  in-flight LDAP ops (10s wall-clock bound only). (reliability
+  REL-02, P2)
+- No singleflight coalescing on `Revalidate` for the same userDN;
+  mass-refresh after backend restart hits the directory N times per
+  user. NOTE: the learnings researcher flagged this as advisory only
+  — the Phase 2 singleflight pattern in cluster_router does NOT
+  transfer cleanly to per-session LDAP. (reliability REL-03, advisory)
+
+---
+
 ## Phase 2 — Multi-cluster RBAC & TLS hardening (2026-05 audit)
 
 The Phase 2 security audit produced three review rounds (2026-05-13,
