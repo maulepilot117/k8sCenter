@@ -1020,3 +1020,101 @@ func TestHandleRefresh_LDAP_ProviderUnregistered(t *testing.T) {
 		t.Fatalf("retry expected 401, got %d", w2.Code)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Phase 3 review additions — regression tests added in response to the
+// ce-code-review findings on audit emission and LastRevalidated
+// stamping. See the Phase 3 session log + PR description.
+// ---------------------------------------------------------------------
+
+// TestHandleLogin_AccountThrottle_AuditEntry pins the audit emit on
+// 429 from the per-account throttle. The earlier brute-force /
+// case-folded / independent-usernames tests asserted HTTP status and
+// Retry-After only, so a regression that reordered statements before
+// the writeJSON early-return (or dropped the AuditLogger.Log call
+// entirely) would pass all three but leave throttle hits invisible
+// in the audit table. Testing review T-01, conf 95.
+func TestHandleLogin_AccountThrottle_AuditEntry(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(1, time.Minute)
+	rec := &recordingAuditLogger{}
+	srv.AuditLogger = rec
+
+	// First attempt consumes the bucket — should fail with 401 (bad
+	// creds, no user exists), emitting a login-failure audit entry.
+	w1 := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong",
+	}, "192.0.2.10:54321")
+	if w1.Code != http.StatusUnauthorized {
+		t.Fatalf("first attempt: expected 401, got %d", w1.Code)
+	}
+
+	// Second attempt hits the per-account throttle.
+	w2 := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong",
+	}, "192.0.2.99:54321") // rotated IP — IP throttle doesn't fire
+	if w2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second attempt: expected 429 from account throttle, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	entries := rec.snapshot()
+	var throttleEntry *audit.Entry
+	for i := range entries {
+		if entries[i].Action == audit.ActionRateLimited {
+			throttleEntry = &entries[i]
+			break
+		}
+	}
+	if throttleEntry == nil {
+		t.Fatalf("expected at least one ActionRateLimited audit entry; got: %+v", entries)
+	}
+	if throttleEntry.Result != audit.ResultDenied {
+		t.Errorf("Result = %q, want %q", throttleEntry.Result, audit.ResultDenied)
+	}
+	if !strings.Contains(throttleEntry.Detail, "login") {
+		t.Errorf("Detail = %q, want substring %q (purpose namespace)", throttleEntry.Detail, "login")
+	}
+	if !strings.Contains(throttleEntry.Detail, "retry") {
+		t.Errorf("Detail = %q, want retry-seconds reference", throttleEntry.Detail)
+	}
+}
+
+// TestIssueTokenPairAt_LastRevalidatedStamped pins the LastRevalidated
+// field on the stored session. The LDAP grace-window predicate in
+// revalidateLDAPSession (handle_auth.go) pivots entirely on this field
+// — zero/stale -> fail-closed, recent -> grace-open. If the
+// assignment were dropped from issueTokenPairAt's struct literal
+// during a future refactor, the grace window would silently always
+// fail-closed (or always open if the zero-time guard were also wrong)
+// and nothing else would catch it. Testing review T-02, conf 90.
+func TestIssueTokenPairAt_LastRevalidatedStamped(t *testing.T) {
+	srv := testServer(t)
+
+	fixedTime := time.Now().Add(-2 * time.Minute) // distinct from time.Now() inside the call
+	user := &auth.User{ID: "ldap:corp:CN=alice,OU=Users", Username: "alice", Provider: "ldap"}
+
+	w := httptest.NewRecorder()
+	_, refreshToken, err := srv.issueTokenPairAt(w, user, false /* cookieMode */, fixedTime)
+	if err != nil {
+		t.Fatalf("issueTokenPairAt: %v", err)
+	}
+
+	var got time.Time
+	var found bool
+	srv.Sessions.RangeSessions(func(s auth.RefreshSession) bool {
+		if s.Token == refreshToken {
+			found = true
+			got = s.LastRevalidated
+			return false
+		}
+		return true
+	})
+	if !found {
+		t.Fatalf("issued refresh token not in SessionStore")
+	}
+	if !got.Equal(fixedTime) {
+		t.Errorf("session.LastRevalidated = %v, want %v", got, fixedTime)
+	}
+}
