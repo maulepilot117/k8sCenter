@@ -47,6 +47,14 @@ auth:
   jwtSecret: "REPLACE_ME_JWT_SECRET_MIN_32_BYTES"
   setupToken: "REPLACE_ME_SETUP_TOKEN"
 
+# Homelab consciously accepts the plaintext-exposure risk: service.type
+# below is LoadBalancer (no upstream TLS termination), backend.config.dev
+# is true (relaxed rate limits + non-Secure cookies), and the LAN is
+# treated as a trust boundary. Set to false and add an HTTPS ingress for
+# anything that leaves the homelab.
+security:
+  insecureExposureAcknowledged: true
+
 service:
   type: LoadBalancer
   port: 8080

@@ -8,6 +8,22 @@ fullnameOverride: ""
 imagePullSecrets: []
 # - name: ghcr-pull-secret
 
+# -- Security posture (P2-8 of the 2026-05-22 security audit)
+#
+# Set insecureExposureAcknowledged=true to allow plaintext-exposed
+# deployment configurations: service.type=LoadBalancer / NodePort,
+# ingress.enabled=true without ingress.tls, or backend.config.dev=true
+# combined with any externally-reachable service. The chart refuses to
+# render any of those modes by default — exposing the backend without
+# TLS leaks access tokens, refresh tokens, setup tokens, and all API
+# traffic in the clear.
+#
+# Acknowledge the risk only when TLS termination happens upstream
+# (managed LB with cert, service mesh gateway, etc.) and the network
+# path stays inside a trusted boundary.
+security:
+  insecureExposureAcknowledged: false
+
 # -- Backend (Go API server)
 backend:
   image:
