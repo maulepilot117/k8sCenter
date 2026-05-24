@@ -61,17 +61,34 @@ func (rl *RateLimiter) SetAuditLogger(logger audit.Logger) {
 	rl.auditLogger = logger
 }
 
-// Check tests if the given IP is within rate limits and returns the retry-after
-// duration in seconds if rate-limited. Both values are computed under a single
-// lock acquisition to avoid race conditions.
+// Check is a back-compat alias for [CheckKey]. New call sites should
+// prefer CheckKey for explicit key naming — IP throttles use
+// CheckKey(<ip>) and per-account throttles use CheckKey("login:<user>")
+// against the same RateLimiter instance.
 func (rl *RateLimiter) Check(ip string) (allowed bool, retryAfterSec int) {
+	return rl.CheckKey(ip)
+}
+
+// CheckKey tests if the given key is within rate limits and returns the
+// retry-after duration in seconds if rate-limited. Both values are
+// computed under a single lock acquisition to avoid race conditions.
+//
+// The key is opaque — IP-based throttles pass the raw IP, account
+// throttles pass a namespaced username like "login:alice" or
+// "setup:bob" (audit finding P2-1 part 2, 2026-05-22). Callers are
+// responsible for choosing non-colliding namespaces; the same bucket
+// map backs every keyspace, so a careless "alice"/"login:alice"/
+// "10.0.0.1" mix would have shared accounting. The convention in this
+// codebase is: bare IPs for IP throttles, "<purpose>:<account>" for
+// account throttles.
+func (rl *RateLimiter) CheckKey(key string) (allowed bool, retryAfterSec int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	b, ok := rl.buckets[ip]
+	b, ok := rl.buckets[key]
 	if !ok || now.Sub(b.lastReset) >= rl.window {
-		rl.buckets[ip] = &bucket{tokens: 1, lastReset: now}
+		rl.buckets[key] = &bucket{tokens: 1, lastReset: now}
 		return true, 0
 	}
 

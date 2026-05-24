@@ -135,7 +135,7 @@ k8scenter/
 - **Tailwind CSS utility-only.** No custom CSS class names. Theme via CSS custom properties (`var(--accent)`, `var(--success)`, etc.) — no hardcoded color classes.
 
 ### Security
-- **JWT: 15 min access. Refresh: 7 day (local/LDAP) or 1 hour (OIDC).** The shorter OIDC window propagates IdP revocation (account disabled, group removed) within the hour rather than waiting for the standard 7-day rotation cycle. See `backend/internal/auth/jwt.go` `OIDCRefreshTokenLifetime`. Refresh tokens stored server-side (httpOnly cookie for web, body-mode for mobile).
+- **JWT: 15 min access. Refresh: 7 day (local) or 1 hour (LDAP/OIDC).** The shorter LDAP/OIDC window propagates external-identity-store revocation (account disabled, group removed) within the hour rather than waiting for the standard 7-day rotation cycle. LDAP sessions additionally revalidate against the directory on every refresh with a 5-minute bounded grace window for transient outages. See `backend/internal/auth/jwt.go` `OIDCRefreshTokenLifetime` + `LDAPRefreshTokenLifetime`, and `backend/internal/server/handle_auth.go` `revalidateLDAPSession`. Refresh tokens stored server-side (httpOnly cookie for web, body-mode for mobile).
 - **Secrets masked in API responses.** Reveal requires explicit action + audit log.
 - **CSP headers, NetworkPolicy, Pod Security Standards (restricted profile).**
 - **Audit logging for all write operations.** PostgreSQL-backed, 90-day retention.

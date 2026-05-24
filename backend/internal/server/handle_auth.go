@@ -2,7 +2,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -10,6 +15,47 @@ import (
 	"github.com/kubecenter/kubecenter/pkg/api"
 	"k8s.io/apimachinery/pkg/labels"
 )
+
+// accountThrottle applies a per-username rate-limit bucket on the
+// supplied RateLimiter against the namespaced key "<purpose>:<user>".
+// Username is case-folded so "Admin" / "admin" / "ADMIN" share one
+// bucket — without this an attacker could rotate case to multiply the
+// per-account budget. On rate-limit hit emits an [audit.ActionRateLimited]
+// entry and writes a 429 with Retry-After; returns true so the caller
+// can early-return. Successful login does NOT reset the bucket, so an
+// attacker can't mix valid creds with brute-force attempts to extend
+// the budget. Audit finding P2-1 part 2 (2026-05-22).
+func (s *Server) accountThrottle(w http.ResponseWriter, r *http.Request, purpose, username string, action audit.Action) bool {
+	if username == "" {
+		return false
+	}
+	key := purpose + ":" + strings.ToLower(username)
+	allowed, retry := s.RateLimiter.CheckKey(key)
+	if allowed {
+		return false
+	}
+	entry := s.newAuditEntry(r, username, audit.ActionRateLimited, audit.ResultDenied)
+	entry.Detail = fmt.Sprintf("%s account throttle: %s (retry %ds)", purpose, action, retry)
+	s.AuditLogger.Log(r.Context(), entry)
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeJSON(w, http.StatusTooManyRequests, api.Response{
+		Error: &api.APIError{
+			Code:    429,
+			Message: "too many attempts",
+			Detail:  fmt.Sprintf("try again in %d seconds", retry),
+		},
+	})
+	return true
+}
+
+// ldapGracePeriod bounds how long after the last successful LDAP
+// revalidation the refresh handler will fall back to cached identity
+// during a transient LDAP outage. A 5-minute window is short enough
+// that a sustained outage cannot indefinitely extend access for a
+// user whose identity was revoked in the directory, but long enough
+// that brief LDAP server flips don't evict every active session at
+// once. Audit finding P2-3 (2026-05-22).
+const ldapGracePeriod = 5 * time.Minute
 
 // handleLogin authenticates a user via credential-based providers (local, LDAP).
 // The optional "provider" field in the request body selects which provider to use (default: "local").
@@ -35,6 +81,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "invalid credentials"},
 		})
+		return
+	}
+
+	// Per-account throttle BEFORE provider lookup so an attacker who
+	// already knows the rate-limit budget can't multiply it by varying
+	// the provider field. Audit finding P2-1 part 2 (2026-05-22).
+	if s.accountThrottle(w, r, "login", creds.Username, audit.ActionLogin) {
 		return
 	}
 
@@ -102,6 +155,9 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
 		if jerr := json.NewDecoder(r.Body).Decode(&body); jerr != nil || body.RefreshToken == "" {
+			entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
+			entry.Detail = "missing or malformed refresh token (body mode)"
+			s.AuditLogger.Log(r.Context(), entry)
 			writeJSON(w, http.StatusUnauthorized, api.Response{
 				Error: &api.APIError{Code: 401, Message: "missing refresh token"},
 			})
@@ -111,11 +167,15 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		bodyMode = true
 	}
 
-	// Issue #274 — Peek validates the session without deleting it. We
-	// only Consume the session AFTER issueTokenPair succeeds, so a
-	// transient signing or RNG failure no longer silently logs the
-	// user out (their original refresh token remains valid for retry).
-	session, err := s.Sessions.Peek(refreshTokenIn)
+	// Audit finding P2-2 (2026-05-22) — Rotate atomically removes the
+	// session in a single sync.Map.LoadAndDelete. Two concurrent
+	// refreshers can therefore never both mint a successor pair; the
+	// loser observes ErrSessionNotFound and is rejected. If post-rotate
+	// work (issueTokenPair, user lookup) fails for the winner, we
+	// Restore the session so the client can retry with the same refresh
+	// token rather than being silently logged out by a transient
+	// failure (issue #274's original intent, now race-free).
+	session, err := s.Sessions.Rotate(refreshTokenIn)
 	if err != nil {
 		entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
 		entry.Detail = "invalid or expired refresh token"
@@ -126,56 +186,76 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For OIDC users, use the cached user data from the session (no local store).
-	// For local/LDAP users, look up by ID from the provider registry.
-	var user *auth.User
-	if session.CachedUser != nil {
-		user = session.CachedUser
-	} else {
-		user, err = s.AuthRegistry.GetUserByID(session.Provider, session.UserID)
-		if err != nil {
-			// User no longer exists — the session is stale. Consume
-			// it now so subsequent refreshes with the same token return
-			// 401 (refresh-token-not-found) instead of repeatedly
-			// hitting the same dead user lookup.
-			if cerr := s.Sessions.Consume(refreshTokenIn); cerr != nil && cerr != auth.ErrSessionNotFound {
-				s.Logger.Warn("failed to consume stale session", "error", cerr)
-			}
-			writeJSON(w, http.StatusUnauthorized, api.Response{
-				Error: &api.APIError{Code: 401, Message: "user not found"},
-			})
+	// Resolve the User. LDAP sessions revalidate against the directory
+	// on every refresh (audit P2-3); OIDC sessions reuse the cached user
+	// (their 1h cap propagates IdP revocation); local sessions look up
+	// the live row from the in-memory store.
+	var (
+		user            *auth.User
+		lastRevalidated = time.Now() // refreshed identity → new high-water mark
+		auditDetail     string       // non-empty signals a non-standard success (e.g. LDAP grace fallback) to the final audit emit
+	)
+	switch session.Provider {
+	case "ldap":
+		var rerr error
+		user, lastRevalidated, auditDetail, rerr = s.revalidateLDAPSession(w, r, session)
+		if rerr != nil {
+			// revalidateLDAPSession already wrote the 401 + emitted the
+			// audit entry. Whether the session was Restored depends on
+			// the branch: transient-outside-grace Restores so the client
+			// can retry once LDAP comes back; definitive rejections do
+			// NOT Restore (the user is genuinely gone or the metadata
+			// is broken — retrying the same token can never succeed).
 			return
+		}
+	default:
+		if session.CachedUser != nil {
+			user = session.CachedUser
+		} else {
+			user, err = s.AuthRegistry.GetUserByID(session.Provider, session.UserID)
+			if err != nil {
+				// User no longer exists — the session is genuinely stale.
+				// Rotate already removed the row, so subsequent refreshes
+				// with the same token will return 401 (not-found) without
+				// re-running this dead lookup. No Restore.
+				entry := s.newAuditEntry(r, "", audit.ActionRefresh, audit.ResultFailure)
+				entry.Detail = "user no longer present for provider " + session.Provider
+				s.AuditLogger.Log(r.Context(), entry)
+				writeJSON(w, http.StatusUnauthorized, api.Response{
+					Error: &api.APIError{Code: 401, Message: "user not found"},
+				})
+				return
+			}
 		}
 	}
 
 	// In body-mode (mobile) we skip setting the cookie — the new refresh
 	// token is echoed in the JSON response. In cookie-mode (web) we keep
-	// the existing httpOnly cookie behaviour.
-	accessToken, newRefreshToken, err := s.issueTokenPair(w, user, !bodyMode)
+	// the existing httpOnly cookie behaviour. The LDAP grace fallback
+	// path preserves the original LastRevalidated timestamp so a
+	// sustained outage cannot extend revoked-user access beyond the
+	// 5-minute grace window.
+	accessToken, newRefreshToken, err := s.issueTokenPairAt(w, user, !bodyMode, lastRevalidated)
 	if err != nil {
-		// Token mint failed; preserve the session by NOT calling Consume.
-		// The client can retry with the same refresh token. Issue #274.
+		// Token mint failed — Restore the original session so the
+		// client can retry. The new sentinel uses the original
+		// ExpiresAt, so retry windows shrink correctly over time.
+		s.Sessions.Restore(session)
 		s.Logger.Error("failed to issue tokens", "error", err)
+		failEntry := s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultFailure)
+		failEntry.Detail = "issueTokenPair failed; session restored for client retry"
+		s.AuditLogger.Log(r.Context(), failEntry)
 		writeJSON(w, http.StatusInternalServerError, api.Response{
 			Error: &api.APIError{Code: 500, Message: "failed to issue token"},
 		})
 		return
 	}
 
-	// Token pair successfully minted — consume the original session so
-	// it cannot be replayed. ErrSessionNotFound here means a concurrent
-	// refresh consumed it first; both clients have valid new pairs, so
-	// the rotation is effectively complete either way. Log for
-	// diagnostics but don't fail the response.
-	if cerr := s.Sessions.Consume(refreshTokenIn); cerr != nil {
-		if cerr == auth.ErrSessionNotFound {
-			s.Logger.Debug("refresh consume race — session already gone", "user", user.Username)
-		} else {
-			s.Logger.Warn("refresh consume failed", "error", cerr, "user", user.Username)
-		}
+	successEntry := s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess)
+	if auditDetail != "" {
+		successEntry.Detail = auditDetail
 	}
-
-	s.AuditLogger.Log(r.Context(), s.newAuditEntry(r, user.Username, audit.ActionRefresh, audit.ResultSuccess))
+	s.AuditLogger.Log(r.Context(), successEntry)
 
 	respData := map[string]any{
 		"accessToken": accessToken,
@@ -191,6 +271,140 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		respData["refreshExpiresIn"] = int(auth.RefreshLifetimeFor(user.Provider).Seconds())
 	}
 	writeJSON(w, http.StatusOK, api.Response{Data: respData})
+}
+
+// revalidateLDAPSession re-authorises an LDAP user against the directory
+// during a token refresh. On success returns the freshly mapped user, a
+// fresh LastRevalidated timestamp, and an optional audit detail string
+// (non-empty only on grace-window fallback). On failure writes the 401
+// response, emits the audit entry, and returns a non-nil error so the
+// caller can abort without retrying.
+//
+// Failure modes and Restore behaviour:
+//   - Malformed UserID, unknown provider ID, type mismatch: definitive
+//     401, NO Restore (session metadata is broken; re-login is the only
+//     path forward).
+//   - Definitive Revalidate rejection (user gone, ambiguous, malformed
+//     DN): definitive 401, NO Restore (user is genuinely gone from the
+//     directory).
+//   - Transient Revalidate error WITHIN grace window AND with prior
+//     CachedUser: fall back to last-known identity, audit-flag the
+//     grace event via the auditDetail return so the caller's single
+//     final audit emit carries the grace context. Preserves the
+//     original LastRevalidated on the successor session so subsequent
+//     refreshes during a sustained outage observe an ever-shrinking
+//     grace window rather than restarting it on every refresh.
+//   - Transient Revalidate error OUTSIDE the grace window: 401 + Restore.
+//     The outage is transient by classification; the client should be
+//     able to retry once LDAP recovers rather than being forced to
+//     re-authenticate. The restored session's LastRevalidated stays
+//     stale, so retries during continued outage keep hitting this
+//     branch (correct behaviour).
+//
+// Audit finding P2-3 (2026-05-22). Returned auditDetail also closes
+// the double-emit bug surfaced by the Phase 3 review: previously this
+// helper emitted a Success+grace audit entry inline AND the caller's
+// final success emit ALSO fired, producing two rows per refresh.
+func (s *Server) revalidateLDAPSession(w http.ResponseWriter, r *http.Request, session *auth.RefreshSession) (*auth.User, time.Time, string, error) {
+	// UserID format from ldap.go mapToUser: "ldap:<providerID>:<DN>".
+	// DN may contain colons in attribute values, so split into exactly 3.
+	parts := strings.SplitN(session.UserID, ":", 3)
+	if len(parts) != 3 || parts[0] != "ldap" || parts[1] == "" || parts[2] == "" {
+		s.Logger.Error("malformed LDAP session userID", "userID", session.UserID)
+		s.writeLDAPRefreshFailure(w, r, "", "", "malformed session", "session invalid")
+		return nil, time.Time{}, "", errors.New("malformed LDAP session userID")
+	}
+	providerID, userDN := parts[1], parts[2]
+
+	// Username for audit attribution — pulled from CachedUser when
+	// available so failure rows in the audit table link to the actual
+	// account rather than the empty string. Earlier code passed "" on
+	// every LDAP refresh-failure branch, breaking "who got kicked out
+	// when LDAP came back" queries.
+	username := ""
+	if session.CachedUser != nil {
+		username = session.CachedUser.Username
+	}
+
+	provider, ok := s.AuthRegistry.GetCredential(providerID)
+	if !ok {
+		s.Logger.Error("LDAP provider not found for refresh", "providerID", providerID)
+		s.writeLDAPRefreshFailure(w, r, username, providerID, "provider not registered", "auth provider unavailable")
+		return nil, time.Time{}, "", errors.New("LDAP provider not registered")
+	}
+	ldapProvider, ok := provider.(*auth.LDAPProvider)
+	if !ok {
+		s.Logger.Error("registered provider is not LDAP", "providerID", providerID, "type", provider.Type())
+		s.writeLDAPRefreshFailure(w, r, username, providerID, "provider type mismatch", "session invalid")
+		return nil, time.Time{}, "", errors.New("provider type mismatch")
+	}
+
+	user, err := ldapProvider.Revalidate(r.Context(), userDN)
+	switch {
+	case err == nil:
+		// Fresh identity — adopt the revalidated groups and stamp a new
+		// high-water mark on the successor session.
+		return user, time.Now(), "", nil
+
+	case errors.Is(err, auth.ErrLDAPTransient):
+		// Bounded grace: allow last-known identity only if the most
+		// recent successful revalidation is within ldapGracePeriod.
+		// session.LastRevalidated is preserved on the successor session
+		// (see issueTokenPairAt call site) so the grace window shrinks
+		// on each refresh during a sustained outage rather than
+		// resetting.
+		if session.CachedUser == nil || session.LastRevalidated.IsZero() ||
+			time.Since(session.LastRevalidated) > ldapGracePeriod {
+			s.Logger.Warn("LDAP revalidation transient — outside grace window, restoring session for retry",
+				"providerID", providerID, "err", err,
+				"lastRevalidated", session.LastRevalidated)
+			// Restore the original session: the outage is transient by
+			// classification, so the client should be able to retry
+			// once LDAP recovers. Without Restore the client would be
+			// forced to re-authenticate even though no identity change
+			// happened. The stale LastRevalidated stays put, so retries
+			// during the same outage keep failing through this branch.
+			s.Sessions.Restore(session)
+			s.writeLDAPRefreshFailure(w, r, username, providerID,
+				"LDAP unavailable outside grace window",
+				"ldap unavailable, please retry")
+			return nil, time.Time{}, "", err
+		}
+		s.Logger.Warn("LDAP revalidation transient — reusing cached identity within grace window",
+			"providerID", providerID, "err", err,
+			"lastRevalidated", session.LastRevalidated)
+		// Preserve the original LastRevalidated so successor sessions
+		// keep shrinking the grace window, not resetting it. Signal the
+		// grace event to the caller's final audit emit via the returned
+		// auditDetail string.
+		return session.CachedUser, session.LastRevalidated,
+			"LDAP revalidation transient — grace-window fallback", nil
+
+	default:
+		// Definitive rejection — user genuinely gone from the directory.
+		s.Logger.Info("LDAP revalidation rejected user", "providerID", providerID, "user", username, "err", err)
+		s.writeLDAPRefreshFailure(w, r, username, providerID, "user no longer authorised", "user no longer authorised")
+		return nil, time.Time{}, "", err
+	}
+}
+
+// writeLDAPRefreshFailure centralises the 401 + audit emit for the
+// failure branches of revalidateLDAPSession so the caller can keep its
+// switch statement focused on the control flow. The username argument
+// is the auth.User.Username on the soon-to-be-discarded session — used
+// to attribute audit rows to a real account rather than the empty
+// string.
+func (s *Server) writeLDAPRefreshFailure(w http.ResponseWriter, r *http.Request, username, providerID, detail, userMessage string) {
+	entry := s.newAuditEntry(r, username, audit.ActionRefresh, audit.ResultFailure)
+	if providerID != "" {
+		entry.Detail = "LDAP " + providerID + ": " + detail
+	} else {
+		entry.Detail = "LDAP refresh: " + detail
+	}
+	s.AuditLogger.Log(r.Context(), entry)
+	writeJSON(w, http.StatusUnauthorized, api.Response{
+		Error: &api.APIError{Code: 401, Message: userMessage},
+	})
 }
 
 // handleLogout invalidates the user's refresh token.

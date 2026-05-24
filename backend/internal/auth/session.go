@@ -3,17 +3,20 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 )
 
-// ErrSessionNotFound is returned by [SessionStore.Consume] when the
+// ErrSessionNotFound is returned by [SessionStore.Rotate] when the
 // referenced refresh token row no longer exists — either because a
-// concurrent caller already consumed it or because cleanup removed an
-// expired entry between Peek and Consume. Callers should treat this as
-// non-fatal: the rotation has effectively already happened.
+// concurrent caller already rotated it or because cleanup removed an
+// expired entry before this call landed.
 var ErrSessionNotFound = errors.New("session not found")
+
+// ErrSessionExpired is returned by [SessionStore.Rotate] when the
+// referenced token's ExpiresAt is in the past. The row is removed by
+// Rotate regardless (an expired token has no value going forward).
+var ErrSessionExpired = errors.New("session expired")
 
 // RefreshSession holds a refresh token and its associated user/expiry.
 type RefreshSession struct {
@@ -21,9 +24,20 @@ type RefreshSession struct {
 	UserID    string
 	Provider  string // auth provider that created this session
 	ExpiresAt time.Time
-	// CachedUser stores the full user for providers without a local store (OIDC).
-	// For local and LDAP providers, this is nil and the user is looked up by ID.
+	// CachedUser stores the full user for providers without a local store
+	// (OIDC, LDAP). For local users this is nil and lookups go through the
+	// provider registry. For LDAP users this is the last-known identity; on
+	// refresh the LDAPProvider.Revalidate path overwrites it with fresh
+	// group data unless LDAP is transiently unreachable.
 	CachedUser *User
+	// LastRevalidated is the timestamp of the most recent successful
+	// authorisation refresh against the external identity store. Set to
+	// login time at issuance; updated on each successful LDAP Revalidate.
+	// Used by the refresh handler to bound the LDAP-transient-outage
+	// grace window so a sustained LDAP outage cannot indefinitely extend
+	// access for a user whose identity was revoked while LDAP was down.
+	// Unused for local and OIDC providers (audit finding P2-3, 2026-05-22).
+	LastRevalidated time.Time
 }
 
 // SessionStore manages server-side refresh token storage.
@@ -43,95 +57,55 @@ func (s *SessionStore) Store(session RefreshSession) {
 	s.sessions.Store(session.Token, session)
 }
 
-// ValidatedSession is the result of a successful refresh token validation.
-type ValidatedSession struct {
-	UserID     string
-	Provider   string
-	CachedUser *User // non-nil for OIDC users
-}
-
-// Validate checks if a refresh token is valid (exists and not expired).
-// If valid, it deletes the token (rotation — single use).
-// Returns the session data needed for token refresh.
+// Rotate atomically removes a refresh token from the store and returns its
+// session payload. This is the single-step primitive that backs refresh-
+// token rotation: callers receive the session and may then mint a successor
+// pair. Returns [ErrSessionNotFound] when the row is missing (concurrent
+// rotation winner, explicit Revoke, or cleanup eviction) and
+// [ErrSessionExpired] when the row existed but had expired (the row is
+// removed in both cases so it can't be replayed).
 //
-// Note: this is the legacy single-call API. Callers that can fail
-// between validation and consumption (e.g., the refresh handler, where
-// issueTokenPair may error after Validate succeeds) should use
-// [Peek] + [Consume] instead — see issue #274. Validate remains for
-// flows where the consumption is unconditional.
-func (s *SessionStore) Validate(token string) (*ValidatedSession, error) {
-	val, ok := s.sessions.Load(token)
+// Concurrency contract: Rotate uses sync.Map.LoadAndDelete, which is
+// atomic. Two concurrent Rotate calls for the same token therefore can
+// never both succeed — exactly one returns the session, every other
+// caller observes ErrSessionNotFound. This closes the race documented in
+// audit finding P2-2 (2026-05-22), where the legacy Peek+Consume split
+// allowed two callers to each mint a valid successor pair from a single
+// stolen refresh token.
+//
+// Failure handling: if the caller's post-rotate work (issueTokenPair,
+// LDAP revalidation, etc.) fails, call [Restore] with the returned
+// session to put it back so the client can retry. The returned
+// *RefreshSession is opaque metadata for that purpose; do not mutate it
+// between Rotate and Restore.
+func (s *SessionStore) Rotate(token string) (*RefreshSession, error) {
+	val, ok := s.sessions.LoadAndDelete(token)
 	if !ok {
-		return nil, fmt.Errorf("refresh token not found")
+		return nil, ErrSessionNotFound
 	}
-
 	session := val.(RefreshSession)
-
-	// Always delete — token is single-use regardless of validity
-	s.sessions.Delete(token)
-
 	if time.Now().After(session.ExpiresAt) {
-		return nil, fmt.Errorf("refresh token expired")
+		return nil, ErrSessionExpired
 	}
-
-	return &ValidatedSession{
-		UserID:     session.UserID,
-		Provider:   session.Provider,
-		CachedUser: session.CachedUser,
-	}, nil
+	return &session, nil
 }
 
-// Peek validates a refresh token WITHOUT consuming it. Returns the
-// session payload if the token exists and is not expired. Expired
-// tokens ARE deleted (no value in keeping them), but valid tokens
-// remain in the store — callers MUST follow up with [Consume] on
-// success to enforce single-use rotation.
+// Restore re-stores a session previously removed by [Rotate]. Used by the
+// refresh handler when the post-rotate work fails (transient signing
+// error, IdP revalidation timeout) — putting the session back lets the
+// client retry with the same refresh token rather than being silently
+// logged out. The intent matches the original issue #274 fix, but the
+// surrounding primitive is now atomic (no double-mint race).
 //
-// Issue #274 — separating Peek from Consume closes the race window
-// where [Validate] would delete a session BEFORE the caller had
-// successfully minted a replacement. If the post-Peek work (user
-// lookup, token minting) fails, the caller skips Consume and the
-// session remains valid for client retry. Without this split, a
-// transient backend failure between Validate and issueTokenPair
-// silently logs the user out.
-//
-// Concurrency: Peek + Consume is NOT atomic. Two callers can Peek the
-// same token simultaneously and both proceed. The first Consume wins;
-// the second returns [ErrSessionNotFound] (informational — the new
-// pair has already been minted in both branches).
-func (s *SessionStore) Peek(token string) (*ValidatedSession, error) {
-	val, ok := s.sessions.Load(token)
-	if !ok {
-		return nil, fmt.Errorf("refresh token not found")
+// Safe to call after Rotate succeeded. No-ops are intentional: if the
+// caller passes a stale or zero-value session, Store overwrites whatever
+// is there — and that pathological mis-use is already a programming
+// error the type system can't prevent.
+func (s *SessionStore) Restore(session *RefreshSession) {
+	if session == nil || session.Token == "" {
+		return
 	}
-
-	session := val.(RefreshSession)
-
-	if time.Now().After(session.ExpiresAt) {
-		// Expired — purge so it doesn't linger until the next cleanup
-		// tick. Mirrors Validate's behavior on expired tokens.
-		s.sessions.Delete(token)
-		return nil, fmt.Errorf("refresh token expired")
-	}
-
-	return &ValidatedSession{
-		UserID:     session.UserID,
-		Provider:   session.Provider,
-		CachedUser: session.CachedUser,
-	}, nil
-}
-
-// Consume atomically deletes a refresh token. Used by callers that have
-// finished the post-[Peek] work and need to enforce single-use
-// rotation. Returns [ErrSessionNotFound] if the row is already gone
-// (concurrent Peek+Consume race, cleanup race, or explicit Revoke);
-// callers should treat that as non-fatal — the rotation has effectively
-// already happened on the other path.
-func (s *SessionStore) Consume(token string) error {
-	if _, ok := s.sessions.LoadAndDelete(token); !ok {
-		return ErrSessionNotFound
-	}
-	return nil
+	s.sessions.Store(session.Token, *session)
 }
 
 // Revoke deletes a refresh token (e.g., on logout).
@@ -141,9 +115,9 @@ func (s *SessionStore) Revoke(token string) {
 
 // RangeSessions iterates stored sessions, invoking fn for each. fn returns
 // false to stop iteration. Exposed for tests that need to inspect stored
-// expiry values without consuming the token via Validate (which is single-
+// expiry values without consuming the token via Rotate (which is single-
 // use and would also strip the row). Production callers should prefer
-// Validate / Revoke.
+// Rotate / Revoke.
 func (s *SessionStore) RangeSessions(fn func(RefreshSession) bool) {
 	s.sessions.Range(func(_, val any) bool {
 		return fn(val.(RefreshSession))
@@ -172,3 +146,4 @@ func (s *SessionStore) StartCleanup(ctx context.Context, interval time.Duration)
 		}
 	}()
 }
+

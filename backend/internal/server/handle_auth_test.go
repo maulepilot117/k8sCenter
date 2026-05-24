@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -480,12 +481,10 @@ func TestIssueTokenPair_OIDCRefreshLifetime(t *testing.T) {
 				t.Fatal("expected non-empty refresh token")
 			}
 
-			// Locate the stored session by its token. We can't read SessionStore
-			// internals, so re-Validate (which is single-use). The returned
-			// ValidatedSession doesn't expose ExpiresAt; instead, we walk the
-			// internal sessions map via reflection-free sync.Map iteration by
-			// re-storing a marker before Validate consumes the row. Simpler:
-			// re-issue + Range the sync.Map BEFORE consuming.
+			// Locate the stored session by its token without consuming it
+			// (Rotate is single-use and we still want to assert against the
+			// stored ExpiresAt). RangeSessions walks the sync.Map without
+			// mutation, which is exactly the test affordance we need.
 			var found bool
 			var got time.Time
 			srv.Sessions.RangeSessions(func(s auth.RefreshSession) bool {
@@ -806,4 +805,316 @@ func doRequest(t *testing.T, srv *Server, method, path, body string, headers map
 	w := httptest.NewRecorder()
 	srv.Router.ServeHTTP(w, req)
 	return w
+}
+
+// ---------------------------------------------------------------------
+// Audit finding P2-1 part 2 (2026-05-22) — per-account login throttle.
+// ---------------------------------------------------------------------
+
+// TestHandleLogin_AccountThrottle_BlocksBruteForce pins the per-account
+// rate-limit: after the configured number of attempts against a single
+// username (even from rotating IPs), the next attempt against the same
+// username returns 429 regardless of IP. The previous IP-only throttle
+// could be bypassed by an attacker rotating source IPs.
+func TestHandleLogin_AccountThrottle_BlocksBruteForce(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	for i := 0; i < 2; i++ {
+		w := postLogin(t, srv, map[string]string{
+			"username": "alice",
+			"password": "wrong-password",
+		}, "192.0.2."+strconv.Itoa(10+i)+":54321")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 invalid-creds, got %d: %s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	// Third attempt against the same username from yet another IP must
+	// hit the account throttle even though no single IP exhausted its
+	// per-IP bucket.
+	w := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong-password",
+	}, "192.0.2.99:54321")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 account-throttled, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Fatal("Retry-After header missing on 429")
+	}
+}
+
+// TestHandleLogin_AccountThrottle_CaseFolded asserts "Alice"/"alice"/
+// "ALICE" share one bucket. Without case-folding an attacker could
+// multiply the per-account budget by varying letter case.
+func TestHandleLogin_AccountThrottle_CaseFolded(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	for _, casing := range []string{"alice", "Alice"} {
+		w := postLogin(t, srv, map[string]string{
+			"username": casing,
+			"password": "wrong",
+		}, "192.0.2.10:54321")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s: expected 401, got %d", casing, w.Code)
+		}
+	}
+
+	// Third attempt with another casing must still be throttled.
+	w := postLogin(t, srv, map[string]string{
+		"username": "ALICE",
+		"password": "wrong",
+	}, "192.0.2.11:54321")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("case-folded throttle missed: got %d, want 429", w.Code)
+	}
+}
+
+// TestHandleLogin_AccountThrottle_IndependentUsernames pins isolation
+// between account buckets: throttling "alice" must not affect "bob".
+func TestHandleLogin_AccountThrottle_IndependentUsernames(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(2, time.Minute)
+
+	// Exhaust alice's bucket.
+	for i := 0; i < 3; i++ {
+		postLogin(t, srv, map[string]string{
+			"username": "alice",
+			"password": "wrong",
+		}, "192.0.2.10:54321")
+	}
+
+	// bob must still be allowed past the failure-of-creds path —
+	// expecting 401 invalid-creds, NOT 429.
+	w := postLogin(t, srv, map[string]string{
+		"username": "bob",
+		"password": "wrong",
+	}, "192.0.2.10:54321")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("bob should hit 401 invalid-creds, not 429; got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// postLogin issues a JSON login POST against the server with the
+// supplied remote address, returning the recorder. Helper for the
+// account-throttle tests above.
+func postLogin(t *testing.T, srv *Server, body map[string]string, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(string(raw)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.RemoteAddr = remoteAddr
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	return w
+}
+
+// ---------------------------------------------------------------------
+// Audit finding P2-3 (2026-05-22) — LDAP refresh-path revalidation
+// tests. The full ldapProvider.Revalidate path requires a live directory
+// (homelab soak / Phase 3 follow-up integration test); these unit tests
+// pin the no-LDAP-needed failure branches: parsing the UserID, looking
+// up the provider in the registry, and asserting the provider type.
+// ---------------------------------------------------------------------
+
+func TestHandleRefresh_LDAP_MalformedUserID(t *testing.T) {
+	cases := []struct {
+		name   string
+		userID string
+	}{
+		{"empty", ""},
+		{"missing prefix", "google:google-id:user-dn"},
+		{"only prefix", "ldap:"},
+		{"empty provider id", "ldap::CN=alice,OU=Users"},
+		{"empty DN", "ldap:ldap-corp:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+
+			token := "ldap-test-token-" + tc.name
+			srv.Sessions.Store(auth.RefreshSession{
+				Token:     token,
+				UserID:    tc.userID,
+				Provider:  "ldap",
+				ExpiresAt: time.Now().Add(time.Hour),
+				CachedUser: &auth.User{
+					ID:       tc.userID,
+					Username: "alice",
+					Provider: "ldap",
+				},
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+			w := httptest.NewRecorder()
+			srv.Router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for malformed UserID %q, got %d: %s", tc.userID, w.Code, w.Body.String())
+			}
+			var resp api.Response
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Error == nil || !strings.Contains(strings.ToLower(resp.Error.Message), "session invalid") {
+				t.Fatalf("expected 'session invalid' error, got %+v", resp.Error)
+			}
+		})
+	}
+}
+
+func TestHandleRefresh_LDAP_ProviderUnregistered(t *testing.T) {
+	srv := testServer(t)
+	// Note: testServer only registers the "local" provider. A session
+	// claiming "ldap-corp" will fail the registry lookup and produce
+	// the "auth provider unavailable" error path.
+
+	token := "ldap-orphan-token"
+	srv.Sessions.Store(auth.RefreshSession{
+		Token:     token,
+		UserID:    "ldap:ldap-corp:CN=alice,OU=Users,DC=example,DC=com",
+		Provider:  "ldap",
+		ExpiresAt: time.Now().Add(time.Hour),
+		CachedUser: &auth.User{
+			ID:       "ldap:ldap-corp:CN=alice,OU=Users,DC=example,DC=com",
+			Username: "alice",
+			Provider: "ldap",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unregistered LDAP provider, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp api.Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || !strings.Contains(strings.ToLower(resp.Error.Message), "auth provider unavailable") {
+		t.Fatalf("expected 'auth provider unavailable' error, got %+v", resp.Error)
+	}
+
+	// The original session was Rotate-removed and NOT Restored
+	// (definitive failure path), so retry with the same token should
+	// 401 with the "invalid or expired refresh token" path, not the
+	// "auth provider unavailable" path.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req2.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+	w2 := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("retry expected 401, got %d", w2.Code)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Phase 3 review additions — regression tests added in response to the
+// ce-code-review findings on audit emission and LastRevalidated
+// stamping. See the Phase 3 session log + PR description.
+// ---------------------------------------------------------------------
+
+// TestHandleLogin_AccountThrottle_AuditEntry pins the audit emit on
+// 429 from the per-account throttle. The earlier brute-force /
+// case-folded / independent-usernames tests asserted HTTP status and
+// Retry-After only, so a regression that reordered statements before
+// the writeJSON early-return (or dropped the AuditLogger.Log call
+// entirely) would pass all three but leave throttle hits invisible
+// in the audit table. Testing review T-01, conf 95.
+func TestHandleLogin_AccountThrottle_AuditEntry(t *testing.T) {
+	srv := testServer(t)
+	srv.RateLimiter = middleware.NewRateLimiterWithRate(1, time.Minute)
+	rec := &recordingAuditLogger{}
+	srv.AuditLogger = rec
+
+	// First attempt consumes the bucket — should fail with 401 (bad
+	// creds, no user exists), emitting a login-failure audit entry.
+	w1 := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong",
+	}, "192.0.2.10:54321")
+	if w1.Code != http.StatusUnauthorized {
+		t.Fatalf("first attempt: expected 401, got %d", w1.Code)
+	}
+
+	// Second attempt hits the per-account throttle.
+	w2 := postLogin(t, srv, map[string]string{
+		"username": "alice",
+		"password": "wrong",
+	}, "192.0.2.99:54321") // rotated IP — IP throttle doesn't fire
+	if w2.Code != http.StatusTooManyRequests {
+		t.Fatalf("second attempt: expected 429 from account throttle, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	entries := rec.snapshot()
+	var throttleEntry *audit.Entry
+	for i := range entries {
+		if entries[i].Action == audit.ActionRateLimited {
+			throttleEntry = &entries[i]
+			break
+		}
+	}
+	if throttleEntry == nil {
+		t.Fatalf("expected at least one ActionRateLimited audit entry; got: %+v", entries)
+	}
+	if throttleEntry.Result != audit.ResultDenied {
+		t.Errorf("Result = %q, want %q", throttleEntry.Result, audit.ResultDenied)
+	}
+	if !strings.Contains(throttleEntry.Detail, "login") {
+		t.Errorf("Detail = %q, want substring %q (purpose namespace)", throttleEntry.Detail, "login")
+	}
+	if !strings.Contains(throttleEntry.Detail, "retry") {
+		t.Errorf("Detail = %q, want retry-seconds reference", throttleEntry.Detail)
+	}
+}
+
+// TestIssueTokenPairAt_LastRevalidatedStamped pins the LastRevalidated
+// field on the stored session. The LDAP grace-window predicate in
+// revalidateLDAPSession (handle_auth.go) pivots entirely on this field
+// — zero/stale -> fail-closed, recent -> grace-open. If the
+// assignment were dropped from issueTokenPairAt's struct literal
+// during a future refactor, the grace window would silently always
+// fail-closed (or always open if the zero-time guard were also wrong)
+// and nothing else would catch it. Testing review T-02, conf 90.
+func TestIssueTokenPairAt_LastRevalidatedStamped(t *testing.T) {
+	srv := testServer(t)
+
+	fixedTime := time.Now().Add(-2 * time.Minute) // distinct from time.Now() inside the call
+	user := &auth.User{ID: "ldap:corp:CN=alice,OU=Users", Username: "alice", Provider: "ldap"}
+
+	w := httptest.NewRecorder()
+	_, refreshToken, err := srv.issueTokenPairAt(w, user, false /* cookieMode */, fixedTime)
+	if err != nil {
+		t.Fatalf("issueTokenPairAt: %v", err)
+	}
+
+	var got time.Time
+	var found bool
+	srv.Sessions.RangeSessions(func(s auth.RefreshSession) bool {
+		if s.Token == refreshToken {
+			found = true
+			got = s.LastRevalidated
+			return false
+		}
+		return true
+	})
+	if !found {
+		t.Fatalf("issued refresh token not in SessionStore")
+	}
+	if !got.Equal(fixedTime) {
+		t.Errorf("session.LastRevalidated = %v, want %v", got, fixedTime)
+	}
 }

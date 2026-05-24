@@ -124,19 +124,21 @@ func TestRefreshTokenLifetime(t *testing.T) {
 	}
 }
 
-// TestRefreshLifetimeFor asserts the provider-aware refresh TTL switch:
-// OIDC sessions are capped at the shorter [OIDCRefreshTokenLifetime] so
-// IdP-side revocation propagates within the hour; everything else (local,
-// LDAP, future credential providers via the default branch) keeps the
-// standard [RefreshTokenLifetime] window.
+// TestRefreshLifetimeFor asserts the provider-aware refresh TTL switch.
+// OIDC and LDAP sessions get the shorter 1h cap so external-identity-store
+// revocation propagates within the hour rather than the 7-day standard
+// rotation window. Local sessions and any unknown provider fall through
+// to [RefreshTokenLifetime]. Audit finding P2-3 (2026-05-22) added LDAP
+// to the capped set; the OIDC cap pre-dates Phase 3.
 func TestRefreshLifetimeFor(t *testing.T) {
 	cases := []struct {
 		provider string
 		want     time.Duration
 	}{
 		{"oidc", OIDCRefreshTokenLifetime},
+		{"ldap", LDAPRefreshTokenLifetime},
 		{"local", RefreshTokenLifetime},
-		{"ldap", RefreshTokenLifetime},
+		{"unknown", RefreshTokenLifetime}, // default branch
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {

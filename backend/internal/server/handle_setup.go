@@ -78,6 +78,16 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-account throttle (P2-1 part 2). Setup is one-shot — only the
+	// first call succeeds, every subsequent call returns 410 — but
+	// audit-listed setup-probing benefits from a per-username bucket
+	// so an attacker iterating likely admin names ("admin", "root",
+	// "administrator") is throttled independently of the global IP
+	// bucket.
+	if s.accountThrottle(w, r, "setup", req.Username, audit.ActionSetup) {
+		return
+	}
+
 	// P1-1: Setup token gate.
 	//
 	// If SetupToken is configured, a constant-time comparison is required
@@ -137,9 +147,17 @@ func (s *Server) handleSetupInit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Verify setup token if configured — constant-time comparison
+		// Verify setup token if configured — constant-time comparison.
 		if subtle.ConstantTimeCompare([]byte(req.SetupToken), []byte(s.Config.Auth.SetupToken)) != 1 {
 			s.Logger.Warn("setup init rejected: invalid setup token", "remoteAddr", r.RemoteAddr)
+			// Audit the rejected setup attempt: an attacker probing the
+			// setup-token endpoint otherwise leaves no trace until the
+			// IP rate-limit middleware kicks in. The sibling no-token
+			// branch already audits — keeping parity here closes the
+			// gap (Phase 3 review, audit P2-1 cluster).
+			entry := s.newAuditEntry(r, req.Username, audit.ActionSetup, audit.ResultFailure)
+			entry.Detail = "invalid setup token"
+			s.AuditLogger.Log(r.Context(), entry)
 			writeJSON(w, http.StatusForbidden, api.Response{
 				Error: &api.APIError{Code: 403, Message: "invalid setup token"},
 			})
