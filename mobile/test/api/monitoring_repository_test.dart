@@ -302,4 +302,131 @@ void main() {
       expect(mock.requests.single.headers['X-Cluster-ID'], 'cluster-b');
     });
   });
+
+  group('MonitoringRepository.queryRangeSlug (F#4)', () {
+    test('routes to /api/v1/monitoring/queries/{slug} with params', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/monitoring/queries/pods/cpu',
+        body: {
+          'data': {
+            'resultType': 'matrix',
+            'result': [
+              {
+                'metric': {'container': 'web'},
+                'values': [
+                  [1700000000.0, '0.5'],
+                ],
+              },
+            ],
+          },
+        },
+      );
+
+      final result =
+          await container.read(monitoringRepositoryProvider).queryRangeSlug(
+                slug: 'pods/cpu',
+                namespace: 'default',
+                name: 'web-abc',
+                start: DateTime.utc(2026, 5, 1),
+                end: DateTime.utc(2026, 5, 1, 1),
+                stepSeconds: 15,
+              );
+
+      expect(result.series, hasLength(1));
+      expect(result.series.first.points.first.v, 0.5);
+
+      // The request must carry the slug as a path segment plus
+      // namespace/name as query params — the backend collapses missing
+      // slugs and RBAC denials into the same 404, so the URL shape is
+      // the contract we can pin in unit tests.
+      final req = mock.requests.single;
+      expect(req.path, '/api/v1/monitoring/queries/pods/cpu');
+      expect(req.queryParameters['namespace'], 'default');
+      expect(req.queryParameters['name'], 'web-abc');
+    });
+
+    test('cluster-scoped slug (nodes/cpu) omits namespace param', () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/monitoring/queries/nodes/cpu',
+        body: {
+          'data': {'resultType': 'matrix', 'result': <Object>[]},
+        },
+      );
+
+      await container.read(monitoringRepositoryProvider).queryRangeSlug(
+            slug: 'nodes/cpu',
+            name: 'worker-1',
+            start: DateTime.utc(2026, 5, 1),
+            end: DateTime.utc(2026, 5, 1, 1),
+            stepSeconds: 15,
+          );
+
+      final req = mock.requests.single;
+      expect(req.queryParameters.containsKey('namespace'), isFalse,
+          reason: 'cluster-scoped slug must not send a namespace param');
+      expect(req.queryParameters['name'], 'worker-1');
+    });
+
+    test('404 from backend surfaces as ApiError(404) — the operator-facing '
+        'controller copy distinguishes "slug missing" vs "RBAC denied"',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.on(
+        'GET',
+        '/api/v1/monitoring/queries/pods/cpu',
+        (_) => _json({
+          'error': {'code': 404, 'message': 'not found or forbidden'},
+        }, status: 404),
+      );
+
+      expect(
+        () => container.read(monitoringRepositoryProvider).queryRangeSlug(
+              slug: 'pods/cpu',
+              namespace: 'default',
+              name: 'web-abc',
+              start: DateTime.utc(2026, 5, 1),
+              end: DateTime.utc(2026, 5, 1, 1),
+              stepSeconds: 15,
+            ),
+        throwsA(isA<ApiError>()
+            .having((e) => e.statusCode, 'statusCode', 404)),
+      );
+    });
+
+    test('clusterIdOverride forwards as explicit X-Cluster-ID header',
+        () async {
+      final (:container, :mock) = _make();
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/monitoring/queries/pods/cpu',
+        body: {
+          'data': {'resultType': 'matrix', 'result': <Object>[]},
+        },
+      );
+
+      await container.read(monitoringRepositoryProvider).queryRangeSlug(
+            slug: 'pods/cpu',
+            namespace: 'default',
+            name: 'web-abc',
+            start: DateTime.utc(2026, 5, 1),
+            end: DateTime.utc(2026, 5, 1, 1),
+            stepSeconds: 15,
+            clusterIdOverride: 'cluster-b',
+          );
+
+      expect(mock.requests.single.headers['X-Cluster-ID'], 'cluster-b');
+    });
+  });
 }

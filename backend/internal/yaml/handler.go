@@ -13,6 +13,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,10 +22,11 @@ import (
 
 // Handler provides HTTP handlers for YAML operations.
 type Handler struct {
-	K8sClient   *k8s.ClientFactory
-	AuditLogger audit.Logger
-	Logger      *slog.Logger
-	ClusterID   string
+	K8sClient     *k8s.ClientFactory
+	ClusterRouter *k8s.ClusterRouter
+	AuditLogger   audit.Logger
+	Logger        *slog.Logger
+	ClusterID     string
 }
 
 // HandleValidate validates YAML against the cluster's schema using dry-run apply.
@@ -46,11 +48,24 @@ func (h *Handler) HandleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	// F#7 / F#19 — RESTMapper is built against the local cluster's discovery,
+	// so validating against a remote cluster's schema can return wrong results
+	// for CRDs that only exist remotely (or differ between local and remote).
+	// Reject non-local with 501 until a per-cluster discovery-backed mapper
+	// ships (Phase 4 follow-up).
+	if !pair.IsLocal {
+		httputil.WriteError(w, http.StatusNotImplemented,
+			"YAML validate is not yet supported on remote clusters",
+			"Connect to that cluster directly to use this feature")
+		return
+	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	type validationError struct {
@@ -121,16 +136,29 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 
 	force := r.URL.Query().Get("force") == "true"
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	// F#7 / F#19 — see HandleValidate. Remote-cluster YAML apply needs a
+	// remote-discovery-backed RESTMapper before it can be re-enabled.
+	if !pair.IsLocal {
+		httputil.WriteError(w, http.StatusNotImplemented,
+			"YAML apply is not yet supported on remote clusters",
+			"Connect to that cluster directly to use this feature")
+		return
+	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	resp := ApplyDocuments(r.Context(), dynClient, mapper, docs, force, h.Logger)
 
-	// Audit log each document apply
+	// Audit log each document apply. F#6 — record the per-request cluster ID
+	// from the request context (not the handler's static h.ClusterID) so the
+	// audit row points at the cluster the apply actually targeted.
+	auditClusterID := clusterID
 	for _, result := range resp.Results {
 		auditResult := audit.ResultSuccess
 		if result.Action == "failed" {
@@ -138,7 +166,7 @@ func (h *Handler) HandleApply(w http.ResponseWriter, r *http.Request) {
 		}
 		h.AuditLogger.Log(r.Context(), audit.Entry{
 			Timestamp:         time.Now(),
-			ClusterID:         h.ClusterID,
+			ClusterID:         auditClusterID,
 			User:              user.Username,
 			SourceIP:          r.RemoteAddr,
 			Action:            audit.ActionApply,
@@ -182,11 +210,20 @@ func (h *Handler) HandleDiff(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	// F#7 / F#19 — see HandleValidate.
+	if !pair.IsLocal {
+		httputil.WriteError(w, http.StatusNotImplemented,
+			"YAML diff is not yet supported on remote clusters",
+			"Connect to that cluster directly to use this feature")
+		return
+	}
+	dynClient := pair.Dynamic
 	mapper := h.K8sClient.RESTMapper()
 
 	resp := DiffDocuments(r.Context(), dynClient, mapper, docs, h.Logger)
@@ -233,11 +270,22 @@ func (h *Handler) HandleExport(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	dynClient, err := h.K8sClient.DynamicClientForUser(user.KubernetesUsername, user.KubernetesGroups)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	pair, err := h.ClusterRouter.RouterFor(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		httputil.WriteError(w, http.StatusInternalServerError, "failed to create kubernetes client", err.Error())
 		return
 	}
+	// F#7 / F#19 — Export resolves GVR via the local cluster's discovery API,
+	// which won't see CRDs that only exist on the remote cluster. Reject
+	// non-local until per-cluster discovery ships.
+	if !pair.IsLocal {
+		httputil.WriteError(w, http.StatusNotImplemented,
+			"YAML export is not yet supported on remote clusters",
+			"Connect to that cluster directly to use this feature")
+		return
+	}
+	dynClient := pair.Dynamic
 
 	gvr, err := resolveGVR(h.K8sClient, kind)
 	if err != nil {

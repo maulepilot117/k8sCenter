@@ -195,10 +195,11 @@ func New(deps Deps) *Server {
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{
-			K8sClient:   deps.K8sClient,
-			AuditLogger: deps.AuditLogger,
-			Logger:      deps.Logger,
-			ClusterID:   deps.Config.ClusterID,
+			K8sClient:     deps.K8sClient,
+			ClusterRouter: deps.ClusterRouter,
+			AuditLogger:   deps.AuditLogger,
+			Logger:        deps.Logger,
+			ClusterID:     deps.Config.ClusterID,
 		}
 		s.WizardHandler = &wizard.Handler{
 			Logger: deps.Logger,

@@ -15,28 +15,43 @@ func (s *Server) registerRoutes() {
 
 	// WebSocket routes — no timeout middleware (long-lived connections).
 	// Auth is handled in-band via the first message, not via middleware.
-	if s.Hub != nil {
-		s.Router.Get("/api/v1/ws/resources", s.handleWSResources)
-	}
+	//
+	// F#6 (security audit 2026-05-22 round-2): All WS routes now run under
+	// the WSClusterContext middleware so middleware.ClusterIDFromContext
+	// reads the X-Cluster-ID upgrade header instead of always returning
+	// "local". The per-handler remote-cluster gates (F#1 + F#9 plumbing in
+	// handle_ws_logs, handle_ws_logs_search, etc.) were inert before this
+	// fix — they always saw "local" and silently routed remote-targeted WS
+	// requests to the local cluster.
+	s.Router.Group(func(r chi.Router) {
+		r.Use(middleware.WSClusterContext)
 
-	// Hubble flow WebSocket — auth in-band (same as resource WS), no timeout
-	if s.NetworkingHandler != nil && s.NetworkingHandler.HubbleClient != nil {
-		s.Router.Get("/api/v1/ws/flows", s.handleWSFlows)
-	}
+		if s.Hub != nil {
+			r.Get("/api/v1/ws/resources", s.handleWSResources)
+		}
 
-	// Loki log search WebSocket — auth in-band, no timeout
-	if s.LokiHandler != nil {
-		s.Router.Get("/api/v1/ws/logs-search", s.handleWSLogsSearch)
-	}
+		// Hubble flow WebSocket — auth in-band (same as resource WS), no timeout
+		if s.NetworkingHandler != nil && s.NetworkingHandler.HubbleClient != nil {
+			r.Get("/api/v1/ws/flows", s.handleWSFlows)
+		}
 
-	// Pod log streaming WebSocket — auth in-band (same as resource WS), no timeout
-	if s.ResourceHandler != nil {
-		s.Router.Get("/api/v1/ws/logs/{namespace}/{pod}/{container}", s.handleWSLogs)
-	}
+		// Loki log search WebSocket — auth in-band, no timeout
+		if s.LokiHandler != nil {
+			r.Get("/api/v1/ws/logs-search", s.handleWSLogsSearch)
+		}
 
-	// Pod exec WebSocket — auth via middleware (not in-band), no timeout
+		// Pod log streaming WebSocket — auth in-band (same as resource WS), no timeout
+		if s.ResourceHandler != nil {
+			r.Get("/api/v1/ws/logs/{namespace}/{pod}/{container}", s.handleWSLogs)
+		}
+	})
+
+	// Pod exec WebSocket — auth via middleware (not in-band), no timeout.
+	// Also gets WSClusterContext so the in-handler cluster check sees the
+	// real X-Cluster-ID header rather than the "local" fallback.
 	if s.ResourceHandler != nil {
 		s.Router.Group(func(r chi.Router) {
+			r.Use(middleware.WSClusterContext)
 			r.Use(middleware.Auth(s.TokenManager))
 			r.Use(middleware.CSRF)
 			r.Get("/api/v1/ws/exec/{namespace}/{name}/{container}", s.ResourceHandler.HandlePodExec)
@@ -331,13 +346,30 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 		// No rate limit on monitoring — read-only, behind auth, Prometheus handles load
 		mr.Get("/status", h.HandleStatus)
 		mr.Post("/rediscover", h.HandleRediscover)
-		mr.Get("/query", h.HandleQuery)
-		mr.Get("/query_range", h.HandleQueryRange)
+		// Raw PromQL — admin only (P2-4: unrestricted PromQL is admin-gated).
+		mr.With(middleware.RequireAdmin).Get("/query", h.HandleQuery)
+		mr.With(middleware.RequireAdmin).Get("/query_range", h.HandleQueryRange)
 		mr.Get("/dashboards", h.HandleDashboards)
 		mr.Get("/templates", h.HandleTemplates)
 		mr.Get("/templates/query", h.HandleTemplateQuery)
 		mr.Get("/resource-dashboard", h.HandleResourceDashboard)
-		mr.HandleFunc("/grafana/proxy/*", h.GrafanaProxy)
+		// Slug-based queries — authenticated non-admin users, RBAC-enforced per slug (P2-4).
+		mr.Get("/queries/*", h.HandleSlugQuery)
+
+		// Grafana reverse-proxy — admin only (viewer token injected server-side).
+		//
+		// Method narrowing (Phase 2, F#25): Only GET and HEAD are registered.
+		// POST / PUT / PATCH / DELETE now return 405 via chi's MethodNotAllowed
+		// handler. This is intentional — write operations against Grafana must
+		// go through a typed handler (HandleDashboards, etc.) where input is
+		// validated and audited, not through the opaque reverse-proxy.
+		// Removing a method here is a deliberate API contract change; do not
+		// re-add PATCH/POST without a security review.
+		mr.Route("/grafana/proxy", func(gr chi.Router) {
+			gr.Use(middleware.RequireAdmin)
+			gr.Get("/*", h.GrafanaProxy)
+			gr.Head("/*", h.GrafanaProxy)
+		})
 	})
 }
 

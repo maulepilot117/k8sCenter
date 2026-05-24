@@ -1,0 +1,166 @@
+{{- include "kubecenter.validatePlaceholders" . }}
+{{/*
+  Opt-in RBAC ClusterRoles — finding P1-2 of 2026-05-22 security audit.
+
+  The default ClusterRole (clusterrole.yaml) intentionally has NO impersonation
+  grant and NO cluster-wide secret read.  Operators that need either capability
+  must opt in explicitly by setting the values below.
+
+  kubecenter-impersonator
+  -----------------------
+  Grants impersonate verbs on users/groups/serviceaccounts, scoped via
+  resourceNames to operator-supplied allowlists.  Without this grant the backend
+  cannot forward k8s impersonation headers — all per-user RBAC checks then fall
+  through to the SA's own (narrower) permissions rather than the requesting
+  user's real permissions.
+
+  Enable with:
+    rbac.impersonationEnabled: true
+    rbac.allowedImpersonateUsers:
+      - alice@example.com
+    rbac.allowedImpersonateGroups:
+      - cluster-admins
+    rbac.allowedImpersonateServiceAccounts:
+      - default/my-sa
+
+  kubecenter-secrets-reader
+  -------------------------
+  Grants get/list/watch on core/secrets, bound via per-namespace RoleBindings to
+  the namespaces listed in rbac.secretsReaderNamespaces.  Without this grant the
+  UI's secret-reveal feature returns Forbidden for tenants outside the install
+  namespace (where the pod's ambient SA token is already sufficient).
+
+  Enable with:
+    rbac.secretsReaderNamespaces:
+      - team-a
+      - team-b
+*/}}
+
+{{- if .Values.rbac.impersonationEnabled }}
+{{- /*
+  F#2 — Empty-allowlists fail-guard.
+
+  If impersonationEnabled is true but every allowlist is empty, the rendered
+  ClusterRole has zero rules and is silently useless. Worse, the ClusterRole
+  binding still attaches, leaving operators believing impersonation works
+  when in fact every per-user RBAC check falls through to the SA. Fail at
+  render time so the misconfiguration surfaces during helm install/upgrade,
+  not at first user login.
+*/}}
+{{- if and (eq (len .Values.rbac.allowedImpersonateUsers) 0)
+           (eq (len .Values.rbac.allowedImpersonateGroups) 0)
+           (eq (len .Values.rbac.allowedImpersonateServiceAccounts) 0) }}
+{{- fail "rbac.impersonationEnabled=true requires at least one entry in allowedImpersonateUsers, allowedImpersonateGroups, or allowedImpersonateServiceAccounts" }}
+{{- end }}
+{{- /*
+  F#21 — system:* allowlist block.
+
+  Allowing impersonation of system:* principals (system:admin, system:masters,
+  system:serviceaccount:kube-system:default, system:anonymous, ...) would let
+  the backend forge a request as a built-in privileged identity. Reject ANY
+  entry that starts with "system:" across all three allowlists at render time.
+
+  F#5 (round-2) — case-insensitive + trim. Kubernetes treats RBAC subject
+  names case-sensitively, but a typo like "System:masters" or "SYSTEM:admin"
+  would slip past a literal hasPrefix "system:" check and create a
+  ClusterRole whose first user-supplied entry is then a regular non-system
+  string — still allowing the operator to think they blocked system:* when
+  they hadn't. Lowercase and trim before comparing so the check matches the
+  *intent* (block builtin identities) rather than the *exact bytes*.
+*/}}
+{{- range .Values.rbac.allowedImpersonateUsers }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
+{{- fail (printf "rbac.allowedImpersonateUsers entry %q is forbidden: impersonating system:* principals would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
+{{- range .Values.rbac.allowedImpersonateGroups }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
+{{- fail (printf "rbac.allowedImpersonateGroups entry %q is forbidden: impersonating system:* groups would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
+{{- range .Values.rbac.allowedImpersonateServiceAccounts }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
+{{- fail (printf "rbac.allowedImpersonateServiceAccounts entry %q is forbidden: impersonating system:* service accounts would grant cluster-admin-equivalent access" .) }}
+{{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-impersonator
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook-weight: "0"
+rules:
+  {{- if .Values.rbac.allowedImpersonateUsers }}
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames:
+      {{- toYaml .Values.rbac.allowedImpersonateUsers | nindent 6 }}
+  {{- end }}
+  {{- if .Values.rbac.allowedImpersonateGroups }}
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames:
+      {{- toYaml .Values.rbac.allowedImpersonateGroups | nindent 6 }}
+  {{- end }}
+  {{- if .Values.rbac.allowedImpersonateServiceAccounts }}
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["impersonate"]
+    resourceNames:
+      {{- toYaml .Values.rbac.allowedImpersonateServiceAccounts | nindent 6 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-impersonator
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubecenter.fullname" . }}-impersonator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubecenter.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.rbac.secretsReaderNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubecenter.fullname" . }}-secrets-reader
+  labels:
+    {{- include "kubecenter.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook-weight: "0"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+{{- range .Values.rbac.secretsReaderNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kubecenter.fullname" $ }}-secrets-reader
+  namespace: {{ . }}
+  labels:
+    {{- include "kubecenter.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubecenter.fullname" $ }}-secrets-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubecenter.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

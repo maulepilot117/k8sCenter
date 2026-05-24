@@ -200,21 +200,22 @@ class MetricsController
     final rangeSec =
         range.end.difference(range.start).inSeconds.clamp(1, 365 * 24 * 3600);
     final step = MonitoringRepository.computeStep(rangeSec);
-    final vars = _resolveVariables();
+
+    // F#4 — slug endpoint accepts only `namespace` + `name` params; the
+    // backend re-derives the PromQL from the slug. Cluster-scoped kinds
+    // (nodes, pvs, storageclasses, validatingwebhookconfigurations,
+    // mutatingwebhookconfigurations) send `name` only. namespaces/* slugs
+    // put the namespace name in `name`, not `namespace` — there is no
+    // mobile screen for the bare namespaces kind today, so the conversion
+    // below covers everything wired into `metricPanelsByKind`.
+    final params = _slugParams();
 
     await Future.wait(panels.map((panel) async {
-      String query;
       try {
-        query = panel.render(vars);
-      } on ArgumentError catch (e) {
-        _writePanel(panel.id, PanelFailed(e.message?.toString() ?? '$e'),
-            captured);
-        return;
-      }
-
-      try {
-        final result = await repo.queryRange(
-          query: query,
+        final result = await repo.queryRangeSlug(
+          slug: panel.slug,
+          namespace: params.namespace,
+          name: params.name,
           start: range.start,
           end: range.end,
           stepSeconds: step,
@@ -250,30 +251,13 @@ class MetricsController
     }));
   }
 
-  /// Translates the controller target into the variable bindings the
-  /// per-kind panels declare. `node` panels read the resource name as
-  /// the node label value; PVC panels read it into `pvc`; workload
-  /// panels follow `<kind-singular>` (deployment / statefulset /
-  /// daemonset).
-  Map<String, String> _resolveVariables() {
-    final base = <String, String>{
-      'namespace': _target.namespace,
-    };
-    switch (_target.kind) {
-      case 'pods':
-        return {...base, 'pod': _target.name};
-      case 'nodes':
-        return {'node': _target.name};
-      case 'deployments':
-        return {...base, 'deployment': _target.name};
-      case 'statefulsets':
-        return {...base, 'statefulset': _target.name};
-      case 'daemonsets':
-        return {...base, 'daemonset': _target.name};
-      case 'persistentvolumeclaims':
-        return {...base, 'pvc': _target.name};
+  /// Maps the controller target into the (namespace, name) tuple the slug
+  /// endpoint expects. Cluster-scoped kinds (nodes) send `name` only.
+  ({String? namespace, String name}) _slugParams() {
+    if (_target.kind == 'nodes') {
+      return (namespace: null, name: _target.name);
     }
-    return base;
+    return (namespace: _target.namespace, name: _target.name);
   }
 
   void _writePanel(String panelId, PanelStatus status, int captured) {
@@ -293,6 +277,15 @@ class MetricsController
     }
     if (e.statusCode == 503) {
       return 'Prometheus is not available on this cluster.';
+    }
+    if (e.statusCode == 404) {
+      // F#4 — backend collapses "unknown slug" and "RBAC denied" into the
+      // same 404 to prevent slug-catalog enumeration. From the operator's
+      // side both possibilities are visible: either mobile is out of sync
+      // with the backend Registry, or their RBAC doesn't cover the
+      // namespace.
+      return 'Metric not available — either you lack list permission on '
+          'this resource, or the metric is not configured on this cluster.';
     }
     return e.message;
   }

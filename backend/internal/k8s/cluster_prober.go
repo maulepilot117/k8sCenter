@@ -7,12 +7,47 @@ import (
 	"strings"
 	"time"
 
+	authzv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
 	"github.com/kubecenter/kubecenter/internal/store"
 )
+
+// ProbeImpersonateRights runs a SelfSubjectAccessReview against the
+// impersonate verb on users. Used by ProbeOne and by the cluster-registration
+// handler to fail-fast when the stored bearer cannot impersonate — every
+// KubeCenter request impersonates a username, so a missing grant turns into
+// a runtime 403 on every feature.
+//
+// F#22 — surface the gap at probe time, not at first user-facing request.
+func ProbeImpersonateRights(ctx context.Context, client kubernetes.Interface) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	sar := &authzv1.SelfSubjectAccessReview{
+		Spec: authzv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authzv1.ResourceAttributes{
+				Verb:     "impersonate",
+				Resource: "users",
+				Group:    "",
+			},
+		},
+	}
+	resp, err := client.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, sar, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("SelfSubjectAccessReview failed: %w", err)
+	}
+	if !resp.Status.Allowed {
+		reason := resp.Status.Reason
+		if reason == "" {
+			reason = "API server denied impersonate on users"
+		}
+		return fmt.Errorf("%s", reason)
+	}
+	return nil
+}
 
 // StatusChangeFunc is called when a cluster's probe status transitions.
 // Parameters: ctx, clusterID, oldStatus, newStatus.
@@ -113,18 +148,27 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		}
 	}
 
-	// Build rest.Config with 10s timeout enforced at transport level
+	// Build rest.Config with 10s timeout enforced at transport level.
+	// F#1 — TLS policy MUST match cluster_router.buildRemoteConfig: when no
+	// CAData is stored, only opt-in AllowInsecureTLS clusters may probe with
+	// TLS verification disabled. Without this, the prober happily disabled
+	// TLS verification on every CA-less remote — even those the router would
+	// refuse to build a client for at request time — and reported them as
+	// "connected", masking the misconfiguration. F#5 audit 2026-05-22.
 	cfg := &rest.Config{
 		Host:        cluster.APIServerURL,
 		BearerToken: string(token),
 		Timeout:     10 * time.Second,
 		QPS:         10,
 		Burst:       20,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: caData,
+		},
 	}
-	if len(caData) > 0 {
-		cfg.TLSClientConfig = rest.TLSClientConfig{CAData: caData}
-	} else {
-		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, p.logger); err != nil {
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "TLS verification required (no CA, AllowInsecureTLS=false)", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+		return nil, err
 	}
 
 	cs, err := kubernetes.NewForConfig(cfg)
@@ -139,6 +183,16 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", sanitizeProbeError(err), "", 0)
 		p.emitStatusChange(ctx, clusterID, oldStatus, "disconnected")
 		return nil, err
+	}
+
+	// F#22 — Verify the stored bearer can still impersonate users. If the
+	// remote RBAC was tightened post-registration (token rotated, role
+	// trimmed), surface the gap as a "disconnected" probe rather than letting
+	// the cluster stay "connected" while every actual request 403s.
+	if err := ProbeImpersonateRights(ctx, cs); err != nil {
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", "credentials cannot impersonate users", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "disconnected")
+		return nil, fmt.Errorf("impersonate probe failed: %w", err)
 	}
 
 	// Node count (limit=500 — sufficient for any real cluster)

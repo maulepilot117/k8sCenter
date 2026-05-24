@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -23,7 +24,7 @@ func (h *Handler) HandleResourceCounts(w http.ResponseWriter, r *http.Request) {
 	// Resource counts rely on the local informer cache — remote clusters
 	// use direct API calls and do not populate informers.
 	clusterID := middleware.ClusterIDFromContext(r.Context())
-	if clusterID != "" && clusterID != "local" {
+	if !k8s.IsLocalClusterID(clusterID) {
 		writeError(w, http.StatusBadRequest, "resource counts are only available for the local cluster", "")
 		return
 	}
@@ -34,8 +35,13 @@ func (h *Handler) HandleResourceCounts(w http.ResponseWriter, r *http.Request) {
 }
 
 // canList checks if the user has "list" permission for the given resource in the namespace.
+// HandleResourceCounts gates non-local clusters at the route entrance, so this
+// path is local-only — pass k8s.LocalClusterID to satisfy F#9's clusterID
+// requirement without threading the request context all the way down. F#20
+// removes the prior hardcoded "local" literal so cache-key drift across
+// counts.go / websocket/hub.go / websocket/client.go is impossible.
 func (h *Handler) canList(ctx context.Context, user *auth.User, resource, namespace string) bool {
-	allowed, _ := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	allowed, _ := h.AccessChecker.CanAccess(ctx, k8s.LocalClusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	return allowed
 }
 

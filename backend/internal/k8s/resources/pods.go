@@ -15,6 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/remotecommand"
 )
@@ -144,6 +146,22 @@ func (h *Handler) HandlePodExec(w http.ResponseWriter, r *http.Request) {
 
 	if container != "" && !validContainerName.MatchString(container) {
 		writeError(w, http.StatusBadRequest, "invalid container name", "")
+		return
+	}
+
+	// P2-5: pod exec requires SPDY stream upgrade against the target cluster's
+	// API server, which is not yet supported for remote clusters. Reject with
+	// HTTP 501 before the WebSocket upgrade so the error is delivered cleanly.
+	execClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(execClusterID) {
+		h.Logger.Warn("pod exec rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", execClusterID,
+			"namespace", ns,
+			"pod", name,
+		)
+		h.auditWrite(r, user, audit.ActionCreate, "Pod/exec", ns, name, audit.ResultFailure)
+		writeError(w, http.StatusNotImplemented, "pod exec not yet supported on remote clusters", "")
 		return
 	}
 

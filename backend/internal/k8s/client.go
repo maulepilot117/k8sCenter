@@ -46,9 +46,10 @@ type ClientFactory struct {
 	baseDynOnce   sync.Once
 	mapper        meta.RESTMapper
 	mapperOnce    sync.Once
-	clusterID     string
-	logger        *slog.Logger
-	testOverride  *kubernetes.Clientset // if set, ClientForUser returns this directly
+	clusterID       string
+	logger          *slog.Logger
+	testOverride    *kubernetes.Clientset // if set, ClientForUser returns this directly
+	testDynOverride dynamic.Interface     // if set, DynamicClientForUser returns this directly
 }
 
 // NewClientFactory creates a ClientFactory using in-cluster config with
@@ -164,6 +165,9 @@ func (f *ClientFactory) ClientForUser(username string, groups []string) (*kubern
 // known at compile time (arbitrary apiVersion/kind).
 // Results are cached for 5 minutes keyed by hash(username+groups).
 func (f *ClientFactory) DynamicClientForUser(username string, groups []string) (dynamic.Interface, error) {
+	if f.testDynOverride != nil {
+		return f.testDynOverride, nil
+	}
 	key := cacheKey(username, groups)
 
 	if val, ok := f.dynCache.Load(key); ok {
@@ -249,6 +253,20 @@ func NewTestClientFactory(cs *kubernetes.Clientset) *ClientFactory {
 		clusterID:     "test",
 		logger:        slog.Default(),
 		testOverride:  cs,
+	}
+}
+
+// NewTestClientFactoryWithDynamic returns a ClientFactory whose
+// ClientForUser and DynamicClientForUser return the supplied stubs,
+// bypassing impersonation. For use in tests that exercise code paths
+// needing both client types (e.g., RouterFor).
+func NewTestClientFactoryWithDynamic(cs *kubernetes.Clientset, dyn dynamic.Interface) *ClientFactory {
+	return &ClientFactory{
+		baseClientset:   cs,
+		clusterID:       "test",
+		logger:          slog.Default(),
+		testOverride:    cs,
+		testDynOverride: dyn,
 	}
 }
 

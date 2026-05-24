@@ -128,7 +128,7 @@ type mockAccessChecker struct {
 	alwaysDeny        bool
 }
 
-func (m *mockAccessChecker) CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error) {
+func (m *mockAccessChecker) CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error) {
 	if m.alwaysAllow {
 		return true, nil
 	}

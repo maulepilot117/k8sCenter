@@ -14,6 +14,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/topology"
 )
 
@@ -83,7 +84,8 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, err := h.AccessChecker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	if err != nil {
 		h.Logger.Error("RBAC check failed", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
@@ -174,7 +176,8 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	allowed, err := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	allowed, err := h.AccessChecker.CanAccess(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
 	if err != nil {
 		h.Logger.Error("RBAC check failed", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")

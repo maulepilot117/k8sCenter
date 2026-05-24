@@ -305,8 +305,9 @@ func main() {
 	go monDiscoverer.RunDiscoveryLoop(ctx)
 
 	monHandler := &monitoring.Handler{
-		Discoverer: monDiscoverer,
-		Logger:     logger,
+		Discoverer:    monDiscoverer,
+		AccessChecker: accessChecker,
+		Logger:        logger,
 	}
 
 	// Initialize Loki discoverer and start background discovery
@@ -393,16 +394,6 @@ func main() {
 		logger.Info("cilium agent exec collector enabled")
 	}
 
-	networkingHandler := &networking.Handler{
-		K8sClient:      k8sClient,
-		Detector:       cniDetector,
-		HubbleClient:   hubbleClient,
-		AuditLogger:    auditLogger,
-		Logger:         logger,
-		ClusterID:      cfg.ClusterID,
-		AgentCollector: agentCollector,
-	}
-
 	// Initialize alerting
 	alertStore := alerting.NewMemoryStore()
 	go alertStore.RunPruner(ctx, cfg.Alerting.RetentionDays, logger)
@@ -439,6 +430,22 @@ func main() {
 	}
 	clusterRouter := k8s.NewClusterRouter(k8sClient, clusterStore, dbEncKey, logger)
 	clusterRouter.StartCacheSweeper(ctx)
+	// F#9 — wire the multi-cluster router into AccessChecker so SARs against
+	// non-local clusterIDs route through the right remote API server. Without
+	// this, AccessChecker would always SAR against the local cluster's RBAC
+	// even when X-Cluster-ID names a remote cluster.
+	accessChecker.SetClusterRouter(clusterRouter)
+
+	networkingHandler := &networking.Handler{
+		K8sClient:      k8sClient,
+		ClusterRouter:  clusterRouter,
+		Detector:       cniDetector,
+		HubbleClient:   hubbleClient,
+		AuditLogger:    auditLogger,
+		Logger:         logger,
+		ClusterID:      cfg.ClusterID,
+		AgentCollector: agentCollector,
+	}
 
 	// Cluster health probing — background goroutine
 	var clusterProber *k8s.ClusterProber
@@ -758,9 +765,15 @@ func main() {
 
 	// Cert-Manager integration
 	cmDisc := certmanager.NewDiscoverer(k8sClient, logger)
-	cmHandler := certmanager.NewHandler(k8sClient, cmDisc, accessChecker, auditLogger, notifService, logger)
+	cmHandler := certmanager.NewHandler(k8sClient, clusterRouter, cmDisc, accessChecker, auditLogger, notifService, logger)
 	cmPoller := certmanager.NewPoller(k8sClient, cmDisc, cmHandler, notifService, logger)
 	go cmPoller.Start(ctx)
+	// F#8 (round-3) — wire cert-manager's per-cluster remote cache into
+	// ClusterRouter.EvictCluster so a cluster deletion or credential
+	// update drops the cached cert data in the same operation. Without
+	// this hook a re-registered cluster ID could briefly serve the
+	// previous tenant's certificates until cacheTTL expired.
+	clusterRouter.RegisterEvictHook(cmHandler.EvictRemoteCache)
 
 	// External Secrets Operator integration (Phase A — observatory; Phase D
 	// — alerting + threshold annotations; Phase C — DB persistence + drift

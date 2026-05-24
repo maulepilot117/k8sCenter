@@ -10,7 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -53,9 +55,6 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	logWSCount.Add(1)
-	defer logWSCount.Add(-1)
-
 	ns := chi.URLParam(r, "namespace")
 	pod := chi.URLParam(r, "pod")
 	container := chi.URLParam(r, "container")
@@ -95,9 +94,48 @@ func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
 		filter.TailLines = 10000
 	}
 
-	// RBAC check — get on pods/log subresource
+	// P2-5: WebSocket log streams against remote clusters are not yet supported
+	// because the watch connection lifecycle differs for remote API servers.
+	// Reject with an error frame BEFORE bumping the connection counter, running
+	// the RBAC check, emitting the audit "subscribed" entry, or opening the k8s
+	// stream — mirrors HandlePodExec ordering in pods.go.
+	wsLogsClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(wsLogsClusterID) {
+		s.Logger.Warn("ws log stream rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", wsLogsClusterID,
+			"namespace", ns,
+			"pod", pod,
+		)
+		// F#7 (round-2) — emit a failure audit entry on the rejection path
+		// so the operator-observable trail isn't just a slog warning. Mirrors
+		// HandlePodExec at pods.go:163 (which has the same rejection pattern
+		// for exec WS on remote clusters). Without this, the only forensic
+		// record of "user attempted remote pod logs" is the JSON log; the
+		// audit table — what compliance reviews actually read — stays blank.
+		if s.AuditLogger != nil {
+			entry := s.newAuditEntry(r, user.Username, audit.ActionReadLogs, audit.ResultFailure)
+			entry.ResourceKind = "Pod"
+			entry.ResourceNamespace = ns
+			entry.ResourceName = pod
+			entry.Detail = "ws log stream rejected: remote clusters not supported"
+			s.AuditLogger.Log(r.Context(), entry)
+		}
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "WebSocket log streaming not yet supported on remote clusters",
+		})
+		return
+	}
+
+	logWSCount.Add(1)
+	defer logWSCount.Add(-1)
+
+	// RBAC check — get on pods/log subresource. wsLogsClusterID was already
+	// gated to a local cluster above, so we forward it explicitly rather than
+	// re-reading the context, keeping the F#9 plumbing visible.
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), user.KubernetesUsername, user.KubernetesGroups,
+		r.Context(), wsLogsClusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"get", "pods/log", ns,
 	)
 	if err != nil {

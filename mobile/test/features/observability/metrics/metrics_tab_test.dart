@@ -104,16 +104,23 @@ void main() {
           },
         },
       );
-      // Every panel call returns one empty matrix so panels land in
-      // PanelLoaded(isEmpty) — the "No data" branch — without needing
-      // realistic Prometheus payloads.
-      mock.on(
-        'GET',
-        '/api/v1/monitoring/query_range',
-        (_) => _json({
-          'data': {'resultType': 'matrix', 'result': <Object>[]},
-        }),
-      );
+      // F#4 — every panel call hits the slug endpoint. Arm one handler per
+      // pod slug; each returns an empty matrix so panels land in
+      // PanelLoaded(isEmpty) — the "No data" branch.
+      for (final slug in const [
+        'pods/cpu',
+        'pods/memory',
+        'pods/network-rx',
+        'pods/network-tx',
+      ]) {
+        mock.on(
+          'GET',
+          '/api/v1/monitoring/queries/$slug',
+          (_) => _json({
+            'data': {'resultType': 'matrix', 'result': <Object>[]},
+          }),
+        );
+      }
 
       await _pumpTab(tester, mock: mock, kind: 'pods');
       await tester.pump();
@@ -126,8 +133,9 @@ void main() {
       expect(find.text('6h'), findsOneWidget);
       // First two pod-kind panel titles render in the visible viewport;
       // the remaining two live below the fold (ListView.builder lazy).
-      expect(find.text('CPU usage per container'), findsOneWidget);
-      expect(find.text('Memory working set per container'), findsOneWidget);
+      // Titles updated when panels moved to slug-based references in F#4.
+      expect(find.text('CPU usage'), findsOneWidget);
+      expect(find.text('Memory working set'), findsOneWidget);
       // The empty-vector mock should route each panel through the
       // _renderResult `result.isEmpty` branch, surfacing the "No data"
       // banner. Without this assertion the empty-state copy could

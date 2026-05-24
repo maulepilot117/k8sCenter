@@ -71,11 +71,17 @@ void main() {
         'data': {'detected': true, 'prometheus': {'available': true}},
       });
 
-      // Every panel hits query_range; respond with one series for each.
-      for (var i = 0; i < 4; i++) {
+      // F#4 — every panel hits the slug endpoint /api/v1/monitoring/queries/{slug}.
+      // The pod kind has four slugs; arm one mock per slug.
+      for (final slug in const [
+        'pods/cpu',
+        'pods/memory',
+        'pods/network-rx',
+        'pods/network-tx',
+      ]) {
         mock.on(
           'GET',
-          '/api/v1/monitoring/query_range',
+          '/api/v1/monitoring/queries/$slug',
           (_) => _matrix([
             {
               'metric': {'container': 'web'},
@@ -119,10 +125,15 @@ void main() {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);
 
-      for (var i = 0; i < 4; i++) {
+      for (final slug in const [
+        'pods/cpu',
+        'pods/memory',
+        'pods/network-rx',
+        'pods/network-tx',
+      ]) {
         mock.on(
           'GET',
-          '/api/v1/monitoring/query_range',
+          '/api/v1/monitoring/queries/$slug',
           (_) => _json({
             'error': {'code': 502, 'message': 'Prometheus query failed'},
           }, status: 502),
@@ -164,8 +175,12 @@ void main() {
       // resolves to value 0.99.
       final initialCompleters = List.generate(4, (_) => Completer<void>());
       var phase = 0;
-      mock.on('GET', '/api/v1/monitoring/query_range', (req) {
-        // First 4 calls — phase 0.
+      // F#4 — same swap-mid-fetch race against the slug endpoint. Each pod
+      // panel hits its own slug, so register the handler against every
+      // pod slug. Each handler shares the phase counter (the race
+      // assertion doesn't care which slug landed in which order — only
+      // that the post-swap batch wins).
+      ResponseBody handler(RequestOptions _) {
         if (phase < 4) {
           final i = phase++;
           // Force the initial fetches to block on completer so we can
@@ -190,7 +205,19 @@ void main() {
             ],
           },
         ]);
-      });
+      }
+
+      for (final slug in const [
+        'pods/cpu',
+        'pods/memory',
+        'pods/network-rx',
+        'pods/network-tx',
+      ]) {
+        // Register handler twice per slug so the same closure satisfies
+        // both the initial batch and the post-swap batch for that slug.
+        mock.on('GET', '/api/v1/monitoring/queries/$slug', handler);
+        mock.on('GET', '/api/v1/monitoring/queries/$slug', handler);
+      }
 
       final target = const MetricsTarget(
         clusterId: 'local',
@@ -235,13 +262,18 @@ void main() {
       addTearDown(container.dispose);
 
       // Switch active cluster after the controller pins on 'cluster-a',
-      // before the query_range mock returns. The mock returns a valid
+      // before the slug endpoint mock returns. The mock returns a valid
       // body so we exercise the post-emission re-check rather than the
       // happy path or a Dio error path.
-      for (var i = 0; i < 4; i++) {
+      for (final slug in const [
+        'pods/cpu',
+        'pods/memory',
+        'pods/network-rx',
+        'pods/network-tx',
+      ]) {
         mock.on(
           'GET',
-          '/api/v1/monitoring/query_range',
+          '/api/v1/monitoring/queries/$slug',
           (_) {
             container
                 .read(activeClusterProvider.notifier)
@@ -295,8 +327,9 @@ void main() {
       expect(state.panels, isEmpty);
       // The mock never gets a request because no panels are scheduled.
       expect(
-        mock.requests
-            .where((r) => r.path == '/api/v1/monitoring/query_range'),
+        mock.requests.where(
+          (r) => r.path.startsWith('/api/v1/monitoring/queries/'),
+        ),
         isEmpty,
       );
     });
@@ -305,21 +338,21 @@ void main() {
       final (:container, :mock) = _make();
       addTearDown(container.dispose);
 
-      // First batch fails with 502 for every panel.
-      for (var i = 0; i < 4; i++) {
+      // F#4 — register slug-endpoint handlers per panel. First handler in
+      // the per-slug queue serves the initial fetch; second serves the
+      // post-refresh fetch.
+      const slugs = ['pods/cpu', 'pods/memory', 'pods/network-rx', 'pods/network-tx'];
+      for (final slug in slugs) {
         mock.on(
           'GET',
-          '/api/v1/monitoring/query_range',
+          '/api/v1/monitoring/queries/$slug',
           (_) => _json({
             'error': {'code': 502, 'message': 'Prometheus query failed'},
           }, status: 502),
         );
-      }
-      // Second batch (after refresh) returns success.
-      for (var i = 0; i < 4; i++) {
         mock.on(
           'GET',
-          '/api/v1/monitoring/query_range',
+          '/api/v1/monitoring/queries/$slug',
           (_) => _matrix([
             {
               'metric': {'container': 'web'},

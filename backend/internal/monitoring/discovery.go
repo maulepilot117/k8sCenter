@@ -19,6 +19,10 @@ import (
 // recheckInterval is how often the discoverer re-probes the cluster.
 const recheckInterval = 5 * time.Minute
 
+// grafanaTokenDeprecationOnce gates the legacy-GrafanaToken deprecation WARN
+// so it fires once per process startup instead of every 5min discovery cycle.
+var grafanaTokenDeprecationOnce sync.Once
+
 // ComponentStatus describes whether a monitoring component is available.
 type ComponentStatus struct {
 	Available       bool   `json:"available"`
@@ -94,6 +98,23 @@ func (d *Discoverer) GrafanaProxy() http.Handler {
 	return d.grafProxy
 }
 
+// SetGrafanaProxy replaces the Grafana reverse proxy handler. Primarily used in
+// tests to inject a stub proxy without running a full discovery cycle.
+func (d *Discoverer) SetGrafanaProxy(h http.Handler) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.grafProxy = h
+}
+
+// NewTestDiscoverer returns a zero-value Discoverer seeded with the given
+// status and proxy, suitable for unit tests that do not need k8s connectivity.
+func NewTestDiscoverer(status *MonitoringStatus, proxy http.Handler) *Discoverer {
+	return &Discoverer{
+		status:    status,
+		grafProxy: proxy,
+	}
+}
+
 // GrafanaClient returns the cached Grafana API client, or nil.
 func (d *Discoverer) GrafanaAPIClient() *GrafanaClient {
 	d.mu.RLock()
@@ -164,20 +185,35 @@ func (d *Discoverer) Discover(ctx context.Context) {
 		}
 	}
 
+	// Resolve viewer and provisioning tokens with backward-compat logic.
+	// Legacy: if only GrafanaToken is set, treat it as the viewer token and
+	// disable provisioning. The deprecation WARN fires once per process
+	// (sync.Once) instead of every 5min discovery cycle (F#27).
+	viewerToken := d.config.GrafanaViewerToken
+	provisioningToken := d.config.GrafanaProvisioningToken
+	if d.config.GrafanaToken != "" && viewerToken == "" && provisioningToken == "" {
+		grafanaTokenDeprecationOnce.Do(func() {
+			d.logger.Warn("monitoring.grafanatoken is deprecated; set grafanaviewertoken and grafanaprovisioningtoken instead — provisioning disabled until you split the tokens")
+		})
+		viewerToken = d.config.GrafanaToken
+	}
+
 	var grafProxy http.Handler
 	var grafClient *GrafanaClient
 	if grafURL != "" {
-		// Proxy is always created when Grafana is discovered — token is optional
+		// Proxy is always created when Grafana is discovered — viewerToken is optional
 		// (it adds an Authorization header for Grafana instances that require auth)
-		proxy, err := newGrafanaProxy(grafURL, d.config.GrafanaToken)
+		proxy, err := newGrafanaProxy(grafURL, viewerToken)
 		if err != nil {
 			d.logger.Error("failed to create grafana proxy", "url", grafURL, "error", err)
 		} else {
 			grafProxy = proxy
 		}
-		// API client for dashboard provisioning requires a token
-		if d.config.GrafanaToken != "" {
-			grafClient = NewGrafanaClient(grafURL, d.config.GrafanaToken)
+		// API client for dashboard provisioning requires the provisioning token
+		if provisioningToken != "" {
+			grafClient = NewGrafanaClient(grafURL, provisioningToken)
+		} else {
+			d.logger.Warn("grafana provisioning token not set — dashboard provisioning disabled")
 		}
 	}
 
@@ -381,6 +417,12 @@ func newGrafanaProxy(grafanaURL, token string) (http.Handler, error) {
 			slog.Error("grafana proxy error", "err", err, "path", r.URL.Path)
 			http.Error(w, `{"error":{"code":502,"message":"monitoring service unavailable"}}`, http.StatusBadGateway)
 		},
+	}
+	// F#17: bound the response-header wait so a slow/hung Grafana backend
+	// can't tie up proxy goroutines indefinitely. Matches the 30s timeouts on
+	// GrafanaClient.QueryRange / PrometheusClient.QueryRange.
+	proxy.Transport = &http.Transport{
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	return proxy, nil
 }

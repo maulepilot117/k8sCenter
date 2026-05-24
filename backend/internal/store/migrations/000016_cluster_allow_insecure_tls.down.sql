@@ -1,0 +1,29 @@
+-- F#5 + F#2 (round-3) — down migration for the allow_insecure_tls column.
+--
+-- BINARY-ROLLBACK CONSTRAINT (READ BEFORE RUNNING):
+--
+-- This down migration drops the allow_insecure_tls column. Running it
+-- against a database whose backend pods include the F#5 fix WILL crash
+-- every cluster API call. ClusterStore.List / ClusterStore.Get
+-- unconditionally SELECT allow_insecure_tls, and applyClusterTLS in
+-- cluster_router.go consumes the field on every remote rest.Config build.
+--
+-- Required runbook for a post-F#5 rollback:
+--   1. Stop all post-F#5 backend pods (kubectl scale deploy/kubecenter --replicas=0).
+--   2. Apply 000017's down migration (a documented no-op) and then this one,
+--      in that order — golang-migrate will refuse to roll back 000016 while
+--      000017 is still applied.
+--   3. Deploy a pre-F#5 backend image. The pre-F#5 backend reintroduces the
+--      silent TLS-skip vulnerability that F#5 was specifically designed to
+--      close; there is no safe rollback path that retains the F#5 protection.
+--
+-- There is NO safe way to roll back F#5 alone while keeping the column.
+-- If you only want to disable the fail-closed check on a specific cluster,
+-- set allow_insecure_tls=true on that row (admin-only, audit-logged via the
+-- UI/API) instead of dropping the column.
+--
+-- The down file is retained for convention (golang-migrate expects a .down.sql
+-- per .up.sql), but treat it as a coordinated multi-step procedure, not a
+-- standalone command.
+
+ALTER TABLE clusters DROP COLUMN IF EXISTS allow_insecure_tls;

@@ -109,10 +109,13 @@ func validateDNSLabel(s string) bool {
 	return len(s) > 0 && len(s) <= 63 && dnsLabelRegex.MatchString(s)
 }
 
-// canAccess checks if the user can access a Velero resource.
+// canAccess checks if the user can access a Velero resource. clusterID is
+// derived from ctx so the SAR runs against the right cluster (F#9).
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
+		clusterID,
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,

@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 const (
@@ -256,8 +257,10 @@ func (h *Handler) PruneObservedDrift(currentUIDs map[string]bool) {
 // AccessChecker. Phase A only ever passes "list" / "get"; write verbs land
 // in Phases D / E.
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
+		clusterID,
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,

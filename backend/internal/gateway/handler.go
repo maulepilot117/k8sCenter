@@ -19,6 +19,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // routeKindToKind maps query-param route kind values to Gateway API Kind names.
@@ -85,10 +86,13 @@ func (h *Handler) getImpersonatingClient(w http.ResponseWriter, user *auth.User)
 	return client, true
 }
 
-// canAccess checks if the user can access a Gateway API resource.
+// canAccess checks if the user can access a Gateway API resource. clusterID
+// comes from ctx so the SAR runs against the right cluster (F#9).
 func (h *Handler) canAccess(ctx context.Context, user *auth.User, verb, resource, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
 		ctx,
+		clusterID,
 		user.KubernetesUsername,
 		user.KubernetesGroups,
 		verb,

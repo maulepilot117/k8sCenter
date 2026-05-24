@@ -1,21 +1,42 @@
 package monitoring
 
 import (
+	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"text/template"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/httputil"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // maxQueryLength is the maximum allowed PromQL query string length.
 const maxQueryLength = 4096
 
+// Query range caps — Finding P2-4 of the 2026-05-22 security audit.
+//
+// Note: maxQuerySamples was previously enforced separately, but with the
+// active maxQueryRangeDuration (6h) and minQueryStep (10s) caps the worst-case
+// sample count is (6*3600)/10 + 1 = 2161, which is comfortably under any
+// reasonable Prometheus sample bound. The samples cap is implicitly bounded by
+// range/step and is no longer enforced as its own gate.
+const (
+	maxQueryRangeDuration = 6 * time.Hour
+	minQueryStep          = 10 * time.Second
+)
+
 // Handler serves monitoring HTTP endpoints.
 type Handler struct {
-	Discoverer *Discoverer
-	Logger     *slog.Logger
+	Discoverer    *Discoverer
+	AccessChecker *resources.AccessChecker
+	Logger        *slog.Logger
 }
 
 // HandleStatus returns the current monitoring discovery status.
@@ -32,6 +53,7 @@ func (h *Handler) HandleRediscover(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleQuery proxies an instant PromQL query to Prometheus.
+// Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query?query=...&time=...
 func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	pc := h.Discoverer.PrometheusClient()
@@ -76,6 +98,7 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleQueryRange proxies a range PromQL query to Prometheus.
+// Requires admin role — see routes.go. Raw PromQL access is admin-only (P2-4).
 // GET /api/v1/monitoring/query_range?query=...&start=...&end=...&step=...
 func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
 	pc := h.Discoverer.PrometheusClient()
@@ -109,6 +132,12 @@ func (h *Handler) HandleQueryRange(w http.ResponseWriter, r *http.Request) {
 	step, err := time.ParseDuration(q.Get("step"))
 	if err != nil {
 		httputil.WriteError(w, http.StatusBadRequest, "invalid step parameter (use Go duration like 15s, 1m)", err.Error())
+		return
+	}
+
+	// Apply caps even for admin raw queries (P2-4).
+	if err := validateRangeCaps(start, end, step); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
 		return
 	}
 
@@ -274,3 +303,299 @@ func (h *Handler) HandleTemplateQuery(w http.ResponseWriter, r *http.Request) {
 		"warnings":   warnings,
 	})
 }
+
+// HandleSlugQuery executes a named, server-owned PromQL template from the
+// Registry. Non-admin users call this instead of the raw /query endpoints.
+// RBAC is enforced per-slug using the RequiredGVR field.
+// Finding P2-4 of the 2026-05-22 security audit.
+//
+// GET /api/v1/monitoring/queries/*
+//   - {slug} path segment captured by chi wildcard (e.g. "pods/cpu").
+//   - namespace: Kubernetes namespace (required for namespaced resources).
+//   - name: Resource name used in the PromQL template.
+//   - start / end / step: Optional; omitting runs an instant query at Now().
+func (h *Handler) HandleSlugQuery(w http.ResponseWriter, r *http.Request) {
+	pc := h.Discoverer.PrometheusClient()
+	if pc == nil {
+		httputil.WriteError(w, http.StatusServiceUnavailable,
+			"Prometheus is not available", "")
+		return
+	}
+
+	// chi wildcard route: /monitoring/queries/* — slug is everything after the prefix.
+	rawSlug := chi.URLParam(r, "*")
+	if rawSlug == "" {
+		httputil.WriteError(w, http.StatusNotFound, "slug is required", "")
+		return
+	}
+
+	def, ok := Registry[rawSlug]
+	if !ok {
+		// Return same shape as RBAC-denied (F#29) so the response can't be used
+		// as an oracle to enumerate the slug catalog. Don't echo the slug name.
+		//
+		// F#15 (round-2 — accepted trade-off, documented): there is still a
+		// timing-side-channel oracle here because the RBAC-denied path runs a
+		// SelfSubjectAccessReview round-trip (10-30ms typical) while the
+		// unknown-slug path returns synchronously (<1ms). An attacker with a
+		// stopwatch can therefore distinguish "slug doesn't exist" from
+		// "slug exists but RBAC denied" by response latency. We accept this
+		// because: (a) slug names are not security-sensitive — they're
+		// product capability identifiers, not secrets; (b) adding an
+		// artificial sleep would slow every legitimate 404 and erode UX;
+		// (c) the catalog is already discoverable from /monitoring/templates
+		// (admin-only) and from the frontend bundle anyway. If slug names
+		// ever do become sensitive, equalize timing by issuing a dummy SAR
+		// on the unknown-slug path. Tracked as F#15 in the audit re-review.
+		httputil.WriteError(w, http.StatusNotFound, "not found or forbidden", "")
+		return
+	}
+
+	q := r.URL.Query()
+	namespace := q.Get("namespace")
+	name := q.Get("name")
+
+	// Validate supplied label values to prevent PromQL injection.
+	// `name` validation uses the relaxed instance-label rules when the slug is
+	// node-scoped — node-exporter instance labels include uppercase letters,
+	// `_`, and `:` (e.g. "gke-cluster-pool-1A2B3C4D", "192.168.1.5:9100") which
+	// the strict k8s DNS-1123 validator rejects. Namespace is always strict.
+	if namespace != "" && !isValidK8sName(namespace) {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid namespace value", "")
+		return
+	}
+	if name != "" {
+		isNodeScoped := def.RequiredGVR == "nodes" || strings.HasPrefix(rawSlug, "nodes/")
+		validName := isValidK8sName(name)
+		if !validName && isNodeScoped {
+			validName = isValidInstanceLabel(name)
+		}
+		if !validName {
+			httputil.WriteError(w, http.StatusBadRequest, "invalid name value", "")
+			return
+		}
+	}
+
+	// RBAC check: user must have the required verb on the resource in the
+	// requested namespace. Cluster-scoped resources use namespace="".
+	if def.RequiredGVR != "" && h.AccessChecker != nil {
+		user, ok := auth.UserFromContext(r.Context())
+		if !ok {
+			httputil.WriteError(w, http.StatusUnauthorized, "authentication required", "")
+			return
+		}
+
+		// Split RequiredGVR into resource + apiGroup.
+		// Format: "resource" (core group) or "resource.group" (named group).
+		apiGroup := ""
+		resource := def.RequiredGVR
+		if idx := strings.Index(def.RequiredGVR, "."); idx != -1 {
+			resource = def.RequiredGVR[:idx]
+			apiGroup = def.RequiredGVR[idx+1:]
+		}
+
+		// For namespaces/* slugs the target namespace is in `name`, not
+		// `namespace`. Without this, the RBAC check would run cluster-scoped
+		// (rbacNS="") and a viewer with access to namespace A could pull
+		// per-namespace metrics for namespace B. (Finding F#10.)
+		rbacNS := namespace
+		if strings.HasPrefix(rawSlug, "namespaces/") {
+			rbacNS = name
+		}
+		// For cluster-scoped resources, pass "" as namespace.
+		if clusterScopedGVRs[def.RequiredGVR] {
+			rbacNS = ""
+		}
+
+		clusterID := middleware.ClusterIDFromContext(r.Context())
+		for _, verb := range def.RequiredVerbs {
+			allowed, err := h.AccessChecker.CanAccessGroupResource(
+				r.Context(),
+				clusterID,
+				user.KubernetesUsername,
+				user.KubernetesGroups,
+				verb,
+				apiGroup,
+				resource,
+				rbacNS,
+			)
+			if err != nil {
+				h.Logger.Error("slug query RBAC check failed",
+					"slug", rawSlug, "user", user.Username, "error", err)
+				httputil.WriteError(w, http.StatusInternalServerError, "RBAC check failed", "")
+				return
+			}
+			if !allowed {
+				// Return the same shape for unknown-slug vs RBAC-denied so the
+				// 404 vs 403 distinction can't be used as an oracle to enumerate
+				// the slug catalog. The slug name is not echoed back.
+				httputil.WriteError(w, http.StatusNotFound, "not found or forbidden", "")
+				return
+			}
+		}
+	}
+
+	// Render the PromQL template.
+	rendered, err := renderSlugTemplate(def.Template, namespace, name)
+	if err != nil {
+		h.Logger.Error("slug template render failed", "slug", rawSlug, "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "template render failed", "")
+		return
+	}
+
+	// Determine instant vs range query.
+	startStr := q.Get("start")
+	endStr := q.Get("end")
+	stepStr := q.Get("step")
+
+	if startStr == "" && endStr == "" {
+		// Instant query.
+		ts := time.Now()
+		if t := q.Get("time"); t != "" {
+			parsed, err := time.Parse(time.RFC3339, t)
+			if err != nil {
+				httputil.WriteError(w, http.StatusBadRequest, "invalid time parameter", err.Error())
+				return
+			}
+			ts = parsed
+		}
+		result, warnings, err := pc.Query(r.Context(), rendered, ts)
+		if err != nil {
+			httputil.WriteError(w, http.StatusBadGateway, "Prometheus query failed", err.Error())
+			return
+		}
+		// F#23 — match the /query_range data envelope shape exactly so the
+		// mobile QueryRangeResult parser works without a separate schema. The
+		// slug + rendered PromQL stay server-side (in slog logs) rather than
+		// echoing back to the client.
+		httputil.WriteData(w, map[string]any{
+			"resultType": result.Type(),
+			"result":     result,
+			"warnings":   warnings,
+		})
+		return
+	}
+
+	// Range query — parse and apply caps.
+	if stepStr == "" {
+		stepStr = "60s"
+	}
+	start, err := time.Parse(time.RFC3339, startStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid start parameter", err.Error())
+		return
+	}
+	end, err := time.Parse(time.RFC3339, endStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid end parameter", err.Error())
+		return
+	}
+	step, err := time.ParseDuration(stepStr)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid step parameter (use Go duration like 15s, 1m)", err.Error())
+		return
+	}
+
+	if err := validateRangeCaps(start, end, step); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, err.Error(), "")
+		return
+	}
+
+	result, warnings, err := pc.QueryRange(r.Context(), rendered, start, end, step)
+	if err != nil {
+		httputil.WriteError(w, http.StatusBadGateway, "Prometheus range query failed", err.Error())
+		return
+	}
+	// F#23 — same shape match as the instant branch above.
+	httputil.WriteData(w, map[string]any{
+		"resultType": result.Type(),
+		"result":     result,
+		"warnings":   warnings,
+	})
+}
+
+// validateRangeCaps enforces the P2-4 time-range caps:
+//   - max range = 6h
+//   - min step  = 10s
+//
+// The explicit samples cap was removed — bounded by range/step (worst case
+// 2161 samples). See the const block above.
+func validateRangeCaps(start, end time.Time, step time.Duration) error {
+	if end.Before(start) {
+		return fmt.Errorf("end must be after start")
+	}
+	rangeDur := end.Sub(start)
+	if rangeDur > maxQueryRangeDuration {
+		return fmt.Errorf("time range %.1fh exceeds maximum 6h", rangeDur.Hours())
+	}
+	if step < minQueryStep {
+		return fmt.Errorf("step %s is below minimum 10s", step)
+	}
+	return nil
+}
+
+// slugTemplateVars carries the supported substitution variables.
+//
+// NamespaceRegex / NameRegex are the same values pre-escaped for use in regex
+// (=~) positions. Templates that bind a value into an =~ label MUST use the
+// *Regex form so user input cannot inject regex metacharacters into the
+// surrounding pattern. F#30 — validators already restrict allowed chars, but
+// `.` is a regex metachar that fits both the strict ([a-z0-9.-]) and the
+// relaxed ([a-zA-Z0-9._:-]) sets and would otherwise widen the match
+// silently.
+type slugTemplateVars struct {
+	Namespace      string
+	Name           string
+	NamespaceRegex string
+	NameRegex      string
+}
+
+// promQLRegexEscaper escapes the regex metacharacters that can appear in our
+// validated label values. The only metachar reachable through isValidK8sName
+// is `.`; isValidInstanceLabel adds `_` and `:` (both regex-literal) plus
+// uppercase letters. We still escape the full PCRE/RE2 metaset so any future
+// validator loosening doesn't quietly bypass this defense.
+var promQLRegexEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`.`, `\.`,
+	`+`, `\+`,
+	`*`, `\*`,
+	`?`, `\?`,
+	`(`, `\(`,
+	`)`, `\)`,
+	`[`, `\[`,
+	`]`, `\]`,
+	`{`, `\{`,
+	`}`, `\}`,
+	`^`, `\^`,
+	`$`, `\$`,
+	`|`, `\|`,
+)
+
+// escapePromQLRegex escapes regex metachars so a validated label value can be
+// substituted into a Prometheus =~ position without widening the match.
+func escapePromQLRegex(s string) string {
+	return promQLRegexEscaper.Replace(s)
+}
+
+// renderSlugTemplate renders a QueryDef.Template using text/template.
+// Templates may use {{.Namespace}} / {{.Name}} in `=` positions and MUST use
+// {{.NamespaceRegex}} / {{.NameRegex}} in `=~` positions.
+func renderSlugTemplate(tmplStr, namespace, name string) (string, error) {
+	t, err := template.New("slug").Parse(tmplStr)
+	if err != nil {
+		return "", fmt.Errorf("parsing template: %w", err)
+	}
+	var buf bytes.Buffer
+	vars := slugTemplateVars{
+		Namespace:      namespace,
+		Name:           name,
+		NamespaceRegex: escapePromQLRegex(namespace),
+		NameRegex:      escapePromQLRegex(name),
+	}
+	if err := t.Execute(&buf, vars); err != nil {
+		return "", fmt.Errorf("executing template: %w", err)
+	}
+	return buf.String(), nil
+}
+

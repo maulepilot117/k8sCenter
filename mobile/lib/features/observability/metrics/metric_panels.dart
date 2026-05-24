@@ -1,32 +1,24 @@
 // Per-kind curated PromQL panels for the M4 Metrics tab.
 //
-// The backend's `/v1/monitoring/resource-dashboard?kind=...` endpoint
-// returns only Grafana embed metadata (`{dashboardUID, varName,
-// grafanaProxied}`), NOT the curated PromQL queries the plan describes.
-// The real per-kind queries live in `backend/internal/monitoring/
-// metrics.go` under `QueryTemplates` — exposed via the templates
-// endpoint family but limited to instant queries.
-//
-// PR-4b's "Deferred to Implementation" question delegated this shape
-// to the implementing agent. The cleanest path within the
-// "no backend changes" constraint is to mirror the backend's
-// QueryTemplates queries on mobile, keyed by kind, with explicit
-// variable slots that the controller fills before calling
-// `/v1/monitoring/query_range`. The mobile + backend pair stays in
-// sync the same way mobile-side resource models mirror backend wire
-// types — drift caught at integration test time.
+// F#4 (security audit 2026-05-22) — panels now reference SERVER-OWNED
+// slugs from `backend/internal/monitoring/query_registry.go` rather than
+// embedding raw PromQL the mobile app would send through
+// `/v1/monitoring/query_range`. After F#23 + F#10 hardening that endpoint
+// is admin-only; non-admin operators (the Metrics tab's intended audience)
+// were getting 403 on every chart. The slug endpoint
+// `/v1/monitoring/queries/{slug}` runs the matching server-side template
+// after a per-slug RBAC check, so a viewer can pull pod CPU in namespaces
+// they can list pods in and nothing else.
 //
 // Coverage parity with the web's Grafana dashboards:
 //   * pods, nodes — rich coverage (4 panels each)
 //   * persistentvolumeclaims, deployments — one canonical panel each
-//   * statefulsets, daemonsets — workload-shaped panels using a
-//     name-prefix matcher on `pod` labels (mirrors how
-//     `kubectl top` aggregates).
+//   * statefulsets, daemonsets — workload-shaped panels using the
+//     `<workload>-.*` pod-name matcher the registry expects.
 //
-// PromQL strings here MUST match the backend's QueryTemplates byte-for-
-// byte for any template that exists there. New panels (StatefulSet,
-// DaemonSet) live only here for now; if the backend adds matching
-// templates, prefer those and delete the local copy.
+// Slug names MUST match a key in the backend Registry exactly — drift is
+// silently caught here when the backend returns 404 (which it folds into
+// "not found or forbidden" so the client can't enumerate the catalog).
 
 import 'package:flutter/foundation.dart' show immutable;
 
@@ -36,18 +28,21 @@ import 'package:flutter/foundation.dart' show immutable;
 /// testable without pulling in Flutter).
 enum PanelSeverity { primary, success, warning, error, info, muted }
 
-/// A single chart panel definition. The PromQL `queryTemplate` is
-/// rendered by substituting `$<name>` tokens against the panel's
-/// declared `variables`. The chart layer takes the rendered string,
-/// hands it to `MonitoringRepository.queryRange`, and routes the result
-/// into a `KubeLineChart`.
+/// A single chart panel definition. Each panel references a
+/// `slug` in the backend's monitoring Registry; the controller hands
+/// the slug + (namespace, name) to `MonitoringRepository.queryRangeSlug`,
+/// the backend renders + RBAC-checks + executes the PromQL, and the
+/// chart layer plots the result.
+///
+/// F#4 (security audit 2026-05-22) replaced the previous
+/// `queryTemplate` / variable-substitution design — that path required
+/// hitting `/v1/monitoring/query_range`, which is admin-only after F#23.
 @immutable
 class MetricPanel {
   const MetricPanel({
     required this.id,
     required this.title,
-    required this.queryTemplate,
-    required this.variables,
+    required this.slug,
     this.severity = PanelSeverity.primary,
     this.unitHint,
   });
@@ -58,13 +53,11 @@ class MetricPanel {
   /// Operator-facing chart title (e.g. "CPU usage per container").
   final String title;
 
-  /// PromQL with `$varname` tokens. The set of required tokens MUST
-  /// equal [variables] — the controller raises an ArgumentError
-  /// otherwise (caught by tests).
-  final String queryTemplate;
-
-  /// Variable names that must appear in the supplied bindings.
-  final List<String> variables;
+  /// Backend Registry key — e.g. `pods/cpu`, `deployments/replicas`.
+  /// Must match a key in
+  /// `backend/internal/monitoring/query_registry.go` exactly. Drift
+  /// surfaces as a 404 ("not found or forbidden") at runtime.
+  final String slug;
 
   /// Color token for the chart line(s) in this panel.
   final PanelSeverity severity;
@@ -73,279 +66,178 @@ class MetricPanel {
   /// "bytes/sec"). Not authoritative — Prometheus values arrive
   /// unitless; this is purely operator copy.
   final String? unitHint;
-
-  /// Substitutes `$<varname>` tokens. Throws [ArgumentError] when a
-  /// declared variable is missing from `vars` so the caller sees the
-  /// failure synchronously rather than emitting an empty Prometheus
-  /// query that returns nothing without explanation.
-  String render(Map<String, String> vars) {
-    var q = queryTemplate;
-    for (final v in variables) {
-      final value = vars[v];
-      if (value == null || value.isEmpty) {
-        throw ArgumentError('Missing variable for panel $id: $v');
-      }
-      if (!_isValidPromQLLabelValue(value)) {
-        throw ArgumentError(
-          'Invalid value for $v on panel $id: '
-          'contains characters that would break the PromQL query',
-        );
-      }
-      q = q.replaceAll('\$$v', value);
-    }
-    return q;
-  }
-}
-
-/// Rejects values that would break out of the double-quoted PromQL
-/// label-value string. The strict RFC 1123 subdomain validator is
-/// applied server-side (backend `isValidK8sName`); this client-side
-/// guard exists for defence-in-depth and to fail fast before issuing
-/// the HTTP request — but it must accept any name a Kubernetes
-/// kubelet or controller can register, since legitimate on-prem node
-/// names sometimes contain uppercase or underscores (kubelet's
-/// `--hostname-override` allows them).
-///
-/// Reject only the characters that have semantic meaning inside the
-/// PromQL string context (`"` closes the string, `\` escapes the next
-/// char, `$` triggers another substitution pass in templated query
-/// engines, newline/return/NUL break the wire format) plus the
-/// 253-char Kubernetes name length cap. Anything else is forwarded to
-/// the backend, which applies the strict RFC 1123 check and returns a
-/// 400 with a precise error string for the operator to act on.
-bool _isValidPromQLLabelValue(String s) {
-  if (s.isEmpty || s.length > 253) return false;
-  for (final cu in s.codeUnits) {
-    // 0x00 NUL, 0x0A LF, 0x0D CR — control chars that break the wire
-    // format or Prometheus tokenizer.
-    if (cu == 0x00 || cu == 0x0A || cu == 0x0D) return false;
-    // 0x22 " — closes the surrounding label-value string.
-    // 0x5C \ — escape character.
-    // 0x24 $ — variable expansion marker; defence-in-depth, since the
-    //          template engine has already substituted at this point.
-    if (cu == 0x22 || cu == 0x5C || cu == 0x24) return false;
-  }
-  return true;
 }
 
 /// Curated panels per resource kind. Keys are the backend-canonical
 /// plural kind strings (matching the route segment and
-/// `ResourceDashboardMap` keys).
+/// `ResourceDashboardMap` keys). Slugs reference entries in
+/// `backend/internal/monitoring/query_registry.go`.
 const Map<String, List<MetricPanel>> metricPanelsByKind = {
   // ---------------- Pod ----------------
-  // Mirrors backend/QueryTemplates entries pod_cpu_usage,
-  // pod_memory_usage, pod_network_rx, pod_network_tx.
   'pods': [
     MetricPanel(
       id: 'pod_cpu_usage',
-      title: 'CPU usage per container',
-      queryTemplate:
-          'sum(rate(container_cpu_usage_seconds_total{container!="",pod="\$pod",namespace="\$namespace"}[5m])) by (container)',
-      variables: ['namespace', 'pod'],
+      title: 'CPU usage',
+      slug: 'pods/cpu',
       severity: PanelSeverity.primary,
       unitHint: 'cores',
     ),
     MetricPanel(
       id: 'pod_memory_usage',
-      title: 'Memory working set per container',
-      queryTemplate:
-          'sum(container_memory_working_set_bytes{container!="",pod="\$pod",namespace="\$namespace"}) by (container)',
-      variables: ['namespace', 'pod'],
+      title: 'Memory working set',
+      slug: 'pods/memory',
       severity: PanelSeverity.warning,
-      unitHint: 'bytes',
+      unitHint: 'MB',
     ),
     MetricPanel(
       id: 'pod_network_rx',
       title: 'Network receive',
-      queryTemplate:
-          'sum(rate(container_network_receive_bytes_total{pod="\$pod",namespace="\$namespace"}[5m]))',
-      variables: ['namespace', 'pod'],
+      slug: 'pods/network-rx',
       severity: PanelSeverity.info,
-      unitHint: 'bytes/sec',
+      unitHint: 'KB/s',
     ),
     MetricPanel(
       id: 'pod_network_tx',
       title: 'Network transmit',
-      queryTemplate:
-          'sum(rate(container_network_transmit_bytes_total{pod="\$pod",namespace="\$namespace"}[5m]))',
-      variables: ['namespace', 'pod'],
+      slug: 'pods/network-tx',
       severity: PanelSeverity.success,
-      unitHint: 'bytes/sec',
+      unitHint: 'KB/s',
     ),
   ],
 
   // ---------------- Node ----------------
-  // Mirrors backend/QueryTemplates node_* entries.
   'nodes': [
     MetricPanel(
       id: 'node_cpu_utilization',
       title: 'CPU utilization',
-      queryTemplate:
-          '100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",instance=~"\$node.*"}[5m])) * 100)',
-      variables: ['node'],
+      slug: 'nodes/cpu',
       severity: PanelSeverity.primary,
       unitHint: '%',
     ),
     MetricPanel(
       id: 'node_memory_utilization',
       title: 'Memory utilization',
-      queryTemplate:
-          '100 * (1 - node_memory_MemAvailable_bytes{instance=~"\$node.*"} / node_memory_MemTotal_bytes{instance=~"\$node.*"})',
-      variables: ['node'],
+      slug: 'nodes/memory',
       severity: PanelSeverity.warning,
       unitHint: '%',
     ),
     MetricPanel(
-      id: 'node_disk_utilization',
-      title: 'Root disk utilization',
-      queryTemplate:
-          '100 - (node_filesystem_avail_bytes{instance=~"\$node.*",mountpoint="/",fstype!="rootfs"} / node_filesystem_size_bytes{instance=~"\$node.*",mountpoint="/",fstype!="rootfs"} * 100)',
-      variables: ['node'],
-      severity: PanelSeverity.error,
-      unitHint: '%',
+      id: 'node_load',
+      title: '5-minute load average',
+      slug: 'nodes/load',
+      severity: PanelSeverity.info,
+      unitHint: 'load',
     ),
     MetricPanel(
-      id: 'node_pod_count',
-      title: 'Pods on node',
-      queryTemplate: 'count(kube_pod_info{node="\$node"})',
-      variables: ['node'],
-      severity: PanelSeverity.info,
-      unitHint: 'pods',
+      id: 'node_network_rx',
+      title: 'Network receive',
+      slug: 'nodes/network-rx',
+      severity: PanelSeverity.success,
+      unitHint: 'MB/s',
     ),
   ],
 
   // ---------------- Deployment ----------------
-  // Mirrors backend deployment_replica_health and adds per-deployment
-  // CPU/memory roll-ups that aggregate by pod-name prefix — same
-  // matcher `kubectl top` uses when --by-deployment isn't supported.
   'deployments': [
     MetricPanel(
-      id: 'deployment_replica_health',
-      title: 'Replica health',
-      queryTemplate:
-          'kube_deployment_status_replicas_available{namespace="\$namespace",deployment="\$deployment"} / kube_deployment_spec_replicas{namespace="\$namespace",deployment="\$deployment"}',
-      variables: ['namespace', 'deployment'],
+      id: 'deployment_replicas',
+      title: 'Current replicas',
+      slug: 'deployments/replicas',
       severity: PanelSeverity.success,
-      unitHint: 'ratio',
+      unitHint: 'replicas',
     ),
     MetricPanel(
       id: 'deployment_pod_cpu',
       title: 'CPU usage (sum of owned pods)',
-      queryTemplate:
-          'sum(rate(container_cpu_usage_seconds_total{container!="",namespace="\$namespace",pod=~"\$deployment-.*"}[5m]))',
-      variables: ['namespace', 'deployment'],
+      slug: 'deployments/cpu',
       severity: PanelSeverity.primary,
       unitHint: 'cores',
     ),
     MetricPanel(
       id: 'deployment_pod_memory',
       title: 'Memory (sum of owned pods)',
-      queryTemplate:
-          'sum(container_memory_working_set_bytes{container!="",namespace="\$namespace",pod=~"\$deployment-.*"})',
-      variables: ['namespace', 'deployment'],
+      slug: 'deployments/memory',
       severity: PanelSeverity.warning,
-      unitHint: 'bytes',
+      unitHint: 'MB',
     ),
   ],
 
   // ---------------- StatefulSet ----------------
-  // No backend QueryTemplates coverage today; the matcher relies on
-  // StatefulSet's predictable `name-<ordinal>` pod naming convention.
   'statefulsets': [
     MetricPanel(
-      id: 'statefulset_replica_health',
+      id: 'statefulset_replicas_ready',
       title: 'Ready replicas',
-      queryTemplate:
-          'kube_statefulset_status_replicas_ready{namespace="\$namespace",statefulset="\$statefulset"} / kube_statefulset_status_replicas{namespace="\$namespace",statefulset="\$statefulset"}',
-      variables: ['namespace', 'statefulset'],
+      slug: 'statefulsets/replicas-ready',
       severity: PanelSeverity.success,
-      unitHint: 'ratio',
+      unitHint: 'replicas',
     ),
     MetricPanel(
       id: 'statefulset_pod_cpu',
       title: 'CPU usage (sum of owned pods)',
-      queryTemplate:
-          'sum(rate(container_cpu_usage_seconds_total{container!="",namespace="\$namespace",pod=~"\$statefulset-[0-9]+"}[5m]))',
-      variables: ['namespace', 'statefulset'],
+      slug: 'statefulsets/cpu',
       severity: PanelSeverity.primary,
       unitHint: 'cores',
     ),
     MetricPanel(
       id: 'statefulset_pod_memory',
       title: 'Memory (sum of owned pods)',
-      queryTemplate:
-          'sum(container_memory_working_set_bytes{container!="",namespace="\$namespace",pod=~"\$statefulset-[0-9]+"})',
-      variables: ['namespace', 'statefulset'],
+      slug: 'statefulsets/memory',
       severity: PanelSeverity.warning,
-      unitHint: 'bytes',
+      unitHint: 'MB',
     ),
   ],
 
   // ---------------- DaemonSet ----------------
-  // Backend has no curated DS templates. The desired/available ratio
-  // catches partial node coverage; per-pod CPU/memory uses the same
-  // prefix matcher as Deployment.
   'daemonsets': [
     MetricPanel(
-      id: 'daemonset_ready_ratio',
-      title: 'Ready ratio',
-      queryTemplate:
-          'kube_daemonset_status_number_ready{namespace="\$namespace",daemonset="\$daemonset"} / kube_daemonset_status_desired_number_scheduled{namespace="\$namespace",daemonset="\$daemonset"}',
-      variables: ['namespace', 'daemonset'],
+      id: 'daemonset_ready',
+      title: 'Ready pods',
+      slug: 'daemonsets/ready',
       severity: PanelSeverity.success,
-      unitHint: 'ratio',
+      unitHint: 'pods',
     ),
     MetricPanel(
       id: 'daemonset_pod_cpu',
       title: 'CPU usage (sum of owned pods)',
-      queryTemplate:
-          'sum(rate(container_cpu_usage_seconds_total{container!="",namespace="\$namespace",pod=~"\$daemonset-.*"}[5m]))',
-      variables: ['namespace', 'daemonset'],
+      slug: 'daemonsets/cpu',
       severity: PanelSeverity.primary,
       unitHint: 'cores',
     ),
     MetricPanel(
       id: 'daemonset_pod_memory',
       title: 'Memory (sum of owned pods)',
-      queryTemplate:
-          'sum(container_memory_working_set_bytes{container!="",namespace="\$namespace",pod=~"\$daemonset-.*"})',
-      variables: ['namespace', 'daemonset'],
+      slug: 'daemonsets/memory',
       severity: PanelSeverity.warning,
-      unitHint: 'bytes',
+      unitHint: 'MB',
     ),
   ],
 
   // ---------------- PersistentVolumeClaim ----------------
-  // Mirrors backend pvc_usage_percent; capacity/available panels round
-  // out the trio operators want when investigating a "PVC almost full"
-  // alert.
+  // Backend Registry uses `pvcs/*` for the slug namespace even though
+  // the K8s plural is `persistentvolumeclaims`. The mobile kind key
+  // (and route segment) keep the K8s plural; the slug just references
+  // the Registry entry directly.
   'persistentvolumeclaims': [
     MetricPanel(
-      id: 'pvc_usage_percent',
+      id: 'pvc_usage',
       title: 'Used capacity',
-      queryTemplate:
-          'kubelet_volume_stats_used_bytes{namespace="\$namespace",persistentvolumeclaim="\$pvc"} / kubelet_volume_stats_capacity_bytes{namespace="\$namespace",persistentvolumeclaim="\$pvc"} * 100',
-      variables: ['namespace', 'pvc'],
+      slug: 'pvcs/usage',
       severity: PanelSeverity.warning,
-      unitHint: '%',
+      unitHint: 'GiB',
     ),
     MetricPanel(
-      id: 'pvc_used_bytes',
-      title: 'Used bytes',
-      queryTemplate:
-          'kubelet_volume_stats_used_bytes{namespace="\$namespace",persistentvolumeclaim="\$pvc"}',
-      variables: ['namespace', 'pvc'],
+      id: 'pvc_capacity',
+      title: 'Total capacity',
+      slug: 'pvcs/capacity',
       severity: PanelSeverity.primary,
-      unitHint: 'bytes',
+      unitHint: 'GiB',
     ),
     MetricPanel(
-      id: 'pvc_available_bytes',
-      title: 'Available bytes',
-      queryTemplate:
-          'kubelet_volume_stats_available_bytes{namespace="\$namespace",persistentvolumeclaim="\$pvc"}',
-      variables: ['namespace', 'pvc'],
+      id: 'pvc_inodes',
+      title: 'Inodes used',
+      slug: 'pvcs/inodes',
       severity: PanelSeverity.success,
-      unitHint: 'bytes',
+      unitHint: 'inodes',
     ),
   ],
 };

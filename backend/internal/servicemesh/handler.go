@@ -28,6 +28,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 const meshCacheTTL = 30 * time.Second
@@ -325,7 +326,7 @@ func filterByRBAC[T namespacedResource](ctx context.Context, h *Handler, user *a
 		key := accessKey{entry.APIGroup, entry.Resource, ns}
 		allowed, checked := access[key]
 		if !checked {
-			can, err := h.AccessChecker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", entry.APIGroup, entry.Resource, ns)
+			can, err := h.AccessChecker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", entry.APIGroup, entry.Resource, ns)
 			allowed = err == nil && can
 			access[key] = allowed
 		}
@@ -507,7 +508,7 @@ func (h *Handler) HandleGetRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "get", entry.APIGroup, entry.Resource, ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "get", entry.APIGroup, entry.Resource, ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to view this resource", "")
 		return
@@ -620,7 +621,7 @@ func (h *Handler) HandleMTLSPosture(w http.ResponseWriter, r *http.Request) {
 	// RBAC: a checker error is a system fault (500); a plain "no" is 403.
 	// Conflating the two would mask infrastructure outages as access
 	// denials.
-	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
+	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
 	if aerr != nil {
 		h.Logger.Error("mTLS posture RBAC check failed", "user", user.KubernetesUsername, "namespace", namespace, "error", aerr)
 		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
@@ -792,7 +793,7 @@ func (h *Handler) HandleGoldenSignals(w http.ResponseWriter, r *http.Request) {
 	// the service, but the underlying workload lives in the namespace; if
 	// the user can't read pods there, the metric breakdown would leak
 	// workload names they shouldn't see.
-	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
+	can, aerr := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "list", "", "pods", namespace)
 	if aerr != nil {
 		h.Logger.Error("golden signals RBAC check failed", "user", user.KubernetesUsername, "namespace", namespace, "error", aerr)
 		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")

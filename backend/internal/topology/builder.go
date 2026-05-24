@@ -16,6 +16,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/auth"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/servicemesh"
 )
 
@@ -118,8 +119,11 @@ type resourceMeta struct {
 type healthFn func(resourceMeta) (Health, string)
 
 // canAccess checks if the user has "list" permission for the given resource.
+// clusterID flows from ctx (middleware.ClusterIDFromContext) so the SAR runs
+// against the correct cluster's RBAC (F#9).
 func canAccess(ctx context.Context, user *auth.User, checker *resources.AccessChecker, resource, namespace string) bool {
-	allowed, _ := checker.CanAccess(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	allowed, _ := checker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", resource, namespace)
 	return allowed
 }
 
@@ -449,7 +453,8 @@ func (b *Builder) applyESOChainOverlay(
 }
 
 func canAccessESOGroup(ctx context.Context, user *auth.User, checker *resources.AccessChecker, resource, namespace string) bool {
-	allowed, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "external-secrets.io", resource, namespace)
+	clusterID := middleware.ClusterIDFromContext(ctx)
+	allowed, err := checker.CanAccessGroupResource(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "external-secrets.io", resource, namespace)
 	return err == nil && allowed
 }
 
@@ -521,7 +526,7 @@ func (b *Builder) applyMeshOverlay(
 		if v, ok := access[key]; ok {
 			return v
 		}
-		can, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, namespace)
+		can, err := checker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", apiGroup, resource, namespace)
 		if err != nil {
 			b.logger.Warn("mesh overlay: RBAC check failed", "namespace", namespace, "apiGroup", apiGroup, "resource", resource, "error", err)
 			access[key] = false

@@ -16,6 +16,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
 // Handler serves security scanning HTTP endpoints.
@@ -268,8 +269,9 @@ func (h *Handler) HandleVulnerabilities(w http.ResponseWriter, r *http.Request) 
 
 // canAccessTrivy checks if the user can list Trivy VulnerabilityReports in the namespace.
 func (h *Handler) canAccessTrivy(ctx context.Context, user *auth.User, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
-		ctx, user.KubernetesUsername, user.KubernetesGroups,
+		ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "aquasecurity.github.io", "vulnerabilityreports", namespace,
 	)
 	return err == nil && can
@@ -277,8 +279,9 @@ func (h *Handler) canAccessTrivy(ctx context.Context, user *auth.User, namespace
 
 // canAccessKubescape checks if the user can list Kubescape VulnerabilitySummaries in the namespace.
 func (h *Handler) canAccessKubescape(ctx context.Context, user *auth.User, namespace string) bool {
+	clusterID := middleware.ClusterIDFromContext(ctx)
 	can, err := h.AccessChecker.CanAccessGroupResource(
-		ctx, user.KubernetesUsername, user.KubernetesGroups,
+		ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "spdx.softwarecomposition.org", "vulnerabilitysummaries", namespace,
 	)
 	return err == nil && can

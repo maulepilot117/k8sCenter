@@ -231,7 +231,7 @@ func filterByRBAC[T namespacedItem](ctx context.Context, checker *resources.Acce
 		key := accessKey{item.getNamespace()}
 		allowed, checked := access[key]
 		if !checked {
-			can, err := checker.CanAccessGroupResource(ctx, user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", resource, item.getNamespace())
+			can, err := checker.CanAccessGroupResource(ctx, middleware.ClusterIDFromContext(ctx), user.KubernetesUsername, user.KubernetesGroups, "list", "notification.toolkit.fluxcd.io", resource, item.getNamespace())
 			allowed = err == nil && can
 			access[key] = allowed
 		}
@@ -379,7 +379,7 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "providers", input.Namespace)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "providers", input.Namespace)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create providers in this namespace", "")
 		return
@@ -414,7 +414,7 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "providers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "providers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this provider", "")
 		return
@@ -463,7 +463,7 @@ func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "providers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "providers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this provider", "")
 		return
@@ -497,7 +497,7 @@ func (h *Handler) HandleSuspendProvider(w http.ResponseWriter, r *http.Request) 
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "providers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "providers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this provider", "")
 		return
@@ -591,7 +591,7 @@ func (h *Handler) HandleCreateAlert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "alerts", input.Namespace)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "alerts", input.Namespace)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create alerts in this namespace", "")
 		return
@@ -626,7 +626,7 @@ func (h *Handler) HandleUpdateAlert(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "alerts", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "alerts", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this alert", "")
 		return
@@ -675,7 +675,7 @@ func (h *Handler) HandleDeleteAlert(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "alerts", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "alerts", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this alert", "")
 		return
@@ -709,7 +709,7 @@ func (h *Handler) HandleSuspendAlert(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "alerts", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "alerts", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this alert", "")
 		return
@@ -803,7 +803,7 @@ func (h *Handler) HandleCreateReceiver(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "receivers", input.Namespace)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "create", "notification.toolkit.fluxcd.io", "receivers", input.Namespace)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to create receivers in this namespace", "")
 		return
@@ -838,7 +838,7 @@ func (h *Handler) HandleUpdateReceiver(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "receivers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "update", "notification.toolkit.fluxcd.io", "receivers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to update this receiver", "")
 		return
@@ -887,7 +887,7 @@ func (h *Handler) HandleDeleteReceiver(w http.ResponseWriter, r *http.Request) {
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "receivers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "delete", "notification.toolkit.fluxcd.io", "receivers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to delete this receiver", "")
 		return
@@ -921,7 +921,7 @@ func (h *Handler) HandleSuspendReceiver(w http.ResponseWriter, r *http.Request) 
 	ns := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
-	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "receivers", ns)
+	can, err := h.AccessChecker.CanAccessGroupResource(r.Context(), middleware.ClusterIDFromContext(r.Context()), user.KubernetesUsername, user.KubernetesGroups, "patch", "notification.toolkit.fluxcd.io", "receivers", ns)
 	if err != nil || !can {
 		httputil.WriteError(w, http.StatusForbidden, "you do not have permission to modify this receiver", "")
 		return

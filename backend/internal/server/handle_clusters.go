@@ -85,12 +85,30 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		APIServerURL string `json:"apiServerUrl"`
 		CACert       string `json:"caCert"`
 		Token        string `json:"token"`
+		// AllowInsecureTLS opts the cluster into the legacy "no CA → skip TLS
+		// verification" behaviour for self-signed homelab control planes. Admin-
+		// only; the connection test below will reject the registration when set
+		// without an admin role in context. F#5 security audit 2026-05-22.
+		AllowInsecureTLS bool `json:"allowInsecureTLS"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "invalid request body"},
 		})
 		return
+	}
+
+	// F#5 — only admins may register a cluster with TLS verification disabled.
+	// Non-admin contexts get the silent-MITM defense regardless of what they
+	// requested.
+	if req.AllowInsecureTLS {
+		user, _ := auth.UserFromContext(r.Context())
+		if user == nil || !auth.IsAdmin(user) {
+			writeJSON(w, http.StatusForbidden, api.Response{
+				Error: &api.APIError{Code: 403, Message: "allowInsecureTLS requires admin role"},
+			})
+			return
+		}
 	}
 
 	// Validate required fields
@@ -142,7 +160,30 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Connection test — verify the cluster is reachable before saving (10s timeout)
+	// F#5 — reject registrations that would be unusable. Either pin trust to a
+	// CA or explicitly opt into the silent-MITM behaviour. Without one of these
+	// the cluster_router will refuse to build a remote config later anyway, so
+	// surface the failure at registration time rather than after persistence.
+	if len(req.CACert) == 0 && !req.AllowInsecureTLS {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{
+				Code:    400,
+				Message: "caCert is required unless allowInsecureTLS is true",
+				Detail:  "Provide the cluster's CA certificate, or set allowInsecureTLS=true to opt into unverified TLS (homelab self-signed control planes only).",
+			},
+		})
+		return
+	}
+
+	// Connection test — verify the cluster is reachable before saving (10s timeout).
+	// F#13 (round-3) — route through k8s.ApplyClusterTLS so the registration
+	// test exercises the SAME fail-closed policy that cluster_router and
+	// cluster_prober run. Previously the connection-test built TLS config
+	// inline, which let any future drift in the policy (e.g. a default
+	// CA bundle, a min-TLS-version bump) silently bypass the register-
+	// time check. Pre-conditions above (caCert non-empty OR allowInsecureTLS
+	// admin-approved) mean ApplyClusterTLS will never return an error here,
+	// but plumbing it through keeps the single source of truth.
 	testCfg := &rest.Config{
 		Host:        req.APIServerURL,
 		BearerToken: req.Token,
@@ -150,8 +191,15 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.CACert) > 0 {
 		testCfg.TLSClientConfig = rest.TLSClientConfig{CAData: []byte(req.CACert)}
-	} else {
-		testCfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	}
+	if err := k8s.ApplyClusterTLS(testCfg, req.Name, []byte(req.CACert), req.AllowInsecureTLS, s.Logger); err != nil {
+		// Should be unreachable given the pre-conditions above; surface
+		// it as a 400 anyway so any future relaxation of those pre-
+		// conditions can't bypass the policy silently.
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "TLS policy rejected the cluster configuration", Detail: err.Error()},
+		})
+		return
 	}
 	testClient, err := kubernetes.NewForConfig(testCfg)
 	if err != nil {
@@ -168,6 +216,25 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F#22 — Probe whether the stored bearer can impersonate users on the
+	// remote API server. Without this grant, every per-request impersonation
+	// from KubeCenter will fail with 403 once the cluster is registered, but
+	// the registration itself would have succeeded — leaving operators with a
+	// "connected" cluster that can't serve any RBAC-impersonating request.
+	// SelfSubjectAccessReview against the impersonate verb surfaces the gap
+	// immediately, at register-time. (Same probe runs in ClusterProber.ProbeOne
+	// so token rotation / RBAC tightening surfaces as "disconnected" later.)
+	if err := k8s.ProbeImpersonateRights(r.Context(), testClient); err != nil {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{
+				Code:    400,
+				Message: "the supplied credentials cannot impersonate users on the remote cluster",
+				Detail:  "grant 'impersonate' on users to the bearer token's identity (see docs on RBAC bootstrap): " + err.Error(),
+			},
+		})
+		return
+	}
+
 	id, err := generateClusterID()
 	if err != nil {
 		s.Logger.Error("failed to generate cluster ID", "error", err)
@@ -178,13 +245,14 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	record := store.ClusterRecord{
-		ID:           id,
-		Name:         req.Name,
-		DisplayName:  req.DisplayName,
-		APIServerURL: req.APIServerURL,
-		CAData:       []byte(req.CACert),
-		AuthType:     "token",
-		AuthData:     []byte(req.Token),
+		ID:               id,
+		Name:             req.Name,
+		DisplayName:      req.DisplayName,
+		APIServerURL:     req.APIServerURL,
+		CAData:           []byte(req.CACert),
+		AuthType:         "token",
+		AuthData:         []byte(req.Token),
+		AllowInsecureTLS: req.AllowInsecureTLS,
 	}
 
 	if err := s.ClusterStore.Create(r.Context(), record); err != nil {

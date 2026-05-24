@@ -102,7 +102,8 @@ func (h *Handler) impersonatingDynamic(r *http.Request, user *auth.User) (dynami
 // checkAccess verifies the user can perform the verb on the resource in the namespace.
 // Returns true if allowed, writes 403 and returns false if denied.
 func (h *Handler) checkAccess(w http.ResponseWriter, r *http.Request, user *auth.User, verb, resource, namespace string) bool {
-	allowed, err := h.AccessChecker.CanAccess(r.Context(), user.KubernetesUsername, user.KubernetesGroups, verb, resource, namespace)
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	allowed, err := h.AccessChecker.CanAccess(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups, verb, resource, namespace)
 	if err != nil {
 		h.Logger.Error("access check failed", "error", err, "user", user.Username, "verb", verb, "resource", resource)
 		writeError(w, http.StatusInternalServerError, "failed to check permissions", err.Error())

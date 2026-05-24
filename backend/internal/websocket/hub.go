@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 // AccessChecker verifies RBAC permissions for WebSocket subscriptions.
+// clusterID matches the signatures on *resources.AccessChecker (F#9). WS
+// fan-out is local-cluster only — callers pass "local" — but the interface
+// must agree with the concrete checker.
 type AccessChecker interface {
-	CanAccess(ctx context.Context, username string, groups []string, verb, resource, namespace string) (bool, error)
-	CanAccessGroupResource(ctx context.Context, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error)
+	CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error)
+	CanAccessGroupResource(ctx context.Context, clusterID, username string, groups []string, verb, apiGroup, resource, namespace string) (bool, error)
 }
 
 // subChange represents a subscription addition.
@@ -271,9 +276,14 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			var allowed bool
 			var err error
+			// WebSocket fan-out is local-cluster only — informers don't run on
+			// remote clusters. F#20 — pull the canonical local-cluster string
+			// from k8s.LocalClusterID so this stays in lockstep with
+			// counts.go and client.go cache keys.
 			if apiGroup := crdAPIGroup(key.Kind); apiGroup != "" {
 				allowed, err = h.accessChecker.CanAccessGroupResource(
 					checkCtx,
+					k8s.LocalClusterID,
 					client.user.KubernetesUsername,
 					client.user.KubernetesGroups,
 					"list",
@@ -284,6 +294,7 @@ func (h *Hub) revalidateSubscriptions(ctx context.Context) {
 			} else {
 				allowed, err = h.accessChecker.CanAccess(
 					checkCtx,
+					k8s.LocalClusterID,
 					client.user.KubernetesUsername,
 					client.user.KubernetesGroups,
 					"list",
