@@ -99,6 +99,17 @@ type ServerConfig struct {
 	TLSKey          string        `koanf:"tlskey"`
 	ShutdownTimeout time.Duration `koanf:"shutdowntimeout"`
 	RequestTimeout  time.Duration `koanf:"requesttimeout"`
+	// TrustedProxyCIDRs lists IPv4 / IPv6 CIDR blocks whose socket peers
+	// are trusted to set X-Forwarded-For / X-Real-IP headers. The
+	// TrustedProxy middleware rewrites r.RemoteAddr from those headers
+	// ONLY when the request's TCP peer falls inside one of these blocks;
+	// otherwise the forwarded headers are ignored and r.RemoteAddr stays
+	// at the socket-peer address. Default empty = fail-closed (no proxies
+	// trusted) so rate-limit buckets cannot be poisoned by spoofed
+	// headers from direct LAN/internet attackers (audit finding P2-1,
+	// 2026-05-22). Configure via KUBECENTER_SERVER_TRUSTEDPROXYCIDRS as
+	// a comma-separated list, e.g. "10.0.0.0/8,fd00::/8".
+	TrustedProxyCIDRs []string `koanf:"trustedproxycidrs"`
 }
 
 type LogConfig struct {

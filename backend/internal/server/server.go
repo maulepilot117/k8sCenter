@@ -309,14 +309,21 @@ func New(deps Deps) *Server {
 	// Auth and CSRF are applied per-route-group in registerRoutes(),
 	// not globally, so public endpoints don't need a skip list.
 	//
-	// CaptureSocketPeer MUST run before chimw.RealIP so we preserve the
-	// ground-truth TCP peer address before chi overwrites r.RemoteAddr
-	// from X-Forwarded-For / X-Real-IP headers. The loopback-setup gate
-	// and the audit ConnectionIP field both read the captured value.
-	// See: Finding #1+#8 (ce-code-review 2026-05-22).
+	// CaptureSocketPeer runs before any header-driven rewrites so we
+	// preserve the ground-truth TCP peer address. The loopback-setup
+	// gate and the audit ConnectionIP field both read the captured
+	// value. See Finding #1+#8 (ce-code-review 2026-05-22).
+	//
+	// TrustedProxy replaces chi-RealIP's blanket-trust behaviour:
+	// X-Forwarded-For / X-Real-IP are honored ONLY when the request's
+	// TCP peer falls inside Config.Server.TrustedProxyCIDRs. Default
+	// empty = fail-closed (no proxies trusted), so direct LAN/internet
+	// attackers cannot spoof their rate-limit bucket key. Audit
+	// finding P2-1 (2026-05-22) — replaces the pre-Phase-3
+	// `chimw.RealIP` blanket call.
 	s.Router.Use(chimw.RequestID)
 	s.Router.Use(middleware.CaptureSocketPeer)
-	s.Router.Use(chimw.RealIP)
+	s.Router.Use(middleware.TrustedProxy(deps.Config.Server.TrustedProxyCIDRs, deps.Logger))
 	s.Router.Use(slogMiddleware(deps.Logger))
 	s.Router.Use(chimw.Recoverer)
 	s.Router.Use(chimw.CleanPath)
