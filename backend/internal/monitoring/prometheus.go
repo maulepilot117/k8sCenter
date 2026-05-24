@@ -25,22 +25,23 @@ type PrometheusClient struct {
 // loopback/link-local/metadata candidate IPs (P2-6 part 2, Phase 4
 // security audit 2026-05-22).
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
+	return NewPrometheusClientWithTransport(address, k8s.SafeHTTPTransport())
+}
+
+// NewPrometheusClientWithTransport builds the same client as
+// NewPrometheusClient but with a caller-supplied http.RoundTripper. Use
+// in tests that talk to httptest.Server URLs on loopback (which the
+// safe-by-default transport rejects). Production code MUST use
+// NewPrometheusClient so the SSRF defense stays wired by default.
+func NewPrometheusClientWithTransport(address string, rt http.RoundTripper) (*PrometheusClient, error) {
 	client, err := api.NewClient(api.Config{
 		Address:      address,
-		RoundTripper: safePromRoundTripper(),
+		RoundTripper: rt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating prometheus client: %w", err)
 	}
 	return &PrometheusClient{api: v1.NewAPI(client)}, nil
-}
-
-// safePromRoundTripper returns the http.RoundTripper used by every
-// Prometheus client instance. Built as a function (not a package var)
-// so each client gets its own connection pool, matching the stdlib
-// default and the prometheus client_golang convention.
-func safePromRoundTripper() http.RoundTripper {
-	return k8s.SafeHTTPTransport()
 }
 
 // Query runs a PromQL instant query.
