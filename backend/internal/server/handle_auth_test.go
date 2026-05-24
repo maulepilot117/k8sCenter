@@ -805,3 +805,109 @@ func doRequest(t *testing.T, srv *Server, method, path, body string, headers map
 	srv.Router.ServeHTTP(w, req)
 	return w
 }
+
+// ---------------------------------------------------------------------
+// Audit finding P2-3 (2026-05-22) — LDAP refresh-path revalidation
+// tests. The full ldapProvider.Revalidate path requires a live directory
+// (homelab soak / Phase 3 follow-up integration test); these unit tests
+// pin the no-LDAP-needed failure branches: parsing the UserID, looking
+// up the provider in the registry, and asserting the provider type.
+// ---------------------------------------------------------------------
+
+func TestHandleRefresh_LDAP_MalformedUserID(t *testing.T) {
+	cases := []struct {
+		name   string
+		userID string
+	}{
+		{"empty", ""},
+		{"missing prefix", "google:google-id:user-dn"},
+		{"only prefix", "ldap:"},
+		{"empty provider id", "ldap::CN=alice,OU=Users"},
+		{"empty DN", "ldap:ldap-corp:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+
+			token := "ldap-test-token-" + tc.name
+			srv.Sessions.Store(auth.RefreshSession{
+				Token:     token,
+				UserID:    tc.userID,
+				Provider:  "ldap",
+				ExpiresAt: time.Now().Add(time.Hour),
+				CachedUser: &auth.User{
+					ID:       tc.userID,
+					Username: "alice",
+					Provider: "ldap",
+				},
+			})
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+			w := httptest.NewRecorder()
+			srv.Router.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 for malformed UserID %q, got %d: %s", tc.userID, w.Code, w.Body.String())
+			}
+			var resp api.Response
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Error == nil || !strings.Contains(strings.ToLower(resp.Error.Message), "session invalid") {
+				t.Fatalf("expected 'session invalid' error, got %+v", resp.Error)
+			}
+		})
+	}
+}
+
+func TestHandleRefresh_LDAP_ProviderUnregistered(t *testing.T) {
+	srv := testServer(t)
+	// Note: testServer only registers the "local" provider. A session
+	// claiming "ldap-corp" will fail the registry lookup and produce
+	// the "auth provider unavailable" error path.
+
+	token := "ldap-orphan-token"
+	srv.Sessions.Store(auth.RefreshSession{
+		Token:     token,
+		UserID:    "ldap:ldap-corp:CN=alice,OU=Users,DC=example,DC=com",
+		Provider:  "ldap",
+		ExpiresAt: time.Now().Add(time.Hour),
+		CachedUser: &auth.User{
+			ID:       "ldap:ldap-corp:CN=alice,OU=Users,DC=example,DC=com",
+			Username: "alice",
+			Provider: "ldap",
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unregistered LDAP provider, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp api.Response
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || !strings.Contains(strings.ToLower(resp.Error.Message), "auth provider unavailable") {
+		t.Fatalf("expected 'auth provider unavailable' error, got %+v", resp.Error)
+	}
+
+	// The original session was Rotate-removed and NOT Restored
+	// (definitive failure path), so retry with the same token should
+	// 401 with the "invalid or expired refresh token" path, not the
+	// "auth provider unavailable" path.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", nil)
+	req2.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req2.AddCookie(&http.Cookie{Name: "refresh_token", Value: token})
+	w2 := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("retry expected 401, got %d", w2.Code)
+	}
+}

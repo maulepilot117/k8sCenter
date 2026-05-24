@@ -81,6 +81,21 @@ func (s *Server) newAuditEntry(r *http.Request, username string, action audit.Ac
 // removed) within the hour rather than the standard 7-day window — see
 // the constant's doc comment for the rationale.
 func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMode bool) (string, string, error) {
+	return s.issueTokenPairAt(w, user, cookieMode, time.Now())
+}
+
+// issueTokenPairAt is the lower-level variant of [Server.issueTokenPair]
+// that stamps a caller-supplied LastRevalidated time on the new session.
+// The refresh handler's LDAP path uses this to preserve the original
+// revalidation timestamp when falling back to last-known identity
+// during a transient LDAP outage — bounding how long a sustained
+// outage can extend access for a user whose identity was revoked while
+// LDAP was down (audit finding P2-3, 2026-05-22).
+//
+// Every other caller goes through issueTokenPair, which passes
+// time.Now() — the LastRevalidated field is unused for non-LDAP
+// providers and the timestamp is harmless extra metadata.
+func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookieMode bool, lastRevalidated time.Time) (string, string, error) {
 	accessToken, err := s.TokenManager.IssueAccessToken(user)
 	if err != nil {
 		return "", "", err
@@ -94,13 +109,15 @@ func (s *Server) issueTokenPair(w http.ResponseWriter, user *auth.User, cookieMo
 	refreshLifetime := auth.RefreshLifetimeFor(user.Provider)
 
 	session := auth.RefreshSession{
-		Token:     refreshToken,
-		UserID:    user.ID,
-		Provider:  user.Provider,
-		ExpiresAt: time.Now().Add(refreshLifetime),
+		Token:           refreshToken,
+		UserID:          user.ID,
+		Provider:        user.Provider,
+		ExpiresAt:       time.Now().Add(refreshLifetime),
+		LastRevalidated: lastRevalidated,
 	}
 	// Cache user data for non-local providers (OIDC has no local store,
-	// LDAP would require reconnecting to the directory on refresh).
+	// LDAP needs a baseline last-known identity for the grace-window
+	// fallback if revalidation hits a transient LDAP outage on refresh).
 	// Local users are looked up by ID from the in-memory store instead.
 	if user.Provider != "local" {
 		session.CachedUser = user
