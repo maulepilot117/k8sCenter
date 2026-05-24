@@ -20,6 +20,12 @@ interface ClusterInfo {
   k8sVersion: string;
   nodeCount: number;
   isLocal: boolean;
+  // F#10 — surface the operator-opted-in insecure TLS state in the cluster
+  // list so admins can spot homelab-only registrations at a glance and so
+  // any unexpected `true` (e.g. after a CA-less rolling-upgrade backfill)
+  // gets noticed before it's used to send bearer tokens over an unverified
+  // connection. Optional because older backend versions omit the field.
+  allowInsecureTLS?: boolean;
   lastProbedAt?: string;
 }
 
@@ -41,6 +47,10 @@ export default function ClusterManager() {
   const apiServerUrl = useSignal("");
   const token = useSignal("");
   const caCert = useSignal("");
+  // F#2 — admin-only opt-in for unverified TLS. Bearer tokens travel over
+  // the connection, so default-false. Backend re-validates admin role and
+  // rejects registrations missing both CA and this opt-in.
+  const allowInsecureTLS = useSignal(false);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -72,6 +82,7 @@ export default function ClusterManager() {
           apiServerUrl: apiServerUrl.value,
           token: token.value,
           caCert: caCert.value,
+          allowInsecureTLS: allowInsecureTLS.value,
         }),
       });
       // Reset wizard and reload
@@ -81,6 +92,7 @@ export default function ClusterManager() {
       apiServerUrl.value = "";
       token.value = "";
       caCert.value = "";
+      allowInsecureTLS.value = false;
       await loadClusters();
     } catch (err) {
       error.value = err instanceof Error
@@ -161,7 +173,7 @@ export default function ClusterManager() {
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-text-secondary">
-              CA Certificate (optional)
+              CA Certificate (optional with insecure TLS opt-in below)
             </label>
             <textarea
               class="w-full rounded-md border border-border-primary px-3 py-2 text-sm font-mono bg-surface text-text-secondary"
@@ -173,13 +185,38 @@ export default function ClusterManager() {
               }}
             />
           </div>
+          {/* F#2 — admin-only opt-in for unverified TLS. Default-off. */}
+          <div class="rounded-md border border-warning bg-warning-dim p-3 text-sm">
+            <label class="flex items-start gap-2 text-text-primary cursor-pointer">
+              <input
+                type="checkbox"
+                class="mt-0.5"
+                checked={allowInsecureTLS.value}
+                onChange={(e) => {
+                  allowInsecureTLS.value =
+                    (e.target as HTMLInputElement).checked;
+                }}
+              />
+              <span>
+                <span class="font-medium">
+                  Allow insecure TLS (self-signed CA, homelab only)
+                </span>
+                <span class="block mt-1 text-xs text-warning">
+                  Bearer tokens will be sent over an unverified TLS connection.
+                  Only enable for trusted homelab self-signed certs. Admin role
+                  required.
+                </span>
+              </span>
+            </label>
+          </div>
           <div class="flex gap-3">
             <Button
               type="button"
               variant="primary"
               loading={saving.value}
               onClick={addCluster}
-              disabled={!name.value || !apiServerUrl.value || !token.value}
+              disabled={!name.value || !apiServerUrl.value || !token.value ||
+                (!caCert.value && !allowInsecureTLS.value)}
             >
               Register Cluster
             </Button>
@@ -236,6 +273,14 @@ export default function ClusterManager() {
                   {c.isLocal && (
                     <span class="ml-2 rounded px-1.5 py-0.5 text-xs bg-accent-dim text-accent">
                       local
+                    </span>
+                  )}
+                  {c.allowInsecureTLS && !c.isLocal && (
+                    <span
+                      class="ml-2 rounded px-1.5 py-0.5 text-xs bg-warning-dim text-warning"
+                      title="TLS verification disabled — bearer tokens are sent over an unverified connection"
+                    >
+                      ⚠ Insecure TLS
                     </span>
                   )}
                 </p>

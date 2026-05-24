@@ -47,17 +47,32 @@ func NewClusterRouter(local *ClientFactory, cs *store.ClusterStore, encKey strin
 }
 
 // ClientForCluster returns an impersonating clientset for the given cluster.
+//
+// F#18 (security audit 2026-05-22, round 2) — when a non-local clusterID is
+// requested but no clusterStore is wired, fail closed rather than silently
+// downgrading to the local cluster. The previous fall-through let a request
+// targeting `remote-99` execute against the local cluster as long as no
+// cluster registry was configured, which mismatched AccessChecker's behavior
+// (it already hard-errored in the same scenario). Both layers now fail
+// closed in the safer direction.
 func (cr *ClusterRouter) ClientForCluster(ctx context.Context, clusterID, username string, groups []string) (*kubernetes.Clientset, error) {
-	if clusterID == "" || clusterID == "local" || cr.clusterStore == nil {
+	if clusterID == "" || clusterID == "local" {
 		return cr.localFactory.ClientForUser(username, groups)
+	}
+	if cr.clusterStore == nil {
+		return nil, fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
 	}
 	return cr.remoteTypedClient(ctx, clusterID, username, groups)
 }
 
 // DynamicClientForCluster returns an impersonating dynamic client for the given cluster.
+// See ClientForCluster for the F#18 fail-closed policy on nil clusterStore.
 func (cr *ClusterRouter) DynamicClientForCluster(ctx context.Context, clusterID, username string, groups []string) (dynamic.Interface, error) {
-	if clusterID == "" || clusterID == "local" || cr.clusterStore == nil {
+	if clusterID == "" || clusterID == "local" {
 		return cr.localFactory.DynamicClientForUser(username, groups)
+	}
+	if cr.clusterStore == nil {
+		return nil, fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
 	}
 	return cr.remoteDynamicClient(ctx, clusterID, username, groups)
 }

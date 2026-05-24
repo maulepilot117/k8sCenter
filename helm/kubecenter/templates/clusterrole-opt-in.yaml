@@ -59,19 +59,27 @@
   system:serviceaccount:kube-system:default, system:anonymous, ...) would let
   the backend forge a request as a built-in privileged identity. Reject ANY
   entry that starts with "system:" across all three allowlists at render time.
+
+  F#5 (round-2) — case-insensitive + trim. Kubernetes treats RBAC subject
+  names case-sensitively, but a typo like "System:masters" or "SYSTEM:admin"
+  would slip past a literal hasPrefix "system:" check and create a
+  ClusterRole whose first user-supplied entry is then a regular non-system
+  string — still allowing the operator to think they blocked system:* when
+  they hadn't. Lowercase and trim before comparing so the check matches the
+  *intent* (block builtin identities) rather than the *exact bytes*.
 */}}
 {{- range .Values.rbac.allowedImpersonateUsers }}
-{{- if hasPrefix "system:" . }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
 {{- fail (printf "rbac.allowedImpersonateUsers entry %q is forbidden: impersonating system:* principals would grant cluster-admin-equivalent access" .) }}
 {{- end }}
 {{- end }}
 {{- range .Values.rbac.allowedImpersonateGroups }}
-{{- if hasPrefix "system:" . }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
 {{- fail (printf "rbac.allowedImpersonateGroups entry %q is forbidden: impersonating system:* groups would grant cluster-admin-equivalent access" .) }}
 {{- end }}
 {{- end }}
 {{- range .Values.rbac.allowedImpersonateServiceAccounts }}
-{{- if hasPrefix "system:" . }}
+{{- if hasPrefix "system:" (trim (lower .)) }}
 {{- fail (printf "rbac.allowedImpersonateServiceAccounts entry %q is forbidden: impersonating system:* service accounts would grant cluster-admin-equivalent access" .) }}
 {{- end }}
 {{- end }}

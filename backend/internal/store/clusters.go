@@ -117,7 +117,15 @@ func (s *ClusterStore) Create(ctx context.Context, c ClusterRecord) error {
 }
 
 // UpdateCredentials updates a cluster's connection credentials (encrypts before storing).
-func (s *ClusterStore) UpdateCredentials(ctx context.Context, id string, apiServerURL string, caData, authData []byte) error {
+//
+// F#19 (security audit 2026-05-22) — allowInsecureTLS is part of the
+// credential set: if an admin rotates the bearer token while removing the
+// CA, the new credentials must carry the explicit insecure opt-in or the
+// router will refuse to build a client at next request time. Forgetting to
+// thread the flag here previously left the old DB value in place, silently
+// re-enabling whatever the original registration chose. The bool is now
+// mandatory on the function signature so callers can't accidentally drop it.
+func (s *ClusterStore) UpdateCredentials(ctx context.Context, id string, apiServerURL string, caData, authData []byte, allowInsecureTLS bool) error {
 	encAuthData, err := Encrypt(authData, s.encryptionKey)
 	if err != nil {
 		return fmt.Errorf("encrypting auth data: %w", err)
@@ -131,8 +139,9 @@ func (s *ClusterStore) UpdateCredentials(ctx context.Context, id string, apiServ
 	}
 
 	_, err = s.pool.Exec(ctx, `
-		UPDATE clusters SET api_server_url = $2, ca_data = $3, auth_data = $4, updated_at = NOW()
-		WHERE id = $1`, id, apiServerURL, encCAData, encAuthData)
+		UPDATE clusters SET api_server_url = $2, ca_data = $3, auth_data = $4,
+		       allow_insecure_tls = $5, updated_at = NOW()
+		WHERE id = $1`, id, apiServerURL, encCAData, encAuthData, allowInsecureTLS)
 	if err != nil {
 		return fmt.Errorf("updating cluster credentials: %w", err)
 	}

@@ -13,6 +13,7 @@ class Cluster {
     this.k8sVersion,
     this.nodeCount = 0,
     this.statusMessage,
+    this.allowInsecureTLS = false,
   });
 
   factory Cluster.fromJson(Map<String, dynamic> json) {
@@ -29,6 +30,11 @@ class Cluster {
       // Permissive cast: backend may serialize as int or double.
       nodeCount:
           nodeCount is num && nodeCount.isFinite ? nodeCount.toInt() : 0,
+      // F#10 — surface the operator-opted-in unverified-TLS state. Mobile
+      // renders a warning badge so users see the security posture before
+      // bearer tokens / impersonated requests flow over the link. Default
+      // false; older backend versions that omit the field stay safe.
+      allowInsecureTLS: json['allowInsecureTLS'] as bool? ?? false,
     );
   }
 
@@ -41,6 +47,7 @@ class Cluster {
   final String? statusMessage;
   final String? k8sVersion;
   final int nodeCount;
+  final bool allowInsecureTLS;
 
   String get label => displayName ?? name;
 }

@@ -148,18 +148,27 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		}
 	}
 
-	// Build rest.Config with 10s timeout enforced at transport level
+	// Build rest.Config with 10s timeout enforced at transport level.
+	// F#1 — TLS policy MUST match cluster_router.buildRemoteConfig: when no
+	// CAData is stored, only opt-in AllowInsecureTLS clusters may probe with
+	// TLS verification disabled. Without this, the prober happily disabled
+	// TLS verification on every CA-less remote — even those the router would
+	// refuse to build a client for at request time — and reported them as
+	// "connected", masking the misconfiguration. F#5 audit 2026-05-22.
 	cfg := &rest.Config{
 		Host:        cluster.APIServerURL,
 		BearerToken: string(token),
 		Timeout:     10 * time.Second,
 		QPS:         10,
 		Burst:       20,
+		TLSClientConfig: rest.TLSClientConfig{
+			CAData: caData,
+		},
 	}
-	if len(caData) > 0 {
-		cfg.TLSClientConfig = rest.TLSClientConfig{CAData: caData}
-	} else {
-		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, p.logger); err != nil {
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "TLS verification required (no CA, AllowInsecureTLS=false)", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+		return nil, err
 	}
 
 	cs, err := kubernetes.NewForConfig(cfg)
