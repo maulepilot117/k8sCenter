@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/monitoring/dashboards"
 )
 
@@ -20,12 +21,18 @@ type GrafanaClient struct {
 	httpClient *http.Client
 }
 
-// NewGrafanaClient creates a Grafana API client.
+// NewGrafanaClient creates a Grafana API client. The underlying
+// transport uses k8s.SafeHTTPTransport so every TCP dial re-resolves
+// the Grafana host and blocks private/loopback/link-local/metadata
+// candidate IPs (P2-6 part 2, Phase 4 security audit 2026-05-22).
 func NewGrafanaClient(baseURL, token string) *GrafanaClient {
 	return &GrafanaClient{
-		baseURL:    baseURL,
-		token:      token,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL: baseURL,
+		token:   token,
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: k8s.SafeHTTPTransport(),
+		},
 	}
 }
 

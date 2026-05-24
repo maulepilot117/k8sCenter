@@ -3,12 +3,15 @@ package monitoring
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 // PrometheusClient wraps the Prometheus v1 API for KubeCenter queries.
@@ -16,13 +19,28 @@ type PrometheusClient struct {
 	api v1.API
 }
 
-// NewPrometheusClient creates a typed API client for the given Prometheus address.
+// NewPrometheusClient creates a typed API client for the given Prometheus
+// address. The underlying HTTP transport uses k8s.SafeHTTPTransport so
+// every TCP dial re-resolves the Prometheus host and blocks private/
+// loopback/link-local/metadata candidate IPs (P2-6 part 2, Phase 4
+// security audit 2026-05-22).
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
-	client, err := api.NewClient(api.Config{Address: address})
+	client, err := api.NewClient(api.Config{
+		Address:      address,
+		RoundTripper: safePromRoundTripper(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating prometheus client: %w", err)
 	}
 	return &PrometheusClient{api: v1.NewAPI(client)}, nil
+}
+
+// safePromRoundTripper returns the http.RoundTripper used by every
+// Prometheus client instance. Built as a function (not a package var)
+// so each client gets its own connection pool, matching the stdlib
+// default and the prometheus client_golang convention.
+func safePromRoundTripper() http.RoundTripper {
+	return k8s.SafeHTTPTransport()
 }
 
 // Query runs a PromQL instant query.

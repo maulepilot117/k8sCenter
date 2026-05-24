@@ -410,6 +410,14 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 		},
 		QPS:   50,
 		Burst: 100,
+		// P2-6 part 2: defend against DNS rebinding and unintended
+		// server-controlled redirects by re-resolving the cluster host
+		// on every dial and rejecting any candidate IP in the SSRF
+		// block-list. rest.Config.Dial is invoked by client-go's
+		// underlying http transport for each new TCP connection, so
+		// this protects every API call routed through the returned
+		// config — not just the first dial after validation.
+		Dial: SafeDialContext,
 	}
 
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {

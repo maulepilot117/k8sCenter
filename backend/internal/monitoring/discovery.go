@@ -421,8 +421,15 @@ func newGrafanaProxy(grafanaURL, token string) (http.Handler, error) {
 	// F#17: bound the response-header wait so a slow/hung Grafana backend
 	// can't tie up proxy goroutines indefinitely. Matches the 30s timeouts on
 	// GrafanaClient.QueryRange / PrometheusClient.QueryRange.
-	proxy.Transport = &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
+	//
+	// P2-6 part 2 (Phase 4 security audit 2026-05-22): the dial path uses
+	// SafeDialContext so each new connection re-resolves the Grafana host
+	// and rejects private/loopback/link-local/metadata IPs. Defends against
+	// DNS rebinding (an attacker's resolver flipping between validation
+	// and dial) and against Grafana issuing a 30x redirect to an internal
+	// address — every dial in the redirect chain re-runs the IP check.
+	safeTransport := k8s.SafeHTTPTransport()
+	safeTransport.ResponseHeaderTimeout = 30 * time.Second
+	proxy.Transport = safeTransport
 	return proxy, nil
 }
