@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kubecenter/kubecenter/internal/audit"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/networking"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -48,6 +50,32 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// F#1 (round-3) — Hubble flow streaming targets the LOCAL cluster's CNI
+	// data plane (Hubble gRPC connection is wired to the in-cluster relay).
+	// Forwarding a remote X-Cluster-ID through this handler would still
+	// stream the local cluster's flows but advertise them as the remote
+	// cluster's, a classic confused-deputy. Reject BEFORE the connection
+	// counter, the filter read, the RBAC check, or any audit-success entry
+	// — mirrors handle_ws_logs.go:102-128.
+	flowsClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(flowsClusterID) {
+		s.Logger.Warn("ws flow stream rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", flowsClusterID,
+		)
+		if s.AuditLogger != nil {
+			entry := s.newAuditEntry(r, user.Username, audit.Action("read_flows"), audit.ResultFailure)
+			entry.ResourceKind = "Flow"
+			entry.Detail = "ws flow stream rejected: remote clusters not supported"
+			s.AuditLogger.Log(r.Context(), entry)
+		}
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "WebSocket flow streaming not yet supported on remote clusters",
+		})
+		return
+	}
+
 	flowWSCount.Add(1)
 	defer flowWSCount.Add(-1)
 
@@ -67,10 +95,11 @@ func (s *Server) handleWSFlows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RBAC check — flow visibility = pod observability (SelfSubjectAccessReview, cached 60s)
-	clusterID := middleware.ClusterIDFromContext(r.Context())
+	// RBAC check — flow visibility = pod observability (SelfSubjectAccessReview, cached 60s).
+	// flowsClusterID was already gated to local above; forward it explicitly so the
+	// cluster routing in CanAccess matches the gate that ran first.
 	allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-		r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
+		r.Context(), flowsClusterID, user.KubernetesUsername, user.KubernetesGroups,
 		"list", "pods", filter.Namespace,
 	)
 	if err != nil {

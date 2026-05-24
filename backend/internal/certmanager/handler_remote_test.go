@@ -93,8 +93,11 @@ func TestHandleListCertificates_RemoteClusterBypassesLocalCache(t *testing.T) {
 		}
 	}
 	// 500 with the cluster-store fail-closed error is the expected outcome here.
+	// F#7 (round-3): this must FAIL the test if F#3 regresses, not just log —
+	// the previous t.Logf would have let a silently-restored cache hit pass
+	// as long as 200's cert name was not "local-cert".
 	if w.Code != http.StatusInternalServerError {
-		t.Logf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
+		t.Errorf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -148,7 +151,8 @@ func TestHandleListIssuers_RemoteClusterBypassesLocalCache(t *testing.T) {
 		}
 	}
 	if w.Code != http.StatusInternalServerError {
-		t.Logf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
+		// F#7 (round-3): see TestHandleListCertificates_RemoteClusterBypassesLocalCache.
+		t.Errorf("status = %d (expected 500 after F#18 fail-closed on nil clusterStore); body: %s", w.Code, w.Body.String())
 	}
 }
 

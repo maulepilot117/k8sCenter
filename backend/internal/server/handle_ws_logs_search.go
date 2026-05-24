@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/loki"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -48,6 +50,31 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	// F#1 (round-3) — Loki tail is a connection to the LOCAL cluster's Loki
+	// service. A remote X-Cluster-ID on this handler would still stream the
+	// local Loki's logs while advertising them as the remote cluster's —
+	// classic confused-deputy. Reject BEFORE the connection counter, the
+	// subscribe read, the RBAC check, or the Loki dial. Mirrors the gate
+	// pattern in handle_ws_logs.go:102-128.
+	searchClusterID := middleware.ClusterIDFromContext(r.Context())
+	if !k8s.IsLocalClusterID(searchClusterID) {
+		s.Logger.Warn("ws log search rejected on remote cluster",
+			"user", user.Username,
+			"clusterID", searchClusterID,
+		)
+		if s.AuditLogger != nil {
+			entry := s.newAuditEntry(r, user.Username, audit.ActionReadLogs, audit.ResultFailure)
+			entry.ResourceKind = "LokiTail"
+			entry.Detail = "ws log search rejected: remote clusters not supported"
+			s.AuditLogger.Log(r.Context(), entry)
+		}
+		conn.WriteJSON(map[string]any{
+			"type":    "error",
+			"message": "WebSocket log search not yet supported on remote clusters",
+		})
+		return
+	}
+
 	logSearchWSCount.Add(1)
 	defer logSearchWSCount.Add(-1)
 
@@ -71,11 +98,12 @@ func (s *Server) handleWSLogsSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// P1-4 fix: validate namespace against Kubernetes RBAC (same pattern as handleWSFlows)
+		// P1-4 fix: validate namespace against Kubernetes RBAC (same pattern as handleWSFlows).
+		// searchClusterID was gated to local above; reuse rather than re-reading the
+		// context so the gate and the RBAC check resolve against the same cluster ID.
 		if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
-			clusterID := middleware.ClusterIDFromContext(r.Context())
 			allowed, err := s.ResourceHandler.AccessChecker.CanAccess(
-				r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
+				r.Context(), searchClusterID, user.KubernetesUsername, user.KubernetesGroups,
 				"list", "pods", sub.Namespace,
 			)
 			if err != nil {
