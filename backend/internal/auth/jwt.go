@@ -26,18 +26,31 @@ const (
 	// the IdP's. The 1h cap is a pragmatic middle ground: documented as the
 	// session-lifetime guarantee for OIDC users.
 	OIDCRefreshTokenLifetime = 1 * time.Hour
+	// LDAPRefreshTokenLifetime caps refresh tokens issued for LDAP-sourced
+	// sessions. Mirrors the OIDC cap for the same reason: bounds the window
+	// where a revoked LDAP identity (disabled account, removed group
+	// membership) keeps minting valid access tokens. Combined with the
+	// per-refresh LDAPProvider.Revalidate call in the refresh handler, the
+	// worst-case revoked-user access drops from ~7 days to one access-token
+	// lifetime (15min). Closes audit finding P2-3 (2026-05-22).
+	LDAPRefreshTokenLifetime = 1 * time.Hour
 	// RefreshTokenBytes is the length of random refresh tokens.
 	RefreshTokenBytes = 32
 )
 
 // RefreshLifetimeFor returns the refresh token TTL for a given auth
-// provider. OIDC sessions get the shorter cap; everything else gets the
-// standard window.
+// provider. OIDC and LDAP sessions get a 1h cap to bound revocation
+// propagation against external identity stores; local sessions get the
+// standard 7-day window.
 func RefreshLifetimeFor(provider string) time.Duration {
-	if provider == "oidc" {
+	switch provider {
+	case "oidc":
 		return OIDCRefreshTokenLifetime
+	case "ldap":
+		return LDAPRefreshTokenLifetime
+	default:
+		return RefreshTokenLifetime
 	}
-	return RefreshTokenLifetime
 }
 
 // TokenClaims are the JWT claims for access tokens.

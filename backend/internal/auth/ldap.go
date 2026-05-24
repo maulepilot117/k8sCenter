@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,15 @@ import (
 	"github.com/go-ldap/ldap/v3"
 	"github.com/kubecenter/kubecenter/internal/config"
 )
+
+// ErrLDAPTransient wraps connection / timeout / unexpected server failures
+// during LDAP revalidation. Callers can branch on it to apply a bounded
+// grace window (reuse last-known identity) rather than logging every LDAP
+// user out the moment the directory has a brief hiccup. Definitive
+// rejections — user not found, account disabled, bad service-account
+// credentials — are NOT wrapped in this sentinel; they return
+// [ErrInvalidCredentials] and the caller must fail closed.
+var ErrLDAPTransient = errors.New("ldap transient failure")
 
 const (
 	ldapDialTimeout      = 5 * time.Second
@@ -298,6 +308,108 @@ func (p *LDAPProvider) mapToUser(entry *ldap.Entry, groups []string) *User {
 		KubernetesGroups:   k8sGroups,
 		Roles:              []string{"user"},
 	}
+}
+
+// ID returns the configured provider ID (e.g. "ldap-corp"). Used by the
+// refresh handler to look up the same provider instance the user
+// authenticated against when revalidating their identity.
+func (p *LDAPProvider) ID() string { return p.config.ID }
+
+// Revalidate re-authorizes a previously authenticated LDAP user without
+// re-prompting for their password. It binds as the service account,
+// searches for the user by DN, and returns a freshly mapped [*User] with
+// the directory's current group membership. The refresh handler calls
+// this on every refresh so that revoked identity (account disabled,
+// group removed) propagates within the LDAP refresh-token cap rather
+// than waiting for the cached session to expire — closes audit finding
+// P2-3 (2026-05-22).
+//
+// Error contract:
+//   - Returns [ErrInvalidCredentials] when the user is no longer present
+//     (search returned zero entries), the DN is malformed, or the entry
+//     set is ambiguous. The caller MUST fail closed on these — the user
+//     is genuinely gone from the directory.
+//   - Returns an error wrapping [ErrLDAPTransient] for connection,
+//     timeout, and unexpected-server errors. The caller MAY fall back to
+//     last-known identity within a bounded grace window to avoid
+//     evicting every active LDAP user during a brief directory outage.
+//
+// Inputs:
+//   - ctx: cancellation propagates to the LDAP operations via SetTimeout.
+//   - userDN: the user's distinguished name as captured at login time
+//     (the second-colon-separated segment of the session UserID).
+func (p *LDAPProvider) Revalidate(ctx context.Context, userDN string) (*User, error) {
+	if userDN == "" {
+		return nil, ErrInvalidCredentials
+	}
+
+	conn, err := p.connect()
+	if err != nil {
+		return nil, fmt.Errorf("%w: connect: %w", ErrLDAPTransient, err)
+	}
+	defer conn.Close()
+
+	// honor caller cancellation if it's already expired before any IO.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLDAPTransient, cerr)
+	}
+
+	if berr := conn.Bind(p.config.BindDN, p.config.BindPassword); berr != nil {
+		// Service-account credentials breaking is a configuration problem,
+		// not a per-user signal. Classify as transient so an in-flight
+		// admin rotation doesn't take down every LDAP session at once;
+		// the operator still sees the failure in logs and the audit table.
+		return nil, fmt.Errorf("%w: service bind: %w", ErrLDAPTransient, berr)
+	}
+
+	searchReq := ldap.NewSearchRequest(
+		userDN,
+		ldap.ScopeBaseObject,
+		ldap.NeverDerefAliases,
+		2, // SizeLimit: expect exactly 1 entry; 2 surfaces ambiguity.
+		int(ldapOperationTimeout.Seconds()),
+		false,
+		"(objectClass=*)",
+		p.config.UserAttributes,
+		nil,
+	)
+
+	result, err := conn.Search(searchReq)
+	if err != nil {
+		return nil, classifyLDAPError(err)
+	}
+
+	switch len(result.Entries) {
+	case 0:
+		// Entry no longer exists — definitive rejection.
+		return nil, ErrInvalidCredentials
+	case 1:
+		// happy path; fall through.
+	default:
+		// Ambiguous identity — refuse to choose. Logged for the operator.
+		p.logger.Warn("LDAP revalidation found multiple entries", "dn", userDN, "count", len(result.Entries))
+		return nil, ErrInvalidCredentials
+	}
+
+	entry := result.Entries[0]
+	groups := p.getGroups(conn, entry, userDN)
+	return p.mapToUser(entry, groups), nil
+}
+
+// classifyLDAPError translates a go-ldap error into the public sentinel
+// the refresh handler branches on. NoSuchObject is the only LDAP result
+// code that means "user is gone from the directory"; everything else is
+// a connectivity or server-side hiccup that the caller should treat as
+// transient. This helper is unit-tested in isolation because the rest of
+// the LDAP code path requires a live directory.
+func classifyLDAPError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if ldap.IsErrorWithCode(err, ldap.LDAPResultNoSuchObject) {
+		return ErrInvalidCredentials
+	}
+	return fmt.Errorf("%w: %w", ErrLDAPTransient, err)
 }
 
 // extractCNFromDN extracts the CN value from a Distinguished Name.

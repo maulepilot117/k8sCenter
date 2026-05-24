@@ -24,9 +24,20 @@ type RefreshSession struct {
 	UserID    string
 	Provider  string // auth provider that created this session
 	ExpiresAt time.Time
-	// CachedUser stores the full user for providers without a local store (OIDC).
-	// For local and LDAP providers, this is nil and the user is looked up by ID.
+	// CachedUser stores the full user for providers without a local store
+	// (OIDC, LDAP). For local users this is nil and lookups go through the
+	// provider registry. For LDAP users this is the last-known identity; on
+	// refresh the LDAPProvider.Revalidate path overwrites it with fresh
+	// group data unless LDAP is transiently unreachable.
 	CachedUser *User
+	// LastRevalidated is the timestamp of the most recent successful
+	// authorisation refresh against the external identity store. Set to
+	// login time at issuance; updated on each successful LDAP Revalidate.
+	// Used by the refresh handler to bound the LDAP-transient-outage
+	// grace window so a sustained LDAP outage cannot indefinitely extend
+	// access for a user whose identity was revoked while LDAP was down.
+	// Unused for local and OIDC providers (audit finding P2-3, 2026-05-22).
+	LastRevalidated time.Time
 }
 
 // SessionStore manages server-side refresh token storage.
