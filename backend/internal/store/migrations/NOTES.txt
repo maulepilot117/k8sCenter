@@ -2,36 +2,83 @@ Operator-facing migration notes. One section per migration that needs a
 heads-up beyond what the .up.sql comment block already says.
 
 ------------------------------------------------------------------------
-000016_cluster_allow_insecure_tls (F#3 + F#5 security audit 2026-05-22)
+000016_cluster_allow_insecure_tls (F#5 security audit 2026-05-22)
 ------------------------------------------------------------------------
 
 Adds the `allow_insecure_tls` boolean column on `clusters` and replaces the
 silent "no CA → skip TLS verification" fallback in cluster_router with an
-explicit fail-closed check.
+explicit fail-closed check. The backfill of existing CA-less rows lives in
+the separate 000017 migration (see below for why).
 
 Operator action required:
 
   - If you registered remote clusters BEFORE upgrading to the schema that
-    includes 000016, and those rows had NO CA certificate (auth/storage
-    paths that stored an empty ca_data column), the migration auto-flags
+    includes 000016 + 000017, and those rows had NO CA certificate (auth/
+    storage paths that stored an empty ca_data column), 000017 auto-flags
     them as `allow_insecure_tls = true` to preserve connectivity. This is
     the same effective security posture they had pre-upgrade (insecure
     TLS), but it is now visible and opt-out instead of silent and on by
     default.
 
   - Review the auto-flagged rows in the cluster list. The UI surfaces a
-    "⚠ Insecure TLS" badge next to each non-local cluster whose
+    red "⚠ Insecure TLS" badge next to each non-local cluster whose
     `allow_insecure_tls` is true.
+
+  - Inspection query (paste into psql against the kubecenter database):
+
+      SELECT id, name, api_server_url
+        FROM clusters
+       WHERE allow_insecure_tls = true
+         AND is_local = false
+       ORDER BY name;
 
   - For each flagged row, either:
       (a) Provide a CA certificate via re-registration / credential update
           and then explicitly toggle `allow_insecure_tls = false`; or
-      (b) Accept the insecure flag explicitly (homelab self-signed setups
-          only — bearer tokens travel over the connection).
+      (b) Accept the insecure flag explicitly. SECURITY CAVEAT: bearer
+          tokens traverse an unverified TLS connection — only appropriate
+          for isolated homelab networks. A network-adjacent attacker can
+          intercept the bearer and decrypt every subsequent k8s API call.
+          The accepted-risk posture is logged at registration time
+          (slog Warn) and re-emitted on every applyClusterTLS call.
 
   - The local cluster row (is_local = true) is skipped by the backfill —
     in-cluster TLS uses the service-account CA bundle from the pod, not
     the stored ca_data column.
 
-To revert: see 000016_cluster_allow_insecure_tls.down.sql. Note that the
-down migration drops the column entirely; any operator flags lost.
+Binary-rollback constraint (READ BEFORE RUNNING 000016.down.sql):
+
+  Running `migrate down` against a database whose backend pods include
+  the F#5 fix WILL crash every cluster API call. ClusterStore.List/Get
+  unconditionally SELECT allow_insecure_tls, and applyClusterTLS in
+  cluster_router.go consumes the field on every remote rest.Config build.
+  The full runbook lives in 000016_cluster_allow_insecure_tls.down.sql;
+  the short version is: stop post-F#5 pods, run 000017.down then
+  000016.down, then deploy a pre-F#5 backend image (which reintroduces
+  the silent TLS-skip vulnerability F#5 was designed to close).
+
+  There is no safe rollback path that retains the F#5 protection.
+
+------------------------------------------------------------------------
+000017_backfill_allow_insecure_tls (F#2 round-3 security audit 2026-05-23)
+------------------------------------------------------------------------
+
+Backfills `allow_insecure_tls = true` on existing CA-less non-local rows
+so deployments that registered remote clusters before F#5 stay connected
+after the upgrade.
+
+Why a separate migration instead of editing 000016 in place?
+
+  golang-migrate skips migration versions that are already recorded in
+  schema_migrations. A round-1 deployment that had applied the original
+  (column-add-only) 000016 will NOT re-run the file after the in-place
+  edit added the backfill UPDATE — schema_migrations already records
+  000016 as applied. Result: those deployments would silently start
+  failing every remote-cluster API call as soon as the post-F#5 backend
+  rolled out. Splitting the backfill into 000017 forces every deployment
+  to run it regardless of which round of 000016 they applied first.
+
+The down migration is an intentional no-op — there is no way to know
+which rows the backfill originally flagged versus which the operator
+later set explicitly. The destructive operation lives in 000016.down.sql;
+see the binary-rollback constraint above before running it.
