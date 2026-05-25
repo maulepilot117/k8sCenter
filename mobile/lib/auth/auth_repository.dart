@@ -138,7 +138,17 @@ class AuthRepository extends Notifier<AuthState> {
       // this catch is defense-in-depth against unexpected throws so
       // logout always proceeds to the local-clear path below.
     }
-    await fcm.dispose();
+    try {
+      await fcm.dispose();
+    } catch (e) {
+      // StreamSubscription.cancel() returns a Future that can complete
+      // with an error when the underlying stream has already faulted
+      // (Firebase messaging network drop, permission revocation
+      // mid-session). Without this guard the rejection would propagate
+      // out of logout(), skipping authTokenHolder.clear() and
+      // state=Unauthenticated below — the user would stay signed in
+      // with live credentials. Code-review finding R-1 (Phase 5).
+    }
 
     final dio = ref.read(dioProvider);
     try {
