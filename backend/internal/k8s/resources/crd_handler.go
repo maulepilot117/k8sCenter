@@ -1,11 +1,13 @@
 package resources
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -17,6 +19,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
+
+// crdAccessConcurrency bounds parallel SAR calls when filtering CRD inventory
+// for the P3-2 RBAC filter. Matches the existing countConcurrency=5 in
+// crd_discovery.go — apiserver SAR cost amortizes well at this fan-out without
+// overwhelming the API priority/fairness queue under burst load.
+// Review-fix REL-001 / PERF-1.
+const crdAccessConcurrency = 5
 
 // dnsSubdomainRegexp validates DNS subdomain names used for API groups and resource names.
 var dnsSubdomainRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$`)
@@ -56,21 +65,11 @@ func (h *GenericCRDHandler) HandleListCRDs(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
+	allowedSet := h.batchCRDListAccess(r.Context(), user, collectCRDKeys(all))
 	filtered := make(map[string][]*k8s.CRDInfo, len(all))
 	for group, infos := range all {
 		for _, info := range infos {
-			allowed, err := h.AccessChecker.CanAccessGroupResource(
-				r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
-				"list", info.Group, info.Resource, "",
-			)
-			if err != nil {
-				// SAR failure is logged but treated as deny — fail closed.
-				h.Logger.Warn("CRD inventory RBAC check failed; omitting from response",
-					"group", info.Group, "resource", info.Resource, "error", err)
-				continue
-			}
-			if allowed {
+			if allowedSet[info.Group+"/"+info.Resource] {
 				filtered[group] = append(filtered[group], info)
 			}
 		}
@@ -155,28 +154,98 @@ func (h *GenericCRDHandler) HandleCRDCounts(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	clusterID := middleware.ClusterIDFromContext(r.Context())
-	filtered := make(map[string]int, len(counts))
-	for key, count := range counts {
+	keys := make([]crdAccessKey, 0, len(counts))
+	for key := range counts {
 		group, resource, ok := splitGroupResourceKey(key)
 		if !ok {
-			// Malformed cache key — skip rather than expose to the user.
 			h.Logger.Warn("CRD count key malformed; skipping", "key", key)
 			continue
 		}
-		allowed, err := h.AccessChecker.CanAccessGroupResource(
-			r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
-			"list", group, resource, "",
-		)
-		if err != nil {
-			h.Logger.Warn("CRD count RBAC check failed; omitting", "key", key, "error", err)
-			continue
-		}
-		if allowed {
+		keys = append(keys, crdAccessKey{group: group, resource: resource})
+	}
+
+	allowedSet := h.batchCRDListAccess(r.Context(), user, keys)
+	filtered := make(map[string]int, len(counts))
+	for key, count := range counts {
+		if allowedSet[key] {
 			filtered[key] = count
 		}
 	}
 	writeData(w, filtered)
+}
+
+// crdAccessKey is a (group, resource) pair used to batch SAR checks for the
+// P3-2 CRD inventory filter. Review-fix REL-001 / PERF-1.
+type crdAccessKey struct {
+	group    string
+	resource string
+}
+
+// collectCRDKeys extracts (group, resource) pairs from the ListCRDs response.
+func collectCRDKeys(all map[string][]*k8s.CRDInfo) []crdAccessKey {
+	var total int
+	for _, infos := range all {
+		total += len(infos)
+	}
+	keys := make([]crdAccessKey, 0, total)
+	for _, infos := range all {
+		for _, info := range infos {
+			keys = append(keys, crdAccessKey{group: info.Group, resource: info.Resource})
+		}
+	}
+	return keys
+}
+
+// batchCRDListAccess fans out cluster-wide list SSARs for the given (group,
+// resource) keys with bounded concurrency, returning a set keyed by
+// "group/resource" of CRDs the user is permitted to list. SAR errors are
+// logged and treated as denied (fail-closed) — matches the documented P3-2
+// contract that omits unverifiable entries from the inventory.
+//
+// Concurrency is bounded to crdAccessConcurrency (5) to mirror the existing
+// fetchCounts pattern in crd_discovery.go without overwhelming the apiserver's
+// API priority/fairness queue. Review-fix REL-001 / PERF-1.
+func (h *GenericCRDHandler) batchCRDListAccess(ctx context.Context, user *auth.User, keys []crdAccessKey) map[string]bool {
+	if len(keys) == 0 {
+		return map[string]bool{}
+	}
+	clusterID := middleware.ClusterIDFromContext(ctx)
+
+	allowed := make(map[string]bool, len(keys))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, crdAccessConcurrency)
+
+	for _, k := range keys {
+		wg.Add(1)
+		go func(k crdAccessKey) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			ok, err := h.AccessChecker.CanAccessGroupResource(
+				ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups,
+				"list", k.group, k.resource, "",
+			)
+			if err != nil {
+				h.Logger.Warn("CRD RBAC check failed; omitting",
+					"group", k.group, "resource", k.resource, "error", err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				allowed[k.group+"/"+k.resource] = true
+				mu.Unlock()
+			}
+		}(k)
+	}
+	wg.Wait()
+	return allowed
 }
 
 // splitGroupResourceKey parses a "group/resource" key as stored in the
@@ -402,7 +471,18 @@ func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *ht
 
 	// P3-4: audit the returned object's actual name + namespace so forensics
 	// trace the server-acknowledged identity, not the URL-supplied one.
-	h.auditWrite(r, user, audit.ActionUpdate, gvr.Resource, updated.GetNamespace(), updated.GetName(), audit.ResultSuccess)
+	// Belt-and-suspenders fallback (review-fix sec-3): if the apiserver ever
+	// returns an object with empty name/namespace (theoretical edge), fall back
+	// to the URL-validated values so the audit entry is never blank.
+	auditName := updated.GetName()
+	if auditName == "" {
+		auditName = name
+	}
+	auditNamespace := updated.GetNamespace()
+	if auditNamespace == "" && info.Scope == "Namespaced" {
+		auditNamespace = ns
+	}
+	h.auditWrite(r, user, audit.ActionUpdate, gvr.Resource, auditNamespace, auditName, audit.ResultSuccess)
 	writeData(w, updated)
 }
 
