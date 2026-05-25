@@ -231,7 +231,7 @@ func TestHandleQuery_MissingQuery(t *testing.T) {
 	}))
 	defer mockProm.Close()
 
-	pc, _ := NewPrometheusClient(mockProm.URL)
+	pc, _ := NewPrometheusClientWithTransport(mockProm.URL, http.DefaultTransport)
 	d := &Discoverer{
 		status:     &MonitoringStatus{Prometheus: ComponentStatus{Available: true}},
 		promClient: pc,
@@ -248,7 +248,7 @@ func TestHandleQuery_MissingQuery(t *testing.T) {
 }
 
 func TestHandleQuery_QueryTooLong(t *testing.T) {
-	pc, _ := NewPrometheusClient("http://localhost:9090")
+	pc, _ := NewPrometheusClientWithTransport("http://localhost:9090", http.DefaultTransport)
 	d := &Discoverer{
 		status:     &MonitoringStatus{Prometheus: ComponentStatus{Available: true}},
 		promClient: pc,

@@ -412,12 +412,15 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 		Burst: 100,
 		// P2-6 part 2: defend against DNS rebinding and unintended
 		// server-controlled redirects by re-resolving the cluster host
-		// on every dial and rejecting any candidate IP in the SSRF
-		// block-list. rest.Config.Dial is invoked by client-go's
+		// on every dial and rejecting any candidate IP in the strict
+		// block-list (including RFC1918 — a remote cluster API server
+		// that resolves to a private address either was never legitimate
+		// or has been rebound mid-session, and either case warrants
+		// fail-closed). rest.Config.Dial is invoked by client-go's
 		// underlying http transport for each new TCP connection, so
 		// this protects every API call routed through the returned
 		// config — not just the first dial after validation.
-		Dial: SafeDialContext,
+		Dial: StrictDialContext,
 	}
 
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {
@@ -520,17 +523,48 @@ func ValidateRemoteURL(apiServerURL string) error {
 }
 
 // checkIPNotPrivate returns an error when ip is in any range we treat
-// as off-limits for outbound requests built from user-supplied URLs:
-// loopback, private RFC1918, link-local (which includes 169.254.169.254
-// cloud metadata), CGNAT, and the unspecified 0.0.0.0/:: addresses.
-// Centralised so ValidateRemoteURL and the SSRF DialContext share one
-// blocklist — adding a range later automatically tightens both paths.
+// as off-limits for outbound requests built from user-supplied URLs
+// targeting external endpoints: loopback, RFC1918 private, link-local
+// (which includes 169.254.169.254 cloud metadata), CGNAT, and the
+// unspecified 0.0.0.0/:: addresses. Used by ValidateRemoteURL +
+// StrictDialContext for remote cluster URLs and other admin-supplied
+// inputs that must not resolve to anything cluster-internal.
 func checkIPNotPrivate(ip net.IP) error {
 	if ip.IsLoopback() {
 		return fmt.Errorf("URL resolves to loopback address %s", ip)
 	}
 	if ip.IsPrivate() {
 		return fmt.Errorf("URL resolves to private address %s", ip)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("URL resolves to link-local/metadata address %s", ip)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("URL resolves to unspecified address %s", ip)
+	}
+	if cgnatNet.Contains(ip) {
+		return fmt.Errorf("URL resolves to CGNAT address %s", ip)
+	}
+	return nil
+}
+
+// checkIPAlwaysBad returns an error for IP ranges that are off-limits
+// even from inside the cluster: loopback (DNS-rebinding to localhost),
+// link-local (cloud metadata IAM theft via 169.254.169.254), CGNAT
+// (carrier infrastructure), and unspecified. RFC1918 is INTENTIONALLY
+// allowed — every in-cluster Service ClusterIP falls inside RFC1918,
+// and SafeDialContext is used by the in-cluster monitoring clients
+// where blocking RFC1918 would silently break the bundled monitoring
+// subchart.
+//
+// The audit's "block private/loopback" recommendation in P2-6 was
+// framed for admin-supplied URLs targeting external endpoints. For
+// those, use checkIPNotPrivate via StrictDialContext. For URLs that
+// may legitimately resolve to a cluster-internal ClusterIP, use this
+// looser check via SafeDialContext.
+func checkIPAlwaysBad(ip net.IP) error {
+	if ip.IsLoopback() {
+		return fmt.Errorf("URL resolves to loopback address %s", ip)
 	}
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return fmt.Errorf("URL resolves to link-local/metadata address %s", ip)
