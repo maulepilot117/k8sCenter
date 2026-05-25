@@ -2,6 +2,9 @@
 // Android EncryptedSharedPreferences). Single key. Riverpod-injected so
 // tests can substitute an in-memory implementation.
 
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -23,10 +26,129 @@ abstract class SecureTokenStore {
   Future<void> deleteRefreshToken();
 }
 
-class FlutterSecureTokenStore implements SecureTokenStore {
-  FlutterSecureTokenStore({FlutterSecureStorage? storage})
-      : _storage = storage ?? const FlutterSecureStorage();
+/// Default-options FlutterSecureStorage instance held module-wide so the
+/// "legacy" backend pointer is identity-stable across reads — matters
+/// only on iOS where reads with default options can hit the same
+/// underlying Keychain item written before P3-7.
+const FlutterSecureStorage _legacyDefaults = FlutterSecureStorage();
 
+/// Production backend mirrors the explicit options from
+/// [FlutterSecurePendingOidcStore]:
+///   - iOS: first_unlock_this_device — readable after first device
+///     unlock, not synced to iCloud, not restored from backups. The
+///     refresh token is a per-device credential; cross-device sync
+///     would defeat session-scoped revocation on the issuing device.
+///   - Android: encryptedSharedPreferences — uses the Jetpack
+///     EncryptedSharedPreferences backend (AES-GCM-256 with key
+///     material in the Android Keystore) instead of the default
+///     per-value AES wrapper.
+///
+/// Audit finding P3-7.
+FlutterSecureStorage _defaultCurrentStorage() => const FlutterSecureStorage(
+      iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      ),
+      aOptions: AndroidOptions(encryptedSharedPreferences: true),
+    );
+
+class FlutterSecureTokenStore implements SecureTokenStore {
+  /// Production constructor: wires the audit-recommended explicit
+  /// storage backend AND a default-options legacy backend so values
+  /// written by older app versions migrate forward transparently on
+  /// first read after upgrade.
+  FlutterSecureTokenStore({
+    FlutterSecureStorage? storage,
+    FlutterSecureStorage? legacyStorage,
+  })  : _current = _FlutterBacked(storage ?? _defaultCurrentStorage()),
+        _legacy = _FlutterBacked(legacyStorage ?? _legacyDefaults),
+        _opTimeout = _defaultOpTimeout;
+
+  /// Test seam — accepts arbitrary [SecureTokenStore] backends so
+  /// migration logic can be exercised without spinning up a real
+  /// FlutterSecureStorage method channel. The [opTimeout] override lets
+  /// timeout-branch tests use a tight bound (e.g., 50ms) so the suite
+  /// doesn't have to wait through the production 5s budget.
+  @visibleForTesting
+  FlutterSecureTokenStore.fromBackends({
+    required SecureTokenStore current,
+    required SecureTokenStore legacy,
+    Duration opTimeout = _defaultOpTimeout,
+  })  : _current = current,
+        _legacy = legacy,
+        _opTimeout = opTimeout;
+
+  final SecureTokenStore _current;
+  final SecureTokenStore _legacy;
+  final Duration _opTimeout;
+
+  /// Per-op upper bound on platform-channel calls into FlutterSecureStorage.
+  /// On Android in the Before-First-Unlock state (post-reboot, pre-PIN),
+  /// EncryptedSharedPreferences can hang indefinitely — same failure mode
+  /// closed for SharedPreferences in issue #270 via `prefs_bootstrap.dart`.
+  /// 5s is tighter than the 10s SharedPreferences budget because bootstrap
+  /// has already passed `hydratePrefsWithTimeout` by the time it reaches
+  /// here, so the device has more recently demonstrated storage liveness.
+  /// On timeout the call returns null / completes silently, and bootstrap
+  /// falls through to the unauthenticated path — same disposition as
+  /// "no stored refresh token". Code-review finding (learnings #1, Phase 5).
+  static const Duration _defaultOpTimeout = Duration(seconds: 5);
+
+  @override
+  Future<String?> readRefreshToken() async {
+    final current = await _readWithTimeout(_current);
+    if (current != null) return current;
+
+    // Forward-migrate any value persisted under the pre-P3-7 default
+    // options. Best-effort: if the write to the new backend fails or
+    // times out, leave the legacy entry intact so the next read tries
+    // again rather than losing the user's session.
+    final legacy = await _readWithTimeout(_legacy);
+    if (legacy != null) {
+      try {
+        await _current.writeRefreshToken(legacy).timeout(_opTimeout);
+        await _legacy.deleteRefreshToken().timeout(_opTimeout);
+      } catch (_) {
+        // Swallow migration failures (including TimeoutException);
+        // the legacy value is still returned below so bootstrap can
+        // refresh.
+      }
+    }
+    return legacy;
+  }
+
+  Future<String?> _readWithTimeout(SecureTokenStore store) async {
+    try {
+      return await store.readRefreshToken().timeout(_opTimeout);
+    } on Exception catch (error) {
+      debugPrint(
+        'secure_storage: read exceeded ${_opTimeout.inMilliseconds}ms '
+        '— falling through to unauthenticated path. $error',
+      );
+      return null;
+    }
+  }
+
+  @override
+  Future<void> writeRefreshToken(String token) =>
+      _current.writeRefreshToken(token);
+
+  @override
+  Future<void> deleteRefreshToken() async {
+    // Clear from both backends. Without the legacy clear, a logout that
+    // happens before the first post-upgrade read would leave a stale
+    // refresh token in default-options storage where a future read
+    // would re-migrate it forward.
+    await _current.deleteRefreshToken();
+    await _legacy.deleteRefreshToken();
+  }
+}
+
+/// Adapter that exposes a single [FlutterSecureStorage] under the
+/// [SecureTokenStore] interface so [FlutterSecureTokenStore] can hold
+/// either real or in-memory backends through one shape. Private — the
+/// public seam is [FlutterSecureTokenStore.fromBackends].
+class _FlutterBacked implements SecureTokenStore {
+  const _FlutterBacked(this._storage);
   final FlutterSecureStorage _storage;
 
   @override

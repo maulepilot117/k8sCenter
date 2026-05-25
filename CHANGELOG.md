@@ -12,6 +12,280 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 5 — Mobile UX hardening (2026-05 audit)
+
+Phase 5 closes four mobile-side audit findings: P2-9 (FCM device
+registrations not revoked on logout), P2-10 (Sentry preserves raw
+request URLs), P3-6 (OIDC error callbacks clear pending PKCE before
+validating state), and P3-7 (refresh-token secure-storage options
+less explicit than pending-OIDC storage). The audit report is
+`plans/security-audit-2026-05-22.md`. All four findings are
+mobile-app-only — no backend, Helm, or web-frontend changes.
+
+### Non-breaking changes
+
+- **FCM device revoke on logout** (audit P2-9). `AuthRepository.logout`
+  now calls `FcmRegistration.revokeCurrentDevice` BEFORE clearing the
+  access token. The revoke flow resolves the current FCM token via
+  `FirebaseMessaging.instance.getToken`, looks up the matching device
+  record via `GET /api/v1/notifications/devices`, and issues
+  `DELETE /api/v1/notifications/devices/{id}`. Then disposes the
+  token-refresh and opened-app listeners. Best-effort throughout —
+  Firebase-init failure, network blip, 4xx all swallowed so a flaky
+  push backend can't strand the user signed in. Closes the gap where a
+  signed-out device kept receiving notifications for the prior account.
+
+- **Sentry `SentryRequest.url` scrub** (audit P2-10). `scrubEvent`
+  previously copied `event.request.url` unchanged while nulling the
+  sibling `queryString`, `data`, and `cookies` fields, so the audit-
+  flagged leak of namespace/name path segments and any embedded
+  `?token=…` query remained open. A shared `_scrubUrl` helper now
+  slices `?query` and `#fragment` from the URL and runs the bare path
+  through `_scrubText`; the same helper services HTTP breadcrumb
+  `url` values so the two surfaces can't diverge. The sibling
+  `SentryRequest.fragment` field is also nulled (it can carry the same
+  identifiers as the URL fragment).
+
+- **OIDC error-callback CSRF bind** (audit P3-6 part 1).
+  `OIDCController.completeFlow` previously cleared pending PKCE+state
+  on any callback with `error=…`, regardless of whether the callback's
+  `state` matched the persisted pending. An attacker who could deliver
+  a crafted error universal-link (Android intent spoofing, hostile
+  webpage on iOS) could wipe the verifier/state of an in-flight
+  legitimate flow — targeted login DoS. The error branch now reads
+  `state` first and requires `callbackState == pending.state` to honor
+  the error. Missing/mismatched state drops silently — same disposition
+  as the existing "no pending" guard. Surfacing an error here would
+  both confirm the crafted callback was received AND clobber whatever
+  banner a previous legitimate failure had placed on the login screen.
+
+- **Universal-link callbacks reject `http://`** (audit P3-6 part 2).
+  `UniversalLinkListener._maybeDispatch` previously accepted both
+  `https` and `http`. App Links / Universal Links rely on the
+  OS-verified domain binding that AASA + assetlinks.json provide,
+  which is a property of the https scheme only; honoring http opened a
+  downgrade vector where an attacker who could serve content on
+  `http://<host>/m/auth/callback` could intercept the redirect. Now
+  scheme-restricted to https.
+
+- **Refresh-token secure-storage explicit options** (audit P3-7).
+  `FlutterSecureTokenStore` now mirrors the explicit-options pattern
+  `FlutterSecurePendingOidcStore` already uses:
+  - iOS: `KeychainAccessibility.first_unlock_this_device` — readable
+    after first device unlock, not synced to iCloud, not restored from
+    backups. The refresh token is a per-device credential; cross-device
+    sync would defeat session-scoped revocation on the issuing device.
+  - Android: `AndroidOptions(encryptedSharedPreferences: true)` —
+    Jetpack EncryptedSharedPreferences (AES-GCM-256, key material in
+    the Android Keystore) instead of the default per-value AES wrapper.
+
+  Forward migration: a default-options legacy backend is held alongside
+  the current one. On first post-upgrade read, the legacy backend is
+  consulted, the value is migrated forward, and the legacy entry is
+  deleted. Best-effort — if the migration write fails, the legacy
+  value is still returned so bootstrap can refresh, and the legacy
+  entry stays put for the next try. `deleteRefreshToken` clears both
+  backends so a logout that happens before the first post-upgrade read
+  can't leave a stale legacy entry that re-migrates on next launch.
+
+### Operator notes
+
+- **No re-login required on upgrade.** P3-7's forward migration is
+  transparent: the first post-upgrade `readRefreshToken` finds the
+  legacy entry, writes it under the new options, and deletes the
+  legacy. Users stay signed-in across the version bump.
+
+- **Push notifications stop on logout.** P2-9's silent revoke means
+  users will no longer receive push for the previous account after
+  signing out (previously they continued until the FCM token rotated,
+  the device was unregistered manually, or the backend GC swept the
+  row). No settings tile — silent revoke matches the "user signed out,
+  push stops" mental model. The deferred-from-PR-5a settings tile is
+  no longer needed; the stale comment in `settings_screen.dart` was
+  removed.
+
+- **Sentry projects only see scrubbed URLs going forward.** If the
+  operator has been opted-in and the Sentry project contains historical
+  events with raw URLs in `event.request.url`, those existing events
+  are not retroactively scrubbed (Sentry-side data retention applies).
+  Future events will arrive with paths scrubbed and query/fragment
+  removed.
+
+### Verification
+
+- `flutter test` — all mobile tests pass after the Phase 5 work AND
+  the review-fix commits below. New + extended tests:
+  - `test/notifications/fcm_revoke_test.dart` — 6 tests covering
+    happy path, no-match, empty list, GET failure, DELETE failure,
+    malformed response.
+  - `test/observability/pii_scrubber_test.dart` — 4 new tests for the
+    initial scrub (query / fragment / non-k8s passthrough / null URL)
+    plus 4 review-driven regression tests for the percent-encoded
+    delimiter bypass (`%3F`, `%23`, breadcrumb parity, malformed
+    encoding fallback). One existing test extended.
+  - `test/auth/oidc_controller_test.dart` — 2 new tests for no-state
+    and wrong-state error-callback drops; existing "consent denied"
+    test extended to carry `&state=`; 5 review-driven tests covering
+    `login_required`, `interaction_required`, `temporarily_unavailable`,
+    `server_error`, and unknown error codes through the matched-state
+    path.
+  - `test/auth/universal_link_listener_test.dart` — 1 new test for
+    http-scheme rejection.
+  - `test/auth/secure_storage_test.dart` (new file) — 7 base tests
+    covering current-hit, legacy-fallback-and-migrate, no-data,
+    repeated reads, migration-write-failure preservation, write
+    isolation, dual delete; plus 3 review-driven tests covering the
+    Android BFU op-timeout fallback (current hang, both hang, write
+    hang during migration).
+- `dart analyze` — clean repo-wide across the mobile tree
+  (`dart analyze` from `mobile/`, no scope filter).
+
+### Applied during Phase 5 code review (one round of `/ce-code-review`)
+
+The review surfaced several issues that were fixed inline before merge:
+
+- **`fcm.dispose()` uncaught in logout** (reliability R-1, P1). The
+  outer try/catch wrapped `revokeCurrentDevice` but not the immediately-
+  following `dispose()`. `StreamSubscription.cancel()` returns a Future
+  that can reject when the underlying stream has faulted (Firebase
+  network drop, permission revocation mid-session); a rejection would
+  propagate out of `logout()`, skipping `authTokenHolder.clear()` and
+  `state = AuthUnauthenticated()` — the user would stay signed in with
+  live credentials. Added a sibling try/catch.
+- **`_scrubUrl` URL-encoded delimiter bypass** (adversarial ADV-3 +
+  testing T-2, P2, cross-reviewer ×2). A URL like
+  `https://kubecenter.local/v1/resources/secrets/ns/name%3Ftoken=leak`
+  defeats `indexOf('?')`: the encoded `%3F` is literal text, not `?`,
+  so the slice misses it and the segment regex stops at `%` — `token=leak`
+  survives in the scrubbed output. Now percent-decodes via
+  `Uri.decodeFull` BEFORE slicing. 4 regression tests added covering
+  `%3F`, `%23`, breadcrumb parity, and malformed-encoding fallback.
+- **Android BFU hang on migration** (learnings #1, P2). The new
+  `readRefreshToken` migration sequence ran three sequential `await`s
+  on FlutterSecureStorage with no timeout — Android EncryptedSharedPreferences
+  can hang indefinitely in the Before-First-Unlock state (issue #270's
+  earlier SharedPreferences fix established the `hydratePrefsWithTimeout`
+  pattern). Now wraps each read in a 5s op-timeout; on timeout the call
+  returns null and bootstrap falls through to the unauthenticated path —
+  same disposition as "no stored refresh token". 3 timeout-branch tests
+  added.
+- **FCM revoke total-time bound** (reliability R-2, P2). The revoke
+  flow issues two sequential Dio calls (`GET /devices` + `DELETE
+  /devices/{id}`). Each call has a 30s `receiveTimeout` from
+  `dio_client.dart`, so a hung backend could block logout for ~90s
+  total. `revokeCurrentDevice` now bounds the inner `revokeDeviceByToken`
+  call at 5s.
+- **Device-ID leak in debugPrint** (reliability R-3, P2). The revoke
+  list and delete error paths used `e.message` which Dio populates with
+  the full request URL including the device ID. Now logs only the
+  ApiError message or Dio error type name.
+- **OIDC error-code coverage** (testing T-1, P2). The matched-state
+  switch routes five distinct error codes (`access_denied`,
+  `login_required`, `interaction_required`, `temporarily_unavailable`,
+  `server_error`, wildcard) to four `OIDCFlowErrorReason` values. Only
+  `access_denied` was tested through the matched-state path. Added 5
+  tests so the switch can't drift undetected.
+- **CHANGELOG verification language** (project-standards PS-2, P2).
+  The verification line said "across all changed files" — accurate for
+  the actual run command (`dart analyze` from `mobile/` with no scope
+  filter, which IS repo-wide for the mobile tree) but the wording
+  could read as scoped. Rewritten to be unambiguous.
+
+### Known follow-ups (Phase 5 deferred — single review round)
+
+This phase follows the Phase 3 and Phase 4 cadence: one round of
+`/ce-code-review` plus this documented follow-up list rather than
+chasing every regression through additional cycles. The deferred
+items below are tracked here for the next audit:
+
+- **Auth → Notifications import inversion** (maintainability M-1).
+  `auth_repository.dart` now imports `notifications/fcm_registration.dart`.
+  The domain-correct boundary is: auth emits a logout signal,
+  notifications observes auth state and self-revokes (symmetric with
+  the register-on-login `container.listen` in `main.dart`). The
+  refactor requires designing a logout-event surface (an
+  `AuthLoggingOut` intermediate state or a dedicated stream) — deferred
+  to a follow-up because it's bigger than a review fix.
+- **Logout-test wiring assertion** (testing T-3, maintainability T-1).
+  The existing `logout: clears tokens` test in `auth_repository_test.dart`
+  passes after Phase 5's change because `revokeCurrentDevice` is a no-op
+  in the headless test environment (`!_supportedPlatform`). The
+  order-of-operations contract — revoke fires while access token is
+  still live, then clear — is not asserted. A spy-based test would
+  close this gap; it lands naturally if M-1 (the inversion) is taken
+  next.
+- **revoke-during-ensureRegistered race** (correctness-1). If logout
+  fires after `ensureRegistered` POSTs the device but before
+  `_initialized = true`, the revoke is skipped and the backend row
+  survives. Narrow window (Firebase token resolution latency); could
+  be closed by setting `_initialized` immediately after the POST.
+- **iOS Keychain accessibility-class persistence** (correctness-2).
+  When the accessibility class changes between writes, the legacy
+  Keychain item may persist with the old class rather than being
+  replaced. Low confidence; needs real-device verification.
+- **Stale rotated FCM device rows** (correctness-3 + adversarial ADV-1,
+  cross-reviewer ×2, P2). Revoke deletes only the device row for the
+  CURRENT FCM token. Rotated-and-orphaned device rows from prior
+  registrations are left intact and could cross-bind if the same token
+  is later assigned to another user. This is a pre-existing concern
+  documented at `fcm_registration.dart:11`; resolution belongs in a
+  backend old-token sweep PR.
+- **`_scrubUrl` preserves user-info** (correctness-4). URLs like
+  `https://user:pass@host/path` pass through with credentials intact.
+  Mobile app never constructs such URLs, but Sentry breadcrumbs from
+  third-party Dio interceptors could in theory. Worth a future
+  defensive normalization.
+- **OIDC error-callback silent-drop undebuggable** (reliability R-4).
+  The silent-drop disposition prevents an attacker from confirming
+  receipt of a crafted callback — but also blocks operator debugging
+  of legitimate IdP misconfigurations that send unexpected state.
+  Debug-build-only `debugPrint` or a scrubbed Sentry breadcrumb would
+  preserve diagnostics without confirming receipt.
+- **Migration delete-failure swallowed without log** (reliability R-5).
+  When `_current.writeRefreshToken(legacy)` succeeds but
+  `_legacy.deleteRefreshToken()` throws, the `catch (_)` block swallows
+  silently. Session is safe; the stale legacy entry sits until next
+  logout. A `debugPrint` in the catch would make persistent Keychain
+  delete failures diagnosable.
+- **`_FlutterBacked` premature abstraction** (maintainability M-2).
+  Zero-behavior passthrough adapter introduced for type-coercion
+  reasons. Could be inlined once migration completes and the legacy
+  backend is removed.
+- **`InMemoryTokenStore` missing `@visibleForTesting`** (maintainability
+  M-3). Used by 100+ test files but lives in production lib/ without
+  the annotation. One-line addition.
+- **Migration partial-success test gap** (adversarial ADV-4). The
+  `_WriteFailingStore` test covers write failure but not the symmetric
+  delete failure after write succeeds. Mirrors reliability R-5's
+  concern from a test-coverage angle.
+- **fcm.dispose silences onTokenRefresh between sign-out and sign-in**
+  (adversarial ADV-7). Pre-Phase-5, dispose only ran at container
+  teardown. Now every logout cancels the subscription, so any FCM
+  rotation between sign-out and the next sign-in is unobserved
+  (re-synced on next `ensureRegistered`). Combined with ADV-1, extends
+  the cross-user push leakage window slightly.
+- **Sentry tags/extra/contexts structured-field audit** (learnings #5).
+  `_scrubEventBody` covers `request`, `exceptions`, `breadcrumbs`, and
+  `message`. The `tags`, `extra` map values, and `contexts` structured
+  fields are not scrubbed. No known caller currently populates them
+  with raw resource identifiers but a grep audit would confirm.
+
+### Out of scope for Phase 5
+
+The audit's remaining findings are tracked for subsequent phases:
+
+- **Phase 6** (scoping leaks): P3-2 CRD inventory per-user RBAC, P3-3
+  diagnostics related-resource RBAC, P3-4 CRD URL/body name mismatch,
+  P3-5 Loki label scoping.
+- **Phase 7** (supply chain + LDAP TLS): P2-11 govulncheck-clean Go
+  toolchain + `golang.org/x/net` bump, P3-1 LDAP plaintext bind reject,
+  P3-9 image digest pinning + gating Trivy.
+
+Phase 4 deferred follow-ups (12 items documented in this changelog
+above) remain open and tracked.
+
+---
+
 ## Phase 4 — Network / SSRF / TLS hardening (2026-05 audit)
 
 Phase 4 closes audit findings P2-6 (SSRF DNS rebinding window on

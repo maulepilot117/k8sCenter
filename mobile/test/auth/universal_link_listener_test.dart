@@ -67,10 +67,22 @@ void main() {
       expect(recorder.completedFlows.single.path, '/m/auth/callback');
     });
 
-    test('custom-scheme link ignored (only https/http handled here)',
+    test('custom-scheme link ignored (only https handled here)',
         () async {
       await listener
           .dispatch(Uri.parse('k8scenter://cluster/local/Pod/ns/foo'));
+      expect(recorder.completedFlows, isEmpty);
+    });
+
+    test(
+        'http (cleartext) callback ignored — only https accepted '
+        '(P3-6 downgrade guard)', () async {
+      // App Links / Universal Links rely on the OS-verified domain
+      // binding that AASA + assetlinks.json provide. http:// callbacks
+      // bypass that binding entirely; an attacker who can serve content
+      // on http://<host>/m/auth/callback could intercept the redirect.
+      await listener.dispatch(
+          Uri.parse('http://k8scenter.test/m/auth/callback?code=X&state=Y'));
       expect(recorder.completedFlows, isEmpty);
     });
 

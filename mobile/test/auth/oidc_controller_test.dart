@@ -272,21 +272,159 @@ void main() {
       expect(await s.pending.read(), isNull);
     });
 
-    test('consent denied: consentDenied error', () async {
+    test(
+        'consent denied with matched state: consentDenied error, clears '
+        'pending (P3-6 happy path)', () async {
       final s = _setup();
       addTearDown(s.container.dispose);
-      await seedPending(s.pending, s.now());
+      await seedPending(s.pending, s.now(), state: 'STATE123');
 
+      // Audit finding P3-6: error callbacks must carry a matched state
+      // to be honored. The legitimate IdP redirect always includes the
+      // state it received in the auth request.
       await s.container
           .read(oidcControllerProvider.notifier)
           .completeFlow(Uri.parse(
-              'https://k8scenter.test/m/auth/callback?error=access_denied&error_description=User+declined'));
+              'https://k8scenter.test/m/auth/callback?error=access_denied&error_description=User+declined&state=STATE123'));
 
       final state =
           s.container.read(oidcControllerProvider) as OIDCFlowError;
       expect(state.reason, OIDCFlowErrorReason.consentDenied);
       expect(state.detail, 'User declined');
       expect(await s.pending.read(), isNull);
+    });
+
+    test(
+        'error callback with NO state: silently dropped, pending preserved '
+        '(P3-6 — login DoS guard)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'EXPECTED');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=access_denied'));
+
+      // No state surfaced — controller stays idle so the legitimate
+      // success callback can still race-in and complete the flow.
+      expect(
+        s.container.read(oidcControllerProvider),
+        isA<OIDCFlowIdle>(),
+        reason: 'no error banner should appear from an unbound callback',
+      );
+      // Pending state preserved — the legitimate callback still has its
+      // verifier/state intact.
+      expect(
+        await s.pending.read(),
+        isNotNull,
+        reason: 'attacker callback must not wipe in-flight verifier/state',
+      );
+    });
+
+    test(
+        'error callback with WRONG state: silently dropped, pending preserved '
+        '(P3-6 — login DoS guard)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'EXPECTED');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=access_denied&state=ATTACKER_STATE'));
+
+      expect(s.container.read(oidcControllerProvider), isA<OIDCFlowIdle>());
+      expect(
+        await s.pending.read(),
+        isNotNull,
+        reason: 'mismatched state must not clear pending',
+      );
+    });
+
+    // Cross-reviewer testing T-1 (Phase 5): the error-code switch routes
+    // five distinct OAuth/OIDC error values to different controller
+    // reasons. Only access_denied was exercised before. A subtle swap
+    // (e.g., routing temporarily_unavailable to exchangeRejected instead
+    // of networkError) would not be caught. One test per branch through
+    // the matched-state path so the switch can't drift undetected.
+
+    test('login_required → consentDenied (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=login_required&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.consentDenied);
+      expect(await s.pending.read(), isNull);
+    });
+
+    test('interaction_required → consentDenied (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=interaction_required&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.consentDenied);
+    });
+
+    test('temporarily_unavailable → networkError (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=temporarily_unavailable&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.networkError);
+    });
+
+    test('server_error → networkError (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=server_error&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.networkError);
+    });
+
+    test(
+        'unknown error code → exchangeRejected (matched state, wildcard '
+        'branch)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=teapot&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.exchangeRejected);
     });
 
     test('ttl expired: ttlExpired error', () async {

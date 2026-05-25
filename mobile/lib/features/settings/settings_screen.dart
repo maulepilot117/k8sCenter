@@ -10,8 +10,10 @@
 // the section without the feature would be misleading metadata under
 // App Store guideline 2.3.
 //
-// FCM device-token revoke tile is deferred from PR-5a — see
-// docs/OBSERVABILITY.md for the rationale.
+// FCM device-token revoke happens automatically on logout (Phase 5
+// audit finding P2-9, wired in [AuthRepository.logout]). No dedicated
+// settings tile — silent revoke matches the "user signed out, push
+// stops" mental model.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';

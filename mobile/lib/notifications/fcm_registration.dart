@@ -149,6 +149,85 @@ class FcmRegistration {
     }
   }
 
+  /// Upper bound on the whole revoke flow. Dio's per-request receive
+  /// timeout is 30s (dio_client.dart) and revoke issues two sequential
+  /// calls — without this bound a hung backend would block logout for
+  /// ~60s on the FCM path plus another 30s on `/auth/logout`. 5s is
+  /// generous for the well-behaved case (sub-second list + sub-second
+  /// delete) and decisive on the failure case. Code-review finding R-2
+  /// (Phase 5).
+  static const Duration _revokeTotalTimeout = Duration(seconds: 5);
+
+  /// Called from [AuthRepository.logout] before clearing the access token —
+  /// the DELETE requires the still-valid access token to pass auth
+  /// middleware. Best-effort: any failure short-circuits silently so a
+  /// network blip can't strand the user signed-in. Audit finding P2-9.
+  ///
+  /// Skips entirely when Firebase isn't initialised (no platform config,
+  /// permission denied, unsupported platform) — there is nothing to revoke
+  /// because [ensureRegistered] never ran a POST.
+  Future<void> revokeCurrentDevice() async {
+    if (!_supportedPlatform || !_initialized) return;
+    String? token;
+    try {
+      token = await FirebaseMessaging.instance.getToken();
+    } catch (e) {
+      debugPrint('[fcm] revoke: getToken failed: $e');
+      return;
+    }
+    if (token == null || token.isEmpty) return;
+    try {
+      await revokeDeviceByToken(token).timeout(_revokeTotalTimeout);
+    } on TimeoutException {
+      debugPrint(
+        '[fcm] revoke: exceeded ${_revokeTotalTimeout.inSeconds}s — '
+        'logout proceeding without revoke confirmation',
+      );
+    }
+  }
+
+  /// Looks up the device record for [token] via the per-user list endpoint,
+  /// then DELETEs it. Visible for tests so the network path can be
+  /// exercised without a Firebase platform channel. Returns true when a
+  /// matching device was found and deleted.
+  @visibleForTesting
+  Future<bool> revokeDeviceByToken(String token) async {
+    final String deviceId;
+    try {
+      final res = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/notifications/devices',
+      );
+      final data = res.data?['data'];
+      if (data is! List) return false;
+      final match = data.whereType<Map<String, dynamic>>().firstWhere(
+            (d) => (d['deviceToken'] as String?) == token,
+            orElse: () => const <String, dynamic>{},
+          );
+      final id = match['id'] as String?;
+      if (id == null || id.isEmpty) return false;
+      deviceId = id;
+    } on DioException catch (e) {
+      // Log only the type — Dio's e.message can include the request URL,
+      // which would land the FCM device-token (or stale device ID) in
+      // debugPrint output. Code-review finding R-3 (Phase 5).
+      final err = e.error;
+      final reason = err is ApiError ? err.message : e.type.name;
+      debugPrint('[fcm] revoke list failed: $reason');
+      return false;
+    }
+    try {
+      await _dio.delete<dynamic>('/api/v1/notifications/devices/$deviceId');
+      return true;
+    } on DioException catch (e) {
+      // Same scrub as the list path — Dio error messages on the DELETE
+      // include the full request URL, which embeds the device ID.
+      final err = e.error;
+      final reason = err is ApiError ? err.message : e.type.name;
+      debugPrint('[fcm] revoke delete failed: $reason');
+      return false;
+    }
+  }
+
   bool get _supportedPlatform {
     // Web/desktop builds skip FCM entirely. M1 ships iOS + Android only.
     if (kIsWeb) return false;
