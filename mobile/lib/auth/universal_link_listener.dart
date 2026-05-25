@@ -94,7 +94,14 @@ class UniversalLinkListener {
   Future<void> _maybeDispatch(Uri uri) async {
     // Only consume the OIDC callback path. Notification deep-links and
     // any other /m/* paths flow through their own handlers.
-    if (uri.scheme != 'https' && uri.scheme != 'http') return;
+    //
+    // https-only — App Links / Universal Links chosen specifically for
+    // the OS-verified domain binding (AASA + assetlinks.json) that
+    // custom schemes and http can't provide. Accepting http here would
+    // open a downgrade vector: an attacker who can serve content on
+    // http://<host>/m/auth/callback could intercept the callback before
+    // it reaches the legitimate https handler. Audit finding P3-6.
+    if (uri.scheme != 'https') return;
     if (uri.host != _host) return;
     if (uri.path != oidcCallbackPath) return;
 

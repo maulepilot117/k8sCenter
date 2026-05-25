@@ -272,8 +272,24 @@ class OIDCController extends Notifier<OIDCFlowState> {
     // BEFORE pulling `code` so we route the right error. RFC 6749 §4.1.2.1
     // OAuth error codes + OIDC core §3.1.2.6 mapped to controller reasons
     // so the inline banner reflects the actual condition.
+    //
+    // CSRF-bind error callbacks the same way we bind success callbacks:
+    // read `state` first and reject anything that doesn't match the
+    // persisted pending.state BEFORE touching pendingStore. Without this
+    // bind an attacker who can deliver a crafted error universal-link
+    // (intent spoofing on Android, hostile webpage on iOS) can wipe the
+    // verifier/state of an in-flight legitimate flow — targeted login
+    // DoS. Audit finding P3-6.
     final errorParam = callback.queryParameters['error'];
+    final callbackState = callback.queryParameters['state'];
     if (errorParam != null && errorParam.isNotEmpty) {
+      if (callbackState == null || callbackState != pending.state) {
+        // Silently drop — same disposition as the "no pending" branch
+        // above. Surfacing an error here would both confirm the crafted
+        // callback was received AND clobber the inline error banner that
+        // a previous real failure may have placed on the login screen.
+        return;
+      }
       await pendingStore.clear();
       final reason = switch (errorParam) {
         'access_denied' => OIDCFlowErrorReason.consentDenied,
@@ -296,7 +312,6 @@ class OIDCController extends Notifier<OIDCFlowState> {
     }
 
     final code = callback.queryParameters['code'];
-    final callbackState = callback.queryParameters['state'];
 
     if (code == null || code.isEmpty || callbackState == null) {
       await pendingStore.clear();

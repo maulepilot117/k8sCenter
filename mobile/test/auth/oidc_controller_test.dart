@@ -272,21 +272,74 @@ void main() {
       expect(await s.pending.read(), isNull);
     });
 
-    test('consent denied: consentDenied error', () async {
+    test(
+        'consent denied with matched state: consentDenied error, clears '
+        'pending (P3-6 happy path)', () async {
       final s = _setup();
       addTearDown(s.container.dispose);
-      await seedPending(s.pending, s.now());
+      await seedPending(s.pending, s.now(), state: 'STATE123');
 
+      // Audit finding P3-6: error callbacks must carry a matched state
+      // to be honored. The legitimate IdP redirect always includes the
+      // state it received in the auth request.
       await s.container
           .read(oidcControllerProvider.notifier)
           .completeFlow(Uri.parse(
-              'https://k8scenter.test/m/auth/callback?error=access_denied&error_description=User+declined'));
+              'https://k8scenter.test/m/auth/callback?error=access_denied&error_description=User+declined&state=STATE123'));
 
       final state =
           s.container.read(oidcControllerProvider) as OIDCFlowError;
       expect(state.reason, OIDCFlowErrorReason.consentDenied);
       expect(state.detail, 'User declined');
       expect(await s.pending.read(), isNull);
+    });
+
+    test(
+        'error callback with NO state: silently dropped, pending preserved '
+        '(P3-6 — login DoS guard)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'EXPECTED');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=access_denied'));
+
+      // No state surfaced — controller stays idle so the legitimate
+      // success callback can still race-in and complete the flow.
+      expect(
+        s.container.read(oidcControllerProvider),
+        isA<OIDCFlowIdle>(),
+        reason: 'no error banner should appear from an unbound callback',
+      );
+      // Pending state preserved — the legitimate callback still has its
+      // verifier/state intact.
+      expect(
+        await s.pending.read(),
+        isNotNull,
+        reason: 'attacker callback must not wipe in-flight verifier/state',
+      );
+    });
+
+    test(
+        'error callback with WRONG state: silently dropped, pending preserved '
+        '(P3-6 — login DoS guard)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'EXPECTED');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=access_denied&state=ATTACKER_STATE'));
+
+      expect(s.container.read(oidcControllerProvider), isA<OIDCFlowIdle>());
+      expect(
+        await s.pending.read(),
+        isNotNull,
+        reason: 'mismatched state must not clear pending',
+      );
     });
 
     test('ttl expired: ttlExpired error', () async {
