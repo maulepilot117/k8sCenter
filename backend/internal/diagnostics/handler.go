@@ -60,6 +60,25 @@ var kindToResource = map[string]string{
 	"PersistentVolumeClaim": "persistentvolumeclaims",
 }
 
+// kindNeedsReplicaSets enumerates target kinds whose related-pod resolution
+// walks through ReplicaSets. P3-3 security audit 2026-05-22: when the user
+// can't list ReplicaSets, we must skip the chain rather than leak owner data.
+var kindNeedsReplicaSets = map[string]bool{
+	"Deployment": true,
+}
+
+// kindNeedsPods enumerates target kinds whose related-pod resolution lists
+// pods directly. Pods themselves trivially need pod access; resource kinds
+// that don't traverse to pods (PVC today) get false. P3-3 security audit
+// 2026-05-22.
+var kindNeedsPods = map[string]bool{
+	"Deployment":  true,
+	"StatefulSet": true,
+	"DaemonSet":   true,
+	"Pod":         true,
+	"Service":     true,
+}
+
 // HandleDiagnostics runs diagnostic checks and blast radius analysis for a resource.
 // GET /api/v1/diagnostics/{namespace}/{kind}/{name}
 func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -96,8 +115,21 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// P3-3 (security audit 2026-05-22): SSAR-check every related resource type
+	// the diagnostic resolver would traverse for this target kind. Without this,
+	// diagnostics leak pod / ReplicaSet existence + state to users who only have
+	// RBAC on the target kind. Denial is graceful — the related branch is
+	// skipped, downstream rules see empty lists, and the caller still gets the
+	// target-kind diagnostic findings.
+	related, err := h.resolveRelatedRBAC(ctx, user, clusterID, kind, namespace)
+	if err != nil {
+		// Already logged inside resolveRelatedRBAC. Fail closed.
+		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
+		return
+	}
+
 	// Resolve the target resource and its related pods
-	target, err := Resolve(ctx, h.Lister, namespace, kind, name)
+	target, err := Resolve(ctx, h.Lister, namespace, kind, name, related)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			httputil.WriteError(w, http.StatusNotFound, err.Error(), "")
@@ -214,6 +246,36 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 		Failing: failing,
 		Total:   len(pods),
 	})
+}
+
+// resolveRelatedRBAC computes which related-resource resolutions the user is
+// permitted to perform for the given target kind in the given namespace. Each
+// permission is checked via SSAR against the request's cluster context. Errors
+// from SSAR are surfaced (the caller treats them as fail-closed); denials are
+// reflected in the returned struct so Resolve can skip those branches.
+// P3-3 security audit 2026-05-22.
+func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clusterID, kind, namespace string) (*RelatedRBAC, error) {
+	related := &RelatedRBAC{}
+
+	if kindNeedsPods[kind] {
+		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
+		if err != nil {
+			h.Logger.Error("related-pod RBAC check failed", "kind", kind, "namespace", namespace, "error", err)
+			return nil, err
+		}
+		related.Pods = allowed
+	}
+
+	if kindNeedsReplicaSets[kind] {
+		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
+		if err != nil {
+			h.Logger.Error("related-replicaset RBAC check failed", "kind", kind, "namespace", namespace, "error", err)
+			return nil, err
+		}
+		related.ReplicaSets = allowed
+	}
+
+	return related, nil
 }
 
 // findNodeID searches the graph for a node matching the given kind and name.
