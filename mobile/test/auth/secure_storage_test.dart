@@ -9,6 +9,8 @@
 // the production code relies on (writes to one don't appear in reads
 // from the other).
 
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
 
@@ -140,6 +142,73 @@ void main() {
     });
   });
 
+  group('FlutterSecureTokenStore BFU timeout (learnings #1)', () {
+    const Duration tightTimeout = Duration(milliseconds: 50);
+
+    test(
+        'read returns null when the current-backend read hangs past the '
+        'op timeout (Android BFU fallback)', () async {
+      final current = _HangingStore();
+      final legacy = InMemoryTokenStore();
+      await legacy.writeRefreshToken('legacy-value');
+      final store = FlutterSecureTokenStore.fromBackends(
+        current: current,
+        legacy: legacy,
+        opTimeout: tightTimeout,
+      );
+
+      final result = await store.readRefreshToken();
+      expect(
+        result,
+        'legacy-value',
+        reason: 'hanging current read should fall through to the legacy '
+            'fallback path after the op timeout fires',
+      );
+    });
+
+    test(
+        'read returns null when BOTH backends hang past the op timeout '
+        '(forces re-auth instead of stalling cold-start)', () async {
+      final current = _HangingStore();
+      final legacy = _HangingStore();
+      final store = FlutterSecureTokenStore.fromBackends(
+        current: current,
+        legacy: legacy,
+        opTimeout: tightTimeout,
+      );
+
+      final result = await store.readRefreshToken();
+      expect(
+        result,
+        isNull,
+        reason: 'both reads timing out should yield null so bootstrap '
+            'falls through to the unauthenticated path instead of hanging',
+      );
+    });
+
+    test(
+        'migration write timeout preserves legacy value AND returns it '
+        'so the session survives a slow current-backend write', () async {
+      // current.read() returns null fast; current.write() hangs forever.
+      final current = _ReadNullWriteHangsStore();
+      final legacy = InMemoryTokenStore();
+      await legacy.writeRefreshToken('precious');
+      final store = FlutterSecureTokenStore.fromBackends(
+        current: current,
+        legacy: legacy,
+        opTimeout: tightTimeout,
+      );
+
+      final result = await store.readRefreshToken();
+      expect(result, 'precious');
+      expect(
+        await legacy.readRefreshToken(),
+        'precious',
+        reason: 'failed-write migration must not delete legacy data',
+      );
+    });
+  });
+
   group('FlutterSecureTokenStore.deleteRefreshToken', () {
     test('clears BOTH backends so a logout before first read can\'t leave '
         'a stale legacy entry that re-migrates on next launch', () async {
@@ -179,4 +248,36 @@ class _WriteFailingStore implements SecureTokenStore {
   Future<void> deleteRefreshToken() async {
     _value = null;
   }
+}
+
+/// SecureTokenStore whose every method returns a never-completing
+/// Future. Models the Android EncryptedSharedPreferences platform-
+/// channel hang under Before-First-Unlock. Used to exercise the
+/// op-timeout fallback path in FlutterSecureTokenStore.
+class _HangingStore implements SecureTokenStore {
+  @override
+  Future<String?> readRefreshToken() => Completer<String?>().future;
+
+  @override
+  Future<void> writeRefreshToken(String token) =>
+      Completer<void>().future;
+
+  @override
+  Future<void> deleteRefreshToken() => Completer<void>().future;
+}
+
+/// SecureTokenStore that returns null fast on read but hangs on write.
+/// Models the migration-time failure where the current backend can be
+/// queried (empty) but a write to it stalls — covers the inner timeout
+/// inside the legacy-migrate branch.
+class _ReadNullWriteHangsStore implements SecureTokenStore {
+  @override
+  Future<String?> readRefreshToken() async => null;
+
+  @override
+  Future<void> writeRefreshToken(String token) =>
+      Completer<void>().future;
+
+  @override
+  Future<void> deleteRefreshToken() async {}
 }
