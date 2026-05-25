@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -21,24 +22,68 @@ import (
 var dnsSubdomainRegexp = regexp.MustCompile(`^[a-z0-9]([a-z0-9.\-]*[a-z0-9])?$`)
 
 // GenericCRDHandler provides HTTP handlers for CRD CRUD operations via the dynamic client.
+//
+// AccessChecker is optional (nil disables the P3-2 RBAC filter — preserves the
+// pre-audit behavior for tests / dev scenarios that don't wire one). Production
+// main.go always supplies it.
 type GenericCRDHandler struct {
 	Discovery     *k8s.CRDDiscovery
 	ClusterRouter *k8s.ClusterRouter
+	AccessChecker *AccessChecker
 	AuditLogger   audit.Logger
 	Logger        *slog.Logger
 }
 
-// HandleListCRDs returns all discovered CRDs grouped by API group.
+// HandleListCRDs returns CRDs grouped by API group, filtered by per-user RBAC.
+//
+// P3-2 (security audit 2026-05-22): non-admins previously received the full
+// cluster-wide CRD inventory, which leaked operator-deployed feature surfaces
+// (external-secrets, cert-manager, mesh, scanners). Each CRD is now SSAR-checked
+// against the request's cluster context for verb=list at the cluster level. If
+// the user lacks cluster-wide list permission for the CRD's GVR, it's omitted
+// from the response. Users with namespace-only Role bindings won't see those
+// CRDs in inventory — they can still list instances directly via the namespaced
+// resource endpoints if they know the GVR.
 func (h *GenericCRDHandler) HandleListCRDs(w http.ResponseWriter, r *http.Request) {
-	_, ok := requireUser(w, r)
+	user, ok := requireUser(w, r)
 	if !ok {
 		return
 	}
-	writeData(w, h.Discovery.ListCRDs())
+
+	all := h.Discovery.ListCRDs()
+	if h.AccessChecker == nil || auth.IsAdmin(user) {
+		writeData(w, all)
+		return
+	}
+
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	filtered := make(map[string][]*k8s.CRDInfo, len(all))
+	for group, infos := range all {
+		for _, info := range infos {
+			allowed, err := h.AccessChecker.CanAccessGroupResource(
+				r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
+				"list", info.Group, info.Resource, "",
+			)
+			if err != nil {
+				// SAR failure is logged but treated as deny — fail closed.
+				h.Logger.Warn("CRD inventory RBAC check failed; omitting from response",
+					"group", info.Group, "resource", info.Resource, "error", err)
+				continue
+			}
+			if allowed {
+				filtered[group] = append(filtered[group], info)
+			}
+		}
+	}
+	writeData(w, filtered)
 }
 
 // HandleGetCRD returns CRD metadata and the OpenAPI schema for a specific CRD.
 // Returns a combined response with CRDInfo + the storage version's schema.
+//
+// P3-2: non-admins must have cluster-wide list permission on the CRD's GVR;
+// otherwise the response would leak the CRD's existence + schema even if the
+// user couldn't enumerate instances.
 func (h *GenericCRDHandler) HandleGetCRD(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -47,6 +92,10 @@ func (h *GenericCRDHandler) HandleGetCRD(w http.ResponseWriter, r *http.Request)
 
 	_, info, ok := h.resolveGVR(w, r)
 	if !ok {
+		return
+	}
+
+	if !h.userCanAccessCRD(w, r, user, info) {
 		return
 	}
 
@@ -89,13 +138,80 @@ func (h *GenericCRDHandler) HandleGetCRD(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// HandleCRDCounts returns cached instance counts for all discovered CRDs.
+// HandleCRDCounts returns cached instance counts for CRDs the user can list.
+//
+// P3-2: shared count cache stays — counts are non-sensitive cluster aggregates
+// — but the response is filtered to only CRDs the user has cluster-wide list
+// permission for. Same SSAR gate as HandleListCRDs.
 func (h *GenericCRDHandler) HandleCRDCounts(w http.ResponseWriter, r *http.Request) {
-	_, ok := requireUser(w, r)
+	user, ok := requireUser(w, r)
 	if !ok {
 		return
 	}
-	writeData(w, h.Discovery.GetCounts(r.Context()))
+
+	counts := h.Discovery.GetCounts(r.Context())
+	if h.AccessChecker == nil || auth.IsAdmin(user) {
+		writeData(w, counts)
+		return
+	}
+
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	filtered := make(map[string]int, len(counts))
+	for key, count := range counts {
+		group, resource, ok := splitGroupResourceKey(key)
+		if !ok {
+			// Malformed cache key — skip rather than expose to the user.
+			h.Logger.Warn("CRD count key malformed; skipping", "key", key)
+			continue
+		}
+		allowed, err := h.AccessChecker.CanAccessGroupResource(
+			r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
+			"list", group, resource, "",
+		)
+		if err != nil {
+			h.Logger.Warn("CRD count RBAC check failed; omitting", "key", key, "error", err)
+			continue
+		}
+		if allowed {
+			filtered[key] = count
+		}
+	}
+	writeData(w, filtered)
+}
+
+// splitGroupResourceKey parses a "group/resource" key as stored in the
+// CRDDiscovery count cache. Returns false on malformed input.
+func splitGroupResourceKey(key string) (group, resource string, ok bool) {
+	idx := strings.IndexByte(key, '/')
+	if idx <= 0 || idx == len(key)-1 {
+		return "", "", false
+	}
+	return key[:idx], key[idx+1:], true
+}
+
+// userCanAccessCRD performs a cluster-wide list SSAR for the CRD's GVR.
+// Admins and the no-AccessChecker path pass through. On denial it writes a 403
+// response and returns false; on success returns true; on SAR error returns
+// false with a 500 response (fail closed). P3-2 security audit 2026-05-22.
+func (h *GenericCRDHandler) userCanAccessCRD(w http.ResponseWriter, r *http.Request, user *auth.User, info *k8s.CRDInfo) bool {
+	if h.AccessChecker == nil || auth.IsAdmin(user) {
+		return true
+	}
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	allowed, err := h.AccessChecker.CanAccessGroupResource(
+		r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups,
+		"list", info.Group, info.Resource, "",
+	)
+	if err != nil {
+		h.Logger.Error("CRD RBAC check failed", "group", info.Group, "resource", info.Resource, "error", err)
+		writeError(w, http.StatusInternalServerError, "permission check failed", "")
+		return false
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "insufficient permissions", "")
+		return false
+	}
+	return true
 }
 
 // HandleListCRDInstances lists instances of a CRD. Supports namespace scoping,
@@ -227,6 +343,14 @@ func (h *GenericCRDHandler) HandleCreateCRDInstance(w http.ResponseWriter, r *ht
 }
 
 // HandleUpdateCRDInstance updates an existing CRD instance.
+//
+// P3-4 (security audit 2026-05-22): body metadata.name and metadata.namespace
+// MUST match the URL path. A mismatch is rejected with 400 rather than silently
+// updating a different object — the audit log only carries the URL name, so
+// silently honoring the body would let an attacker rename "foo" while logging
+// edits to "bar". Audit records the actually-returned object's name + namespace
+// so a successful update is anchored to what the server saw, not what the URL
+// said.
 func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -252,6 +376,12 @@ func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// P3-4: reject body/URL name + namespace mismatches before any k8s call.
+	if msg, detail, ok := validateCRDUpdateIdentity(name, ns, info.Scope, obj.GetName(), obj.GetNamespace()); !ok {
+		writeError(w, http.StatusBadRequest, msg, detail)
+		return
+	}
+
 	dynClient, err := h.impersonatingDynamic(r, user)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create dynamic client", err.Error())
@@ -270,7 +400,9 @@ func (h *GenericCRDHandler) HandleUpdateCRDInstance(w http.ResponseWriter, r *ht
 		return
 	}
 
-	h.auditWrite(r, user, audit.ActionUpdate, gvr.Resource, ns, name, audit.ResultSuccess)
+	// P3-4: audit the returned object's actual name + namespace so forensics
+	// trace the server-acknowledged identity, not the URL-supplied one.
+	h.auditWrite(r, user, audit.ActionUpdate, gvr.Resource, updated.GetNamespace(), updated.GetName(), audit.ResultSuccess)
 	writeData(w, updated)
 }
 
@@ -404,6 +536,28 @@ func (h *GenericCRDHandler) resolveGVR(w http.ResponseWriter, r *http.Request) (
 func (h *GenericCRDHandler) impersonatingDynamic(r *http.Request, user *auth.User) (dynamic.Interface, error) {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	return h.ClusterRouter.DynamicClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
+}
+
+// validateCRDUpdateIdentity verifies that body metadata.name / metadata.namespace
+// either match the URL params or are empty. Empty body fields are allowed
+// (k8s tolerates omitting them on UPDATE since they're redundant with the URL),
+// but explicit mismatches are rejected. P3-4 security audit 2026-05-22.
+//
+// Returns (errorMessage, detail, ok). ok==true means identity is consistent.
+// scope is "Namespaced" or "Cluster"; for cluster-scoped resources the
+// namespace check is skipped (urlNS is expected to be "").
+func validateCRDUpdateIdentity(urlName, urlNS, scope, bodyName, bodyNS string) (string, string, bool) {
+	if bodyName != "" && bodyName != urlName {
+		return "body metadata.name does not match URL name",
+			"URL name=" + urlName + " body name=" + bodyName,
+			false
+	}
+	if scope == "Namespaced" && urlNS != "" && bodyNS != "" && bodyNS != urlNS {
+		return "body metadata.namespace does not match URL namespace",
+			"URL namespace=" + urlNS + " body namespace=" + bodyNS,
+			false
+	}
+	return "", "", true
 }
 
 // auditWrite logs an audit entry for a CRD write operation.

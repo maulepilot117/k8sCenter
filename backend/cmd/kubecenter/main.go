@@ -464,6 +464,7 @@ func main() {
 		crdHandler = &resources.GenericCRDHandler{
 			Discovery:     crdDiscovery,
 			ClusterRouter: clusterRouter,
+			AccessChecker: accessChecker, // P3-2: per-user RBAC filter for inventory + counts
 			AuditLogger:   auditLogger,
 			Logger:        logger,
 		}
