@@ -467,10 +467,28 @@ var cgnatNet = &net.IPNet{
 	Mask: net.CIDRMask(10, 32),
 }
 
-// ValidateRemoteURL checks that a remote cluster URL does not resolve to
-// private/loopback/CGNAT/link-local/metadata IP addresses. This prevents
-// SSRF attacks. Called both at registration time and at connection time
-// (DNS rebinding defense).
+// validateURLLookupTimeout caps the DNS resolver wait when callers
+// don't supply a deadline. 5s is well below the 30s safeDialerTimeout
+// downstream and well above the typical kube-dns response. Phase 4
+// review (reliability R-1) — net.LookupHost without a deadline can
+// stall the calling goroutine for up to the OS resolver timeout
+// (~90s on default glibc), stacking goroutines in the cluster prober.
+const validateURLLookupTimeout = 5 * time.Second
+
+// ValidateRemoteURL is the no-context shim retained for callers that
+// can't easily plumb a context. Prefer ValidateRemoteURLContext.
+// Internally creates a 5-second deadline so a slow / broken resolver
+// can't stall the caller for 90s.
+func ValidateRemoteURL(apiServerURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), validateURLLookupTimeout)
+	defer cancel()
+	return ValidateRemoteURLContext(ctx, apiServerURL)
+}
+
+// ValidateRemoteURLContext checks that a remote cluster URL does not
+// resolve to private/loopback/CGNAT/link-local/metadata IP addresses.
+// This prevents SSRF attacks. Called both at registration time and at
+// connection time (DNS rebinding defense).
 //
 // Phase 4 of the 2026-05-22 security audit (P2-6) — fails closed on
 // DNS resolution errors. The previous implementation allowed the
@@ -482,7 +500,11 @@ var cgnatNet = &net.IPNet{
 // the IP-based block was supposed to refuse. Fail-closed is the safer
 // posture: operators with broken DNS see an unambiguous error instead
 // of an SSRF-shaped silent success.
-func ValidateRemoteURL(apiServerURL string) error {
+//
+// Phase 4 review (reliability R-1) — the ctx parameter caps the
+// resolver wait. Callers without a context should use ValidateRemoteURL
+// (which applies a 5s deadline internally).
+func ValidateRemoteURLContext(ctx context.Context, apiServerURL string) error {
 	u, err := url.Parse(apiServerURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -501,7 +523,7 @@ func ValidateRemoteURL(apiServerURL string) error {
 		return checkIPNotPrivate(ip)
 	}
 
-	ips, err := net.LookupHost(host)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return fmt.Errorf("DNS resolution failed for %s: %w", host, err)
 	}
@@ -509,8 +531,8 @@ func ValidateRemoteURL(apiServerURL string) error {
 		return fmt.Errorf("DNS resolution returned no IPs for %s", host)
 	}
 
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
+	for _, ipAddr := range ips {
+		ip := ipAddr.IP
 		if ip == nil {
 			continue
 		}
