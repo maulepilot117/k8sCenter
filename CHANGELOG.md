@@ -117,6 +117,49 @@ credentials). The audit report is `plans/security-audit-2026-05-22.md`.
   can construct the client. The doc comment is explicit that
   production callers must keep using the safe-by-default constructor.
 
+### Applied during Phase 4 code review (one round of `/ce-code-review`)
+
+The review surfaced several issues that were fixed inline before merge:
+
+- **Split SafeDialContext / StrictDialContext** (correctness C1,
+  testing TG-1, maintainability M-2). The original blanket RFC1918
+  block would have silently broken every operator running
+  `monitoring.deploy=true` because in-cluster Service ClusterIPs are
+  RFC1918. SafeDialContext (used by the monitoring clients) now
+  allows RFC1918 while still blocking loopback / link-local-metadata /
+  CGNAT / unspecified. StrictDialContext (used by cluster_router for
+  remote API server URLs) keeps the full block-list including RFC1918.
+- **`monitoring_test.go` migrated to NewPrometheusClientWithTransport**
+  (testing TG-1, maintainability M-2). I missed two call sites when
+  adding the test seam in commit a0a4a9e.
+- **Insecure-exposure ack string bypass** (adversarial, reliability
+  R-5). `--set-string security.insecureExposureAcknowledged="false"`
+  previously bypassed the guard because Helm's `not` evaluates non-
+  empty strings as truthy. Now coerces through `toString | eq "true"`.
+- **`ingress.tls: [{}]` empty-map bypass** (adversarial, reliability
+  R-5). A single empty-map entry passed `not (empty)` and rendered
+  an Ingress with `secretName: ""`. Now requires at least one entry
+  with a non-empty secretName.
+- **NetworkPolicy podSelector cross-namespace breakage** (correctness
+  C3, reliability R-3, adversarial 4). Bare podSelector matches only
+  same-namespace pods. Added `namespaceSelector: {}` to Postgres,
+  Prometheus, and Grafana egress rules so the typical
+  Prometheus-in-`monitoring`-namespace layout works.
+- **External Postgres silently blocked** (reliability R-3). Operators
+  using `externalDatabase.host` without populating
+  `networkPolicy.egress.extraAllowedCIDRs` lost DB connectivity. Added
+  a port-5432 ipBlock fallback with the universal link-local except.
+- **`networkPolicy.egress.postgresPodLabels` knob** (adversarial 7).
+  Defaults to bitnami convention; operators on CrunchyData / CNPG /
+  Zalando override the label map.
+- **DNS values comment expanded** (reliability R-2, adversarial 5).
+  Calls out Talos / RKE2 / OpenShift label divergences explicitly.
+- **`ValidateRemoteURL` context+timeout** (reliability R-1). Previous
+  `net.LookupHost` had no deadline and could stall goroutines for
+  ~90s. New `ValidateRemoteURLContext` propagates caller context;
+  the no-arg shim applies a 5s deadline so existing call sites get
+  fail-fast behavior without a refactor.
+
 ### Known follow-ups (Phase 4 deferred — single review round)
 
 This phase follows the Phase 3 cadence: one round of `/ce-code-review`
@@ -124,35 +167,60 @@ plus this documented follow-up list rather than chasing every regression
 through additional cycles. The deferred items below are tracked here
 for the next audit:
 
-- **SafeDialContext IPv6 dual-stack pinning.** Current implementation
-  pins to `ips[0]` — fine for single-stack hosts, but for dual-stack
-  resolvers returning both an IPv4 and IPv6 candidate, the pin
-  forecloses on the dialer's happy-eyeballs preference. Acceptable
-  trade-off (every candidate is already validated to be non-private)
-  but worth revisiting if dual-stack-only environments report
-  connectivity regressions.
-- **NetworkPolicy egress: subchart Postgres labelSelector assumes
-  bitnami/CrunchyData conventions.** Operators with custom Postgres
-  deployments may need to add `extraAllowedCIDRs` even for in-cluster
-  Postgres. Could be tightened by exposing
-  `networkPolicy.egress.postgresPodLabels` similar to the dns pod
-  label knob.
+- **Loki HTTP client missed SafeHTTPTransport** (reliability R-4).
+  `internal/loki/client.go` still uses bare `&http.Transport{}` while
+  every other monitoring client was migrated. Same DNS-rebinding gap
+  applies post-registration. Low-effort follow-up.
+- **SafeDialContext IPv6 dual-stack pinning** (correctness C2).
+  Current implementation pins to `ips[0]` — fine for single-stack
+  hosts but forecloses on happy-eyeballs preference for dual-stack
+  resolvers. Acceptable trade-off (every candidate is validated to
+  be non-blocked) but iterating the validated list would preserve
+  both protections and Happy Eyeballs.
+- **NAT64-wrapped metadata IPs not blocked** (adversarial 3).
+  `64:ff9b::169.254.169.254` evades `IsLinkLocalUnicast()`. Narrow
+  attack surface (IPv6-only/NAT64 AWS deployments) but worth a
+  custom-CIDR check in the next pass. NetworkPolicy `except` block
+  also only lists IPv4 `169.254.0.0/16`.
+- **`validateSettingsURL` wrapper can be inlined** (maintainability
+  M-1). After delegating to `k8s.ValidateRemoteURL`, the wrapper is
+  three lines of trivial dispatch and the string-sentinel return type
+  is inconsistent with the OIDC/LDAP handlers in the same file.
+- **`validateSettingsURL` admin-UI .svc DNS rejection** (correctness
+  C4). Operators trying to set `http://prometheus.monitoring:9090`
+  via the UI get an opaque "URL resolves to private address" error.
+  Workaround: configure via Helm values instead. UI hint or per-URL
+  trust knob could improve the UX.
+- **DNS-rebinding integration tests** (testing TG-2/TG-3/TG-4, RR-1).
+  Core security claim — hostname resolves to private IP at dial time —
+  is not covered by direct tests. Requires injecting a fake resolver
+  (package-level `lookupHost` var or `SafeDialer` struct with resolver
+  field). Literal-IP, DNS-failure, and IP-pin TOCTOU branches are
+  also untested.
+- **Helm `_validate.tpl` no negative-case CI coverage** (testing TG-5).
+  Three new fail() branches with no automated tests asserting they
+  fire. Phase 4 verified by manual matrix; future CI should run a
+  `helm template` per fail condition.
+- **`safeDialerTimeout` / `safeDialerKeepAlive` unexported** (M-3).
+  Three sibling 30s hardcoded values in the monitoring subsystem
+  cannot reference the dialer constants. Either export them or add
+  a comment cross-reference.
+- **NetworkPolicy ipBlock `except` block duplicated 6 times** (M-4).
+  Helm doesn't have a clean partial-template extraction for the
+  except stanza alone. Mitigated by sharing the `$blockedRanges` var
+  but the rendering loop repeats. Worth a comment flagging the
+  parallel-edit requirement.
 - **Cookie Secure flag still gated on global Dev flag, not per-request
   loopback.** `Secure: !s.Config.Dev` means an admin who bypasses the
   chart guard with `security.insecureExposureAcknowledged=true` AND
   runs dev mode will ship non-Secure cookies. Acceptable given the
-  explicit acknowledgement, but a future hardening could tie the
-  Secure flag to the request's TLS state rather than the global Dev
-  config.
-- **Monitoring URL validation at boot-time helm/env path.** The
-  config-override path (`KUBECENTER_MONITORING_PROMETHEUSURL` set via
-  Helm) is not subjected to SafeDialContext at boot — only at first
-  dial. Operators set this consciously at deploy time and the dial-
-  time check still applies, but a boot-time fail-fast would surface
+  explicit acknowledgement.
+- **Monitoring URL validation at boot-time helm/env path.** Operator-
+  set URLs via Helm bypass `validateSettingsURL`. The dial-time check
+  still applies but boot-time fail-fast would surface
   misconfiguration earlier.
 - **`internal/monitoring/discovery.go:263` pre-existing unusedparams
-  diagnostic.** Not introduced by Phase 4; flag for a future cleanup
-  PR.
+  diagnostic.** Not introduced by Phase 4.
 
 ---
 
