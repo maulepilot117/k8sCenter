@@ -148,7 +148,7 @@ func TestGoldenSignalsForService_UnsupportedMesh(t *testing.T) {
 // handler can emit 400. We build a Prometheus client against an unreachable
 // address — Render fires before Query would ever touch the network.
 func TestGoldenSignalsForService_RenderFailureSurfacesError(t *testing.T) {
-	pc, err := monitoring.NewPrometheusClient("http://127.0.0.1:1")
+	pc, err := monitoring.NewPrometheusClientWithTransport("http://127.0.0.1:1", http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestGoldenSignalsForService_HappyPath(t *testing.T) {
 		{"histogram_quantile(0.99", 99.0}, // p99
 	})
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestGoldenSignalsForService_PartialFailure(t *testing.T) {
 			`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%g"]}]}}`, value)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestGoldenSignalsForService_AllSucceedHasNoMissingQueries(t *testing.T) {
 		fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"42"]}]}}`)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestGoldenSignalsForService_AllQueriesFailReportsUnavailable(t *testing.T) 
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestHandler_GoldenSignals_RenderFailureSurfacesAs400(t *testing.T) {
 	// the render path is the one that fails.
 	srv := newFakePromServer(t, []promStub{{"istio_requests_total", 1}})
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}

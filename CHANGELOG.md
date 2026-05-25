@@ -12,6 +12,218 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 4 — Network / SSRF / TLS hardening (2026-05 audit)
+
+Phase 4 closes audit findings P2-6 (SSRF DNS rebinding window on
+remote-cluster and monitoring URLs), P2-7 (backend NetworkPolicy
+egress allowed all destinations on sensitive ports), P2-8 (chart
+permitted plaintext exposure of authenticated app traffic), and P3-8
+(dev PostgreSQL compose service bound to LAN with weak fixed
+credentials). The audit report is `plans/security-audit-2026-05-22.md`.
+
+### Breaking changes (operator action required)
+
+- **TLS-by-default chart guard** (audit P2-8). The Helm chart now
+  refuses to render any of three plaintext-exposed configurations
+  unless the new top-level `security.insecureExposureAcknowledged`
+  value is explicitly set to `true`:
+  1. `ingress.enabled=true` with empty `ingress.tls`.
+  2. `service.type=LoadBalancer` or `service.type=NodePort`.
+  3. `backend.config.dev=true` combined with any externally-reachable
+     service mode (LoadBalancer / NodePort / ingress-without-TLS).
+  The acknowledgement is intended for fully internal trust-domain
+  deployments where TLS termination happens upstream (managed LB with
+  cert, service-mesh gateway) and the network path stays inside a
+  trusted boundary. Default is `false` (safest posture). The bundled
+  `values-homelab.yaml.example` opts in explicitly with a comment
+  documenting the LAN-only trust boundary.
+
+- **SSRF DNS resolution fails closed** (audit P2-6 part 1).
+  `k8s.ValidateRemoteURL` previously allowed a connection through when
+  DNS resolution failed; the rationale was that the k8s client would
+  produce a more specific error. That left a window where transient
+  NXDOMAIN, poisoned records, or rebinding flips between validation and
+  dial could deliver requests to private endpoints the IP-block was
+  supposed to refuse. Operators with broken DNS will now see an
+  unambiguous "DNS resolution failed" error at remote-cluster
+  registration / connection time and at admin-UI settings updates,
+  rather than an SSRF-shaped silent success.
+
+- **Dev PostgreSQL compose loopback bind** (audit P3-8). The
+  developer compose file's port mapping changed from `5432:5432` (LAN
+  reachable) to `127.0.0.1:5432:5432` (loopback only). Credentials are
+  now sourced from `POSTGRES_PASSWORD` / `POSTGRES_USER` /
+  `POSTGRES_DB` environment variables (or `.env` file) with the
+  previous weak defaults preserved as fall-throughs for `make dev-db`.
+  Operators whose developer DB was being accessed from other LAN hosts
+  must now configure that connection through SSH tunnels or change the
+  bind explicitly. Production and staging Postgres deployments are
+  unaffected — they use the Helm chart, not this compose file.
+
+### Non-breaking changes
+
+- **SSRF-safe DialContext on long-lived HTTP transports** (audit P2-6
+  part 2). New `k8s.SafeHTTPTransport` and `k8s.SafeDialContext`
+  wired into:
+  - Remote-cluster `rest.Config.Dial` (cluster_router) — every k8s
+    API call through the impersonating clients re-validates the API
+    server IP, defending against DNS rebinding and the cluster URL
+    flipping to an internal address mid-session.
+  - Grafana reverse proxy transport — each Grafana 30x redirect
+    re-runs the IP check, so a misbehaving Grafana returning
+    `Location: http://169.254.169.254/` can't pivot the proxy.
+  - Grafana API client and Prometheus API client transports — same
+    protection for dashboard provisioning and PromQL queries.
+
+  Behaviour: each TCP dial re-resolves the host, pins to the
+  validated IP before dialing (a racy resolver can't substitute a
+  private IP), and rejects any candidate in the loopback / RFC1918 /
+  link-local-metadata / CGNAT / unspecified ranges.
+
+- **Hostname-resolving validation on admin-UI URL inputs** (audit
+  P2-6 part 1). `validateSettingsURL` previously only blocked literal
+  IPs. Settings paths (monitoring Prometheus / Grafana URLs, OIDC
+  issuer test, LDAP server test) now resolve the hostname and apply
+  the full SSRF block-list. Admins who need to point monitoring at
+  an in-cluster service should configure it via Helm values rather
+  than the UI.
+
+- **NetworkPolicy backend egress destinations** (audit P2-7). The
+  previous port-only egress rules let the backend reach any host on
+  the LAN, public internet, or in-cluster on the allowed ports.
+  Tightened to structured `to:` selectors with universal SSRF block:
+  - DNS: `namespaceSelector kube-system + podSelector k8s-app=kube-dns`
+    (tunable via `networkPolicy.egress.dnsNamespace/dnsPodLabel`).
+  - Kubernetes API: `ipBlock` allowlist via
+    `networkPolicy.egress.kubernetesApiCIDRs`, falling back to
+    `0.0.0.0/0 minus link-local/metadata` when empty.
+  - In-cluster Postgres / Prometheus / Grafana: `podSelector` by
+    standard `app.kubernetes.io/name` labels.
+  - External monitoring: `networkPolicy.egress.monitoringCIDRs` (opt-in).
+  - LDAP: `networkPolicy.egress.ldapCIDRs` (opt-in).
+  - Extra allowed: `networkPolicy.egress.extraAllowedCIDRs`.
+  - Extra blocked: `networkPolicy.egress.extraBlockedCIDRs` (appended
+    to the universal link-local + metadata block on every IP rule).
+
+  Default values preserve current reachability for homelab / single-
+  cluster deployments; operators with out-of-cluster dependencies opt
+  into the new knobs.
+
+- **Test seam: `NewPrometheusClientWithTransport`**. Production code
+  continues to use `NewPrometheusClient`, which wires
+  `SafeHTTPTransport` by default. The new variant accepts a caller-
+  supplied `http.RoundTripper` so tests using `httptest.Server` URLs
+  on loopback (which the safe-by-default transport correctly refuses)
+  can construct the client. The doc comment is explicit that
+  production callers must keep using the safe-by-default constructor.
+
+### Applied during Phase 4 code review (one round of `/ce-code-review`)
+
+The review surfaced several issues that were fixed inline before merge:
+
+- **Split SafeDialContext / StrictDialContext** (correctness C1,
+  testing TG-1, maintainability M-2). The original blanket RFC1918
+  block would have silently broken every operator running
+  `monitoring.deploy=true` because in-cluster Service ClusterIPs are
+  RFC1918. SafeDialContext (used by the monitoring clients) now
+  allows RFC1918 while still blocking loopback / link-local-metadata /
+  CGNAT / unspecified. StrictDialContext (used by cluster_router for
+  remote API server URLs) keeps the full block-list including RFC1918.
+- **`monitoring_test.go` migrated to NewPrometheusClientWithTransport**
+  (testing TG-1, maintainability M-2). I missed two call sites when
+  adding the test seam in commit a0a4a9e.
+- **Insecure-exposure ack string bypass** (adversarial, reliability
+  R-5). `--set-string security.insecureExposureAcknowledged="false"`
+  previously bypassed the guard because Helm's `not` evaluates non-
+  empty strings as truthy. Now coerces through `toString | eq "true"`.
+- **`ingress.tls: [{}]` empty-map bypass** (adversarial, reliability
+  R-5). A single empty-map entry passed `not (empty)` and rendered
+  an Ingress with `secretName: ""`. Now requires at least one entry
+  with a non-empty secretName.
+- **NetworkPolicy podSelector cross-namespace breakage** (correctness
+  C3, reliability R-3, adversarial 4). Bare podSelector matches only
+  same-namespace pods. Added `namespaceSelector: {}` to Postgres,
+  Prometheus, and Grafana egress rules so the typical
+  Prometheus-in-`monitoring`-namespace layout works.
+- **External Postgres silently blocked** (reliability R-3). Operators
+  using `externalDatabase.host` without populating
+  `networkPolicy.egress.extraAllowedCIDRs` lost DB connectivity. Added
+  a port-5432 ipBlock fallback with the universal link-local except.
+- **`networkPolicy.egress.postgresPodLabels` knob** (adversarial 7).
+  Defaults to bitnami convention; operators on CrunchyData / CNPG /
+  Zalando override the label map.
+- **DNS values comment expanded** (reliability R-2, adversarial 5).
+  Calls out Talos / RKE2 / OpenShift label divergences explicitly.
+- **`ValidateRemoteURL` context+timeout** (reliability R-1). Previous
+  `net.LookupHost` had no deadline and could stall goroutines for
+  ~90s. New `ValidateRemoteURLContext` propagates caller context;
+  the no-arg shim applies a 5s deadline so existing call sites get
+  fail-fast behavior without a refactor.
+
+### Known follow-ups (Phase 4 deferred — single review round)
+
+This phase follows the Phase 3 cadence: one round of `/ce-code-review`
+plus this documented follow-up list rather than chasing every regression
+through additional cycles. The deferred items below are tracked here
+for the next audit:
+
+- **Loki HTTP client missed SafeHTTPTransport** (reliability R-4).
+  `internal/loki/client.go` still uses bare `&http.Transport{}` while
+  every other monitoring client was migrated. Same DNS-rebinding gap
+  applies post-registration. Low-effort follow-up.
+- **SafeDialContext IPv6 dual-stack pinning** (correctness C2).
+  Current implementation pins to `ips[0]` — fine for single-stack
+  hosts but forecloses on happy-eyeballs preference for dual-stack
+  resolvers. Acceptable trade-off (every candidate is validated to
+  be non-blocked) but iterating the validated list would preserve
+  both protections and Happy Eyeballs.
+- **NAT64-wrapped metadata IPs not blocked** (adversarial 3).
+  `64:ff9b::169.254.169.254` evades `IsLinkLocalUnicast()`. Narrow
+  attack surface (IPv6-only/NAT64 AWS deployments) but worth a
+  custom-CIDR check in the next pass. NetworkPolicy `except` block
+  also only lists IPv4 `169.254.0.0/16`.
+- **`validateSettingsURL` wrapper can be inlined** (maintainability
+  M-1). After delegating to `k8s.ValidateRemoteURL`, the wrapper is
+  three lines of trivial dispatch and the string-sentinel return type
+  is inconsistent with the OIDC/LDAP handlers in the same file.
+- **`validateSettingsURL` admin-UI .svc DNS rejection** (correctness
+  C4). Operators trying to set `http://prometheus.monitoring:9090`
+  via the UI get an opaque "URL resolves to private address" error.
+  Workaround: configure via Helm values instead. UI hint or per-URL
+  trust knob could improve the UX.
+- **DNS-rebinding integration tests** (testing TG-2/TG-3/TG-4, RR-1).
+  Core security claim — hostname resolves to private IP at dial time —
+  is not covered by direct tests. Requires injecting a fake resolver
+  (package-level `lookupHost` var or `SafeDialer` struct with resolver
+  field). Literal-IP, DNS-failure, and IP-pin TOCTOU branches are
+  also untested.
+- **Helm `_validate.tpl` no negative-case CI coverage** (testing TG-5).
+  Three new fail() branches with no automated tests asserting they
+  fire. Phase 4 verified by manual matrix; future CI should run a
+  `helm template` per fail condition.
+- **`safeDialerTimeout` / `safeDialerKeepAlive` unexported** (M-3).
+  Three sibling 30s hardcoded values in the monitoring subsystem
+  cannot reference the dialer constants. Either export them or add
+  a comment cross-reference.
+- **NetworkPolicy ipBlock `except` block duplicated 6 times** (M-4).
+  Helm doesn't have a clean partial-template extraction for the
+  except stanza alone. Mitigated by sharing the `$blockedRanges` var
+  but the rendering loop repeats. Worth a comment flagging the
+  parallel-edit requirement.
+- **Cookie Secure flag still gated on global Dev flag, not per-request
+  loopback.** `Secure: !s.Config.Dev` means an admin who bypasses the
+  chart guard with `security.insecureExposureAcknowledged=true` AND
+  runs dev mode will ship non-Secure cookies. Acceptable given the
+  explicit acknowledgement.
+- **Monitoring URL validation at boot-time helm/env path.** Operator-
+  set URLs via Helm bypass `validateSettingsURL`. The dial-time check
+  still applies but boot-time fail-fast would surface
+  misconfiguration earlier.
+- **`internal/monitoring/discovery.go:263` pre-existing unusedparams
+  diagnostic.** Not introduced by Phase 4.
+
+---
+
 ## Phase 3 — Auth primitives hardening (2026-05 audit)
 
 Phase 3 closes audit findings P2-1 (trusted-proxy CIDR boundary +

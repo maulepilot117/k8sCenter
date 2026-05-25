@@ -410,6 +410,17 @@ func (cr *ClusterRouter) buildRemoteConfig(ctx context.Context, clusterID, usern
 		},
 		QPS:   50,
 		Burst: 100,
+		// P2-6 part 2: defend against DNS rebinding and unintended
+		// server-controlled redirects by re-resolving the cluster host
+		// on every dial and rejecting any candidate IP in the strict
+		// block-list (including RFC1918 — a remote cluster API server
+		// that resolves to a private address either was never legitimate
+		// or has been rebound mid-session, and either case warrants
+		// fail-closed). rest.Config.Dial is invoked by client-go's
+		// underlying http transport for each new TCP connection, so
+		// this protects every API call routed through the returned
+		// config — not just the first dial after validation.
+		Dial: StrictDialContext,
 	}
 
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, cr.logger); err != nil {
@@ -456,10 +467,44 @@ var cgnatNet = &net.IPNet{
 	Mask: net.CIDRMask(10, 32),
 }
 
-// ValidateRemoteURL checks that a remote cluster URL does not resolve to
-// private/loopback/CGNAT IP addresses. This prevents SSRF attacks.
-// Called both at registration time and at connection time (DNS rebinding defense).
+// validateURLLookupTimeout caps the DNS resolver wait when callers
+// don't supply a deadline. 5s is well below the 30s safeDialerTimeout
+// downstream and well above the typical kube-dns response. Phase 4
+// review (reliability R-1) — net.LookupHost without a deadline can
+// stall the calling goroutine for up to the OS resolver timeout
+// (~90s on default glibc), stacking goroutines in the cluster prober.
+const validateURLLookupTimeout = 5 * time.Second
+
+// ValidateRemoteURL is the no-context shim retained for callers that
+// can't easily plumb a context. Prefer ValidateRemoteURLContext.
+// Internally creates a 5-second deadline so a slow / broken resolver
+// can't stall the caller for 90s.
 func ValidateRemoteURL(apiServerURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), validateURLLookupTimeout)
+	defer cancel()
+	return ValidateRemoteURLContext(ctx, apiServerURL)
+}
+
+// ValidateRemoteURLContext checks that a remote cluster URL does not
+// resolve to private/loopback/CGNAT/link-local/metadata IP addresses.
+// This prevents SSRF attacks. Called both at registration time and at
+// connection time (DNS rebinding defense).
+//
+// Phase 4 of the 2026-05-22 security audit (P2-6) — fails closed on
+// DNS resolution errors. The previous implementation allowed the
+// connection through on lookup failure, on the theory that the
+// underlying client would produce a more specific error. That left a
+// window where a transient DNS server response (NXDOMAIN intermittently
+// returned for a poisoned response, or a rebinding flip between
+// validation and dial) could let a request reach a private endpoint
+// the IP-based block was supposed to refuse. Fail-closed is the safer
+// posture: operators with broken DNS see an unambiguous error instead
+// of an SSRF-shaped silent success.
+//
+// Phase 4 review (reliability R-1) — the ctx parameter caps the
+// resolver wait. Callers without a context should use ValidateRemoteURL
+// (which applies a 5s deadline internally).
+func ValidateRemoteURLContext(ctx context.Context, apiServerURL string) error {
 	u, err := url.Parse(apiServerURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -470,26 +515,87 @@ func ValidateRemoteURL(apiServerURL string) error {
 		return fmt.Errorf("empty hostname")
 	}
 
-	// Resolve hostname to IPs
-	ips, err := net.LookupHost(host)
-	if err != nil {
-		// If DNS resolution fails, allow the connection — the k8s client will
-		// produce a more specific error. We only block known-private IPs.
-		return nil
+	// If the host is already a literal IP, validate it directly without
+	// going through DNS. Skipping resolution avoids spurious DNS-error
+	// failures in environments without a resolver (in-cluster sidecar
+	// configurations using IP-only endpoints).
+	if ip := net.ParseIP(host); ip != nil {
+		return checkIPNotPrivate(ip)
 	}
 
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return fmt.Errorf("DNS resolution failed for %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("DNS resolution returned no IPs for %s", host)
+	}
+
+	for _, ipAddr := range ips {
+		ip := ipAddr.IP
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("URL resolves to private/loopback address %s", ipStr)
-		}
-		if cgnatNet.Contains(ip) {
-			return fmt.Errorf("URL resolves to CGNAT address %s", ipStr)
+		if err := checkIPNotPrivate(ip); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// checkIPNotPrivate returns an error when ip is in any range we treat
+// as off-limits for outbound requests built from user-supplied URLs
+// targeting external endpoints: loopback, RFC1918 private, link-local
+// (which includes 169.254.169.254 cloud metadata), CGNAT, and the
+// unspecified 0.0.0.0/:: addresses. Used by ValidateRemoteURL +
+// StrictDialContext for remote cluster URLs and other admin-supplied
+// inputs that must not resolve to anything cluster-internal.
+func checkIPNotPrivate(ip net.IP) error {
+	if ip.IsLoopback() {
+		return fmt.Errorf("URL resolves to loopback address %s", ip)
+	}
+	if ip.IsPrivate() {
+		return fmt.Errorf("URL resolves to private address %s", ip)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("URL resolves to link-local/metadata address %s", ip)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("URL resolves to unspecified address %s", ip)
+	}
+	if cgnatNet.Contains(ip) {
+		return fmt.Errorf("URL resolves to CGNAT address %s", ip)
+	}
+	return nil
+}
+
+// checkIPAlwaysBad returns an error for IP ranges that are off-limits
+// even from inside the cluster: loopback (DNS-rebinding to localhost),
+// link-local (cloud metadata IAM theft via 169.254.169.254), CGNAT
+// (carrier infrastructure), and unspecified. RFC1918 is INTENTIONALLY
+// allowed — every in-cluster Service ClusterIP falls inside RFC1918,
+// and SafeDialContext is used by the in-cluster monitoring clients
+// where blocking RFC1918 would silently break the bundled monitoring
+// subchart.
+//
+// The audit's "block private/loopback" recommendation in P2-6 was
+// framed for admin-supplied URLs targeting external endpoints. For
+// those, use checkIPNotPrivate via StrictDialContext. For URLs that
+// may legitimately resolve to a cluster-internal ClusterIP, use this
+// looser check via SafeDialContext.
+func checkIPAlwaysBad(ip net.IP) error {
+	if ip.IsLoopback() {
+		return fmt.Errorf("URL resolves to loopback address %s", ip)
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return fmt.Errorf("URL resolves to link-local/metadata address %s", ip)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("URL resolves to unspecified address %s", ip)
+	}
+	if cgnatNet.Contains(ip) {
+		return fmt.Errorf("URL resolves to CGNAT address %s", ip)
+	}
 	return nil
 }

@@ -19,7 +19,7 @@ dev: dev-backend
 
 dev-db:
 	docker compose up -d
-	@echo "PostgreSQL: postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable"
+	@echo "PostgreSQL: postgresql://k8scenter:k8scenter@127.0.0.1:5432/k8scenter?sslmode=disable (loopback-only; override POSTGRES_PASSWORD via .env)"
 
 dev-db-stop:
 	docker compose down

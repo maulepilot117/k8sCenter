@@ -1,19 +1,33 @@
-# Local development PostgreSQL
+# Local development PostgreSQL — LOCAL DEVELOPMENT ONLY.
+#
+# The port is bound to 127.0.0.1 so the database is unreachable from the
+# LAN even when the host firewall is permissive. Phase 4 of the
+# 2026-05-22 security audit (P3-8) tightened this from the previous
+# host-wide bind, which exposed a fixed-credential developer DB to every
+# device on the operator's network.
+#
+# Password is sourced from the POSTGRES_PASSWORD environment variable
+# (drop a `.env` file next to this compose file, or export it in your
+# shell). The fall-through default keeps `make dev-db` working out of
+# the box; override it for anything that isn't a throwaway local DB.
+# Production / staging deployments use the Helm chart's PostgreSQL
+# settings, NOT this compose file.
+#
 # Usage: docker compose up -d
-# Connect: postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable
+# Connect (default creds): postgresql://k8scenter:k8scenter@127.0.0.1:5432/k8scenter?sslmode=disable
 services:
   postgres:
     image: postgres:17-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
-      POSTGRES_USER: k8scenter
-      POSTGRES_PASSWORD: k8scenter
-      POSTGRES_DB: k8scenter
+      POSTGRES_USER: ${POSTGRES_USER:-k8scenter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-k8scenter}
+      POSTGRES_DB: ${POSTGRES_DB:-k8scenter}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U k8scenter"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-k8scenter}"]
       interval: 5s
       timeout: 5s
       retries: 5

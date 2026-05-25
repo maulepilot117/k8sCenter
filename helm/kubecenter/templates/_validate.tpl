@@ -54,4 +54,61 @@ The parity test in backend/internal/config/known_leaked_helm_parity_test.go enfo
 {{- end -}}
 {{- end -}}
 
+{{- /* ── TLS-by-default exposure guard (P2-8) ──────────────────────────
+The previous chart let an operator expose the backend over plaintext
+HTTP by enabling `ingress.enabled` without `ingress.tls`, or by
+flipping `service.type` to LoadBalancer / NodePort. Either path leaks
+access tokens, refresh tokens, setup tokens, and API traffic in the
+clear. Dev mode (`backend.config.dev=true`) compounds the issue: it
+relaxes the cookie Secure flag, so an exposed dev deployment ships
+session cookies recoverable over the wire.
+
+The chart now refuses to render if any of those exposure modes are
+configured without an explicit acknowledgement via
+`security.insecureExposureAcknowledged=true`. Set the override only
+for fully internal trust-domain deployments where TLS termination
+happens upstream and the network path is private.
+*/}}
+{{- $sec := .Values.security | default dict }}
+{{- /* Phase 4 review (adversarial, reliability R-5): `not` evaluates non-
+empty strings as truthy, so `--set-string security.insecureExposureAcknowledged="false"`
+slipped past the previous boolean coercion. `toString` + `eq "true"`
+matches the dev-mode check below and forces a literal-true comparison. */}}
+{{- $ackInsecure := eq (toString ($sec.insecureExposureAcknowledged | default false)) "true" }}
+{{- $svcType := .Values.service.type | default "ClusterIP" }}
+{{- $ingressOn := .Values.ingress.enabled | default false }}
+{{- /* Phase 4 review (adversarial, reliability R-5): a single empty-map
+entry like `ingress.tls: [{}]` passes `not (empty .Values.ingress.tls)`
+and renders an Ingress with `secretName: ""`. Require at least one
+entry with a non-empty secretName. */}}
+{{- $ingressHasTLS := false }}
+{{- if $ingressOn }}
+{{- range .Values.ingress.tls }}
+{{- if .secretName }}
+{{- $ingressHasTLS = true }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $devMode := and .Values.backend (and .Values.backend.config (eq (toString .Values.backend.config.dev) "true")) }}
+
+{{- if and $ingressOn (not $ingressHasTLS) -}}
+{{- if not $ackInsecure -}}
+{{- fail "ingress.enabled=true but ingress.tls has no entry with a non-empty secretName — exposing the backend over plaintext HTTP leaks tokens. Configure ingress.tls with a TLS secret name, or set security.insecureExposureAcknowledged=true to accept the risk (only safe for internal-only deployments behind upstream TLS termination). Finding P2-8." -}}
+{{- end -}}
+{{- end -}}
+
+{{- if or (eq $svcType "LoadBalancer") (eq $svcType "NodePort") -}}
+{{- if not $ackInsecure -}}
+{{- fail (printf "service.type=%s exposes the backend on a raw network port without TLS termination — set service.type to ClusterIP and front the chart with an HTTPS ingress, or set security.insecureExposureAcknowledged=true to accept the risk. Finding P2-8." $svcType) -}}
+{{- end -}}
+{{- end -}}
+
+{{- if $devMode -}}
+{{- if or (eq $svcType "LoadBalancer") (eq $svcType "NodePort") (and $ingressOn (not $ingressHasTLS)) -}}
+{{- if not $ackInsecure -}}
+{{- fail "backend.config.dev=true combined with an externally-reachable service (LoadBalancer/NodePort, or ingress without TLS) — dev mode relaxes cookie Secure flags and rate limits. Use dev mode only with service.type=ClusterIP and no public ingress, or set security.insecureExposureAcknowledged=true to accept the risk. Finding P2-8." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}

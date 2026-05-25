@@ -8,6 +8,22 @@ fullnameOverride: ""
 imagePullSecrets: []
 # - name: ghcr-pull-secret
 
+# -- Security posture (P2-8 of the 2026-05-22 security audit)
+#
+# Set insecureExposureAcknowledged=true to allow plaintext-exposed
+# deployment configurations: service.type=LoadBalancer / NodePort,
+# ingress.enabled=true without ingress.tls, or backend.config.dev=true
+# combined with any externally-reachable service. The chart refuses to
+# render any of those modes by default — exposing the backend without
+# TLS leaks access tokens, refresh tokens, setup tokens, and all API
+# traffic in the clear.
+#
+# Acknowledge the risk only when TLS termination happens upstream
+# (managed LB with cert, service mesh gateway, etc.) and the network
+# path stays inside a trusted boundary.
+security:
+  insecureExposureAcknowledged: false
+
 # -- Backend (Go API server)
 backend:
   image:
@@ -192,6 +208,63 @@ cors:
 networkPolicy:
   enabled: true
   ingressNamespace: "ingress-nginx"   # Namespace of the ingress controller (for backend ingress rule)
+  # Backend egress tuning (P2-7 of the 2026-05-22 security audit). The
+  # default rules restrict egress to kube-dns, in-cluster PostgreSQL +
+  # Prometheus + Grafana pods (by standard label conventions), and any
+  # IP route that's NOT link-local/metadata (169.254.0.0/16). Tune the
+  # knobs below when your cluster diverges from these defaults — for
+  # example, an out-of-cluster Postgres needs its CIDR in
+  # extraAllowedCIDRs, and a private monitoring stack needs its CIDR in
+  # monitoringCIDRs.
+  egress:
+    # kube-dns location. The defaults match upstream Kubernetes / kubeadm /
+    # GKE. Known overrides:
+    #   - Talos / some RKE2 builds: dnsPodLabel: "rke2-coredns" or "coredns"
+    #   - OpenShift: dnsNamespace: "openshift-dns", dnsPodLabel: "dns-default"
+    #     (and operators on OpenShift typically also need to relax the
+    #     namespaceSelector on the egress rule via a custom NetworkPolicy
+    #     since openshift-dns uses different labels than upstream).
+    # When the selector misses, DNS resolution breaks cluster-wide and
+    # liveness probes (which hit `:8080` directly) keep passing while
+    # every functional operation times out. Verify after install with
+    # `kubectl exec backend-pod -- nslookup kubernetes.default`.
+    dnsNamespace: "kube-system"
+    dnsPodLabel: "kube-dns"
+    # Allowlist of CIDRs that hold the Kubernetes API server endpoints.
+    # Typical values: the control-plane node CIDR (bare-metal), the
+    # service CIDR (most managed clusters route the apiserver via the
+    # default/kubernetes Service VIP), or a single VIP /32. When empty,
+    # falls back to 0.0.0.0/0 minus link-local/metadata.
+    kubernetesApiCIDRs: []
+    # - 10.96.0.1/32
+    # CIDRs that hold externally-deployed Prometheus / Grafana / similar.
+    # Leave empty when monitoring runs in-cluster (the default rules
+    # already cover the subchart pods via labelSelector).
+    monitoringCIDRs: []
+    # - 10.10.20.0/24
+    # CIDRs that hold LDAP / Active Directory servers. Only takes effect
+    # when auth.ldap is configured. When empty, falls back to 0.0.0.0/0
+    # minus link-local/metadata on ports 389 + 636.
+    ldapCIDRs: []
+    # - 192.168.10.10/32
+    # Extra CIDRs to allow on common HTTPS / PostgreSQL ports (80, 443,
+    # 5432). Use for out-of-cluster Postgres, internal mirrors, or other
+    # backend dependencies not covered above.
+    extraAllowedCIDRs: []
+    # - 10.20.30.0/24
+    # Pod labels matched by the egress rule for in-cluster PostgreSQL.
+    # Defaults to bitnami / standard chart convention. Override for
+    # CrunchyData (postgres-operator.crunchydata.com/cluster),
+    # CloudNativePG (cnpg.io/cluster), Zalando (application=spilo),
+    # or any custom Postgres operator. Combined AND with `namespaceSelector: {}`
+    # so any namespace matches if the label is present.
+    postgresPodLabels:
+      app.kubernetes.io/name: postgresql
+    # Additional ranges to block from every ipBlock egress rule (appended
+    # to the universal link-local/metadata blocklist). Use for internal
+    # management VLANs you never want the backend to reach.
+    extraBlockedCIDRs: []
+    # - 192.168.100.0/24
 
 # -- Subchart overrides (only when monitoring.deploy=true)
 monitoring-stack:

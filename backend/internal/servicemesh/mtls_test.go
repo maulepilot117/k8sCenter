@@ -536,7 +536,7 @@ func TestHandler_MTLSPosture_ClusterWideMetricOverride(t *testing.T) {
 		}`)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -611,7 +611,7 @@ func TestHandler_MTLSPosture_LinkerdOnlySkipsPromCrossCheck(t *testing.T) {
 		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestQueryIstioMTLSRatios_DropsNaNAndInfSamples(t *testing.T) {
 		}`)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}
@@ -766,7 +766,7 @@ func TestQueryIstioMTLSRatios_DropsEmptyNamespaceSample(t *testing.T) {
 		}`)
 	}))
 	defer srv.Close()
-	pc, err := monitoring.NewPrometheusClient(srv.URL)
+	pc, err := monitoring.NewPrometheusClientWithTransport(srv.URL, http.DefaultTransport)
 	if err != nil {
 		t.Fatalf("prom client: %v", err)
 	}

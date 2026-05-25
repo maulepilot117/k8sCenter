@@ -3,12 +3,15 @@ package monitoring
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
+
+	"github.com/kubecenter/kubecenter/internal/k8s"
 )
 
 // PrometheusClient wraps the Prometheus v1 API for KubeCenter queries.
@@ -16,9 +19,25 @@ type PrometheusClient struct {
 	api v1.API
 }
 
-// NewPrometheusClient creates a typed API client for the given Prometheus address.
+// NewPrometheusClient creates a typed API client for the given Prometheus
+// address. The underlying HTTP transport uses k8s.SafeHTTPTransport so
+// every TCP dial re-resolves the Prometheus host and blocks private/
+// loopback/link-local/metadata candidate IPs (P2-6 part 2, Phase 4
+// security audit 2026-05-22).
 func NewPrometheusClient(address string) (*PrometheusClient, error) {
-	client, err := api.NewClient(api.Config{Address: address})
+	return NewPrometheusClientWithTransport(address, k8s.SafeHTTPTransport())
+}
+
+// NewPrometheusClientWithTransport builds the same client as
+// NewPrometheusClient but with a caller-supplied http.RoundTripper. Use
+// in tests that talk to httptest.Server URLs on loopback (which the
+// safe-by-default transport rejects). Production code MUST use
+// NewPrometheusClient so the SSRF defense stays wired by default.
+func NewPrometheusClientWithTransport(address string, rt http.RoundTripper) (*PrometheusClient, error) {
+	client, err := api.NewClient(api.Config{
+		Address:      address,
+		RoundTripper: rt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating prometheus client: %w", err)
 	}

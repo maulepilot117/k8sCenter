@@ -1,7 +1,39 @@
 {{- include "kubecenter.validatePlaceholders" . }}
 {{- if .Values.networkPolicy.enabled }}
+{{- /*
+Phase 4 of the 2026-05-22 security audit (P2-7) tightened backend egress.
+The previous policy was port-only — anything in the cluster, in the LAN,
+or on the public internet that happened to listen on 443/5432/6443/9090
+was reachable. The current policy adds structured `to:` selectors for the
+known destinations (kube-dns, in-namespace PostgreSQL, in-cluster
+Prometheus/Grafana when the subchart is deployed) plus IP allowlists for
+the cluster's Kubernetes API and any externally-configured monitoring
+endpoints. Every IP-based egress rule carries `except` blocks for
+link-local (169.254.0.0/16) and metadata IPs so a compromised backend
+pod can't pivot to cloud instance-metadata services for IAM credential
+theft. Tunable via the `networkPolicy.egress.*` value tree.
+*/}}
+{{- $egress := .Values.networkPolicy.egress | default dict }}
+{{- $dnsNs := $egress.dnsNamespace | default "kube-system" }}
+{{- $dnsLabel := $egress.dnsPodLabel | default "kube-dns" }}
+{{- $apiCIDRs := $egress.kubernetesApiCIDRs | default (list) }}
+{{- $monitorCIDRs := $egress.monitoringCIDRs | default (list) }}
+{{- $ldapCIDRs := $egress.ldapCIDRs | default (list) }}
+{{- $extraCIDRs := $egress.extraAllowedCIDRs | default (list) }}
+{{- /*
+$blockedRanges is the universal SSRF blocklist appended as `except`
+entries to every `ipBlock` egress rule. Covers link-local (which
+includes the 169.254.169.254 cloud metadata endpoint), IPv6
+link-local, and IPv4-mapped-IPv6 link-local. Operators can extend via
+`networkPolicy.egress.extraBlockedCIDRs` (for example to also block
+internal management VLANs or known-sensitive RFC1918 ranges).
+*/}}
+{{- $blockedRanges := concat (list "169.254.0.0/16") ($egress.extraBlockedCIDRs | default (list)) }}
 ---
-# Backend NetworkPolicy: allow ingress from frontend/ingress, allow egress to k8s API + DNS
+# Backend NetworkPolicy: allow ingress from frontend/ingress, allow egress
+# only to structured destinations (kube-dns, in-cluster PostgreSQL +
+# observability, configured external CIDRs). Metadata/link-local ranges
+# are explicitly blocked from every IP egress rule.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -38,30 +70,179 @@ spec:
           protocol: TCP
     {{- end }}
   egress:
-    # Allow all TCP/UDP egress to required ports (DNS, k8s API, PostgreSQL, Prometheus, Grafana, Hubble Relay)
-    - ports:
+    # --- DNS — kube-dns (or equivalent) in $dnsNs only ---
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $dnsNs }}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ $dnsLabel }}
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
+    # --- Kubernetes API server ---
+    # When $apiCIDRs is configured (typical: cluster control-plane VIP or
+    # the API service CIDR), restrict to those CIDRs. Otherwise fall back
+    # to port-only (still blocking link-local/metadata via `except`).
+    {{- if $apiCIDRs }}
+    - to:
+        {{- range $apiCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    {{- else }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    {{- end }}
+    # --- In-cluster PostgreSQL ---
+    # Phase 4 review (correctness C3, reliability R-3, adversarial 7):
+    # bare `podSelector` without `namespaceSelector` matches only pods
+    # in the same namespace as the policy. The kube-prometheus-stack +
+    # subchart Postgres pattern (kubecenter in one namespace, Postgres
+    # in `database`/`postgres`/release-namespace) breaks silently. The
+    # rule now uses `namespaceSelector: {}` (any namespace) AND'd with
+    # the podSelector. When `networkPolicy.egress.postgresPodLabels`
+    # diverges from bitnami conventions (CrunchyData, CNPG, Zalando),
+    # operators override the label set.
+    # Plus a port-only fallback with the link-local except so externally-
+    # hosted Postgres reachable via `externalDatabase.host` is not
+    # silently cut off when the operator forgets to populate
+    # `extraAllowedCIDRs`.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              {{- ($egress.postgresPodLabels | default (dict "app.kubernetes.io/name" "postgresql")) | toYaml | nindent 14 }}
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        - port: 5432
+          protocol: TCP
+    # --- In-cluster Prometheus + Grafana ---
+    # `app.kubernetes.io/name` covers both the kube-prometheus-stack
+    # subchart and standalone Prometheus/Grafana installs that follow
+    # the standard label conventions. `namespaceSelector: {}` covers
+    # the common "Prometheus in `monitoring` namespace" deployment.
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 9090
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+      ports:
+        - port: 3000
+          protocol: TCP
+    {{- if $monitorCIDRs }}
+    # --- External monitoring endpoints (operator-configured) ---
+    # When Prometheus/Grafana live outside the cluster, list their VIPs
+    # here so the backend can reach them while still blocking link-local
+    # and metadata IPs.
+    - to:
+        {{- range $monitorCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+        {{- end }}
+      ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+        - port: 3000
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.auth.ldap }}
+    # --- LDAP / LDAPS (only when LDAP providers are configured) ---
+    {{- if $ldapCIDRs }}
+    - to:
+        {{- range $ldapCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+        {{- end }}
+      ports:
+        - port: 389
+          protocol: TCP
+        - port: 636
+          protocol: TCP
+    {{- else }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+      ports:
+        - port: 389
+          protocol: TCP
+        - port: 636
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    {{- if $extraCIDRs }}
+    # --- Extra operator-configured CIDRs (e.g. external Postgres,
+    # backup targets, internal mirrors). Still excludes metadata IPs. ---
+    - to:
+        {{- range $extraCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            except:
+              {{- range $blockedRanges }}
+              - {{ . | quote }}
+              {{- end }}
+        {{- end }}
+      ports:
         - port: 80
           protocol: TCP
         - port: 443
           protocol: TCP
         - port: 5432
-          protocol: TCP
-        - port: 6443
-          protocol: TCP
-        - port: 9090
-          protocol: TCP
-        - port: 3000
-          protocol: TCP
-    {{- if .Values.auth.ldap }}
-    # LDAP/LDAPS (only when LDAP providers are configured)
-    - ports:
-        - port: 389
-          protocol: TCP
-        - port: 636
           protocol: TCP
     {{- end }}
 ---
@@ -98,8 +279,15 @@ spec:
         - port: {{ .Values.frontend.port }}
           protocol: TCP
   egress:
-    # DNS resolution
-    - ports:
+    # DNS — kube-dns only
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $dnsNs }}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ $dnsLabel }}
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
@@ -148,9 +336,15 @@ spec:
           protocol: TCP
     {{- end }}
   egress:
-    # DNS only — well-known Pod serves static ConfigMap content and
-    # has no other outbound dependencies.
-    - ports:
+    # DNS only — kube-dns only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $dnsNs }}
+          podSelector:
+            matchLabels:
+              k8s-app: {{ $dnsLabel }}
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
