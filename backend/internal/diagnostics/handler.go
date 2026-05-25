@@ -120,13 +120,9 @@ func (h *Handler) HandleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// diagnostics leak pod / ReplicaSet existence + state to users who only have
 	// RBAC on the target kind. Denial is graceful — the related branch is
 	// skipped, downstream rules see empty lists, and the caller still gets the
-	// target-kind diagnostic findings.
-	related, err := h.resolveRelatedRBAC(ctx, user, clusterID, kind, namespace)
-	if err != nil {
-		// Already logged inside resolveRelatedRBAC. Fail closed.
-		httputil.WriteError(w, http.StatusInternalServerError, "permission check failed", "")
-		return
-	}
+	// target-kind diagnostic findings. SSAR transport errors are logged and
+	// treated as denial inside resolveRelatedRBAC (review-fix REL-003 / adv-5).
+	related := h.resolveRelatedRBAC(ctx, user, clusterID, kind, namespace)
 
 	// Resolve the target resource and its related pods
 	target, err := Resolve(ctx, h.Lister, namespace, kind, name, related)
@@ -250,32 +246,38 @@ func (h *Handler) HandleNamespaceSummary(w http.ResponseWriter, r *http.Request)
 
 // resolveRelatedRBAC computes which related-resource resolutions the user is
 // permitted to perform for the given target kind in the given namespace. Each
-// permission is checked via SSAR against the request's cluster context. Errors
-// from SSAR are surfaced (the caller treats them as fail-closed); denials are
-// reflected in the returned struct so Resolve can skip those branches.
-// P3-3 security audit 2026-05-22.
-func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clusterID, kind, namespace string) (*RelatedRBAC, error) {
+// permission is checked via SSAR against the request's cluster context.
+//
+// SSAR transport errors (apiserver unreachable, RBAC webhook outage) are
+// logged and treated as denial rather than failing the request — this matches
+// the documented graceful-degradation contract (the related branch is skipped,
+// downstream rules see an empty list, target-kind findings still surface). The
+// alternative (return error → HTTP 500) would convert a transient apiserver
+// blip into a hard failure for every diagnostic request, which is strictly
+// worse than a temporarily reduced result set. P3-3 review-fix REL-003 / adv-5
+// (security audit 2026-05-22).
+func (h *Handler) resolveRelatedRBAC(ctx context.Context, user *auth.User, clusterID, kind, namespace string) *RelatedRBAC {
 	related := &RelatedRBAC{}
 
 	if kindNeedsPods[kind] {
 		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "pods", namespace)
 		if err != nil {
-			h.Logger.Error("related-pod RBAC check failed", "kind", kind, "namespace", namespace, "error", err)
-			return nil, err
+			h.Logger.Warn("related-pod RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+		} else {
+			related.Pods = allowed
 		}
-		related.Pods = allowed
 	}
 
 	if kindNeedsReplicaSets[kind] {
 		allowed, err := h.AccessChecker.CanAccess(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups, "list", "replicasets", namespace)
 		if err != nil {
-			h.Logger.Error("related-replicaset RBAC check failed", "kind", kind, "namespace", namespace, "error", err)
-			return nil, err
+			h.Logger.Warn("related-replicaset RBAC check failed; treating as denied", "kind", kind, "namespace", namespace, "error", err)
+		} else {
+			related.ReplicaSets = allowed
 		}
-		related.ReplicaSets = allowed
 	}
 
-	return related, nil
+	return related
 }
 
 // findNodeID searches the graph for a node matching the given kind and name.
