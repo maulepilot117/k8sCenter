@@ -12,6 +12,161 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 6 — Scoping leaks (2026-05 audit)
+
+Phase 6 closes four backend audit findings concerned with information leakage
+across RBAC boundaries: P3-2 (CRD discovery + counts leak operator inventory),
+P3-3 (diagnostics disclose pod/ReplicaSet details without pod RBAC), P3-4
+(CRD update audit can record a different name than the object actually
+updated), and P3-5 (Loki `/logs/labels` returns unscoped global label names).
+The audit report is `plans/security-audit-2026-05-22.md`. All four findings
+are backend Go work — no mobile, Helm, or web-frontend changes.
+
+### Non-breaking changes
+
+- **CRD inventory + counts filtered by per-user RBAC** (audit P3-2).
+  `GET /api/v1/extensions/crds`, `GET /api/v1/extensions/crds/counts`, and
+  `GET /api/v1/extensions/crds/{group}/{resource}` previously returned the
+  full cluster-wide CRD inventory to any authenticated user, leaking the
+  operator's installed-feature surface (External Secrets, cert-manager,
+  GitOps, mesh, vulnerability scanners, etc.). Each endpoint now runs a
+  cluster-wide `SelfSubjectAccessReview` for `verb=list` on every CRD's
+  group+resource before including it in the response. The shared CRD
+  discovery + count caches stay — counts are non-sensitive cluster
+  aggregates — but the response is filtered per-request. Admins bypass the
+  filter (matches the existing audit-log + secret-mask conventions). When
+  the SSAR call itself errors, the entry is omitted and a warning is
+  logged: fail-closed.
+
+- **Diagnostics related-resource RBAC** (audit P3-3).
+  `GET /api/v1/diagnostics/{ns}/{kind}/{name}` previously checked only the
+  target kind's RBAC, then `Resolve()` listed pods and (for Deployments)
+  ReplicaSets from the informer cache — leaking pod names, owner-reference
+  chains, restart/failure states, and image-pull details to users who had
+  RBAC on Deployments/Services but not Pods/ReplicaSets. The handler now
+  precomputes a `RelatedRBAC{Pods, ReplicaSets}` struct via SSARs against
+  the request's cluster context and passes it through `Resolve` →
+  `resolveRelatedPods`. Denial is graceful — the related branch is
+  skipped, downstream rules see an empty pod list, and the caller still
+  receives the target-kind diagnostic findings. Lookup tables
+  (`kindNeedsPods`, `kindNeedsReplicaSets`) drive which SSARs run for each
+  target kind; pre-existing kinds without a pod traversal (PVC today) skip
+  the pod check entirely.
+
+- **CRD update URL/body identity mismatch rejected** (audit P3-4).
+  `PUT /api/v1/extensions/resources/{group}/{resource}/{ns}/{name}`
+  previously accepted any `metadata.name` / `metadata.namespace` in the
+  request body, sent the body to the apiserver, and audited the URL name
+  on success — letting a request URL name `foo` while the audit logged
+  edits to `bar`, weakening forensics. A new pure helper
+  `validateCRDUpdateIdentity` rejects body/URL mismatches with HTTP 400
+  before any Kubernetes API call (empty body fields are still accepted —
+  k8s tolerates omitting them on UPDATE). On success the audit entry now
+  carries the apiserver-returned object's name + namespace rather than
+  the URL values — the contract holds even if the mismatch guard is ever
+  loosened.
+
+- **Loki `/logs/labels` admin-gated** (audit P3-5).
+  `GET /api/v1/logs/labels` previously called Loki's global `/loki/api/v1/labels`
+  endpoint for any authenticated user. The pre-existing
+  `buildNamespaceScopeQuery` plumbing was constructed but discarded
+  unused — Loki's `/labels` endpoint only accepts a `query` parameter in
+  2.4+ and even then doesn't reliably scope label *names* (the index may
+  surface labels seen anywhere). Rather than rely on Loki version + query
+  rewriting, the endpoint is now `middleware.RequireAdmin`-gated at the
+  route layer. The scoped `/logs/labels/{name}/values` path stays
+  available to non-admins because it already enforces a namespace-scoped
+  LogQL selector via `enforceQueryNamespaces`. The dead scope-query code
+  in `HandleLabels` was removed.
+
+### Operator notes
+
+- **Non-admin CRD inventory shrinks.** Users with namespace-only Role
+  bindings (rather than cluster-wide ClusterRole bindings) will no longer
+  see those CRDs in `GET /extensions/crds` — the SSAR for cluster-wide
+  list returns Allowed=false. They can still list instances directly via
+  `GET /extensions/resources/{group}/{resource}/{ns}` (the namespaced
+  path enforces RBAC at the apiserver). If users report missing operators
+  in the resource sidebar, verify their cluster-wide list permissions on
+  the CRD's GVR (e.g., `kubectl auth can-i list <resource>.<group>`).
+
+- **`/api/v1/logs/labels` now returns 403 for non-admins.** Operators
+  using the UI's "label browser" surface should grant the user the
+  `admin` role, or use `/logs/labels/{name}/values?namespace=<ns>` for
+  the same data scoped to a single namespace.
+
+- **Diagnostics may show fewer pod-derived findings for some users.** A
+  user with Deployment-list but no Pod-list permission will see the
+  Deployment-level diagnostic rules but no `PodImagePullBackOff`-style
+  pod-derived results. The behavior matches existing platforms that
+  silently omit RBAC-denied related resources.
+
+- **Per-request SSAR cost.** P3-2 + P3-3 add per-request `SelfSubjectAccessReview`
+  calls to the relevant endpoints. The existing `AccessChecker` 60s cache
+  amortizes these — first request per user-per-minute pays the SAR cost,
+  subsequent requests hit the cache. For clusters with very large CRD
+  counts (200+), the first inventory load may take a noticeable beat;
+  subsequent loads within 60s are sub-millisecond.
+
+### Verification
+
+- `go vet ./...` — clean repo-wide.
+- `go test ./...` — all backend packages pass. New tests:
+  - `internal/k8s/resources/crd_handler_p3_test.go` — 9 cases for
+    `validateCRDUpdateIdentity` (empty fields, matching, name mismatch,
+    namespace mismatch, fail-fast precedence, cluster-scoped resource
+    handling); 8 cases for `splitGroupResourceKey` (normal, edge,
+    malformed inputs).
+  - `internal/diagnostics/rbac_p3_test.go` — 5 cases for `RelatedRBAC`
+    allow/deny semantics (nil-permissive, zero-deny, partial, full),
+    plus a lookup-table lock for `kindNeedsPods` / `kindNeedsReplicaSets`
+    so regressions either over-broaden or under-cover detectably.
+- `cd frontend && deno lint .` — clean repo-wide. (Pre-existing format
+  drift in 504 frontend files and 40 type-check errors in
+  `routes/api/[...path].ts` are not caused by Phase 6 — Phase 6 touches
+  zero frontend files. These are deferred to a separate frontend
+  housekeeping pass.)
+
+### Known follow-ups (Phase 6 deferred)
+
+- **Per-user CRD count cache scoping.** The shared count cache returns
+  the same numbers to every user post-filter, even when the user has
+  partial RBAC (e.g. list permission in some namespaces but not others).
+  The audit's intent — "filter inventory" — is satisfied because users
+  without cluster-wide list see nothing; users with cluster-wide list
+  see correct totals. A future refinement would scope counts by the
+  intersection of namespaces a user can list, but this would defeat
+  caching for non-admins.
+- **Diagnostics graceful-degradation visibility.** When pod/ReplicaSet
+  RBAC denies the related-pod resolution, the diagnostic response shape
+  is identical to "no failing pods found" — no signal to the operator
+  that pod-derived rules were skipped. A future addition could surface
+  a `relatedResourcesSkipped: ["pods", "replicasets"]` field so the UI
+  can render a "view-only restricted" badge.
+- **CRD update audit ResourceKind precision.** P3-4 fixed the
+  ResourceName + ResourceNamespace fields but still audits the URL-derived
+  `gvr.Resource` for `ResourceKind`. The apiserver could theoretically
+  treat resource aliasing differently from what the URL suggests; future
+  work could derive the audit kind from `updated.GroupVersionKind()`.
+- **Loki label admin gate visibility on the mobile log-search screen.**
+  Mobile's M4 LogQL editor calls `/logs/labels` for label autocomplete;
+  non-admin mobile users will silently lose autocomplete after this PR.
+  A future mobile follow-up could detect the 403 and show a hint that
+  label autocomplete requires admin role.
+
+### Out of scope for Phase 6
+
+The audit's remaining findings are tracked for subsequent phases:
+
+- **Phase 7** (supply chain + LDAP TLS): P2-11 govulncheck-clean Go
+  toolchain + `golang.org/x/net` bump, P3-1 LDAP plaintext bind reject,
+  P3-9 image digest pinning + gating Trivy.
+
+Phase 4 deferred follow-ups (12 items) and Phase 5 deferred follow-ups
+(13 items) remain open and tracked in earlier CHANGELOG sections.
+
+---
+
 ## Phase 5 — Mobile UX hardening (2026-05 audit)
 
 Phase 5 closes four mobile-side audit findings: P2-9 (FCM device
