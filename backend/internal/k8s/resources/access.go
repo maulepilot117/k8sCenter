@@ -330,7 +330,7 @@ func sortedGroups(groups []string) string {
 // apiGroupForResource returns the API group for common resource types.
 func apiGroupForResource(resource string) string {
 	switch resource {
-	case "deployments", "statefulsets", "daemonsets":
+	case "deployments", "statefulsets", "daemonsets", "replicasets":
 		return "apps"
 	case "jobs", "cronjobs":
 		return "batch"

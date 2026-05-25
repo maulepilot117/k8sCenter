@@ -1,6 +1,9 @@
 package resources
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestValidateCRDUpdateIdentity covers P3-4 (security audit 2026-05-22):
 // CRD update requests must have body metadata.name / metadata.namespace either
@@ -83,7 +86,7 @@ func TestValidateCRDUpdateIdentity(t *testing.T) {
 			if ok != c.wantOK {
 				t.Fatalf("ok=%v want=%v (msg=%q detail=%q)", ok, c.wantOK, msg, detail)
 			}
-			if !c.wantOK && c.wantInMsg != "" && !contains(msg, c.wantInMsg) {
+			if !c.wantOK && c.wantInMsg != "" && !strings.Contains(msg, c.wantInMsg) {
 				t.Errorf("expected msg to contain %q, got %q", c.wantInMsg, msg)
 			}
 			if c.wantOK && (msg != "" || detail != "") {
@@ -93,13 +96,27 @@ func TestValidateCRDUpdateIdentity(t *testing.T) {
 	}
 }
 
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
+// TestApiGroupForResource_ReplicaSetsInApps locks Phase 6 review-fix adv-1:
+// "replicasets" must resolve to the "apps" API group. Without this entry the
+// new diagnostics SSAR for ReplicaSet RBAC at handler.go would issue
+// {Group:"", Resource:"replicasets"}, which apiserver evaluates as a core
+// resource that doesn't exist — Allowed=false for every realistic RBAC,
+// silently breaking the entire P3-3 Deployment→ReplicaSet→Pod chain for
+// non-admins. This test catches a future regression of the apiGroupForResource
+// switch — the bug is otherwise invisible (no error, no panic, just an
+// empty diagnostic).
+func TestApiGroupForResource_ReplicaSetsInApps(t *testing.T) {
+	t.Parallel()
+	if got := apiGroupForResource("replicasets"); got != "apps" {
+		t.Errorf("apiGroupForResource(\"replicasets\") = %q, want \"apps\" (silent P3-3 regression)", got)
+	}
+	// Sibling sanity check — the other apps/v1 kinds the diagnostics code
+	// uses must still resolve correctly.
+	for _, r := range []string{"deployments", "statefulsets", "daemonsets"} {
+		if got := apiGroupForResource(r); got != "apps" {
+			t.Errorf("apiGroupForResource(%q) = %q, want \"apps\"", r, got)
 		}
 	}
-	return false
 }
 
 // TestSplitGroupResourceKey covers P3-2 helper used to split CRDDiscovery
