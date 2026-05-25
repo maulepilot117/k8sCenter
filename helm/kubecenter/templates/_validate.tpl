@@ -70,15 +70,30 @@ for fully internal trust-domain deployments where TLS termination
 happens upstream and the network path is private.
 */}}
 {{- $sec := .Values.security | default dict }}
-{{- $ackInsecure := $sec.insecureExposureAcknowledged | default false }}
+{{- /* Phase 4 review (adversarial, reliability R-5): `not` evaluates non-
+empty strings as truthy, so `--set-string security.insecureExposureAcknowledged="false"`
+slipped past the previous boolean coercion. `toString` + `eq "true"`
+matches the dev-mode check below and forces a literal-true comparison. */}}
+{{- $ackInsecure := eq (toString ($sec.insecureExposureAcknowledged | default false)) "true" }}
 {{- $svcType := .Values.service.type | default "ClusterIP" }}
-{{- $ingressOn := and .Values.ingress.enabled (not (empty .Values.ingress.enabled)) }}
-{{- $ingressHasTLS := and $ingressOn (not (empty .Values.ingress.tls)) }}
+{{- $ingressOn := .Values.ingress.enabled | default false }}
+{{- /* Phase 4 review (adversarial, reliability R-5): a single empty-map
+entry like `ingress.tls: [{}]` passes `not (empty .Values.ingress.tls)`
+and renders an Ingress with `secretName: ""`. Require at least one
+entry with a non-empty secretName. */}}
+{{- $ingressHasTLS := false }}
+{{- if $ingressOn }}
+{{- range .Values.ingress.tls }}
+{{- if .secretName }}
+{{- $ingressHasTLS = true }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $devMode := and .Values.backend (and .Values.backend.config (eq (toString .Values.backend.config.dev) "true")) }}
 
 {{- if and $ingressOn (not $ingressHasTLS) -}}
 {{- if not $ackInsecure -}}
-{{- fail "ingress.enabled=true but ingress.tls is empty — exposing the backend over plaintext HTTP leaks tokens. Configure ingress.tls with a TLS secret, or set security.insecureExposureAcknowledged=true to accept the risk (only safe for internal-only deployments behind upstream TLS termination). Finding P2-8." -}}
+{{- fail "ingress.enabled=true but ingress.tls has no entry with a non-empty secretName — exposing the backend over plaintext HTTP leaks tokens. Configure ingress.tls with a TLS secret name, or set security.insecureExposureAcknowledged=true to accept the risk (only safe for internal-only deployments behind upstream TLS termination). Finding P2-8." -}}
 {{- end -}}
 {{- end -}}
 

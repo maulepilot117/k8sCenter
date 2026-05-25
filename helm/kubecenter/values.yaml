@@ -217,9 +217,17 @@ networkPolicy:
   # extraAllowedCIDRs, and a private monitoring stack needs its CIDR in
   # monitoringCIDRs.
   egress:
-    # kube-dns location. The defaults match upstream Kubernetes; clusters
-    # that run CoreDNS in a different namespace (e.g. `coredns`) or
-    # under a different pod label must override.
+    # kube-dns location. The defaults match upstream Kubernetes / kubeadm /
+    # GKE. Known overrides:
+    #   - Talos / some RKE2 builds: dnsPodLabel: "rke2-coredns" or "coredns"
+    #   - OpenShift: dnsNamespace: "openshift-dns", dnsPodLabel: "dns-default"
+    #     (and operators on OpenShift typically also need to relax the
+    #     namespaceSelector on the egress rule via a custom NetworkPolicy
+    #     since openshift-dns uses different labels than upstream).
+    # When the selector misses, DNS resolution breaks cluster-wide and
+    # liveness probes (which hit `:8080` directly) keep passing while
+    # every functional operation times out. Verify after install with
+    # `kubectl exec backend-pod -- nslookup kubernetes.default`.
     dnsNamespace: "kube-system"
     dnsPodLabel: "kube-dns"
     # Allowlist of CIDRs that hold the Kubernetes API server endpoints.
@@ -244,6 +252,14 @@ networkPolicy:
     # backend dependencies not covered above.
     extraAllowedCIDRs: []
     # - 10.20.30.0/24
+    # Pod labels matched by the egress rule for in-cluster PostgreSQL.
+    # Defaults to bitnami / standard chart convention. Override for
+    # CrunchyData (postgres-operator.crunchydata.com/cluster),
+    # CloudNativePG (cnpg.io/cluster), Zalando (application=spilo),
+    # or any custom Postgres operator. Combined AND with `namespaceSelector: {}`
+    # so any namespace matches if the label is present.
+    postgresPodLabels:
+      app.kubernetes.io/name: postgresql
     # Additional ranges to block from every ipBlock egress rule (appended
     # to the universal link-local/metadata blocklist). Use for internal
     # management VLANs you never want the backend to reach.
