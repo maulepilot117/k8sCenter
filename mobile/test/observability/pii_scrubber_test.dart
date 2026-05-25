@@ -149,7 +149,9 @@ void main() {
       );
     });
 
-    test('strips request body + query but keeps method/url', () {
+    test(
+        'strips request body, query, cookies, fragment and scrubs url path '
+        '(P2-10)', () {
       final event = SentryEvent(
         request: SentryRequest(
           url: 'https://kubecenter.local/v1/resources/secrets/team/v',
@@ -157,13 +159,64 @@ void main() {
           data: {'secret': 'should-not-leak'},
           queryString: 'token=abc',
           cookies: 'session=xyz',
+          fragment: 'leaky-anchor',
         ),
       );
       final scrubbed = scrubEventForTest(event);
       expect(scrubbed.request!.data, isNull);
       expect(scrubbed.request!.queryString, isNull);
       expect(scrubbed.request!.cookies, isNull);
+      expect(
+        scrubbed.request!.fragment,
+        isNull,
+        reason: 'fragment is a sibling of url and can carry identifiers',
+      );
       expect(scrubbed.request!.method, 'GET');
+      expect(
+        scrubbed.request!.url,
+        'https://kubecenter.local/v1/resources/secrets/<namespace>/<name>',
+        reason: 'path segments must be scrubbed, not preserved (P2-10)',
+      );
+    });
+
+    test('strips query + fragment from SentryRequest.url (P2-10)', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url:
+              'https://kubecenter.local/v1/resources/secrets/team/v?token=leak#anchor-leak',
+          method: 'GET',
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.request!.url,
+        'https://kubecenter.local/v1/resources/secrets/<namespace>/<name>',
+        reason: 'query and fragment must be sliced before path scrubbing',
+      );
+    });
+
+    test('SentryRequest.url passes through unchanged when no scrub-worthy '
+        'segments are present (P2-10)', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url: 'https://pub.dev/packages/sentry_flutter',
+          method: 'GET',
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.request!.url,
+        'https://pub.dev/packages/sentry_flutter',
+        reason: 'non-k8sCenter URLs should be left intact',
+      );
+    });
+
+    test('SentryRequest.url null passes through as null (P2-10)', () {
+      final event = SentryEvent(
+        request: SentryRequest(method: 'GET'),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(scrubbed.request!.url, isNull);
     });
 
     test('drops Authorization, Cookie, X-CSRF-* headers from requests', () {

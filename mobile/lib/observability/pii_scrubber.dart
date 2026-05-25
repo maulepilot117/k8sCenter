@@ -117,14 +117,22 @@ SentryEvent _scrubEventBody(SentryEvent event) {
   final scrubbedRequest = origRequest == null
       ? null
       : SentryRequest(
-          url: origRequest.url,
+          // Strip query + fragment, then run the path through the same
+          // positional scrubber that handles message text and breadcrumb
+          // URLs. Without this, SentryRequest.url leaks namespace/name
+          // segments and any ?token=… that the request happened to carry,
+          // even though the sibling queryString field is nulled below.
+          // Audit finding P2-10.
+          url: origRequest.url == null ? null : _scrubUrl(origRequest.url!),
           method: origRequest.method,
-          // data/queryString/cookies dropped; SentryRequest constructor
-          // accepts null for each, which clears them.
+          // data/queryString/cookies/fragment dropped; SentryRequest
+          // constructor accepts null for each, which clears them. The
+          // fragment field is a sibling of `url` and can carry the same
+          // identifiers, so it must be nulled even when url is scrubbed.
           data: null,
           queryString: null,
           cookies: null,
-          fragment: origRequest.fragment,
+          fragment: null,
           apiTarget: origRequest.apiTarget,
           headers: _scrubHeaders(origRequest.headers),
           env: origRequest.env,
@@ -254,17 +262,11 @@ Map<String, dynamic>? _scrubBreadcrumbData(Map<String, dynamic>? data) {
   if (data == null) return null;
   final clean = <String, dynamic>{};
   data.forEach((key, value) {
-    // HTTP breadcrumbs carry the URL under `url`. Strip query string +
-    // fragment, then scrub path segments. We slice off `?` / `#` rather
-    // than `Uri.replace(query: '')` so the output is canonical (no
-    // dangling `?` from an empty query string).
+    // HTTP breadcrumbs carry the URL under `url`. Shares the same
+    // strip-and-scrub treatment as SentryRequest.url so the two surfaces
+    // can't diverge.
     if (key == 'url' && value is String) {
-      var stripped = value;
-      final qIdx = stripped.indexOf('?');
-      if (qIdx >= 0) stripped = stripped.substring(0, qIdx);
-      final fIdx = stripped.indexOf('#');
-      if (fIdx >= 0) stripped = stripped.substring(0, fIdx);
-      clean[key] = _scrubText(stripped);
+      clean[key] = _scrubUrl(value);
       return;
     }
     if (value is String) {
@@ -275,6 +277,21 @@ Map<String, dynamic>? _scrubBreadcrumbData(Map<String, dynamic>? data) {
     }
   });
   return clean;
+}
+
+/// Strips `?query` and `#fragment` from [url], then runs the bare path
+/// through [_scrubText]. We slice off `?`/`#` rather than calling
+/// `Uri.replace(query: '')` so the output is canonical (no dangling `?`
+/// from an empty query string) and stays a valid URL when the path
+/// scrubber rewrites segments. Single source of truth for URL scrub:
+/// SentryRequest.url and HTTP breadcrumb `url` both pass through here.
+String _scrubUrl(String url) {
+  var stripped = url;
+  final qIdx = stripped.indexOf('?');
+  if (qIdx >= 0) stripped = stripped.substring(0, qIdx);
+  final fIdx = stripped.indexOf('#');
+  if (fIdx >= 0) stripped = stripped.substring(0, fIdx);
+  return _scrubText(stripped);
 }
 
 /// Public for tests. Applies positional k8s-path + key-value + FCM
