@@ -149,6 +149,66 @@ class FcmRegistration {
     }
   }
 
+  /// Called from [AuthRepository.logout] before clearing the access token —
+  /// the DELETE requires the still-valid access token to pass auth
+  /// middleware. Best-effort: any failure short-circuits silently so a
+  /// network blip can't strand the user signed-in. Audit finding P2-9.
+  ///
+  /// Skips entirely when Firebase isn't initialised (no platform config,
+  /// permission denied, unsupported platform) — there is nothing to revoke
+  /// because [ensureRegistered] never ran a POST.
+  Future<void> revokeCurrentDevice() async {
+    if (!_supportedPlatform || !_initialized) return;
+    String? token;
+    try {
+      token = await FirebaseMessaging.instance.getToken();
+    } catch (e) {
+      debugPrint('[fcm] revoke: getToken failed: $e');
+      return;
+    }
+    if (token == null || token.isEmpty) return;
+    await revokeDeviceByToken(token);
+  }
+
+  /// Looks up the device record for [token] via the per-user list endpoint,
+  /// then DELETEs it. Visible for tests so the network path can be
+  /// exercised without a Firebase platform channel. Returns true when a
+  /// matching device was found and deleted.
+  @visibleForTesting
+  Future<bool> revokeDeviceByToken(String token) async {
+    final String deviceId;
+    try {
+      final res = await _dio.get<Map<String, dynamic>>(
+        '/api/v1/notifications/devices',
+      );
+      final data = res.data?['data'];
+      if (data is! List) return false;
+      final match = data.whereType<Map<String, dynamic>>().firstWhere(
+            (d) => (d['deviceToken'] as String?) == token,
+            orElse: () => const <String, dynamic>{},
+          );
+      final id = match['id'] as String?;
+      if (id == null || id.isEmpty) return false;
+      deviceId = id;
+    } on DioException catch (e) {
+      final err = e.error;
+      debugPrint(
+        '[fcm] revoke list failed: ${err is ApiError ? err.message : e.message}',
+      );
+      return false;
+    }
+    try {
+      await _dio.delete<dynamic>('/api/v1/notifications/devices/$deviceId');
+      return true;
+    } on DioException catch (e) {
+      final err = e.error;
+      debugPrint(
+        '[fcm] revoke delete failed: ${err is ApiError ? err.message : e.message}',
+      );
+      return false;
+    }
+  }
+
   bool get _supportedPlatform {
     // Web/desktop builds skip FCM entirely. M1 ships iOS + Android only.
     if (kIsWeb) return false;

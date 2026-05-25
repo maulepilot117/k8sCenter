@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/api_error.dart';
 import '../api/auth_token_holder.dart';
 import '../api/dio_client.dart';
+import '../notifications/fcm_registration.dart';
 import 'auth_state.dart';
 import 'secure_storage.dart';
 import 'user.dart';
@@ -124,6 +125,21 @@ class AuthRepository extends Notifier<AuthState> {
   }
 
   Future<void> logout() async {
+    // Revoke + dispose FCM BEFORE clearing the access token — the DELETE
+    // call routes through the authenticated Dio and middleware rejects
+    // unauthenticated requests. Best-effort: any failure (Firebase not
+    // initialised, network error, 4xx) is swallowed so a flaky push
+    // backend can't strand the user signed-in. Audit finding P2-9.
+    final fcm = ref.read(fcmRegistrationProvider);
+    try {
+      await fcm.revokeCurrentDevice();
+    } catch (e) {
+      // revokeCurrentDevice already swallows DioException internally;
+      // this catch is defense-in-depth against unexpected throws so
+      // logout always proceeds to the local-clear path below.
+    }
+    await fcm.dispose();
+
     final dio = ref.read(dioProvider);
     try {
       await dio.post<void>('/api/v1/auth/logout');
