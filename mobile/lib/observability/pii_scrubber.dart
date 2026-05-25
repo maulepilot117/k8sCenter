@@ -285,8 +285,25 @@ Map<String, dynamic>? _scrubBreadcrumbData(Map<String, dynamic>? data) {
 /// from an empty query string) and stays a valid URL when the path
 /// scrubber rewrites segments. Single source of truth for URL scrub:
 /// SentryRequest.url and HTTP breadcrumb `url` both pass through here.
+///
+/// Percent-decodes via `Uri.decodeFull` BEFORE slicing so an attacker
+/// can't smuggle a fake query string into the path with `%3F` or `%23`.
+/// Without the decode pass, `/v1/resources/secrets/ns/name%3Ftoken=leak`
+/// would land in `_scrubText` unchanged — the regex char class
+/// `[A-Za-z0-9._-]` stops at `%`, so the segment scrub catches only
+/// `.../ns/name`, and `%3Ftoken=leak` survives in the output. Code-
+/// review finding (adversarial ADV-3 + testing T-2, Phase 5).
 String _scrubUrl(String url) {
-  var stripped = url;
+  String decoded;
+  try {
+    decoded = Uri.decodeFull(url);
+  } catch (_) {
+    // Malformed percent-encoding (e.g., bare `%` not followed by hex).
+    // Fall back to the raw string — better to scrub literal text than
+    // to skip scrubbing entirely.
+    decoded = url;
+  }
+  var stripped = decoded;
   final qIdx = stripped.indexOf('?');
   if (qIdx >= 0) stripped = stripped.substring(0, qIdx);
   final fIdx = stripped.indexOf('#');

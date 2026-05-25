@@ -219,6 +219,84 @@ void main() {
       expect(scrubbed.request!.url, isNull);
     });
 
+    test(
+        'SentryRequest.url with %3F (encoded ?) is decoded before slicing — '
+        'attacker cannot smuggle a fake query into the path (ADV-3)', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url:
+              'https://kubecenter.local/v1/resources/secrets/team/vault-token%3Fapi_key=abc123def',
+          method: 'GET',
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.request!.url,
+        'https://kubecenter.local/v1/resources/secrets/<namespace>/<name>',
+        reason:
+            '%3F must be decoded to ? before the slice so api_key=… does not survive',
+      );
+    });
+
+    test(
+        'SentryRequest.url with %23 (encoded #) is decoded before slicing '
+        '(ADV-3 variant)', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url:
+              'https://kubecenter.local/v1/resources/secrets/team/vault-token%23fragment=leak',
+          method: 'GET',
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.request!.url,
+        'https://kubecenter.local/v1/resources/secrets/<namespace>/<name>',
+        reason: '%23 must be decoded to # before the slice',
+      );
+    });
+
+    test(
+        'breadcrumb url with %3F is also decoded before slicing — both '
+        'surfaces share _scrubUrl (ADV-3)', () {
+      final event = SentryEvent(
+        breadcrumbs: [
+          Breadcrumb(
+            type: 'http',
+            data: {
+              'url':
+                  'https://kubecenter.local/v1/resources/secrets/team/v%3Ftoken=leak',
+              'method': 'GET',
+            },
+          ),
+        ],
+      );
+      final scrubbed = scrubEventForTest(event);
+      final crumb = scrubbed.breadcrumbs!.single;
+      expect(
+        crumb.data!['url'],
+        'https://kubecenter.local/v1/resources/secrets/<namespace>/<name>',
+      );
+    });
+
+    test('SentryRequest.url with malformed percent-encoding still scrubs '
+        '(fallback path)', () {
+      final event = SentryEvent(
+        request: SentryRequest(
+          url:
+              'https://kubecenter.local/v1/resources/secrets/team/v%ZZbad?token=leak',
+          method: 'GET',
+        ),
+      );
+      final scrubbed = scrubEventForTest(event);
+      // Uri.decodeFull would throw on `%ZZ`; we fall back to raw and
+      // still slice off the literal `?` and run the segment scrubber.
+      // The path segment match stops at `%` in the regex char class, so
+      // we accept that the prefix up to `%ZZbad` survives untransformed
+      // — but the query string is gone, which is the primary defence.
+      expect(scrubbed.request!.url, isNot(contains('token=leak')));
+    });
+
     test('drops Authorization, Cookie, X-CSRF-* headers from requests', () {
       final event = SentryEvent(
         request: SentryRequest(
