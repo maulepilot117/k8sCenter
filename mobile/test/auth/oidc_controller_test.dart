@@ -342,6 +342,91 @@ void main() {
       );
     });
 
+    // Cross-reviewer testing T-1 (Phase 5): the error-code switch routes
+    // five distinct OAuth/OIDC error values to different controller
+    // reasons. Only access_denied was exercised before. A subtle swap
+    // (e.g., routing temporarily_unavailable to exchangeRejected instead
+    // of networkError) would not be caught. One test per branch through
+    // the matched-state path so the switch can't drift undetected.
+
+    test('login_required → consentDenied (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=login_required&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.consentDenied);
+      expect(await s.pending.read(), isNull);
+    });
+
+    test('interaction_required → consentDenied (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=interaction_required&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.consentDenied);
+    });
+
+    test('temporarily_unavailable → networkError (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=temporarily_unavailable&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.networkError);
+    });
+
+    test('server_error → networkError (matched state)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=server_error&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.networkError);
+    });
+
+    test(
+        'unknown error code → exchangeRejected (matched state, wildcard '
+        'branch)', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+      await seedPending(s.pending, s.now(), state: 'S');
+
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .completeFlow(Uri.parse(
+              'https://k8scenter.test/m/auth/callback?error=teapot&state=S'));
+
+      final state =
+          s.container.read(oidcControllerProvider) as OIDCFlowError;
+      expect(state.reason, OIDCFlowErrorReason.exchangeRejected);
+    });
+
     test('ttl expired: ttlExpired error', () async {
       // Create pending 6 minutes ago, advance clock 10 minutes.
       final past = DateTime.utc(2026, 5, 16, 12, 0, 0);
