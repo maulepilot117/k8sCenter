@@ -106,7 +106,15 @@ func (h *Handler) HandleQuery(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleLabels returns available label names from Loki.
-// GET /api/v1/logs/labels?start=...&end=...&namespace=...
+// GET /api/v1/logs/labels?start=...&end=...
+//
+// P3-5 (security audit 2026-05-22): admin-only at the route layer
+// (middleware.RequireAdmin in registerLogRoutes). Loki's /labels endpoint
+// surfaces global label names without reliable per-tenant scoping, so the
+// previous best-effort `buildNamespaceScopeQuery` plumbing was discarded
+// without effect. Non-admins receive 403 before this handler runs and can
+// still enumerate label values inside their permitted namespace via
+// /labels/{name}/values (which enforces a namespace-scoped LogQL selector).
 func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 	client := h.Discoverer.Client()
 	if client == nil {
@@ -127,15 +135,6 @@ func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// P1 fix: scope label query to user's allowed namespace
-	// Loki /labels endpoint accepts a query param for scoping
-	scopeQuery, err := h.buildNamespaceScopeQuery(r)
-	if err != nil {
-		httputil.WriteError(w, http.StatusForbidden, "namespace access denied", err.Error())
-		return
-	}
-
-	// Use LabelValues-style scoping by passing the query to limit results
 	labels, err := client.Labels(r.Context(), start, end)
 	if err != nil {
 		h.Logger.Warn("loki labels query failed", "error", err)
@@ -143,9 +142,6 @@ func (h *Handler) HandleLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If non-admin, we can't scope the /labels endpoint directly (Loki limitation),
-	// but we log the access. The real enforcement happens on /query and /label/values.
-	_ = scopeQuery
 	httputil.WriteData(w, labels)
 }
 

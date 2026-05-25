@@ -494,7 +494,14 @@ func (s *Server) registerLogRoutes(ar chi.Router) {
 
 		lr.Get("/status", h.HandleStatus)
 		lr.Get("/query", h.HandleQuery)
-		lr.Get("/labels", h.HandleLabels)
+		// P3-5 (security audit 2026-05-22): /logs/labels enumerates global label
+		// names across every namespace in Loki. Loki's /labels endpoint accepts a
+		// `query` parameter only in 2.4+ and even then doesn't reliably scope
+		// label names (the index may surface labels seen anywhere). Rather than
+		// rely on Loki version + query rewriting, admin-gate the endpoint. The
+		// scoped /labels/{name}/values path stays available to non-admins because
+		// it already enforces a namespace-scoped LogQL selector.
+		lr.With(middleware.RequireAdmin).Get("/labels", h.HandleLabels)
 		lr.Get("/labels/{name}/values", h.HandleLabelValues)
 		lr.Get("/volume", h.HandleVolume)
 	})
