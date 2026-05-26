@@ -45,7 +45,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          # P2-11 (2026-05-22 audit): pin to 1.26.3 to clear the
+          # reachable govulncheck advisories landed in stdlib at that
+          # patch — staying on the "1.26" floating prefix would lag
+          # the security patch on CI runners cached from an earlier
+          # minor.
+          go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
 
       - name: Check cluster-routing discipline
