@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -245,8 +246,24 @@ func (c *Config) validate() error {
 	// every login. Operators with a legitimate plaintext-on-trusted-LAN
 	// use case must set the flag per provider; everyone else fails
 	// closed with a directly actionable startup error.
+	//
+	// Phase 7 ce-code-review C-1: scheme comparison runs through
+	// url.Parse + lowercase rather than strings.HasPrefix, because
+	// go-ldap's ldap.DialURL lowercases the scheme before dispatching
+	// (so `LDAP://`, `Ldap://`, and `ldap://` all dial plaintext TCP).
+	// A case-sensitive HasPrefix gate would silently miss the
+	// uppercase forms.
 	for i, l := range c.Auth.LDAP {
-		if !strings.HasPrefix(l.URL, "ldap://") {
+		if l.URL == "" {
+			continue
+		}
+		u, err := url.Parse(l.URL)
+		if err != nil {
+			// Malformed URL surfaces as an LDAP dial failure later;
+			// the gate is not responsible for syntax checks.
+			continue
+		}
+		if strings.ToLower(u.Scheme) != "ldap" {
 			continue
 		}
 		if l.StartTLS || l.InsecurePlaintext {

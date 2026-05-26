@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +120,19 @@ func TestValidateLDAPPlaintextGate(t *testing.T) {
 			ldap:    LDAPConfig{ID: "corp", URL: "ldap://ldap.example.com:389", StartTLS: true, InsecurePlaintext: true},
 			wantErr: false,
 		},
+		{
+			// Phase 7 ce-code-review C-1: go-ldap lowercases scheme
+			// before dispatching, so uppercase variants dial plaintext.
+			// The gate must catch them.
+			name:    "uppercase LDAP:// is rejected like lowercase ldap://",
+			ldap:    LDAPConfig{ID: "corp", URL: "LDAP://ldap.example.com:389"},
+			wantErr: true,
+		},
+		{
+			name:    "mixed-case Ldap:// is rejected like lowercase ldap://",
+			ldap:    LDAPConfig{ID: "corp", URL: "Ldap://ldap.example.com:389"},
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -155,7 +169,7 @@ func TestValidateLDAPPlaintextGateMultiProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for plaintext provider in mixed list, got nil")
 	}
-	if got := err.Error(); !contains(got, "ldap-legacy") {
+	if got := err.Error(); !strings.Contains(got, "ldap-legacy") {
 		t.Fatalf("expected error to name ldap-legacy provider, got %q", got)
 	}
 }
@@ -175,18 +189,32 @@ func TestValidateLDAPPlaintextGateUnnamedProvider(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for plaintext provider with empty ID, got nil")
 	}
-	if got := err.Error(); !contains(got, "auth.ldap[0]") {
+	if got := err.Error(); !strings.Contains(got, "auth.ldap[0]") {
 		t.Fatalf("expected error to fall back to indexed label, got %q", got)
 	}
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
+// TestValidateLDAPPlaintextGateUnnamedProviderAtIndex confirms the
+// indexed-label fallback names the offending provider's actual
+// position, not a hardcoded 0. Phase 7 ce-code-review T-3.
+func TestValidateLDAPPlaintextGateUnnamedProviderAtIndex(t *testing.T) {
+	cfg := Config{
+		Server: ServerConfig{Port: DefaultPort},
+		Log:    LogConfig{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Auth: AuthConfig{
+			LDAP: []LDAPConfig{
+				{ID: "named", URL: "ldaps://named.example.com:636"},
+				{URL: "ldap://unnamed-second.example.com:389"},
+			},
+		},
 	}
-	return false
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for unnamed plaintext provider at index 1, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "auth.ldap[1]") {
+		t.Fatalf("expected error to name auth.ldap[1], got %q", got)
+	}
 }
 
 func TestSlogLevel(t *testing.T) {

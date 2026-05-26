@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -34,6 +35,20 @@ const (
 // usernameAllowlist restricts LDAP usernames to safe characters as a defense-in-depth
 // measure against LDAP injection (in addition to ldap.EscapeFilter).
 var usernameAllowlist = regexp.MustCompile(`^[a-zA-Z0-9._@-]+$`)
+
+// isPlaintextLDAPURL reports whether the given LDAP URL uses the
+// cleartext `ldap://` scheme. Comparison is case-insensitive because
+// go-ldap's DialURL lowercases the scheme before dispatching, so
+// `LDAP://` and `Ldap://` both dial plaintext TCP. A case-sensitive
+// strings.HasPrefix check would silently miss those forms. Audit
+// finding P3-1 + Phase 7 ce-code-review C-1.
+func isPlaintextLDAPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return strings.ToLower(u.Scheme) == "ldap"
+}
 
 // LDAPProvider authenticates users against an LDAP directory using bind+search.
 type LDAPProvider struct {
@@ -67,7 +82,7 @@ func NewLDAPProvider(config LDAPProviderConfig, logger *slog.Logger) *LDAPProvid
 	// service-account + user-bind credentials are leaving the host in
 	// the clear. Without the opt-in, config.validate() would have
 	// returned an error before reaching this constructor.
-	if strings.HasPrefix(config.URL, "ldap://") && !config.StartTLS {
+	if isPlaintextLDAPURL(config.URL) && !config.StartTLS {
 		p.logger.Warn("LDAP connection is plaintext — credentials will be transmitted unencrypted. Operator opted in via insecureplaintext=true; switch to ldaps:// or enable StartTLS for production.")
 	}
 	return p
@@ -189,8 +204,10 @@ func (p *LDAPProvider) connect() (*ldap.Conn, error) {
 
 	conn.SetTimeout(ldapOperationTimeout)
 
-	// Upgrade to TLS if using StartTLS on a plaintext connection
-	if p.config.StartTLS && strings.HasPrefix(p.config.URL, "ldap://") {
+	// Upgrade to TLS if using StartTLS on a plaintext connection.
+	// Case-insensitive scheme check matches go-ldap's DialURL
+	// behaviour (see isPlaintextLDAPURL).
+	if p.config.StartTLS && isPlaintextLDAPURL(p.config.URL) {
 		if err := conn.StartTLS(tlsConfig); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("StartTLS failed: %w", err)
