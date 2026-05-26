@@ -12,6 +12,144 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 7 — Supply chain & LDAP TLS (2026-05 audit)
+
+Phase 7 closes three audit findings across supply-chain integrity and LDAP
+transport: **P2-11** (reachable Go dependency advisories), **P3-1** (LDAP
+plaintext bind allowed in non-dev configurations), and **P3-9** (mutable
+supply-chain inputs and non-gating Trivy scans). The audit report is
+`plans/security-audit-2026-05-22.md`. Phase 7 touches backend Go (LDAP
+gate + toolchain bump), GitHub Actions workflows (SHA pinning + Trivy
+gating + dependabot), the Helm homelab example, and the build-push
+script. No frontend or mobile code changes.
+
+### Breaking changes
+
+- **`auth.ldap[].url` starting with `ldap://` now fails closed at startup**
+  unless either `auth.ldap[].starttls=true` or
+  `auth.ldap[].insecureplaintext=true` is set on that LDAP provider
+  (audit P3-1). The new `insecureplaintext` field is a per-provider
+  opt-in for plaintext bind that operators with a legitimate trusted-LAN
+  use case must set explicitly — previously the backend warned and kept
+  running with cleartext service-account + user-bind credentials. The
+  startup error names the offending provider (or falls back to
+  `auth.ldap[N]` when the operator omitted `id`) so the fix is
+  immediate. The matching admin LDAP test endpoint
+  (`POST /api/v1/settings/test/ldap`) mirrors the gate: requests with
+  `ldap://` URLs return HTTP 400 unless the request body sets `startTLS`
+  or `insecurePlaintext`. Operators upgrading from Phase 6 with
+  `ldap://` providers and no StartTLS will not boot until they choose
+  one of the three paths (switch to `ldaps://`, enable StartTLS, or
+  set `insecureplaintext=true`).
+
+- **`scripts/build-push.sh` no longer defaults to `latest`** (audit P3-9).
+  The script now exits 2 when called with no arguments rather than
+  building and pushing a floating `latest` tag. Pass an explicit
+  `v<chartAppVersion>` tag or a `sha-<git-short-sha>` build tag. The
+  CI release workflow handles the `latest` floating tag separately
+  and only on the release path.
+
+- **`values-homelab.yaml.example` now uses `REPLACE_ME_*_TAG` placeholders**
+  for `backend.image.tag` and `frontend.image.tag` (audit P3-9). The
+  prior `tag: latest` defaults are gone — a fresh homelab install
+  must declare the image version explicitly, matching the existing
+  `REPLACE_ME_*` pattern for `auth.jwtSecret` / `auth.setupToken` /
+  `postgresql.auth.password`. Argocd-image-updater still rewrites
+  the field at runtime once configured; this only changes the
+  bootstrap value seen before the first sync.
+
+### Non-breaking changes
+
+- **`golang.org/x/net` upgraded to `v0.54.0`** and the backend `go.mod`
+  `go` directive bumped to **`1.26.3`** (audit P2-11). Closes the
+  reachable stdlib advisories `GO-2026-4918`, `-4971`, `-4976`,
+  `-4977`, `-4980`, `-4982`, `-4986` and the x/net side of `-4918`.
+  CI `setup-go` actions in `ci.yml` and `codeql.yml` are pinned to
+  `go-version: "1.26.3"` so the runner cache cannot serve a pre-patch
+  1.26.x. The backend Dockerfile pins `golang:1.26.3-alpine`.
+  `GO-2026-5026` (IDNA Punycode-only label rejection in
+  `golang.org/x/net/idna`) remains a deferred follow-up — its only
+  fix is in `golang.org/x/net@v0.55.0`, which is inside the global
+  7-day supply-chain cooldown and will be addressed in a follow-up
+  PR after the cooldown elapses.
+
+- **Release Trivy scans now gate the build** (audit P3-9). Both image
+  scans in `ci-release.yml` now run with `exit-code: 1`. `ignore-unfixed:
+  true` keeps the gate actionable — only fixable CRITICAL/HIGH CVEs
+  block release, so unpatched upstream advisories surface as SARIF
+  without halting deploys. Accepted residual findings belong in the
+  pre-existing `.trivyignore`, which the workflow now references via
+  `trivyignores: ".trivyignore"`. Per audit guidance: each ignore line
+  carries a one-line reason + reviewer initials + date, and is
+  re-evaluated every release.
+
+- **All GitHub Actions pinned by commit SHA** across `ci.yml`,
+  `ci-release.yml`, `codeql.yml`, `e2e.yml`, and `mobile-ci.yml`
+  (audit P3-9). Each `uses:` line now references a full 40-char commit
+  SHA with a trailing `# vX` comment for human readability.
+  `github/codeql-action` pinned to `v3.35.5` / `v4.35.5` (10 days old)
+  rather than the floating major or the freshly-released `v3.36.0` /
+  `v4.36.0` (4 days old, inside cooldown). The actionlint bootstrap
+  script in `ci.yml` is also pinned — the previous
+  `bash <(curl ...rhysd/actionlint/main/scripts/download-actionlint.bash)`
+  fetched from a mutable branch and ran the result under
+  `GITHUB_TOKEN`. Now pinned to the v1.7.5 commit SHA.
+
+- **`.github/dependabot.yml` added** (audit P3-9). Weekly dependabot
+  PRs keep the SHA pins from rotting without forcing an operator to
+  chase every action release manually. All actions grouped into one
+  PR per week so the 7-day cooldown review happens in one place
+  rather than across N parallel PRs. Backend `gomod` and frontend/
+  backend Docker base images covered separately, with `k8s.io/*` and
+  `golang.org/x/*` grouped so transitive interdependence does not
+  break the build mid-merge.
+
+### Operator notes
+
+- **First boot after upgrade**: if any `auth.ldap[]` provider was
+  configured with `ldap://` and no StartTLS in Phase 6 or earlier,
+  the backend will refuse to start. The error message names the
+  provider and lists the three acceptable remediations. Pick one
+  before rolling out the upgrade.
+
+- **Helm `values-homelab.yaml.example`** has new placeholder tokens
+  for image tags. If you copy this file as a starting point for a
+  fresh install, the `_validate.tpl` REPLACE_ME guard will refuse to
+  render until the tags are set. Existing `values-homelab.yaml` files
+  already have real tags and are unaffected.
+
+- **First Trivy gate failure**: if the first post-merge release scan
+  surfaces a fixable CRITICAL/HIGH CVE the workflow will fail. Two
+  remediation paths: rebuild against an updated base image (preferred)
+  or add the CVE to `.trivyignore` with the documented reason + reviewer
+  + date format. The audit explicitly required reviewed allowlists, not
+  blanket suppression.
+
+- **Dependabot account**: `.github/dependabot.yml` runs under the
+  built-in `dependabot[bot]`. No extra GitHub App install required.
+  PRs land with `dependencies` + per-ecosystem labels (`go`,
+  `docker`, `github-actions`) for branch-protection filtering.
+
+### Out of scope for Phase 7
+
+- `GO-2026-5026` (IDNA Punycode bypass) — deferred for the 7-day
+  supply-chain cooldown to elapse.
+- Mobile pubspec advisories — covered by the `osv-scan` job in
+  `mobile-ci.yml`, already non-gating per the existing `fail-on-vuln:
+  false` posture. Flipping that to `true` is a separate Phase 8
+  candidate once the baseline is cataloged.
+- Helm subchart pinning — the `kube-prometheus-stack` and
+  `postgresql` chart versions in `helm/kubecenter/Chart.yaml` are
+  still tag-pinned (not digest-pinned). Helm OCI digest pinning is
+  technically supported but requires a registry that re-publishes
+  charts with stable digests; deferred until the operator path is
+  in place.
+- Phase 2's gitops + externalsecrets ClusterRouter migration. Still
+  in warn mode in `scripts/check-cluster-routing.sh`. Strict-mode
+  flip is gated on that migration landing.
+
+---
+
 ## Phase 6 — Scoping leaks (2026-05 audit)
 
 Phase 6 closes four backend audit findings concerned with information leakage
