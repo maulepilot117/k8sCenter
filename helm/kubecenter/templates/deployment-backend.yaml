@@ -179,10 +179,59 @@ spec:
                   name: {{ include "kubecenter.fullname" $ }}
                   key: ldap-{{ $provider.id }}-bind-password
             {{- end }}
+            # P3-1 (2026-05-22 audit) TLS posture — the new
+            # `auth.ldap[].insecureplaintext` opt-in pairs with the
+            # existing starttls / tlsinsecure / cacertpath knobs to
+            # let an operator clear the Phase 7 plaintext-bind gate
+            # via Helm values rather than only via a YAML config
+            # mount. Previously the chart rendered seven LDAP env
+            # vars and silently dropped the rest, so an operator
+            # could not set them. Audit finding ADV-1 (Phase 7
+            # ce-code-review).
+            {{- if $provider.starttls }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_STARTTLS
+              value: {{ $provider.starttls | quote }}
+            {{- end }}
+            {{- if $provider.tlsinsecure }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_TLSINSECURE
+              value: {{ $provider.tlsinsecure | quote }}
+            {{- end }}
+            {{- if $provider.insecureplaintext }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_INSECUREPLAINTEXT
+              value: {{ $provider.insecureplaintext | quote }}
+            {{- end }}
+            {{- if $provider.cacertpath }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_CACERTPATH
+              value: {{ $provider.cacertpath | quote }}
+            {{- end }}
             - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERBASEDN
               value: {{ $provider.userBaseDN | quote }}
             - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERFILTER
               value: {{ $provider.userFilter | quote }}
+            {{- if $provider.userAttributes }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERATTRIBUTES
+              value: {{ join "," $provider.userAttributes | quote }}
+            {{- end }}
+            {{- if $provider.groupBaseDN }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_GROUPBASEDN
+              value: {{ $provider.groupBaseDN | quote }}
+            {{- end }}
+            {{- if $provider.groupFilter }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_GROUPFILTER
+              value: {{ $provider.groupFilter | quote }}
+            {{- end }}
+            {{- if $provider.groupNameAttr }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_GROUPNAMEATTR
+              value: {{ $provider.groupNameAttr | quote }}
+            {{- end }}
+            {{- if $provider.usernameMapAttr }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_USERNAMEMAPATTR
+              value: {{ $provider.usernameMapAttr | quote }}
+            {{- end }}
+            {{- if $provider.groupsPrefix }}
+            - name: KUBECENTER_AUTH_LDAP_{{ $i }}_GROUPSPREFIX
+              value: {{ $provider.groupsPrefix | quote }}
+            {{- end }}
             {{- end }}
           startupProbe:
             httpGet:
