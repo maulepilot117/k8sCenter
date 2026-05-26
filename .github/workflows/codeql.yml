@@ -31,8 +31,8 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       jsTs: ${{ steps.filter.outputs.jsTs }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
         id: filter
         with:
           # Each language filter also includes this workflow file so
@@ -61,11 +61,11 @@ jobs:
       security-events: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           languages: actions
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           category: "/language:actions"
 
@@ -79,16 +79,18 @@ jobs:
       security-events: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26"
+          # P2-11 (2026-05-22 audit): match ci.yml — pin to 1.26.3 to
+          # avoid lagging the stdlib security patch.
+          go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           languages: go
-      - uses: github/codeql-action/autobuild@v3
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/autobuild@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           category: "/language:go"
 
@@ -102,11 +104,11 @@ jobs:
       security-events: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
         with:
           category: "/language:javascript-typescript"
 

@@ -1,11 +1,36 @@
 #!/bin/bash
 # Build and push k8sCenter container images to GHCR
-# Usage: ./scripts/build-push.sh [tag]
+# Usage: ./scripts/build-push.sh <tag>
 # Requires: docker login ghcr.io -u maulepilot117
+#
+# P3-9 (2026-05-22 audit): the script no longer defaults to \`latest\`.
+# Pass an explicit tag — typically a \`v<chartAppVersion>\` release tag
+# or a \`sha-<git-short-sha>\` build tag — so the resulting image is
+# immutable from the moment it leaves the build host. CI handles
+# the floating \`latest\` tag separately and only on the release path.
 
 set -euo pipefail
 
-TAG="${1:-latest}"
+if [ -z "${1:-}" ]; then
+  echo "error: tag argument is required (e.g. v0.42.0 or sha-\$(git rev-parse --short HEAD))" >&2
+  echo "       avoid \`latest\` — see P3-9 of the 2026-05-22 security audit" >&2
+  exit 2
+fi
+TAG="$1"
+
+# Phase 7 ce-code-review ADV-6: empty-arg guard above closed the
+# accidental-no-arg path, but `./build-push.sh latest` still bypassed
+# the audit's intent. Reject the mutable-shaped tag names explicitly
+# so an operator habit of typing them stops at the script boundary
+# rather than landing a floating image into GHCR.
+case "$TAG" in
+  latest|stable|release|prod|main|master|dev|nightly)
+    echo "error: tag '$TAG' is mutable / floating — refusing to push" >&2
+    echo "       use a versioned tag (v0.42.0) or a sha-<commit> build tag" >&2
+    echo "       see P3-9 of the 2026-05-22 security audit" >&2
+    exit 2
+    ;;
+esac
 REGISTRY="ghcr.io/maulepilot117"
 BACKEND_IMAGE="${REGISTRY}/k8scenter-backend:${TAG}"
 FRONTEND_IMAGE="${REGISTRY}/k8scenter-frontend:${TAG}"

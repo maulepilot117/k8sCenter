@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -91,6 +92,15 @@ type LDAPConfig struct {
 	GroupNameAttr   string   `koanf:"groupnameattr"`
 	UsernameMapAttr string   `koanf:"usernamemapattr"`
 	GroupsPrefix    string   `koanf:"groupsprefix"`
+	// InsecurePlaintext lets an operator opt in to a plaintext
+	// ldap:// bind without StartTLS. Defaults to false — the config
+	// validator refuses to start with `ldap://` URLs unless either
+	// StartTLS is true or this flag is explicitly set. The flag exists
+	// so test / homelab fixtures that talk to a directory inside a
+	// trusted network can still boot, but it must be a conscious
+	// operator decision per LDAP provider rather than a silent
+	// behaviour. Audit finding P3-1 (2026-05-22).
+	InsecurePlaintext bool `koanf:"insecureplaintext"`
 }
 
 type ServerConfig struct {
@@ -227,6 +237,43 @@ func (c *Config) validate() error {
 	case "json", "text":
 	default:
 		return fmt.Errorf("log.format must be json|text, got %q", c.Log.Format)
+	}
+
+	// P3-1 (2026-05-22 audit): reject plaintext LDAP binds unless the
+	// operator explicitly opted in via `auth.ldap[].insecureplaintext`.
+	// `ldap://` without StartTLS sends the service-account credentials
+	// and every user bind in cleartext, so an on-path attacker captures
+	// every login. Operators with a legitimate plaintext-on-trusted-LAN
+	// use case must set the flag per provider; everyone else fails
+	// closed with a directly actionable startup error.
+	//
+	// Phase 7 ce-code-review C-1: scheme comparison runs through
+	// url.Parse + lowercase rather than strings.HasPrefix, because
+	// go-ldap's ldap.DialURL lowercases the scheme before dispatching
+	// (so `LDAP://`, `Ldap://`, and `ldap://` all dial plaintext TCP).
+	// A case-sensitive HasPrefix gate would silently miss the
+	// uppercase forms.
+	for i, l := range c.Auth.LDAP {
+		if l.URL == "" {
+			continue
+		}
+		u, err := url.Parse(l.URL)
+		if err != nil {
+			// Malformed URL surfaces as an LDAP dial failure later;
+			// the gate is not responsible for syntax checks.
+			continue
+		}
+		if strings.ToLower(u.Scheme) != "ldap" {
+			continue
+		}
+		if l.StartTLS || l.InsecurePlaintext {
+			continue
+		}
+		id := l.ID
+		if id == "" {
+			id = fmt.Sprintf("auth.ldap[%d]", i)
+		}
+		return fmt.Errorf("auth.ldap %q uses ldap:// without StartTLS: switch the URL to ldaps://, set starttls=true, or explicitly set insecureplaintext=true to acknowledge the risk", id)
 	}
 
 	return nil

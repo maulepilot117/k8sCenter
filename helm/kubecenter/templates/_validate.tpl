@@ -44,6 +44,22 @@ The parity test in backend/internal/config/known_leaked_helm_parity_test.go enfo
 {{- end -}}
 {{- end -}}
 
+{{- /* ── Image tags (P3-9 2026-05-22 audit) ──────────────────────────────
+The values-homelab.yaml.example file now uses REPLACE_ME_*_TAG
+placeholders for backend.image.tag and frontend.image.tag instead of
+the previous `latest` defaults. The CHANGELOG promises this guard
+refuses to render until the operator picks a real tag — match that
+promise here so a fresh homelab install does not deploy pods that
+ImagePullBackOff on the placeholder string. Audit finding P3-9 +
+Phase 7 ce-code-review AN-1.
+*/}}
+{{- if and .Values.backend.image.tag (hasPrefix "replace_me_" (lower .Values.backend.image.tag)) -}}
+{{- fail "backend.image.tag contains a REPLACE_ME placeholder. Replace it with a versioned tag (e.g. v0.42.0) or a sha-<commit> build tag before deploying. See values-homelab.yaml.example. Finding P3-9." -}}
+{{- end -}}
+{{- if and .Values.frontend.image.tag (hasPrefix "replace_me_" (lower .Values.frontend.image.tag)) -}}
+{{- fail "frontend.image.tag contains a REPLACE_ME placeholder. Replace it with a versioned tag (e.g. v0.42.0) or a sha-<commit> build tag before deploying. See values-homelab.yaml.example. Finding P3-9." -}}
+{{- end -}}
+
 {{- /* ── externalDatabase password ────────────────────────────────── */}}
 {{- if .Values.externalDatabase.host -}}
 {{- if and .Values.externalDatabase.password (hasPrefix "replace_me_" (lower .Values.externalDatabase.password)) -}}

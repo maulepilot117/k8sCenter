@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,150 @@ func TestValidationRejectsInvalidLogLevel(t *testing.T) {
 	_, err := Load("")
 	if err == nil {
 		t.Fatal("expected error for invalid log level, got nil")
+	}
+}
+
+// TestValidateLDAPPlaintextGate locks the P3-1 fail-closed contract:
+// `ldap://` URLs must declare StartTLS or explicitly opt in to a
+// plaintext bind. ldaps:// always passes regardless of the flag set.
+// Audit finding P3-1 (2026-05-22).
+func TestValidateLDAPPlaintextGate(t *testing.T) {
+	baseConfig := func() Config {
+		return Config{
+			Server: ServerConfig{Port: DefaultPort},
+			Log:    LogConfig{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		}
+	}
+
+	cases := []struct {
+		name    string
+		ldap    LDAPConfig
+		wantErr bool
+	}{
+		{
+			name:    "ldaps:// passes by default",
+			ldap:    LDAPConfig{ID: "corp", URL: "ldaps://ldap.example.com:636"},
+			wantErr: false,
+		},
+		{
+			name:    "ldap:// without StartTLS or opt-in is rejected",
+			ldap:    LDAPConfig{ID: "corp", URL: "ldap://ldap.example.com:389"},
+			wantErr: true,
+		},
+		{
+			name:    "ldap:// with StartTLS passes",
+			ldap:    LDAPConfig{ID: "corp", URL: "ldap://ldap.example.com:389", StartTLS: true},
+			wantErr: false,
+		},
+		{
+			name:    "ldap:// with explicit InsecurePlaintext opt-in passes",
+			ldap:    LDAPConfig{ID: "corp", URL: "ldap://ldap.example.com:389", InsecurePlaintext: true},
+			wantErr: false,
+		},
+		{
+			name:    "empty URL passes (LDAP provider effectively disabled)",
+			ldap:    LDAPConfig{ID: "corp", URL: ""},
+			wantErr: false,
+		},
+		{
+			name:    "ldap:// with both flags passes (StartTLS wins, opt-in irrelevant)",
+			ldap:    LDAPConfig{ID: "corp", URL: "ldap://ldap.example.com:389", StartTLS: true, InsecurePlaintext: true},
+			wantErr: false,
+		},
+		{
+			// Phase 7 ce-code-review C-1: go-ldap lowercases scheme
+			// before dispatching, so uppercase variants dial plaintext.
+			// The gate must catch them.
+			name:    "uppercase LDAP:// is rejected like lowercase ldap://",
+			ldap:    LDAPConfig{ID: "corp", URL: "LDAP://ldap.example.com:389"},
+			wantErr: true,
+		},
+		{
+			name:    "mixed-case Ldap:// is rejected like lowercase ldap://",
+			ldap:    LDAPConfig{ID: "corp", URL: "Ldap://ldap.example.com:389"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := baseConfig()
+			cfg.Auth.LDAP = []LDAPConfig{tc.ldap}
+			err := cfg.validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for %+v, got nil", tc.ldap)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for %+v: %v", tc.ldap, err)
+			}
+		})
+	}
+}
+
+// TestValidateLDAPPlaintextGateMultiProvider confirms a single bad
+// provider in a list of otherwise valid ones still fails closed, and
+// the error message names the offending provider so operators can
+// fix it without guessing.
+func TestValidateLDAPPlaintextGateMultiProvider(t *testing.T) {
+	cfg := Config{
+		Server: ServerConfig{Port: DefaultPort},
+		Log:    LogConfig{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Auth: AuthConfig{
+			LDAP: []LDAPConfig{
+				{ID: "ldaps-corp", URL: "ldaps://corp.example.com:636"},
+				{ID: "ldap-legacy", URL: "ldap://legacy.example.com:389"},
+			},
+		},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for plaintext provider in mixed list, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "ldap-legacy") {
+		t.Fatalf("expected error to name ldap-legacy provider, got %q", got)
+	}
+}
+
+// TestValidateLDAPPlaintextGateUnnamedProvider exercises the fallback
+// label when an operator omits the provider ID — the error should use
+// the index so the operator can still locate the misconfigured entry.
+func TestValidateLDAPPlaintextGateUnnamedProvider(t *testing.T) {
+	cfg := Config{
+		Server: ServerConfig{Port: DefaultPort},
+		Log:    LogConfig{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Auth: AuthConfig{
+			LDAP: []LDAPConfig{{URL: "ldap://anon.example.com:389"}},
+		},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for plaintext provider with empty ID, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "auth.ldap[0]") {
+		t.Fatalf("expected error to fall back to indexed label, got %q", got)
+	}
+}
+
+// TestValidateLDAPPlaintextGateUnnamedProviderAtIndex confirms the
+// indexed-label fallback names the offending provider's actual
+// position, not a hardcoded 0. Phase 7 ce-code-review T-3.
+func TestValidateLDAPPlaintextGateUnnamedProviderAtIndex(t *testing.T) {
+	cfg := Config{
+		Server: ServerConfig{Port: DefaultPort},
+		Log:    LogConfig{Level: DefaultLogLevel, Format: DefaultLogFormat},
+		Auth: AuthConfig{
+			LDAP: []LDAPConfig{
+				{ID: "named", URL: "ldaps://named.example.com:636"},
+				{URL: "ldap://unnamed-second.example.com:389"},
+			},
+		},
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for unnamed plaintext provider at index 1, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, "auth.ldap[1]") {
+		t.Fatalf("expected error to name auth.ldap[1], got %q", got)
 	}
 }
 

@@ -18,8 +18,8 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       helm: ${{ steps.filter.outputs.helm }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
         id: filter
         with:
           filters: |
@@ -41,11 +41,16 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.26"
+          # P2-11 (2026-05-22 audit): pin to 1.26.3 to clear the
+          # reachable govulncheck advisories landed in stdlib at that
+          # patch — staying on the "1.26" floating prefix would lag
+          # the security patch on CI runners cached from an earlier
+          # minor.
+          go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
 
       - name: Check cluster-routing discipline
@@ -77,9 +82,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@667a34cdef165d8d2b2e98dde39547c9daac7282 # v2.0.4
         with:
           deno-version: v2.x
 
@@ -101,15 +106,22 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Run actionlint
         # actionlint catches workflow YAML syntax errors and
         # expression-language mistakes (typos in needs.<job>.outputs,
         # unknown contexts, etc.) before push-to-main. Runs on every
         # PR — not gated on path filters since workflow changes can
         # land in any PR.
+        #
+        # P3-9 (2026-05-22 audit): pin the download script to the
+        # rhysd/actionlint v1.7.5 commit SHA rather than reading it
+        # from the floating `main` branch — a malicious push to main
+        # of that repo would otherwise execute arbitrary code under
+        # GITHUB_TOKEN. The script then installs actionlint 1.7.5
+        # itself, which is a separate signed release.
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.5
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/e11169d0656294827d65370a3c76a2325406da85/scripts/download-actionlint.bash) 1.7.5
           ./actionlint -color
 
   helm:
@@ -120,9 +132,9 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.helm == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: "v3.16.2"
 

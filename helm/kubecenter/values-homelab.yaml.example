@@ -21,7 +21,14 @@ replicaCount: 1
 backend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-backend
-    tag: latest  # overridden at runtime by argocd-image-updater → sha-<commit>
+    # P3-9 (2026-05-22 audit): \`latest\` is mutable. Pin to a specific
+    # \`sha-<commit>\` (every merge to main publishes one) or the
+    # current \`v<chartAppVersion>\` release. Argocd-image-updater
+    # rewrites this in place, so the value here is the bootstrap
+    # value used before the first sync — it should not be \`latest\`
+    # on a fresh install of a publicly-reachable cluster. Pick the
+    # most recent \`v*\` tag from the GHCR package page.
+    tag: REPLACE_ME_BACKEND_TAG  # e.g. v0.42.0 or sha-abc1234
     pullPolicy: Always
   config:
     dev: true  # relaxes rate limiting to 60 req/min for homelab
@@ -29,7 +36,8 @@ backend:
 frontend:
   image:
     repository: ghcr.io/maulepilot117/k8scenter-frontend
-    tag: latest  # overridden at runtime by argocd-image-updater → sha-<commit>
+    # P3-9 (2026-05-22 audit): see backend.image.tag note above.
+    tag: REPLACE_ME_FRONTEND_TAG  # e.g. v0.42.0 or sha-abc1234
     pullPolicy: Always
   resources:
     requests:
