@@ -17,6 +17,20 @@ if [ -z "${1:-}" ]; then
   exit 2
 fi
 TAG="$1"
+
+# Phase 7 ce-code-review ADV-6: empty-arg guard above closed the
+# accidental-no-arg path, but `./build-push.sh latest` still bypassed
+# the audit's intent. Reject the mutable-shaped tag names explicitly
+# so an operator habit of typing them stops at the script boundary
+# rather than landing a floating image into GHCR.
+case "$TAG" in
+  latest|stable|release|prod|main|master|dev|nightly)
+    echo "error: tag '$TAG' is mutable / floating — refusing to push" >&2
+    echo "       use a versioned tag (v0.42.0) or a sha-<commit> build tag" >&2
+    echo "       see P3-9 of the 2026-05-22 security audit" >&2
+    exit 2
+    ;;
+esac
 REGISTRY="ghcr.io/maulepilot117"
 BACKEND_IMAGE="${REGISTRY}/k8scenter-backend:${TAG}"
 FRONTEND_IMAGE="${REGISTRY}/k8scenter-frontend:${TAG}"
