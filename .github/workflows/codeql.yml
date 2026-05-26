@@ -62,10 +62,10 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/init@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           languages: actions
-      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/analyze@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           category: "/language:actions"
 
@@ -86,11 +86,11 @@ jobs:
           # avoid lagging the stdlib security patch.
           go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
-      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/init@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           languages: go
-      - uses: github/codeql-action/autobuild@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
-      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/autobuild@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
+      - uses: github/codeql-action/analyze@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           category: "/language:go"
 
@@ -105,10 +105,10 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/init@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3.35.5
+      - uses: github/codeql-action/analyze@f411752efdf656cb71aa17b755b22c890960da1d # v3.35.5
         with:
           category: "/language:javascript-typescript"
 

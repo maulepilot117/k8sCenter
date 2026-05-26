@@ -146,7 +146,7 @@ jobs:
           trivyignores: ".trivyignore"
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        uses: github/codeql-action/upload-sarif@f25eda876ebb741d872b63b9f2c6dfdd77f14b83 # v4.35.5
         if: always()
         with:
           sarif_file: trivy-backend.sarif
@@ -233,7 +233,7 @@ jobs:
           trivyignores: ".trivyignore"
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        uses: github/codeql-action/upload-sarif@f25eda876ebb741d872b63b9f2c6dfdd77f14b83 # v4.35.5
         if: always()
         with:
           sarif_file: trivy-frontend.sarif
