@@ -122,8 +122,21 @@ auth:
   #   url: "ldaps://ldap.corp.com:636"
   #   bindDN: "CN=svc-k8scenter,OU=ServiceAccounts,DC=corp,DC=com"
   #   bindPassword: ""
+  #   # TLS posture (P3-1, 2026-05-22 audit). The backend refuses to
+  #   # start when url begins with ldap:// unless one of starttls or
+  #   # insecureplaintext is true. Set starttls=true to upgrade an
+  #   # ldap:// connection to TLS via the StartTLS extended op;
+  #   # leave both false when using ldaps:// (the default and
+  #   # recommended posture); set insecureplaintext=true ONLY when
+  #   # binding to a directory reachable exclusively on a trusted
+  #   # private network and TLS is genuinely not available.
+  #   starttls: false
+  #   insecureplaintext: false
+  #   tlsinsecure: false           # disable peer cert verification — DO NOT use in production
+  #   cacertpath: ""               # PEM bundle inside the container for custom CA
   #   userBaseDN: "DC=corp,DC=com"
   #   userFilter: "(sAMAccountName={0})"
+  #   userAttributes: ["dn", "uid", "mail", "cn", "sAMAccountName", "memberOf"]
   #   groupBaseDN: "DC=corp,DC=com"
   #   groupFilter: "(member={0})"
   #   groupNameAttr: "cn"
