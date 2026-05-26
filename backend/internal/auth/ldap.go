@@ -61,9 +61,14 @@ func NewLDAPProvider(config LDAPProviderConfig, logger *slog.Logger) *LDAPProvid
 		config: config,
 		logger: logger.With("ldap_provider", config.ID),
 	}
-	// Warn if credentials will be sent in plaintext
+	// P3-1 (2026-05-22 audit): when the operator explicitly opted in
+	// via auth.ldap[].insecureplaintext, the config validator already
+	// allowed boot but the runtime should remind on every restart that
+	// service-account + user-bind credentials are leaving the host in
+	// the clear. Without the opt-in, config.validate() would have
+	// returned an error before reaching this constructor.
 	if strings.HasPrefix(config.URL, "ldap://") && !config.StartTLS {
-		p.logger.Warn("LDAP connection is plaintext — credentials will be transmitted unencrypted. Use ldaps:// or enable StartTLS.")
+		p.logger.Warn("LDAP connection is plaintext — credentials will be transmitted unencrypted. Operator opted in via insecureplaintext=true; switch to ldaps:// or enable StartTLS for production.")
 	}
 	return p
 }

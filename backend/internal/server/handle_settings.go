@@ -75,9 +75,11 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodySize)
 
 	var req struct {
-		URL          string `json:"url"`
-		BindDN       string `json:"bindDN"`
-		BindPassword string `json:"bindPassword"`
+		URL               string `json:"url"`
+		BindDN            string `json:"bindDN"`
+		BindPassword      string `json:"bindPassword"`
+		StartTLS          bool   `json:"startTLS"`
+		InsecurePlaintext bool   `json:"insecurePlaintext"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
 		writeJSON(w, http.StatusBadRequest, api.Response{
@@ -87,9 +89,20 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate scheme (LDAP connections only)
-	if u, err := url.Parse(req.URL); err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") {
+	u, err := url.Parse(req.URL)
+	if err != nil || (u.Scheme != "ldap" && u.Scheme != "ldaps") {
 		writeJSON(w, http.StatusBadRequest, api.Response{
 			Error: &api.APIError{Code: 400, Message: "LDAP URL must use ldap:// or ldaps://"},
+		})
+		return
+	}
+	// P3-1: refuse to test a plaintext LDAP bind unless the caller
+	// explicitly acknowledged the risk. Mirrors the startup gate in
+	// config.validate() so the admin UI cannot probe a configuration
+	// the running backend would refuse to load.
+	if u.Scheme == "ldap" && !req.StartTLS && !req.InsecurePlaintext {
+		writeJSON(w, http.StatusBadRequest, api.Response{
+			Error: &api.APIError{Code: 400, Message: "ldap:// without StartTLS sends credentials in plaintext; set startTLS=true, use ldaps://, or set insecurePlaintext=true to acknowledge the risk"},
 		})
 		return
 	}
@@ -102,10 +115,12 @@ func (s *Server) handleTestLDAP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	provider := auth.NewLDAPProvider(auth.LDAPProviderConfig{
-		ID:           "test",
-		URL:          req.URL,
-		BindDN:       req.BindDN,
-		BindPassword: req.BindPassword,
+		ID:                "test",
+		URL:               req.URL,
+		BindDN:            req.BindDN,
+		BindPassword:      req.BindPassword,
+		StartTLS:          req.StartTLS,
+		InsecurePlaintext: req.InsecurePlaintext,
 	}, s.Logger)
 
 	if err := provider.TestConnection(r.Context()); err != nil {
