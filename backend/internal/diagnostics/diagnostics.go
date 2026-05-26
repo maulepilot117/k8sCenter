@@ -54,6 +54,33 @@ type DiagnosticTarget struct {
 	Events    []*corev1.Event
 }
 
+// RelatedRBAC describes which related-resource resolutions the requesting user
+// is permitted to perform during diagnostic resolution. P3-3 security audit
+// 2026-05-22: without this gate, diagnostics leaked pod names, owner-reference
+// chains, restart/failure states, and image-pull details to users who could
+// only list the target kind (e.g. Deployments) but not its related kinds
+// (Pods, ReplicaSets).
+//
+// The zero value denies every related resolution — callers must opt in
+// explicitly after running SARs. nil RelatedRBAC means "no gating" (used by
+// tests and dev paths that pre-date the audit fix).
+type RelatedRBAC struct {
+	Pods        bool
+	ReplicaSets bool
+}
+
+// allowsPods reports whether the user can resolve related pods. nil means
+// permitted (legacy callers).
+func (r *RelatedRBAC) allowsPods() bool {
+	return r == nil || r.Pods
+}
+
+// allowsReplicaSets reports whether the user can resolve owner-chain
+// ReplicaSets (used only by the Deployment → ReplicaSet → Pod path).
+func (r *RelatedRBAC) allowsReplicaSets() bool {
+	return r == nil || r.ReplicaSets
+}
+
 // ruleEntry binds a named rule to its check function and applicable resource kinds.
 type ruleEntry struct {
 	name      string
@@ -159,7 +186,12 @@ func statusOrder(status string) int {
 }
 
 // Resolve fetches the target resource and its related pods from the lister.
-func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string) (*DiagnosticTarget, error) {
+//
+// related controls which related-resource resolutions are permitted; pass the
+// result of running SARs against the requesting user. nil means "no gating"
+// (legacy / test path — production callers always supply a non-nil value).
+// P3-3 security audit 2026-05-22.
+func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string, related *RelatedRBAC) (*DiagnosticTarget, error) {
 	target := &DiagnosticTarget{
 		Kind:      kind,
 		Name:      name,
@@ -176,12 +208,17 @@ func Resolve(ctx context.Context, lister topology.ResourceLister, namespace, kin
 	}
 	target.Object = obj
 
-	// Fetch related pods
-	pods, err := resolveRelatedPods(ctx, lister, namespace, kind, name, obj)
-	if err != nil {
-		slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
+	// Fetch related pods — gated by per-user RBAC for the kinds the resolution
+	// would traverse. When pod access is denied, target.Pods stays empty and
+	// downstream rules that depend on it (PodImagePullBackOff, etc.) report
+	// nothing rather than leaking pod-derived state.
+	if related.allowsPods() {
+		pods, err := resolveRelatedPods(ctx, lister, namespace, kind, name, obj, related)
+		if err != nil {
+			slog.Warn("failed to resolve related pods", "kind", kind, "name", name, "error", err)
+		}
+		target.Pods = pods
 	}
-	target.Pods = pods
 
 	// Note: ResourceLister does not expose ListEvents, so we skip event population.
 	// Events can be added later if the interface is extended.
@@ -259,7 +296,9 @@ func fetchObject(ctx context.Context, lister topology.ResourceLister, namespace,
 }
 
 // resolveRelatedPods finds pods associated with the target resource.
-func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string, obj runtime.Object) ([]*corev1.Pod, error) {
+// related gates which owner-chain kinds may be traversed (P3-3 security audit
+// 2026-05-22). The caller has already confirmed pod access is permitted.
+func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, namespace, kind, name string, obj runtime.Object, related *RelatedRBAC) ([]*corev1.Pod, error) {
 	allPods, err := lister.ListPods(ctx, namespace)
 	if err != nil {
 		return nil, err
@@ -276,7 +315,13 @@ func resolveRelatedPods(ctx context.Context, lister topology.ResourceLister, nam
 		return nil, nil
 
 	case "Deployment":
-		// Deployment -> ReplicaSet -> Pod (match via ownerReference chain)
+		// Deployment -> ReplicaSet -> Pod (match via ownerReference chain).
+		// P3-3: if the user can't list ReplicaSets, skip the chain rather than
+		// leak the owner-reference inventory. The resulting pod list will be
+		// empty for this kind, which downstream rules treat as "no signal".
+		if !related.allowsReplicaSets() {
+			return nil, nil
+		}
 		replicaSets, err := lister.ListReplicaSets(ctx, namespace)
 		if err != nil {
 			return nil, err

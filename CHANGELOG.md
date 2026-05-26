@@ -12,6 +12,311 @@ correlate findings back to the audit reports under `docs/security/`.
 
 ---
 
+## Phase 6 — Scoping leaks (2026-05 audit)
+
+Phase 6 closes four backend audit findings concerned with information leakage
+across RBAC boundaries: P3-2 (CRD discovery + counts leak operator inventory),
+P3-3 (diagnostics disclose pod/ReplicaSet details without pod RBAC), P3-4
+(CRD update audit can record a different name than the object actually
+updated), and P3-5 (Loki `/logs/labels` returns unscoped global label names).
+The audit report is `plans/security-audit-2026-05-22.md`. All four findings
+are backend Go work — no mobile, Helm, or web-frontend changes.
+
+### Non-breaking changes
+
+- **CRD inventory + counts filtered by per-user RBAC** (audit P3-2).
+  `GET /api/v1/extensions/crds`, `GET /api/v1/extensions/crds/counts`, and
+  `GET /api/v1/extensions/crds/{group}/{resource}` previously returned the
+  full cluster-wide CRD inventory to any authenticated user, leaking the
+  operator's installed-feature surface (External Secrets, cert-manager,
+  GitOps, mesh, vulnerability scanners, etc.). Each endpoint now runs a
+  cluster-wide `SelfSubjectAccessReview` for `verb=list` on every CRD's
+  group+resource before including it in the response. The shared CRD
+  discovery + count caches stay — counts are non-sensitive cluster
+  aggregates — but the response is filtered per-request. Admins bypass the
+  filter (matches the existing audit-log + secret-mask conventions). When
+  the SSAR call itself errors, the entry is omitted and a warning is
+  logged: fail-closed.
+
+- **Diagnostics related-resource RBAC** (audit P3-3).
+  `GET /api/v1/diagnostics/{ns}/{kind}/{name}` previously checked only the
+  target kind's RBAC, then `Resolve()` listed pods and (for Deployments)
+  ReplicaSets from the informer cache — leaking pod names, owner-reference
+  chains, restart/failure states, and image-pull details to users who had
+  RBAC on Deployments/Services but not Pods/ReplicaSets. The handler now
+  precomputes a `RelatedRBAC{Pods, ReplicaSets}` struct via SSARs against
+  the request's cluster context and passes it through `Resolve` →
+  `resolveRelatedPods`. Denial is graceful — the related branch is
+  skipped, downstream rules see an empty pod list, and the caller still
+  receives the target-kind diagnostic findings. Lookup tables
+  (`kindNeedsPods`, `kindNeedsReplicaSets`) drive which SSARs run for each
+  target kind; pre-existing kinds without a pod traversal (PVC today) skip
+  the pod check entirely.
+
+- **CRD update URL/body identity mismatch rejected** (audit P3-4).
+  `PUT /api/v1/extensions/resources/{group}/{resource}/{ns}/{name}`
+  previously accepted any `metadata.name` / `metadata.namespace` in the
+  request body, sent the body to the apiserver, and audited the URL name
+  on success — letting a request URL name `foo` while the audit logged
+  edits to `bar`, weakening forensics. A new pure helper
+  `validateCRDUpdateIdentity` rejects body/URL mismatches with HTTP 400
+  before any Kubernetes API call (empty body fields are still accepted —
+  k8s tolerates omitting them on UPDATE). On success the audit entry now
+  carries the apiserver-returned object's name + namespace rather than
+  the URL values — the contract holds even if the mismatch guard is ever
+  loosened.
+
+- **Loki `/logs/labels` admin-gated** (audit P3-5).
+  `GET /api/v1/logs/labels` previously called Loki's global `/loki/api/v1/labels`
+  endpoint for any authenticated user. The pre-existing
+  `buildNamespaceScopeQuery` plumbing was constructed but discarded
+  unused — Loki's `/labels` endpoint only accepts a `query` parameter in
+  2.4+ and even then doesn't reliably scope label *names* (the index may
+  surface labels seen anywhere). Rather than rely on Loki version + query
+  rewriting, the endpoint is now `middleware.RequireAdmin`-gated at the
+  route layer. The scoped `/logs/labels/{name}/values` path stays
+  available to non-admins because it already enforces a namespace-scoped
+  LogQL selector via `enforceQueryNamespaces`. The dead scope-query code
+  in `HandleLabels` was removed.
+
+### Operator notes
+
+- **Non-admin CRD inventory shrinks.** Users with namespace-only Role
+  bindings (rather than cluster-wide ClusterRole bindings) will no longer
+  see those CRDs in `GET /extensions/crds` — the SSAR for cluster-wide
+  list returns Allowed=false. They can still list instances directly via
+  `GET /extensions/resources/{group}/{resource}/{ns}` (the namespaced
+  path enforces RBAC at the apiserver). If users report missing operators
+  in the resource sidebar, verify their cluster-wide list permissions on
+  the CRD's GVR (e.g., `kubectl auth can-i list <resource>.<group>`).
+
+- **`/api/v1/logs/labels` now returns 403 for non-admins.** Operators
+  using the UI's "label browser" surface should grant the user the
+  `admin` role, or use `/logs/labels/{name}/values?namespace=<ns>` for
+  the same data scoped to a single namespace.
+
+- **Diagnostics may show fewer pod-derived findings for some users.** A
+  user with Deployment-list but no Pod-list permission will see the
+  Deployment-level diagnostic rules but no `PodImagePullBackOff`-style
+  pod-derived results. The behavior matches existing platforms that
+  silently omit RBAC-denied related resources.
+
+- **Per-request SSAR cost.** P3-2 + P3-3 add per-request `SelfSubjectAccessReview`
+  calls to the relevant endpoints. The existing `AccessChecker` 60s cache
+  amortizes these — first request per user-per-minute pays the SAR cost,
+  subsequent requests hit the cache. For clusters with very large CRD
+  counts (200+), the first inventory load may take a noticeable beat;
+  subsequent loads within 60s are sub-millisecond.
+
+### Verification
+
+- `go vet ./...` — clean repo-wide.
+- `go test ./...` — all backend packages pass. New tests:
+  - `internal/k8s/resources/crd_handler_p3_test.go` — 9 cases for
+    `validateCRDUpdateIdentity` (empty fields, matching, name mismatch,
+    namespace mismatch, fail-fast precedence, cluster-scoped resource
+    handling); 8 cases for `splitGroupResourceKey` (normal, edge,
+    malformed inputs).
+  - `internal/diagnostics/rbac_p3_test.go` — 5 cases for `RelatedRBAC`
+    allow/deny semantics (nil-permissive, zero-deny, partial, full),
+    plus a lookup-table lock for `kindNeedsPods` / `kindNeedsReplicaSets`
+    so regressions either over-broaden or under-cover detectably.
+- `cd frontend && deno lint .` — clean repo-wide. (Pre-existing format
+  drift in 504 frontend files and 40 type-check errors in
+  `routes/api/[...path].ts` are not caused by Phase 6 — Phase 6 touches
+  zero frontend files. These are deferred to a separate frontend
+  housekeeping pass.)
+
+### Applied during Phase 6 code review (one round of `/ce-code-review`)
+
+The review surfaced 30+ findings across 11 reviewers; five
+high-confidence ones were applied inline before push:
+
+- **`apiGroupForResource` missing "replicasets"** (adversarial adv-1, P1,
+  confidence 90). The new P3-3 SSAR for ReplicaSet RBAC was issuing
+  `{Group:"", Resource:"replicasets"}` because `apiGroupForResource`
+  omitted `replicasets`. Apiserver evaluates that as a core resource
+  that doesn't exist → Allowed=false for every realistic RBAC → silently
+  breaks the entire Deployment→ReplicaSet→Pod traversal for non-admins.
+  Invisible at runtime (no error, no panic, just an empty diagnostic).
+  Added `replicasets` to the `apps` group and locked the contract with
+  `TestApiGroupForResource_ReplicaSetsInApps`. This was the single most
+  valuable review finding — without it the P3-3 fix would have shipped
+  defeated.
+
+- **Diagnostics graceful degradation on SAR error** (reliability REL-003
+  + adversarial adv-5, cross-corroborated, P2). `resolveRelatedRBAC`
+  previously returned `(nil, err)` on any SAR transport error, fanning
+  out to HTTP 500. This contradicted the documented graceful-degradation
+  contract — a transient apiserver SAR blip would convert every
+  Deployment diagnostic into a hard 500. Now logs at Warn and treats SAR
+  errors as denial (the resource branch is skipped). Behavioral coverage
+  added via `TestResolveRelatedRBAC_AllowVsDeny`.
+
+- **Parallel CRD RBAC fan-out** (reliability REL-001 + performance
+  PERF-1, cross-corroborated, confidence 90+). `HandleListCRDs` and
+  `HandleCRDCounts` were looping `CanAccessGroupResource` serially over
+  every discovered CRD — on a cold cache with 200 CRDs at 30ms per SAR,
+  that's 6 seconds of blocked handler time per request. The same file's
+  `crd_discovery.go fetchCounts` already had the template
+  (`countConcurrency=5` + semaphore + WaitGroup). Extracted shared
+  `batchCRDListAccess` helper that fans out SARs with bounded concurrency
+  and returns an allow set; both handlers drop from N-step serial loops
+  to a single fan-out + filter walk.
+
+- **Audit-name fallback** (security sec-3, P2). Belt-and-suspenders for
+  the P3-4 audit-success path: if the apiserver ever returns an Update
+  result with empty `metadata.name` or `metadata.namespace` (edge case,
+  currently unreachable), fall back to the URL-validated values so the
+  audit identity is never blank.
+
+- **`strings.Contains` over custom helper** (maintainability MAINT-02,
+  P2, confidence 100). `crd_handler_p3_test.go` had a hand-rolled
+  `contains` function duplicating `strings.Contains` byte-by-byte.
+  Replaced with the stdlib call.
+
+### Known follow-ups (Phase 6 deferred — single review round)
+
+Phase 6 follows the Phase 3-5 cadence: one round of `/ce-code-review`
+plus this documented follow-up list rather than chasing every regression
+through additional cycles. The deferred items below are tracked here
+for the next audit:
+
+- **`AccessChecker` field is silently optional** (maintainability
+  MAINT-01, P1, confidence 90). `GenericCRDHandler.AccessChecker` is a
+  pointer field documented as "nil disables the P3-2 RBAC filter."
+  Production `main.go` always wires it correctly, but any future test
+  fixture or factory that omits it silently bypasses the audit fix
+  without compile-time signal. A `NewGenericCRDHandler` constructor
+  would make it required at the type level. Deferred because the fix
+  requires updating every existing construction site and refactoring
+  the test fixtures.
+
+- **Optional `RelatedRBAC` nil-permissive contract** (adversarial
+  adv-3, P2). Same shape as MAINT-01 but for the diagnostics
+  `RelatedRBAC` type. Documented contract; production handler always
+  passes non-nil. Future hardening would require non-nil at construction.
+
+- **CRD-existence 404-vs-403 side channel** (adversarial adv-2 +
+  security sec-1, P3, cross-corroborated). `HandleGetCRD` returns 404
+  for unknown CRDs and 403 for unauthorized — a non-admin can probe
+  well-known CRD names (`cert-manager.io/certificates`,
+  `external-secrets.io/externalsecrets`, etc.) and observe 404 vs 403
+  to enumerate operator-deployed surface. Reduces P3-2 from a hard
+  inventory hide to a friction barrier. Closing this would require
+  collapsing 404 and 403 to 404 on discovery endpoints for non-admins
+  (trades operator UX for a closed side channel).
+
+- **Loki `/labels/{name}/values` per-namespace label-name probe**
+  (adversarial adv-6, P3). P3-5 admin-gates `/labels` but
+  `/labels/{name}/values` is still non-admin. Loki returns 200 with
+  empty data for unknown labels, so a non-admin can probe
+  `/labels/{guessed-name}/values?namespace=permitted-ns` and infer label
+  existence in their permitted namespaces. Residual schema-discovery
+  leak for broadly-scoped users.
+
+- **CRD update audit `ResourceKind` precision** (deferred from initial
+  Phase 6). P3-4 fixed `ResourceName` + `ResourceNamespace` but still
+  audits the URL-derived `gvr.Resource` for `ResourceKind`. Future work
+  could derive the audit kind from `updated.GroupVersionKind()`.
+
+- **Diagnostics graceful-degradation visibility** (cross-corroborated,
+  P2). When pod/ReplicaSet RBAC denies the related-pod resolution, the
+  diagnostic response shape is identical to "no failing pods found" —
+  no signal to the operator. A future addition could surface
+  `relatedResourcesSkipped: ["pods", "replicasets"]` so the UI can
+  render a "view-only restricted" badge. Agent-native review (warning
+  #1) and api-contract review (AC-006) both flagged this independently.
+
+- **Mobile loki autocomplete + `/logs/labels` admin gate** (agent-native
+  warning #2, API contract AC-005). Mobile `loki_repository.dart`'s
+  `labels()` method calls the bare `/api/v1/logs/labels` endpoint and
+  will silently return `[]` on the new 403 for non-admin users — label
+  autocomplete in the M4 LogQL editor will show an empty dropdown
+  without explanation. Web `LogFilterBar.tsx` is unaffected (already
+  uses `/labels/{name}/values`). A small mobile follow-up PR should
+  either (a) detect the 403 and render a "label autocomplete requires
+  admin role" hint, or (b) switch to per-label calls on the known set
+  `{namespace, pod, container, app}` matching the web pattern.
+
+- **CRD inventory cache singleflight** (performance PERF-3 + reliability
+  REL-002, P2). After REL-001/PERF-1 parallelized the SAR fan-out, up
+  to 5 goroutines can concurrently cold-miss the same `(user, GVR)` SAR
+  cache key and each issue an independent SAR. `crd_discovery.go`
+  already demonstrates the fix via `countGroup.Do()` (singleflight).
+  Trade-off documented; future optimization candidate.
+
+- **Per-request `sortedGroups` allocation** (performance PERF-4, P3,
+  confidence 75). `sortedGroups` allocates + sorts on every
+  `CanAccess` / `CanAccessGroupResource` call. In a 200-CRD parallel
+  fan-out that's 200 small allocations + trivial sorts per non-admin
+  inventory request. Hoist once per handler invocation if profiling
+  identifies it.
+
+- **`CanAccess` vs `CanAccessGroupResource` cache key shape mismatch**
+  (performance PERF-2, P2). The two methods use structurally different
+  cache key shapes (raw `resource` vs `apiGroup/resource`). No collision
+  today, but any gap in `apiGroupForResource` silently doubles the SAR
+  count for affected resources. Unify the cache key schema.
+
+- **`splitGroupResourceKey` lives in `crd_handler.go` but the key format
+  is owned by `CRDDiscovery`** (maintainability MAINT-03, P2). Move to
+  `crd_discovery.go` as exported `ParseCRDKey` so the producer + parser
+  live in the same file.
+
+- **`validateCRDUpdateIdentity` positional 3-return** (maintainability
+  MAINT-04, P3). Cosmetic — convert to named returns `(msg, detail
+  string, ok bool)` for callsite clarity.
+
+- **Cluster-scoped CRD update accepts stray bodyNS** (correctness +
+  security sec-2, P3, cross-corroborated). When `scope==Cluster` the
+  namespace mismatch check is skipped entirely, so `bodyNS="kube-system"`
+  passes validation on a cluster-scoped resource. Apiserver ignores it,
+  audit anchors to `updated.GetNamespace()` (empty), no exploit — but
+  inconsistent with the body-name mismatch behavior. Add a "reject any
+  non-empty bodyNS when scope==Cluster" branch.
+
+- **Multi-slash key handling in `splitGroupResourceKey`** (adversarial
+  adv-7, P3). Today the helper returns `ok=true` for `a.b/c/d` →
+  resource=`"c/d"`. Unreachable in production (CRD groups + resources
+  are DNS subdomains), but if `CRDDiscovery` is extended to track
+  subresource keys (`group/resource/scale`), the SAR would receive
+  `Resource="resource/scale"` which apiserver doesn't interpret as
+  subresource → silent over-deny. Reject multi-slash keys.
+
+- **60s SAR cache TTL on positive decisions** (security sec-4, P3).
+  Pre-existing behavior — a demoted user can still see CRD inventory
+  + pod-derived diagnostic findings for up to 60s after their
+  `ClusterRoleBinding` is removed. Not introduced by Phase 6 but
+  amplified by it. Mitigations: cache only negative decisions, or
+  shorter TTL for CRD-list SARs.
+
+- **15-finding deferred list** documented above tracks remaining
+  feedback items from the testing, reliability, performance, security,
+  maintainability, project-standards, agent-native, and api-contract
+  reviewers. Cross-reviewer themes that surfaced but weren't applied:
+  HTTP-handler integration test coverage (testing reviewer's primary
+  ask); breaking-change documentation in CLAUDE.md API Design section
+  (api-contract reviewer AC-001 through AC-006); STEP 0 rule scoping
+  for the Loki dead-code removal (project-standards PS-001 — the dead
+  `_ = scopeQuery` was removed in the same P3-5 commit as the
+  structural change, which the project-standards reviewer flagged as
+  a Rule 1 violation; the change is mechanically equivalent and the
+  separation cost would not have produced clearer reviewability).
+
+### Out of scope for Phase 6
+
+The audit's remaining findings are tracked for subsequent phases:
+
+- **Phase 7** (supply chain + LDAP TLS): P2-11 govulncheck-clean Go
+  toolchain + `golang.org/x/net` bump, P3-1 LDAP plaintext bind reject,
+  P3-9 image digest pinning + gating Trivy.
+
+Phase 4 deferred follow-ups (12 items) and Phase 5 deferred follow-ups
+(13 items) remain open and tracked in earlier CHANGELOG sections.
+
+---
+
 ## Phase 5 — Mobile UX hardening (2026-05 audit)
 
 Phase 5 closes four mobile-side audit findings: P2-9 (FCM device
