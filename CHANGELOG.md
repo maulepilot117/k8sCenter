@@ -35,7 +35,7 @@ script. No frontend or mobile code changes.
   startup error names the offending provider (or falls back to
   `auth.ldap[N]` when the operator omitted `id`) so the fix is
   immediate. The matching admin LDAP test endpoint
-  (`POST /api/v1/settings/test/ldap`) mirrors the gate: requests with
+  (`POST /api/v1/settings/auth/test-ldap`) mirrors the gate: requests with
   `ldap://` URLs return HTTP 400 unless the request body sets `startTLS`
   or `insecurePlaintext`. Operators upgrading from Phase 6 with
   `ldap://` providers and no StartTLS will not boot until they choose
@@ -129,6 +129,96 @@ script. No frontend or mobile code changes.
   built-in `dependabot[bot]`. No extra GitHub App install required.
   PRs land with `dependencies` + per-ecosystem labels (`go`,
   `docker`, `github-actions`) for branch-protection filtering.
+
+### Phase 7 ce-code-review — deferred follow-ups
+
+The 11-reviewer ce-code-review pass on this PR surfaced 30+ findings.
+Six high-confidence findings were applied inline (R1 Helm LDAP env
+propagation; R2 case-insensitive scheme check + REPLACE_ME image
+tag guard; R3 CHANGELOG route fix + this list; R4 handleTestLDAP
+tests + `contains` helper cleanup; R5 build-push.sh mutable-tag
+reject; R6 values.yaml LDAP doc). The remaining findings are tracked
+here for follow-up PRs so signal does not get lost:
+
+- **ADV-2 (P2, handler hardening)**: `handleTestLDAP` accepts
+  `insecurePlaintext: true` from the request body and forwards
+  `bindPassword` to attacker-controlled `ldap://` hosts once the
+  admin clicks the acknowledgement. SSRF + admin-only mitigates
+  most of the risk, but the path exists. Consider an internal-host
+  allowlist for plaintext targets or stronger UX confirmation.
+- **ADV-3 / S-1 (P2, supply chain)**: `backend/Dockerfile` and
+  `frontend/Dockerfile` use tag-pinned base images (`golang:1.26.3-alpine`,
+  `distroless/static-debian12:nonroot`, `denoland/deno:2.7.11`,
+  `debian:trixie`) rather than digest-pinned. Audit P3-9 asked for
+  digest pinning; Phase 7 closed it for GitHub Actions but not for
+  Docker base images. Follow-up: resolve current digests after the
+  7-day cooldown, pin with `FROM image:tag@sha256:<digest>`, let
+  dependabot keep them fresh.
+- **S-2 (P3, actionlint tarball)**: ci.yml `actionlint` job pins the
+  bootstrap script SHA, but the script downloads the actionlint
+  1.7.5 release tarball without a sha256 verification step. Vendor
+  the binary's expected sha256 or migrate to a SHA-pinned
+  `rhysd/actionlint` GitHub Action when one ships.
+- **S-5 (P3, defense-in-depth)**: `auth.NewLDAPProvider` constructor
+  does not refuse plaintext; the gate lives only in `config.validate()`
+  and `handleTestLDAP`. A future caller could regress the contract.
+  Move the gate into the constructor (return `(*LDAPProvider, error)`)
+  so adding a new entry point cannot bypass it.
+- **R-3 (P3, govulncheck CI gap)**: There is no CI step that re-runs
+  govulncheck. Phase 7 closed the audit's reachable advisories but
+  the closure is unverified post-merge. Add a `govulncheck` job
+  pinned to `golang/govulncheck-action@<sha>`, start in advisory
+  mode, flip to gating after one clean run.
+- **R-1 (P2, Trivy break-glass docs)**: The new `exit-code: 1` Trivy
+  gate has no documented break-glass for an emergency security
+  hotfix landing inside the 7-day cooldown. Add a runbook section to
+  `mobile/docs/RELEASE.md` (or a new `docs/release.md`) covering the
+  recovery order: (a) signed-distro errata override, (b) cooldown
+  delay, (c) `.trivyignore` with reviewer initials + date as the
+  last resort.
+- **R-6 (P3, audit logging)**: `handleTestLDAP` / `handleTestOIDC`
+  emit no audit log on success or failure. Admin-token enumeration
+  of arbitrary URLs is invisible. Add `audit.Log` calls at every
+  return path. Pre-existing — pre-dates Phase 7.
+- **C-2 / AC-2 (P2, frontend UI)**: `frontend/islands/AuthSettings.tsx`
+  does not have StartTLS / InsecurePlaintext checkboxes; the form
+  body POSTs `{url, bindDN, bindPassword}` only. After Phase 7
+  merges, every admin test of an `ldap://` config from the UI
+  returns 400. Follow-up frontend PR adds the toggles + threads
+  them through the API client.
+- **AC-4 (P3, Helm values.yaml docs)**: The LDAP example in
+  `helm/kubecenter/values.yaml` does not document the new
+  `starttls` / `insecureplaintext` keys. R6 in this PR adds them;
+  this entry tracks for completeness if it shifts to a follow-up.
+- **AC-5 (P3, CHANGELOG message verbatim)**: This CHANGELOG quotes
+  the runtime error message in prose rather than backticks. Future
+  doc drift would not surface in code review. Cosmetic — leave for
+  the next audit-doc refresh.
+- **T-2 (P3, koanf env-var decoding test)**: There is no test
+  exercising `KUBECENTER_AUTH_LDAP_0_INSECUREPLAINTEXT=true` through
+  the koanf loader. A typo in the koanf tag would fail open silently.
+- **T-5 (P3, runtime warning test)**: The `LDAP connection is
+  plaintext` warning has no slog-handler-capture test pinning the
+  message text. Low priority.
+- **M-2 (P3, dependabot group name)**: `golang-x` group name
+  diverges from the project's `k8s` short form. Cosmetic.
+- **AN-2 (observation, .trivyignore format)**: CI does not lint the
+  `.trivyignore` format. A future entry could land without a
+  reviewer-initials + date justification. Add a `scripts/check-trivyignore.sh`
+  in a follow-up.
+- **AN-3 (observation, Trivy machine-parseable surface)**: The
+  workflow logs are plain text; the canonical machine-parseable
+  surface is the SARIF artifact (`trivy-backend.sarif` /
+  `trivy-frontend.sarif`). Add a sentence to operator notes
+  pointing automation at SARIF.
+- **AN-4 (observation, dependabot grouping cooldown)**: Grouped
+  weekly PRs can mix sub-7-day and aged actions. Add a comment to
+  `.github/dependabot.yml` documenting that reviewers must verify
+  per-bump cooldowns, not assume the whole group cleared.
+- **`GO-2026-5026` (P3, x/net deferred)**: Re-bump
+  `golang.org/x/net` from `v0.54.0` to `v0.55.0`+ once the 7-day
+  cooldown elapses (target: 2026-05-29 or later). Closes the last
+  reachable advisory from the original audit.
 
 ### Out of scope for Phase 7
 
