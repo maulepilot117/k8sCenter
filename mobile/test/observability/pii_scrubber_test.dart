@@ -48,6 +48,32 @@ void main() {
       expect(out, 'build id ABC123abc456ABC123abc456ABC123');
     });
 
+    test('redacts an IPv4 quad in free-text exception messages', () {
+      // SocketException.toString() embeds the dialled address inline. Scrub
+      // the IP, keep the surrounding words.
+      final out =
+          scrubText('connection failed: address = 10.0.12.34, port = 443');
+      expect(out, 'connection failed: address = <ip>, port = 443');
+    });
+
+    test('redacts every IPv4 quad in a message, leaving non-IP text intact', () {
+      final out = scrubText('hop 192.168.1.1 then 203.0.113.255 timed out');
+      expect(out, 'hop <ip> then <ip> timed out');
+    });
+
+    test('does NOT mangle a k8s path with a dotted name (IPv4 pass)', () {
+      // `team-a/db` is positionally scrubbed by the existing passes; the
+      // dotted token is not an IPv4 quad so the IPv4 pass leaves it alone.
+      final out = scrubText('GET /v1/resources/secrets/team-a/db failed');
+      expect(out, 'GET /v1/resources/secrets/<namespace>/<name> failed');
+    });
+
+    test('does NOT scrub a dotted token whose octets exceed 255', () {
+      // 999 is out of the 0–255 octet range, so this is not a valid quad.
+      final out = scrubText('version 1.2.999.4 shipped');
+      expect(out, 'version 1.2.999.4 shipped');
+    });
+
     test('idempotent — sanitized input passes through unchanged', () {
       const already = 'Failed to fetch /v1/resources/secrets/<namespace>/<name>: 404';
       expect(scrubText(already), already);
@@ -146,6 +172,28 @@ void main() {
       expect(
         scrubbed.exceptions!.single.value,
         'GET /v1/resources/secrets/<namespace>/<name> failed',
+      );
+    });
+
+    test('redacts IPv4 in exception.value (SocketException leak)', () {
+      // A real SocketException stringifies with the address inline; scrub it
+      // before the event leaves the device.
+      final event = SentryEvent(
+        exceptions: [
+          SentryException(
+            type: 'SocketException',
+            value: 'SocketException: Connection refused '
+                '(OS Error: Connection refused, errno = 111), '
+                'address = 10.0.12.34, port = 443',
+          ),
+        ],
+      );
+      final scrubbed = scrubEventForTest(event);
+      expect(
+        scrubbed.exceptions!.single.value,
+        'SocketException: Connection refused '
+        '(OS Error: Connection refused, errno = 111), '
+        'address = <ip>, port = 443',
       );
     });
 

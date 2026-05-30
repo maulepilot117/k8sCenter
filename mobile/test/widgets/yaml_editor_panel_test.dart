@@ -34,6 +34,25 @@ const _applyKey = YamlApplyKey(
   name: 'cfg',
 );
 
+// Secret GET responses arrive with `data` (and any `stringData`) values
+// already masked to the literal `"****"` by the backend. Seeding the editor
+// with these would let SSA persist the mask over real credential bytes, so
+// [YamlEditorPanel.stripSensitiveDataFields] drops them. These fixtures pin
+// that defense.
+const _secretResource = <String, dynamic>{
+  'kind': 'Secret',
+  'metadata': {'name': 'creds', 'namespace': 'default'},
+  'type': 'Opaque',
+  'data': {'username': '****', 'password': '****'},
+};
+
+const _secretApplyKey = YamlApplyKey(
+  clusterId: 'local',
+  kind: 'secrets',
+  namespace: 'default',
+  name: 'creds',
+);
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 ({ProviderContainer container, MockDioAdapter mock}) _makeContainer() {
@@ -58,6 +77,25 @@ Widget _harness(ProviderContainer container) {
         body: YamlEditorPanel(
           applyKey: _applyKey,
           resource: _resource,
+        ),
+      ),
+    ),
+  );
+}
+
+Widget _secretHarness(
+  ProviderContainer container, {
+  required bool stripSensitiveDataFields,
+}) {
+  return UncontrolledProviderScope(
+    container: container,
+    child: MaterialApp(
+      theme: buildKubeTheme('nexus'),
+      home: Scaffold(
+        body: YamlEditorPanel(
+          applyKey: _secretApplyKey,
+          resource: _secretResource,
+          stripSensitiveDataFields: stripSensitiveDataFields,
         ),
       ),
     ),
@@ -179,5 +217,74 @@ void main() {
 
     // Dry run panel should appear after a successful validate.
     expect(find.text('Dry run'), findsOneWidget);
+  });
+
+  testWidgets(
+      'Secret with stripSensitiveDataFields hides data in read-only view',
+      (tester) async {
+    final (:container, mock: _) = _makeContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      _secretHarness(container, stripSensitiveDataFields: true),
+    );
+    await tester.pump();
+
+    // The rendered read-only pretty output must omit the masked `data`
+    // field entirely — otherwise SSA would later persist `"****"`.
+    final view = tester.widget<SelectableText>(find.byType(SelectableText));
+    final rendered = view.data!;
+    expect(rendered.contains('"data"'), isFalse);
+    expect(rendered.contains('****'), isFalse);
+    // Non-sensitive fields remain visible.
+    expect(rendered.contains('"kind": "Secret"'), isTrue);
+  });
+
+  testWidgets(
+      'Secret with stripSensitiveDataFields omits data/stringData from editor seed',
+      (tester) async {
+    final (:container, mock: _) = _makeContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      _secretHarness(container, stripSensitiveDataFields: true),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Edit'));
+    await tester.pump();
+
+    // The editor seed must not carry the masked credential fields, so a
+    // label-only edit + Apply never overwrites real secret bytes with `****`.
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    final seed = textField.controller!.text;
+    expect(seed.contains('"data"'), isFalse);
+    expect(seed.contains('"stringData"'), isFalse);
+    expect(seed.contains('****'), isFalse);
+    // The rest of the resource is still present and editable.
+    expect(seed.contains('"kind": "Secret"'), isTrue);
+  });
+
+  testWidgets(
+      'Secret without stripSensitiveDataFields keeps data field present',
+      (tester) async {
+    final (:container, mock: _) = _makeContainer();
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      _secretHarness(container, stripSensitiveDataFields: false),
+    );
+    await tester.pump();
+
+    // Control case: with the flag off the `data` field IS rendered. This
+    // proves it is the strip — not an absence of data — that removes it.
+    final view = tester.widget<SelectableText>(find.byType(SelectableText));
+    expect(view.data!.contains('"data"'), isTrue);
+
+    await tester.tap(find.text('Edit'));
+    await tester.pump();
+
+    final textField = tester.widget<TextField>(find.byType(TextField));
+    expect(textField.controller!.text.contains('"data"'), isTrue);
   });
 }

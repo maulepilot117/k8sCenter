@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/api_error.dart';
 import '../../cluster/cluster_provider.dart';
+import '../../cluster/cluster_repository.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
@@ -60,9 +62,19 @@ class NotificationFeedScreen extends ConsumerWidget {
           if (unread > 0)
             TextButton(
               onPressed: () async {
-                await ref
-                    .read(notificationsRepositoryProvider)
-                    .markAllRead();
+                try {
+                  await ref
+                      .read(notificationsRepositoryProvider)
+                      .markAllRead();
+                } on ApiError {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Could not mark all as read'),
+                    ),
+                  );
+                  return;
+                }
                 ref.invalidate(notificationsFeedProvider);
                 ref.invalidate(unreadCountProvider);
               },
@@ -92,13 +104,39 @@ class NotificationFeedScreen extends ConsumerWidget {
                 ],
               );
             }
+            // The feed is fetched with the default limit (50) and no
+            // load-more, so when the backend reports more items than were
+            // returned, surface an honest footer instead of silently
+            // dropping the remainder. The footer occupies a synthetic
+            // trailing index, so the separator/item builders guard against
+            // it to avoid an out-of-range read into page.items.
+            final truncated = page.total > page.items.length;
+            final itemCount = page.items.length + (truncated ? 1 : 0);
             return ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: page.items.length,
+              itemCount: itemCount,
               separatorBuilder: (_, _) =>
                   Divider(height: 1, color: colors.borderSubtle),
-              itemBuilder: (context, i) =>
-                  _NotificationTile(item: page.items[i]),
+              itemBuilder: (context, i) {
+                if (truncated && i == page.items.length) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 16,
+                    ),
+                    child: Center(
+                      child: Text(
+                        'Showing ${page.items.length} of ${page.total}',
+                        style: TextStyle(
+                          color: colors.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return _NotificationTile(item: page.items[i]);
+              },
             );
           },
         ),
@@ -141,9 +179,20 @@ class _NotificationTile extends ConsumerWidget {
     // wrapper's onTap is the sole AT-reachable activation path.
     Future<void> onTap() async {
       if (!item.read) {
-        await ref.read(notificationsRepositoryProvider).markRead(item.id);
-        ref.invalidate(notificationsFeedProvider);
-        ref.invalidate(unreadCountProvider);
+        try {
+          await ref.read(notificationsRepositoryProvider).markRead(item.id);
+          ref.invalidate(notificationsFeedProvider);
+          ref.invalidate(unreadCountProvider);
+        } on ApiError {
+          // A transient read-flag write failure must NOT block the
+          // deep-link drill-down the user tapped. Surface a SnackBar
+          // and fall through to the mounted-check + navigation below.
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not mark as read')),
+            );
+          }
+        }
       }
       if (!context.mounted) return;
       if (item.hasResourceTarget) {
@@ -156,8 +205,18 @@ class _NotificationTile extends ConsumerWidget {
         // the active cluster and silently 404. Cross-cluster
         // notifications normally don't appear in the feed (the
         // backend filters server-side), so this is defensive.
+        //
+        // The clusterId comes from an untrusted notification payload, so
+        // only honor the swap when it names a cluster the user actually
+        // has registered. Reads the already-resolved clustersProvider
+        // snapshot synchronously (never awaits); a not-yet-loaded list
+        // leaves the active cluster untouched rather than trusting the
+        // payload. Mirrors _isKnownCluster in app_router.dart.
         final activeCluster = ref.read(activeClusterProvider);
-        if (clusterId != activeCluster) {
+        final knownClusters = ref.read(clustersProvider).valueOrNull;
+        final isKnown =
+            knownClusters?.clusters.any((c) => c.id == clusterId) ?? false;
+        if (clusterId != activeCluster && isKnown) {
           ref.read(activeClusterProvider.notifier).setCluster(clusterId);
         }
         // Use the kind segment as-is; kindDetailPath() falls back to

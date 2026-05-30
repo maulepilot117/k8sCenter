@@ -271,21 +271,25 @@ abstract class WizardController<TForm>
   /// errors for the current step so corrected fields don't keep showing
   /// their old messages. Bumps [_dispatchId] so an in-flight preview's
   /// late 200 doesn't re-route the operator forward against the
-  /// pre-edit form. If the wizard was in [WizardStatus.previewing] when
-  /// the edit landed, reset to [WizardStatus.formEditing] — the
-  /// operator clearly isn't reviewing anymore.
+  /// pre-edit form. If the wizard was in [WizardStatus.previewing] or
+  /// [WizardStatus.reviewing] when the edit landed, reset to
+  /// [WizardStatus.formEditing] — the operator clearly isn't reviewing
+  /// anymore, and the previously-previewed YAML is now stale.
   void updateForm(TForm Function(TForm) update) {
     final next = update(state.form);
     final errors = Map<int, StepFieldErrors>.from(state.stepErrors)
       ..remove(state.currentStep);
     _dispatchId++;
-    final resetStatus = state.status == WizardStatus.previewing
+    final resetStatus = (state.status == WizardStatus.previewing ||
+            state.status == WizardStatus.reviewing)
         ? WizardStatus.formEditing
         : state.status;
     _safeSet(state.copyWith(
       status: resetStatus,
       form: next,
       stepErrors: errors,
+      clearPreviewYaml: true,
+      clearApplyOutcome: true,
       clearErrorMessage: true,
       clearUnrouted: true,
     ));
@@ -294,9 +298,31 @@ abstract class WizardController<TForm>
   /// Jump to an arbitrary completed step. Stepper widget calls this when
   /// the operator taps a prior step's chip. Future steps are
   /// tap-disabled at the widget level so this guard is defensive only.
+  ///
+  /// When the jump originates from a non-form-editing status (e.g. the
+  /// operator taps a completed-step chip while at Review, status
+  /// `reviewing`/`previewing`/`failed`), this mirrors [back]'s full
+  /// reset: it bumps [_dispatchId] and clears the preview YAML, apply
+  /// outcome, and cluster-mismatch flag. Without this, jumping out of
+  /// Review left `status=reviewing` and a populated `previewYaml`, so the
+  /// footer kept offering Apply and [apply] would commit the stale,
+  /// un-previewed YAML against an edited form.
   void goToStep(int step) {
     if (step < 0 || step >= steps.length) return;
     if (step > state.currentStep) return;
+    if (state.status != WizardStatus.formEditing) {
+      _dispatchId++;
+      _safeSet(state.copyWith(
+        currentStep: step,
+        status: WizardStatus.formEditing,
+        clearPreviewYaml: true,
+        clearApplyOutcome: true,
+        clearErrorMessage: true,
+        clearUnrouted: true,
+        clusterMismatch: false,
+      ));
+      return;
+    }
     _safeSet(state.copyWith(currentStep: step, clearErrorMessage: true));
   }
 

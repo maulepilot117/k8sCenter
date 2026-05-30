@@ -42,6 +42,7 @@ String formatAge(String creationTimestamp) {
   final parsed = DateTime.tryParse(creationTimestamp);
   if (parsed == null) return '—';
   final delta = DateTime.now().toUtc().difference(parsed.toUtc());
+  if (delta.isNegative) return '0s';
   if (delta.inDays >= 365) return '${(delta.inDays / 365).floor()}y';
   if (delta.inDays >= 30) return '${(delta.inDays / 30).floor()}mo';
   if (delta.inDays >= 1) return '${delta.inDays}d';

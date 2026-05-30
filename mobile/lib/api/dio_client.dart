@@ -323,11 +323,17 @@ class AuthInterceptor extends Interceptor {
         await store.writeRefreshToken(newRefresh);
       }
       return true;
-    } on DioException {
-      // Stale or rotated token — clear local state so the auth machine
-      // transitions to Unauthenticated.
-      await store.deleteRefreshToken();
-      ref.read(authTokenHolderProvider).clear();
+    } on DioException catch (e) {
+      final status = e.response?.statusCode;
+      if (status == 401 || status == 403) {
+        // Server genuinely rejected the token (stale or rotated) — clear
+        // local state so the auth machine transitions to Unauthenticated.
+        await store.deleteRefreshToken();
+        ref.read(authTokenHolderProvider).clear();
+      }
+      // Transient failure (no response = connectivity blip, or 5xx): keep
+      // the still-valid refresh token so the next retry can succeed rather
+      // than permanently logging the user out on a momentary outage.
       return false;
     }
   }

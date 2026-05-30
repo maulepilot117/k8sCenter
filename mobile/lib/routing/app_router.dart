@@ -11,6 +11,8 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
+import '../cluster/cluster_provider.dart';
+import '../cluster/cluster_repository.dart';
 import '../features/certmanager/certificate_detail_screen.dart';
 import '../features/certmanager/certificates_list_screen.dart';
 import '../features/certmanager/expiring_screen.dart';
@@ -80,6 +82,32 @@ import 'wizard_routes.dart';
 /// coerced to null so the bottom-sheet picker fires rather than
 /// forwarding an invalid value to the backend's mandatory ?namespace= param.
 final _kNamespaceRe = RegExp(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$');
+
+/// Coerces a raw `?namespace=` query param to a validated value, or null
+/// when it is empty / absent / not a DNS-1123 label. Null fires the
+/// bottom-sheet picker instead of forwarding a bad value to the backend's
+/// mandatory ?namespace= parameter. Keeps [_kNamespaceRe] in one place.
+String? _coerceNsParam(String? raw) =>
+    (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
+        ? raw
+        : null;
+
+/// Whether [target] is a cluster the user actually has registered, read
+/// from the already-resolved [clustersProvider] snapshot. Untrusted
+/// notification / deep-link payloads carry an attacker-influenceable
+/// `clusterId`; gating `setCluster` on membership keeps a forged value
+/// from silently swapping the active cluster (backend already fails
+/// closed, so this is integrity/UX hardening).
+///
+/// Reads `valueOrNull` synchronously — never awaits — so it is safe to
+/// call inside a Riverpod listener or a tap handler. If the list has not
+/// loaded yet (snapshot null) it returns false, leaving the active
+/// cluster untouched rather than honoring an unvalidated payload.
+bool _isKnownCluster(WidgetRef ref, String target) {
+  final result = ref.read(clustersProvider).valueOrNull;
+  if (result == null) return false;
+  return result.clusters.any((c) => c.id == target);
+}
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   // Listening to authRepositoryProvider rebuilds the router on transitions.
@@ -156,9 +184,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/clusters/:clusterId/logs',
         builder: (context, state) {
-          final ns = state.uri.queryParameters['namespace'];
+          final ns = _coerceNsParam(state.uri.queryParameters['namespace']);
           return LogSearchScreen(
-            initialNamespace: ns == null || ns.isEmpty ? null : ns,
+            initialNamespace: ns,
           );
         },
       ),
@@ -599,9 +627,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: 'violations',
-            builder: (context, state) => ViolationsListScreen(
-              initialNamespace: state.uri.queryParameters['namespace'],
-            ),
+            builder: (context, state) {
+              final ns = _coerceNsParam(state.uri.queryParameters['namespace']);
+              return ViolationsListScreen(
+                initialNamespace: ns,
+              );
+            },
             routes: [
               GoRoute(
                 path: ':stableKey',
@@ -640,14 +671,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
             path: 'vulnerabilities',
             builder: (context, state) {
-              final raw = state.uri.queryParameters['namespace'];
               // Validate namespace: must match DNS-1123 label format.
               // An empty string or invalid value coerces to null so the
               // bottom-sheet picker fires instead of passing a bad namespace
               // to the backend's mandatory ?namespace= parameter.
-              final ns = (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
-                  ? raw
-                  : null;
+              final ns = _coerceNsParam(state.uri.queryParameters['namespace']);
               return VulnerabilitiesListScreen(initialNamespace: ns);
             },
             routes: [
@@ -708,6 +736,22 @@ class _RootScreen extends ConsumerWidget {
       if (next == null) return;
       final parsed = kDeepLinkHandler.parse(next);
       if (parsed.isValid) {
+        // Switch the active cluster before navigating so the detail
+        // fetch carries the right X-Cluster-ID. Mirrors the feed-tap
+        // guard in feed_screen.dart. parsed.clusterId is null for the
+        // /notifications shape, hence the null/empty guard. Read the
+        // notifier synchronously here — not in the deferred callback —
+        // so the cluster swap lands before the push schedules.
+        // The clusterId comes from an untrusted deep-link payload, so it
+        // must be a cluster the user actually has registered before we
+        // honor the swap (see [_isKnownCluster]).
+        final target = parsed.clusterId;
+        if (target != null &&
+            target.isNotEmpty &&
+            target != ref.read(activeClusterProvider) &&
+            _isKnownCluster(ref, target)) {
+          ref.read(activeClusterProvider.notifier).setCluster(target);
+        }
         // Defer push to next frame so the AdaptiveScaffold has mounted
         // and go_router has a stable route stack to push onto.
         WidgetsBinding.instance.addPostFrameCallback((_) {

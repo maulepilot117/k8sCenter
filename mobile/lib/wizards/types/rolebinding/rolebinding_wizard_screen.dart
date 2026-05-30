@@ -186,9 +186,21 @@ class _SubjectRowState extends State<_SubjectRow> {
   @override
   void didUpdateWidget(covariant _SubjectRow old) {
     super.didUpdateWidget(old);
-    if (_name.text != widget.subject.name) _name.text = widget.subject.name;
-    if (_ns.text != widget.subject.namespace) {
+    // Only resync on external value change (e.g. a parent rebuild that
+    // replaced the subject), not on the echo of our own onChanged. The
+    // local controller is the truth during typing; resyncing on echo
+    // would drop an in-flight trailing space and jump the cursor to 0.
+    if (widget.subject.name != _name.text &&
+        widget.subject.name != old.subject.name) {
+      _name.text = widget.subject.name;
+      _name.selection =
+          TextSelection.collapsed(offset: widget.subject.name.length);
+    }
+    if (widget.subject.namespace != _ns.text &&
+        widget.subject.namespace != old.subject.namespace) {
       _ns.text = widget.subject.namespace;
+      _ns.selection =
+          TextSelection.collapsed(offset: widget.subject.namespace.length);
     }
   }
 

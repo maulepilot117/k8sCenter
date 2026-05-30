@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,6 +46,47 @@ class _ThrowingOIDCRepository implements OIDCRepository {
   }) async {
     throw Exception('boom');
   }
+}
+
+/// Stub repository whose exchangeMobile never completes — parks the
+/// controller in [OIDCFlowExchanging] so a test can prove
+/// [OIDCController.abandonLaunching] leaves an in-flight exchange alone.
+class _HangingOIDCRepository implements OIDCRepository {
+  final Completer<OIDCExchangeResult> _never = Completer();
+
+  @override
+  Future<OIDCMobileAuthConfig> fetchMobileConfig(String providerID) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<OIDCExchangeResult> exchangeMobile({
+    required String providerID,
+    required String code,
+    required String codeVerifier,
+    required String nonce,
+  }) {
+    return _never.future;
+  }
+}
+
+/// Pending store whose [read] never completes — suspends
+/// [OIDCController.completeFlow] in its pre-Exchanging read window, where
+/// state is still [OIDCFlowLaunching] and the controller's `_resolving`
+/// flag is set. Proves [OIDCController.abandonLaunching] no-ops during
+/// that window. [write]/[clear] behave normally so [OIDCController.startFlow]
+/// can still park the controller in [OIDCFlowLaunching].
+class _HangingReadPendingOidcStore implements PendingOidcStore {
+  final Completer<PendingOidc?> _never = Completer();
+
+  @override
+  Future<PendingOidc?> read() => _never.future;
+
+  @override
+  Future<void> write(PendingOidc pending) async {}
+
+  @override
+  Future<void> clear() async {}
 }
 
 ({
@@ -687,6 +730,170 @@ void main() {
 
       s.container.read(oidcControllerProvider.notifier).clearError();
       expect(s.container.read(oidcControllerProvider), isA<OIDCFlowIdle>());
+    });
+  });
+
+  group('abandonLaunching', () {
+    test('resets OIDCFlowLaunching back to idle', () async {
+      final s = _setup();
+      addTearDown(s.container.dispose);
+
+      s.mock.onJson(
+        'GET',
+        '/api/v1/auth/oidc/authelia/mobile-config',
+        body: {
+          'data': {
+            'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
+            'clientId': 'kubecenter-mobile',
+            'scopes': ['openid'],
+          },
+        },
+      );
+
+      // startFlow launches the custom-tab (stub launcher resolves
+      // immediately) but no callback Uri arrives, so the controller
+      // parks in OIDCFlowLaunching — the dead-end this fix recovers from.
+      await s.container
+          .read(oidcControllerProvider.notifier)
+          .startFlow('authelia');
+      expect(
+        s.container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+      );
+
+      s.container.read(oidcControllerProvider.notifier).abandonLaunching();
+      expect(s.container.read(oidcControllerProvider), isA<OIDCFlowIdle>());
+    });
+
+    test('leaves OIDCFlowExchanging untouched', () async {
+      // A never-completing exchange parks the controller in
+      // OIDCFlowExchanging so abandonLaunching() can be proven to no-op
+      // against a real in-flight exchange (callback already landed).
+      final pending = InMemoryPendingOidcStore();
+      final container = ProviderContainer(overrides: [
+        pendingOidcStoreProvider.overrideWithValue(pending),
+        secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        oidcControllerProvider.overrideWith(() => OIDCController(
+              universalLinkHost: 'k8scenter.test',
+              now: () => DateTime.utc(2026, 5, 16, 12, 0, 0),
+            )),
+        oidcRepositoryProvider
+            .overrideWithValue(_HangingOIDCRepository()),
+      ]);
+      addTearDown(container.dispose);
+
+      await pending.write(PendingOidc(
+        providerID: 'authelia',
+        state: 'STATE123',
+        codeVerifier: 'VERIFIER456',
+        nonce: 'NONCE789',
+        createdAtMillis:
+            DateTime.utc(2026, 5, 16, 12, 0, 0).millisecondsSinceEpoch,
+      ));
+
+      // Fire completeFlow but don't await — the exchange hangs, leaving
+      // the controller in OIDCFlowExchanging.
+      unawaited(
+        container.read(oidcControllerProvider.notifier).completeFlow(
+              Uri.parse(
+                'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123',
+              ),
+            ),
+      );
+      // Let the synchronous portion of completeFlow up to the exchange
+      // await run so the state advances to OIDCFlowExchanging.
+      await pumpEventQueue();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowExchanging>(),
+      );
+
+      // Guard is strict on OIDCFlowLaunching — exchanging is preserved.
+      container.read(oidcControllerProvider.notifier).abandonLaunching();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowExchanging>(),
+      );
+    });
+
+    test('no-op during completeFlow read window (_resolving guard)', () async {
+      // Findings #10/#11: completeFlow's pre-Exchanging
+      // `await pendingStore.read()` leaves state in OIDCFlowLaunching. A
+      // resume-timer-driven abandonLaunching() firing in that window would
+      // briefly flip the flow to idle out from under an in-flight
+      // resolution. The `_resolving` guard must suppress it.
+      final launcher = _StubLauncher();
+      final hangingReadStore = _HangingReadPendingOidcStore();
+      final mock = MockDioAdapter();
+      final container = ProviderContainer(overrides: [
+        pendingOidcStoreProvider.overrideWithValue(hangingReadStore),
+        secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        oidcControllerProvider.overrideWith(() => OIDCController(
+              launchUrl: launcher.call,
+              universalLinkHost: 'k8scenter.test',
+              now: () => DateTime.utc(2026, 5, 16, 12, 0, 0),
+            )),
+        refreshDioProvider.overrideWith((ref) {
+          final dio = Dio(BaseOptions(baseUrl: 'http://localhost:8080'));
+          dio.httpClientAdapter = mock;
+          return dio;
+        }),
+        dioProvider.overrideWith((ref) {
+          final dio = Dio(BaseOptions(baseUrl: 'http://localhost:8080'));
+          dio.httpClientAdapter = mock;
+          return dio;
+        }),
+      ]);
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/auth/oidc/authelia/mobile-config',
+        body: {
+          'data': {
+            'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
+            'clientId': 'kubecenter-mobile',
+            'scopes': ['openid'],
+          },
+        },
+      );
+
+      // Park the controller in OIDCFlowLaunching (startFlow only writes
+      // pending — it never reads — so the hanging-read store doesn't block
+      // it).
+      await container
+          .read(oidcControllerProvider.notifier)
+          .startFlow('authelia');
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+      );
+
+      // Fire completeFlow but don't await — it suspends on
+      // pendingStore.read(), which never completes. State stays
+      // OIDCFlowLaunching, but _resolving is now true.
+      unawaited(
+        container.read(oidcControllerProvider.notifier).completeFlow(
+              Uri.parse(
+                'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123',
+              ),
+            ),
+      );
+      await pumpEventQueue();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+        reason: 'still Launching while the read await is suspended',
+      );
+
+      // abandonLaunching() must no-op because _resolving is true, even
+      // though the state is still Launching.
+      container.read(oidcControllerProvider.notifier).abandonLaunching();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+        reason: 'read-window resolution must not be clobbered to idle',
+      );
     });
   });
 }

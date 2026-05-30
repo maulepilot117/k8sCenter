@@ -187,8 +187,9 @@ abstract class _IssuerWizardBase extends WizardController<IssuerForm> {
 
   @override
   int? errorRouter(String fieldPath) {
-    if (fieldPath == 'type' || fieldPath == 'selfSigned') return 0;
-    if (fieldPath == 'name' ||
+    if (fieldPath == 'type') return 0;
+    if (fieldPath == 'selfSigned' ||
+        fieldPath == 'name' ||
         fieldPath == 'namespace' ||
         fieldPath == 'scope' ||
         fieldPath == 'acme' ||

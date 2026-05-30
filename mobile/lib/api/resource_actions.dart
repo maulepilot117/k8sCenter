@@ -199,17 +199,37 @@ class ActionResult {
 const Duration _defaultActionTimeout = Duration(seconds: 30);
 const Duration _deleteActionTimeout = Duration(seconds: 90);
 
+/// Maps the RBAC/menu kind to the kind the backend resource registry
+/// actually routes on, for kinds where the two diverge. The kebab menu
+/// and RBAC checks key on the K8s plural `persistentvolumeclaims` (the
+/// only string the RBAC summary carries), but `GetAdapter` in the backend
+/// resource registry is registered under `pvcs` — a DELETE to
+/// `/resources/persistentvolumeclaims/...` 404s. Decoupling the wire kind
+/// here mirrors the server-owned slug normalization in
+/// `lib/features/observability/metrics/metric_panels.dart`. Keep
+/// [actionsByKind] / [getVisibleActions] keyed on the original kind so
+/// RBAC + menu visibility are unchanged.
+///
+/// This map is applied inside [_resourceBase] — wire-path translation is
+/// co-located with URL construction so routing decisions live in one place
+/// (the only sanctioned routing sites are [_resourceBase] and
+/// `resource_repository.dart`). Callers always pass the original kind.
+const Map<String, String> _routeKindAliases = {
+  'persistentvolumeclaims': 'pvcs',
+};
+
 /// Build the `/api/v1/resources/...` base path. Skips the namespace
 /// segment for cluster-scoped resources (namespace is empty), so an
 /// action on a Namespace produces `/api/v1/resources/namespaces/<name>`
 /// not `/api/v1/resources/namespaces//<name>`. Matches the backend
 /// router's split between cluster-scoped and namespaced action routes.
 String _resourceBase(String kind, String namespace, String name) {
+  final routeKind = _routeKindAliases[kind] ?? kind;
   final segs = <String>[
     'api',
     'v1',
     'resources',
-    Uri.encodeComponent(kind),
+    Uri.encodeComponent(routeKind),
     if (namespace.isNotEmpty) Uri.encodeComponent(namespace),
     Uri.encodeComponent(name),
   ];

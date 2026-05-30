@@ -13,8 +13,13 @@
 //   if (ok == true) { ... }
 //
 // When [typeToConfirm] is non-null, the confirm button stays disabled
-// until the input matches (after trim) — same gating as ConfirmDialog's
-// `canConfirm = !typeToConfirm || input.value === typeToConfirm`.
+// until the input matches the required string after BOTH are run through
+// [_normalize] — trim whitespace + strip zero-width characters
+// (U+200B–U+200D / U+FEFF). This is intentionally MORE lenient than web's
+// ConfirmDialog, whose gate is an exact match
+// (`canConfirm = !typeToConfirm || input.value === typeToConfirm`) with no
+// normalization on either side. Mobile relaxes the comparison for
+// paste/autocorrect ergonomics on touch keyboards; see [_normalize].
 
 import 'package:flutter/material.dart';
 
@@ -59,7 +64,12 @@ class ConfirmSheet extends StatefulWidget {
   final bool danger;
 
   /// When set, an input field renders and the confirm button stays
-  /// disabled until input.trim() matches this string (case-sensitive).
+  /// disabled until the input matches this string (case-sensitive) after
+  /// BOTH sides are run through [_normalize] — i.e. trim whitespace AND
+  /// strip zero-width characters from the input and the required string
+  /// alike. This makes the gate strictly more lenient than web's
+  /// ConfirmDialog exact (`input === required`) match; the leniency is a
+  /// deliberate paste/autocorrect ergonomics affordance, not a bug.
   final String? typeToConfirm;
 
   @override

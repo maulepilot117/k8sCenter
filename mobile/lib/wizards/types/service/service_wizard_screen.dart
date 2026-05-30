@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
+import '../../widgets/repeating_row_index.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -205,19 +206,39 @@ class _PortsEditor extends StatelessWidget {
     return Column(
       children: [
         for (var i = 0; i < display.length; i++)
-          Padding(
-            padding: EdgeInsets.only(
-                bottom: i == display.length - 1 ? 0 : 8),
-            child: _PortRow(
-              port: display[i],
-              showRemove: !(i == display.length - 1 && display[i].isEmpty),
-              portError: stepErrors['ports[$i].port'],
-              targetPortError: stepErrors['ports[$i].targetPort'],
-              nameError: stepErrors['ports[$i].name'],
-              onChanged: (next) => _emit(_replace(display, i, next)),
-              onRemove: () => _emit(_removeAt(display, i)),
-              colors: colors,
-            ),
+          Builder(
+            builder: (context) {
+              // portsAsJson() strips empty rows before send, so
+              // server-reported errors are indexed against the stripped
+              // list. Map display-row index → server index so the error
+              // lands on the row the operator actually filled.
+              final serverIndex = serverIndexForRow(
+                display.length,
+                (idx) => display[idx].isEmpty,
+                i,
+              );
+              return Padding(
+                padding: EdgeInsets.only(
+                    bottom: i == display.length - 1 ? 0 : 8),
+                child: _PortRow(
+                  port: display[i],
+                  showRemove:
+                      !(i == display.length - 1 && display[i].isEmpty),
+                  portError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].port'],
+                  targetPortError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].targetPort'],
+                  nameError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].name'],
+                  onChanged: (next) => _emit(_replace(display, i, next)),
+                  onRemove: () => _emit(_removeAt(display, i)),
+                  colors: colors,
+                ),
+              );
+            },
           ),
       ],
     );

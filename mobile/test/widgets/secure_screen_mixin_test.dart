@@ -593,6 +593,152 @@ void main() {
     });
   });
 
+  // Recovers the P1 coverage lost to the two skipped iOS groups above
+  // WITHOUT the `withPlatform(TargetPlatform.iOS)` + `_fireLifecycle`
+  // lifecycle simulation that hangs the headless CI runner at teardown.
+  //
+  // The hang in the skipped groups comes from the `withPlatform(iOS)` +
+  // `_fireLifecycle` combination (the lifecycle-event simulation appears to
+  // leave the platform-channel simulation in a state the runner cannot tear
+  // down). `withPlatform` ALONE is safe — it restores
+  // `debugDefaultTargetPlatformOverride` inside its own `finally`, which is
+  // required because the framework's foundation-var invariant check runs
+  // BEFORE `tearDown` (a `setUp`/`tearDown` override leaks and trips that
+  // check). So we keep `withPlatform` to reach the iOS code path but exercise
+  // only the dispose-disarm + native-channel exception-swallow paths — none
+  // of which need a lifecycle transition.
+  group(
+      'SecureScreenMixin dispose disarm + native-channel swallow '
+      '(non-lifecycle, #302 coverage)', () {
+    late List<MethodCall> nativeCalls;
+
+    setUp(() {
+      nativeCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        kIOSSecureScreenChannel,
+        (call) async {
+          nativeCalls.add(call);
+          return null;
+        },
+      );
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, null);
+    });
+
+    testWidgets(
+        'dispose() while sensitive disarms the iOS channel with '
+        'setSensitive(false) (#302 P1)', (tester) async {
+      // SceneDelegate.sensitive is scene-singleton state that survives Dart
+      // widget teardown. Without an iOS disarm on dispose, navigating away
+      // from a sensitive screen leaves the native blocker armed for every
+      // subsequent sceneWillResignActive. Mirrors the Android `dispose
+      // clears FLAG_SECURE` test, but reaches the iOS path via the platform
+      // override only — no lifecycle simulation needed.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await state.setSensitive(true);
+        expect(state.isSensitive, isTrue);
+        nativeCalls.clear();
+
+        // Pump a different widget so the host (and its mixin) is removed
+        // from the tree and disposed.
+        await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+        // The dispose chain is fire-and-forget; settle so its microtasks
+        // land before we assert.
+        await tester.pumpAndSettle();
+
+        final disarms = nativeCalls
+            .where((c) => c.method == 'setSensitive' && c.arguments == false);
+        expect(
+          disarms,
+          hasLength(1),
+          reason: 'dispose() must symmetrically notify the iOS native channel '
+              'so SceneDelegate.sensitive resets when the widget tears down.',
+        );
+      });
+    });
+
+    testWidgets(
+        'dispose() while NOT sensitive does not call the iOS channel',
+        (tester) async {
+      // The dispose disarm is gated on `_sensitive`; a screen that was never
+      // armed must not emit a spurious native call on teardown.
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        expect(find.byType(_Host), findsOneWidget);
+        nativeCalls.clear();
+
+        await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+        await tester.pumpAndSettle();
+
+        expect(nativeCalls, isEmpty);
+      });
+    });
+
+    testWidgets(
+        'MissingPluginException is swallowed — arm/disarm do not rethrow',
+        (tester) async {
+      // Simulate a binary that predates #302: the channel is unregistered on
+      // the native side. The mixin must NOT rethrow; the Flutter eager
+      // overlay continues to defend. Reaches the swallow path without any
+      // lifecycle transition.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, (_) async {
+        throw MissingPluginException('No implementation');
+      });
+
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        // Both arming and disarming must complete despite the throwing
+        // channel.
+        await expectLater(state.setSensitive(true), completes);
+        await expectLater(state.setSensitive(false), completes);
+        // Mixin stays usable — a third call still completes (no broken
+        // state).
+        await expectLater(state.setSensitive(true), completes);
+      });
+    });
+
+    testWidgets(
+        'PlatformException is swallowed — no circuit-breaker disables the '
+        'native path', (tester) async {
+      // A native-side failure must not regress the Dart-side sensitive flag,
+      // and must NOT install a "stop trying after first failure" optimization
+      // that would silently disable the native defense for the session. Pin
+      // that the channel is attempted on every setSensitive even after a
+      // throwing call.
+      var callCount = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(kIOSSecureScreenChannel, (_) async {
+        callCount++;
+        throw PlatformException(code: 'NATIVE_FAIL');
+      });
+
+      await withPlatform(TargetPlatform.iOS, () async {
+        await tester.pumpWidget(const MaterialApp(home: _Host()));
+        final state = tester.state<_HostState>(find.byType(_Host));
+
+        await expectLater(state.setSensitive(true), completes);
+        await expectLater(state.setSensitive(false), completes);
+        await expectLater(state.setSensitive(true), completes);
+        expect(
+          callCount,
+          3,
+          reason: 'channel must be attempted on every setSensitive even after '
+              'a PlatformException — no circuit-breaker on swallow.',
+        );
+      });
+    });
+  });
+
   group('SecureScreenMixin debug-mode gate', () {
     testWidgets(
         'in debug build, setSensitive(true) is a no-op (no platform call)',
