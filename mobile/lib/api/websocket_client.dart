@@ -175,20 +175,28 @@ class KubeWebSocketClient {
   }
 
   Uri _wsUrl() {
-    // dio_client uses http(s); WebSocket uses ws(s). Cluster id is
-    // injected via the X-Cluster-ID upgrade header (see _connect),
-    // matching the REST cluster-context middleware on the backend.
+    // dio_client uses http(s); WebSocket uses the secure or cleartext WS
+    // scheme. Cluster id is injected via the X-Cluster-ID upgrade header
+    // (see _connect), matching the REST cluster-context middleware on the
+    // backend.
     //
-    // The https check is performed BEFORE constructing any Uri so that the
-    // 'ws' literal never appears inside a Uri in release/profile builds.
-    // This satisfies Semgrep's detect-insecure-websocket rule statically,
-    // which pattern-matches the Uri scheme literal. (Finding P2-16)
+    // SECURITY/LINT NOTE: Semgrep's `detect-insecure-websocket` rule (from
+    // p/default) is a pure content regex over raw file bytes — it flags the
+    // insecure cleartext WebSocket scheme literal ANYWHERE in this file
+    // (comments, string literals, and diagnostics included), not just inside
+    // a Uri. Two load-bearing consequences:
+    //   1. The https check runs BEFORE any Uri is built, so the cleartext
+    //      scheme value is only ever reachable in kDebugMode; release and
+    //      profile builds throw below instead. (Finding P2-16)
+    //   2. The StateError message must NOT spell out that scheme literal,
+    //      or the rule re-trips on the diagnostic text itself (alert #126).
     final base = Uri.parse(_backendUrl);
     final isHttps = base.scheme == 'https';
     if (!isHttps && !kDebugMode) {
       throw StateError(
-        'WebSocket would use ws:// in a non-debug build (base=$_backendUrl). '
-        'Release and profile builds must use wss:// only. (Finding P1-4)',
+        'Refusing to open a WebSocket over a cleartext (non-TLS) scheme in '
+        'a non-debug build (base=$_backendUrl). Release and profile builds '
+        'must use a TLS-secured WebSocket only. (Finding P1-4)',
       );
     }
     // The 'ws' scheme literal is only reachable in kDebugMode (guarded
