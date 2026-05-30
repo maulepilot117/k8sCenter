@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../api/api_error.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
@@ -60,9 +61,19 @@ class NotificationFeedScreen extends ConsumerWidget {
           if (unread > 0)
             TextButton(
               onPressed: () async {
-                await ref
-                    .read(notificationsRepositoryProvider)
-                    .markAllRead();
+                try {
+                  await ref
+                      .read(notificationsRepositoryProvider)
+                      .markAllRead();
+                } on ApiError {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Could not mark all as read'),
+                    ),
+                  );
+                  return;
+                }
                 ref.invalidate(notificationsFeedProvider);
                 ref.invalidate(unreadCountProvider);
               },
@@ -141,9 +152,20 @@ class _NotificationTile extends ConsumerWidget {
     // wrapper's onTap is the sole AT-reachable activation path.
     Future<void> onTap() async {
       if (!item.read) {
-        await ref.read(notificationsRepositoryProvider).markRead(item.id);
-        ref.invalidate(notificationsFeedProvider);
-        ref.invalidate(unreadCountProvider);
+        try {
+          await ref.read(notificationsRepositoryProvider).markRead(item.id);
+          ref.invalidate(notificationsFeedProvider);
+          ref.invalidate(unreadCountProvider);
+        } on ApiError {
+          // A transient read-flag write failure must NOT block the
+          // deep-link drill-down the user tapped. Surface a SnackBar
+          // and fall through to the mounted-check + navigation below.
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not mark as read')),
+            );
+          }
+        }
       }
       if (!context.mounted) return;
       if (item.hasResourceTarget) {

@@ -199,6 +199,20 @@ class ActionResult {
 const Duration _defaultActionTimeout = Duration(seconds: 30);
 const Duration _deleteActionTimeout = Duration(seconds: 90);
 
+/// Maps the RBAC/menu kind to the kind the backend resource registry
+/// actually routes on, for kinds where the two diverge. The kebab menu
+/// and RBAC checks key on the K8s plural `persistentvolumeclaims` (the
+/// only string the RBAC summary carries), but `GetAdapter` in the backend
+/// resource registry is registered under `pvcs` — a DELETE to
+/// `/resources/persistentvolumeclaims/...` 404s. Decoupling the wire kind
+/// here mirrors the server-owned slug normalization in
+/// `lib/features/observability/metrics/metric_panels.dart`. Keep
+/// [actionsByKind] / [getVisibleActions] keyed on the original kind so
+/// RBAC + menu visibility are unchanged.
+const Map<String, String> _routeKindAliases = {
+  'persistentvolumeclaims': 'pvcs',
+};
+
 /// Build the `/api/v1/resources/...` base path. Skips the namespace
 /// segment for cluster-scoped resources (namespace is empty), so an
 /// action on a Namespace produces `/api/v1/resources/namespaces/<name>`
@@ -226,7 +240,8 @@ Future<ActionResult> executeAction({
   required String name,
   Map<String, dynamic>? params,
 }) async {
-  final base = _resourceBase(kind, namespace, name);
+  final routeKind = _routeKindAliases[kind] ?? kind;
+  final base = _resourceBase(routeKind, namespace, name);
   final opts = Options(
     receiveTimeout:
         id == ActionId.delete ? _deleteActionTimeout : _defaultActionTimeout,

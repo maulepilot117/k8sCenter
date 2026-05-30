@@ -195,6 +195,10 @@ class LogSearchController
     // the request hits the wire. Backend enforces the same limit;
     // this is a UX shortcut for the paste-a-huge-query case.
     if (params.query.length > kLokiMaxQueryChars) {
+      // Cancel any prior in-flight fetch + bump the dispatch id first so
+      // a stale _runQuery/_runVolume can't overwrite this validation
+      // error with a late LogQueryLoaded result.
+      supersede('over-length query rejected');
       state = state.copyWith(
         params: params,
         result: LogQueryFailed(

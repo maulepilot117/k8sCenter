@@ -27,7 +27,7 @@ const List<String> kServiceTypes = ['ClusterIP', 'NodePort', 'LoadBalancer'];
 
 /// Common protocols. Backend defaults to TCP when empty; we surface
 /// the picker explicitly so the operator never wonders what's chosen.
-const List<String> kServiceProtocols = ['TCP', 'UDP', 'SCTP'];
+const List<String> kServiceProtocols = ['TCP', 'UDP'];
 
 class ServicePort {
   const ServicePort({

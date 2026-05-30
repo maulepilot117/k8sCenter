@@ -183,6 +183,20 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
+/// Map a display-row index to the index the backend reports errors
+/// against for `ports[N]` paths, accounting for `portsAsJson()`
+/// stripping empty rows. Returns null when [displayIndex] is out of
+/// range or the row at [displayIndex] is itself empty.
+int? _portsServerIndexFor(List<ServicePort> rows, int displayIndex) {
+  if (displayIndex < 0 || displayIndex >= rows.length) return null;
+  if (rows[displayIndex].isEmpty) return null;
+  var serverIndex = 0;
+  for (var i = 0; i < displayIndex; i++) {
+    if (!rows[i].isEmpty) serverIndex++;
+  }
+  return serverIndex;
+}
+
 /// Mini repeating-row editor for ServicePort entries. Trailing empty
 /// row is auto-rendered so operators don't need an explicit "Add"
 /// button.
@@ -205,19 +219,35 @@ class _PortsEditor extends StatelessWidget {
     return Column(
       children: [
         for (var i = 0; i < display.length; i++)
-          Padding(
-            padding: EdgeInsets.only(
-                bottom: i == display.length - 1 ? 0 : 8),
-            child: _PortRow(
-              port: display[i],
-              showRemove: !(i == display.length - 1 && display[i].isEmpty),
-              portError: stepErrors['ports[$i].port'],
-              targetPortError: stepErrors['ports[$i].targetPort'],
-              nameError: stepErrors['ports[$i].name'],
-              onChanged: (next) => _emit(_replace(display, i, next)),
-              onRemove: () => _emit(_removeAt(display, i)),
-              colors: colors,
-            ),
+          Builder(
+            builder: (context) {
+              // portsAsJson() strips empty rows before send, so
+              // server-reported errors are indexed against the stripped
+              // list. Map display-row index → server index so the error
+              // lands on the row the operator actually filled.
+              final serverIndex = _portsServerIndexFor(display, i);
+              return Padding(
+                padding: EdgeInsets.only(
+                    bottom: i == display.length - 1 ? 0 : 8),
+                child: _PortRow(
+                  port: display[i],
+                  showRemove:
+                      !(i == display.length - 1 && display[i].isEmpty),
+                  portError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].port'],
+                  targetPortError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].targetPort'],
+                  nameError: serverIndex == null
+                      ? null
+                      : stepErrors['ports[$serverIndex].name'],
+                  onChanged: (next) => _emit(_replace(display, i, next)),
+                  onRemove: () => _emit(_removeAt(display, i)),
+                  colors: colors,
+                ),
+              );
+            },
           ),
       ],
     );

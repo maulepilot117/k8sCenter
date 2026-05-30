@@ -371,7 +371,8 @@ class DiagnosticsRepository {
     }
     try {
       final res = await _dio.get<Map<String, dynamic>>(
-        '/api/v1/diagnostics/$namespace/$kind/$name',
+        '/api/v1/diagnostics/${Uri.encodeComponent(namespace)}/'
+        '${Uri.encodeComponent(kind)}/${Uri.encodeComponent(name)}',
         options: Options(
           receiveTimeout: const Duration(seconds: 30),
           headers: clusterIdOverride == null
@@ -411,7 +412,7 @@ class DiagnosticsRepository {
   }) async {
     try {
       final res = await _dio.get<Map<String, dynamic>>(
-        '/api/v1/diagnostics/$namespace/summary',
+        '/api/v1/diagnostics/${Uri.encodeComponent(namespace)}/summary',
         options: clusterIdOverride == null
             ? null
             : Options(headers: {'X-Cluster-ID': clusterIdOverride}),

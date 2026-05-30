@@ -174,5 +174,57 @@ void main() {
       expect(state.currentStep, 0);
       expect(state.stepErrors[0]?['data[0].secretKey'], contains('duplicate'));
     });
+
+    test('half-filled data row fails validateLocally instead of being '
+        'silently dropped (mirror of Velero mapping rejection)', () async {
+      final (:container, mock: _) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      final notifier =
+          container.read(externalSecretWizardProvider(_key).notifier);
+      notifier.updateForm((f) => f.copyWith(
+            name: 'db-creds',
+            namespace: 'app',
+            storeRef:
+                const StoreSelection(name: 'vault-shared', kind: 'SecretStore'),
+            targetSecretName: 'db-creds',
+            data: const [
+              EsoDataItem(secretKey: 'password', remoteKey: ''),
+            ],
+          ));
+      await notifier.next();
+
+      final state = container.read(externalSecretWizardProvider(_key));
+      expect(state.currentStep, 0);
+      expect(state.stepErrors[0]?['data[0].remoteRef.key'], isNotNull);
+    });
+
+    test('half-filled data row (remote key only) fails validateLocally '
+        'on secretKey', () async {
+      final (:container, mock: _) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      final notifier =
+          container.read(externalSecretWizardProvider(_key).notifier);
+      notifier.updateForm((f) => f.copyWith(
+            name: 'db-creds',
+            namespace: 'app',
+            storeRef:
+                const StoreSelection(name: 'vault-shared', kind: 'SecretStore'),
+            targetSecretName: 'db-creds',
+            data: const [
+              EsoDataItem(secretKey: '', remoteKey: 'kv/db'),
+            ],
+          ));
+      await notifier.next();
+
+      final state = container.read(externalSecretWizardProvider(_key));
+      expect(state.currentStep, 0);
+      expect(state.stepErrors[0]?['data[0].secretKey'], isNotNull);
+    });
   });
 }

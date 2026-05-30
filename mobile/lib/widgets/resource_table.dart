@@ -171,7 +171,7 @@ class _TabletTableState<T> extends State<_TabletTable<T>> {
     // "201–250 of 30" view. Guard isAttached because the controller is
     // wired on the first build, not on construction.
     if (_paginator.isAttached &&
-        widget.items.length < _paginator.currentRowIndex) {
+        widget.items.length <= _paginator.currentRowIndex) {
       _paginator.goToFirstPage();
     }
     // onTap is intentionally excluded: the source's _onTap will pick up

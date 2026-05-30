@@ -166,6 +166,22 @@ class OIDCController extends Notifier<OIDCFlowState> {
     }
   }
 
+  /// Recovers from an abandoned IdP browser. [startFlow] launches the
+  /// custom-tab and parks in [OIDCFlowLaunching]; the only exit is a
+  /// callback Uri arriving via [completeFlow]. If the user swipes the
+  /// browser away without consenting, no Uri ever arrives and the login
+  /// screen stays disabled forever. The login screen calls this on app
+  /// resume to release that lock.
+  ///
+  /// Guarded STRICTLY on [OIDCFlowLaunching] so a real in-flight
+  /// [OIDCFlowExchanging] (callback already landed, body-mode exchange
+  /// running) is never clobbered.
+  void abandonLaunching() {
+    if (state is OIDCFlowLaunching) {
+      state = const OIDCFlowIdle();
+    }
+  }
+
   /// Begin an OIDC flow for [providerID]. Fetches the provider's auth
   /// config from the backend, generates PKCE + state + nonce, persists
   /// the pending state, and launches the IdP authorization URL in

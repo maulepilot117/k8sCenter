@@ -21,17 +21,45 @@ class LoginScreen extends ConsumerStatefulWidget {
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> {
+class _LoginScreenState extends ConsumerState<LoginScreen>
+    with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   String _selectedProvider = 'local';
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // The OIDC custom-tab launch resolves on LAUNCH, not on close, so the
+    // controller parks in OIDCFlowLaunching until a callback Uri arrives.
+    // If the user swipes the IdP browser away without consenting, no Uri
+    // ever lands and the whole login screen stays disabled. On resume,
+    // release that lock — but only after a short delay so a legitimate
+    // app_links callback (which can land a few frames after `resumed`)
+    // gets a chance to transition the controller to OIDCFlowExchanging
+    // first; abandonLaunching() then no-ops because it guards strictly on
+    // OIDCFlowLaunching. The happy path is untouched.
+    if (state == AppLifecycleState.resumed) {
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (!mounted) return;
+        ref.read(oidcControllerProvider.notifier).abandonLaunching();
+      });
+    }
   }
 
   Future<void> _submit() async {

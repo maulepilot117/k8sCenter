@@ -158,6 +158,51 @@ void main() {
     );
   });
 
+  test(
+      'AuthInterceptor: transient refresh failure (connectionTimeout, '
+      'no response) keeps the refresh token', () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    container.read(authTokenHolderProvider).set('stale-access');
+    await container
+        .read(secureTokenStoreProvider)
+        .writeRefreshToken('valid-refresh');
+
+    mock.on('GET', '/api/v1/protected', (_) {
+      return _json(
+        {
+          'error': {'code': 401, 'message': 'expired'},
+        },
+        status: 401,
+      );
+    });
+    // A momentary connectivity blip: the refresh POST never reaches a
+    // server, so the DioException carries no response. The destructive
+    // delete/clear branch must NOT fire — the server-side-valid refresh
+    // token has to survive for the next retry.
+    mock.on('POST', '/api/v1/auth/refresh', (req) {
+      throw DioException(
+        requestOptions: req,
+        type: DioExceptionType.connectionTimeout,
+      );
+    });
+
+    await expectLater(
+      container.read(dioProvider).get<dynamic>('/api/v1/protected'),
+      throwsA(isA<DioException>()),
+    );
+
+    // Contrast with the '401 clears tokens' test above: a transient
+    // failure must leave both the access holder and the stored refresh
+    // token intact.
+    expect(container.read(authTokenHolderProvider).accessToken, 'stale-access');
+    expect(
+      await container.read(secureTokenStoreProvider).readRefreshToken(),
+      'valid-refresh',
+    );
+  });
+
   // Issue #275 — P1 regression test. N concurrent requests that 401 must
   // share a single /v1/auth/refresh call, not fire N independent refreshes.
   // Without singleflight, every concurrent request's 401 handler races to

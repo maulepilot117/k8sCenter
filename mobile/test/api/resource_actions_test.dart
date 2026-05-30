@@ -127,6 +127,24 @@ void main() {
       expect(mock.requests.last.method, 'DELETE');
     });
 
+    test('delete on PVC routes the wire path to /resources/pvcs/', () async {
+      // The kebab menu + RBAC key on the K8s plural
+      // `persistentvolumeclaims`, but the backend resource registry only
+      // routes on `pvcs` — so the DELETE wire path must be aliased.
+      final mock = MockDioAdapter();
+      mock.on('DELETE', '/api/v1/resources/pvcs/default/data-0', (_) => _ok());
+      final res = await executeAction(
+        dio: _dio(mock),
+        id: ActionId.delete,
+        kind: 'persistentvolumeclaims',
+        namespace: 'default',
+        name: 'data-0',
+      );
+      expect(res.message, 'Deleted data-0');
+      expect(mock.requests.last.method, 'DELETE');
+      expect(mock.requests.last.path, contains('/resources/pvcs/'));
+    });
+
     test('suspend POSTs {suspend: true}', () async {
       final mock = MockDioAdapter();
       mock.on('POST', '/api/v1/resources/cronjobs/default/c1/suspend',

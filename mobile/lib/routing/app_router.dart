@@ -11,6 +11,7 @@ import 'package:go_router/go_router.dart';
 
 import '../auth/auth_repository.dart';
 import '../auth/auth_state.dart';
+import '../cluster/cluster_provider.dart';
 import '../features/certmanager/certificate_detail_screen.dart';
 import '../features/certmanager/certificates_list_screen.dart';
 import '../features/certmanager/expiring_screen.dart';
@@ -156,9 +157,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/clusters/:clusterId/logs',
         builder: (context, state) {
-          final ns = state.uri.queryParameters['namespace'];
+          final raw = state.uri.queryParameters['namespace'];
+          final ns = (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
+              ? raw
+              : null;
           return LogSearchScreen(
-            initialNamespace: ns == null || ns.isEmpty ? null : ns,
+            initialNamespace: ns,
           );
         },
       ),
@@ -599,9 +603,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: 'violations',
-            builder: (context, state) => ViolationsListScreen(
-              initialNamespace: state.uri.queryParameters['namespace'],
-            ),
+            builder: (context, state) {
+              final raw = state.uri.queryParameters['namespace'];
+              final ns = (raw != null && raw.isNotEmpty && _kNamespaceRe.hasMatch(raw))
+                  ? raw
+                  : null;
+              return ViolationsListScreen(
+                initialNamespace: ns,
+              );
+            },
             routes: [
               GoRoute(
                 path: ':stableKey',
@@ -708,6 +718,18 @@ class _RootScreen extends ConsumerWidget {
       if (next == null) return;
       final parsed = kDeepLinkHandler.parse(next);
       if (parsed.isValid) {
+        // Switch the active cluster before navigating so the detail
+        // fetch carries the right X-Cluster-ID. Mirrors the feed-tap
+        // guard in feed_screen.dart. parsed.clusterId is null for the
+        // /notifications shape, hence the null/empty guard. Read the
+        // notifier synchronously here — not in the deferred callback —
+        // so the cluster swap lands before the push schedules.
+        final target = parsed.clusterId;
+        if (target != null &&
+            target.isNotEmpty &&
+            target != ref.read(activeClusterProvider)) {
+          ref.read(activeClusterProvider.notifier).setCluster(target);
+        }
         // Defer push to next frame so the AdaptiveScaffold has mounted
         // and go_router has a stable route stack to push onto.
         WidgetsBinding.instance.addPostFrameCallback((_) {

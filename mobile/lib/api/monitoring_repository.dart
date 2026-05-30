@@ -397,13 +397,8 @@ final monitoringStatusProvider = FutureProvider.autoDispose
   ref.onDispose(() {
     if (!cancel.isCancelled) cancel.cancel('status invalidated');
   });
-  try {
-    return await ref.read(monitoringRepositoryProvider).status(
-          clusterIdOverride: clusterId,
-          cancelToken: cancel,
-        );
-  } on DioException catch (e) {
-    if (CancelToken.isCancel(e)) rethrow;
-    rethrow;
-  }
+  return ref.read(monitoringRepositoryProvider).status(
+        clusterIdOverride: clusterId,
+        cancelToken: cancel,
+      );
 });

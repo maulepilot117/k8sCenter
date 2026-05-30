@@ -254,10 +254,13 @@ void main() {
   });
 
   group('errorRouter', () {
-    test('routes name/namespace/acme.* to step 1; type to step 0', () {
+    test('routes name/namespace/acme.*/selfSigned to step 1; type to step 0',
+        () {
       final c = IssuerWizardController();
       expect(c.errorRouter('type'), 0);
-      expect(c.errorRouter('selfSigned'), 0);
+      // selfSigned renders in the step-1 Configure body (_SelfSignedSummary),
+      // so its backend field error must route to step 1, not step 0.
+      expect(c.errorRouter('selfSigned'), 1);
       expect(c.errorRouter('name'), 1);
       expect(c.errorRouter('namespace'), 1);
       expect(c.errorRouter('acme.email'), 1);
