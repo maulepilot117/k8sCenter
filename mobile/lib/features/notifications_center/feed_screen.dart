@@ -104,13 +104,39 @@ class NotificationFeedScreen extends ConsumerWidget {
                 ],
               );
             }
+            // The feed is fetched with the default limit (50) and no
+            // load-more, so when the backend reports more items than were
+            // returned, surface an honest footer instead of silently
+            // dropping the remainder. The footer occupies a synthetic
+            // trailing index, so the separator/item builders guard against
+            // it to avoid an out-of-range read into page.items.
+            final truncated = page.total > page.items.length;
+            final itemCount = page.items.length + (truncated ? 1 : 0);
             return ListView.separated(
               physics: const AlwaysScrollableScrollPhysics(),
-              itemCount: page.items.length,
+              itemCount: itemCount,
               separatorBuilder: (_, _) =>
                   Divider(height: 1, color: colors.borderSubtle),
-              itemBuilder: (context, i) =>
-                  _NotificationTile(item: page.items[i]),
+              itemBuilder: (context, i) {
+                if (truncated && i == page.items.length) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 16,
+                    ),
+                    child: Center(
+                      child: Text(
+                        'Showing ${page.items.length} of ${page.total}',
+                        style: TextStyle(
+                          color: colors.textMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                return _NotificationTile(item: page.items[i]);
+              },
             );
           },
         ),

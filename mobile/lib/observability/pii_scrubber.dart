@@ -36,6 +36,7 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 const String kScrubbedNamespace = '<namespace>';
 const String kScrubbedName = '<name>';
 const String kScrubbedToken = '<fcm-token>';
+const String kScrubbedIp = '<ip>';
 
 /// Matches FCM registration tokens. Real-world FCM tokens are
 /// 140+ chars of `[A-Za-z0-9_:-]`. We use a 100-char floor to avoid
@@ -82,6 +83,18 @@ final RegExp _wsPathPattern = RegExp(
 final RegExp _k8sKeyValuePattern = RegExp(
   r'\b(namespace|name)=([^,;&\s)\]\}"' "'" r']+)',
   caseSensitive: false,
+);
+
+/// Matches a bare IPv4 dotted quad (each octet 0–255), word-boundary
+/// anchored. Unlike a bare k8s-name regex (which the header rejects for its
+/// false-positive rate), the four-octet dotted-quad shape is tight and
+/// distinctive enough to scrub safely: each component is validated 0–255 and
+/// the `\b` anchors stop it from chewing into version strings or longer
+/// numeric runs. Targets the `SocketException.toString()` free-text leak —
+/// e.g. "address = 10.0.12.34, port = 443" — where backend/cluster IPs hide
+/// in exception messages that the positional k8s-path passes never inspect.
+final RegExp _ipv4Pattern = RegExp(
+  r'\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b',
 );
 
 /// Hook used by [SentryFlutter.init]'s `beforeSend` callback. Returns
@@ -361,6 +374,13 @@ String _scrubText(String input) {
     final replacement = key == 'namespace' ? kScrubbedNamespace : kScrubbedName;
     return '${m.group(1)}=$replacement';
   });
+
+  // IPv4 dotted quads LAST — after all `/v1/...` path passes. The k8s-path
+  // patterns operate on `/v1/...` shapes that carry no bare IPs, so ordering
+  // this final keeps it from interfering with them. The tight 0–255-per-octet
+  // quad scrubs backend/cluster IPs that leak as free text via
+  // `SocketException.toString()` and similar exception messages.
+  out = out.replaceAll(_ipv4Pattern, kScrubbedIp);
 
   return out;
 }

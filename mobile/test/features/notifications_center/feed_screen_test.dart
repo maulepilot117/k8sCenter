@@ -93,4 +93,36 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Mark all read'), findsNothing);
   });
+
+  testWidgets('shows truncation footer when total > items.length',
+      (tester) async {
+    await tester.pumpWidget(_harness(
+      page: NotificationsPage(
+        items: [
+          _item(id: 'n-1', read: true),
+          _item(id: 'n-2', read: true),
+        ],
+        total: 137,
+      ),
+      unread: 0,
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Showing 2 of 137'), findsOneWidget);
+  });
+
+  testWidgets('hides truncation footer when total == items.length',
+      (tester) async {
+    await tester.pumpWidget(_harness(
+      page: NotificationsPage(
+        items: [
+          _item(id: 'n-1', read: true),
+          _item(id: 'n-2', read: true),
+        ],
+        total: 2,
+      ),
+      unread: 0,
+    ));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Showing'), findsNothing);
+  });
 }

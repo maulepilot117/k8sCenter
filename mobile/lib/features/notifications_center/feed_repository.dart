@@ -84,7 +84,6 @@ class NotificationsRepository {
     String? severity,
     String? read,
     int limit = 50,
-    int offset = 0,
   }) async {
     try {
       final res = await _dio.get<Map<String, dynamic>>(
@@ -94,7 +93,6 @@ class NotificationsRepository {
           if (severity != null && severity.isNotEmpty) 'severity': severity,
           if (read != null && read.isNotEmpty) 'read': read,
           'limit': '$limit',
-          'offset': '$offset',
         },
       );
       final raw = res.data?['data'];
