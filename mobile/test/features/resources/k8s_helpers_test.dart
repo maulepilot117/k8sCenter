@@ -61,6 +61,13 @@ void main() {
         '2y',
       );
     });
+    test('clamps future/clock-skewed timestamps to "0s"', () {
+      final future =
+          DateTime.now().toUtc().add(const Duration(seconds: 5));
+      expect(formatAge(future.toIso8601String()), '0s');
+      final now = DateTime.now().toUtc();
+      expect(formatAge(now.toIso8601String()), '0s');
+    });
   });
 
   group('joinMap', () {

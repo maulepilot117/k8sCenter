@@ -209,6 +209,11 @@ const Duration _deleteActionTimeout = Duration(seconds: 90);
 /// `lib/features/observability/metrics/metric_panels.dart`. Keep
 /// [actionsByKind] / [getVisibleActions] keyed on the original kind so
 /// RBAC + menu visibility are unchanged.
+///
+/// This map is applied inside [_resourceBase] — wire-path translation is
+/// co-located with URL construction so routing decisions live in one place
+/// (the only sanctioned routing sites are [_resourceBase] and
+/// `resource_repository.dart`). Callers always pass the original kind.
 const Map<String, String> _routeKindAliases = {
   'persistentvolumeclaims': 'pvcs',
 };
@@ -219,11 +224,12 @@ const Map<String, String> _routeKindAliases = {
 /// not `/api/v1/resources/namespaces//<name>`. Matches the backend
 /// router's split between cluster-scoped and namespaced action routes.
 String _resourceBase(String kind, String namespace, String name) {
+  final routeKind = _routeKindAliases[kind] ?? kind;
   final segs = <String>[
     'api',
     'v1',
     'resources',
-    Uri.encodeComponent(kind),
+    Uri.encodeComponent(routeKind),
     if (namespace.isNotEmpty) Uri.encodeComponent(namespace),
     Uri.encodeComponent(name),
   ];
@@ -240,8 +246,7 @@ Future<ActionResult> executeAction({
   required String name,
   Map<String, dynamic>? params,
 }) async {
-  final routeKind = _routeKindAliases[kind] ?? kind;
-  final base = _resourceBase(routeKind, namespace, name);
+  final base = _resourceBase(kind, namespace, name);
   final opts = Options(
     receiveTimeout:
         id == ActionId.delete ? _deleteActionTimeout : _defaultActionTimeout,

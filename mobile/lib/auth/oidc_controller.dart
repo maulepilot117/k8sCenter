@@ -148,6 +148,13 @@ class OIDCController extends Notifier<OIDCFlowState> {
   final String? _universalLinkHostOverride;
   final DateTime Function() _now;
 
+  // True while [completeFlow] is resolving a callback. The pre-Exchanging
+  // `await pendingStore.read()` window leaves state in [OIDCFlowLaunching],
+  // so without this flag a concurrent [abandonLaunching] (fired by the
+  // login screen's resume timer) could clobber an in-flight resolution
+  // back to idle before it reaches [OIDCFlowExchanging].
+  bool _resolving = false;
+
   // Constructor override seam preserved for unit tests; production reads
   // through the provider so widget tests can override the host without
   // rebuilding the controller.
@@ -175,9 +182,13 @@ class OIDCController extends Notifier<OIDCFlowState> {
   ///
   /// Guarded STRICTLY on [OIDCFlowLaunching] so a real in-flight
   /// [OIDCFlowExchanging] (callback already landed, body-mode exchange
-  /// running) is never clobbered.
+  /// running) is never clobbered. The `!_resolving` clause additionally
+  /// covers [completeFlow]'s pre-Exchanging `await pendingStore.read()`
+  /// window, where state is still [OIDCFlowLaunching] but a callback is
+  /// actively being resolved — abandoning then would briefly flip the
+  /// flow to idle out from under the resolution.
   void abandonLaunching() {
-    if (state is OIDCFlowLaunching) {
+    if (state is OIDCFlowLaunching && !_resolving) {
       state = const OIDCFlowIdle();
     }
   }
@@ -266,142 +277,153 @@ class OIDCController extends Notifier<OIDCFlowState> {
   /// to app_links and dispatches here) and the cold-start re-entry
   /// path (main.dart drains the initial link after auth bootstrap).
   Future<void> completeFlow(Uri callback) async {
-    final pendingStore = ref.read(pendingOidcStoreProvider);
-    final pending = await pendingStore.read();
+    // Mark the flow as resolving BEFORE the first await. The
+    // `await pendingStore.read()` window below leaves state in
+    // [OIDCFlowLaunching], so this flag stops a concurrent
+    // [abandonLaunching] from flipping the flow to idle mid-resolution.
+    // The outer finally guarantees the flag is cleared on every exit
+    // path (early returns, timeout, propagating exception).
+    _resolving = true;
+    try {
+      final pendingStore = ref.read(pendingOidcStoreProvider);
+      final pending = await pendingStore.read();
 
-    if (pending == null) {
-      // No flow in progress. Either the callback arrived after the user
-      // already completed/cancelled, or someone tapped a stale link.
-      // Treat as no-op rather than an error — surfacing an error here
-      // would confuse users who navigated to the app without intending
-      // to complete a sign-in.
-      return;
-    }
-
-    if (pending.isExpired(_now())) {
-      await pendingStore.clear();
-      state = const OIDCFlowError(reason: OIDCFlowErrorReason.ttlExpired);
-      return;
-    }
-
-    // IdP cancellation surfaces as `?error=access_denied`. Inspect
-    // BEFORE pulling `code` so we route the right error. RFC 6749 §4.1.2.1
-    // OAuth error codes + OIDC core §3.1.2.6 mapped to controller reasons
-    // so the inline banner reflects the actual condition.
-    //
-    // CSRF-bind error callbacks the same way we bind success callbacks:
-    // read `state` first and reject anything that doesn't match the
-    // persisted pending.state BEFORE touching pendingStore. Without this
-    // bind an attacker who can deliver a crafted error universal-link
-    // (intent spoofing on Android, hostile webpage on iOS) can wipe the
-    // verifier/state of an in-flight legitimate flow — targeted login
-    // DoS. Audit finding P3-6.
-    final errorParam = callback.queryParameters['error'];
-    final callbackState = callback.queryParameters['state'];
-    if (errorParam != null && errorParam.isNotEmpty) {
-      if (callbackState == null || callbackState != pending.state) {
-        // Silently drop — same disposition as the "no pending" branch
-        // above. Surfacing an error here would both confirm the crafted
-        // callback was received AND clobber the inline error banner that
-        // a previous real failure may have placed on the login screen.
+      if (pending == null) {
+        // No flow in progress. Either the callback arrived after the user
+        // already completed/cancelled, or someone tapped a stale link.
+        // Treat as no-op rather than an error — surfacing an error here
+        // would confuse users who navigated to the app without intending
+        // to complete a sign-in.
         return;
       }
-      await pendingStore.clear();
-      final reason = switch (errorParam) {
-        'access_denied' => OIDCFlowErrorReason.consentDenied,
-        // User not signed in at IdP / interaction prompt suppressed —
-        // surfaces the same "Sign-in cancelled" UX since the next attempt
-        // will succeed once the user authenticates.
-        'login_required' => OIDCFlowErrorReason.consentDenied,
-        'interaction_required' => OIDCFlowErrorReason.consentDenied,
-        // Transient IdP-side failures get the network bucket so the user
-        // is told to retry rather than seeing "rejected by IdP".
-        'temporarily_unavailable' => OIDCFlowErrorReason.networkError,
-        'server_error' => OIDCFlowErrorReason.networkError,
-        _ => OIDCFlowErrorReason.exchangeRejected,
-      };
-      state = OIDCFlowError(
-        reason: reason,
-        detail: callback.queryParameters['error_description'],
-      );
-      return;
-    }
 
-    final code = callback.queryParameters['code'];
+      if (pending.isExpired(_now())) {
+        await pendingStore.clear();
+        state = const OIDCFlowError(reason: OIDCFlowErrorReason.ttlExpired);
+        return;
+      }
 
-    if (code == null || code.isEmpty || callbackState == null) {
-      await pendingStore.clear();
-      state = const OIDCFlowError(reason: OIDCFlowErrorReason.internalError);
-      return;
-    }
+      // IdP cancellation surfaces as `?error=access_denied`. Inspect
+      // BEFORE pulling `code` so we route the right error. RFC 6749 §4.1.2.1
+      // OAuth error codes + OIDC core §3.1.2.6 mapped to controller reasons
+      // so the inline banner reflects the actual condition.
+      //
+      // CSRF-bind error callbacks the same way we bind success callbacks:
+      // read `state` first and reject anything that doesn't match the
+      // persisted pending.state BEFORE touching pendingStore. Without this
+      // bind an attacker who can deliver a crafted error universal-link
+      // (intent spoofing on Android, hostile webpage on iOS) can wipe the
+      // verifier/state of an in-flight legitimate flow — targeted login
+      // DoS. Audit finding P3-6.
+      final errorParam = callback.queryParameters['error'];
+      final callbackState = callback.queryParameters['state'];
+      if (errorParam != null && errorParam.isNotEmpty) {
+        if (callbackState == null || callbackState != pending.state) {
+          // Silently drop — same disposition as the "no pending" branch
+          // above. Surfacing an error here would both confirm the crafted
+          // callback was received AND clobber the inline error banner that
+          // a previous real failure may have placed on the login screen.
+          return;
+        }
+        await pendingStore.clear();
+        final reason = switch (errorParam) {
+          'access_denied' => OIDCFlowErrorReason.consentDenied,
+          // User not signed in at IdP / interaction prompt suppressed —
+          // surfaces the same "Sign-in cancelled" UX since the next attempt
+          // will succeed once the user authenticates.
+          'login_required' => OIDCFlowErrorReason.consentDenied,
+          'interaction_required' => OIDCFlowErrorReason.consentDenied,
+          // Transient IdP-side failures get the network bucket so the user
+          // is told to retry rather than seeing "rejected by IdP".
+          'temporarily_unavailable' => OIDCFlowErrorReason.networkError,
+          'server_error' => OIDCFlowErrorReason.networkError,
+          _ => OIDCFlowErrorReason.exchangeRejected,
+        };
+        state = OIDCFlowError(
+          reason: reason,
+          detail: callback.queryParameters['error_description'],
+        );
+        return;
+      }
 
-    if (callbackState != pending.state) {
-      await pendingStore.clear();
-      state = const OIDCFlowError(reason: OIDCFlowErrorReason.stateMismatch);
-      return;
-    }
+      final code = callback.queryParameters['code'];
 
-    state = OIDCFlowExchanging(pending.providerID);
+      if (code == null || code.isEmpty || callbackState == null) {
+        await pendingStore.clear();
+        state = const OIDCFlowError(reason: OIDCFlowErrorReason.internalError);
+        return;
+      }
 
-    final repo = ref.read(oidcRepositoryProvider);
-    final OIDCExchangeResult result;
-    try {
-      result = await repo.exchangeMobile(
-        providerID: pending.providerID,
-        code: code,
-        codeVerifier: pending.codeVerifier,
-        nonce: pending.nonce,
-      );
-    } on ApiError catch (e) {
-      await pendingStore.clear();
-      state = OIDCFlowError(
-        reason: _classifyExchangeError(e),
-        detail: e.message,
-      );
-      return;
-    } catch (e) {
-      await pendingStore.clear();
-      state = OIDCFlowError(
-        reason: OIDCFlowErrorReason.internalError,
-        detail: e.toString(),
-      );
-      return;
-    }
+      if (callbackState != pending.state) {
+        await pendingStore.clear();
+        state = const OIDCFlowError(reason: OIDCFlowErrorReason.stateMismatch);
+        return;
+      }
 
-    // Success path: write tokens, hydrate /me, clear pending. Order
-    // matters — clear pending AFTER applyAuthTokens succeeds so a
-    // hydration failure can be retried via the auth state machine
-    // without losing the OIDC flow context. In practice applyAuthTokens
-    // always returns (it sets state to Unauthenticated on hydration
-    // failure), so this is belt-and-braces.
-    //
-    // The 30s timeout bounds the worst case where the backend hangs on
-    // /v1/auth/me — without it the OIDC controller could sit in
-    // [OIDCFlowExchanging] forever and lock the login screen out of
-    // retries. Times out to networkError so the user is told to retry.
-    try {
-      await ref
-          .read(authRepositoryProvider.notifier)
-          .applyAuthTokens(
-            accessToken: result.accessToken,
-            refreshToken: result.refreshToken,
-          )
-          .timeout(
-            const Duration(seconds: 30),
-            onTimeout: () =>
-                throw TimeoutException('applyAuthTokens timeout'),
-          );
-    } on TimeoutException {
-      // finally below clears pending; just surface the error here.
-      state = const OIDCFlowError(
-        reason: OIDCFlowErrorReason.networkError,
-        detail: 'auth/me hydration timeout',
-      );
-      return;
+      state = OIDCFlowExchanging(pending.providerID);
+
+      final repo = ref.read(oidcRepositoryProvider);
+      final OIDCExchangeResult result;
+      try {
+        result = await repo.exchangeMobile(
+          providerID: pending.providerID,
+          code: code,
+          codeVerifier: pending.codeVerifier,
+          nonce: pending.nonce,
+        );
+      } on ApiError catch (e) {
+        await pendingStore.clear();
+        state = OIDCFlowError(
+          reason: _classifyExchangeError(e),
+          detail: e.message,
+        );
+        return;
+      } catch (e) {
+        await pendingStore.clear();
+        state = OIDCFlowError(
+          reason: OIDCFlowErrorReason.internalError,
+          detail: e.toString(),
+        );
+        return;
+      }
+
+      // Success path: write tokens, hydrate /me, clear pending. Order
+      // matters — clear pending AFTER applyAuthTokens succeeds so a
+      // hydration failure can be retried via the auth state machine
+      // without losing the OIDC flow context. In practice applyAuthTokens
+      // always returns (it sets state to Unauthenticated on hydration
+      // failure), so this is belt-and-braces.
+      //
+      // The 30s timeout bounds the worst case where the backend hangs on
+      // /v1/auth/me — without it the OIDC controller could sit in
+      // [OIDCFlowExchanging] forever and lock the login screen out of
+      // retries. Times out to networkError so the user is told to retry.
+      try {
+        await ref
+            .read(authRepositoryProvider.notifier)
+            .applyAuthTokens(
+              accessToken: result.accessToken,
+              refreshToken: result.refreshToken,
+            )
+            .timeout(
+              const Duration(seconds: 30),
+              onTimeout: () =>
+                  throw TimeoutException('applyAuthTokens timeout'),
+            );
+      } on TimeoutException {
+        // finally below clears pending; just surface the error here.
+        state = const OIDCFlowError(
+          reason: OIDCFlowErrorReason.networkError,
+          detail: 'auth/me hydration timeout',
+        );
+        return;
+      } finally {
+        await pendingStore.clear();
+      }
+      state = const OIDCFlowIdle();
     } finally {
-      await pendingStore.clear();
+      _resolving = false;
     }
-    state = const OIDCFlowIdle();
   }
 
   OIDCFlowErrorReason _classifyExchangeError(ApiError e) {

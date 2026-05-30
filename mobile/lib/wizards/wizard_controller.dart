@@ -288,6 +288,8 @@ abstract class WizardController<TForm>
       status: resetStatus,
       form: next,
       stepErrors: errors,
+      clearPreviewYaml: true,
+      clearApplyOutcome: true,
       clearErrorMessage: true,
       clearUnrouted: true,
     ));

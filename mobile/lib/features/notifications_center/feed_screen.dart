@@ -9,6 +9,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../api/api_error.dart';
 import '../../cluster/cluster_provider.dart';
+import '../../cluster/cluster_repository.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
@@ -178,8 +179,18 @@ class _NotificationTile extends ConsumerWidget {
         // the active cluster and silently 404. Cross-cluster
         // notifications normally don't appear in the feed (the
         // backend filters server-side), so this is defensive.
+        //
+        // The clusterId comes from an untrusted notification payload, so
+        // only honor the swap when it names a cluster the user actually
+        // has registered. Reads the already-resolved clustersProvider
+        // snapshot synchronously (never awaits); a not-yet-loaded list
+        // leaves the active cluster untouched rather than trusting the
+        // payload. Mirrors _isKnownCluster in app_router.dart.
         final activeCluster = ref.read(activeClusterProvider);
-        if (clusterId != activeCluster) {
+        final knownClusters = ref.read(clustersProvider).valueOrNull;
+        final isKnown =
+            knownClusters?.clusters.any((c) => c.id == clusterId) ?? false;
+        if (clusterId != activeCluster && isKnown) {
           ref.read(activeClusterProvider.notifier).setCluster(clusterId);
         }
         // Use the kind segment as-is; kindDetailPath() falls back to

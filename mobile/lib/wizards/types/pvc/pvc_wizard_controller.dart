@@ -95,7 +95,10 @@ class PvcWizardController extends WizardController<PvcForm> {
   String get wizardType => 'pvc';
 
   @override
-  String get resourceListKind => 'persistentvolumeclaims';
+  // Backend registry slug is 'pvcs' (not the k8s plural
+  // 'persistentvolumeclaims') — must match the ResourceListKey slot the
+  // PVC list/detail screens use so post-apply invalidation hits it.
+  String get resourceListKind => 'pvcs';
 
   @override
   List<WizardStep> get steps => const [

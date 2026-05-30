@@ -203,6 +203,57 @@ void main() {
     );
   });
 
+  test(
+      'AuthInterceptor: transient refresh failure (5xx with response) '
+      'keeps the refresh token', () async {
+    final (:container, :mock) = _makeContainer();
+    addTearDown(container.dispose);
+
+    container.read(authTokenHolderProvider).set('stale-access');
+    await container
+        .read(secureTokenStoreProvider)
+        .writeRefreshToken('valid-refresh');
+
+    mock.on('GET', '/api/v1/protected', (_) {
+      return _json(
+        {
+          'error': {'code': 401, 'message': 'expired'},
+        },
+        status: 401,
+      );
+    });
+    // A gateway error: the refresh POST reaches a server that replies
+    // 503. Unlike the connectionTimeout case above, this DioException
+    // carries a NON-null response (e.response?.statusCode == 503). The
+    // _refresh() guard only clears tokens on 401/403, so a 5xx must NOT
+    // fire the destructive delete/clear branch — the server-side-valid
+    // refresh token has to survive for the next retry. This guards
+    // against a future narrowing of the guard (e.g. to `status != null`)
+    // that would silently log users out on gateway errors.
+    mock.on('POST', '/api/v1/auth/refresh', (_) {
+      return _json(
+        {
+          'error': {'code': 503, 'message': 'upstream unavailable'},
+        },
+        status: 503,
+      );
+    });
+
+    await expectLater(
+      container.read(dioProvider).get<dynamic>('/api/v1/protected'),
+      throwsA(isA<DioException>()),
+    );
+
+    // Contrast with the '401 clears tokens' test above: a 5xx is a
+    // transient server-side failure and must leave both the access
+    // holder and the stored refresh token intact.
+    expect(container.read(authTokenHolderProvider).accessToken, 'stale-access');
+    expect(
+      await container.read(secureTokenStoreProvider).readRefreshToken(),
+      'valid-refresh',
+    );
+  });
+
   // Issue #275 — P1 regression test. N concurrent requests that 401 must
   // share a single /v1/auth/refresh call, not fire N independent refreshes.
   // Without singleflight, every concurrent request's 401 handler races to

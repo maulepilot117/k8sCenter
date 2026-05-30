@@ -70,6 +70,25 @@ class _HangingOIDCRepository implements OIDCRepository {
   }
 }
 
+/// Pending store whose [read] never completes — suspends
+/// [OIDCController.completeFlow] in its pre-Exchanging read window, where
+/// state is still [OIDCFlowLaunching] and the controller's `_resolving`
+/// flag is set. Proves [OIDCController.abandonLaunching] no-ops during
+/// that window. [write]/[clear] behave normally so [OIDCController.startFlow]
+/// can still park the controller in [OIDCFlowLaunching].
+class _HangingReadPendingOidcStore implements PendingOidcStore {
+  final Completer<PendingOidc?> _never = Completer();
+
+  @override
+  Future<PendingOidc?> read() => _never.future;
+
+  @override
+  Future<void> write(PendingOidc pending) async {}
+
+  @override
+  Future<void> clear() async {}
+}
+
 ({
   ProviderContainer container,
   MockDioAdapter mock,
@@ -783,7 +802,7 @@ void main() {
       );
       // Let the synchronous portion of completeFlow up to the exchange
       // await run so the state advances to OIDCFlowExchanging.
-      await Future<void>.delayed(Duration.zero);
+      await pumpEventQueue();
       expect(
         container.read(oidcControllerProvider),
         isA<OIDCFlowExchanging>(),
@@ -794,6 +813,86 @@ void main() {
       expect(
         container.read(oidcControllerProvider),
         isA<OIDCFlowExchanging>(),
+      );
+    });
+
+    test('no-op during completeFlow read window (_resolving guard)', () async {
+      // Findings #10/#11: completeFlow's pre-Exchanging
+      // `await pendingStore.read()` leaves state in OIDCFlowLaunching. A
+      // resume-timer-driven abandonLaunching() firing in that window would
+      // briefly flip the flow to idle out from under an in-flight
+      // resolution. The `_resolving` guard must suppress it.
+      final launcher = _StubLauncher();
+      final hangingReadStore = _HangingReadPendingOidcStore();
+      final mock = MockDioAdapter();
+      final container = ProviderContainer(overrides: [
+        pendingOidcStoreProvider.overrideWithValue(hangingReadStore),
+        secureTokenStoreProvider.overrideWithValue(InMemoryTokenStore()),
+        oidcControllerProvider.overrideWith(() => OIDCController(
+              launchUrl: launcher.call,
+              universalLinkHost: 'k8scenter.test',
+              now: () => DateTime.utc(2026, 5, 16, 12, 0, 0),
+            )),
+        refreshDioProvider.overrideWith((ref) {
+          final dio = Dio(BaseOptions(baseUrl: 'http://localhost:8080'));
+          dio.httpClientAdapter = mock;
+          return dio;
+        }),
+        dioProvider.overrideWith((ref) {
+          final dio = Dio(BaseOptions(baseUrl: 'http://localhost:8080'));
+          dio.httpClientAdapter = mock;
+          return dio;
+        }),
+      ]);
+      addTearDown(container.dispose);
+
+      mock.onJson(
+        'GET',
+        '/api/v1/auth/oidc/authelia/mobile-config',
+        body: {
+          'data': {
+            'authorizationEndpoint': 'https://idp.example.com/oauth2/auth',
+            'clientId': 'kubecenter-mobile',
+            'scopes': ['openid'],
+          },
+        },
+      );
+
+      // Park the controller in OIDCFlowLaunching (startFlow only writes
+      // pending — it never reads — so the hanging-read store doesn't block
+      // it).
+      await container
+          .read(oidcControllerProvider.notifier)
+          .startFlow('authelia');
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+      );
+
+      // Fire completeFlow but don't await — it suspends on
+      // pendingStore.read(), which never completes. State stays
+      // OIDCFlowLaunching, but _resolving is now true.
+      unawaited(
+        container.read(oidcControllerProvider.notifier).completeFlow(
+              Uri.parse(
+                'https://k8scenter.test/m/auth/callback?code=AUTHCODE&state=STATE123',
+              ),
+            ),
+      );
+      await pumpEventQueue();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+        reason: 'still Launching while the read await is suspended',
+      );
+
+      // abandonLaunching() must no-op because _resolving is true, even
+      // though the state is still Launching.
+      container.read(oidcControllerProvider.notifier).abandonLaunching();
+      expect(
+        container.read(oidcControllerProvider),
+        isA<OIDCFlowLaunching>(),
+        reason: 'read-window resolution must not be clobbered to idle',
       );
     });
   });

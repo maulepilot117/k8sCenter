@@ -3,6 +3,8 @@
 // in with X" buttons for each OIDC provider, error chrome for ApiError
 // messages from /v1/auth/login + OIDC flow errors from OIDCController.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -23,10 +25,16 @@ class LoginScreen extends ConsumerStatefulWidget {
 
 class _LoginScreenState extends ConsumerState<LoginScreen>
     with WidgetsBindingObserver {
+  // Delay before releasing an abandoned OIDCFlowLaunching lock on resume.
+  // ~400ms because app_links delivers the callback Uri a few frames after
+  // `resumed`; we let a legitimate callback transition to Exchanging first.
+  static const _kOidcAbandonResetDelay = Duration(milliseconds: 400);
+
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
   String _selectedProvider = 'local';
+  Timer? _abandonTimer;
 
   @override
   void initState() {
@@ -36,6 +44,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
 
   @override
   void dispose() {
+    _abandonTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _usernameController.dispose();
     _passwordController.dispose();
@@ -54,8 +63,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen>
     // gets a chance to transition the controller to OIDCFlowExchanging
     // first; abandonLaunching() then no-ops because it guards strictly on
     // OIDCFlowLaunching. The happy path is untouched.
+    //
+    // The timer is cancel-and-reschedule: rapid background→foreground (or
+    // relaunching the IdP) must not queue multiple timers, where an early
+    // one could fire abandonLaunching while a freshly re-launched flow is
+    // legitimately back in OIDCFlowLaunching.
     if (state == AppLifecycleState.resumed) {
-      Future.delayed(const Duration(milliseconds: 400), () {
+      _abandonTimer?.cancel();
+      _abandonTimer = Timer(_kOidcAbandonResetDelay, () {
         if (!mounted) return;
         ref.read(oidcControllerProvider.notifier).abandonLaunching();
       });

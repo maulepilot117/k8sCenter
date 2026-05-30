@@ -296,5 +296,36 @@ void main() {
       expect(state.previewYaml, isNull);
       expect(state.currentStep, 0);
     });
+
+    test(
+        'updateForm out of reviewing resets to formEditing and clears the '
+        'stale preview YAML', () async {
+      final (:container, :mock) = _makeContainer();
+      addTearDown(container.dispose);
+      final sub = _keepAlive(container);
+      addTearDown(sub.close);
+
+      mock.onJson('POST', '/api/v1/wizards/configmap/preview', body: {
+        'data': {'yaml': 'apiVersion: v1\nkind: ConfigMap\n'},
+      });
+
+      final notifier = _ctl(container);
+      notifier.updateForm((_) => _filledForm());
+      // Run preview to land at Review with a populated preview YAML.
+      await notifier.next();
+
+      final reviewing = container.read(configMapWizardProvider(_key));
+      expect(reviewing.status, WizardStatus.reviewing);
+      expect(reviewing.previewYaml, isNotNull);
+
+      // Operator edits a field while at Review. updateForm must reset
+      // status off reviewing and drop the now-stale preview YAML so the
+      // footer can no longer offer Apply on un-previewed input.
+      notifier.updateForm((f) => f.copyWith(name: 'changed'));
+
+      final state = container.read(configMapWizardProvider(_key));
+      expect(state.status, WizardStatus.formEditing);
+      expect(state.previewYaml, isNull);
+    });
   });
 }

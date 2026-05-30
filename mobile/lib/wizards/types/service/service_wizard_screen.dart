@@ -10,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../cluster/cluster_provider.dart';
 import '../../../theme/kube_theme_builder.dart';
 import '../../widgets/key_value_table.dart';
+import '../../widgets/repeating_row_index.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
 import '../../widgets/wizard_unrouted_banner.dart';
@@ -183,20 +184,6 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-/// Map a display-row index to the index the backend reports errors
-/// against for `ports[N]` paths, accounting for `portsAsJson()`
-/// stripping empty rows. Returns null when [displayIndex] is out of
-/// range or the row at [displayIndex] is itself empty.
-int? _portsServerIndexFor(List<ServicePort> rows, int displayIndex) {
-  if (displayIndex < 0 || displayIndex >= rows.length) return null;
-  if (rows[displayIndex].isEmpty) return null;
-  var serverIndex = 0;
-  for (var i = 0; i < displayIndex; i++) {
-    if (!rows[i].isEmpty) serverIndex++;
-  }
-  return serverIndex;
-}
-
 /// Mini repeating-row editor for ServicePort entries. Trailing empty
 /// row is auto-rendered so operators don't need an explicit "Add"
 /// button.
@@ -225,7 +212,11 @@ class _PortsEditor extends StatelessWidget {
               // server-reported errors are indexed against the stripped
               // list. Map display-row index → server index so the error
               // lands on the row the operator actually filled.
-              final serverIndex = _portsServerIndexFor(display, i);
+              final serverIndex = serverIndexForRow(
+                display.length,
+                (idx) => display[idx].isEmpty,
+                i,
+              );
               return Padding(
                 padding: EdgeInsets.only(
                     bottom: i == display.length - 1 ? 0 : 8),

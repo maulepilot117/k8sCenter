@@ -17,6 +17,7 @@ import '../../widgets/container_form_parts.dart';
 import '../../widgets/key_value_table.dart';
 import '../../widgets/probe_form.dart';
 import '../../widgets/repeating_row_group.dart';
+import '../../widgets/repeating_row_index.dart';
 import '../../widgets/resources_form.dart';
 import '../../widgets/wizard_review_body.dart';
 import '../../widgets/wizard_screen_scaffold.dart';
@@ -158,20 +159,6 @@ class _BasicsStep extends ConsumerWidget {
   }
 }
 
-/// Map form-row index to the index the backend reports errors against
-/// for `ports[N]` paths, accounting for `containerPortsAsJson()`
-/// stripping empty rows. Returns null when the row at [formIndex] is
-/// itself empty.
-int? _portsServerIndexFor(List<ContainerPortData> rows, int formIndex) {
-  if (formIndex < 0 || formIndex >= rows.length) return null;
-  if (rows[formIndex].isEmpty) return null;
-  var serverIndex = 0;
-  for (var i = 0; i < formIndex; i++) {
-    if (!rows[i].isEmpty) serverIndex++;
-  }
-  return serverIndex;
-}
-
 class _NetworkingStep extends ConsumerWidget {
   const _NetworkingStep({required this.wizardKey});
   final WizardKey wizardKey;
@@ -210,8 +197,11 @@ class _NetworkingStep extends ConsumerWidget {
             // so server-reported errors are indexed against the
             // stripped list. Map form-row index → server index so
             // the error lands on the row the operator actually filled.
-            final serverIndex =
-                _portsServerIndexFor(state.form.ports, i);
+            final serverIndex = serverIndexForRow(
+              state.form.ports.length,
+              (idx) => state.form.ports[idx].isEmpty,
+              i,
+            );
             return ContainerPortRow(
               value: item,
               portError: serverIndex == null
