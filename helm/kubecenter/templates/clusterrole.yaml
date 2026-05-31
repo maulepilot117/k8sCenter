@@ -101,7 +101,7 @@ rules:
     verbs: ["get", "list", "watch"]
   # GitOps CRDs (dynamic informers for real-time WebSocket updates)
   - apiGroups: ["argoproj.io"]
-    resources: ["applications"]
+    resources: ["applications", "applicationsets"]
     verbs: ["list", "watch"]
   - apiGroups: ["kustomize.toolkit.fluxcd.io"]
     resources: ["kustomizations"]
