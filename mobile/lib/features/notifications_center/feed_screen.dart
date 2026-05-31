@@ -26,6 +26,14 @@ class NotificationFeedScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        // Explicit back affordance. Reached via the drawer's `context.push`,
+        // so the default pop returns to the originating page; fall back to
+        // the dashboard for a deep link / cold start straight to
+        // /notifications (the automatic leading only appears when the route
+        // can be popped). Mirrors settings_screen.dart.
+        leading: BackButton(
+          onPressed: () => context.canPop() ? context.pop() : context.go('/'),
+        ),
         title: MergeSemantics(
           child: Row(
             children: [

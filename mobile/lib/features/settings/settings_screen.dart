@@ -17,6 +17,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -63,7 +64,18 @@ class SettingsScreen extends ConsumerWidget {
     final rateEnabled = !isIOS || appStoreListingConfigured;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(
+        // Explicit back affordance. The drawer reaches this screen via
+        // `context.push`, so the default pop returns to the originating
+        // page. When there is nothing to pop — a deep link or cold start
+        // straight to /settings — fall back to the dashboard so the user
+        // is never stranded with no way back (the AppBar's automatic
+        // leading only appears when the route can be popped).
+        leading: BackButton(
+          onPressed: () => context.canPop() ? context.pop() : context.go('/'),
+        ),
+        title: const Text('Settings'),
+      ),
       body: ListView(
         children: [
           _SectionHeader(label: 'Appearance', colors: colors),

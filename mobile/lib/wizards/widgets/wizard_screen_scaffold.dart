@@ -166,7 +166,11 @@ class WizardScreenScaffold<TForm> extends ConsumerWidget {
     if (!context.mounted) return;
     if (outcome.firstResultName.isNotEmpty &&
         outcome.firstResultNamespace != null) {
-      context.go(kindDetailPath(
+      // pushReplacement (not go): swap the just-submitted wizard for the new
+      // resource's detail while keeping whatever launched the wizard
+      // (dashboard / list) below it, so the detail's back button returns there
+      // instead of dead-ending on a stackless route.
+      context.pushReplacement(kindDetailPath(
         clusterId: wizardKey.clusterId,
         kind: entry.kind,
         namespace: outcome.firstResultNamespace!,
@@ -183,7 +187,9 @@ class WizardScreenScaffold<TForm> extends ConsumerWidget {
       context.go('/');
       return;
     }
-    context.go('/clusters/${wizardKey.clusterId}/'
+    // pushReplacement so the resource list keeps the launcher below it and its
+    // back button works (see the detail branch above).
+    context.pushReplacement('/clusters/${wizardKey.clusterId}/'
         '${section.pathSegment}/${entry.kind}');
   }
 
