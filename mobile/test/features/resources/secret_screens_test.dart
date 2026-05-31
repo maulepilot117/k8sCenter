@@ -13,8 +13,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/api/dio_client.dart';
 import 'package:kubecenter/auth/secure_storage.dart';
+import 'package:flutter_windowmanager_plus/flutter_windowmanager_plus.dart';
 import 'package:kubecenter/features/resources/secret_screens.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
+import 'package:kubecenter/widgets/secure_screen_mixin.dart';
 
 import '../../support/mock_dio_adapter.dart';
 import '../../support/platform_helpers.dart';
@@ -140,25 +142,27 @@ void main() {
       );
     }
 
-    /// Mocks the `flutter_windowmanager` MethodChannel and returns the
-    /// captured calls list for assertions. Caller is responsible for
-    /// `addTearDown` cleanup (registered here).
+    /// Stubs [SecureScreenMixin]'s secure-flag seam and returns the captured
+    /// calls list for assertions. The seam is used instead of mocking the
+    /// `flutter_windowmanager_plus` MethodChannel directly because the plugin
+    /// self-guards on `dart:io` `Platform.isAndroid` (false under `flutter
+    /// test`) and would never reach the channel. Synthesizes `MethodCall`s so
+    /// the per-test assertions (method name + `flags` argument) are unchanged.
+    /// Caller is responsible for nothing — `addTearDown` cleanup is registered
+    /// here.
     List<MethodCall> mockWindowManager() {
       final calls = <MethodCall>[];
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-        const MethodChannel('flutter_windowmanager'),
-        (call) async {
-          calls.add(call);
-          return true;
-        },
-      );
+      SecureScreenMixin.addSecureFlags = (flags) async {
+        calls.add(MethodCall('addFlags', <String, dynamic>{'flags': flags}));
+        return true;
+      };
+      SecureScreenMixin.clearSecureFlags = (flags) async {
+        calls.add(MethodCall('clearFlags', <String, dynamic>{'flags': flags}));
+        return true;
+      };
       addTearDown(() {
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
-          const MethodChannel('flutter_windowmanager'),
-          null,
-        );
+        SecureScreenMixin.addSecureFlags = FlutterWindowManagerPlus.addFlags;
+        SecureScreenMixin.clearSecureFlags = FlutterWindowManagerPlus.clearFlags;
       });
       return calls;
     }

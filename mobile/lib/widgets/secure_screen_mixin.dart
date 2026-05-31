@@ -38,7 +38,7 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:flutter_windowmanager_plus/flutter_windowmanager_plus.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 /// Channel into `mobile/ios/Runner/SceneDelegate.swift` for the native
@@ -80,6 +80,21 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
   /// forget when adding new ones.)
   @visibleForTesting
   static bool kIgnoreDebugForTests = kDebugMode;
+
+  /// Test seam for the Android secure-flag platform calls. Production wires
+  /// these to the real `flutter_windowmanager_plus` methods, which self-guard
+  /// on `dart:io` `Platform.isAndroid` and therefore no-op (returning without
+  /// touching the MethodChannel) under `flutter test` on a host OS. The
+  /// mixin's own `defaultTargetPlatform` gate already scopes these calls to
+  /// Android, so the plugin's redundant host guard is irrelevant in
+  /// production but un-mockable in tests — hence this indirection, which lets
+  /// tests observe the calls without faking `Platform.isAndroid`.
+  @visibleForTesting
+  static Future<bool> Function(int flags) addSecureFlags =
+      FlutterWindowManagerPlus.addFlags;
+  @visibleForTesting
+  static Future<bool> Function(int flags) clearSecureFlags =
+      FlutterWindowManagerPlus.clearFlags;
 
   bool _sensitive = false;
   OverlayEntry? _blurOverlay;
@@ -252,12 +267,12 @@ mixin SecureScreenMixin<T extends StatefulWidget> on State<T> {
 
   Future<void> _addFlagSecure() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
-    await FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+    await addSecureFlags(FlutterWindowManagerPlus.FLAG_SECURE);
   }
 
   Future<void> _clearFlagSecure() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
-    await FlutterWindowManager.clearFlags(FlutterWindowManager.FLAG_SECURE);
+    await clearSecureFlags(FlutterWindowManagerPlus.FLAG_SECURE);
   }
 
   /// Notifies the iOS [SceneDelegate] of the sensitive state via the
