@@ -1,3 +1,4 @@
+import java.io.File
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -16,7 +17,7 @@ plugins {
 // file from the ANDROID_UPLOAD_* secrets at run time; finding P1-5 of the
 // audit: release builds must NOT fall back to debug signing.
 val keyPropertiesFile = System.getenv("ANDROID_KEY_PROPERTIES_PATH")
-    ?.let { java.io.File(it) }
+    ?.let { File(it) }
     ?: rootProject.file("key.properties")
 
 val keyProperties = Properties().apply {
@@ -38,6 +39,11 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // flutter_local_notifications >=18 (and the timezone DB it bundles)
+        // calls into java.time APIs that are not available below API 26, so
+        // AGP requires core-library desugaring to be enabled on :app. The
+        // desugar_jdk_libs dependency is wired in the `dependencies` block.
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -126,4 +132,11 @@ tasks.matching { task ->
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Required by flutter_local_notifications >=18 so the app's minSdk can
+    // stay below API 26 while the plugin uses java.time. Version pinned to
+    // the plugin's documented minimum (2.1.4); see README "Android Setup".
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

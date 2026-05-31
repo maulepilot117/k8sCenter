@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_windowmanager_plus/flutter_windowmanager_plus.dart';
 import 'package:kubecenter/widgets/secure_screen_mixin.dart';
 
 import '../support/platform_helpers.dart';
@@ -17,22 +18,23 @@ void main() {
 
     setUp(() {
       calls = <MethodCall>[];
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-        const MethodChannel('flutter_windowmanager'),
-        (call) async {
-          calls.add(call);
-          return true;
-        },
-      );
+      // Drive the mixin's secure-flag seam rather than the
+      // flutter_windowmanager_plus MethodChannel: the plugin self-guards on
+      // `dart:io` `Platform.isAndroid` (false here) and never reaches the
+      // channel. Synthesized MethodCalls keep the assertions below unchanged.
+      SecureScreenMixin.addSecureFlags = (flags) async {
+        calls.add(MethodCall('addFlags', <String, dynamic>{'flags': flags}));
+        return true;
+      };
+      SecureScreenMixin.clearSecureFlags = (flags) async {
+        calls.add(MethodCall('clearFlags', <String, dynamic>{'flags': flags}));
+        return true;
+      };
     });
 
     tearDown(() {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(
-        const MethodChannel('flutter_windowmanager'),
-        null,
-      );
+      SecureScreenMixin.addSecureFlags = FlutterWindowManagerPlus.addFlags;
+      SecureScreenMixin.clearSecureFlags = FlutterWindowManagerPlus.clearFlags;
     });
 
     testWidgets('setSensitive(true) adds FLAG_SECURE', (tester) async {
@@ -757,20 +759,20 @@ void main() {
 
       await withPlatform(TargetPlatform.android, () async {
         final platformCalls = <MethodCall>[];
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(
-          const MethodChannel('flutter_windowmanager'),
-          (call) async {
-            platformCalls.add(call);
-            return true;
-          },
-        );
+        SecureScreenMixin.addSecureFlags = (flags) async {
+          platformCalls
+              .add(MethodCall('addFlags', <String, dynamic>{'flags': flags}));
+          return true;
+        };
+        SecureScreenMixin.clearSecureFlags = (flags) async {
+          platformCalls
+              .add(MethodCall('clearFlags', <String, dynamic>{'flags': flags}));
+          return true;
+        };
         addTearDown(() {
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-              .setMockMethodCallHandler(
-            const MethodChannel('flutter_windowmanager'),
-            null,
-          );
+          SecureScreenMixin.addSecureFlags = FlutterWindowManagerPlus.addFlags;
+          SecureScreenMixin.clearSecureFlags =
+              FlutterWindowManagerPlus.clearFlags;
         });
 
         await tester.pumpWidget(const MaterialApp(home: _Host()));

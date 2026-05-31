@@ -74,7 +74,10 @@ dependencies:
   # Android FLAG_SECURE for the Secret detail screen (PR-5d). Exact-pinned
   # because the platform-channel surface is small and accidental upgrades on
   # a security primitive are not worth the risk of silent behavioural drift.
-  flutter_windowmanager: 0.2.0
+  # Uses the maintained `_plus` fork: the original flutter_windowmanager 0.2.0
+  # is abandoned and ships an AGP-7-era android/build.gradle with no namespace,
+  # which fails to configure under AGP 8 ("Namespace not specified").
+  flutter_windowmanager_plus: 1.0.1
 
   # External URLs from the Settings "About" tiles + the onboarding "How to
   # set up your server" CTA (PR-5g).

@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- POST_NOTIFICATIONS runtime permission (Android 13+, API 33). Must be a
+         direct child of <manifest>, not nested inside <application> (AAPT2
+         rejects the latter under AGP 8). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="kubecenter"
         android:name="${applicationName}"
@@ -50,8 +54,6 @@
                       android:pathPrefix="/m/"/>
             </intent-filter>
         </activity>
-        <!-- POST_NOTIFICATIONS runtime permission (Android 13+, API 33). -->
-        <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
