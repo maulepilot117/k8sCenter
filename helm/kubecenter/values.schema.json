@@ -25,6 +25,7 @@
           "type": "object",
           "properties": {
             "dev": { "type": "boolean" },
+            "devInClusterAllow": { "type": "boolean" },
             "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
             "logFormat": { "type": "string", "enum": ["json", "text"] },
             "clusterID": { "type": "string", "minLength": 1 }

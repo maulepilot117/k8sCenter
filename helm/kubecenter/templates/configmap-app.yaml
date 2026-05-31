@@ -9,6 +9,12 @@ metadata:
 data:
   KUBECENTER_SERVER_PORT: {{ .Values.backend.port | quote }}
   KUBECENTER_DEV: {{ .Values.backend.config.dev | quote }}
+  {{- if .Values.backend.config.devInClusterAllow }}
+  # Explicit opt-in to run dev mode in-cluster (P1-1-cascade guard in
+  # backend/cmd/kubecenter/main.go). Only consulted by the backend when
+  # dev mode is enabled; without it an in-cluster dev pod refuses to start.
+  KUBECENTER_DEV_IN_CLUSTER_ALLOW: "true"
+  {{- end }}
   KUBECENTER_LOG_LEVEL: {{ .Values.backend.config.logLevel | quote }}
   KUBECENTER_LOG_FORMAT: {{ .Values.backend.config.logFormat | quote }}
   KUBECENTER_CLUSTERID: {{ .Values.backend.config.clusterID | quote }}

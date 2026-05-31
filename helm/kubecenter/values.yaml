@@ -41,6 +41,13 @@ backend:
   goMemLimit: "230MiB"    # GOMEMLIMIT — set to ~90% of memory limit
   config:
     dev: false
+    # P1-1-cascade opt-in (see backend/cmd/kubecenter/main.go): when dev=true
+    # AND the backend runs in-cluster, it refuses to start unless this is true.
+    # Dev mode in-cluster disables the leaked-secret guard, the loopback-setup
+    # gate, and chart token auto-generation — enable this ONLY for trusted-LAN
+    # homelab installs that consciously accept that posture. No effect when
+    # dev=false.
+    devInClusterAllow: false
     logLevel: info     # debug, info, warn, error
     logFormat: json     # json, text
     clusterID: local
