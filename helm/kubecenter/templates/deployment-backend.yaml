@@ -1,4 +1,12 @@
 {{- include "kubecenter.validatePlaceholders" . }}
+{{- /* App secret source. When auth.existingSecret is set, the backend reads
+       jwt-secret / setup-token / database-url from that operator-managed
+       Secret via secretKeyRef instead of the chart-managed Secret. This is
+       required for GitOps/ArgoCD, where Helm's `lookup` returns nothing
+       (so the chart's persistence fallback would emit a fresh random secret
+       on every render) and committing secrets to values is unacceptable
+       (Finding P0-1). Empty → default chart-managed Secret. */}}
+{{- $appSecret := .Values.auth.existingSecret | default (include "kubecenter.fullname" .) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -85,20 +93,20 @@ spec:
             - name: KUBECENTER_AUTH_JWTSECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kubecenter.fullname" . }}
+                  name: {{ $appSecret }}
                   key: jwt-secret
             {{- if or .Values.postgresql.enabled .Values.externalDatabase.host }}
             - name: KUBECENTER_DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kubecenter.fullname" . }}
+                  name: {{ $appSecret }}
                   key: database-url
             {{- end }}
             {{- if or .Values.auth.setupToken (not .Values.backend.config.dev) }}
             - name: KUBECENTER_AUTH_SETUPTOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kubecenter.fullname" . }}
+                  name: {{ $appSecret }}
                   key: setup-token
             {{- end }}
             {{- if .Values.alerting.enabled }}

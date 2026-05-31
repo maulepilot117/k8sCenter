@@ -41,6 +41,13 @@ backend:
   goMemLimit: "230MiB"    # GOMEMLIMIT — set to ~90% of memory limit
   config:
     dev: false
+    # P1-1-cascade opt-in (see backend/cmd/kubecenter/main.go): when dev=true
+    # AND the backend runs in-cluster, it refuses to start unless this is true.
+    # Dev mode in-cluster disables the leaked-secret guard, the loopback-setup
+    # gate, and chart token auto-generation — enable this ONLY for trusted-LAN
+    # homelab installs that consciously accept that posture. No effect when
+    # dev=false.
+    devInClusterAllow: false
     logLevel: info     # debug, info, warn, error
     logFormat: json     # json, text
     clusterID: local
@@ -102,6 +109,18 @@ auth:
   # from a loopback peer; non-loopback dev installs still require a
   # configured token. See finding P1-1 in plans/security-audit-2026-05-22.md.
   setupToken: ""
+  # Name of a pre-created Secret that supplies the core app secrets
+  # (keys: jwt-secret, database-url, and — when used — setup-token) via
+  # secretKeyRef. Set this for GitOps/ArgoCD, where Helm `lookup` is
+  # unavailable (so the chart's persistence fallback would emit a fresh
+  # random jwt-secret on every render) and committing secrets to a values
+  # file is unacceptable (Finding P0-1). When set, the chart does NOT
+  # render or auto-generate those keys, and the database-url is taken from
+  # the Secret rather than assembled from postgresql.auth.password — so the
+  # PG password need not appear in values either (point
+  # postgresql.auth.existingSecret at the same Secret for the subchart).
+  # Empty → default chart-managed Secret with lookup-based persistence.
+  existingSecret: ""
   # OIDC providers (array). Each entry maps to config.OIDCConfig.
   oidc: []
   # - id: google
