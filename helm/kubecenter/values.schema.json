@@ -78,6 +78,7 @@
       "properties": {
         "jwtSecret": { "type": "string" },
         "setupToken": { "type": "string" },
+        "existingSecret": { "type": "string" },
         "oidc": { "type": "array" },
         "ldap": { "type": "array" }
       }
