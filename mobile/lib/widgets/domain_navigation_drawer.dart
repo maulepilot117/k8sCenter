@@ -61,7 +61,9 @@ class DomainNavigationDrawer extends ConsumerWidget {
             trailing: _UnreadBadge(),
             onTap: () {
               Navigator.of(context).pop();
-              context.go('/notifications');
+              // push (not go) so the feed keeps a back stack — its AppBar
+              // back button returns to the originating page. See feed_screen.
+              context.push('/notifications');
             },
           ),
           // --- M5 PR-5a: Settings (theme picker, Sentry opt-in, About).
@@ -71,7 +73,10 @@ class DomainNavigationDrawer extends ConsumerWidget {
             title: const Text('Settings'),
             onTap: () {
               Navigator.of(context).pop();
-              context.go('/settings');
+              // push (not go) so the Settings screen keeps a back stack —
+              // its AppBar back button then returns to the originating
+              // page instead of stranding the user. See settings_screen.dart.
+              context.push('/settings');
             },
           ),
           // --- M3 PR-3a: "Create" submenu — RBAC-gated wizard launcher.
@@ -106,7 +111,12 @@ class DomainNavigationDrawer extends ConsumerWidget {
                           clusterId: clusterId,
                         )
                       : '/clusters/$clusterId/${section.pathSegment}/${kind.kind}';
-                  context.go(target);
+                  // push (not go) so the destination stacks on the dashboard
+                  // (the only screen that hosts this drawer): the list screen's
+                  // AppBar then shows a back button returning here. `go` would
+                  // replace the dashboard, leaving the list with no drawer and
+                  // no back stack — a dead end.
+                  context.push(target);
                 },
               ),
           ],
@@ -159,7 +169,9 @@ class _CreateSubmenu extends ConsumerWidget {
             dense: true,
             onTap: () {
               Navigator.of(context).pop();
-              context.go(
+              // push so the wizard stacks on the dashboard; its Cancel/back
+              // returns here instead of replacing the stack.
+              context.push(
                 '/clusters/$clusterId/wizards/${entry.type}/new',
               );
             },

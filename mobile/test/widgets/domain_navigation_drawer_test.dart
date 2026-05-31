@@ -84,4 +84,82 @@ void main() {
 
     expect(find.text('SETTINGS_PAGE'), findsOneWidget);
   });
+
+  // Regression: domain destinations must be *pushed*, not go'd. `go` replaced
+  // the dashboard (the only screen hosting this drawer), leaving the list with
+  // neither a drawer nor a back button — a dead end. Pushing stacks the list
+  // on the dashboard so its AppBar shows a back button that returns here.
+  testWidgets('tapping a domain kind pushes it with a working back button',
+      (tester) async {
+    final router = GoRouter(
+      initialLocation: '/',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => const Scaffold(
+            drawer: DomainNavigationDrawer(),
+            body: Text('DASHBOARD_HOME'),
+          ),
+        ),
+        GoRoute(
+          // Mirrors the real PodListScreen: bare Scaffold + AppBar(title),
+          // relying on the AppBar's default auto-leading for the back button.
+          path: '/clusters/:clusterId/workloads/pods',
+          builder: (context, state) => Scaffold(
+            appBar: AppBar(title: const Text('Pods')),
+            body: const Text('PODS_LIST'),
+          ),
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    final user = UserInfo(
+      id: 'u1',
+      username: 'admin',
+      provider: 'local',
+      roles: const ['admin'],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authRepositoryProvider.overrideWith(
+            () => _FakeAuth(
+              AuthAuthenticated(
+                user: user,
+                rbac: RBACSummary.fromJson(<String, dynamic>{}),
+              ),
+            ),
+          ),
+          unreadCountProvider.overrideWith((ref) async => 0),
+        ],
+        child: MaterialApp.router(
+          theme: buildKubeTheme('nexus'),
+          routerConfig: router,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final scaffoldState =
+        tester.state<ScaffoldState>(find.byType(Scaffold).first);
+    scaffoldState.openDrawer();
+    await tester.pumpAndSettle();
+
+    final podsTile = find.byKey(const ValueKey('drawer-kind-pods'));
+    await tester.ensureVisible(podsTile);
+    await tester.pumpAndSettle();
+    await tester.tap(podsTile);
+    await tester.pumpAndSettle();
+
+    // Pushed (not go'd): the list shows AND has a back button.
+    expect(find.text('PODS_LIST'), findsOneWidget);
+    expect(find.byType(BackButton), findsOneWidget);
+
+    // Back returns to the dashboard — not a dead end.
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.text('DASHBOARD_HOME'), findsOneWidget);
+  });
 }

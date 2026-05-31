@@ -183,7 +183,13 @@ class ResourceDetailScaffold extends ConsumerWidget {
           leading: IconButton(
             tooltip: 'Back',
             icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.of(context).maybePop(),
+            // Pop when there's a stack; otherwise fall back to the dashboard.
+            // A bare maybePop() silently no-ops when the detail was reached
+            // with no back stack (wizard post-apply pushReplacement, or a
+            // deep link / notification tap straight into a resource), leaving
+            // the user stranded on the page.
+            onPressed: () =>
+                context.canPop() ? context.pop() : context.go('/'),
           ),
           actions: [
             if (canDiagnose)

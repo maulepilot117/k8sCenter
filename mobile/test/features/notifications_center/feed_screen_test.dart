@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:kubecenter/features/notifications_center/feed_repository.dart';
 import 'package:kubecenter/features/notifications_center/feed_screen.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
@@ -124,5 +125,71 @@ void main() {
     ));
     await tester.pumpAndSettle();
     expect(find.textContaining('Showing'), findsNothing);
+  });
+
+  // Back-navigation contract: the AppBar must always offer a way off the
+  // feed. Pushed (drawer) returns to the origin; deep-linked (no back
+  // stack) falls back to the dashboard. Mirrors settings_screen_test.
+  GoRouter backNavRouter({required String initialLocation}) => GoRouter(
+        initialLocation: initialLocation,
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (_, _) => const Scaffold(body: Text('ORIGIN_PAGE')),
+          ),
+          GoRoute(
+            path: '/notifications',
+            builder: (_, _) => const NotificationFeedScreen(),
+          ),
+        ],
+      );
+
+  Future<void> pumpRouter(WidgetTester tester, GoRouter router) async {
+    addTearDown(router.dispose);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          notificationsFeedProvider
+              .overrideWith((ref) async => const NotificationsPage(
+                    items: [],
+                    total: 0,
+                  )),
+          unreadCountProvider.overrideWith((ref) async => 0),
+        ],
+        child: MaterialApp.router(
+          theme: buildKubeTheme('nexus'),
+          routerConfig: router,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('AppBar back button returns to the originating screen',
+      (tester) async {
+    final router = backNavRouter(initialLocation: '/');
+    await pumpRouter(tester, router);
+
+    router.push('/notifications');
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'Notifications'), findsOneWidget);
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ORIGIN_PAGE'), findsOneWidget);
+    expect(find.widgetWithText(AppBar, 'Notifications'), findsNothing);
+  });
+
+  testWidgets('AppBar back button falls back to the dashboard with no stack',
+      (tester) async {
+    final router = backNavRouter(initialLocation: '/notifications');
+    await pumpRouter(tester, router);
+    expect(find.widgetWithText(AppBar, 'Notifications'), findsOneWidget);
+
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ORIGIN_PAGE'), findsOneWidget);
   });
 }
