@@ -95,19 +95,17 @@ jobs:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
 
-      # On a cache hit only the OS-level deps need installing (fast apt step);
-      # the browser binaries are already restored. The per-step timeout means a
-      # hung download fails THIS step in 8 minutes with a clear cause, instead
-      # of silently consuming the whole 30m job budget (the prior failure mode).
-      - name: Install Playwright browsers
+      # Install only the Chromium browser binary — NOT --with-deps. GitHub's
+      # ubuntu-latest runner image already ships every shared library Chromium
+      # needs, so the apt step `--with-deps`/`install-deps` triggers is pure
+      # overhead — and it was the actual hang: dpkg trigger processing stalled
+      # mid-install and blew first the 30m job ceiling, then the 8m step probe.
+      # With the binary cached this is a fast no-op on hits. The per-step
+      # timeout stays as a fail-fast backstop against a cold-cache download hang.
+      - name: Install Playwright browser
         working-directory: e2e
-        timeout-minutes: 8
-        run: |
-          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
-            npx playwright install-deps chromium
-          else
-            npx playwright install chromium --with-deps
-          fi
+        timeout-minutes: 6
+        run: npx playwright install chromium
 
       - name: Run E2E tests
         working-directory: e2e
