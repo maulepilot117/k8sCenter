@@ -53,15 +53,15 @@ export default function PromQLAdminGate(
           Admin access required
         </h2>
         <p class="text-sm text-text-secondary">
-          Raw PromQL access is reserved for cluster administrators. The
-          backend rejects non-admin queries against this endpoint, and the
-          UI matches that boundary.
+          Raw PromQL access is reserved for cluster administrators. The backend
+          rejects non-admin queries against this endpoint, and the UI matches
+          that boundary.
         </p>
         <p class="text-sm text-text-secondary">
           For per-resource metrics, open the resource's detail page (Pods,
-          Deployments, Nodes, etc.) and switch to the Metrics tab — those
-          panels use curated, server-owned queries that respect your
-          Kubernetes RBAC scope.
+          Deployments, Nodes, etc.) and switch to the Metrics tab — those panels
+          use curated, server-owned queries that respect your Kubernetes RBAC
+          scope.
         </p>
         <div class="pt-2">
           <a
