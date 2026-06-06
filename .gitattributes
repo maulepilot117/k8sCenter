@@ -1,0 +1,5 @@
+# Shell scripts must use LF line endings — they run on Linux CI runners, where
+# a CRLF terminator on the shebang ("/usr/bin/env sh\r") breaks execution.
+# Without this, a commit authored on Windows (core.autocrlf=true) can store
+# CRLF and silently break scripts/*.sh in CI.
+*.sh text eol=lf

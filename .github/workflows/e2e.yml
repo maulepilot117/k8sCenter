@@ -63,6 +63,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: lts/*
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
 
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
@@ -78,11 +80,34 @@ jobs:
         working-directory: backend
         run: go build -o bin/kubecenter ./cmd/kubecenter
 
-      - name: Install Playwright
+      - name: Install npm dependencies
         working-directory: e2e
+        run: npm ci
+
+      # Cache the Playwright browser binaries (~/.cache/ms-playwright) keyed on
+      # the lockfile, so the ~120MB Chromium download only happens when the
+      # Playwright version actually changes. The recurring "Install Playwright"
+      # hangs that blew the 30m job ceiling were re-downloading this every run.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('e2e/package-lock.json') }}
+
+      # On a cache hit only the OS-level deps need installing (fast apt step);
+      # the browser binaries are already restored. The per-step timeout means a
+      # hung download fails THIS step in 8 minutes with a clear cause, instead
+      # of silently consuming the whole 30m job budget (the prior failure mode).
+      - name: Install Playwright browsers
+        working-directory: e2e
+        timeout-minutes: 8
         run: |
-          npm ci
-          npx playwright install chromium --with-deps
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install chromium --with-deps
+          fi
 
       - name: Run E2E tests
         working-directory: e2e
