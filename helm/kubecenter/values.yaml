@@ -121,6 +121,21 @@ auth:
   # postgresql.auth.existingSecret at the same Secret for the subchart).
   # Empty → default chart-managed Secret with lookup-based persistence.
   existingSecret: ""
+  # Optionally materialize `existingSecret` from an external secret manager
+  # (e.g. HashiCorp Vault) via the External Secrets Operator, instead of
+  # hand-applying that Secret. Disabled by default to keep the chart portable;
+  # requires ESO + a (Cluster)SecretStore already present in the cluster. When
+  # enabled, also set `existingSecret` (the target Secret name) and `key` (the
+  # store path holding all required keys: jwt-secret, database-url, etc.).
+  externalSecret:
+    enabled: false
+    # Path of the secret in the store (KV-v2 path for Vault) holding the keys.
+    key: ""
+    # How often ESO re-syncs the target Secret from the store.
+    refreshInterval: 1h
+    secretStore:
+      name: ""
+      kind: ClusterSecretStore
   # OIDC providers (array). Each entry maps to config.OIDCConfig.
   oidc: []
   # - id: google

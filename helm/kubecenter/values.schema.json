@@ -80,6 +80,21 @@
         "jwtSecret": { "type": "string" },
         "setupToken": { "type": "string" },
         "existingSecret": { "type": "string" },
+        "externalSecret": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "key": { "type": "string" },
+            "refreshInterval": { "type": "string" },
+            "secretStore": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "kind": { "type": "string" }
+              }
+            }
+          }
+        },
         "oidc": { "type": "array" },
         "ldap": { "type": "array" }
       }
