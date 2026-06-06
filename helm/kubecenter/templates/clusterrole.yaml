@@ -208,6 +208,13 @@ rules:
     resources:
       - vulnerabilityreports
     verbs: ["list", "watch"]
+  # Kubescape CRDs — list for the scanning observatory in `internal/scanning`.
+  # VulnerabilitySummaries are listed as the service account (with an SSAR
+  # precheck); the Kubescape counterpart to Trivy's VulnerabilityReports.
+  - apiGroups: ["spdx.softwarecomposition.org"]
+    resources:
+      - vulnerabilitysummaries
+    verbs: ["list", "watch"]
   # Flux Notification CRDs — list for the notification surface in
   # `internal/notification`. Providers/Alerts/Receivers are listed as the
   # service account; creates/updates use the impersonated client.
@@ -247,6 +254,7 @@ rules:
   #   gateway.networking.k8s.io → Gateway API Gateway / HTTPRoute / etc counts
   #   velero.io                → Velero Backup / Restore / Schedule counts
   #   aquasecurity.github.io   → Trivy VulnerabilityReport counts
+  #   spdx.softwarecomposition.org → Kubescape VulnerabilitySummary counts
   #   notification.toolkit.fluxcd.io → Flux Provider / Alert / Receiver counts
   #   cilium.io                → Cilium CNI resource counts
   #   snapshot.storage.k8s.io  → VolumeSnapshot counts
@@ -298,6 +306,9 @@ rules:
     verbs: ["list"]
   - apiGroups: ["aquasecurity.github.io"]
     resources: ["vulnerabilityreports"]
+    verbs: ["list"]
+  - apiGroups: ["spdx.softwarecomposition.org"]
+    resources: ["vulnerabilitysummaries"]
     verbs: ["list"]
   - apiGroups: ["notification.toolkit.fluxcd.io"]
     resources: ["providers", "alerts", "receivers"]

@@ -100,6 +100,25 @@ jobs:
       - name: Build
         run: deno task build
 
+  rbac-guard:
+    name: ClusterRole CRD grants
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: [changes]
+    # Run when either side of the contract moves: a backend change can add a
+    # new SA-listed CRD group, and a helm change can drop a grant. Either alone
+    # can reintroduce the #305 -> #326 regression.
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.helm == 'true'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Check ClusterRole covers service-account-listed CRD groups
+        # Fails if a CRD-discovered feature lists resources as the service
+        # account (BaseDynamicClient) but the Helm ClusterRole is missing the
+        # matching apiGroup grant — which makes the feature dashboard 500
+        # wherever those CRDs are installed (root cause of #326).
+        run: bash scripts/check-clusterrole-crd-grants.sh
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
