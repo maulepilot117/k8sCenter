@@ -171,6 +171,52 @@ rules:
       - issuers
       - clusterissuers
     verbs: ["list", "watch"]
+  # Gateway API CRDs — list for the discoverer + 30s cache in
+  # `internal/gateway`. fetchAll lists these cluster-wide as the service
+  # account; handlers then apply per-user RBAC via SelfSubjectAccessReview
+  # before returning data. Detail reads use the impersonated client, so no
+  # `get` grant is needed here. TCP/TLS/UDP routes live in v1alpha2 but RBAC
+  # is version-agnostic, so the single group grant covers every version.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gatewayclasses
+      - gateways
+      - httproutes
+      - grpcroutes
+      - tcproutes
+      - tlsroutes
+      - udproutes
+    verbs: ["list", "watch"]
+  # Velero CRDs — list for the discoverer + 30s cache in `internal/velero`.
+  # The dashboard lists these cluster-wide as the service account, then applies
+  # per-user RBAC via SelfSubjectAccessReview. Backup/restore/schedule write
+  # actions and detail reads use the impersonated client.
+  - apiGroups: ["velero.io"]
+    resources:
+      - backups
+      - restores
+      - schedules
+      - backupstoragelocations
+      - volumesnapshotlocations
+      - deletebackuprequests
+      - downloadrequests
+    verbs: ["list", "watch"]
+  # Trivy / Aqua Security CRDs — list for the scanning observatory in
+  # `internal/scanning`. VulnerabilityReports are listed as the service account
+  # (with an SSAR precheck) for the namespace-scoped vulnerability view.
+  - apiGroups: ["aquasecurity.github.io"]
+    resources:
+      - vulnerabilityreports
+    verbs: ["list", "watch"]
+  # Flux Notification CRDs — list for the notification surface in
+  # `internal/notification`. Providers/Alerts/Receivers are listed as the
+  # service account; creates/updates use the impersonated client.
+  - apiGroups: ["notification.toolkit.fluxcd.io"]
+    resources:
+      - providers
+      - alerts
+      - receivers
+    verbs: ["list", "watch"]
   # CRD discovery — list/watch CustomResourceDefinitions for Extensions Hub.
   # The CRDDiscovery informer (internal/k8s/crd_discovery.go) uses the
   # apiextensions typed client — not a dynamic wildcard list. The SA needs
@@ -198,6 +244,10 @@ rules:
   #   policy.linkerd.io        → Linkerd Server / HTTPRoute counts
   #   external-secrets.io      → ESO ExternalSecret / SecretStore etc counts
   #   cert-manager.io          → cert-manager Certificate / Issuer counts
+  #   gateway.networking.k8s.io → Gateway API Gateway / HTTPRoute / etc counts
+  #   velero.io                → Velero Backup / Restore / Schedule counts
+  #   aquasecurity.github.io   → Trivy VulnerabilityReport counts
+  #   notification.toolkit.fluxcd.io → Flux Provider / Alert / Receiver counts
   #   cilium.io                → Cilium CNI resource counts
   #   snapshot.storage.k8s.io  → VolumeSnapshot counts
   #   monitoring.coreos.com    → ServiceMonitor / Prometheus counts
@@ -239,6 +289,18 @@ rules:
     verbs: ["list"]
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates", "issuers", "clusterissuers"]
+    verbs: ["list"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses", "gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"]
+    verbs: ["list"]
+  - apiGroups: ["velero.io"]
+    resources: ["backups", "restores", "schedules", "backupstoragelocations", "volumesnapshotlocations", "deletebackuprequests", "downloadrequests"]
+    verbs: ["list"]
+  - apiGroups: ["aquasecurity.github.io"]
+    resources: ["vulnerabilityreports"]
+    verbs: ["list"]
+  - apiGroups: ["notification.toolkit.fluxcd.io"]
+    resources: ["providers", "alerts", "receivers"]
     verbs: ["list"]
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies", "ciliumbgpclusterconfigs", "ciliumbgppeerconfigs", "ciliumbgpnodeconfigs", "ciliumnodes", "ciliumendpoints"]
