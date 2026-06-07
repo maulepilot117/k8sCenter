@@ -1,7 +1,7 @@
 # P2-11 (2026-05-22 audit): pin to 1.26.3-alpine to clear the reachable
 # govulncheck stdlib advisories (GO-2026-4918 et al.). The floating
 # "1.26" tag would lag the patch on hosts with cached layers.
-FROM golang:1.26.3-alpine AS builder
+FROM golang:1.26.4-alpine AS builder
 
 WORKDIR /build
 
