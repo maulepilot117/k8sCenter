@@ -109,3 +109,4 @@ tools/theme-gen/deno.lock
 
 #ArgoCD Directory
 /argocd/
+/.playwright-mcp
