@@ -545,9 +545,7 @@ export default function NotificationChannels() {
             }
           }}
         >
-          <div
-            class="w-full max-w-[480px] glass-elevated rounded-2xl p-6"
-          >
+          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
               class="text-base font-semibold mb-4"
               style={{ color: "var(--text-primary)" }}
@@ -617,7 +615,10 @@ export default function NotificationChannels() {
               <button
                 type="button"
                 class="rounded-md px-3 py-1.5 text-sm font-medium"
-                style={{ backgroundColor: "var(--accent)", color: "var(--bg-base)" }}
+                style={{
+                  backgroundColor: "var(--accent)",
+                  color: "var(--bg-base)",
+                }}
                 disabled={saving.value}
                 onClick={handleSave}
               >
@@ -639,9 +640,7 @@ export default function NotificationChannels() {
             }
           }}
         >
-          <div
-            class="w-full max-w-[480px] glass-elevated rounded-2xl p-6"
-          >
+          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
               class="text-base font-semibold mb-2"
               style={{ color: "var(--danger)" }}
@@ -679,7 +678,10 @@ export default function NotificationChannels() {
               <button
                 type="button"
                 class="rounded-md px-3 py-1.5 text-sm font-medium"
-                style={{ backgroundColor: "var(--danger)", color: "var(--bg-base)" }}
+                style={{
+                  backgroundColor: "var(--danger)",
+                  color: "var(--bg-base)",
+                }}
                 disabled={saving.value ||
                   deleteConfirmText.value !== deleteTarget.value.name}
                 onClick={handleDelete}

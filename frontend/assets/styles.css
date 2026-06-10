@@ -111,10 +111,10 @@ body::before {
       transparent 70%
     ),
     radial-gradient(
-      50% 45% at 90% 100%,
-      color-mix(in srgb, var(--accent-secondary) 6%, transparent),
-      transparent 70%
-    );
+    50% 45% at 90% 100%,
+    color-mix(in srgb, var(--accent-secondary) 6%, transparent),
+    transparent 70%
+  );
 }
 
 .glass {
@@ -143,7 +143,8 @@ body::before {
 }
 
 /* Fallback: no backdrop-filter support → solid elevated surfaces. */
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+@supports 
+  not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass,
   .glass-elevated {
     background: var(--bg-elevated);
