@@ -43,7 +43,7 @@ Widget _harness({
       unreadCountProvider.overrideWith((ref) async => unread),
     ],
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: const NotificationFeedScreen(),
     ),
   );
@@ -157,7 +157,7 @@ void main() {
           unreadCountProvider.overrideWith((ref) async => 0),
         ],
         child: MaterialApp.router(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           routerConfig: router,
         ),
       ),

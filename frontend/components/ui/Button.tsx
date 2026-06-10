@@ -25,7 +25,7 @@ const variantStyles: Record<ButtonVariant, Record<string, string>> = {
   },
   danger: {
     background: "var(--error)",
-    color: "white",
+    color: "var(--bg-base)",
   },
   ghost: {
     background: "transparent",
@@ -58,7 +58,7 @@ export function Button({
     <button
       {...props}
       disabled={disabled || loading}
-      class={`inline-flex items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+      class={`inline-flex cursor-pointer items-center justify-center font-medium rounded-md transition-colors focus:outline-none focus:ring-2 focus:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 ${
         sizeClasses[size]
       } ${className ?? ""}`}
       style={mergedStyle}

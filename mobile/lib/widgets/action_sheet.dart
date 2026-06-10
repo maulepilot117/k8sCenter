@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../api/resource_actions.dart';
 import '../auth/user.dart';
 import '../theme/kube_theme_builder.dart';
+import 'glass_container.dart';
 
 /// Open the action sheet for [resource]. Filters [actions] through the
 /// user's RBAC summary; an empty result renders an empty-state explaining
@@ -21,13 +22,19 @@ Future<ActionId?> showActionSheet({
   required Map<String, dynamic> resource,
   required RBACSummary? rbac,
 }) {
+  final colors = Theme.of(context).extension<KubeColors>()!;
   return showModalBottomSheet<ActionId>(
     context: context,
-    builder: (ctx) => ActionSheet(
-      kind: kind,
-      namespace: namespace,
-      resource: resource,
-      rbac: rbac,
+    backgroundColor: Colors.transparent,
+    barrierColor: colors.glassScrim,
+    builder: (ctx) => GlassContainer(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: ActionSheet(
+        kind: kind,
+        namespace: namespace,
+        resource: resource,
+        rbac: rbac,
+      ),
     ),
   );
 }

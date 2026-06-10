@@ -31,7 +31,7 @@ Future<void> _pump(
     child: _DioInstaller(
       mock: mock,
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: Scaffold(
           body: GoldenSignalsTab(
             namespace: 'app',
@@ -62,7 +62,7 @@ Future<void> _pumpFromCandidates(
     child: _DioInstaller(
       mock: mock,
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: Scaffold(
           body: GoldenSignalsTab.fromCandidates(
             namespace: 'app',

@@ -12,7 +12,7 @@ import 'package:kubecenter/widgets/kube_line_chart.dart';
 
 void main() {
   group('kubeChartSeverityColor', () {
-    final colors = buildKubeTheme('nexus').extension<KubeColors>()!;
+    final colors = buildKubeTheme('liquid-glass').extension<KubeColors>()!;
 
     test('maps each severity to the corresponding KubeColors token', () {
       expect(kubeChartSeverityColor(KubeChartSeverity.primary, colors),
@@ -107,7 +107,7 @@ void main() {
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(body: child),
   );
 }

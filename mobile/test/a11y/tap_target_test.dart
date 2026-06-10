@@ -133,7 +133,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     await tester.pumpWidget(MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: MediaQuery(
         data: const MediaQueryData(size: Size(900, 700)),
         child: SizedBox(

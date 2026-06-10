@@ -18,7 +18,7 @@ Future<void> _pump(WidgetTester tester, StoreMetrics metrics) async {
   await tester.pumpWidget(
     ProviderScope(
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: Scaffold(
           body: StoreMetricsPanel(
             metricsAsync: AsyncValue.data(metrics),

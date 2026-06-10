@@ -7,7 +7,6 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
-import ThemeSelector from "@/islands/ThemeSelector.tsx";
 import NotificationBell from "@/islands/NotificationBell.tsx";
 
 export default function TopBarV2() {
@@ -50,10 +49,12 @@ export default function TopBarV2() {
 
   return (
     <header
+      class="glass"
       style={{
         height: "var(--topbar-height, 52px)",
-        background: "var(--bg-base)",
-        borderBottom: "1px solid var(--border-subtle)",
+        border: "none",
+        borderBottom: "1px solid var(--glass-border)",
+        boxShadow: "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
@@ -165,11 +166,8 @@ export default function TopBarV2() {
         </button>
       </div>
 
-      {/* Right section: theme + notifications + user */}
+      {/* Right section: notifications + user */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        {/* Theme selector */}
-        <ThemeSelector />
-
         {/* Notification bell */}
         <NotificationBell />
 
@@ -210,7 +208,7 @@ export default function TopBarV2() {
                 height: "28px",
                 borderRadius: "50%",
                 background: "var(--accent)",
-                color: "#fff",
+                color: "var(--bg-base)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",

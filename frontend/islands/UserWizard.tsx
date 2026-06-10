@@ -179,7 +179,8 @@ export default function UserWizard() {
             <div class="mt-4 flex gap-3">
               <a
                 href="/rbac/clusterrolebindings/new"
-                class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90"
+                class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
+                style={{ color: "var(--bg-base)" }}
               >
                 Create Role Binding
               </a>

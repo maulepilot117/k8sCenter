@@ -26,21 +26,20 @@ function dismiss(id: number) {
   toasts.value = toasts.value.filter((t) => t.id !== id);
 }
 
+// Toast chrome is glass (.glass-elevated); type identity comes from the
+// text color and a solid left accent edge instead of a tinted fill.
 const typeStyles: Record<Toast["type"], Record<string, string>> = {
   success: {
-    background: "var(--success-dim)",
     color: "var(--success)",
-    borderColor: "var(--success)",
+    borderLeft: "3px solid var(--success)",
   },
   error: {
-    background: "var(--error-dim)",
     color: "var(--error)",
-    borderColor: "var(--error)",
+    borderLeft: "3px solid var(--error)",
   },
   info: {
-    background: "var(--accent-dim)",
     color: "var(--accent)",
-    borderColor: "var(--accent)",
+    borderLeft: "3px solid var(--accent)",
   },
 };
 
@@ -60,7 +59,7 @@ export default function ToastProvider() {
       {toasts.value.map((toast) => (
         <div
           key={toast.id}
-          class="pointer-events-auto flex items-center gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg"
+          class="glass-elevated pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-3 text-sm"
           style={typeStyles[toast.type]}
         >
           <span class="flex-1">{toast.message}</span>

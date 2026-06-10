@@ -120,9 +120,12 @@ export default function PromQLQuery() {
               onClick={() => queryType.value = "instant"}
               class={`px-3 py-1.5 text-sm ${
                 queryType.value === "instant"
-                  ? "bg-brand text-white"
+                  ? "bg-brand"
                   : "text-text-secondary hover:bg-hover"
               }`}
+              style={queryType.value === "instant"
+                ? { color: "var(--bg-base)" }
+                : undefined}
             >
               Instant
             </button>
@@ -131,9 +134,12 @@ export default function PromQLQuery() {
               onClick={() => queryType.value = "range"}
               class={`px-3 py-1.5 text-sm border-l border-border-primary ${
                 queryType.value === "range"
-                  ? "bg-brand text-white"
+                  ? "bg-brand"
                   : "text-text-secondary hover:bg-hover"
               }`}
+              style={queryType.value === "range"
+                ? { color: "var(--bg-base)" }
+                : undefined}
             >
               Range
             </button>
@@ -158,7 +164,8 @@ export default function PromQLQuery() {
             type="button"
             onClick={runQuery}
             disabled={loading.value || !query.value.trim()}
-            class="rounded-md bg-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+            class="rounded-md bg-brand px-4 py-1.5 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
+            style={{ color: "var(--bg-base)" }}
           >
             {loading.value ? "Running..." : "Run Query"}
           </button>

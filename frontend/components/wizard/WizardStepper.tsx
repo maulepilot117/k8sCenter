@@ -44,11 +44,14 @@ export function WizardStepper(
                 <span
                   class={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
                     isCurrent
-                      ? "bg-brand text-white"
+                      ? "bg-brand"
                       : isCompleted
-                      ? "bg-brand text-white"
+                      ? "bg-brand"
                       : "bg-elevated text-text-muted"
                   }`}
+                  style={(isCurrent || isCompleted)
+                    ? { color: "var(--bg-base)" }
+                    : undefined}
                 >
                   {isCompleted
                     ? (

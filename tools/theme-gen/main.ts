@@ -45,13 +45,7 @@ const DART_OUT = resolve(
 
 // Theme load order matches the existing styles.css for diff stability.
 const ORDER = [
-  "nexus",
-  "dracula",
-  "tokyo-night",
-  "catppuccin",
-  "nord",
-  "one-dark",
-  "gruvbox",
+  "liquid-glass",
 ];
 
 const CSS_VAR_MAP: Record<string, string> = {
@@ -75,6 +69,11 @@ const CSS_VAR_MAP: Record<string, string> = {
   error: "--error",
   errorDim: "--error-dim",
   info: "--info",
+  glassSurface: "--glass-surface",
+  glassElevated: "--glass-elevated",
+  glassBorder: "--glass-border",
+  glassHighlight: "--glass-highlight",
+  glassScrim: "--glass-scrim",
 };
 
 async function loadThemes(): Promise<Theme[]> {

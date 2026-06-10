@@ -70,7 +70,6 @@ import '../features/resources/rollback_picker_screen.dart';
 import '../features/resources/secret_screens.dart';
 import '../features/resources/service_screens.dart';
 import '../features/resources/statefulset_screens.dart';
-import '../features/settings/theme_picker_sheet.dart';
 import '../widgets/adaptive_scaffold.dart';
 import '../widgets/cluster_pill.dart';
 import '../widgets/domain_navigation_drawer.dart';
@@ -771,11 +770,6 @@ class _RootScreen extends ConsumerWidget {
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 8),
           child: ClusterPill(),
-        ),
-        IconButton(
-          icon: const Icon(Icons.palette_outlined),
-          tooltip: 'Theme',
-          onPressed: () => ThemePickerSheet.show(context),
         ),
         IconButton(
           icon: const Icon(Icons.logout),

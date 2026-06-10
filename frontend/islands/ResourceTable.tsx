@@ -467,7 +467,8 @@ export default function ResourceTable({
               canPerformCheck(rbac.value, kind, "create", ns.value) && (
               <a
                 href={createHref}
-                class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90 transition-colors"
+                class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90 transition-colors"
+                style={{ color: "var(--bg-base)" }}
               >
                 <svg
                   class="w-4 h-4"

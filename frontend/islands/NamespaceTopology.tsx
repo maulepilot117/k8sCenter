@@ -495,7 +495,8 @@ export default function NamespaceTopology({
         <ErrorBanner message={error.value} />
         <button
           type="button"
-          class="rounded bg-accent-primary px-3 py-1.5 text-sm font-medium text-white hover:opacity-90"
+          class="rounded bg-accent-primary px-3 py-1.5 text-sm font-medium hover:opacity-90"
+          style={{ color: "var(--bg-base)" }}
           onClick={() => fetchGraph()}
         >
           Retry
@@ -574,9 +575,10 @@ export default function NamespaceTopology({
                       : label}
                     class={`px-2.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       active
-                        ? "bg-accent-primary text-white"
+                        ? "bg-accent-primary"
                         : "bg-bg-surface text-text-secondary hover:text-text-primary"
                     }`}
+                    style={active ? { color: "var(--bg-base)" } : undefined}
                     onClick={() => {
                       overlayMode.value = mode;
                     }}

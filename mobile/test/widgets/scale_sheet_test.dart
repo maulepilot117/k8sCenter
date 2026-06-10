@@ -16,7 +16,7 @@ Widget _host({
   void Function(int?)? onResult,
 }) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: Builder(builder: (ctx) {
         return Center(

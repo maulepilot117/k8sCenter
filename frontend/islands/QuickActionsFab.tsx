@@ -68,7 +68,7 @@ export default function QuickActionsFab() {
           borderRadius: "14px",
           background:
             "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
-          color: "#fff",
+          color: "var(--bg-base)",
           border: "none",
           cursor: "pointer",
           display: "flex",
@@ -114,21 +114,19 @@ export default function QuickActionsFab() {
               key={action.label}
               href={action.href}
               onClick={close}
+              class="glass-elevated"
               style={{
                 display: "flex",
                 alignItems: "center",
                 gap: "10px",
                 padding: "10px 14px",
                 borderRadius: "var(--radius)",
-                background: "var(--bg-surface)",
-                border: "1px solid var(--border-primary)",
                 color: "var(--text-primary)",
                 fontSize: "13px",
                 fontWeight: 500,
                 textDecoration: "none",
                 whiteSpace: "nowrap",
                 transition: "border-color 0.15s ease",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
               }}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLElement).style.borderColor =

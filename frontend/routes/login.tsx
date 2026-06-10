@@ -19,7 +19,7 @@ export default define.page(function LoginPage() {
         </div>
 
         {/* Login card */}
-        <div class="rounded-lg border border-border-primary bg-surface p-6 shadow-sm">
+        <div class="glass-elevated rounded-2xl p-6">
           <LoginForm />
           <AuthProviderButtons />
         </div>

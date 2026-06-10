@@ -2,6 +2,7 @@
 // ThemeData. Each theme's primary colour must match the generated accent
 // token; rgba() and #hex parsing both round-trip.
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kubecenter/theme/kube_theme_builder.dart';
 import 'package:kubecenter/theme/themes.g.dart';
@@ -24,18 +25,18 @@ void main() {
     expect(fallback.colorScheme.primary, equals(reference.colorScheme.primary));
   });
 
-  test('Nexus accent parses to expected ARGB', () {
-    final theme = buildKubeTheme('nexus');
+  test('Liquid Glass accent parses to expected ARGB', () {
+    final theme = buildKubeTheme('liquid-glass');
     final colors = theme.extension<KubeColors>()!;
-    // accent: '#00C2FF' → 0xFF00C2FF
-    expect(colors.accent.toARGB32(), equals(0xFF00C2FF));
+    // accent: '#3DAEFF' → 0xFF3DAEFF
+    expect(colors.accent.toARGB32(), equals(0xFF3DAEFF));
   });
 
   test('rgba() tokens preserve alpha', () {
-    final theme = buildKubeTheme('nexus');
+    final theme = buildKubeTheme('liquid-glass');
     final colors = theme.extension<KubeColors>()!;
-    // accentDim: 'rgba(0, 194, 255, 0.08)' — alpha 0.08*255 ≈ 20
-    expect(colors.accentDim.a, closeTo(0.08, 0.01));
+    // accentDim: 'rgba(61, 174, 255, 0.09)' — alpha 0.09*255 ≈ 23
+    expect(colors.accentDim.a, closeTo(0.09, 0.01));
   });
 
   test('every theme registers KubeColors as a ThemeExtension', () {
@@ -49,9 +50,9 @@ void main() {
     }
   });
 
-  test('KubeColors.lerp interpolates between themes', () {
-    final from = buildKubeTheme('nexus').extension<KubeColors>()!;
-    final to = buildKubeTheme('dracula').extension<KubeColors>()!;
+  test('KubeColors.lerp interpolates between colour sets', () {
+    final from = buildKubeTheme('liquid-glass').extension<KubeColors>()!;
+    final to = from.copyWith(accent: const Color(0xFF123456));
     final mid = from.lerp(to, 0.5);
     expect(mid, isA<KubeColors>());
     // At t=0 the result equals `from`; at t=1, equals `to`.

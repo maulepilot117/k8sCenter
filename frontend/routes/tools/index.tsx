@@ -23,7 +23,8 @@ export default define.page(function ToolsPage(ctx) {
           <div class="flex gap-3 justify-center">
             <a
               href="/tools/yaml-apply"
-              class="px-4 py-2 text-xs font-medium text-white bg-accent rounded-md no-underline"
+              class="px-4 py-2 text-xs font-medium bg-accent rounded-md no-underline"
+              style={{ color: "var(--bg-base)" }}
             >
               YAML Apply
             </a>

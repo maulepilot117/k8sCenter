@@ -282,21 +282,18 @@ export default function CommandPalette() {
         alignItems: "flex-start",
         justifyContent: "center",
         paddingTop: "min(20vh, 120px)",
-        background: "rgba(0,0,0,0.5)",
-        backdropFilter: "blur(4px)",
       }}
+      class="glass-scrim"
       onClick={(e) => {
         if (e.target === e.currentTarget) closePalette();
       }}
     >
       <div
+        class="glass-elevated"
         style={{
           width: "100%",
           maxWidth: "560px",
-          background: "var(--bg-surface)",
-          border: "1px solid var(--border-primary)",
-          borderRadius: "12px",
-          boxShadow: "0 16px 48px rgba(0,0,0,0.4)",
+          borderRadius: "var(--radius-glass, 16px)",
           overflow: "hidden",
         }}
       >

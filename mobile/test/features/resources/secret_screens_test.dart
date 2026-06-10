@@ -133,7 +133,7 @@ void main() {
       return UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           home: const SecretDetailScreen(
             namespace: namespace,
             name: name,

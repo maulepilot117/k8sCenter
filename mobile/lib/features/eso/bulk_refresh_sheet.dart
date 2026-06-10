@@ -22,6 +22,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../api/eso_repository.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/confirm_sheet.dart';
+import '../../widgets/glass_container.dart';
 import 'bulk_refresh_controller.dart';
 import 'bulk_refresh_scope_picker.dart';
 
@@ -33,11 +34,17 @@ Future<void> showBulkRefreshSheet({
   required BuildContext context,
   required String clusterId,
 }) {
+  final colors = Theme.of(context).extension<KubeColors>()!;
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     isDismissible: true,
-    builder: (ctx) => _BulkRefreshSheet(clusterId: clusterId),
+    backgroundColor: Colors.transparent,
+    barrierColor: colors.glassScrim,
+    builder: (ctx) => GlassContainer(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: _BulkRefreshSheet(clusterId: clusterId),
+    ),
   );
 }
 

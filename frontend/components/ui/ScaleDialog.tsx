@@ -19,14 +19,14 @@ export function ScaleDialog({
 }: ScaleDialogProps) {
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       role="dialog"
       aria-modal="true"
       aria-label={`Scale ${resourceName}`}
       onClick={onCancel}
     >
       <div
-        class="w-full max-w-sm rounded-lg bg-surface p-6 shadow-xl"
+        class="w-full max-w-sm glass-elevated rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 class="text-lg font-semibold text-text-primary">
@@ -65,7 +65,8 @@ export function ScaleDialog({
             type="button"
             disabled={loading}
             onClick={onConfirm}
-            class="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90 disabled:opacity-50"
+            class="rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
+            style={{ color: "var(--bg-base)" }}
           >
             {loading ? "..." : "Scale"}
           </button>

@@ -15,7 +15,7 @@ LogLine _ln(String text, {Map<String, String> labels = const {}, int ts = 0}) {
 Future<void> _pump(WidgetTester tester, LogQueryResult result) async {
   await tester.pumpWidget(
     MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: SingleChildScrollView(
           child: LogResultsList(result: result),

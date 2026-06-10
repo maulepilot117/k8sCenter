@@ -14,7 +14,7 @@ import 'package:kubecenter/wizards/types/secret_store/providers/provider_form.da
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

@@ -171,9 +171,9 @@ export default function ESOBulkRefreshDialog(
     <div
       role="dialog"
       aria-modal="true"
-      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 glass-scrim"
     >
-      <div class="w-full max-w-xl rounded-lg border border-border-primary bg-elevated shadow-xl">
+      <div class="w-full max-w-xl glass-elevated rounded-2xl">
         <div class="flex items-center justify-between border-b border-border-primary px-5 py-3">
           <h2 class="text-base font-semibold text-text-primary">
             Refresh ExternalSecrets
@@ -235,7 +235,8 @@ export default function ESOBulkRefreshDialog(
                 type="button"
                 onClick={submit}
                 disabled={phase.value !== "confirm"}
-                class="px-3 py-1.5 text-sm rounded bg-brand text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                class="px-3 py-1.5 text-sm rounded bg-brand hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                style={{ color: "var(--bg-base)" }}
               >
                 Refresh {scope.value.visibleCount}
               </button>

@@ -47,7 +47,7 @@ class _CountingKubeDataTableSource<T> extends KubeDataTableSource<T> {
 
 Widget _harness({required Widget child, required Size size}) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: MediaQuery(
       data: MediaQueryData(size: size),
       child: SizedBox.fromSize(size: size, child: child),

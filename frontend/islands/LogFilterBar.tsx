@@ -229,9 +229,10 @@ export default function LogFilterBar(props: LogFilterBarProps) {
         type="button"
         class={`rounded px-3 py-1.5 text-sm font-semibold ${
           props.isTailing.value
-            ? "bg-status-error text-white"
+            ? "bg-status-error"
             : "border border-accent-primary bg-bg-elevated text-accent-primary"
         }`}
+        style={props.isTailing.value ? { color: "var(--bg-base)" } : undefined}
         onClick={handleLiveTail}
       >
         {props.isTailing.value ? "Stop" : "Live Tail"}

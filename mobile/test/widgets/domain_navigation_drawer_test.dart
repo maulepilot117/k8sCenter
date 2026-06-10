@@ -66,7 +66,7 @@ void main() {
           unreadCountProvider.overrideWith((ref) async => 0),
         ],
         child: MaterialApp.router(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           routerConfig: router,
         ),
       ),
@@ -135,7 +135,7 @@ void main() {
           unreadCountProvider.overrideWith((ref) async => 0),
         ],
         child: MaterialApp.router(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           routerConfig: router,
         ),
       ),

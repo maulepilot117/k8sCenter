@@ -56,6 +56,11 @@ class KubeColors extends ThemeExtension<KubeColors> {
     required this.error,
     required this.errorDim,
     required this.info,
+    required this.glassSurface,
+    required this.glassElevated,
+    required this.glassBorder,
+    required this.glassHighlight,
+    required this.glassScrim,
   });
 
   /// Canvas background. Scaffold body, app root.
@@ -128,6 +133,23 @@ class KubeColors extends ThemeExtension<KubeColors> {
   /// Info state. Same composite policy as [success].
   final Color info;
 
+  /// Liquid-glass panel fill (translucent). Non-text — only ever a
+  /// backdrop behind [textPrimary] content composited over [bgBase], so
+  /// effective contrast is governed by the composite, not this token.
+  final Color glassSurface;
+
+  /// Liquid-glass fill for floating sheets/dialogs. Non-text.
+  final Color glassElevated;
+
+  /// 1px edge for glass panels. Decorative, no contrast guarantee.
+  final Color glassBorder;
+
+  /// Inset top bevel for glass panels. Decorative.
+  final Color glassHighlight;
+
+  /// Modal scrim behind glass sheets/dialogs (40–60% per HIG).
+  final Color glassScrim;
+
   @override
   KubeColors copyWith({
     Color? bgBase,
@@ -150,6 +172,11 @@ class KubeColors extends ThemeExtension<KubeColors> {
     Color? error,
     Color? errorDim,
     Color? info,
+    Color? glassSurface,
+    Color? glassElevated,
+    Color? glassBorder,
+    Color? glassHighlight,
+    Color? glassScrim,
   }) {
     return KubeColors(
       bgBase: bgBase ?? this.bgBase,
@@ -172,6 +199,11 @@ class KubeColors extends ThemeExtension<KubeColors> {
       error: error ?? this.error,
       errorDim: errorDim ?? this.errorDim,
       info: info ?? this.info,
+      glassSurface: glassSurface ?? this.glassSurface,
+      glassElevated: glassElevated ?? this.glassElevated,
+      glassBorder: glassBorder ?? this.glassBorder,
+      glassHighlight: glassHighlight ?? this.glassHighlight,
+      glassScrim: glassScrim ?? this.glassScrim,
     );
   }
 
@@ -204,6 +236,14 @@ class KubeColors extends ThemeExtension<KubeColors> {
       error: Color.lerp(error, other.error, t) ?? error,
       errorDim: Color.lerp(errorDim, other.errorDim, t) ?? errorDim,
       info: Color.lerp(info, other.info, t) ?? info,
+      glassSurface:
+          Color.lerp(glassSurface, other.glassSurface, t) ?? glassSurface,
+      glassElevated:
+          Color.lerp(glassElevated, other.glassElevated, t) ?? glassElevated,
+      glassBorder: Color.lerp(glassBorder, other.glassBorder, t) ?? glassBorder,
+      glassHighlight:
+          Color.lerp(glassHighlight, other.glassHighlight, t) ?? glassHighlight,
+      glassScrim: Color.lerp(glassScrim, other.glassScrim, t) ?? glassScrim,
     );
   }
 }
@@ -235,6 +275,11 @@ ThemeData buildKubeTheme(String id) {
     error: _parseColor(c.error),
     errorDim: _parseColor(c.errorDim),
     info: _parseColor(c.info),
+    glassSurface: _parseColor(c.glassSurface),
+    glassElevated: _parseColor(c.glassElevated),
+    glassBorder: _parseColor(c.glassBorder),
+    glassHighlight: _parseColor(c.glassHighlight),
+    glassScrim: _parseColor(c.glassScrim),
   );
 
   final colorScheme = ColorScheme.dark(

@@ -12,7 +12,7 @@ Widget _harness({
   required ValueChanged<ProbeData?> onChanged,
 }) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: _Stateful(initial: initial, onChanged: onChanged),
     ),

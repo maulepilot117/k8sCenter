@@ -14,6 +14,7 @@ import '../cluster/cluster_provider.dart';
 import '../cluster/cluster_repository.dart';
 import '../theme/kube_theme_builder.dart';
 import 'empty_states.dart';
+import 'glass_container.dart';
 
 class ClusterPickerSheet extends ConsumerWidget {
   const ClusterPickerSheet({super.key});
@@ -23,10 +24,16 @@ class ClusterPickerSheet extends ConsumerWidget {
   /// operators pick a cluster that was deleted upstream.
   static Future<void> show(BuildContext context, WidgetRef ref) {
     ref.invalidate(clustersProvider);
+    final colors = Theme.of(context).extension<KubeColors>()!;
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => const ClusterPickerSheet(),
+      backgroundColor: Colors.transparent,
+      barrierColor: colors.glassScrim,
+      builder: (_) => GlassContainer(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: const ClusterPickerSheet(),
+      ),
     );
   }
 

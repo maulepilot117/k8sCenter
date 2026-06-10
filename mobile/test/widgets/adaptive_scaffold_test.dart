@@ -11,7 +11,7 @@ Widget _harness({
   required Size size,
 }) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: MediaQuery(
       data: MediaQueryData(size: size),
       child: SizedBox.fromSize(

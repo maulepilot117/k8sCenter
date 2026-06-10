@@ -38,7 +38,7 @@ Widget _wrap(ProviderContainer container, Widget child) {
   return UncontrolledProviderScope(
     container: container,
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: Padding(padding: const EdgeInsets.all(16), child: child),
       ),

@@ -37,7 +37,7 @@ Future<void> _pump(WidgetTester tester, BlastRadius blast) async {
   );
   await tester.pumpWidget(ProviderScope(
     child: MaterialApp.router(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       routerConfig: router,
     ),
   ));

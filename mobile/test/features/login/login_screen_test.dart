@@ -56,7 +56,7 @@ Widget _harness(ProviderContainer container) {
   return UncontrolledProviderScope(
     container: container,
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: const LoginScreen(),
     ),
   );

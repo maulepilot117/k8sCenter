@@ -6,7 +6,7 @@ export const inputStyle: Record<string, string> = {
   width: "100%",
   background: "var(--bg-surface)",
   border: "1px solid var(--border-primary)",
-  borderRadius: "6px",
+  borderRadius: "8px",
   padding: "8px 12px",
   color: "var(--text-primary)",
   fontSize: "13px",

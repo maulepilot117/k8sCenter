@@ -406,7 +406,7 @@ export default function DashboardV2() {
             requests={s?.memory?.requests ?? "—"}
             limits={s?.memory?.limits ?? "—"}
             color="var(--accent-secondary)"
-            secondaryColor="#FF79C6"
+            secondaryColor="var(--accent)"
           />
         </div>
 

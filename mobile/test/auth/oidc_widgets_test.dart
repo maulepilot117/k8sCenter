@@ -18,7 +18,7 @@ Widget _harness({
   required Widget child,
 }) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(body: Center(child: child)),
   );
 }

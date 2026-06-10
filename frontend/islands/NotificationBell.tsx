@@ -177,7 +177,7 @@ export default function NotificationBell() {
               height: "16px",
               borderRadius: "8px",
               background: "var(--danger)",
-              color: "#fff",
+              color: "var(--bg-base)",
               fontSize: "10px",
               fontWeight: 600,
               display: "flex",
@@ -195,6 +195,7 @@ export default function NotificationBell() {
       {/* Dropdown panel */}
       {showPanel.value && (
         <div
+          class="glass-elevated"
           style={{
             position: "absolute",
             right: 0,
@@ -202,10 +203,7 @@ export default function NotificationBell() {
             width: "360px",
             maxHeight: "480px",
             overflowY: "auto",
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-primary)",
             borderRadius: "8px",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
             zIndex: 100,
           }}
         >

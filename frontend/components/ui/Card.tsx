@@ -4,15 +4,22 @@ interface CardProps {
   title?: string;
   children: ComponentChildren;
   class?: string;
+  /** Liquid glass chrome treatment. Default solid — data-dense content
+   * (tables, editors, logs) must stay on an opaque surface. */
+  glass?: boolean;
 }
 
-export function Card({ title, children, class: className }: CardProps) {
+export function Card(
+  { title, children, class: className, glass = false }: CardProps,
+) {
   return (
     <div
-      class={`rounded-lg border p-6 ${className ?? ""}`}
-      style={{
+      class={`${glass ? "glass rounded-2xl" : "rounded-lg border"} p-6 ${
+        className ?? ""
+      }`}
+      style={glass ? undefined : {
         background: "var(--bg-surface)",
-        borderColor: "var(--border-primary)",
+        borderColor: "var(--border-subtle)",
       }}
     >
       {title && (

@@ -299,7 +299,7 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
                               borderRadius: "2px",
                               width: `${memPercent}%`,
                               background:
-                                "linear-gradient(90deg, var(--accent-secondary), #FF79C6)",
+                                "linear-gradient(90deg, var(--accent), var(--accent-secondary))",
                             }}
                           />
                         </div>

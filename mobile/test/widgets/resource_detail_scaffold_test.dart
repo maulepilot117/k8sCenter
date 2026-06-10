@@ -58,7 +58,7 @@ Future<void> _pump(
 }) async {
   await tester.pumpWidget(ProviderScope(
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: ResourceDetailScaffold(
         kindLabel: 'Pod',
         name: 'test-pod',

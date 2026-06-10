@@ -21,7 +21,7 @@ Widget _harness({
   // its error footer color. Tests must supply the kube theme or the
   // build crashes on the first render.
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: _Stateful(initial: initial, onChanged: onChanged),
     ),

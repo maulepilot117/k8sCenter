@@ -329,7 +329,7 @@ export function NotificationFormShell({
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       onClick={onCancel}
     >
       <div
@@ -337,7 +337,7 @@ export function NotificationFormShell({
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${id}-title`}
-        class={`w-full rounded-lg bg-surface p-6 shadow-xl ${
+        class={`w-full glass-elevated rounded-2xl p-6 ${
           wide ? "max-w-lg max-h-[90vh] overflow-y-auto" : "max-w-md"
         }`}
         onClick={(e) => e.stopPropagation()}
@@ -367,7 +367,8 @@ export function NotificationFormShell({
             type="button"
             disabled={submitting}
             onClick={onSubmit}
-            class="rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 bg-brand hover:bg-brand/90"
+            class="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 bg-brand hover:bg-brand/90"
+            style={{ color: "var(--bg-base)" }}
           >
             {submitting
               ? "..."
@@ -416,7 +417,7 @@ export function ActionsDropdown({
       </button>
       {openDropdown.value === itemKey && (
         <div
-          class="absolute right-0 z-40 mt-1 w-40 rounded-md border border-border-primary bg-surface shadow-lg"
+          class="absolute right-0 z-40 mt-1 w-40 glass-elevated rounded-2xl"
           onClick={(e) => e.stopPropagation()}
         >
           <button

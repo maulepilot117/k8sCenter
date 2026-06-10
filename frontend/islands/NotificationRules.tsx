@@ -188,14 +188,14 @@ export default function NotificationRules() {
   const primaryBtnStyle: Record<string, string> = {
     ...btnStyle,
     background: "var(--accent)",
-    color: "#fff",
+    color: "var(--bg-base)",
     border: "1px solid var(--accent)",
   };
 
   const dangerBtnStyle: Record<string, string> = {
     ...btnStyle,
     background: "var(--danger)",
-    color: "#fff",
+    color: "var(--bg-base)",
     border: "1px solid var(--danger)",
   };
 
@@ -470,10 +470,10 @@ export default function NotificationRules() {
       {/* Modal overlay */}
       {showModal.value && (
         <div
+          class="glass-scrim"
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(0,0,0,0.5)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -484,10 +484,8 @@ export default function NotificationRules() {
           }}
         >
           <div
+            class="glass-elevated rounded-2xl"
             style={{
-              background: "var(--bg-elevated)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "10px",
               padding: "24px",
               width: "100%",
               maxWidth: "480px",

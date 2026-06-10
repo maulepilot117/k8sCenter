@@ -1,9 +1,11 @@
 // Settings entry point. Reachable from the navigation drawer.
 //
-// Three sections in display order:
-//   1. Appearance      — opens the existing theme_picker_sheet.
-//   2. Crash reporting — Sentry opt-in toggle.
-//   3. About           — version + build, Privacy Policy, Rate this app.
+// Two sections in display order:
+//   1. Crash reporting — Sentry opt-in toggle.
+//   2. About           — version + build, Privacy Policy, Rate this app.
+//
+// No "Appearance" section since the Liquid Glass redesign — the app ships
+// a single design language, so there is no theme to pick.
 //
 // No "Security" section in M5 — biometric authentication is not
 // implemented (no local_auth dep, no Settings → Security UI). Adding
@@ -24,7 +26,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../observability/sentry_init.dart' show kSentryDsn;
 import '../../theme/kube_theme_builder.dart';
 import 'sentry_controller.dart';
-import 'theme_picker_sheet.dart';
 
 /// Public so these URLs can be referenced elsewhere (PR-5g onboarding
 /// cards, PR-5j App Privacy doc). All external URL constants live here so
@@ -78,16 +79,6 @@ class SettingsScreen extends ConsumerWidget {
       ),
       body: ListView(
         children: [
-          _SectionHeader(label: 'Appearance', colors: colors),
-          ListTile(
-            leading: Icon(Icons.palette_outlined, color: colors.accent),
-            title: const Text('Theme'),
-            subtitle: const Text('Switch between built-in themes'),
-            trailing: Icon(Icons.chevron_right, color: colors.textMuted),
-            onTap: () => ThemePickerSheet.show(context),
-          ),
-          const Divider(height: 1),
-
           _SectionHeader(label: 'Crash reporting', colors: colors),
           SwitchListTile(
             key: const ValueKey('settings-sentry-opt-in'),

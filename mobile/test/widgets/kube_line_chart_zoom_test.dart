@@ -196,7 +196,7 @@ void main() {
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(body: Center(child: child)),
   );
 }
