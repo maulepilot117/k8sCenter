@@ -26,12 +26,12 @@ RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
 # Security patch stage: overlay patched OS libraries onto distroless so Trivy
 # clears the open CVEs. Uses target platform so library arch paths match.
 #
-#   libssl3t64 3.5.5-1~deb13u1 → 3.5.6-1~deb13u1   [pinned]
-#     Supersedes deb13u2 (which was pulled from the Packages index when
-#     openssl 3.5.6 landed in trixie-security). The new release rolls up
-#     the deb13u2 fixes (CVE-2026-31790, -2673, -28387..28390, -31789)
-#     plus the upstream 3.5.6 security advisory contents. Pin is bumped
-#     by hand whenever Debian rolls a new patch (every few weeks).
+#   libssl3t64 — REMOVED 2026-06-10. The distroless base caught up to the
+#     3.5.6-1~deb13u1 pin (its status.d entry no longer carries 3.5.5),
+#     which tripped the stage's base-version assertion — the designed
+#     cleanup signal. If a future OpenSSL CVE needs patching ahead of the
+#     base again, restore the pinned install + status.d sed from git
+#     history (pre 2026-06-10).
 #
 #   libc6                       → latest in trixie  [unpinned + 7-day gate]
 #     Pinning libc6 was the recurring failure source — Debian rolls
@@ -53,34 +53,30 @@ FROM denoland/deno:distroless-2.8.1 AS runtime-base
 # size delta does not affect the final runtime image.
 FROM debian:trixie AS security-patch
 
-# Pull the base's dpkg status entries first so the consolidated RUN
-# below can read them. Single RUN keeps shell variables (version
+# Pull the base's dpkg status entry first so the consolidated RUN
+# below can read it. Single RUN keeps shell variables (version
 # strings, upload dates) reachable across the install + assertion +
 # sed-substitution steps.
-COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
 COPY --from=runtime-base /var/lib/dpkg/status.d/libc6 /tmp/libc6-orig
 
-# Consolidated RUN — install + cooldown gate + assertion + patch + sed
-# substitution. Single RUN so shell variables (LIBC6_VER, BASE_LIBC6_VER,
-# upload-date math) reach every step. The /tmp/*-orig files were COPYed
-# from runtime-base just above. Step-by-step rationale:
-#   1. apt-get install — libssl3t64 stays pinned (target known); libc6
-#      is unpinned so Debian patch rolls don't break the build.
+# Consolidated RUN — install + cooldown gate + patch + sed substitution.
+# Single RUN so shell variables (LIBC6_VER, BASE_LIBC6_VER, upload-date
+# math) reach every step. The /tmp/libc6-orig file was COPYed from
+# runtime-base just above. Step-by-step rationale:
+#   1. apt-get install — libc6 is unpinned so Debian patch rolls don't
+#      break the build.
 #   2. 7-day cooldown — abort if apt grabbed a libc6 release uploaded
 #      <7 days ago. Source: changelog.Debian.gz upload-date line, which
 #      Debian Policy mandates on every binary .deb (--no-install-
 #      recommends does not skip it).
-#   3. libssl3t64 base-version assertion — fires only when the
-#      distroless image catches up to the pinned patch (= cleanup signal).
-#   4. libc6 dynamic-version extraction — no static assertion; if base
+#   3. libc6 dynamic-version extraction — no static assertion; if base
 #      already matches the patch target, log a NOTE and continue.
-#   5. Copy patched binaries into /patch/.
-#   6. sed the dpkg status.d entries (libssl3t64 = static substitution;
-#      libc6 = dynamic substitution from extracted versions).
+#   4. Copy patched binaries into /patch/.
+#   5. sed the dpkg status.d entry (dynamic substitution from extracted
+#      versions).
 RUN set -e && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      libssl3t64=3.5.6-1~deb13u1 \
       libc6 && \
     rm -rf /var/lib/apt/lists/* && \
     LIBC6_VER=$(dpkg-query -W -f='${Version}' libc6) && \
@@ -99,29 +95,23 @@ RUN set -e && \
         exit 1; \
     fi && \
     echo "libc6 $LIBC6_VER uploaded $AGE_DAYS days ago — passes 7-day cooldown" && \
-    grep -q '3\.5\.5-1~deb13u1' /tmp/libssl3t64-orig || \
-        { echo "ERROR: distroless base no longer contains libssl3t64 3.5.5-1~deb13u1 — drop libssl3t64 from the security-patch stage" >&2; exit 1; } && \
     BASE_LIBC6_VER=$(grep '^Version:' /tmp/libc6-orig | awk '{print $2}') && \
     [ -n "$BASE_LIBC6_VER" ] || { echo "ERROR: failed to extract libc6 Version from /tmp/libc6-orig" >&2; exit 1; } && \
     if [ "$BASE_LIBC6_VER" = "$LIBC6_VER" ]; then \
         echo "NOTE: distroless base already ships libc6 $LIBC6_VER — the security-patch stage is a no-op for libc6 and can be dropped"; \
     fi && \
     mkdir -p /patch/usr/lib && \
-    for pkg in libssl3t64 libc6; do \
-      dpkg -L "$pkg" | grep '/usr/lib' | while read f; do \
-        [ -f "$f" ] && mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; \
-      done; \
-    done && \
-    sed 's/3\.5\.5-1~deb13u1/3.5.6-1~deb13u1/g' /tmp/libssl3t64-orig > /patch/libssl3t64-status && \
+    dpkg -L libc6 | grep '/usr/lib' | while read f; do \
+      [ -f "$f" ] && mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; \
+    done; \
     sed "s|${BASE_LIBC6_VER}|${LIBC6_VER}|g" /tmp/libc6-orig > /patch/libc6-status
 
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
 FROM denoland/deno:distroless-2.8.1
 
-# Overlay patched libraries (libssl3t64, libc6) and updated package metadata
+# Overlay patched libraries (libc6) and updated package metadata
 COPY --from=security-patch /patch/usr/lib/ /usr/lib/
-COPY --from=security-patch /patch/libssl3t64-status /var/lib/dpkg/status.d/libssl3t64
 COPY --from=security-patch /patch/libc6-status /var/lib/dpkg/status.d/libc6
 
 WORKDIR /app
