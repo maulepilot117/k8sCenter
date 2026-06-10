@@ -48,7 +48,7 @@ Future<void> _pump(WidgetTester tester, MockDioAdapter mock) async {
     child: _DioInstaller(
       mock: mock,
       child: MaterialApp.router(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         routerConfig: router,
       ),
     ),

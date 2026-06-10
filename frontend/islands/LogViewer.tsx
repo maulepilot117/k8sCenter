@@ -445,9 +445,12 @@ export default function LogViewer(
             }}
             class={`px-3 py-1 text-xs font-medium ${
               mode.value === "follow"
-                ? "bg-brand text-white"
+                ? "bg-brand"
                 : "text-text-secondary hover:bg-elevated text-text-secondary"
             } rounded-l-md`}
+            style={mode.value === "follow"
+              ? { color: "var(--bg-base)" }
+              : undefined}
           >
             Follow
           </button>
@@ -458,9 +461,12 @@ export default function LogViewer(
             }}
             class={`px-3 py-1 text-xs font-medium ${
               mode.value === "snapshot"
-                ? "bg-brand text-white"
+                ? "bg-brand"
                 : "text-text-secondary hover:bg-elevated text-text-secondary"
             } rounded-r-md`}
+            style={mode.value === "snapshot"
+              ? { color: "var(--bg-base)" }
+              : undefined}
           >
             Snapshot
           </button>
@@ -596,7 +602,8 @@ export default function LogViewer(
             const pre = preRefs.current[activeTab.value];
             if (pre) pre.scrollTop = pre.scrollHeight;
           }}
-          class="fixed bottom-6 right-6 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium text-white shadow-lg hover:bg-brand/90"
+          class="fixed bottom-6 right-6 z-30 rounded-full bg-brand px-4 py-2 text-sm font-medium shadow-lg hover:bg-brand/90"
+          style={{ color: "var(--bg-base)" }}
         >
           Resume auto-scroll
         </button>

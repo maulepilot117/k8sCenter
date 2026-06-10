@@ -46,7 +46,8 @@ export default function IssuersList() {
           </a>
           <a
             href="/security/certificates/cluster-issuers/new"
-            class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90"
+            class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90"
+            style={{ color: "var(--bg-base)" }}
           >
             Create ClusterIssuer
           </a>

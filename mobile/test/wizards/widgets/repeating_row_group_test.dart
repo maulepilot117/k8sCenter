@@ -15,7 +15,7 @@ Widget _harness({
   required List<_Item> initial,
 }) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: _Stateful(initial: initial),
     ),

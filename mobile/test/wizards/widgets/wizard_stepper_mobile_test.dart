@@ -23,7 +23,7 @@ Widget _harness({
   return MediaQuery(
     data: MediaQueryData(size: size),
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: SizedBox(
           width: size.width,

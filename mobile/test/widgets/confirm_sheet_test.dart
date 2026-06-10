@@ -10,7 +10,7 @@ import 'package:kubecenter/widgets/confirm_sheet.dart';
 
 Widget _host(Widget Function(BuildContext) builder) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: Builder(builder: (ctx) {
         return Center(
@@ -31,7 +31,7 @@ void main() {
   testWidgets('simple confirm: tap Confirm pops true', (tester) async {
     bool? returned;
     await tester.pumpWidget(MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: Builder(builder: (ctx) {
           return Center(
@@ -130,7 +130,7 @@ void main() {
   testWidgets('cancel pops false', (tester) async {
     bool? returned;
     await tester.pumpWidget(MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: Builder(builder: (ctx) {
           return Center(

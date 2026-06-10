@@ -97,7 +97,7 @@ Future<void> _pump(
         sharedPreferencesProvider.overrideWithValue(prefs),
       ],
       child: MaterialApp.router(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         routerConfig: _routerFor(),
       ),
     ),

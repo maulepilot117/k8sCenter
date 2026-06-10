@@ -23,7 +23,7 @@ import 'package:kubecenter/widgets/cluster_pill.dart';
 Widget _harness(Widget child) {
   return ProviderScope(
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(body: Center(child: child)),
     ),
   );

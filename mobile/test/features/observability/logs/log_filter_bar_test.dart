@@ -64,7 +64,7 @@ Future<LogFilterBarHarness> _pump(
         ),
       ],
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: Scaffold(
           body: SingleChildScrollView(
             child: LogFilterBar(onSubmit: submitted.add),

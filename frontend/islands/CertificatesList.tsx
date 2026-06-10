@@ -78,7 +78,8 @@ export default function CertificatesList() {
         <h1 class="text-2xl font-bold text-text-primary">Certificates</h1>
         <a
           href="/security/certificates/new"
-          class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-white hover:bg-brand/90"
+          class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90"
+          style={{ color: "var(--bg-base)" }}
         >
           Create Certificate
         </a>

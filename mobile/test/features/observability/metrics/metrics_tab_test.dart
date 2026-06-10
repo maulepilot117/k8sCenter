@@ -50,7 +50,7 @@ Future<void> _pumpTab(
         }),
       ],
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: Scaffold(
           body: MetricsTab(
             clusterId: 'local',

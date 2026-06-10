@@ -8,7 +8,7 @@ import 'package:kubecenter/wizards/widgets/kind_picker.dart';
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: Padding(padding: const EdgeInsets.all(16), child: child),
     ),

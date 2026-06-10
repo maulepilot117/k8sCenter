@@ -27,7 +27,7 @@ Future<void> _pump(
     child: _DioInstaller(
       mock: mock,
       child: MaterialApp(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         home: MeshRouteDetailScreen(id: id),
       ),
     ),

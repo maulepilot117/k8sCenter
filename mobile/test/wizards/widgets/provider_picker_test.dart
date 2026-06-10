@@ -16,7 +16,7 @@ import 'package:kubecenter/wizards/widgets/provider_picker.dart';
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

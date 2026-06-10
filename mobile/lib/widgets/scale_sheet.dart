@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../theme/kube_theme_builder.dart';
+import 'glass_container.dart';
 
 /// Show the scale sheet pre-filled with the resource's current desired
 /// replicas. Returns the new replica count on submit, or null on dismiss.
@@ -13,10 +14,16 @@ Future<int?> showScaleSheet({
   required String name,
   required int currentReplicas,
 }) {
+  final colors = Theme.of(context).extension<KubeColors>()!;
   return showModalBottomSheet<int>(
     context: context,
     isScrollControlled: true,
-    builder: (ctx) => ScaleSheet(name: name, currentReplicas: currentReplicas),
+    backgroundColor: Colors.transparent,
+    barrierColor: colors.glassScrim,
+    builder: (ctx) => GlassContainer(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: ScaleSheet(name: name, currentReplicas: currentReplicas),
+    ),
   );
 }
 
@@ -134,7 +141,7 @@ class _ScaleSheetState extends State<ScaleSheet> {
                     onPressed: _submit,
                     style: FilledButton.styleFrom(
                       backgroundColor: colors.accent,
-                      foregroundColor: Colors.white,
+                      foregroundColor: colors.bgBase,
                     ),
                     child: const Text('Scale'),
                   ),

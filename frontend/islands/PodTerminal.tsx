@@ -237,7 +237,9 @@ export default function PodTerminal(
       cursorBlink: true,
       fontSize: 13,
       fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-      theme: { background: "#0f172a" },
+      // xterm's canvas renderer can't resolve CSS vars — hex must match
+      // bgSurface in shared/themes/liquid-glass.json.
+      theme: { background: "#0d1422" },
     });
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -441,7 +443,7 @@ export default function PodTerminal(
                 />
                 {/* Reconnect overlay */}
                 {!s.connected && s.terminal && (
-                  <div class="absolute inset-0 flex items-center justify-center bg-black/60">
+                  <div class="absolute inset-0 flex items-center justify-center glass-scrim">
                     <div class="text-center">
                       <p class="mb-3 text-sm text-text-secondary">
                         {s.error || "Session ended"}

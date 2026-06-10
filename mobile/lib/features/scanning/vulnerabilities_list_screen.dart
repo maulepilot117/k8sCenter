@@ -30,6 +30,7 @@ import '../../api/scanning_repository.dart';
 import '../../cluster/cluster_provider.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/glass_container.dart';
 import '../../widgets/refresh_guard.dart';
 import 'scanning_widgets.dart';
 
@@ -133,10 +134,16 @@ class _VulnerabilitiesListScreenState
 
   Future<void> _openNamespacePicker() async {
     final clusterId = ref.read(activeClusterProvider);
+    final colors = Theme.of(context).extension<KubeColors>()!;
     final picked = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _NamespacePickerSheet(clusterId: clusterId),
+      backgroundColor: Colors.transparent,
+      barrierColor: colors.glassScrim,
+      builder: (context) => GlassContainer(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: _NamespacePickerSheet(clusterId: clusterId),
+      ),
     );
     if (!mounted) return;
     if (picked != null && picked.isNotEmpty) {

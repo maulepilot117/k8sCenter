@@ -24,6 +24,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme/kube_theme_builder.dart';
+import 'glass_container.dart';
 
 /// Open the confirm sheet. Returns true on confirm, false on cancel,
 /// null on dismiss-by-scrim.
@@ -35,15 +36,21 @@ Future<bool?> showConfirmSheet({
   bool danger = false,
   String? typeToConfirm,
 }) {
+  final colors = Theme.of(context).extension<KubeColors>()!;
   return showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
-    builder: (ctx) => ConfirmSheet(
-      title: title,
-      message: message,
-      confirmLabel: confirmLabel,
-      danger: danger,
-      typeToConfirm: typeToConfirm,
+    backgroundColor: Colors.transparent,
+    barrierColor: colors.glassScrim,
+    builder: (ctx) => GlassContainer(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: ConfirmSheet(
+        title: title,
+        message: message,
+        confirmLabel: confirmLabel,
+        danger: danger,
+        typeToConfirm: typeToConfirm,
+      ),
     ),
   );
 }
@@ -232,7 +239,7 @@ class _ConfirmSheetState extends State<ConfirmSheet> {
                         : null,
                     style: FilledButton.styleFrom(
                       backgroundColor: accent,
-                      foregroundColor: Colors.white,
+                      foregroundColor: colors.bgBase,
                     ),
                     child: Text(widget.confirmLabel),
                   ),

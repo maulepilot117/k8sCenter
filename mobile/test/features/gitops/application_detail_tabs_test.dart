@@ -54,7 +54,7 @@ Future<void> _pumpDetail(
     child: _MockedDio(
       mock: mock,
       child: MaterialApp.router(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         routerConfig: router,
       ),
     ),
@@ -178,7 +178,7 @@ void main() {
         child: _MockedDio(
           mock: mock,
           child: MaterialApp.router(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             routerConfig: router,
           ),
         ),
@@ -220,7 +220,7 @@ void main() {
         child: _MockedDio(
           mock: mock,
           child: MaterialApp.router(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             routerConfig: router,
           ),
         ),
@@ -261,7 +261,7 @@ void main() {
         child: _MockedDio(
           mock: mock,
           child: MaterialApp.router(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             routerConfig: router,
           ),
         ),
@@ -313,7 +313,7 @@ void main() {
         child: _MockedDio(
           mock: mock,
           child: MaterialApp.router(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             routerConfig: router,
           ),
         ),
@@ -354,7 +354,7 @@ void main() {
         child: _MockedDio(
           mock: mock,
           child: MaterialApp.router(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             routerConfig: router,
           ),
         ),

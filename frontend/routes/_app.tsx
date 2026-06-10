@@ -3,7 +3,7 @@ import { define } from "@/utils.ts";
 
 export default define.page(function App({ Component }) {
   return (
-    <html lang="en" class="h-full" style="background-color:#0b0e14">
+    <html lang="en" class="h-full" style="background-color:#05080f">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -21,17 +21,19 @@ export default define.page(function App({ Component }) {
           rel="stylesheet"
         />
         {
-          /* Apply saved theme + animation prefs before render to prevent flash.
-            SYNC: bgBase values must match styles.css [data-theme] selectors and lib/themes.ts */
+          /* Apply saved animation prefs before render to prevent flash.
+            SYNC: the hardcoded #05080f background (html/body attributes
+            below) must match bgBase in shared/themes/liquid-glass.json
+            and the styles.css fallbacks. */
         }
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){try{var b={"nexus":"#0b0e14","dracula":"#282a36","tokyo-night":"#1a1b26","catppuccin":"#1e1e2e","nord":"#2e3440","one-dark":"#282c34","gruvbox":"#1d2021"};var t=localStorage.getItem("k8scenter-theme");if(t&&b[t]){document.documentElement.dataset.theme=t;document.documentElement.style.backgroundColor=b[t]}var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
+              `(function(){try{var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
           }}
         />
       </head>
-      <body class="h-full" style="background-color:#0b0e14">
+      <body class="h-full" style="background-color:#05080f">
         <Component />
       </body>
     </html>

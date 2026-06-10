@@ -38,7 +38,8 @@ export default define.page(function ErrorPage({ error, url }) {
           {isServerError && (
             <a
               href={url.pathname}
-              class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand/90"
+              class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium shadow-sm hover:bg-brand/90"
+              style={{ color: "var(--bg-base)" }}
             >
               Retry
             </a>

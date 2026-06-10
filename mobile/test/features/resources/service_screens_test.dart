@@ -92,7 +92,7 @@ void main() {
         UncontrolledProviderScope(
           container: container,
           child: MaterialApp(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             home: const ServiceDetailScreen(
               namespace: 'default',
               name: 'my-svc',
@@ -195,7 +195,7 @@ void main() {
         UncontrolledProviderScope(
           container: container,
           child: MaterialApp(
-            theme: buildKubeTheme('nexus'),
+            theme: buildKubeTheme('liquid-glass'),
             home: const ServiceDetailScreen(
               namespace: 'default',
               name: 'my-svc',

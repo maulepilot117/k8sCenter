@@ -52,13 +52,13 @@ export default function KeyboardShortcuts() {
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
       onClick={() => {
         showHelp.value = false;
       }}
     >
       <div
-        class="w-full max-w-sm rounded-lg border border-border-primary bg-surface p-6 shadow-xl"
+        class="w-full max-w-sm glass-elevated rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 class="mb-4 text-lg font-semibold text-text-primary">

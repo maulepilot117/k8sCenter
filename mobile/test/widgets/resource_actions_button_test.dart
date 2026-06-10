@@ -118,7 +118,7 @@ Widget _harness(
   return UncontrolledProviderScope(
     container: container,
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         appBar: AppBar(
           actions: [

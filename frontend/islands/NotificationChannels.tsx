@@ -384,8 +384,8 @@ export default function NotificationChannels() {
         </h2>
         <button
           type="button"
-          class="rounded-md px-3 py-1.5 text-sm font-medium text-white"
-          style={{ backgroundColor: "var(--accent)" }}
+          class="rounded-md px-3 py-1.5 text-sm font-medium"
+          style={{ backgroundColor: "var(--accent)", color: "var(--bg-base)" }}
           onClick={openCreate}
         >
           Create Channel
@@ -537,8 +537,7 @@ export default function NotificationChannels() {
       {/* Create/Edit Modal */}
       {modalOpen.value && (
         <div
-          class="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+          class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               modalOpen.value = false;
@@ -546,13 +545,7 @@ export default function NotificationChannels() {
             }
           }}
         >
-          <div
-            class="w-full max-w-[480px] rounded-xl p-6 shadow-xl"
-            style={{
-              backgroundColor: "var(--bg-elevated)",
-              border: "1px solid var(--border-primary)",
-            }}
-          >
+          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
               class="text-base font-semibold mb-4"
               style={{ color: "var(--text-primary)" }}
@@ -621,8 +614,11 @@ export default function NotificationChannels() {
               </button>
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium text-white"
-                style={{ backgroundColor: "var(--accent)" }}
+                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                style={{
+                  backgroundColor: "var(--accent)",
+                  color: "var(--bg-base)",
+                }}
                 disabled={saving.value}
                 onClick={handleSave}
               >
@@ -636,8 +632,7 @@ export default function NotificationChannels() {
       {/* Delete Confirmation Modal */}
       {deleteTarget.value && (
         <div
-          class="fixed inset-0 z-50 flex items-center justify-center"
-          style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+          class="fixed inset-0 z-50 flex items-center justify-center glass-scrim"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               deleteTarget.value = null;
@@ -645,13 +640,7 @@ export default function NotificationChannels() {
             }
           }}
         >
-          <div
-            class="w-full max-w-[480px] rounded-xl p-6 shadow-xl"
-            style={{
-              backgroundColor: "var(--bg-elevated)",
-              border: "1px solid var(--border-primary)",
-            }}
-          >
+          <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
               class="text-base font-semibold mb-2"
               style={{ color: "var(--danger)" }}
@@ -688,8 +677,11 @@ export default function NotificationChannels() {
               </button>
               <button
                 type="button"
-                class="rounded-md px-3 py-1.5 text-sm font-medium text-white"
-                style={{ backgroundColor: "var(--danger)" }}
+                class="rounded-md px-3 py-1.5 text-sm font-medium"
+                style={{
+                  backgroundColor: "var(--danger)",
+                  color: "var(--bg-base)",
+                }}
                 disabled={saving.value ||
                   deleteConfirmText.value !== deleteTarget.value.name}
                 onClick={handleDelete}

@@ -55,7 +55,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      class="glass-scrim fixed inset-0 z-50 flex items-center justify-center"
       onClick={onCancel}
     >
       <div
@@ -64,7 +64,7 @@ export function ConfirmDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={message ? descId : undefined}
-        class="w-full max-w-md rounded-lg bg-surface p-6 shadow-xl"
+        class="glass-elevated w-full max-w-md rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <h3
@@ -109,11 +109,12 @@ export function ConfirmDialog({
             type="button"
             disabled={!canConfirm || loading}
             onClick={onConfirm}
-            class={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+            class={`cursor-pointer rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 ${
               danger
                 ? "bg-error hover:bg-error/90"
                 : "bg-brand hover:bg-brand/90"
             }`}
+            style={{ color: "var(--bg-base)" }}
           >
             {loading ? "..." : confirmLabel}
           </button>

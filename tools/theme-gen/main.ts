@@ -5,9 +5,10 @@
 // repo:
 //
 //   frontend/assets/themes.generated.css
-//     Imported by frontend/assets/styles.css. Contains only the per-theme
-//     CSS variable blocks — :root for the default theme, [data-theme="<id>"]
-//     for the others.
+//     Imported by frontend/assets/styles.css. Contains the CSS variable
+//     blocks — :root for the default theme. (Only one theme, liquid-glass,
+//     currently exists; the [data-theme="<id>"] selector logic remains for
+//     any future additional themes.)
 //
 //   mobile/lib/theme/themes.g.dart
 //     Stub Dart file with a KubeThemeColors data class and a static map
@@ -45,13 +46,7 @@ const DART_OUT = resolve(
 
 // Theme load order matches the existing styles.css for diff stability.
 const ORDER = [
-  "nexus",
-  "dracula",
-  "tokyo-night",
-  "catppuccin",
-  "nord",
-  "one-dark",
-  "gruvbox",
+  "liquid-glass",
 ];
 
 const CSS_VAR_MAP: Record<string, string> = {
@@ -75,9 +70,27 @@ const CSS_VAR_MAP: Record<string, string> = {
   error: "--error",
   errorDim: "--error-dim",
   info: "--info",
+  glassSurface: "--glass-surface",
+  glassElevated: "--glass-elevated",
+  glassBorder: "--glass-border",
+  glassHighlight: "--glass-highlight",
+  glassScrim: "--glass-scrim",
 };
 
 async function loadThemes(): Promise<Theme[]> {
+  // Guard against silently ignored themes: every *.json in the themes dir
+  // must be listed in ORDER, or the generator (and the CI parity gate)
+  // would simply never see it.
+  for await (const entry of Deno.readDir(THEMES_DIR)) {
+    if (!entry.isFile || !entry.name.endsWith(".json")) continue;
+    const id = entry.name.slice(0, -".json".length);
+    if (!ORDER.includes(id)) {
+      throw new Error(
+        `theme file ${entry.name} exists but is not listed in ORDER — ` +
+          `add "${id}" to ORDER in tools/theme-gen/main.ts`,
+      );
+    }
+  }
   const themes: Theme[] = [];
   for (const id of ORDER) {
     const path = resolve(THEMES_DIR, `${id}.json`);
@@ -130,10 +143,10 @@ function emitDart(themes: Theme[]): string {
     "// Source: shared/themes/*.json. Regenerate via `deno task theme-gen`",
     "// (or `make check-themes` in CI).",
     "",
-    "/// Pure-Dart colour tokens for each k8sCenter theme. PR-1 will wrap",
-    "/// these into Flutter ThemeData + ThemeExtension instances; until then",
-    "/// the file lives as a plain Dart library so CI parity checks work",
-    "/// without a Flutter toolchain.",
+    "/// Pure-Dart colour tokens for each k8sCenter theme. Consumed by",
+    "/// kube_theme_builder.dart to build Flutter ThemeData + the KubeColors",
+    "/// ThemeExtension. Kept as a plain Dart library so CI parity checks",
+    "/// work without a Flutter toolchain.",
     "class KubeThemeColors {",
     "  const KubeThemeColors({",
   ];

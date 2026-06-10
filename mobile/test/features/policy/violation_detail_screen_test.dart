@@ -72,7 +72,7 @@ Future<({_NavObserver observer, GoRouter router})> _pump(
     child: _DioInstaller(
       mock: mock,
       child: MaterialApp.router(
-        theme: buildKubeTheme('nexus'),
+        theme: buildKubeTheme('liquid-glass'),
         routerConfig: router,
       ),
     ),

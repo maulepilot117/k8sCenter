@@ -197,7 +197,8 @@ export default function SnapshotList() {
       <div class="flex gap-2">
         <a
           href="/storage/snapshots/new"
-          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand/90"
+          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
+          style={{ color: "var(--bg-base)" }}
         >
           Create Snapshot
         </a>

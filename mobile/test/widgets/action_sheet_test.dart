@@ -17,7 +17,7 @@ final _resource = {
 
 Widget _host(RBACSummary rbac) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: Builder(builder: (ctx) {
         return Center(
@@ -96,7 +96,7 @@ void main() {
       (tester) async {
     String? popped;
     await tester.pumpWidget(MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: Builder(builder: (ctx) {
           return Center(

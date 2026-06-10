@@ -636,14 +636,12 @@ export default function CRDResourceList({ group, resource }: Props) {
                       </button>
                       {openMenu.value === menuId && (
                         <div
+                          class="glass-elevated"
                           style={{
                             position: "absolute",
                             right: "14px",
                             top: "100%",
-                            background: "var(--bg-surface)",
-                            border: "1px solid var(--border-primary)",
                             borderRadius: "var(--radius)",
-                            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
                             zIndex: 10,
                             minWidth: "100px",
                           }}
@@ -714,22 +712,21 @@ export default function CRDResourceList({ group, resource }: Props) {
       {/* Delete confirmation dialog */}
       {confirmDelete.value && (
         <div
+          class="glass-scrim"
           style={{
             position: "fixed",
             inset: 0,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "rgba(0,0,0,0.5)",
             zIndex: 100,
           }}
           onClick={() => confirmDelete.value = null}
         >
           <div
+            class="glass-elevated"
             style={{
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "var(--radius)",
+              borderRadius: "16px",
               padding: "24px",
               maxWidth: "400px",
               width: "90%",
@@ -778,7 +775,7 @@ export default function CRDResourceList({ group, resource }: Props) {
                   borderRadius: "var(--radius)",
                   border: "none",
                   background: "var(--error)",
-                  color: "#fff",
+                  color: "var(--bg-base)",
                   cursor: deleting.value ? "default" : "pointer",
                   opacity: deleting.value ? 0.6 : 1,
                 }}

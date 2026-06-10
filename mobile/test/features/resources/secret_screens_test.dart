@@ -133,7 +133,7 @@ void main() {
       return UncontrolledProviderScope(
         container: container,
         child: MaterialApp(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           home: const SecretDetailScreen(
             namespace: namespace,
             name: name,
@@ -418,5 +418,111 @@ void main() {
         });
       },
     );
+
+    group('copy-confirm dialog', () {
+      /// Captures Clipboard.setData calls and serves Clipboard.getData
+      /// from the last value set, so the 30s best-effort wipe (which
+      /// reads before clearing) sees realistic state.
+      List<MethodCall> mockClipboard() {
+        final calls = <MethodCall>[];
+        String? clipText;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+          if (call.method == 'Clipboard.setData') {
+            calls.add(call);
+            clipText = (call.arguments as Map)['text'] as String?;
+            return null;
+          }
+          if (call.method == 'Clipboard.getData') {
+            return <String, dynamic>{'text': clipText};
+          }
+          return null;
+        });
+        addTearDown(() {
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(SystemChannels.platform, null);
+        });
+        return calls;
+      }
+
+      /// Pumps the screen, reveals `username`, and opens the dialog.
+      Future<void> openDialog(WidgetTester tester) async {
+        final (:container, :mock) = makeContainer();
+        addTearDown(container.dispose);
+        mockSecret(mock);
+        mockReveal(mock, 'username', 'admin');
+
+        await tester.pumpWidget(harness(container));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('secret-toggle-username')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const ValueKey('secret-copy-username')));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Copy secret to clipboard?'), findsOneWidget);
+      }
+
+      testWidgets('cancel dismisses without touching the clipboard',
+          (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final clipboardCalls = mockClipboard();
+          await openDialog(tester);
+
+          await tester.tap(find.text('Cancel'));
+          await tester.pumpAndSettle();
+
+          expect(find.text('Copy secret to clipboard?'), findsNothing);
+          expect(clipboardCalls, isEmpty);
+        });
+      });
+
+      testWidgets('barrier dismiss does not touch the clipboard',
+          (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final clipboardCalls = mockClipboard();
+          await openDialog(tester);
+
+          // Tap the scrim well outside the centered dialog.
+          await tester.tapAt(const Offset(10, 10));
+          await tester.pumpAndSettle();
+
+          expect(find.text('Copy secret to clipboard?'), findsNothing);
+          expect(clipboardCalls, isEmpty);
+        });
+      });
+
+      testWidgets(
+          'confirm copies the value, shows the snackbar, and wipes after 30s',
+          (tester) async {
+        await withPlatform(TargetPlatform.android, () async {
+          mockWindowManager();
+          final clipboardCalls = mockClipboard();
+          await openDialog(tester);
+
+          await tester.tap(find.widgetWithText(FilledButton, 'Copy'));
+          await tester.pumpAndSettle();
+
+          expect(clipboardCalls, hasLength(1));
+          expect(
+            (clipboardCalls.single.arguments as Map)['text'],
+            'admin',
+          );
+          expect(
+            find.text('Copied. Clipboard will clear in 30 seconds.'),
+            findsOneWidget,
+          );
+
+          // Advance past the wipe delay: the clipboard still holds the
+          // copied value, so the best-effort wipe must clear it.
+          await tester.pump(const Duration(seconds: 31));
+          await tester.pumpAndSettle();
+
+          expect(clipboardCalls, hasLength(2));
+          expect((clipboardCalls.last.arguments as Map)['text'], '');
+        });
+      });
+    });
   });
 }

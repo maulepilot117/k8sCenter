@@ -16,7 +16,7 @@ import 'package:kubecenter/wizards/types/secret_store/providers/vault_provider_f
 
 Widget _wrap(Widget child) {
   return MaterialApp(
-    theme: buildKubeTheme('nexus'),
+    theme: buildKubeTheme('liquid-glass'),
     home: Scaffold(
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),

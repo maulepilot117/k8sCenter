@@ -1093,7 +1093,7 @@ export default function ClusterTopology() {
                       text-anchor="middle"
                       dy="0.35em"
                       font-size="8"
-                      fill="white"
+                      fill="var(--bg-base)"
                       font-weight="700"
                       style={{ pointerEvents: "none", userSelect: "none" }}
                     >
@@ -1164,12 +1164,10 @@ export default function ClusterTopology() {
             }}
           >
             <div
+              class="glass-elevated"
               style={{
-                background: "var(--bg-elevated)",
-                border: "1px solid var(--border-primary)",
                 borderRadius: "var(--radius-sm)",
-                boxShadow:
-                  `0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px ${accentColor}22`,
+                boxShadow: `0 0 0 1px ${accentColor}22`,
                 overflow: "hidden",
                 fontFamily: "var(--font-sans)",
               }}

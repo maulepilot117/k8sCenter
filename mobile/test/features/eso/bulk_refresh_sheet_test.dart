@@ -56,7 +56,7 @@ Widget _wrap({
       ),
     ],
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(
         body: Builder(
           builder: (ctx) {

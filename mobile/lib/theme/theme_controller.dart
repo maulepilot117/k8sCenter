@@ -1,6 +1,9 @@
-// Active-theme state with SharedPreferences persistence. Survives cold
-// starts. Theme picker and the root MaterialApp both read from this
-// provider — picker writes, MaterialApp watches.
+// Active-theme id with SharedPreferences persistence. Only the root
+// MaterialApp reads from this provider. Since the Liquid Glass redesign
+// there is a single theme and no picker — the controller's remaining job
+// is the graceful fallback for legacy multi-theme-era ids persisted on
+// existing installs; setTheme() has no production callers until a second
+// theme returns.
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

@@ -20,7 +20,7 @@ import '../a11y_helpers.dart';
 Widget _harness({List<DetailExtraTab> extraTabs = const []}) {
   return ProviderScope(
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: ResourceDetailScaffold(
         kindLabel: 'PersistentVolume',
         name: 'test-pv',
@@ -42,7 +42,7 @@ Widget _namespacedHarness() {
   // Diagnose IconButton renders in the AppBar actions slot.
   return ProviderScope(
     child: MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: const ResourceDetailScaffold(
         kindLabel: 'Deployment',
         name: 'frontend',

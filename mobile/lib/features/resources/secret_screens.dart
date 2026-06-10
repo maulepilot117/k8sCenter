@@ -22,6 +22,7 @@ import '../../cluster/cluster_provider.dart';
 import '../../routing/domain_sections.dart';
 import '../../theme/kube_theme_builder.dart';
 import '../../widgets/empty_states.dart';
+import '../../widgets/glass_container.dart';
 import '../../widgets/resource_actions_button.dart';
 import '../../widgets/resource_detail_scaffold.dart';
 import '../../widgets/resource_list_scaffold.dart';
@@ -318,26 +319,78 @@ class _SecretKeyTile extends StatelessWidget {
     String value,
   ) async {
     final messenger = ScaffoldMessenger.of(context);
+    final colors = Theme.of(context).extension<KubeColors>()!;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Copy secret to clipboard?'),
-        content: Text(
-          'The value for `$key` will be placed on the system clipboard '
-          'and wiped after 30 seconds.\n\n'
-          'On Android the clipboard may be readable by other apps. '
-          'On iOS it may sync to other Apple devices via Universal Clipboard.',
+      barrierColor: colors.glassScrim,
+      // A bare Dialog (unlike AlertDialog) names no route for screen
+      // readers and provides no content scrolling; restore both.
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        child: GlassContainer(
+          child: Semantics(
+            scopesRoute: true,
+            namesRoute: true,
+            explicitChildNodes: true,
+            label: 'Copy secret to clipboard?',
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Copy secret to clipboard?',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Text(
+                        'The value for `$key` will be placed on the system '
+                        'clipboard and wiped after 30 seconds.\n\n'
+                        'On Android the clipboard may be readable by other '
+                        'apps. On iOS it may sync to other Apple devices via '
+                        'Universal Clipboard.',
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 14,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        style: TextButton.styleFrom(
+                          foregroundColor: colors.textSecondary,
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: colors.accent,
+                          foregroundColor: colors.bgBase,
+                        ),
+                        child: const Text('Copy'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Copy'),
-          ),
-        ],
       ),
     );
     if (ok != true) return;

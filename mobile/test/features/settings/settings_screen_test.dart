@@ -1,5 +1,5 @@
 // Settings screen UI contract:
-//   - section ordering (Appearance → Crash reporting → About)
+//   - section ordering (Crash reporting → About)
 //   - Sentry switch reflects controller state
 //   - external-link tiles render and route through url_launcher
 //   - launchUrl failure surfaces a snackbar
@@ -70,7 +70,7 @@ void main() {
     if (launcher != null) {
       UrlLauncherPlatform.instance = launcher;
     }
-    final base = buildKubeTheme('nexus');
+    final base = buildKubeTheme('liquid-glass');
     final theme = platform != null ? base.copyWith(platform: platform) : base;
     await tester.pumpWidget(
       ProviderScope(
@@ -86,21 +86,21 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('renders three sections in display order', (tester) async {
+  testWidgets('renders two sections in display order', (tester) async {
     final prefs = await SharedPreferences.getInstance();
     await pumpScreen(tester, prefs);
 
-    final appearance = find.text('APPEARANCE');
+    // No APPEARANCE section since the Liquid Glass redesign — single
+    // design language, nothing to pick.
+    expect(find.text('APPEARANCE'), findsNothing);
+
     final crash = find.text('CRASH REPORTING');
     final about = find.text('ABOUT');
-    expect(appearance, findsOneWidget);
     expect(crash, findsOneWidget);
     expect(about, findsOneWidget);
 
-    final appearanceRect = tester.getRect(appearance);
     final crashRect = tester.getRect(crash);
     final aboutRect = tester.getRect(about);
-    expect(appearanceRect.top, lessThan(crashRect.top));
     expect(crashRect.top, lessThan(aboutRect.top));
   });
 
@@ -239,7 +239,7 @@ void main() {
       ProviderScope(
         overrides: [sharedPreferencesProvider.overrideWithValue(prefs)],
         child: MaterialApp.router(
-          theme: buildKubeTheme('nexus'),
+          theme: buildKubeTheme('liquid-glass'),
           routerConfig: router,
         ),
       ),

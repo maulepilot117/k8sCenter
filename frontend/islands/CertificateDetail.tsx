@@ -167,8 +167,8 @@ export default function CertificateDetailIsland({ namespace, name }: Props) {
 
       {/* Re-issue confirmation modal */}
       {confirmReissue.value && (
-        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div class="bg-bg-elevated border border-border-primary rounded-lg p-6 max-w-md w-full shadow-xl">
+        <div class="fixed inset-0 z-50 flex items-center justify-center glass-scrim">
+          <div class="glass-elevated rounded-2xl p-6 max-w-md w-full">
             <h2 class="text-lg font-semibold text-text-primary mb-3">
               Confirm Re-issue
             </h2>

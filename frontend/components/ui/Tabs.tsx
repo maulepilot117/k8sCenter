@@ -70,7 +70,7 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
               tabIndex={isActive ? 0 : -1}
               type="button"
               onClick={() => onTabChange(tab.id)}
-              class={`px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+              class={`cursor-pointer px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                 isActive ? "border-b-2" : ""
               }`}
               style={isActive
@@ -79,7 +79,7 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
                   color: "var(--accent)",
                 }
                 : {
-                  color: "var(--text-muted)",
+                  color: "var(--text-secondary)",
                 }}
             >
               {tab.label}

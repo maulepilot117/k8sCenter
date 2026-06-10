@@ -78,13 +78,12 @@ function RailTooltip(
 ) {
   useEffect(() => {
     const el = document.createElement("div");
-    el.className = "rail-tooltip";
+    el.className = "rail-tooltip glass-elevated";
     Object.assign(el.style, {
       position: "fixed",
       top: `${top}px`,
       left: `${left}px`,
       transform: "translateY(-50%)",
-      background: "var(--bg-elevated)",
       color: "var(--text-primary)",
       padding: "5px 12px",
       borderRadius: "6px",
@@ -92,10 +91,7 @@ function RailTooltip(
       fontWeight: "500",
       whiteSpace: "nowrap",
       zIndex: "9999",
-      border: "1px solid var(--border-subtle)",
       pointerEvents: "none",
-      boxShadow:
-        "0 4px 12px -2px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.03)",
     });
     el.textContent = label;
     document.body.appendChild(el);
@@ -117,11 +113,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
     // SSR placeholder with correct dimensions
     return (
       <nav
+        class="glass-bar"
         style={{
           width: "var(--rail-width, 60px)",
           gridRow: "1 / -1",
-          background: "var(--bg-base)",
-          borderRight: "1px solid var(--border-subtle)",
+          borderRight: "1px solid var(--glass-border)",
         }}
       />
     );
@@ -215,11 +211,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
 
   return (
     <nav
+      class="glass-bar"
       style={{
         width: "var(--rail-width, 60px)",
         gridRow: "1 / -1",
-        background: "var(--bg-base)",
-        borderRight: "1px solid var(--border-subtle)",
+        borderRight: "1px solid var(--glass-border)",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",

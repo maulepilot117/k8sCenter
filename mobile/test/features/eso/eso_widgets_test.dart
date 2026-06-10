@@ -17,7 +17,7 @@ import 'package:kubecenter/theme/kube_theme_builder.dart';
 Future<void> _pumpWith(WidgetTester tester, Widget child) async {
   await tester.pumpWidget(
     MaterialApp(
-      theme: buildKubeTheme('nexus'),
+      theme: buildKubeTheme('liquid-glass'),
       home: Scaffold(body: Center(child: child)),
     ),
   );

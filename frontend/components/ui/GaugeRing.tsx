@@ -99,7 +99,8 @@ export function GaugeRing({
             fontFamily: "var(--font-mono, monospace)",
             ...(valueGradient
               ? {
-                background: "linear-gradient(135deg, var(--accent), #00E5A0)",
+                background:
+                  "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent",
               }
