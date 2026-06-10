@@ -331,6 +331,7 @@ class _SecretKeyTile extends StatelessWidget {
           child: Semantics(
             scopesRoute: true,
             namesRoute: true,
+            explicitChildNodes: true,
             label: 'Copy secret to clipboard?',
             child: Padding(
               padding: const EdgeInsets.all(24),
