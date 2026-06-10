@@ -83,27 +83,12 @@ body {
 }
 
 /* ── Base body styles ── */
+/* Ambient washes live in the background shorthand: a z-index:-1 fixed
+   pseudo-element paints BEHIND body's opaque background per CSS painting
+   order (CSS2.1 App E) and would be invisible. body itself never scrolls
+   (main scrolls in its own grid cell), so the gradients stay put. */
 body {
   font-family: var(--font-sans);
-  background-color: var(--bg-base) !important;
-  color: var(--text-primary);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-/* ── Liquid glass ─────────────────────────────────────────────────────
-   Glass is CHROME-ONLY: nav, topbar, modals, sheets, toasts, overlay
-   cards. Data surfaces (tables, YAML/log editors, terminals) stay solid
-   on var(--bg-surface) for GPU cost and WCAG contrast reasons. */
-
-/* Ambient backdrop — two dim color washes so backdrop blur has something
-   to refract. Fixed so scrolling never repaints it. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
   background:
     radial-gradient(
       60% 50% at 12% 0%,
@@ -114,7 +99,23 @@ body::before {
     50% 45% at 90% 100%,
     color-mix(in srgb, var(--accent-secondary) 6%, transparent),
     transparent 70%
-  );
+  ),
+    var(--bg-base) !important;
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Liquid glass ─────────────────────────────────────────────────────
+   Glass is CHROME-ONLY: nav, topbar, modals, sheets, toasts, overlay
+   cards. Data surfaces (tables, YAML/log editors, terminals) stay solid
+   on var(--bg-surface) for GPU cost and WCAG contrast reasons. */
+
+/* Persistent chrome bars (topbar, icon rail): translucent fill WITHOUT
+   backdrop-filter. Nothing ever scrolls beneath them (they occupy their
+   own grid tracks), so blur would burn GPU refracting a static backdrop. */
+.glass-bar {
+  background: var(--glass-surface);
 }
 
 .glass {
@@ -162,13 +163,16 @@ body::before {
     backdrop-filter: none;
     background: var(--bg-elevated);
   }
+  .glass-bar {
+    background: var(--bg-surface);
+  }
   .glass-scrim {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: rgba(3, 6, 12, 0.8);
   }
-  body::before {
-    background: none;
+  body {
+    background: var(--bg-base) !important;
   }
 }
 

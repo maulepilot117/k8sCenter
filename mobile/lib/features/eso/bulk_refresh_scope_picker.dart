@@ -147,7 +147,7 @@ class _BulkRefreshScopePickerState
                   : null,
               style: FilledButton.styleFrom(
                 backgroundColor: colors.accent,
-                foregroundColor: Colors.white,
+                foregroundColor: colors.bgBase,
               ),
               child: const Text('Continue'),
             ),

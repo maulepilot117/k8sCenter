@@ -205,7 +205,7 @@ class _YamlEditorPanelState extends ConsumerState<YamlEditorPanel> {
                 onPressed: busy ? null : controller.apply,
                 style: FilledButton.styleFrom(
                   backgroundColor: colors.accent,
-                  foregroundColor: Colors.white,
+                  foregroundColor: colors.bgBase,
                 ),
                 child: state.status == YamlApplyStatus.applying
                     ? const SizedBox(

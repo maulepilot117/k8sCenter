@@ -99,14 +99,20 @@ export default function QuickActionsFab() {
         </svg>
       </button>
 
-      {/* Action items */}
+      {
+        /* Action items — ONE glass panel wrapping all items: a per-item
+          glass-elevated class would stack N backdrop-filter layers. */
+      }
       {expanded.value && (
         <div
+          class="glass-elevated"
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: "4px",
-            alignItems: "flex-end",
+            gap: "2px",
+            alignItems: "stretch",
+            padding: "6px",
+            borderRadius: "var(--radius-glass, 16px)",
           }}
         >
           {ACTIONS.map((action) => (
@@ -114,7 +120,6 @@ export default function QuickActionsFab() {
               key={action.label}
               href={action.href}
               onClick={close}
-              class="glass-elevated"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -126,15 +131,15 @@ export default function QuickActionsFab() {
                 fontWeight: 500,
                 textDecoration: "none",
                 whiteSpace: "nowrap",
-                transition: "border-color 0.15s ease",
+                transition: "background 0.15s ease",
               }}
               onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.borderColor =
-                  "var(--accent)";
+                (e.currentTarget as HTMLElement).style.background =
+                  "var(--bg-hover)";
               }}
               onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.borderColor =
-                  "var(--border-primary)";
+                (e.currentTarget as HTMLElement).style.background =
+                  "transparent";
               }}
             >
               <svg

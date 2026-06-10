@@ -2,10 +2,10 @@
 // Source: shared/themes/*.json. Regenerate via `deno task theme-gen`
 // (or `make check-themes` in CI).
 
-/// Pure-Dart colour tokens for each k8sCenter theme. PR-1 will wrap
-/// these into Flutter ThemeData + ThemeExtension instances; until then
-/// the file lives as a plain Dart library so CI parity checks work
-/// without a Flutter toolchain.
+/// Pure-Dart colour tokens for each k8sCenter theme. Consumed by
+/// kube_theme_builder.dart to build Flutter ThemeData + the KubeColors
+/// ThemeExtension. Kept as a plain Dart library so CI parity checks
+/// work without a Flutter toolchain.
 class KubeThemeColors {
   const KubeThemeColors({
     required this.bgBase,

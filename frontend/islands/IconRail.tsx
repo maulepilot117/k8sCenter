@@ -113,13 +113,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
     // SSR placeholder with correct dimensions
     return (
       <nav
-        class="glass"
+        class="glass-bar"
         style={{
           width: "var(--rail-width, 60px)",
           gridRow: "1 / -1",
-          border: "none",
           borderRight: "1px solid var(--glass-border)",
-          boxShadow: "none",
         }}
       />
     );
@@ -213,13 +211,11 @@ export default function IconRail({ currentPath }: IconRailProps) {
 
   return (
     <nav
-      class="glass"
+      class="glass-bar"
       style={{
         width: "var(--rail-width, 60px)",
         gridRow: "1 / -1",
-        border: "none",
         borderRight: "1px solid var(--glass-border)",
-        boxShadow: "none",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",

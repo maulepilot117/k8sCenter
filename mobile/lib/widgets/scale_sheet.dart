@@ -141,7 +141,7 @@ class _ScaleSheetState extends State<ScaleSheet> {
                     onPressed: _submit,
                     style: FilledButton.styleFrom(
                       backgroundColor: colors.accent,
-                      foregroundColor: Colors.white,
+                      foregroundColor: colors.bgBase,
                     ),
                     child: const Text('Scale'),
                   ),

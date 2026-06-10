@@ -239,7 +239,7 @@ class _ConfirmSheetState extends State<ConfirmSheet> {
                         : null,
                     style: FilledButton.styleFrom(
                       backgroundColor: accent,
-                      foregroundColor: Colors.white,
+                      foregroundColor: colors.bgBase,
                     ),
                     child: Text(widget.confirmLabel),
                   ),

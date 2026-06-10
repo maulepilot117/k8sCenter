@@ -3,9 +3,13 @@
 // overlays. Never wrap scrolling list items: BackdropFilter cost scales
 // with covered pixels and stacks per-item.
 //
-// Honors the platform "reduce transparency" / high-contrast setting by
-// dropping the blur and falling back to the solid elevated surface, the
-// same fallback the web frontend applies via prefers-reduced-transparency.
+// Falls back to a solid elevated surface (no blur) when
+// MediaQuery.highContrastOf is set — iOS "Increase Contrast". Note this
+// is NOT iOS "Reduce Transparency": Flutter exposes no flag for that
+// setting, so those users still get blur. The web frontend's
+// prefers-reduced-transparency fallback has no exact mobile equivalent
+// until a platform-channel check of UIAccessibility
+// .isReduceTransparencyEnabled is added.
 
 import 'dart:ui';
 

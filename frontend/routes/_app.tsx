@@ -21,13 +21,15 @@ export default define.page(function App({ Component }) {
           rel="stylesheet"
         />
         {
-          /* Apply saved theme + animation prefs before render to prevent flash.
-            SYNC: bgBase values must match styles.css [data-theme] selectors and lib/themes.ts */
+          /* Apply saved animation prefs before render to prevent flash.
+            SYNC: the hardcoded #05080f background (html/body attributes
+            below) must match bgBase in shared/themes/liquid-glass.json
+            and the styles.css fallbacks. */
         }
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){try{var b={"liquid-glass":"#05080f"};var t=localStorage.getItem("k8scenter-theme");if(t&&b[t]){document.documentElement.dataset.theme=t;document.documentElement.style.backgroundColor=b[t]}var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
+              `(function(){try{var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
           }}
         />
       </head>

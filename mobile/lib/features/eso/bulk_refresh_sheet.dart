@@ -478,7 +478,7 @@ class _PreviewBody extends ConsumerWidget {
                   : () => _onContinue(context, scope, selectedScope),
               style: FilledButton.styleFrom(
                 backgroundColor: colors.accent,
-                foregroundColor: Colors.white,
+                foregroundColor: colors.bgBase,
               ),
               child: const Text('Continue'),
             ),

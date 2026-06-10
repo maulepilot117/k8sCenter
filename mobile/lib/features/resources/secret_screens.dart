@@ -323,58 +323,70 @@ class _SecretKeyTile extends StatelessWidget {
     final ok = await showDialog<bool>(
       context: context,
       barrierColor: colors.glassScrim,
+      // A bare Dialog (unlike AlertDialog) names no route for screen
+      // readers and provides no content scrolling; restore both.
       builder: (ctx) => Dialog(
         backgroundColor: Colors.transparent,
         child: GlassContainer(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Copy secret to clipboard?',
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'The value for `$key` will be placed on the system clipboard '
-                  'and wiped after 30 seconds.\n\n'
-                  'On Android the clipboard may be readable by other apps. '
-                  'On iOS it may sync to other Apple devices via Universal Clipboard.',
-                  style: TextStyle(
-                    color: colors.textSecondary,
-                    fontSize: 14,
-                    height: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      style: TextButton.styleFrom(
-                        foregroundColor: colors.textSecondary,
-                      ),
-                      child: const Text('Cancel'),
+          child: Semantics(
+            scopesRoute: true,
+            namesRoute: true,
+            label: 'Copy secret to clipboard?',
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Copy secret to clipboard?',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
                     ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: colors.accent,
-                        foregroundColor: Colors.white,
+                  ),
+                  const SizedBox(height: 12),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Text(
+                        'The value for `$key` will be placed on the system '
+                        'clipboard and wiped after 30 seconds.\n\n'
+                        'On Android the clipboard may be readable by other '
+                        'apps. On iOS it may sync to other Apple devices via '
+                        'Universal Clipboard.',
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 14,
+                          height: 1.4,
+                        ),
                       ),
-                      child: const Text('Copy'),
                     ),
-                  ],
-                ),
-              ],
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        style: TextButton.styleFrom(
+                          foregroundColor: colors.textSecondary,
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: colors.accent,
+                          foregroundColor: colors.bgBase,
+                        ),
+                        child: const Text('Copy'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
         ),

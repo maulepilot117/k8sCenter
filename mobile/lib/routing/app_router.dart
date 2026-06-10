@@ -161,7 +161,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const NotificationFeedScreen(),
       ),
 
-      // --- M5 PR-5a: Settings (theme picker, Sentry opt-in, About). ---
+      // --- M5 PR-5a: Settings (Sentry opt-in, About). ---
       // Cluster-agnostic — settings persist per-user across clusters.
       GoRoute(
         path: '/settings',

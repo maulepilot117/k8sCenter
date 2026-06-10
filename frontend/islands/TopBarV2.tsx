@@ -49,12 +49,10 @@ export default function TopBarV2() {
 
   return (
     <header
-      class="glass"
+      class="glass-bar"
       style={{
         height: "var(--topbar-height, 52px)",
-        border: "none",
         borderBottom: "1px solid var(--glass-border)",
-        boxShadow: "none",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
