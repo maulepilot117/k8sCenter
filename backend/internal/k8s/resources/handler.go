@@ -53,6 +53,17 @@ type CertExpiryCounter interface {
 	ExpiringCounts(ctx context.Context, user *auth.User) (warning, critical int, err error)
 }
 
+// ControlPlaneChecker abstracts best-effort control-plane component availability
+// from Prometheus for the cluster health score. Can be nil if monitoring is
+// unavailable. Errors propagate to the caller, which maps them to
+// SignalStatusUnknown ("prometheus unavailable" or query timeout).
+// Components absent from the Prometheus result (e.g. k3s embedded control plane,
+// managed-cloud control planes with no scrape config) map to ComponentUnscraped —
+// the caller treats unscraped as a skipped sub-signal, not a penalty.
+type ControlPlaneChecker interface {
+	ControlPlaneStatus(ctx context.Context) (ControlPlaneStates, error)
+}
+
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
@@ -66,7 +77,8 @@ type Handler struct {
 	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
 	Alerts        AlertCounter        // Optional — nil if alerting unavailable
 	Trends        TrendProvider       // Optional — nil if monitoring unavailable
-	CertExpiry    CertExpiryCounter   // Optional — nil if cert-manager unavailable
+	CertExpiry     CertExpiryCounter    // Optional — nil if cert-manager unavailable
+	ControlPlane   ControlPlaneChecker  // Optional — nil if monitoring unavailable
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool

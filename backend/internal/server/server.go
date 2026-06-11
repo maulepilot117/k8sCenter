@@ -192,19 +192,27 @@ func New(deps Deps) *Server {
 			certExpiryCounter = &certmanager.CertExpiryAdapter{Handler: deps.CertManagerHandler}
 		}
 
+		// Build optional ControlPlaneChecker if monitoring is available.
+		// Mirrors UtilizationAdapter wiring above — same Discoverer, separate adapter.
+		var controlPlaneChecker resources.ControlPlaneChecker
+		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
+			controlPlaneChecker = &monitoring.ControlPlaneAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+		}
+
 		s.ResourceHandler = &resources.Handler{
-			K8sClient:       deps.K8sClient,
-			ClusterRouter:   deps.ClusterRouter,
-			Informers:       deps.Informers,
-			AccessChecker:   ac,
-			AuditLogger:     deps.AuditLogger,
-			Logger:          deps.Logger,
-			TaskManager:     resources.NewTaskManager(),
-			ClusterID:       deps.Config.ClusterID,
-			Utilization:     utilProvider,
-			Trends:          trendProvider,
-			Alerts:          alertCounter,
-			CertExpiry:      certExpiryCounter,
+			K8sClient:      deps.K8sClient,
+			ClusterRouter:  deps.ClusterRouter,
+			Informers:      deps.Informers,
+			AccessChecker:  ac,
+			AuditLogger:    deps.AuditLogger,
+			Logger:         deps.Logger,
+			TaskManager:    resources.NewTaskManager(),
+			ClusterID:      deps.Config.ClusterID,
+			Utilization:    utilProvider,
+			Trends:         trendProvider,
+			Alerts:         alertCounter,
+			CertExpiry:     certExpiryCounter,
+			ControlPlane:   controlPlaneChecker,
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{
