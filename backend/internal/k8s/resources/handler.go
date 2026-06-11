@@ -32,6 +32,13 @@ type AlertCounter interface {
 	ActiveAlertCounts(ctx context.Context) (active int, critical int, err error)
 }
 
+// TrendProvider abstracts short historical time-series for the dashboard metric
+// cards (node/pod/service/alert counts). Used by the dashboard trends endpoint.
+// Can be nil if monitoring is unavailable.
+type TrendProvider interface {
+	DashboardTrends(ctx context.Context) (DashboardTrends, error)
+}
+
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
@@ -44,6 +51,7 @@ type Handler struct {
 	ClusterID     string
 	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
 	Alerts        AlertCounter        // Optional — nil if alerting unavailable
+	Trends        TrendProvider       // Optional — nil if monitoring unavailable
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool

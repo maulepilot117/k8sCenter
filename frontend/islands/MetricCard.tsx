@@ -177,13 +177,12 @@ function MetricCardInner(
         {label}
       </div>
 
-      {/* Sparkline — pushed to bottom of card */}
+      {/* Sparkline — pushed to bottom of card, fills full card width */}
       {sparklineData && sparklineData.length >= 2 && (
         <div style={{ marginTop: "auto", paddingTop: "12px" }}>
           <SparklineChart
             data={sparklineData}
             color={sparklineColor ?? "var(--accent)"}
-            width={120}
             height={32}
           />
         </div>
