@@ -30,6 +30,11 @@ type UtilizationProvider interface {
 // Used by the dashboard summary endpoint. Can be nil if alerting is unavailable.
 type AlertCounter interface {
 	ActiveAlertCounts(ctx context.Context) (active int, critical int, err error)
+	// ActiveAlertCountsExcluding returns the same counts as ActiveAlertCounts but
+	// skips any alert whose AlertName matches one of the provided excludeAlertNames.
+	// Used by the health signal to filter always-firing heartbeat alerts (Watchdog,
+	// DeadMansSwitch) so they don't depress the cluster health score.
+	ActiveAlertCountsExcluding(ctx context.Context, excludeAlertNames ...string) (active int, critical int, err error)
 }
 
 // TrendProvider abstracts short historical time-series for the dashboard metric
