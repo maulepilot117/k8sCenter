@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/prometheus/common/model"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/prometheus/common/model"
 )
 
 // Control-plane job label constants — kube-prometheus-stack defaults.
@@ -20,10 +20,10 @@ import (
 // k3s, k0s, and managed clouds (EKS, GKE, AKS) typically don't scrape
 // control-plane components at all — the absent result maps to ComponentUnscraped.
 const (
-	jobScheduler          = "kube-scheduler"
-	jobControllerManager  = "kube-controller-manager"
-	jobEtcd               = "etcd"
-	jobEtcdAlt            = "kube-etcd" // alternate name used by some kube-prometheus-stack versions
+	jobScheduler         = "kube-scheduler"
+	jobControllerManager = "kube-controller-manager"
+	jobEtcd              = "etcd"
+	jobEtcdAlt           = "kube-etcd" // alternate name used by some kube-prometheus-stack versions
 )
 
 // controlPlaneQuery is the PromQL instant query used to detect component availability.
@@ -71,15 +71,10 @@ func (a *ControlPlaneAdapter) ControlPlaneStatus(ctx context.Context) (resources
 		}
 	}
 
-	// etcd can appear under either "etcd" or "kube-etcd" — prefer the more specific
-	// state when both are present (down beats unscraped; up beats down is not possible
-	// since max by (job) treats them as separate jobs).
-	etcdState := resolveEtcdState(states)
-
 	return resources.ControlPlaneStates{
 		SchedulerState:         stateFor(states, jobScheduler),
 		ControllerManagerState: stateFor(states, jobControllerManager),
-		EtcdState:              etcdState,
+		EtcdState:              resolveEtcdState(states),
 	}, nil
 }
 
@@ -100,18 +95,17 @@ func resolveEtcdState(states map[string]resources.ComponentState) resources.Comp
 	s1, ok1 := states[jobEtcd]
 	s2, ok2 := states[jobEtcdAlt]
 
-	if !ok1 && !ok2 {
+	switch {
+	case !ok1 && !ok2:
 		return resources.ComponentUnscraped
-	}
-	if ok1 && !ok2 {
+	case ok1 && !ok2:
 		return s1
-	}
-	if ok2 && !ok1 {
+	case ok2 && !ok1:
 		return s2
-	}
-	// Both present — if either is down, report down.
-	if s1 == resources.ComponentDown || s2 == resources.ComponentDown {
+	case s1 == resources.ComponentDown || s2 == resources.ComponentDown:
+		// Both present — if either is down, report down.
 		return resources.ComponentDown
+	default:
+		return resources.ComponentUp
 	}
-	return resources.ComponentUp
 }

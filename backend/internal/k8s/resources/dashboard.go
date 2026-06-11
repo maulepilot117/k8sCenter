@@ -100,6 +100,17 @@ func isCrashloopOrImagePull(reason string) bool {
 		reason == waitingReasonErrImagePull
 }
 
+// hasCrashloopWaiting returns true when any container in the slice is in a
+// CrashLoopBackOff/ImagePullBackOff/ErrImagePull waiting state.
+func hasCrashloopWaiting(statuses []corev1.ContainerStatus) bool {
+	for _, cs := range statuses {
+		if cs.State.Waiting != nil && isCrashloopOrImagePull(cs.State.Waiting.Reason) {
+			return true
+		}
+	}
+	return false
+}
+
 // isProgressingDeployment returns true when the Deployment has an active
 // Progressing condition with reason ReplicaSetUpdated or NewReplicaSetCreated.
 // These deployments are excluded from workload availability scoring to prevent
@@ -245,22 +256,8 @@ func (h *Handler) gatherHealthInputs(
 			}
 			inputs.EligiblePods++
 			// Walk ContainerStatuses and InitContainerStatuses for waiting reasons.
-			isCrash := false
-			for _, cs := range p.Status.ContainerStatuses {
-				if cs.State.Waiting != nil && isCrashloopOrImagePull(cs.State.Waiting.Reason) {
-					isCrash = true
-					break
-				}
-			}
-			if !isCrash {
-				for _, cs := range p.Status.InitContainerStatuses {
-					if cs.State.Waiting != nil && isCrashloopOrImagePull(cs.State.Waiting.Reason) {
-						isCrash = true
-						break
-					}
-				}
-			}
-			if isCrash {
+			if hasCrashloopWaiting(p.Status.ContainerStatuses) ||
+				hasCrashloopWaiting(p.Status.InitContainerStatuses) {
 				inputs.CrashloopPods++
 			}
 		}

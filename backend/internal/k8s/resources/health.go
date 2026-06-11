@@ -26,10 +26,10 @@ const (
 
 // HealthSignal is the per-signal result in the health response.
 type HealthSignal struct {
-	Name   string      `json:"name"`
+	Name   string       `json:"name"`
 	Status SignalStatus `json:"status"`
-	Score  *int        `json:"score"`
-	Reason string      `json:"reason,omitempty"`
+	Score  *int         `json:"score"`
+	Reason string       `json:"reason,omitempty"`
 }
 
 // ClusterHealth is the computed cluster health, embedded in DashboardSummary.
@@ -51,9 +51,9 @@ const (
 
 // ControlPlaneStates holds per-component tri-state availability.
 type ControlPlaneStates struct {
-	SchedulerState          ComponentState
-	ControllerManagerState  ComponentState
-	EtcdState               ComponentState
+	SchedulerState         ComponentState
+	ControllerManagerState ComponentState
+	EtcdState              ComponentState
 }
 
 // HealthInputs holds pre-shaped plain values for the health calculator.
@@ -153,6 +153,42 @@ type scoreWeight struct {
 // intPtr returns a pointer to the given int value.
 func intPtr(v int) *int { return &v }
 
+// reasonOr returns reason, or fallback when reason is empty.
+func reasonOr(reason, fallback string) string {
+	if reason == "" {
+		return fallback
+	}
+	return reason
+}
+
+// flatDeductionSignal builds a HealthSignal for a signal that contributes only
+// flat score deductions (certificates, storage, control plane): ok when
+// available, otherwise skipped with reason (falling back to defaultReason).
+func flatDeductionSignal(name string, available bool, reason, defaultReason string) HealthSignal {
+	sig := HealthSignal{Name: name}
+	if available {
+		sig.Status = SignalStatusOk
+	} else {
+		sig.Status = SignalStatusSkipped
+		sig.Reason = reasonOr(reason, defaultReason)
+	}
+	return sig
+}
+
+// safeRatio returns numerator/denominator, returning 0 for a zero denominator
+// or any NaN/Inf result. Used wherever an availability ratio feeds the score or
+// veto tiers so no NaN/±Inf can reach the output (R8).
+func safeRatio(numerator, denominator int) float64 {
+	if denominator == 0 {
+		return 0
+	}
+	r := float64(numerator) / float64(denominator)
+	if math.IsNaN(r) || math.IsInf(r, 0) {
+		return 0
+	}
+	return r
+}
+
 // computeClusterHealth derives the categorical health status and 0–100 score
 // from pre-shaped HealthInputs. It is a pure function with no I/O.
 //
@@ -174,17 +210,12 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		nodesSig.Status = SignalStatusUnknown
 		nodesSig.Reason = "nodes unavailable"
 	} else {
-		// Compute ready ratio; guard for 0 denominator.
-		var readyRatio float64
-		if in.TotalNodes > 0 {
-			readyRatio = float64(in.ReadyNodes) / float64(in.TotalNodes)
-		}
+		readyRatio := safeRatio(in.ReadyNodes, in.TotalNodes)
 		// Per-pressure bounded deduction: −2 per pressure node, capped at 20.
 		pressureDeduction := math.Min(float64(in.PressureNodes)*2, 20)
 		nodesScore = math.Max(0, readyRatio*100-pressureDeduction)
 		nodesSig.Status = SignalStatusOk
-		s := int(math.Round(nodesScore))
-		nodesSig.Score = &s
+		nodesSig.Score = intPtr(int(math.Round(nodesScore)))
 	}
 	signals = append(signals, nodesSig)
 
@@ -195,25 +226,17 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 
 	switch {
 	case !in.WorkloadsAvailable:
-		reason := in.WorkloadsUnavailableReason
-		if reason == "" {
-			reason = "workloads unavailable"
-		}
 		workloadsSig.Status = SignalStatusUnknown
-		workloadsSig.Reason = reason
+		workloadsSig.Reason = reasonOr(in.WorkloadsUnavailableReason, "workloads unavailable")
 	case in.WorkloadsDesired == 0:
 		workloadsSig.Status = SignalStatusSkipped
 		workloadsSig.Reason = "no workloads to evaluate"
 		workloadsScore = 100 // skipped → excluded from renormalization below
 	default:
-		ratio := float64(in.WorkloadsActuallyAvailable) / float64(in.WorkloadsDesired)
-		if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-			ratio = 0
-		}
+		ratio := safeRatio(in.WorkloadsActuallyAvailable, in.WorkloadsDesired)
 		workloadsScore = math.Min(ratio, 1.0) * 100
 		workloadsSig.Status = SignalStatusOk
-		s := int(math.Round(workloadsScore))
-		workloadsSig.Score = &s
+		workloadsSig.Score = intPtr(int(math.Round(workloadsScore)))
 	}
 	signals = append(signals, workloadsSig)
 
@@ -223,27 +246,19 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	podsSig.Name = signalPods
 
 	if !in.PodsAvailable {
-		reason := in.PodsUnavailableReason
-		if reason == "" {
-			reason = "pods unavailable"
-		}
 		podsSig.Status = SignalStatusUnknown
-		podsSig.Reason = reason
+		podsSig.Reason = reasonOr(in.PodsUnavailableReason, "pods unavailable")
 	} else if in.EligiblePods == 0 {
 		// No eligible pods → skipped, not penalized.
 		podsSig.Status = SignalStatusSkipped
 		podsSig.Reason = "no eligible pods"
 		podsScore = 100
 	} else {
-		crashFraction := float64(in.CrashloopPods) / float64(in.EligiblePods)
-		if math.IsNaN(crashFraction) || math.IsInf(crashFraction, 0) {
-			crashFraction = 0
-		}
+		crashFraction := safeRatio(in.CrashloopPods, in.EligiblePods)
 		const amplification = 5.0
 		podsScore = math.Max(0, 100-math.Min(100, crashFraction*100*amplification))
 		podsSig.Status = SignalStatusOk
-		s := int(math.Round(podsScore))
-		podsSig.Score = &s
+		podsSig.Score = intPtr(int(math.Round(podsScore)))
 	}
 	signals = append(signals, podsSig)
 
@@ -253,64 +268,21 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	alertsSig.Name = signalAlerts
 
 	if !in.AlertsAvailable {
-		reason := in.AlertsUnavailableReason
-		if reason == "" {
-			reason = "alerts unavailable"
-		}
 		alertsSig.Status = SignalStatusUnknown
-		alertsSig.Reason = reason
+		alertsSig.Reason = reasonOr(in.AlertsUnavailableReason, "alerts unavailable")
 	} else {
 		alertsScore = math.Max(0, 100-float64(in.AlertsCritical)*10-float64(in.AlertsActive-in.AlertsCritical)*3)
 		alertsSig.Status = SignalStatusOk
-		s := int(math.Round(alertsScore))
-		alertsSig.Score = &s
+		alertsSig.Score = intPtr(int(math.Round(alertsScore)))
 	}
 	signals = append(signals, alertsSig)
 
-	// ── Certificates signal (flat deduction only) ─────────────────────────────
-	var certsSig HealthSignal
-	certsSig.Name = signalCerts
-	if !in.CertsAvailable {
-		reason := in.CertsUnavailableReason
-		if reason == "" {
-			reason = "certificate data unavailable"
-		}
-		certsSig.Status = SignalStatusSkipped
-		certsSig.Reason = reason
-	} else {
-		certsSig.Status = SignalStatusOk
-	}
-	signals = append(signals, certsSig)
-
-	// ── Storage signal (flat deduction only) ──────────────────────────────────
-	var storageSig HealthSignal
-	storageSig.Name = signalStorage
-	if !in.StorageAvailable {
-		reason := in.StorageUnavailableReason
-		if reason == "" {
-			reason = "storage data unavailable"
-		}
-		storageSig.Status = SignalStatusSkipped
-		storageSig.Reason = reason
-	} else {
-		storageSig.Status = SignalStatusOk
-	}
-	signals = append(signals, storageSig)
-
-	// ── Control plane signal (flat deduction only) ────────────────────────────
-	var cpSig HealthSignal
-	cpSig.Name = signalControlPlane
-	if !in.ControlPlaneAvailable {
-		reason := in.ControlPlaneUnavailableReason
-		if reason == "" {
-			reason = "control plane data unavailable"
-		}
-		cpSig.Status = SignalStatusSkipped
-		cpSig.Reason = reason
-	} else {
-		cpSig.Status = SignalStatusOk
-	}
-	signals = append(signals, cpSig)
+	// ── Certificates / Storage / Control plane signals (flat deduction only) ──
+	signals = append(signals,
+		flatDeductionSignal(signalCerts, in.CertsAvailable, in.CertsUnavailableReason, "certificate data unavailable"),
+		flatDeductionSignal(signalStorage, in.StorageAvailable, in.StorageUnavailableReason, "storage data unavailable"),
+		flatDeductionSignal(signalControlPlane, in.ControlPlaneAvailable, in.ControlPlaneUnavailableReason, "control plane data unavailable"),
+	)
 
 	// ── Veto table (top-down, first match wins) ───────────────────────────────
 	//
@@ -325,10 +297,7 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		}
 	}
 
-	var readyRatio float64
-	if in.TotalNodes > 0 {
-		readyRatio = float64(in.ReadyNodes) / float64(in.TotalNodes)
-	}
+	readyRatio := safeRatio(in.ReadyNodes, in.TotalNodes)
 
 	// critical tier
 	isCritical := false
@@ -337,10 +306,7 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		reasons = append(reasons, fmt.Sprintf("%d of %d nodes not ready", in.TotalNodes-in.ReadyNodes, in.TotalNodes))
 	}
 	if in.WorkloadsAvailable && in.WorkloadsDesired > 0 {
-		wRatio := float64(in.WorkloadsActuallyAvailable) / float64(in.WorkloadsDesired)
-		if math.IsNaN(wRatio) || math.IsInf(wRatio, 0) {
-			wRatio = 0
-		}
+		wRatio := safeRatio(in.WorkloadsActuallyAvailable, in.WorkloadsDesired)
 		if wRatio < 0.50-1e-9 {
 			isCritical = true
 			reasons = append(reasons, fmt.Sprintf("%d of %d workload replicas unavailable", in.WorkloadsDesired-in.WorkloadsActuallyAvailable, in.WorkloadsDesired))
@@ -363,10 +329,7 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	}
 	// workload availability < 95%
 	if in.WorkloadsAvailable && in.WorkloadsDesired > 0 {
-		wRatio := float64(in.WorkloadsActuallyAvailable) / float64(in.WorkloadsDesired)
-		if math.IsNaN(wRatio) || math.IsInf(wRatio, 0) {
-			wRatio = 0
-		}
+		wRatio := safeRatio(in.WorkloadsActuallyAvailable, in.WorkloadsDesired)
 		if wRatio < 0.95-1e-9 {
 			isDegraded = true
 			degradedReasons = append(degradedReasons, fmt.Sprintf("%d of %d workload replicas unavailable", in.WorkloadsDesired-in.WorkloadsActuallyAvailable, in.WorkloadsDesired))
@@ -398,23 +361,18 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	}
 	// control-plane component down
 	if in.ControlPlaneAvailable {
-		downComponents := 0
 		if in.ControlPlane.SchedulerState == ComponentDown {
-			downComponents++
 			isDegraded = true
 			degradedReasons = append(degradedReasons, "kube-scheduler scraped and down")
 		}
 		if in.ControlPlane.ControllerManagerState == ComponentDown {
-			downComponents++
 			isDegraded = true
 			degradedReasons = append(degradedReasons, "kube-controller-manager scraped and down")
 		}
 		if in.ControlPlane.EtcdState == ComponentDown {
-			downComponents++
 			isDegraded = true
 			degradedReasons = append(degradedReasons, "etcd scraped and down")
 		}
-		_ = downComponents
 	}
 	// any critical alert
 	if in.AlertsAvailable && in.AlertsCritical > 0 {
@@ -422,28 +380,26 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		degradedReasons = append(degradedReasons, fmt.Sprintf("%d critical alert(s) firing", in.AlertsCritical))
 	}
 
-	// Progressing workloads: always a reason (informational), never a penalty.
-	if in.ProgressingCount > 0 {
-		degradedReasons = append(degradedReasons, fmt.Sprintf("%d workload(s) rolling out", in.ProgressingCount))
-	}
-
 	// ── Status determination ──────────────────────────────────────────────────
+	// Critical reasons are already in `reasons`; degraded reasons merge in for both
+	// the critical and degraded tiers (a critical cluster also surfaces its degraded
+	// detail). The healthy tier carries no degraded reasons.
 	var status HealthStatus
 	switch {
 	case isCritical:
-		// Merge critical+degraded reasons (critical already has its own above).
 		status = HealthStatusCritical
-		// Combine critical reasons (already in `reasons`) with any degraded ones not already added.
 		reasons = append(reasons, degradedReasons...)
 	case isDegraded:
 		status = HealthStatusDegraded
 		reasons = append(reasons, degradedReasons...)
 	default:
 		status = HealthStatusHealthy
-		// Still surface progressing-workload informational reason for healthy.
-		if in.ProgressingCount > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d workload(s) rolling out", in.ProgressingCount))
-		}
+	}
+
+	// Progressing workloads: always an informational reason (never a penalty),
+	// surfaced regardless of tier.
+	if in.ProgressingCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d workload(s) rolling out", in.ProgressingCount))
 	}
 
 	// ── Score aggregation ─────────────────────────────────────────────────────
