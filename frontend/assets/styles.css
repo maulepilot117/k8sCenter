@@ -22,9 +22,20 @@ body {
   --topbar-height: 52px;
   --radius: 10px;
   --radius-sm: 6px;
-  --radius-glass: 16px;
-  --glass-blur: 20px;
-  --glass-blur-strong: 28px;
+  --radius-glass: 18px;
+  --glass-blur: 24px;
+  --glass-blur-strong: 36px;
+  /* Backdrop colour-grade applied with the blur — heavier saturation + a
+     slight brightness lift make refracted content read as luminous "liquid"
+     glass rather than flat frosting (Apple Liquid Glass cue). */
+  --glass-saturate: 180%;
+  --glass-brightness: 1.08;
+  /* Specular rim: bright top-left bevel → dark bottom-right edge gives the
+     "thick lens" illusion. Literals (not theme tokens) because they are an
+     effect, not a palette colour. */
+  --glass-rim-light: rgba(255, 255, 255, 0.22);
+  --glass-rim-soft: rgba(255, 255, 255, 0.06);
+  --glass-rim-dark: rgba(0, 0, 0, 0.28);
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -91,19 +102,45 @@ body {
   font-family: var(--font-sans);
   background:
     radial-gradient(
-      60% 50% at 12% 0%,
-      color-mix(in srgb, var(--accent) 7%, transparent),
-      transparent 70%
+      55% 50% at 12% 0%,
+      color-mix(in srgb, var(--accent) 13%, transparent),
+      transparent 68%
     ),
     radial-gradient(
-    50% 45% at 90% 100%,
-    color-mix(in srgb, var(--accent-secondary) 6%, transparent),
+    50% 45% at 88% 100%,
+    color-mix(in srgb, var(--accent-secondary) 11%, transparent),
+    transparent 68%
+  ),
+    radial-gradient(
+    45% 42% at 66% 28%,
+    color-mix(in srgb, var(--info) 6%, transparent),
     transparent 70%
   ),
     var(--bg-base) !important;
+  background-attachment: fixed;
+  background-size: 160% 160%, 160% 160%, 160% 160%, auto;
+  background-position: 0% 0%, 100% 100%, 50% 30%, 0 0;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* The ambient washes drift slowly so the glass chrome refracts living light
+   instead of a frozen gradient. Motion is tiny + 34s + paused for
+   prefers-reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  body {
+    animation: ambient-drift 34s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes ambient-drift {
+  from {
+    background-position: 0% 0%, 100% 100%, 50% 30%, 0 0;
+  }
+  to {
+    background-position: 12% 9%, 88% 91%, 58% 38%, 0 0;
+  }
 }
 
 /* ── Liquid glass ─────────────────────────────────────────────────────
@@ -111,36 +148,58 @@ body {
    cards. Data surfaces (tables, YAML/log editors, terminals) stay solid
    on var(--bg-surface) for GPU cost and WCAG contrast reasons. */
 
-/* Persistent chrome bars (topbar, icon rail): translucent fill WITHOUT
-   backdrop-filter. Nothing ever scrolls beneath them (they occupy their
-   own grid tracks), so blur would burn GPU refracting a static backdrop. */
+/* Persistent chrome bars (topbar, icon rail). These are small fixed-area
+   surfaces, so a real backdrop-filter here is cheap — and it's what finally
+   makes the always-visible chrome read as glass instead of a flat fill. It
+   refracts the ambient body wash beneath. No `border` property (components
+   own their dividers); the specular edge is expressed purely as an inset
+   bevel so it never doubles up with a component border. */
 .glass-bar {
   background: var(--glass-surface);
+  -webkit-backdrop-filter: blur(var(--glass-blur))
+    saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim-light),
+    inset -1px -1px 0 var(--glass-rim-dark);
 }
 
+/* Specular rim: bright top + soft top-left highlight + dark bottom-right
+   edge = the "thick lens" illusion that separates liquid glass from flat
+   frosting. box-shadow follows each element's own border-radius. */
 .glass {
   background: var(--glass-surface);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
-  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur))
+    saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate))
+    brightness(var(--glass-brightness));
   border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  box-shadow:
+    inset 0 1px 0 var(--glass-rim-light),
+    inset 1px 1px 1px var(--glass-rim-soft),
+    inset -1px -1px 1px var(--glass-rim-dark);
 }
 
 .glass-elevated {
   background: var(--glass-elevated);
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(140%);
-  backdrop-filter: blur(var(--glass-blur-strong)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong))
+    saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
+  backdrop-filter: blur(var(--glass-blur-strong))
+    saturate(var(--glass-saturate)) brightness(var(--glass-brightness));
   border: 1px solid var(--glass-border);
   box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    0 16px 48px -12px rgba(0, 0, 0, 0.5);
+    inset 0 1px 0 var(--glass-rim-light),
+    inset 1px 1px 1px var(--glass-rim-soft),
+    inset -1px -1px 1px var(--glass-rim-dark),
+    0 24px 64px -16px rgba(0, 0, 0, 0.6);
 }
 
 /* Modal/sheet backdrop — dims AND blurs the page behind an overlay. */
 .glass-scrim {
   background: var(--glass-scrim);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(12px) saturate(120%);
+  backdrop-filter: blur(12px) saturate(120%);
 }
 
 /* Fallback: no backdrop-filter support → solid elevated surfaces. */
@@ -149,6 +208,9 @@ body {
   .glass,
   .glass-elevated {
     background: var(--bg-elevated);
+  }
+  .glass-bar {
+    background: var(--bg-surface);
   }
   .glass-scrim {
     background: rgba(3, 6, 12, 0.8);
@@ -164,6 +226,8 @@ body {
     background: var(--bg-elevated);
   }
   .glass-bar {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
     background: var(--bg-surface);
   }
   .glass-scrim {
