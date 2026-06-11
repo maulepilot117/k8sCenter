@@ -2,6 +2,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import { apiGet } from "@/lib/api.ts";
+import { selectedNamespace } from "@/lib/namespace.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type {
@@ -235,9 +236,16 @@ export default function GatewayAPIDashboard() {
               placeholder="Filter by name or namespace..."
             />
           </div>
-          {listData.value && (
+          {listData.value && activeKind.value && (
             <span class="text-xs text-text-muted">
-              {listData.value.items.length} total
+              {visibleItems(
+                activeKind.value,
+                listData.value.items as Array<
+                  { name: string; namespace?: string }
+                >,
+                search.value,
+                selectedNamespace.value,
+              ).length} of {listData.value.items.length}
             </span>
           )}
         </div>
@@ -249,7 +257,12 @@ export default function GatewayAPIDashboard() {
         )}
 
         {!listLoading.value && listData.value &&
-          renderTable(activeKind.value, listData.value, search.value)}
+          renderTable(
+            activeKind.value,
+            listData.value,
+            search.value,
+            selectedNamespace.value,
+          )}
       </div>
     );
   }
@@ -328,6 +341,24 @@ function filterBySearch<
   );
 }
 
+function filterByNamespace<
+  T extends { namespace?: string },
+>(items: T[], ns: string): T[] {
+  if (ns === "all") return items;
+  return items.filter((item) => item.namespace === ns);
+}
+
+// Applies the topbar namespace picker + the in-page search box. GatewayClasses
+// are cluster-scoped, so the namespace filter never applies to them.
+function visibleItems<
+  T extends { name: string; namespace?: string },
+>(kind: GatewayResourceKind, items: T[], query: string, ns: string): T[] {
+  const scoped = kind === "gatewayclasses"
+    ? items
+    : filterByNamespace(items, ns);
+  return filterBySearch(scoped, query);
+}
+
 function getDetailHref(
   kind: GatewayResourceKind,
   item: { name: string; namespace?: string },
@@ -352,30 +383,25 @@ function renderTable(
   kind: GatewayResourceKind,
   data: GatewayListData,
   query: string,
+  ns: string,
 ) {
   switch (kind) {
     case "gatewayclasses":
       return renderGatewayClassesTable(
-        filterBySearch(
-          data.items as GatewayClassSummary[],
-          query,
-        ),
+        visibleItems(kind, data.items as GatewayClassSummary[], query, ns),
       );
     case "gateways":
       return renderGatewaysTable(
-        filterBySearch(data.items as GatewaySummary[], query),
+        visibleItems(kind, data.items as GatewaySummary[], query, ns),
       );
     case "httproutes":
       return renderHTTPRoutesTable(
-        filterBySearch(
-          data.items as HTTPRouteSummary[],
-          query,
-        ),
+        visibleItems(kind, data.items as HTTPRouteSummary[], query, ns),
       );
     default:
       return renderRoutesTable(
         kind,
-        filterBySearch(data.items as RouteSummary[], query),
+        visibleItems(kind, data.items as RouteSummary[], query, ns),
       );
   }
 }
