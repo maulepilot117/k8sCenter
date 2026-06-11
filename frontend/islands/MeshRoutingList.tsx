@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { meshApi } from "@/lib/mesh-api.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
@@ -57,7 +58,11 @@ export default function MeshRoutingList() {
 
   if (!IS_BROWSER) return null;
 
-  const filtered = routes.value.filter((r) => {
+  // Read the global namespace picker in the synchronous render path so the
+  // signal subscription triggers a re-render when the picker changes.
+  const globalNs = selectedNamespace.value;
+
+  const filtered = filterByNamespace(routes.value, globalNs).filter((r) => {
     if (filterMesh.value !== "all" && r.mesh !== filterMesh.value) return false;
     if (
       filterNamespace.value &&

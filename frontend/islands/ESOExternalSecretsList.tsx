@@ -7,6 +7,7 @@ import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
 
 /** Debounce window (ms) for namespace input → re-fetch. Long enough to
@@ -93,7 +94,11 @@ export default function ESOExternalSecretsList() {
     );
   }
 
-  const filtered = items.value.filter((es) => {
+  // selectedNamespace.value read in synchronous render so the island re-filters
+  // when the global namespace picker changes.
+  const nsByGlobal = selectedNamespace.value;
+  const byNamespace = filterByNamespace(items.value, nsByGlobal);
+  const filtered = byNamespace.filter((es) => {
     if (!search.value) return true;
     const q = search.value.toLowerCase();
     return (
@@ -180,7 +185,9 @@ export default function ESOExternalSecretsList() {
           />
         </div>
         <span class="text-xs text-text-muted">
-          {filtered.length} of {items.value.length} ExternalSecrets
+          {filtered.length} of {byNamespace.length} ExternalSecrets
+          {byNamespace.length < items.value.length &&
+            ` (${items.value.length} total)`}
         </span>
       </div>
 
@@ -271,7 +278,7 @@ export default function ESOExternalSecretsList() {
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&
-        items.value.length > 0 && (
+        byNamespace.length > 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No ExternalSecrets match your filters.
@@ -279,7 +286,7 @@ export default function ESOExternalSecretsList() {
         </div>
       )}
 
-      {!loading.value && !error.value && items.value.length === 0 && (
+      {!loading.value && !error.value && byNamespace.length === 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted mb-3">
             No ExternalSecrets in this namespace. Create one to start syncing

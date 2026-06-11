@@ -5,6 +5,7 @@ import { esoApi } from "@/lib/eso-api.ts";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
@@ -79,7 +80,11 @@ export default function ESOStoresList() {
     );
   }
 
-  const filtered = items.value.filter((s) => {
+  // selectedNamespace.value read in synchronous render so the island re-filters
+  // when the global namespace picker changes.
+  const nsByGlobal = selectedNamespace.value;
+  const byNamespace = filterByNamespace(items.value, nsByGlobal);
+  const filtered = byNamespace.filter((s) => {
     if (!search.value) return true;
     const q = search.value.toLowerCase();
     return (
@@ -146,7 +151,9 @@ export default function ESOStoresList() {
           />
         </div>
         <span class="text-xs text-text-muted">
-          {filtered.length} of {items.value.length} SecretStores
+          {filtered.length} of {byNamespace.length} SecretStores
+          {byNamespace.length < items.value.length &&
+            ` (${items.value.length} total)`}
         </span>
       </div>
 
@@ -251,13 +258,13 @@ export default function ESOStoresList() {
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&
-        items.value.length > 0 && (
+        byNamespace.length > 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">No SecretStores match your filters.</p>
         </div>
       )}
 
-      {!loading.value && !error.value && items.value.length === 0 && (
+      {!loading.value && !error.value && byNamespace.length === 0 && (
         <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
           <p class="text-text-muted">
             No SecretStores in this namespace. ExternalSecrets require a

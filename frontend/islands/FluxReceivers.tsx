@@ -22,6 +22,7 @@ import {
   INPUT_CLASS,
   PAGE_SIZE,
 } from "@/lib/notification-types.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 
 /** Receiver types supported by Flux notification-controller. */
@@ -176,7 +177,8 @@ export default function FluxReceivers() {
 
   const notAvailable = !!(crud.status.value && !crud.status.value.available);
 
-  const filtered = crud.items.value.filter((r) => {
+  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const filtered = nsByNs.filter((r) => {
     if (!crud.search.value) return true;
     const q = crud.search.value.toLowerCase();
     return (

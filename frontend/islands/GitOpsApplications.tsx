@@ -18,6 +18,7 @@ import type {
   GitOpsStatus,
   NormalizedApp,
 } from "@/lib/gitops-types.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 
 const PAGE_SIZE = 100;
 
@@ -74,7 +75,8 @@ export default function GitOpsApplications() {
 
   const noEngine = status.value && !status.value.detected;
 
-  const filtered = applications.value.filter((app) => {
+  const nsByNs = filterByNamespace(applications.value, selectedNamespace.value);
+  const filtered = nsByNs.filter((app) => {
     if (filterTool.value !== "all" && app.tool !== filterTool.value) {
       return false;
     }
