@@ -169,10 +169,15 @@ func New(deps Deps) *Server {
 			// Fallback for tests that don't provide an AccessChecker
 			ac = resources.NewAccessChecker(deps.K8sClient, deps.Logger)
 		}
-		// Build optional UtilizationProvider if monitoring is available
+		// Build optional UtilizationProvider + TrendProvider if monitoring is
+		// available. The same adapter implements both — one wraps the Prometheus
+		// Discoverer for instant utilization queries and range trend queries.
 		var utilProvider resources.UtilizationProvider
+		var trendProvider resources.TrendProvider
 		if deps.MonitoringHandler != nil && deps.MonitoringHandler.Discoverer != nil {
-			utilProvider = &monitoring.UtilizationAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+			adapter := &monitoring.UtilizationAdapter{Discoverer: deps.MonitoringHandler.Discoverer}
+			utilProvider = adapter
+			trendProvider = adapter
 		}
 
 		// Build optional AlertCounter if alerting is available
@@ -191,6 +196,7 @@ func New(deps Deps) *Server {
 			TaskManager:     resources.NewTaskManager(),
 			ClusterID:       deps.Config.ClusterID,
 			Utilization:     utilProvider,
+			Trends:          trendProvider,
 			Alerts:          alertCounter,
 			OriginValidator: s.validateWSOrigin,
 		}

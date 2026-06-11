@@ -1,3 +1,5 @@
+import type { JSX } from "preact";
+
 /**
  * Animated loading skeleton placeholder.
  * Use to show content shape while data is loading.
@@ -6,14 +8,18 @@
  * <Skeleton class="h-4 w-32" /> // single line
  * <Skeleton class="h-8 w-full" /> // full-width bar
  * <Skeleton class="h-24 w-full rounded-lg" /> // card placeholder
+ * <Skeleton class="rounded-lg" style={{ gridColumn: "span 6" }} /> // grid cell
  */
 export function Skeleton(
-  { class: className = "" }: { class?: string },
+  { class: className = "", style }: {
+    class?: string;
+    style?: JSX.CSSProperties;
+  },
 ) {
   return (
     <div
       class={`animate-pulse rounded ${className}`}
-      style={{ background: "var(--bg-elevated)" }}
+      style={{ background: "var(--bg-elevated)", ...style }}
     />
   );
 }

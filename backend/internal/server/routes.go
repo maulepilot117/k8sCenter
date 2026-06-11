@@ -109,6 +109,7 @@ func (s *Server) registerRoutes() {
 			// Dashboard summary — aggregated cluster health data
 			if s.ResourceHandler != nil {
 				ar.Get("/cluster/dashboard-summary", s.ResourceHandler.HandleDashboardSummary)
+				ar.Get("/cluster/dashboard-trends", s.ResourceHandler.HandleDashboardTrends)
 			}
 
 			// Resource routes — only registered if k8s dependencies are available

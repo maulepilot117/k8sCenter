@@ -44,11 +44,27 @@ interface DashboardSummary {
   } | null;
 }
 
+// DashboardTrends mirrors the backend payload from GET
+// /v1/cluster/dashboard-trends — short historical series (oldest→newest) that
+// back the metric-card sparklines. Any series may be empty when Prometheus or
+// kube-state-metrics is unavailable; the cards then render no sparkline.
+interface DashboardTrends {
+  nodes: number[] | null;
+  pods: number[] | null;
+  services: number[] | null;
+  alerts: number[] | null;
+  cpu: number[] | null;
+  memory: number[] | null;
+  window: string;
+  step: string;
+}
+
 const REFRESH_INTERVAL = 60_000;
 
 export default function DashboardV2() {
   const clusterInfo = useSignal<ClusterInfoData | null>(null);
   const summary = useSignal<DashboardSummary | null>(null);
+  const trends = useSignal<DashboardTrends | null>(null);
   const events = useSignal<K8sEvent[]>([]);
   const loading = useSignal(true);
 
@@ -62,6 +78,16 @@ export default function DashboardV2() {
     }
   }
 
+  async function fetchTrends(signal?: AbortSignal) {
+    const trendsRes = await api<DashboardTrends>(
+      "/v1/cluster/dashboard-trends",
+      { method: "GET", signal },
+    );
+    if (trendsRes.data) {
+      trends.value = trendsRes.data;
+    }
+  }
+
   useEffect(() => {
     if (!IS_BROWSER) return;
 
@@ -70,17 +96,19 @@ export default function DashboardV2() {
     async function load() {
       loading.value = true;
 
-      const [infoRes, _summaryResult, eventsRes] = await Promise.allSettled([
-        api<ClusterInfoData>("/v1/cluster/info", {
-          method: "GET",
-          signal: controller.signal,
-        }),
-        fetchSummary(controller.signal),
-        api<K8sEvent[]>("/v1/resources/events?limit=10", {
-          method: "GET",
-          signal: controller.signal,
-        }),
-      ]);
+      const [infoRes, _summaryResult, _trendsResult, eventsRes] = await Promise
+        .allSettled([
+          api<ClusterInfoData>("/v1/cluster/info", {
+            method: "GET",
+            signal: controller.signal,
+          }),
+          fetchSummary(controller.signal),
+          fetchTrends(controller.signal),
+          api<K8sEvent[]>("/v1/resources/events?limit=10", {
+            method: "GET",
+            signal: controller.signal,
+          }),
+        ]);
 
       if (controller.signal.aborted) return;
 
@@ -103,7 +131,7 @@ export default function DashboardV2() {
     const interval = setInterval(async () => {
       if (document.hidden) return;
       try {
-        await fetchSummary();
+        await Promise.allSettled([fetchSummary(), fetchTrends()]);
       } catch {
         // Keep last known data on error
       }
@@ -163,6 +191,7 @@ export default function DashboardV2() {
 
   const info = clusterInfo.value;
   const s = summary.value;
+  const t = trends.value;
   const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
 
   const greeting = (() => {
@@ -320,7 +349,7 @@ export default function DashboardV2() {
             status={s?.nodes.ready === s?.nodes.total ? "success" : "warning"}
             statusText={s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "—"}
             href="/cluster/nodes"
-            sparklineData={[3, 3, 3, 3, 3, 3, 3, 3]}
+            sparklineData={t?.nodes ?? undefined}
             sparklineColor="var(--success)"
             icon={
               <>
@@ -335,7 +364,7 @@ export default function DashboardV2() {
             status={(s?.pods.pending ?? 0) > 0 ? "warning" : "success"}
             statusText={s?.pods.total ? `${s.pods.running} Running` : "—"}
             href="/workloads/pods"
-            sparklineData={[30, 32, 31, 33, 35, 34, 36, 38, 40, 42, 44, 45]}
+            sparklineData={t?.pods ?? undefined}
             sparklineColor="var(--success)"
             icon={
               <>
@@ -350,7 +379,7 @@ export default function DashboardV2() {
             status="success"
             statusText="Active"
             href="/networking/services"
-            sparklineData={[40, 41, 41, 42, 42, 43, 43, 44]}
+            sparklineData={t?.services ?? undefined}
             sparklineColor="var(--success)"
             icon={
               <>
@@ -371,7 +400,7 @@ export default function DashboardV2() {
               ? `${s?.alerts.critical ?? 0} Critical`
               : "\u2713 All Clear"}
             href="/alerting"
-            sparklineData={[0, 0, 1, 0, 0, 0, 0, 0]}
+            sparklineData={t?.alerts ?? undefined}
             sparklineColor="var(--warning)"
             icon={
               <>
@@ -393,6 +422,7 @@ export default function DashboardV2() {
             limits={s?.cpu?.limits ?? "—"}
             color="var(--accent)"
             secondaryColor="var(--success)"
+            trendData={t?.cpu ?? undefined}
           />
         </div>
 
@@ -407,6 +437,7 @@ export default function DashboardV2() {
             limits={s?.memory?.limits ?? "—"}
             color="var(--accent-secondary)"
             secondaryColor="var(--accent)"
+            trendData={t?.memory ?? undefined}
           />
         </div>
 

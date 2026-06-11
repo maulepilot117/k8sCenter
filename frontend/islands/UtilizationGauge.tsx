@@ -10,6 +10,35 @@ interface UtilizationGaugeProps {
   color: string;
   secondaryColor?: string;
   trendColor?: string;
+  /**
+   * Historical utilization percentages (oldest→newest) for the trend line.
+   * Sourced from /v1/cluster/dashboard-trends. When absent or shorter than two
+   * points (Prometheus unavailable), no trend line renders.
+   */
+  trendData?: number[];
+}
+
+// Trend SVG coordinate space — fixed viewBox stretched to the card width via
+// preserveAspectRatio="none". 3px vertical padding keeps the line off the edges.
+const TREND_W = 300;
+const TREND_H = 48;
+
+// buildTrendPaths maps a utilization series to a line path and a filled-area
+// path. The series is min/max-normalized so recent movement is visible even
+// when utilization hovers in a narrow band (the gauge ring shows the absolute
+// level; this line shows the shape of the last hour).
+function buildTrendPaths(data: number[]): { line: string; area: string } {
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * TREND_W;
+    const y = TREND_H - ((v - min) / range) * (TREND_H - 6) - 3;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const line = `M${pts.join(" L")}`;
+  const area = `${line} L${TREND_W},${TREND_H} L0,${TREND_H} Z`;
+  return { line, area };
 }
 
 export default function UtilizationGauge({
@@ -22,11 +51,13 @@ export default function UtilizationGauge({
   color,
   secondaryColor,
   trendColor,
+  trendData,
 }: UtilizationGaugeProps) {
   const trendStroke = trendColor ?? color;
   const gradientId = `trend-${Math.random().toString(36).slice(2, 9)}`;
-  const trendPath =
-    "M0,30 C20,28 40,32 60,26 C80,20 100,24 120,18 C140,22 160,16 180,20 C200,14 220,18 240,12 C260,16 280,10 300,14";
+  const trend = trendData && trendData.length >= 2
+    ? buildTrendPaths(trendData)
+    : null;
   const statRows: { label: string; value: string }[] = [
     { label: "Used", value: `${used} / ${total}` },
   ];
@@ -111,36 +142,41 @@ export default function UtilizationGauge({
         </div>
       </div>
 
-      {/* Trend line chart */}
-      <div style={{ marginTop: "16px", height: "48px" }}>
-        <svg
-          viewBox="0 0 300 48"
-          preserveAspectRatio="none"
-          width="100%"
-          height="48"
-        >
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color={trendStroke} stop-opacity="0.15" />
-              <stop
-                offset="100%"
-                stop-color={trendStroke}
-                stop-opacity="0"
-              />
-            </linearGradient>
-          </defs>
-          <path
-            d={`${trendPath} L300,48 L0,48 Z`}
-            fill={`url(#${gradientId})`}
-          />
-          <path
-            d={trendPath}
-            fill="none"
-            stroke={trendStroke}
-            stroke-width="1.5"
-          />
-        </svg>
-      </div>
+      {/* Trend line chart — real last-hour utilization, or nothing if
+          Prometheus history is unavailable (no fake decorative line). */}
+      {trend && (
+        <div style={{ marginTop: "16px", height: "48px" }}>
+          <svg
+            viewBox={`0 0 ${TREND_W} ${TREND_H}`}
+            preserveAspectRatio="none"
+            width="100%"
+            height={TREND_H}
+          >
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop
+                  offset="0%"
+                  stop-color={trendStroke}
+                  stop-opacity="0.15"
+                />
+                <stop
+                  offset="100%"
+                  stop-color={trendStroke}
+                  stop-opacity="0"
+                />
+              </linearGradient>
+            </defs>
+            <path d={trend.area} fill={`url(#${gradientId})`} />
+            <path
+              d={trend.line}
+              fill="none"
+              stroke={trendStroke}
+              stroke-width="1.5"
+              vector-effect="non-scaling-stroke"
+            />
+          </svg>
+        </div>
+      )}
     </div>
   );
 }

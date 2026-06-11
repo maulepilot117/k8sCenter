@@ -58,6 +58,26 @@ type Utilization struct {
 	Limits     string  `json:"limits"`
 }
 
+// DashboardTrends holds short historical series (one value per sample step) that
+// back the sparklines on the dashboard metric cards. Each slice is ordered
+// oldest→newest. A slice may be empty when Prometheus or kube-state-metrics is
+// unavailable; the frontend renders no sparkline in that case rather than a
+// misleading flat line. Window and Step describe the range that produced the
+// series (e.g. "1h" / "2m").
+type DashboardTrends struct {
+	Nodes    []float64 `json:"nodes"`
+	Pods     []float64 `json:"pods"`
+	Services []float64 `json:"services"`
+	Alerts   []float64 `json:"alerts"`
+	// CPU and Memory are cluster-wide utilization percentages (0–100), one
+	// value per step — the historical companions to the instant percentages
+	// in DashboardSummary.CPU/Memory.
+	CPU    []float64 `json:"cpu"`
+	Memory []float64 `json:"memory"`
+	Window string    `json:"window"`
+	Step   string    `json:"step"`
+}
+
 // HandleDashboardSummary returns aggregated cluster health data from the informer cache.
 // Prometheus metrics (CPU/Memory) are fetched asynchronously with a 1-second timeout.
 // Only available for the local cluster (informer cache is not available for remote clusters).
@@ -254,4 +274,42 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	}
 
 	writeJSON(w, http.StatusOK, api.Response{Data: summary})
+}
+
+// HandleDashboardTrends returns short historical series for the dashboard metric
+// cards (node/pod/service/alert counts) sourced from Prometheus range queries.
+// Kept separate from HandleDashboardSummary so its multi-second range queries do
+// not eat into that endpoint's 1-second Prometheus budget. Local cluster only.
+//
+// When monitoring is unavailable (h.Trends == nil) or a query fails, the
+// response carries empty series and HTTP 200 — the dashboard degrades to no
+// sparklines rather than erroring.
+func (h *Handler) HandleDashboardTrends(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireUser(w, r); !ok {
+		return
+	}
+
+	clusterID := middleware.ClusterIDFromContext(r.Context())
+	if clusterID != "" && clusterID != "local" {
+		writeError(w, http.StatusBadRequest, "dashboard trends are only available for the local cluster", "")
+		return
+	}
+
+	if h.Trends == nil {
+		writeJSON(w, http.StatusOK, api.Response{Data: DashboardTrends{}})
+		return
+	}
+
+	trends, err := h.Trends.DashboardTrends(r.Context())
+	if err != nil {
+		// Prometheus hiccups should not surface as a dashboard error — log and
+		// return empty series so the cards still render their current counts.
+		if h.Logger != nil {
+			h.Logger.Warn("dashboard trends query failed", "error", err)
+		}
+		writeJSON(w, http.StatusOK, api.Response{Data: DashboardTrends{}})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, api.Response{Data: trends})
 }
