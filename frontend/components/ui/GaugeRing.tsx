@@ -11,6 +11,10 @@ interface GaugeRingProps {
   displayValue?: string; // Override the default "{value}%" display
   valueSize?: string; // e.g., "42px" — override font size
   valueGradient?: boolean; // Use gradient text
+  // When true, renders the arc fully filled in `color` regardless of `value`
+  // and skips the gradient (used for the "unknown" health status — a null score
+  // would otherwise draw an empty arc).
+  indeterminate?: boolean;
 }
 
 export function GaugeRing({
@@ -23,21 +27,25 @@ export function GaugeRing({
   displayValue,
   valueSize,
   valueGradient,
+  indeterminate = false,
 }: GaugeRingProps) {
   // Use Math.random instead of crypto.randomUUID — the latter requires
   // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
   const gradientId = useMemo(
     () =>
-      secondaryColor
+      !indeterminate && secondaryColor
         ? `gauge-${Math.random().toString(36).slice(2, 10)}`
         : null,
-    [secondaryColor],
+    [secondaryColor, indeterminate],
   );
 
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const clampedValue = Math.max(0, Math.min(100, value));
-  const offset = circumference - (clampedValue / 100) * circumference;
+  // When indeterminate, the arc is fully filled (offset = 0).
+  const offset = indeterminate
+    ? 0
+    : circumference - (clampedValue / 100) * circumference;
   const center = size / 2;
 
   // Animate from fully hidden to target offset on mount / value change
@@ -80,7 +88,7 @@ export function GaugeRing({
           cy={center}
           r={radius}
           fill="none"
-          stroke={gradientId ? `url(#${gradientId})` : color}
+          stroke={!indeterminate && gradientId ? `url(#${gradientId})` : color}
           stroke-width={strokeWidth}
           stroke-linecap="round"
           stroke-dasharray={circumference}

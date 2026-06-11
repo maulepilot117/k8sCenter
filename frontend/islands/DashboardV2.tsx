@@ -10,6 +10,8 @@ import HealthScoreRing from "@/islands/HealthScoreRing.tsx";
 import MetricCard from "@/islands/MetricCard.tsx";
 import UtilizationGauge from "@/islands/UtilizationGauge.tsx";
 import ClusterTopology from "@/islands/ClusterTopology.tsx";
+import { healthStatusColor } from "@/lib/score-color.ts";
+import type { ClusterHealth } from "@/lib/score-color.ts";
 
 interface ClusterInfoData {
   clusterID: string;
@@ -42,6 +44,9 @@ interface DashboardSummary {
     requests: string;
     limits: string;
   } | null;
+  // Added in U4 — absent when backend has not yet shipped the health field
+  // (stale-backend case, R11).
+  health?: ClusterHealth;
 }
 
 // DashboardTrends mirrors the backend payload from GET
@@ -317,18 +322,14 @@ export default function DashboardV2() {
                 width: "6px",
                 height: "6px",
                 borderRadius: "50%",
-                background: "var(--success)",
+                background: healthStatusColor(s?.health?.status ?? "unknown"),
                 display: "inline-block",
               }}
               class="animate-pulse-glow"
             />
             Cluster Health
           </div>
-          <HealthScoreRing
-            nodes={s?.nodes ?? { total: 0, ready: 0 }}
-            pods={s?.pods ?? { total: 0, running: 0, pending: 0, failed: 0 }}
-            alerts={s?.alerts ?? { active: 0, critical: 0 }}
-          />
+          <HealthScoreRing health={s?.health} />
         </div>
 
         {/* ===== METRIC CARDS (span 8) — matches .metrics-grid ===== */}
