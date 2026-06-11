@@ -24,9 +24,12 @@ export default function TopBarV2() {
 
   // Load user info on mount. Always attempt — fetchCurrentUser handles
   // the token refresh flow internally (httpOnly cookie → new access token).
+  // Scope RBAC to the restored namespace so a persisted selection loads with
+  // matching permissions rather than the unscoped/default view.
   useEffect(() => {
     if (!IS_BROWSER) return;
-    fetchCurrentUser();
+    const ns = selectedNamespace.value;
+    fetchCurrentUser(ns !== "all" ? ns : undefined);
   }, []);
 
   // Close user menu on outside click
