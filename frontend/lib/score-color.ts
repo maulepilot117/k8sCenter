@@ -3,6 +3,10 @@
 export type HealthStatus = "healthy" | "degraded" | "critical" | "unknown";
 export type SignalStatus = "ok" | "skipped" | "unknown";
 
+// Signal names are a fixed seven-entry set: "nodes", "workloads", "pods",
+// "alerts", "certificates", "storage", "controlPlane" (the one camelCase name).
+// Flat-deduction signals (certificates/storage/controlPlane) always carry
+// score: null regardless of status; only the four weighted signals carry numbers.
 export interface HealthSignal {
   name: string;
   status: SignalStatus;

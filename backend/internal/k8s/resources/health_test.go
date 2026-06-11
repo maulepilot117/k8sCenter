@@ -920,3 +920,85 @@ func TestComputeClusterHealth_FullNaNSweep(t *testing.T) {
 		}
 	}
 }
+
+// ── T1: NodesUnavailableReason propagation ───────────────────────────────────
+
+// TestComputeClusterHealth_NodesUnavailable_NoNodesVisible:
+// NodesAvailable=false with reason "no nodes visible" → unknown status + nil score.
+func TestComputeClusterHealth_NodesUnavailable_NoNodesVisible(t *testing.T) {
+	in := healthyInputs()
+	in.NodesAvailable = false
+	in.NodesUnavailableReason = "no nodes visible"
+
+	h := computeClusterHealth(in)
+	assertNoNaN(t, h)
+
+	if h.Status != HealthStatusUnknown {
+		t.Errorf("want unknown, got %q", h.Status)
+	}
+	if h.Score != nil {
+		t.Errorf("want nil score when unknown, got %d", *h.Score)
+	}
+	// Reason must propagate.
+	found := false
+	for _, r := range h.Reasons {
+		if strings.Contains(r, "no nodes visible") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want reason containing 'no nodes visible', got %v", h.Reasons)
+	}
+	// Signal reason must also propagate.
+	nodeSig := signalByName(t, h, signalNodes)
+	if !strings.Contains(nodeSig.Reason, "no nodes visible") {
+		t.Errorf("nodes signal reason want 'no nodes visible', got %q", nodeSig.Reason)
+	}
+}
+
+// TestComputeClusterHealth_NodesUnavailable_InsufficientPermissions:
+// reason "insufficient permissions" propagates to signal and top-level reasons.
+func TestComputeClusterHealth_NodesUnavailable_InsufficientPermissions(t *testing.T) {
+	in := healthyInputs()
+	in.NodesAvailable = false
+	in.NodesUnavailableReason = "insufficient permissions"
+
+	h := computeClusterHealth(in)
+	assertNoNaN(t, h)
+
+	if h.Status != HealthStatusUnknown {
+		t.Errorf("want unknown, got %q", h.Status)
+	}
+	nodeSig := signalByName(t, h, signalNodes)
+	if !strings.Contains(nodeSig.Reason, "insufficient permissions") {
+		t.Errorf("nodes signal reason want 'insufficient permissions', got %q", nodeSig.Reason)
+	}
+	found := false
+	for _, r := range h.Reasons {
+		if strings.Contains(r, "insufficient permissions") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want 'insufficient permissions' in top-level reasons, got %v", h.Reasons)
+	}
+}
+
+// TestComputeClusterHealth_NodesUnavailable_CacheSyncing:
+// reason "cache syncing" propagates to signal and top-level reasons.
+func TestComputeClusterHealth_NodesUnavailable_CacheSyncing(t *testing.T) {
+	in := healthyInputs()
+	in.NodesAvailable = false
+	in.NodesUnavailableReason = "cache syncing"
+
+	h := computeClusterHealth(in)
+	assertNoNaN(t, h)
+
+	if h.Status != HealthStatusUnknown {
+		t.Errorf("want unknown, got %q", h.Status)
+	}
+	nodeSig := signalByName(t, h, signalNodes)
+	if !strings.Contains(nodeSig.Reason, "cache syncing") {
+		t.Errorf("nodes signal reason want 'cache syncing', got %q", nodeSig.Reason)
+	}
+}

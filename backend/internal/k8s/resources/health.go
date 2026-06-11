@@ -25,6 +25,12 @@ const (
 )
 
 // HealthSignal is the per-signal result in the health response.
+//
+// Score has no omitempty deliberately: null is always emitted and consumers
+// (frontend ClusterHealth type in score-color.ts) rely on the key being
+// present — never add omitempty without a coordinated frontend update.
+// Flat-deduction signals (certificates/storage/controlPlane) always carry
+// score:null regardless of status; only the four weighted signals carry numbers.
 type HealthSignal struct {
 	Name   string       `json:"name"`
 	Status SignalStatus `json:"status"`
@@ -64,9 +70,12 @@ type HealthInputs struct {
 	// NodesAvailable is false when the nodes signal cannot be computed
 	// (RBAC denied, cache unsynced, or 0 nodes visible despite list permission).
 	NodesAvailable bool
-	TotalNodes     int
-	ReadyNodes     int
-	PressureNodes  int // nodes with any pressure condition (Memory/Disk/PID/NetworkUnavailable)
+	// NodesUnavailableReason carries the specific denial reason when !NodesAvailable:
+	// "insufficient permissions", "cache syncing", or "no nodes visible".
+	NodesUnavailableReason string
+	TotalNodes             int
+	ReadyNodes             int
+	PressureNodes          int // nodes with any pressure condition (Memory/Disk/PID/NetworkUnavailable)
 
 	// --- Workloads signal ---
 	// WorkloadsAvailable is false when the workloads signal cannot be computed
@@ -97,6 +106,10 @@ type HealthInputs struct {
 	// --- Alerts signal ---
 	// AlertsAvailable is false when the alerts signal cannot be computed.
 	AlertsAvailable bool
+	// AlertsSkipped is true when the alerts signal is unavailable for a non-error
+	// reason (nil provider, RBAC-denied). False means the signal is unavailable
+	// due to a query error (maps to SignalStatusUnknown rather than Skipped).
+	AlertsSkipped bool
 	// AlertsUnavailableReason carries the skipped/unknown reason when !AlertsAvailable.
 	AlertsUnavailableReason string
 	AlertsActive            int
@@ -132,6 +145,9 @@ type HealthInputs struct {
 }
 
 // signal name constants — fixed ordered set, always present in Signals output.
+// These are wire-contract values mirrored in frontend/lib/score-color.ts;
+// "controlPlane" is intentionally camelCase (the one two-word name) — do not
+// rename without a coordinated frontend/mobile update.
 const (
 	signalNodes        = "nodes"
 	signalWorkloads    = "workloads"
@@ -208,7 +224,7 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 
 	if !in.NodesAvailable {
 		nodesSig.Status = SignalStatusUnknown
-		nodesSig.Reason = "nodes unavailable"
+		nodesSig.Reason = reasonOr(in.NodesUnavailableReason, "nodes unavailable")
 	} else {
 		readyRatio := safeRatio(in.ReadyNodes, in.TotalNodes)
 		// Per-pressure bounded deduction: −2 per pressure node, capped at 20.
@@ -268,10 +284,21 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	alertsSig.Name = signalAlerts
 
 	if !in.AlertsAvailable {
-		alertsSig.Status = SignalStatusUnknown
+		if in.AlertsSkipped {
+			// Nil provider or RBAC-denied → skipped (not an error condition).
+			alertsSig.Status = SignalStatusSkipped
+		} else {
+			// Query error → unknown.
+			alertsSig.Status = SignalStatusUnknown
+		}
 		alertsSig.Reason = reasonOr(in.AlertsUnavailableReason, "alerts unavailable")
 	} else {
-		alertsScore = math.Max(0, 100-float64(in.AlertsCritical)*10-float64(in.AlertsActive-in.AlertsCritical)*3)
+		// Guard against a provider invariant violation where critical > active.
+		nonCritical := in.AlertsActive - in.AlertsCritical
+		if nonCritical < 0 {
+			nonCritical = 0
+		}
+		alertsScore = math.Max(0, 100-float64(in.AlertsCritical)*10-float64(nonCritical)*3)
 		alertsSig.Status = SignalStatusOk
 		alertsSig.Score = intPtr(int(math.Round(alertsScore)))
 	}
@@ -288,7 +315,7 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 	//
 	// unknown tier: nodes signal unavailable
 	if !in.NodesAvailable {
-		reasons = append(reasons, nodesSig.Reason)
+		reasons = append(reasons, reasonOr(in.NodesUnavailableReason, nodesSig.Reason))
 		return ClusterHealth{
 			Status:  HealthStatusUnknown,
 			Score:   nil,
@@ -470,7 +497,9 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 
 	scoreVal := int(math.Round(compositeScore))
 
-	// De-duplicate reasons (progressing reason may have been appended twice in critical path).
+	// De-duplicate reasons. The primary duplicate source is "N of M nodes not ready"
+	// which is appended to both degradedReasons and the critical-tier reasons slice
+	// when readyRatio < 2/3 and ReadyNodes < TotalNodes are both true.
 	finalReasons := dedupReasons(reasons)
 
 	return ClusterHealth{

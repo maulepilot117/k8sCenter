@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
@@ -98,6 +99,33 @@ func (f *fakeAlertCounter) ActiveAlertCounts(_ context.Context) (int, int, error
 }
 func (f *fakeAlertCounter) ActiveAlertCountsExcluding(_ context.Context, _ ...string) (int, int, error) {
 	return f.active, f.critical, f.err
+}
+
+// fakeAlertCounterCapture records the excludeAlertNames passed to
+// ActiveAlertCountsExcluding so tests can assert the exact names forwarded.
+type fakeAlertCounterCapture struct {
+	active         int
+	critical       int
+	err            error
+	capturedExclude []string
+}
+
+func (f *fakeAlertCounterCapture) ActiveAlertCounts(_ context.Context) (int, int, error) {
+	return f.active, f.critical, f.err
+}
+func (f *fakeAlertCounterCapture) ActiveAlertCountsExcluding(_ context.Context, names ...string) (int, int, error) {
+	f.capturedExclude = names
+	return f.active, f.critical, f.err
+}
+
+// fakeControlPlane implements ControlPlaneChecker for tests.
+type fakeControlPlane struct {
+	states ControlPlaneStates
+	err    error
+}
+
+func (f *fakeControlPlane) ControlPlaneStatus(_ context.Context) (ControlPlaneStates, error) {
+	return f.states, f.err
 }
 
 type fakeCertExpiry struct {
@@ -200,16 +228,16 @@ func TestDashboardHealth_CrashloopPod(t *testing.T) {
 	if summary.Health.Status != HealthStatusDegraded {
 		t.Errorf("expected degraded due to crashloop pod, got %s; reasons: %v", summary.Health.Status, summary.Health.Reasons)
 	}
-	// Confirm a crashloop reason is present.
+	// Confirm a crashloop reason is present (specific wording, not just non-empty).
 	found := false
 	for _, r := range summary.Health.Reasons {
-		if len(r) > 0 {
+		if strings.Contains(r, "crash") || strings.Contains(r, "image pull") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected non-empty reasons for degraded status")
+		t.Errorf("expected a crashloop reason for degraded status, got %v", summary.Health.Reasons)
 	}
 }
 
@@ -673,6 +701,287 @@ func TestDashboardHealth_ProgressingDeploymentExcluded(t *testing.T) {
 	// Cluster should be healthy or unknown (if no other workloads), not critical.
 	if summary.Health.Status == HealthStatusCritical {
 		t.Errorf("progressing deployment should be excluded, cluster must not be critical; got %s; reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+}
+
+// ── T2: zero nodes → unknown ─────────────────────────────────────────────────
+
+// TestDashboardHealth_ZeroNodes_Unknown verifies that an informer cache with
+// no Node objects (but list permission granted and cache synced) produces
+// status unknown with reason containing "no nodes visible" and a nil score.
+func TestDashboardHealth_ZeroNodes_Unknown(t *testing.T) {
+	// No nodes in the fake client — informer cache is empty after sync.
+	objs := []runtime.Object{
+		deployment1x1("default", "dep-1"),
+		runningPod("default", "pod-1"),
+	}
+	h, _ := testHandler(t, objs...)
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	if summary.Health.Status != HealthStatusUnknown {
+		t.Errorf("zero nodes should produce unknown status, got %s; reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+	if summary.Health.Score != nil {
+		t.Errorf("score must be nil for unknown status, got %d", *summary.Health.Score)
+	}
+	found := false
+	for _, r := range summary.Health.Reasons {
+		if strings.Contains(r, "no nodes visible") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected reason containing 'no nodes visible', got %v", summary.Health.Reasons)
+	}
+}
+
+// ── T3: crashloop reason is specific ─────────────────────────────────────────
+
+// TestDashboardHealth_CrashloopPod_ReasonContainsCrash tightens the crashloop
+// reason assertion from "any non-empty reason" to strings.Contains "crash".
+func TestDashboardHealth_CrashloopPod_ReasonContainsCrash(t *testing.T) {
+	crashPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "crash-pod-2", Namespace: "default"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name: "app",
+					State: corev1.ContainerState{
+						Waiting: &corev1.ContainerStateWaiting{
+							Reason: "CrashLoopBackOff",
+						},
+					},
+				},
+			},
+		},
+	}
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		crashPod,
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	if summary.Health.Status != HealthStatusDegraded {
+		t.Errorf("expected degraded due to crashloop pod, got %s", summary.Health.Status)
+	}
+	found := false
+	for _, r := range summary.Health.Reasons {
+		if strings.Contains(r, "crash") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected reason containing 'crash', got %v", summary.Health.Reasons)
+	}
+}
+
+// ── T4: alert exclude names forwarded correctly ───────────────────────────────
+
+// TestDashboardHealth_AlertExcludeNames verifies that gatherHealthInputs
+// passes exactly "Watchdog" and "DeadMansSwitch" to ActiveAlertCountsExcluding
+// and that the health signal reflects the filtered counts.
+func TestDashboardHealth_AlertExcludeNames(t *testing.T) {
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+
+	capture := &fakeAlertCounterCapture{active: 2, critical: 1}
+	h.Alerts = capture
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+
+	// Assert the exclude names forwarded to the provider.
+	if len(capture.capturedExclude) != 2 {
+		t.Fatalf("expected 2 exclude names, got %d: %v", len(capture.capturedExclude), capture.capturedExclude)
+	}
+	found := map[string]bool{}
+	for _, n := range capture.capturedExclude {
+		found[n] = true
+	}
+	if !found["Watchdog"] {
+		t.Errorf("expected 'Watchdog' in exclude names, got %v", capture.capturedExclude)
+	}
+	if !found["DeadMansSwitch"] {
+		t.Errorf("expected 'DeadMansSwitch' in exclude names, got %v", capture.capturedExclude)
+	}
+
+	// Health alerts signal should reflect the filtered counts (1 critical → degraded).
+	if summary.Health.Status != HealthStatusDegraded {
+		t.Errorf("expected degraded with 1 critical alert, got %s; reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+}
+
+// ── T5: control-plane signal from fakeControlPlane ───────────────────────────
+
+// TestDashboardHealth_ControlPlane_Error verifies that a ControlPlaneChecker
+// error produces a controlPlane signal with status unknown and a reason
+// containing "prometheus".
+func TestDashboardHealth_ControlPlane_Error(t *testing.T) {
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+	h.ControlPlane = &fakeControlPlane{err: errors.New("context deadline exceeded")}
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	cpSig := signalByName(t, *summary.Health, signalControlPlane)
+	if cpSig.Status != SignalStatusSkipped && cpSig.Status != SignalStatusUnknown {
+		t.Errorf("control-plane signal on error: want skipped or unknown, got %s", cpSig.Status)
+	}
+	if !strings.Contains(cpSig.Reason, "prometheus") {
+		t.Errorf("control-plane error reason want 'prometheus', got %q", cpSig.Reason)
+	}
+}
+
+// TestDashboardHealth_ControlPlane_SchedulerDown verifies that a scheduler
+// ComponentDown state produces degraded status with a control-plane reason.
+func TestDashboardHealth_ControlPlane_SchedulerDown(t *testing.T) {
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+	h.ControlPlane = &fakeControlPlane{
+		states: ControlPlaneStates{
+			SchedulerState:         ComponentDown,
+			ControllerManagerState: ComponentUp,
+			EtcdState:              ComponentUp,
+		},
+	}
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	if summary.Health.Status != HealthStatusDegraded {
+		t.Errorf("scheduler down should produce degraded, got %s; reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+	found := false
+	for _, r := range summary.Health.Reasons {
+		if strings.Contains(r, "scheduler") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected reason mentioning 'scheduler', got %v", summary.Health.Reasons)
+	}
+}
+
+// ── T6: PDB signal skipped when poddisruptionbudgets denied ──────────────────
+
+// TestDashboardHealth_PDBDenied_SignalSkipped verifies that when the access
+// checker denies only "poddisruptionbudgets", the PDB signal is skipped and
+// nodes/pods signals are still ok, so the overall status is not unknown.
+func TestDashboardHealth_PDBDenied_SignalSkipped(t *testing.T) {
+	maxUnavail := intstr.FromInt32(1)
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-pdb", Namespace: "default"},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MaxUnavailable: &maxUnavail,
+			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "nginx"}},
+		},
+		Status: policyv1.PodDisruptionBudgetStatus{
+			CurrentHealthy: 0,
+			DesiredHealthy: 1,
+		},
+	}
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		deployment1x1("default", "dep-1"),
+		pdb,
+	}
+	h, _ := testHandler(t, objs...)
+
+	// Deny list on poddisruptionbudgets only; everything else allowed.
+	h.AccessChecker = NewDenyResourcesAccessChecker("poddisruptionbudgets")
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	// With PDB access denied, PDB violations are invisible — no degradation from PDB.
+	if summary.Health.Status == HealthStatusUnknown {
+		t.Errorf("PDB denied should not make status unknown, got %s; reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+}
+
+// ── T9: static-binding empty storageClassName counted as pending ─────────────
+
+// TestDashboardHealth_StaticBindingEmptyStorageClass_CountedAsPending verifies
+// that a Pending PVC with an explicit empty StorageClassName ("") is counted as
+// pending even when a WFFC default class exists. An explicit "" means static
+// binding and is never excluded by the WFFC filter.
+func TestDashboardHealth_StaticBindingEmptyStorageClass_CountedAsPending(t *testing.T) {
+	wffc := storagev1.VolumeBindingWaitForFirstConsumer
+	sc := &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "wffc-default",
+			Annotations: map[string]string{
+				"storageclass.kubernetes.io/is-default-class": "true",
+			},
+		},
+		VolumeBindingMode: &wffc,
+	}
+	// StorageClassName is explicitly "" — static binding, should not be
+	// treated as the WFFC default class.
+	staticPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-static", Namespace: "default"},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			StorageClassName: func() *string { s := ""; return &s }(),
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimPending},
+	}
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		deployment1x1("default", "dep-1"),
+		sc,
+		staticPVC,
+	}
+	h, _ := testHandler(t, objs...)
+
+	_, summary := callDashboard(t, h)
+
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	// Static-binding PVC must NOT be excluded → storage signal triggers degraded.
+	if summary.Health.Status != HealthStatusDegraded {
+		t.Errorf("static-binding empty-StorageClassName PVC should be counted as pending (degraded), got %s; reasons: %v",
 			summary.Health.Status, summary.Health.Reasons)
 	}
 }

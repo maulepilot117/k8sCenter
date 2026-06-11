@@ -157,11 +157,13 @@ func isWFFCPending(pvc *corev1.PersistentVolumeClaim, scByName map[string]*stora
 		return false // not pending
 	}
 	// Resolve the StorageClass for this PVC.
+	// Only fall back to the default class when StorageClassName is nil (unset).
+	// An explicit "" means static binding — never WFFC — so do not substitute
+	// the default class in that case.
 	scName := ""
 	if pvc.Spec.StorageClassName != nil {
 		scName = *pvc.Spec.StorageClassName
-	}
-	if scName == "" {
+	} else {
 		scName = defaultSC
 	}
 	sc, ok := scByName[scName]
@@ -181,9 +183,14 @@ func isWFFCPending(pvc *corev1.PersistentVolumeClaim, scByName map[string]*stora
 // are applied; each gated signal resolves to skipped/unknown rather than feeding
 // zero into the score (R5, R9).
 //
-// The control-plane call joins the caller-provided promCtx (the 1-second shared
-// Prometheus budget from HandleDashboardSummary) and the WaitGroup wg, which the
-// caller must Wait() on before reading the returned inputs.
+// canListNodes is the pre-resolved result of h.canList(ctx, user, "nodes", ""),
+// hoisted by HandleDashboardSummary so a single SAR decision is reused across
+// the nodes signal, the workloads guard, and the control-plane gate.
+//
+// The control-plane goroutine is dispatched immediately after the nodes decision
+// so it runs concurrently with remaining per-signal SARs rather than after them.
+// It joins the caller-provided promCtx (the 1-second shared Prometheus budget)
+// and WaitGroup wg, which the caller must Wait() on before reading the inputs.
 //
 // isSyncedFn is consulted per-resource before reading the informer cache.
 // It defaults to h.Informers.IsSynced but can be overridden in tests via
@@ -192,6 +199,7 @@ func isWFFCPending(pvc *corev1.PersistentVolumeClaim, scByName map[string]*stora
 func (h *Handler) gatherHealthInputs(
 	ctx context.Context,
 	user *auth.User,
+	canListNodes bool,
 	nodes []*corev1.Node,
 	pods []*corev1.Pod,
 	wg *sync.WaitGroup,
@@ -201,15 +209,21 @@ func (h *Handler) gatherHealthInputs(
 	cpErr *error,
 ) {
 	// ── Nodes signal ────────────────────────────────────────────────────────
-	canListNodes := h.canList(ctx, user, "nodes", "")
 	if !canListNodes {
 		inputs.NodesAvailable = false
+		inputs.NodesUnavailableReason = "insufficient permissions"
 		inputs.WorkloadsAvailable = false
 		inputs.WorkloadsUnavailableReason = "insufficient permissions"
 		inputs.ControlPlaneAvailable = false
 		inputs.ControlPlaneUnavailableReason = "insufficient permissions"
 	} else if !h.isSyncedFn()("nodes") {
 		inputs.NodesAvailable = false
+		inputs.NodesUnavailableReason = "cache syncing"
+	} else if len(nodes) == 0 {
+		// 0 nodes visible despite list permission — treat as unknown rather than
+		// healthy with a 0-weighted node sub-score (plan veto table).
+		inputs.NodesAvailable = false
+		inputs.NodesUnavailableReason = "no nodes visible"
 	} else {
 		inputs.NodesAvailable = true
 		inputs.TotalNodes = len(nodes)
@@ -235,6 +249,23 @@ func (h *Handler) gatherHealthInputs(
 				inputs.PressureNodes++
 			}
 		}
+	}
+
+	// ── Control-plane signal ─────────────────────────────────────────────────
+	// Dispatched immediately after the nodes decision so the goroutine runs
+	// concurrently with the remaining per-signal SAR round-trips rather than
+	// after them. The 1-second promCtx budget starts at the top of
+	// HandleDashboardSummary; dispatching here maximises the time the goroutine
+	// has to complete before the WaitGroup is joined. Gated on canListNodes
+	// (infrastructure visibility — same guard as the nodes signal).
+	if canListNodes && h.ControlPlane != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			states, err := h.ControlPlane.ControlPlaneStatus(promCtx)
+			*cpErr = err
+			*cpResult = states
+		}()
 	}
 
 	// ── Pods signal ──────────────────────────────────────────────────────────
@@ -417,14 +448,17 @@ func (h *Handler) gatherHealthInputs(
 	// ── Alerts signal ────────────────────────────────────────────────────────
 	if h.Alerts == nil {
 		inputs.AlertsAvailable = false
+		inputs.AlertsSkipped = true
 		inputs.AlertsUnavailableReason = "alerting not configured"
 	} else if !h.canList(ctx, user, "alertmanagers", "") {
 		inputs.AlertsAvailable = false
+		inputs.AlertsSkipped = true
 		inputs.AlertsUnavailableReason = "insufficient permissions"
 	} else {
 		active, critical, err := h.Alerts.ActiveAlertCountsExcluding(ctx, "Watchdog", "DeadMansSwitch")
 		if err != nil {
 			inputs.AlertsAvailable = false
+			// AlertsSkipped remains false — query error maps to unknown.
 			inputs.AlertsUnavailableReason = "alerting unavailable"
 		} else {
 			inputs.AlertsAvailable = true
@@ -457,18 +491,6 @@ func (h *Handler) gatherHealthInputs(
 		}
 	}
 
-	// ── Control-plane signal ─────────────────────────────────────────────────
-	// Gated on nodes canList (infrastructure visibility — same guard as the nodes signal).
-	// The actual query is dispatched into the caller's WaitGroup/promCtx.
-	if canListNodes && h.ControlPlane != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			states, err := h.ControlPlane.ControlPlaneStatus(promCtx)
-			*cpErr = err
-			*cpResult = states
-		}()
-	}
 }
 
 // isSyncedFn returns the active IsSynced function — the test override if set,
@@ -520,11 +542,17 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	summary := DashboardSummary{}
 	ctx := r.Context()
 
+	// Resolve canListNodes once here so the same SAR decision is shared by the
+	// informer fetch, the health-input gathering, and the control-plane signal
+	// resolution below — preventing a second SAR call if the 60s cache expires
+	// mid-request. FIX 7: single SAR decision per request.
+	canListNodes := h.canList(ctx, user, "nodes", "")
+
 	// Fetch nodes and pods once from informer cache — reused for both counts and utilization.
 	var nodes []*corev1.Node
 	var pods []*corev1.Pod
 
-	if h.canList(ctx, user, "nodes", "") {
+	if canListNodes {
 		if n, err := h.Informers.Nodes().List(labels.Everything()); err == nil {
 			nodes = n
 		}
@@ -660,8 +688,8 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		}
 
 		// Gather health inputs — the control-plane goroutine (if any) is added
-		// to wg inside gatherHealthInputs.
-		h.gatherHealthInputs(ctx, user, nodes, pods, &wg, promCtx, &healthInputs, &cpResult, &cpErr)
+		// to wg inside gatherHealthInputs. canListNodes is pre-resolved above.
+		h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, promCtx, &healthInputs, &cpResult, &cpErr)
 
 		wg.Wait()
 
@@ -694,12 +722,13 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 		var wg sync.WaitGroup
 		dummyCtx, dummyCancel := context.WithCancel(ctx)
 		dummyCancel() // immediately cancelled — control-plane goroutine won't be started
-		h.gatherHealthInputs(ctx, user, nodes, pods, &wg, dummyCtx, &healthInputs, &cpResult, &cpErr)
+		h.gatherHealthInputs(ctx, user, canListNodes, nodes, pods, &wg, dummyCtx, &healthInputs, &cpResult, &cpErr)
 		wg.Wait()
 	}
 
 	// Resolve control-plane signal from the goroutine result (if it ran).
-	if h.ControlPlane != nil && h.canList(ctx, user, "nodes", "") {
+	// Reuse canListNodes resolved above — no second SAR call.
+	if h.ControlPlane != nil && canListNodes {
 		if cpErr != nil {
 			healthInputs.ControlPlaneAvailable = false
 			healthInputs.ControlPlaneUnavailableReason = "prometheus timeout or unavailable"

@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
-import { healthStatusColor, scoreColor } from "@/lib/score-color.ts";
+import { healthStatusColor } from "@/lib/score-color.ts";
 import type { ClusterHealth, HealthSignal } from "@/lib/score-color.ts";
 
 interface HealthScoreRingProps {
@@ -109,8 +109,10 @@ export default function HealthScoreRing({ health }: HealthScoreRingProps) {
           const sig = signalMap.get(name);
           const isOk = sig?.status === "ok";
           const chipScore = isOk && sig?.score !== null ? sig.score! : null;
+          // R10: chips never color from score thresholds — neutral when ok,
+          // muted when unavailable. The number itself carries magnitude.
           const chipColor = chipScore !== null
-            ? scoreColor(chipScore, name)
+            ? "var(--text-primary)"
             : "var(--text-muted)";
           const reasonText = sig?.reason;
           const chipId = `chip-${name}-reason`;

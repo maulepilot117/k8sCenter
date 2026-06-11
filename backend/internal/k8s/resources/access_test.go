@@ -87,6 +87,46 @@ func TestAccessCacheKey_SeparatesClusters(t *testing.T) {
 	}
 }
 
+// TestApiGroupForResource_PodDisruptionBudgets verifies that apiGroupForResource
+// maps "poddisruptionbudgets" to "policy" so SubjectAccessReviews for PDB RBAC
+// checks carry the correct API group (T7 — FIX 1 regression guard).
+func TestApiGroupForResource_PodDisruptionBudgets(t *testing.T) {
+	got := apiGroupForResource("poddisruptionbudgets")
+	if got != "policy" {
+		t.Errorf("apiGroupForResource(%q) = %q, want %q", "poddisruptionbudgets", got, "policy")
+	}
+}
+
+// TestApiGroupForResource_KnownMappings spot-checks that other well-known
+// entries still resolve correctly after the PDB addition.
+func TestApiGroupForResource_KnownMappings(t *testing.T) {
+	cases := []struct {
+		resource string
+		want     string
+	}{
+		{"deployments", "apps"},
+		{"statefulsets", "apps"},
+		{"jobs", "batch"},
+		{"cronjobs", "batch"},
+		{"ingresses", "networking.k8s.io"},
+		{"networkpolicies", "networking.k8s.io"},
+		{"poddisruptionbudgets", "policy"},
+		{"roles", "rbac.authorization.k8s.io"},
+		{"pods", ""},
+		{"nodes", ""},
+		{"services", ""},
+		{"persistentvolumeclaims", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.resource, func(t *testing.T) {
+			got := apiGroupForResource(tc.resource)
+			if got != tc.want {
+				t.Errorf("apiGroupForResource(%q) = %q, want %q", tc.resource, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- helpers --------------------------------------------------------------
 
 // countingFactory implements AccessChecker.clientFactory and records call
