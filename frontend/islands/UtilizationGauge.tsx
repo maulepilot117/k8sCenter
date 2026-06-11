@@ -142,8 +142,10 @@ export default function UtilizationGauge({
         </div>
       </div>
 
-      {/* Trend line chart — real last-hour utilization, or nothing if
-          Prometheus history is unavailable (no fake decorative line). */}
+      {
+        /* Trend line chart — real last-hour utilization, or nothing if
+          Prometheus history is unavailable (no fake decorative line). */
+      }
       {trend && (
         <div style={{ marginTop: "16px", height: "48px" }}>
           <svg
