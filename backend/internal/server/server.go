@@ -186,6 +186,12 @@ func New(deps Deps) *Server {
 			alertCounter = &alerting.AlertCountAdapter{Store: deps.AlertingHandler.Store}
 		}
 
+		// Build optional CertExpiryCounter if cert-manager handler is available
+		var certExpiryCounter resources.CertExpiryCounter
+		if deps.CertManagerHandler != nil {
+			certExpiryCounter = &certmanager.CertExpiryAdapter{Handler: deps.CertManagerHandler}
+		}
+
 		s.ResourceHandler = &resources.Handler{
 			K8sClient:       deps.K8sClient,
 			ClusterRouter:   deps.ClusterRouter,
@@ -198,6 +204,7 @@ func New(deps Deps) *Server {
 			Utilization:     utilProvider,
 			Trends:          trendProvider,
 			Alerts:          alertCounter,
+			CertExpiry:      certExpiryCounter,
 			OriginValidator: s.validateWSOrigin,
 		}
 		s.YAMLHandler = &yamlpkg.Handler{

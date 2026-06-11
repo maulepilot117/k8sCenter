@@ -44,6 +44,15 @@ type TrendProvider interface {
 	DashboardTrends(ctx context.Context) (DashboardTrends, error)
 }
 
+// CertExpiryCounter abstracts cert-manager expiring-certificate counts for the
+// cluster health score. The calling user is passed so RBAC filtering can be
+// applied before bucketing. Can be nil if cert-manager is unavailable.
+// Errors are typed: callers should check for certmanager.ErrCertManagerNotInstalled
+// and certmanager.ErrCacheNotWarm to map them to non-fatal skipped signals.
+type CertExpiryCounter interface {
+	ExpiringCounts(ctx context.Context, user *auth.User) (warning, critical int, err error)
+}
+
 // Handler provides HTTP handler methods for Kubernetes resource operations.
 type Handler struct {
 	K8sClient     *k8s.ClientFactory
@@ -57,6 +66,7 @@ type Handler struct {
 	Utilization   UtilizationProvider // Optional — nil if monitoring unavailable
 	Alerts        AlertCounter        // Optional — nil if alerting unavailable
 	Trends        TrendProvider       // Optional — nil if monitoring unavailable
+	CertExpiry    CertExpiryCounter   // Optional — nil if cert-manager unavailable
 	// OriginValidator checks the Origin header for WebSocket connections.
 	// Set by the server at wiring time. If nil, rejects all WS upgrades.
 	OriginValidator func(w http.ResponseWriter, r *http.Request) bool
