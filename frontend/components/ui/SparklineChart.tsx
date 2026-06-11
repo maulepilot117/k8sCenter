@@ -23,7 +23,10 @@ export function SparklineChart(
     [],
   );
 
-  if (data.length < 2) return null;
+  // Drop non-finite samples (NaN/±Infinity) so they cannot produce broken
+  // `M x,NaN` path coordinates that render an invisible, silently-empty chart.
+  const clean = data.filter((v) => Number.isFinite(v));
+  if (clean.length < 2) return null;
 
   // When no explicit pixel width is given, render fluid: the SVG fills its
   // container width and the path coordinates are computed against VIEW_W,
@@ -31,12 +34,12 @@ export function SparklineChart(
   const fluid = width === undefined;
   const w = fluid ? VIEW_W : width;
 
-  const min = Math.min(...data);
-  const max = Math.max(...data);
+  const min = Math.min(...clean);
+  const max = Math.max(...clean);
   const range = max - min || 1;
 
-  const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * w;
+  const points = clean.map((v, i) => {
+    const x = (i / (clean.length - 1)) * w;
     const y = height - ((v - min) / range) * (height - 2) - 1;
     return `${x},${y}`;
   });

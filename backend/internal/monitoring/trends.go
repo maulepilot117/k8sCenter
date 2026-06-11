@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -30,20 +31,24 @@ const (
 //   - cpu/memory are the range-query companions of UtilizationAdapter's instant
 //     CPUPercent/MemoryPercent queries (same PromQL); they come from
 //     node-exporter, which is independent of kube-state-metrics.
+//
+// Each entry carries its own assign func so a new metric self-registers its
+// destination field — there is no separate key→field switch to keep in sync,
+// so it is impossible to add a query and silently drop its result.
 var trendQueries = []struct {
-	key   string
-	query string
+	query  string
+	assign func(*resources.DashboardTrends, []float64)
 }{
-	{"nodes", `count(kube_node_info)`},
-	{"pods", `count(kube_pod_info)`},
-	{"services", `count(kube_service_info)`},
-	{"alerts", `count(ALERTS{alertstate="firing"}) or vector(0)`},
-	{"cpu", `100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`},
-	{"memory", `(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`},
+	{`count(kube_node_info)`, func(t *resources.DashboardTrends, v []float64) { t.Nodes = v }},
+	{`count(kube_pod_info)`, func(t *resources.DashboardTrends, v []float64) { t.Pods = v }},
+	{`count(kube_service_info)`, func(t *resources.DashboardTrends, v []float64) { t.Services = v }},
+	{`count(ALERTS{alertstate="firing"}) or vector(0)`, func(t *resources.DashboardTrends, v []float64) { t.Alerts = v }},
+	{`100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, func(t *resources.DashboardTrends, v []float64) { t.CPU = v }},
+	{`(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, func(t *resources.DashboardTrends, v []float64) { t.Memory = v }},
 }
 
 // DashboardTrends implements resources.TrendProvider. It range-queries
-// Prometheus for the four metric-card series concurrently and returns whatever
+// Prometheus for the six metric-card series concurrently and returns whatever
 // resolved; individual query failures yield an empty series for that metric
 // rather than failing the whole request.
 func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.DashboardTrends, error) {
@@ -80,20 +85,7 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.Das
 	wg.Wait()
 
 	for i, q := range trendQueries {
-		switch q.key {
-		case "nodes":
-			out.Nodes = series[i]
-		case "pods":
-			out.Pods = series[i]
-		case "services":
-			out.Services = series[i]
-		case "alerts":
-			out.Alerts = series[i]
-		case "cpu":
-			out.CPU = series[i]
-		case "memory":
-			out.Memory = series[i]
-		}
+		q.assign(&out, series[i])
 	}
 
 	return out, nil
@@ -102,6 +94,12 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.Das
 // parseMatrixSeries extracts the sample values of the first series from a range
 // query result. Our trend queries are scalar aggregates, so there is exactly
 // one series; anything else (empty matrix, wrong type) yields nil.
+//
+// Non-finite samples (NaN/±Inf) are dropped: Prometheus emits them from
+// division-by-zero (e.g. the memory query during a scrape gap) and counter
+// resets, and encoding/json fails on NaN/±Inf — which, because writeJSON has
+// already sent the 200 header, would truncate the body and silently blank
+// every sparkline. Dropping the bad points keeps the response valid JSON.
 func parseMatrixSeries(val model.Value) []float64 {
 	matrix, ok := val.(model.Matrix)
 	if !ok || len(matrix) == 0 {
@@ -111,9 +109,16 @@ func parseMatrixSeries(val model.Value) []float64 {
 	if len(pairs) == 0 {
 		return nil
 	}
-	values := make([]float64, len(pairs))
-	for i, p := range pairs {
-		values[i] = float64(p.Value)
+	values := make([]float64, 0, len(pairs))
+	for _, p := range pairs {
+		f := float64(p.Value)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			continue
+		}
+		values = append(values, f)
+	}
+	if len(values) == 0 {
+		return nil
 	}
 	return values
 }

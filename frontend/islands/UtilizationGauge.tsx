@@ -55,8 +55,11 @@ export default function UtilizationGauge({
 }: UtilizationGaugeProps) {
   const trendStroke = trendColor ?? color;
   const gradientId = `trend-${Math.random().toString(36).slice(2, 9)}`;
-  const trend = trendData && trendData.length >= 2
-    ? buildTrendPaths(trendData)
+  // Drop non-finite samples (NaN/±Infinity) before building the path — they
+  // would yield broken `M x,NaN` coordinates and an invisible, silent chart.
+  const trendClean = trendData?.filter((v) => Number.isFinite(v));
+  const trend = trendClean && trendClean.length >= 2
+    ? buildTrendPaths(trendClean)
     : null;
   const statRows: { label: string; value: string }[] = [
     { label: "Used", value: `${used} / ${total}` },
