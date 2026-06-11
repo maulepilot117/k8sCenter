@@ -2,22 +2,24 @@ package certmanager
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/auth"
+	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
 // ErrCertManagerNotInstalled is returned by CertExpiryAdapter.ExpiringCounts
 // when the Discoverer reports that cert-manager is not detected in the cluster.
 // Callers should map this to a non-fatal "skipped" signal rather than an error.
-var ErrCertManagerNotInstalled = errors.New("cert-manager not installed")
+// Aliases the sentinel defined in resources (the consumer package) so callers
+// there can errors.Is-match without importing certmanager.
+var ErrCertManagerNotInstalled = resources.ErrCertManagerNotInstalled
 
 // ErrCacheNotWarm is returned by CertExpiryAdapter.ExpiringCounts when the
 // local certificate cache has not yet been populated (cold start or TTL
 // expired). No API fetch is triggered. Callers should map this to a non-fatal
 // "skipped" signal rather than an error.
-var ErrCacheNotWarm = errors.New("cert cache warming")
+var ErrCacheNotWarm = resources.ErrCertCacheNotWarm
 
 // CertExpiryAdapter implements resources.CertExpiryCounter using the certmanager
 // Handler's local cache. It never enters the singleflight fetch path — if the
