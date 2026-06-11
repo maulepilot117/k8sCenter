@@ -3,7 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useCallback, useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import { scoreColor } from "@/lib/health-score.ts";
+import { scoreColor } from "@/lib/score-color.ts";
 import { Button } from "@/components/ui/Button.tsx";
 
 interface TrendPoint {

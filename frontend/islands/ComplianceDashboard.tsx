@@ -11,7 +11,7 @@ import {
   SEVERITY_ORDER,
 } from "@/components/ui/PolicyBadges.tsx";
 import type { ComplianceScore, SeverityCounts } from "@/lib/policy-types.ts";
-import { scoreColor } from "@/lib/health-score.ts";
+import { scoreColor } from "@/lib/score-color.ts";
 import ComplianceTrendChart from "@/islands/ComplianceTrendChart.tsx";
 
 function SeverityBar({

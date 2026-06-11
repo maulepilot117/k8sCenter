@@ -58,6 +58,7 @@ type AccessChecker struct {
 	alwaysAllow   bool            // for testing only
 	alwaysDeny    bool            // for testing only
 	predicate     AccessPredicate // for testing only
+	denyResources map[string]bool // for testing only — denies CanAccess for named resources
 }
 
 // NewAccessChecker creates an AccessChecker that verifies user permissions.
@@ -93,6 +94,11 @@ func (ac *AccessChecker) SetClusterRouter(cr *k8s.ClusterRouter) {
 // clusters are checked against their own RBAC rather than the local
 // cluster's. F#9 security audit 2026-05-22.
 func (ac *AccessChecker) CanAccess(ctx context.Context, clusterID, username string, groups []string, verb, resource, namespace string) (bool, error) {
+	// denyResources is checked first so tests can selectively deny specific
+	// resources even when alwaysAllow is set (NewDenyResourcesAccessChecker).
+	if ac.denyResources != nil && ac.denyResources[resource] {
+		return false, nil
+	}
 	if ac.alwaysAllow {
 		return true, nil
 	}
@@ -279,6 +285,23 @@ func NewAlwaysDenyAccessChecker() *AccessChecker {
 	}
 }
 
+// NewDenyResourcesAccessChecker returns an AccessChecker that allows all
+// requests except CanAccess calls for the named core resources (e.g.
+// "poddisruptionbudgets"). Intended for tests covering selective RBAC
+// denial on core resources while leaving everything else allowed.
+func NewDenyResourcesAccessChecker(denied ...string) *AccessChecker {
+	deny := make(map[string]bool, len(denied))
+	for _, r := range denied {
+		deny[r] = true
+	}
+	return &AccessChecker{
+		clientFactory: nil,
+		logger:        slog.Default(),
+		alwaysAllow:   true, // allow everything not in denyResources
+		denyResources: deny, // checked before alwaysAllow in CanAccess
+	}
+}
+
 // NewPredicateAccessChecker returns an AccessChecker that consults the
 // supplied predicate for every CanAccessGroupResource call. Intended for
 // tests covering partial-RBAC scenarios (e.g., "user can list one CRD
@@ -336,6 +359,8 @@ func apiGroupForResource(resource string) string {
 		return "batch"
 	case "ingresses", "networkpolicies":
 		return "networking.k8s.io"
+	case "poddisruptionbudgets":
+		return "policy"
 	case "roles", "clusterroles", "rolebindings", "clusterrolebindings":
 		return "rbac.authorization.k8s.io"
 	case "prometheusrules", "servicemonitors", "podmonitors", "alertmanagers", "alertmanagerconfigs":

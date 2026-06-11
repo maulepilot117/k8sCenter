@@ -321,6 +321,39 @@ func (m *InformerManager) MutatingWebhookConfigurations() admissionregistrationv
 	return m.factory.Admissionregistration().V1().MutatingWebhookConfigurations().Lister()
 }
 
+// IsSynced reports whether the named informer cache has completed its initial
+// list-and-watch sync. It is non-blocking and cheap — it reads the informer's
+// HasSynced func directly rather than waiting. Unknown resource names return
+// false (conservative: treats unchecked resources as not-ready).
+//
+// Recognised resource names (matching InformerManager lister accessor names):
+// "pods", "nodes", "deployments", "statefulsets", "daemonsets",
+// "poddisruptionbudgets", "persistentvolumeclaims", "storageclasses", "services".
+func (m *InformerManager) IsSynced(resource string) bool {
+	switch resource {
+	case "pods":
+		return m.factory.Core().V1().Pods().Informer().HasSynced()
+	case "nodes":
+		return m.factory.Core().V1().Nodes().Informer().HasSynced()
+	case "services":
+		return m.factory.Core().V1().Services().Informer().HasSynced()
+	case "persistentvolumeclaims":
+		return m.factory.Core().V1().PersistentVolumeClaims().Informer().HasSynced()
+	case "deployments":
+		return m.factory.Apps().V1().Deployments().Informer().HasSynced()
+	case "statefulsets":
+		return m.factory.Apps().V1().StatefulSets().Informer().HasSynced()
+	case "daemonsets":
+		return m.factory.Apps().V1().DaemonSets().Informer().HasSynced()
+	case "poddisruptionbudgets":
+		return m.factory.Policy().V1().PodDisruptionBudgets().Informer().HasSynced()
+	case "storageclasses":
+		return m.factory.Storage().V1().StorageClasses().Informer().HasSynced()
+	default:
+		return false
+	}
+}
+
 // EventCallback is called when an informer observes a resource change.
 type EventCallback func(eventType, kind, namespace, name string, obj any)
 
