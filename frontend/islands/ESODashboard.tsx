@@ -23,6 +23,7 @@ import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type {
   ESOStatus,
   ExternalSecret,
@@ -290,7 +291,11 @@ export default function ESODashboard() {
   if (!IS_BROWSER) return null;
 
   // Aggregate counts client-side. Backend already RBAC-filters.
-  const items = externalSecrets.value;
+  // selectedNamespace.value read here (synchronous render path) ensures the
+  // island re-filters automatically when the global namespace picker changes.
+  const ns = selectedNamespace.value;
+  const allExternalSecrets = externalSecrets.value;
+  const items = filterByNamespace(allExternalSecrets, ns);
   const total = items.length;
   const counts = {
     Synced: 0,
@@ -302,7 +307,9 @@ export default function ESODashboard() {
   } satisfies Record<Status, number>;
   for (const it of items) counts[it.status]++;
 
-  const allStores = [...stores.value, ...clusterStores.value];
+  // Namespaced stores filtered; ClusterSecretStores are cluster-scoped → left unfiltered.
+  const filteredStores = filterByNamespace(stores.value, ns);
+  const allStores = [...filteredStores, ...clusterStores.value];
   const providerCounts = aggregateProviders(allStores);
 
   // Failure table — non-Synced / non-Refreshing only.
@@ -359,11 +366,21 @@ export default function ESODashboard() {
           }
           <div class="rounded-lg border border-border-primary p-6 bg-elevated mb-6 flex flex-col items-center">
             <SyncHealthRing synced={counts.Synced} total={total} />
-            {total === 0 && (
-              <p class="text-xs text-text-muted mt-3">
-                No ExternalSecrets visible yet.
-              </p>
-            )}
+            {total === 0
+              ? (
+                <p class="text-xs text-text-muted mt-3">
+                  {ns !== "all" && ns
+                    ? `No ExternalSecrets in namespace "${ns}".`
+                    : "No ExternalSecrets visible yet."}
+                </p>
+              )
+              : ns !== "all" && ns
+              ? (
+                <p class="text-xs text-text-muted mt-1">
+                  {total} of {allExternalSecrets.length} total (namespace: {ns})
+                </p>
+              )
+              : null}
           </div>
 
           {/* Secondary cards row */}

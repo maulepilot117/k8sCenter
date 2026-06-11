@@ -2,6 +2,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 import { apiGet } from "@/lib/api.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type {
@@ -235,11 +236,23 @@ export default function GatewayAPIDashboard() {
               placeholder="Filter by name or namespace..."
             />
           </div>
-          {listData.value && (
-            <span class="text-xs text-text-muted">
-              {listData.value.items.length} total
-            </span>
-          )}
+          {listData.value && (() => {
+            const ns = selectedNamespace.value;
+            const totalItems = listData.value.items.length;
+            const visibleCount = activeKind.value === "gatewayclasses"
+              ? totalItems
+              : filterByNamespace(
+                listData.value.items as { namespace?: string }[],
+                ns,
+              ).length;
+            return (
+              <span class="text-xs text-text-muted">
+                {ns !== "all"
+                  ? `${visibleCount} of ${totalItems} total`
+                  : `${totalItems} total`}
+              </span>
+            );
+          })()}
         </div>
 
         {listLoading.value && (
@@ -249,7 +262,12 @@ export default function GatewayAPIDashboard() {
         )}
 
         {!listLoading.value && listData.value &&
-          renderTable(activeKind.value, listData.value, search.value)}
+          renderTable(
+            activeKind.value,
+            listData.value,
+            search.value,
+            selectedNamespace.value,
+          )}
       </div>
     );
   }
@@ -352,9 +370,11 @@ function renderTable(
   kind: GatewayResourceKind,
   data: GatewayListData,
   query: string,
+  ns: string,
 ) {
   switch (kind) {
     case "gatewayclasses":
+      // Cluster-scoped — do NOT namespace-filter.
       return renderGatewayClassesTable(
         filterBySearch(
           data.items as GatewayClassSummary[],
@@ -363,19 +383,26 @@ function renderTable(
       );
     case "gateways":
       return renderGatewaysTable(
-        filterBySearch(data.items as GatewaySummary[], query),
+        filterBySearch(
+          filterByNamespace(data.items as GatewaySummary[], ns),
+          query,
+        ),
       );
     case "httproutes":
       return renderHTTPRoutesTable(
         filterBySearch(
-          data.items as HTTPRouteSummary[],
+          filterByNamespace(data.items as HTTPRouteSummary[], ns),
           query,
         ),
       );
     default:
+      // grpcroutes, tcproutes, tlsroutes, udproutes — all namespaced.
       return renderRoutesTable(
         kind,
-        filterBySearch(data.items as RouteSummary[], query),
+        filterBySearch(
+          filterByNamespace(data.items as RouteSummary[], ns),
+          query,
+        ),
       );
   }
 }

@@ -20,6 +20,7 @@ import {
 import { useNotificationCrud } from "@/lib/useNotificationCrud.ts";
 import type { NormalizedProvider } from "@/lib/notification-types.ts";
 import { INPUT_CLASS, PAGE_SIZE } from "@/lib/notification-types.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 
 /** All Flux notification provider types (alphabetical). */
@@ -140,7 +141,8 @@ export default function FluxProviders() {
 
   const notAvailable = !!(crud.status.value && !crud.status.value.available);
 
-  const filtered = crud.items.value.filter((p) => {
+  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const filtered = nsByNs.filter((p) => {
     if (!crud.search.value) return true;
     const q = crud.search.value.toLowerCase();
     return (

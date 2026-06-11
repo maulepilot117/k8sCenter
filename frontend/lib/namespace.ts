@@ -38,3 +38,28 @@ export function initialNamespace(): string {
     ? selectedNamespace.value
     : "default";
 }
+
+/**
+ * Filters a list of namespaced resources by the active namespace-picker
+ * selection. Returns every item when `ns` is "all" (or empty).
+ *
+ * CRD-discovered dashboards fetch all namespaces (the backend list endpoints
+ * return every namespace, RBAC-filtered, with no namespace query param), so
+ * this is the client-side equivalent of the namespace scoping that
+ * ResourceTable gets for free.
+ *
+ * IMPORTANT — reactivity: pass `selectedNamespace.value` explicitly from the
+ * component's render path so the island re-filters when the picker changes:
+ *   filterByNamespace(items, selectedNamespace.value)
+ *
+ * Do NOT pass cluster-scoped lists (ClusterSecretStore, ClusterExternalSecret,
+ * GatewayClass, …) through this — their items have no `namespace`, so a
+ * specific selection would wrongly hide all of them.
+ */
+export function filterByNamespace<T extends { namespace?: string }>(
+  items: T[],
+  ns: string,
+): T[] {
+  if (!ns || ns === "all") return items;
+  return items.filter((item) => item.namespace === ns);
+}

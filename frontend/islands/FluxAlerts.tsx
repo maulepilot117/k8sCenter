@@ -25,6 +25,7 @@ import {
   INPUT_CLASS,
   PAGE_SIZE,
 } from "@/lib/notification-types.ts";
+import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 
 interface AlertFormSource {
@@ -161,7 +162,8 @@ export default function FluxAlerts() {
 
   const notAvailable = !!(crud.status.value && !crud.status.value.available);
 
-  const filtered = crud.items.value.filter((a) => {
+  const nsByNs = filterByNamespace(crud.items.value, selectedNamespace.value);
+  const filtered = nsByNs.filter((a) => {
     if (!crud.search.value) return true;
     const q = crud.search.value.toLowerCase();
     return (

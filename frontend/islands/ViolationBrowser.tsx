@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { selectedNamespace } from "@/lib/namespace.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -74,7 +75,16 @@ export default function ViolationBrowser() {
     ),
   ].sort();
 
+  // Read the global namespace picker in the synchronous render path so the
+  // signal subscription triggers a re-render when the picker changes.
+  const globalNs = selectedNamespace.value;
+
   const filtered = violations.value.filter((v) => {
+    // Global namespace picker — cluster-scoped violations (no namespace) pass
+    // through regardless so they remain visible for any namespace selection.
+    if (globalNs !== "all" && v.namespace && v.namespace !== globalNs) {
+      return false;
+    }
     if (
       filterNamespace.value !== "all" && v.namespace !== filterNamespace.value
     ) {
