@@ -29,7 +29,6 @@ func healthyInputs() HealthInputs {
 		AlertsActive:           0,
 		AlertsCritical:         0,
 		CertsAvailable:         true,
-		CertWarning:            0,
 		CertCritical:           0,
 		StorageAvailable:       true,
 		PendingPVCs:            0,
@@ -293,19 +292,6 @@ func TestComputeClusterHealth_Degraded_PendingPVC(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want a pending PVC reason, got %v", h.Reasons)
-	}
-}
-
-// TestComputeClusterHealth_Degraded_CertWarning.
-func TestComputeClusterHealth_Degraded_CertWarning(t *testing.T) {
-	in := healthyInputs()
-	in.CertWarning = 1
-
-	h := computeClusterHealth(in)
-	assertNoNaN(t, h)
-
-	if h.Status != HealthStatusDegraded {
-		t.Errorf("want degraded, got %q", h.Status)
 	}
 }
 
@@ -613,7 +599,6 @@ func TestComputeClusterHealth_NaNGuard_AllZeros(t *testing.T) {
 		AlertsActive:           0,
 		AlertsCritical:         0,
 		CertsAvailable:         true,
-		CertWarning:            0,
 		CertCritical:           0,
 		StorageAvailable:       true,
 		PendingPVCs:            0,
@@ -717,7 +702,6 @@ func TestComputeClusterHealth_ReasonFormat_NoResourceNames(t *testing.T) {
 	in.EligiblePods = 20
 	in.PendingPVCs = 1
 	in.PDBViolations = 1
-	in.CertWarning = 1
 	in.CertCritical = 1
 	in.AlertsCritical = 1
 	in.AlertsActive = 3
@@ -740,7 +724,6 @@ func TestComputeClusterHealth_ScoreClamping_CannotGoBelowZero(t *testing.T) {
 	in.TotalNodes = 10
 	in.ReadyNodes = 2 // ~20% → node sub-score ≈ 20; also critical
 	in.PressureNodes = 10
-	in.CertWarning = 1   // −3
 	in.CertCritical = 1  // −10
 	in.PendingPVCs = 100 // −3
 	in.ControlPlane.SchedulerState = ComponentDown         // −10
@@ -902,7 +885,6 @@ func TestComputeClusterHealth_FullNaNSweep(t *testing.T) {
 		// many deductions stacked
 		func() HealthInputs {
 			in := healthyInputs()
-			in.CertWarning = 100
 			in.CertCritical = 100
 			in.PendingPVCs = 100
 			in.ControlPlane.SchedulerState = ComponentDown
