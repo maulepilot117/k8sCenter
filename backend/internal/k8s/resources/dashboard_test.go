@@ -621,6 +621,65 @@ func TestDashboardHealth_CertExpirySkipReasons(t *testing.T) {
 	}
 }
 
+// TestDashboardHealth_CertWarningDoesNotDegrade verifies that certs in the
+// warning expiry bucket (still valid, 8–30 days out) do not degrade the cluster
+// or surface a cert reason — only the critical bucket (≤7 days) affects health.
+func TestDashboardHealth_CertWarningDoesNotDegrade(t *testing.T) {
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		runningPod("default", "pod-1"),
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+	// 5 certs in the warning bucket, none critical.
+	h.CertExpiry = &fakeCertExpiry{warn: 5, crit: 0}
+
+	_, summary := callDashboard(t, h)
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	if summary.Health.Status != HealthStatusHealthy {
+		t.Errorf("warning-bucket certs must not degrade health; got %s, reasons: %v",
+			summary.Health.Status, summary.Health.Reasons)
+	}
+	for _, r := range summary.Health.Reasons {
+		if strings.Contains(r, "certificate") {
+			t.Errorf("warning-bucket certs must not produce a reason, got %q", r)
+		}
+	}
+}
+
+// TestDashboardHealth_CertCriticalDegrades verifies that certs in the critical
+// expiry bucket (≤7 days) degrade the cluster with a cert reason.
+func TestDashboardHealth_CertCriticalDegrades(t *testing.T) {
+	objs := []runtime.Object{
+		readyNode("node-1"),
+		runningPod("default", "pod-1"),
+		deployment1x1("default", "dep-1"),
+	}
+	h, _ := testHandler(t, objs...)
+	// Warning certs present but irrelevant; one critical cert must degrade.
+	h.CertExpiry = &fakeCertExpiry{warn: 3, crit: 1}
+
+	_, summary := callDashboard(t, h)
+	if summary.Health == nil {
+		t.Fatal("health must not be nil")
+	}
+	if summary.Health.Status != HealthStatusDegraded {
+		t.Errorf("critical-bucket cert must degrade health; got %s", summary.Health.Status)
+	}
+	found := false
+	for _, r := range summary.Health.Reasons {
+		if strings.Contains(r, "certificate") && strings.Contains(r, "critical") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a critical-cert reason, got %v", summary.Health.Reasons)
+	}
+}
+
 // TestDashboardHealth_InitContainerCrashloop verifies that a crash in an init
 // container is also detected.
 func TestDashboardHealth_InitContainerCrashloop(t *testing.T) {

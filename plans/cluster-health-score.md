@@ -87,7 +87,7 @@ Evaluated top-down; first matching tier wins. "With data" means the signal resol
 |---|---|
 | `unknown` | nodes signal unavailable (RBAC-denied, cache unsynced, or 0 nodes visible with list permission) — nodes are the required backbone |
 | `critical` | node ready ratio < 2/3 with data; workload availability < 50% with data (progressing workloads excluded) |
-| `degraded` | any NotReady node; any node pressure condition (Memory/Disk/PID/NetworkUnavailable); workload availability < 95% (progressing workloads excluded); any crashloop/image-pull pod; PDB with `currentHealthy < desiredHealthy` whose workload is not progressing; pending PVC (excluding WaitForFirstConsumer awaiting a consumer); cert-manager warning or critical expiry bucket non-empty; any control-plane component scraped and down; any critical alert active |
+| `degraded` | any NotReady node; any node pressure condition (Memory/Disk/PID/NetworkUnavailable); workload availability < 95% (progressing workloads excluded); any crashloop/image-pull pod; PDB with `currentHealthy < desiredHealthy` whose workload is not progressing; pending PVC (excluding WaitForFirstConsumer awaiting a consumer); cert-manager critical expiry bucket non-empty (≤7d default; warning-bucket certs are still valid and do not degrade health); any control-plane component scraped and down; any critical alert active |
 | `healthy` | none of the above |
 
 The `degraded` tier is deliberately strict — a single crashloop or NotReady node shows yellow even on large clusters where something is almost always slightly broken. Yellow means "something needs attention"; the score number conveys magnitude.
@@ -103,7 +103,7 @@ Four weighted sub-scores, each 0–100, weights renormalized over signals that r
 - **Pods (0.20):** `100 − min(100, crashFraction × amplification)` where crashFraction = crashloop+imagepull pods over pods with `phase ∈ {Running, Pending}` and nil `deletionTimestamp` (excludes Succeeded/Failed/terminating — completed Jobs must not dilute, evicted leftovers must not depress).
 - **Alerts (0.10):** `100 − 10·critical − 3·(active − critical)`, clamped, heartbeat alerts (`Watchdog`, `DeadMansSwitch`) excluded. Counts are inherently absolute; the low weight bounds their influence.
 
-Flat deductions after the weighted sum, then clamp to [0, 100]: cert warning bucket −3, cert critical bucket −10, pending PVCs −3, and −10 per control-plane component scraped-and-down (etcd, scheduler, controller-manager each). Guard every division (0/0 → signal skipped, never NaN); `score` is null when status is `unknown`.
+Flat deductions after the weighted sum, then clamp to [0, 100]: cert critical bucket −10 (warning bucket is non-penalizing — certs 8–30 days out are still valid), pending PVCs −3, and −10 per control-plane component scraped-and-down (etcd, scheduler, controller-manager each). Guard every division (0/0 → signal skipped, never NaN); `score` is null when status is `unknown`.
 
 ### Wire shape (directional)
 

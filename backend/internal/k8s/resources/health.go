@@ -119,8 +119,12 @@ type HealthInputs struct {
 	CertsAvailable bool
 	// CertsUnavailableReason carries the skipped/unknown reason when !CertsAvailable.
 	CertsUnavailableReason string
-	CertWarning            int // certs in the warning expiry bucket
-	CertCritical           int // certs in the critical expiry bucket
+	// CertCritical is the count of certs in the critical expiry bucket
+	// (default ≤7 days, configurable via kubecenter.io/cert-critical-threshold-days).
+	// Only the critical bucket affects health — warning-bucket certs (default ≤30
+	// days) are still valid and intentionally do not degrade the cluster or deduct
+	// score; the cert observatory surfaces them for operators who want earlier notice.
+	CertCritical int
 
 	// --- Storage signal (flat deductions only; no signal score sub-weight) ---
 	StorageAvailable bool
@@ -377,11 +381,8 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		isDegraded = true
 		degradedReasons = append(degradedReasons, fmt.Sprintf("%d PVC(s) pending", in.PendingPVCs))
 	}
-	// cert expiry buckets
-	if in.CertsAvailable && in.CertWarning > 0 {
-		isDegraded = true
-		degradedReasons = append(degradedReasons, fmt.Sprintf("%d certificate(s) expiring soon (warning)", in.CertWarning))
-	}
+	// cert expiry — only the critical bucket (default ≤7 days) affects health;
+	// warning-bucket certs are still valid and do not degrade the cluster.
 	if in.CertsAvailable && in.CertCritical > 0 {
 		isDegraded = true
 		degradedReasons = append(degradedReasons, fmt.Sprintf("%d certificate(s) expiring soon (critical)", in.CertCritical))
@@ -463,14 +464,10 @@ func computeClusterHealth(in HealthInputs) ClusterHealth {
 		}
 	}
 
-	// Flat deductions (applied after weighted sum).
-	if in.CertsAvailable {
-		if in.CertWarning > 0 {
-			compositeScore -= 3
-		}
-		if in.CertCritical > 0 {
-			compositeScore -= 10
-		}
+	// Flat deductions (applied after weighted sum). Only critical-bucket certs
+	// deduct; warning-bucket certs are non-penalizing.
+	if in.CertsAvailable && in.CertCritical > 0 {
+		compositeScore -= 10
 	}
 	if in.StorageAvailable && in.PendingPVCs > 0 {
 		compositeScore -= 3

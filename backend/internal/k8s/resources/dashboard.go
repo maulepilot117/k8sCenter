@@ -472,10 +472,12 @@ func (h *Handler) gatherHealthInputs(
 		inputs.CertsAvailable = false
 		inputs.CertsUnavailableReason = "cert-manager not configured"
 	} else {
-		warn, crit, certErr := h.CertExpiry.ExpiringCounts(ctx, user)
+		// Only the critical bucket feeds health; the warning count is intentionally
+		// ignored here so certs that are still valid (8–30 days out) don't degrade
+		// the cluster. The observatory page surfaces the warning bucket separately.
+		_, crit, certErr := h.CertExpiry.ExpiringCounts(ctx, user)
 		if certErr == nil {
 			inputs.CertsAvailable = true
-			inputs.CertWarning = warn
 			inputs.CertCritical = crit
 		} else {
 			inputs.CertsAvailable = false
