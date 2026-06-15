@@ -1,6 +1,6 @@
 # Stage 1: Install dependencies and build (always on amd64 — Deno WASM loader
 # crashes under QEMU ARM64 emulation, but build output is arch-independent JS)
-FROM --platform=linux/amd64 denoland/deno:2.8.2 AS builder
+FROM --platform=linux/amd64 denoland/deno:2.8.3 AS builder
 
 WORKDIR /app
 
@@ -47,7 +47,7 @@ RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
 #     The sed substitution that updates the distroless dpkg status.d
 #     entry is now dynamic: extracts base + installed versions at
 #     build time.
-FROM denoland/deno:distroless-2.8.2 AS runtime-base
+FROM denoland/deno:distroless-2.8.3 AS runtime-base
 # debian:trixie (NOT -slim) — the slim variant ships
 # /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
 # stripping changelog.Debian.gz files. The 7-day cooldown gate below
@@ -121,7 +121,7 @@ RUN set -e && \
 
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
-FROM denoland/deno:distroless-2.8.2
+FROM denoland/deno:distroless-2.8.3
 
 # Overlay patched libraries (libssl3t64, libc6) and updated package metadata
 COPY --from=security-patch /patch/usr/lib/ /usr/lib/
