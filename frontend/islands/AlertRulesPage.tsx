@@ -3,8 +3,8 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
-import { Card } from "@/components/ui/Card.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import GlassCard from "@/components/ui/GlassCard.tsx";
 
 interface RuleSummary {
   name: string;
@@ -148,10 +148,24 @@ export default function AlertRulesPage() {
 
   if (editing.value) {
     return (
-      <Card>
-        <div class="space-y-4 p-4">
-          <div class="flex items-center justify-between">
-            <h2 class="text-lg font-semibold text-text-primary">
+      <GlassCard padding={24}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {/* Editor header */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <h2
+              style={{
+                margin: 0,
+                fontSize: "17px",
+                fontWeight: 650,
+                color: "var(--text-primary)",
+              }}
+            >
               {editing.value === "new"
                 ? "Create Alert Rule"
                 : `Edit ${editing.value}`}
@@ -163,7 +177,17 @@ export default function AlertRulesPage() {
 
           {editing.value === "new" && (
             <div>
-              <label class="block text-sm font-medium text-text-secondary mb-1">
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: "var(--text-muted)",
+                  marginBottom: "6px",
+                }}
+              >
                 Namespace
               </label>
               <input
@@ -171,22 +195,51 @@ export default function AlertRulesPage() {
                 value={editorNamespace.value}
                 onInput={(e) =>
                   editorNamespace.value = (e.target as HTMLInputElement).value}
-                class="w-64 px-3 py-2 border border-border-primary rounded-md text-sm bg-surface text-text-primary"
+                style={{
+                  width: "256px",
+                  padding: "7px 10px",
+                  fontSize: "13px",
+                  borderRadius: "9px",
+                  border: "1px solid var(--border-subtle)",
+                  background: "var(--bg-elevated)",
+                  color: "var(--text-primary)",
+                  outline: "none",
+                }}
               />
             </div>
           )}
 
           {error.value && <ErrorBanner message={error.value} />}
 
+          {/* Solid surface for the code editor */}
           <textarea
             value={editorContent.value}
             onInput={(e) =>
               editorContent.value = (e.target as HTMLTextAreaElement).value}
-            class="w-full h-96 font-mono text-sm px-4 py-3 border border-border-primary rounded-md bg-base text-text-primary"
             spellcheck={false}
+            style={{
+              width: "100%",
+              height: "384px",
+              fontFamily: "monospace",
+              fontSize: "13px",
+              padding: "12px 16px",
+              borderRadius: "9px",
+              border: "1px solid var(--border-subtle)",
+              background: "var(--bg-surface)",
+              color: "var(--text-primary)",
+              resize: "vertical",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
           />
 
-          <div class="flex justify-end gap-2">
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: "8px",
+            }}
+          >
             <Button variant="secondary" onClick={() => editing.value = null}>
               Cancel
             </Button>
@@ -195,96 +248,179 @@ export default function AlertRulesPage() {
             </Button>
           </div>
         </div>
-      </Card>
+      </GlassCard>
     );
   }
 
   return (
-    <div class="space-y-4">
-      <div class="flex justify-end">
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button onClick={handleNew}>Create Rule</Button>
       </div>
 
       {error.value && <ErrorBanner message={error.value} />}
 
-      {loading.value
-        ? (
-          <div class="text-text-muted text-sm py-8 text-center">
-            Loading...
-          </div>
-        )
-        : rules.value.length === 0
-        ? (
-          <div class="text-center py-12 text-text-muted">
-            <p class="text-lg font-medium">No alert rules</p>
-            <p class="text-sm mt-1">
-              Create PrometheusRule resources to define alerting conditions.
-              Requires Prometheus Operator.
-            </p>
-          </div>
-        )
-        : (
-          <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-border-primary">
-              <thead class="bg-surface">
-                <tr>
-                  <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
-                    Name
-                  </th>
-                  <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
-                    Namespace
-                  </th>
-                  <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
-                    Rules
-                  </th>
-                  <th class="px-4 py-3 text-left text-xs font-medium text-text-muted uppercase">
-                    Created
-                  </th>
-                  <th class="px-4 py-3 text-right text-xs font-medium text-text-muted uppercase">
-                    Actions
-                  </th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-border-primary">
-                {rules.value.map((rule) => (
+      {/* Solid data surface wrapping the list */}
+      <GlassCard padding={0}>
+        {loading.value
+          ? (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "48px",
+                fontSize: "13px",
+                color: "var(--text-muted)",
+              }}
+            >
+              Loading...
+            </div>
+          )
+          : rules.value.length === 0
+          ? (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "48px 20px",
+                color: "var(--text-muted)",
+              }}
+            >
+              <p
+                style={{
+                  fontSize: "15px",
+                  fontWeight: 600,
+                  color: "var(--text-primary)",
+                  margin: "0 0 6px",
+                }}
+              >
+                No alert rules
+              </p>
+              <p style={{ fontSize: "13px", margin: 0 }}>
+                Create PrometheusRule resources to define alerting conditions.
+                Requires Prometheus Operator.
+              </p>
+            </div>
+          )
+          : (
+            <div style={{ overflowX: "auto" }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: "13px",
+                }}
+              >
+                <thead>
                   <tr
-                    key={`${rule.namespace}/${rule.name}`}
-                    class="hover:bg-hover/50"
+                    style={{
+                      borderBottom: "1px solid var(--border-subtle)",
+                      background: "var(--bg-surface)",
+                    }}
                   >
-                    <td class="px-4 py-3 text-sm font-medium text-text-primary">
-                      {rule.name}
-                    </td>
-                    <td class="px-4 py-3 text-sm text-text-secondary">
-                      {rule.namespace}
-                    </td>
-                    <td class="px-4 py-3 text-sm text-text-secondary">
-                      {rule.rulesCount}
-                    </td>
-                    <td class="px-4 py-3 text-sm text-text-secondary">
-                      {new Date(rule.createdAt).toLocaleDateString()}
-                    </td>
-                    <td class="px-4 py-3 text-right space-x-2">
-                      <button
-                        type="button"
-                        onClick={() => handleEdit(rule.namespace, rule.name)}
-                        class="text-accent hover:text-accent text-sm"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(rule.namespace, rule.name)}
-                        class="text-danger hover:text-danger text-sm"
-                      >
-                        Delete
-                      </button>
-                    </td>
+                    {["Name", "Namespace", "Rules", "Created", ""].map(
+                      (h, i) => (
+                        <th
+                          key={h + i}
+                          style={{
+                            padding: "10px 16px",
+                            textAlign: i === 4 ? "right" : "left",
+                            fontSize: "11px",
+                            fontWeight: 600,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.05em",
+                            color: "var(--text-muted)",
+                          }}
+                        >
+                          {h}
+                        </th>
+                      ),
+                    )}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {rules.value.map((rule) => (
+                    <tr
+                      key={`${rule.namespace}/${rule.name}`}
+                      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+                    >
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          fontWeight: 500,
+                          color: "var(--text-primary)",
+                        }}
+                      >
+                        {rule.name}
+                      </td>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {rule.namespace}
+                      </td>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          color: "var(--text-muted)",
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                      >
+                        {rule.rulesCount}
+                      </td>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {new Date(rule.createdAt).toLocaleDateString()}
+                      </td>
+                      <td
+                        style={{
+                          padding: "12px 16px",
+                          textAlign: "right",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleEdit(rule.namespace, rule.name)}
+                          style={{
+                            marginRight: "12px",
+                            fontSize: "13px",
+                            color: "var(--accent)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: 0,
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDelete(rule.namespace, rule.name)}
+                          style={{
+                            fontSize: "13px",
+                            color: "var(--error)",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: 0,
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+      </GlassCard>
     </div>
   );
 }

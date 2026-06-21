@@ -7,6 +7,7 @@ import type { StatusVariant } from "@/lib/status-colors.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
+import GlassCard from "@/components/ui/GlassCard.tsx";
 
 const severityColor: Record<string, string> = {
   critical: "danger",
@@ -81,93 +82,157 @@ export default function AlertsPage() {
   }
 
   return (
-    <div class="space-y-4">
-      {/* Tabs */}
-      <div class="border-b border-border-primary">
-        <nav class="-mb-px flex space-x-8">
-          {(["active", "history"] as const).map((tab) => (
-            <button
-              type="button"
-              key={tab}
-              onClick={() => {
-                activeTab.value = tab;
-              }}
-              class={`py-2 px-1 border-b-2 text-sm font-medium ${
-                activeTab.value === tab
-                  ? "border-accent text-accent"
-                  : "border-transparent text-text-muted hover:text-text-secondary text-text-muted"
-              }`}
-            >
-              {tab === "active" ? "Active" : "History"}
-              {tab === "active" && activeAlerts.value.length > 0 && (
-                <span class="ml-2 bg-danger-dim text-danger text-xs px-2 py-0.5 rounded-full">
-                  {activeAlerts.value.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {error.value && <ErrorBanner message={error.value} />}
-
-      {loading.value
-        ? (
-          <div class="text-text-muted text-sm py-8 text-center">
-            Loading...
-          </div>
-        )
-        : activeTab.value === "active"
-        ? (
-          <AlertTable
-            alerts={activeAlerts.value}
-            expandedRow={expandedRow.value}
-            onToggle={toggleExpand}
-            showResolvedColumn={false}
-            formatTime={formatTime}
-          />
-        )
-        : (
-          <div class="space-y-4">
-            <AlertTable
-              alerts={historyAlerts.value}
-              expandedRow={expandedRow.value}
-              onToggle={toggleExpand}
-              showResolvedColumn
-              formatTime={formatTime}
-            />
-            {continueToken.value && (
-              <div class="flex justify-center">
-                <Button variant="secondary" onClick={fetchHistory}>
-                  Load More
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-
-      {!loading.value &&
-        activeTab.value === "active" &&
-        activeAlerts.value.length === 0 && (
-        <div class="text-center py-12 text-text-muted">
-          <p class="text-lg font-medium">No active alerts</p>
-          <p class="text-sm mt-1">
-            All clear — no alerts are currently firing.
-          </p>
-        </div>
-      )}
-
-      <div class="flex justify-end">
-        <Button
-          variant="secondary"
-          onClick={() => {
-            if (activeTab.value === "active") fetchActive();
-            else fetchHistory();
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Glass chrome: tab nav + refresh action */}
+      <GlassCard padding={0}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 20px",
+            borderBottom: "1px solid var(--border-subtle)",
           }}
         >
-          Refresh
-        </Button>
-      </div>
+          <nav style={{ display: "flex", gap: "0" }}>
+            {(["active", "history"] as const).map((tab) => (
+              <button
+                type="button"
+                key={tab}
+                onClick={() => {
+                  activeTab.value = tab;
+                }}
+                style={{
+                  padding: "14px 16px",
+                  fontSize: "13px",
+                  fontWeight: activeTab.value === tab ? 600 : 400,
+                  color: activeTab.value === tab
+                    ? "var(--accent)"
+                    : "var(--text-muted)",
+                  background: "none",
+                  border: "none",
+                  borderBottom: activeTab.value === tab
+                    ? "2px solid var(--accent)"
+                    : "2px solid transparent",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  marginBottom: "-1px",
+                }}
+              >
+                {tab === "active" ? "Active" : "History"}
+                {tab === "active" && activeAlerts.value.length > 0 && (
+                  <span
+                    style={{
+                      background: "var(--error-dim)",
+                      color: "var(--error)",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      padding: "1px 7px",
+                      borderRadius: "6px",
+                    }}
+                  >
+                    {activeAlerts.value.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </nav>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              if (activeTab.value === "active") fetchActive();
+              else fetchHistory();
+            }}
+          >
+            Refresh
+          </Button>
+        </div>
+
+        {/* Solid data surface — tables stay opaque */}
+        <div style={{ padding: "0" }}>
+          {error.value && (
+            <div style={{ padding: "12px 20px" }}>
+              <ErrorBanner message={error.value} />
+            </div>
+          )}
+
+          {loading.value
+            ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "48px",
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Loading...
+              </div>
+            )
+            : activeTab.value === "active"
+            ? (
+              activeAlerts.value.length === 0
+                ? (
+                  <div
+                    style={{
+                      textAlign: "center",
+                      padding: "48px 20px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    <p
+                      style={{
+                        fontSize: "15px",
+                        fontWeight: 600,
+                        color: "var(--text-primary)",
+                        margin: "0 0 6px",
+                      }}
+                    >
+                      No active alerts
+                    </p>
+                    <p style={{ fontSize: "13px", margin: 0 }}>
+                      All clear — no alerts are currently firing.
+                    </p>
+                  </div>
+                )
+                : (
+                  <AlertTable
+                    alerts={activeAlerts.value}
+                    expandedRow={expandedRow.value}
+                    onToggle={toggleExpand}
+                    showResolvedColumn={false}
+                    formatTime={formatTime}
+                  />
+                )
+            )
+            : (
+              <div>
+                <AlertTable
+                  alerts={historyAlerts.value}
+                  expandedRow={expandedRow.value}
+                  onToggle={toggleExpand}
+                  showResolvedColumn
+                  formatTime={formatTime}
+                />
+                {continueToken.value && (
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "center",
+                      padding: "16px",
+                    }}
+                  >
+                    <Button variant="secondary" onClick={fetchHistory}>
+                      Load More
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+        </div>
+      </GlassCard>
     </div>
   );
 }

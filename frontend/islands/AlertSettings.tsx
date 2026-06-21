@@ -3,9 +3,9 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost, apiPut } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
-import { Card } from "@/components/ui/Card.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface AlertingSettings {
   enabled: boolean;
@@ -122,16 +122,32 @@ export default function AlertSettings() {
 
   if (loading.value) {
     return (
-      <div class="text-text-muted text-sm py-8 text-center">
+      <div
+        style={{
+          textAlign: "center",
+          padding: "48px",
+          fontSize: "13px",
+          color: "var(--text-muted)",
+        }}
+      >
         Loading...
       </div>
     );
   }
 
   return (
-    <div class="space-y-6">
-      {/* Warning banner */}
-      <div class="bg-warning-dim border border-warning text-warning rounded-lg p-4 text-sm">
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Warning banner — glass-tinted, not a data surface */}
+      <div
+        style={{
+          borderRadius: "12px",
+          border: "1px solid var(--warning)",
+          background: "color-mix(in srgb, var(--warning) 10%, transparent)",
+          padding: "12px 16px",
+          fontSize: "13px",
+          color: "var(--warning)",
+        }}
+      >
         Settings configured here are stored in memory and will be lost on pod
         restart. Use environment variables for persistent configuration.
       </div>
@@ -139,31 +155,55 @@ export default function AlertSettings() {
       {error.value && <ErrorBanner message={error.value} />}
 
       {success.value && (
-        <div class="bg-success-dim border border-success text-success rounded-lg p-4 text-sm">
+        <div
+          style={{
+            borderRadius: "12px",
+            border: "1px solid var(--success)",
+            background: "color-mix(in srgb, var(--success) 10%, transparent)",
+            padding: "12px 16px",
+            fontSize: "13px",
+            color: "var(--success)",
+          }}
+        >
           {success.value}
         </div>
       )}
 
       {/* General Settings */}
-      <Card title="General">
-        <div class="p-4 space-y-4">
-          <div class="flex items-center gap-3">
+      <WidgetShell title="General">
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <input
               type="checkbox"
               id="alerting-enabled"
               checked={enabled.value}
               onChange={(e) =>
                 enabled.value = (e.target as HTMLInputElement).checked}
-              class="h-4 w-4 rounded border-border-primary text-accent"
+              style={{
+                width: "16px",
+                height: "16px",
+                accentColor: "var(--accent)",
+                cursor: "pointer",
+              }}
             />
             <label
               for="alerting-enabled"
-              class="text-sm text-text-secondary"
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+              }}
             >
               Enable alerting (webhook receiver and email notifications)
             </label>
           </div>
-          <div class="grid grid-cols-2 gap-4">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "12px",
+            }}
+          >
             <Input
               label="Rate Limit (emails/hour)"
               type="number"
@@ -182,12 +222,18 @@ export default function AlertSettings() {
             />
           </div>
         </div>
-      </Card>
+      </WidgetShell>
 
       {/* SMTP Configuration */}
-      <Card title="SMTP Configuration">
-        <div class="p-4 space-y-4">
-          <div class="grid grid-cols-2 gap-4">
+      <WidgetShell title="SMTP Configuration">
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "12px",
+            }}
+          >
             <Input
               label="SMTP Host"
               value={smtpHost.value}
@@ -204,7 +250,13 @@ export default function AlertSettings() {
                   parseInt((e.target as HTMLInputElement).value) || 587}
             />
           </div>
-          <div class="grid grid-cols-2 gap-4">
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: "12px",
+            }}
+          >
             <Input
               label="Username"
               value={smtpUsername.value}
@@ -229,23 +281,32 @@ export default function AlertSettings() {
               smtpFrom.value = (e.target as HTMLInputElement).value}
             placeholder="alerts@example.com"
           />
-          <div class="flex items-center gap-3">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <input
               type="checkbox"
               id="tls-insecure"
               checked={smtpTLSInsecure.value}
               onChange={(e) =>
                 smtpTLSInsecure.value = (e.target as HTMLInputElement).checked}
-              class="h-4 w-4 rounded border-border-primary text-accent"
+              style={{
+                width: "16px",
+                height: "16px",
+                accentColor: "var(--accent)",
+                cursor: "pointer",
+              }}
             />
             <label
               for="tls-insecure"
-              class="text-sm text-text-secondary"
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+              }}
             >
               Skip TLS verification (development only)
             </label>
           </div>
-          <div class="flex gap-2">
+          <div style={{ display: "flex", gap: "8px" }}>
             <Button onClick={handleSave} disabled={saving.value}>
               {saving.value ? "Saving..." : "Save Settings"}
             </Button>
@@ -258,17 +319,35 @@ export default function AlertSettings() {
             </Button>
           </div>
         </div>
-      </Card>
+      </WidgetShell>
 
       {/* Webhook Configuration */}
-      <Card title="Webhook Configuration">
-        <div class="p-4 space-y-4">
-          <p class="text-sm text-text-secondary">
+      <WidgetShell title="Webhook Configuration">
+        <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+          <p
+            style={{ margin: 0, fontSize: "13px", color: "var(--text-muted)" }}
+          >
             Configure Alertmanager to send alerts to k8sCenter using the
             following receiver configuration:
           </p>
-          <div class="bg-base rounded-lg p-4 overflow-x-auto">
-            <pre class="text-sm text-success font-mono whitespace-pre">{`receivers:
+          {/* Solid code block — data surface stays opaque */}
+          <div
+            style={{
+              borderRadius: "9px",
+              background: "var(--bg-surface)",
+              padding: "14px 16px",
+              overflowX: "auto",
+            }}
+          >
+            <pre
+              style={{
+                margin: 0,
+                fontSize: "12px",
+                fontFamily: "monospace",
+                color: "var(--success)",
+                whiteSpace: "pre",
+              }}
+            >{`receivers:
  - name: 'kubecenter'
  webhook_configs:
  - send_resolved: true
@@ -278,14 +357,31 @@ export default function AlertSettings() {
  type: Bearer
  credentials: '<webhook-token>'`}</pre>
           </div>
-          <div class="flex items-center gap-2 text-sm text-text-secondary">
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             <span>Webhook Token:</span>
-            <code class="bg-elevated px-2 py-1 rounded text-xs">
+            <code
+              style={{
+                background: "var(--bg-elevated)",
+                padding: "2px 8px",
+                borderRadius: "6px",
+                fontSize: "12px",
+                fontFamily: "monospace",
+                color: "var(--text-primary)",
+              }}
+            >
               {settings.value?.webhookToken || "not configured"}
             </code>
           </div>
         </div>
-      </Card>
+      </WidgetShell>
     </div>
   );
 }

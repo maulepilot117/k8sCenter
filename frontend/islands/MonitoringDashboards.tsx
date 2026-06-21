@@ -4,6 +4,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import GlassCard from "@/components/ui/GlassCard.tsx";
 
 interface GrafanaDashboard {
   uid: string;
@@ -67,33 +68,77 @@ export default function MonitoringDashboards() {
   }
 
   return (
-    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "16px",
+      }}
+    >
       {dashboards.value.map((d) => (
         <a
           key={d.uid}
           href={`/api/v1/monitoring/grafana/proxy${d.url}?kiosk=1`}
           target="_blank"
           rel="noopener noreferrer"
-          class="group rounded-lg border border-border-primary bg-surface p-4 transition-colors hover:border-brand"
+          style={{
+            flex: "1 1 240px",
+            minWidth: "200px",
+            textDecoration: "none",
+            display: "block",
+          }}
         >
-          <h3 class="font-medium text-text-primary group-hover:text-brand text-text-primary">
-            {d.title}
-          </h3>
-          {d.tags && d.tags.length > 0 && (
-            <div class="mt-2 flex flex-wrap gap-1">
-              {d.tags.map((tag) => (
-                <span
-                  key={tag}
-                  class="rounded-full bg-elevated px-2 py-0.5 text-xs text-text-secondary bg-elevated text-text-muted"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
-          <p class="mt-2 text-xs text-text-muted">
-            UID: {d.uid}
-          </p>
+          <GlassCard
+            padding={16}
+            style={{ height: "100%", transition: "border-color 0.15s" }}
+          >
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "14px",
+                fontWeight: 650,
+                color: "var(--text-primary)",
+              }}
+            >
+              {d.title}
+            </h3>
+            {d.tags && d.tags.length > 0 && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "4px",
+                }}
+              >
+                {d.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    style={{
+                      borderRadius: "6px",
+                      background: "var(--bg-elevated)",
+                      padding: "2px 8px",
+                      fontSize: "11px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+            <p
+              style={{
+                marginTop: "10px",
+                marginBottom: 0,
+                fontSize: "11px",
+                color: "var(--text-muted)",
+                fontFamily: "monospace",
+              }}
+            >
+              {d.uid}
+            </p>
+          </GlassCard>
         </a>
       ))}
     </div>
