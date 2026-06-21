@@ -1,10 +1,6 @@
 import { define } from "@/utils.ts";
+import VeleroDashboard from "@/islands/VeleroDashboard.tsx";
 
-export const handler = define.handlers({
-  GET(_ctx) {
-    return new Response(null, {
-      status: 302,
-      headers: { Location: "/backup/backups" },
-    });
-  },
+export default define.page(function BackupOverviewPage(_ctx) {
+  return <VeleroDashboard initialTab="overview" />;
 });
