@@ -6,7 +6,7 @@ import { selectedNamespace } from "@/lib/namespace.ts";
 import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
-import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface SummaryData {
   configmaps: number;
@@ -123,82 +123,77 @@ export default function ConfigDashboard(
   const s = summary.value;
 
   const summaryCards = [
-    {
-      label: "ConfigMaps",
-      value: s.configmaps,
-      displayValue: String(s.configmaps),
-      max: Math.max(s.configmaps, 1),
-      ringValue: s.configmaps,
-      color: "var(--accent)",
-    },
-    {
-      label: "Secrets",
-      value: s.secrets,
-      displayValue: String(s.secrets),
-      max: Math.max(s.secrets, 1),
-      ringValue: s.secrets,
-      color: "var(--accent-secondary)",
-    },
+    { label: "ConfigMaps", value: s.configmaps, color: "var(--accent)" },
+    { label: "Secrets", value: s.secrets, color: "var(--accent-2)" },
     {
       label: "Service Accounts",
       value: s.serviceaccounts,
-      displayValue: String(s.serviceaccounts),
-      max: Math.max(s.serviceaccounts, 1),
-      ringValue: s.serviceaccounts,
       color: "var(--success)",
     },
     {
       label: "Resource Quotas",
       value: s.resourcequotas,
-      displayValue: String(s.resourcequotas),
-      max: Math.max(s.resourcequotas, 1),
-      ringValue: s.resourcequotas,
       color: "var(--warning)",
     },
-    {
-      label: "Limit Ranges",
-      value: s.limitranges,
-      displayValue: String(s.limitranges),
-      max: Math.max(s.limitranges, 1),
-      ringValue: s.limitranges,
-      color: "var(--warning)",
-    },
+    { label: "Limit Ranges", value: s.limitranges, color: "var(--warning)" },
   ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          marginBottom: "20px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
             Configuration
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             Manage ConfigMaps, Secrets, Service Accounts, and resource
             constraints
           </p>
         </div>
-        <div class="flex gap-2">
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <a
             href="/config/secrets/new"
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 14px",
               fontSize: "13px",
               fontWeight: 500,
-              color: "var(--text-secondary)",
+              color: "var(--text-muted)",
               background: "transparent",
-              borderRadius: "6px",
+              borderRadius: "9px",
               textDecoration: "none",
               border: "1px solid var(--border-primary)",
               cursor: "pointer",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
@@ -214,24 +209,24 @@ export default function ConfigDashboard(
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
+              fontWeight: 600,
               color: "var(--bg-base)",
               background: "var(--accent)",
-              borderRadius: "6px",
+              borderRadius: "9px",
               textDecoration: "none",
               border: "none",
               cursor: "pointer",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
@@ -243,57 +238,46 @@ export default function ConfigDashboard(
       {/* Sub-navigation */}
       <SubNav tabs={flattenGroups(configSection)} currentPath={currentPath} />
 
-      {/* Summary strip */}
+      {/* Summary strip \u2014 WidgetShell KPI tiles (glass chrome, data inside) */}
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          gap: "var(--grid-gap, 12px)",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "12px",
           marginBottom: "20px",
         }}
       >
         {summaryCards.map((card) => (
-          <div
+          <WidgetShell
             key={card.label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              padding: "14px 16px",
-              borderRadius: "10px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-              transition: "border-color 0.2s ease",
-            }}
+            padding={16}
+            style={{ flex: "1 1 140px", minWidth: "130px" }}
           >
-            <SummaryRing
-              value={loading.value ? 0 : card.ringValue}
-              max={card.max}
-              size={40}
-              color={card.color}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {card.label}
-              </div>
-              <div
-                style={{
-                  fontSize: "16px",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  color: card.color,
-                }}
-              >
-                {loading.value ? "\u2014" : card.displayValue}
-              </div>
+            <div
+              style={{
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                color: "var(--text-muted)",
+                marginBottom: "6px",
+              }}
+            >
+              {card.label}
             </div>
-          </div>
+            <div
+              style={{
+                fontSize: "24px",
+                fontWeight: 700,
+                fontFamily: "var(--font-mono)",
+                color: loading.value ? "var(--text-muted)" : card.color,
+                lineHeight: 1,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {loading.value ? "\u2014" : String(card.value)}
+            </div>
+          </WidgetShell>
         ))}
       </div>
 
