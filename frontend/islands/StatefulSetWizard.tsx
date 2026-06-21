@@ -1,6 +1,5 @@
 import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
@@ -19,14 +18,13 @@ import type {
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface VolumeClaimEntry {
   name: string;
@@ -56,10 +54,10 @@ interface StatefulSetFormState {
   volumeClaimTemplates: VolumeClaimEntry[];
 }
 
-const STEPS = [
-  { title: "Basics" },
-  { title: "Container & Volumes" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Basics", sub: "Name & service" },
+  { label: "Container & Volumes", sub: "Image, ports & PVCs" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 const POD_MANAGEMENT_OPTIONS = [
@@ -88,7 +86,9 @@ function initialState(): StatefulSetFormState {
   };
 }
 
-export default function StatefulSetWizard() {
+export default function StatefulSetWizard(
+  { onClose }: { onClose: () => void },
+) {
   const currentStep = useSignal(0);
   const form = useSignal<StatefulSetFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -276,344 +276,329 @@ export default function StatefulSetWizard() {
     }
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  serviceName: ${
+      f.serviceName || name + "-headless"
+    }\n  replicas: ${f.replicas}\n  selector:\n    matchLabels:\n      app: ${name}\n  template:\n    metadata:\n      labels:\n        app: ${name}\n    spec:\n      containers:\n        - name: ${name}\n          image: ${
+      f.image || "<image>"
+    }`;
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create StatefulSet
-        </h1>
-        <a
-          href="/workloads/statefulsets"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create StatefulSet"
+      subtitle={`${form.value.namespace || "default"}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
+          <ellipse cx="10" cy="6" rx="7" ry="2.5" />
+          <path d="M3 6v4c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" />
+          <path d="M3 10v4c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-4" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i <= currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onNext={() => {
+        if (currentStep.value < 2) goNext();
+        else onClose();
+      }}
+      nextLabel={currentStep.value < 2 ? "Continue" : "Close"}
+      yaml={currentStep.value < 2 ? manifest() : previewYaml.value}
+    >
+      {/* Step 1: Basics */}
+      {currentStep.value === 0 && (
+        <div class="max-w-lg space-y-4">
+          <Input
+            label="Name"
+            value={form.value.name}
+            onInput={(e) =>
+              updateField("name", (e.target as HTMLInputElement).value)}
+            placeholder="my-statefulset"
+            error={errors.value.name}
+            required
+          />
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
+          <NamespaceSelect
+            value={form.value.namespace}
+            namespaces={namespaces.value}
+            error={errors.value.namespace}
+            onChange={(ns) => updateField("namespace", ns)}
+          />
 
-      <div class="mt-6">
-        {/* Step 1: Basics */}
-        {currentStep.value === 0 && (
-          <div class="max-w-lg space-y-4">
-            <Input
-              label="Name"
-              value={form.value.name}
-              onInput={(e) =>
-                updateField("name", (e.target as HTMLInputElement).value)}
-              placeholder="my-statefulset"
-              error={errors.value.name}
-              required
-            />
+          <Input
+            label="Headless Service Name"
+            value={form.value.serviceName}
+            onInput={(e) =>
+              updateField(
+                "serviceName",
+                (e.target as HTMLInputElement).value,
+              )}
+            placeholder="my-statefulset-headless"
+            error={errors.value.serviceName}
+            required
+          />
+          <p class="-mt-2 text-xs text-text-muted">
+            The headless Service that governs this StatefulSet. Must exist or be
+            created separately.
+          </p>
 
-            <NamespaceSelect
-              value={form.value.namespace}
-              namespaces={namespaces.value}
-              error={errors.value.namespace}
-              onChange={(ns) => updateField("namespace", ns)}
-            />
+          <Input
+            label="Replicas"
+            type="number"
+            value={String(form.value.replicas)}
+            onInput={(e) =>
+              updateField(
+                "replicas",
+                parseInt((e.target as HTMLInputElement).value) || 0,
+              )}
+            min={0}
+            max={1000}
+            error={errors.value.replicas}
+          />
 
-            <Input
-              label="Headless Service Name"
-              value={form.value.serviceName}
-              onInput={(e) =>
-                updateField(
-                  "serviceName",
-                  (e.target as HTMLInputElement).value,
-                )}
-              placeholder="my-statefulset-headless"
-              error={errors.value.serviceName}
-              required
-            />
-            <p class="-mt-2 text-xs text-text-muted">
-              The headless Service that governs this StatefulSet. Must exist or
-              be created separately.
-            </p>
+          <Select
+            label="Pod Management Policy"
+            value={form.value.podManagementPolicy}
+            onChange={(e) =>
+              updateField(
+                "podManagementPolicy",
+                (e.target as HTMLSelectElement).value,
+              )}
+            options={POD_MANAGEMENT_OPTIONS}
+          />
+        </div>
+      )}
 
-            <Input
-              label="Replicas"
-              type="number"
-              value={String(form.value.replicas)}
-              onInput={(e) =>
-                updateField(
-                  "replicas",
-                  parseInt((e.target as HTMLInputElement).value) || 0,
-                )}
-              min={0}
-              max={1000}
-              error={errors.value.replicas}
-            />
+      {/* Step 2: Container & Volumes */}
+      {currentStep.value === 1 && (
+        <div class="space-y-8">
+          <ContainerForm
+            image={form.value.image}
+            command={form.value.command}
+            args={form.value.args}
+            ports={form.value.ports}
+            envVars={form.value.envVars}
+            requestCpu={form.value.requestCpu}
+            requestMemory={form.value.requestMemory}
+            limitCpu={form.value.limitCpu}
+            limitMemory={form.value.limitMemory}
+            errors={errors.value}
+            onChange={updateField}
+          />
 
-            <Select
-              label="Pod Management Policy"
-              value={form.value.podManagementPolicy}
-              onChange={(e) =>
-                updateField(
-                  "podManagementPolicy",
-                  (e.target as HTMLSelectElement).value,
-                )}
-              options={POD_MANAGEMENT_OPTIONS}
-            />
-          </div>
-        )}
+          {/* Volume Claim Templates */}
+          <div class="max-w-2xl space-y-4">
+            <div>
+              <h3 class="text-sm font-medium text-text-secondary">
+                Volume Claim Templates
+              </h3>
+              <p class="mt-1 text-xs text-text-muted">
+                Persistent storage for each pod replica. Each pod gets its own
+                PVC.
+              </p>
+            </div>
 
-        {/* Step 2: Container & Volumes */}
-        {currentStep.value === 1 && (
-          <div class="space-y-8">
-            <ContainerForm
-              image={form.value.image}
-              command={form.value.command}
-              args={form.value.args}
-              ports={form.value.ports}
-              envVars={form.value.envVars}
-              requestCpu={form.value.requestCpu}
-              requestMemory={form.value.requestMemory}
-              limitCpu={form.value.limitCpu}
-              limitMemory={form.value.limitMemory}
-              errors={errors.value}
-              onChange={updateField}
-            />
+            {form.value.volumeClaimTemplates.map((vct, i) => (
+              <div
+                key={i}
+                class="rounded-lg border border-border-primary p-4 space-y-3"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-sm font-medium text-text-secondary">
+                    Volume {i + 1}
+                  </span>
+                  <RemoveButton
+                    onClick={() =>
+                      updateField(
+                        "volumeClaimTemplates",
+                        form.value.volumeClaimTemplates.filter((_, idx) =>
+                          idx !== i
+                        ),
+                      )}
+                    title="Remove volume"
+                    class="p-1"
+                  />
+                </div>
 
-            {/* Volume Claim Templates */}
-            <div class="max-w-2xl space-y-4">
-              <div>
-                <h3 class="text-sm font-medium text-text-secondary">
-                  Volume Claim Templates
-                </h3>
-                <p class="mt-1 text-xs text-text-muted">
-                  Persistent storage for each pod replica. Each pod gets its own
-                  PVC.
-                </p>
-              </div>
+                <Input
+                  label="Volume Name"
+                  value={vct.name}
+                  onInput={(e) => {
+                    const updated = [...form.value.volumeClaimTemplates];
+                    updated[i] = {
+                      ...updated[i],
+                      name: (e.target as HTMLInputElement).value,
+                    };
+                    updateField("volumeClaimTemplates", updated);
+                  }}
+                  placeholder="data"
+                  error={errors.value[`vct[${i}].name`]}
+                  required
+                />
 
-              {form.value.volumeClaimTemplates.map((vct, i) => (
-                <div
-                  key={i}
-                  class="rounded-lg border border-border-primary p-4 space-y-3"
-                >
-                  <div class="flex items-center justify-between">
-                    <span class="text-sm font-medium text-text-secondary">
-                      Volume {i + 1}
-                    </span>
-                    <RemoveButton
-                      onClick={() =>
-                        updateField(
-                          "volumeClaimTemplates",
-                          form.value.volumeClaimTemplates.filter((_, idx) =>
-                            idx !== i
-                          ),
-                        )}
-                      title="Remove volume"
-                      class="p-1"
-                    />
-                  </div>
-
-                  <Input
-                    label="Volume Name"
-                    value={vct.name}
-                    onInput={(e) => {
+                <div>
+                  <label class="block text-sm font-medium text-text-secondary">
+                    Storage Class
+                  </label>
+                  <select
+                    value={vct.storageClassName}
+                    onChange={(e) => {
                       const updated = [...form.value.volumeClaimTemplates];
                       updated[i] = {
                         ...updated[i],
-                        name: (e.target as HTMLInputElement).value,
+                        storageClassName: (e.target as HTMLSelectElement).value,
                       };
                       updateField("volumeClaimTemplates", updated);
                     }}
-                    placeholder="data"
-                    error={errors.value[`vct[${i}].name`]}
-                    required
-                  />
+                    class={WIZARD_INPUT_CLASS}
+                  >
+                    <option value="">Default (cluster default)</option>
+                    {storageClasses.value.map((sc: StorageClassItem) => (
+                      <option key={sc.metadata.name} value={sc.metadata.name}>
+                        {sc.metadata.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                  <div>
-                    <label class="block text-sm font-medium text-text-secondary">
-                      Storage Class
-                    </label>
+                <div>
+                  <label class="block text-sm font-medium text-text-secondary">
+                    Size <span class="text-error">*</span>
+                  </label>
+                  <div class="mt-1 flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      value={vct.sizeValue}
+                      onInput={(e) => {
+                        const updated = [...form.value.volumeClaimTemplates];
+                        updated[i] = {
+                          ...updated[i],
+                          sizeValue: (e.target as HTMLInputElement).value,
+                        };
+                        updateField("volumeClaimTemplates", updated);
+                      }}
+                      class="w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+                    />
                     <select
-                      value={vct.storageClassName}
+                      value={vct.sizeUnit}
                       onChange={(e) => {
                         const updated = [...form.value.volumeClaimTemplates];
                         updated[i] = {
                           ...updated[i],
-                          storageClassName:
-                            (e.target as HTMLSelectElement).value,
+                          sizeUnit: (e.target as HTMLSelectElement).value,
                         };
                         updateField("volumeClaimTemplates", updated);
                       }}
-                      class={WIZARD_INPUT_CLASS}
+                      class="rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
                     >
-                      <option value="">Default (cluster default)</option>
-                      {storageClasses.value.map((sc: StorageClassItem) => (
-                        <option key={sc.metadata.name} value={sc.metadata.name}>
-                          {sc.metadata.name}
-                        </option>
-                      ))}
+                      <option value="Mi">Mi</option>
+                      <option value="Gi">Gi</option>
+                      <option value="Ti">Ti</option>
                     </select>
                   </div>
+                  {errors.value[`vct[${i}].size`] && (
+                    <p class="mt-1 text-xs text-error">
+                      {errors.value[`vct[${i}].size`]}
+                    </p>
+                  )}
+                </div>
 
-                  <div>
-                    <label class="block text-sm font-medium text-text-secondary">
-                      Size <span class="text-error">*</span>
-                    </label>
-                    <div class="mt-1 flex gap-2">
-                      <input
-                        type="number"
-                        min="1"
-                        value={vct.sizeValue}
-                        onInput={(e) => {
-                          const updated = [...form.value.volumeClaimTemplates];
-                          updated[i] = {
-                            ...updated[i],
-                            sizeValue: (e.target as HTMLInputElement).value,
-                          };
-                          updateField("volumeClaimTemplates", updated);
-                        }}
-                        class="w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                      />
-                      <select
-                        value={vct.sizeUnit}
-                        onChange={(e) => {
-                          const updated = [...form.value.volumeClaimTemplates];
-                          updated[i] = {
-                            ...updated[i],
-                            sizeUnit: (e.target as HTMLSelectElement).value,
-                          };
-                          updateField("volumeClaimTemplates", updated);
-                        }}
-                        class="rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+                <div>
+                  <label class="block text-sm font-medium text-text-secondary">
+                    Access Mode
+                  </label>
+                  <div class="mt-2 space-y-1">
+                    {ACCESS_MODES.map((mode) => (
+                      <label
+                        key={mode.value}
+                        class="flex items-center gap-3 rounded-md border border-border-primary px-3 py-1.5 cursor-pointer hover:bg-surface /50"
                       >
-                        <option value="Mi">Mi</option>
-                        <option value="Gi">Gi</option>
-                        <option value="Ti">Ti</option>
-                      </select>
-                    </div>
-                    {errors.value[`vct[${i}].size`] && (
-                      <p class="mt-1 text-xs text-error">
-                        {errors.value[`vct[${i}].size`]}
-                      </p>
-                    )}
-                  </div>
-
-                  <div>
-                    <label class="block text-sm font-medium text-text-secondary">
-                      Access Mode
-                    </label>
-                    <div class="mt-2 space-y-1">
-                      {ACCESS_MODES.map((mode) => (
-                        <label
-                          key={mode.value}
-                          class="flex items-center gap-3 rounded-md border border-border-primary px-3 py-1.5 cursor-pointer hover:bg-surface /50"
-                        >
-                          <input
-                            type="radio"
-                            name={`vct-${i}-accessMode`}
-                            value={mode.value}
-                            checked={vct.accessMode === mode.value}
-                            onChange={() => {
-                              const updated = [
-                                ...form.value.volumeClaimTemplates,
-                              ];
-                              updated[i] = {
-                                ...updated[i],
-                                accessMode: mode.value,
-                              };
-                              updateField("volumeClaimTemplates", updated);
-                            }}
-                            class="text-brand focus:ring-brand"
-                          />
-                          <div>
-                            <span class="text-sm font-medium text-text-secondary">
-                              {mode.label}
-                            </span>
-                            <span class="ml-2 text-xs text-text-muted">
-                              {mode.desc}
-                            </span>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
+                        <input
+                          type="radio"
+                          name={`vct-${i}-accessMode`}
+                          value={mode.value}
+                          checked={vct.accessMode === mode.value}
+                          onChange={() => {
+                            const updated = [
+                              ...form.value.volumeClaimTemplates,
+                            ];
+                            updated[i] = {
+                              ...updated[i],
+                              accessMode: mode.value,
+                            };
+                            updateField("volumeClaimTemplates", updated);
+                          }}
+                          class="text-brand focus:ring-brand"
+                        />
+                        <div>
+                          <span class="text-sm font-medium text-text-secondary">
+                            {mode.label}
+                          </span>
+                          <span class="ml-2 text-xs text-text-muted">
+                            {mode.desc}
+                          </span>
+                        </div>
+                      </label>
+                    ))}
                   </div>
                 </div>
-              ))}
+              </div>
+            ))}
 
-              {form.value.volumeClaimTemplates.length < 20 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    updateField("volumeClaimTemplates", [
-                      ...form.value.volumeClaimTemplates,
-                      {
-                        name: "",
-                        storageClassName: storageClasses.value.length > 0
-                          ? storageClasses.value[0].metadata.name
-                          : "",
-                        sizeValue: "10",
-                        sizeUnit: "Gi",
-                        accessMode: "ReadWriteOnce",
-                      },
-                    ])}
-                  class="text-sm text-brand hover:text-brand/80"
-                >
-                  + Add Volume Claim Template
-                </button>
-              )}
-            </div>
+            {form.value.volumeClaimTemplates.length < 20 && (
+              <button
+                type="button"
+                onClick={() =>
+                  updateField("volumeClaimTemplates", [
+                    ...form.value.volumeClaimTemplates,
+                    {
+                      name: "",
+                      storageClassName: storageClasses.value.length > 0
+                        ? storageClasses.value[0].metadata.name
+                        : "",
+                      sizeValue: "10",
+                      sizeUnit: "Gi",
+                      accessMode: "ReadWriteOnce",
+                    },
+                  ])}
+                class="text-sm text-brand hover:text-brand/80"
+              >
+                + Add Volume Claim Template
+              </button>
+            )}
           </div>
-        )}
-
-        {/* Step 3: Review */}
-        {currentStep.value === 2 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/workloads/statefulsets"
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {currentStep.value < 2 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 1 ? "Preview YAML" : "Next"}
-          </Button>
         </div>
       )}
 
-      {currentStep.value === 2 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {/* Step 3: Review */}
+      {currentStep.value === 2 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/statefulsets"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

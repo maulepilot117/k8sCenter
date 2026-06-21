@@ -1,23 +1,21 @@
 import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
   DNS_LABEL_REGEX,
   ENV_VAR_NAME_REGEX,
   MAX_PORT,
+  RESTART_POLICY_OPTIONS,
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
-import { RESTART_POLICY_OPTIONS } from "@/lib/wizard-constants.ts";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface JobFormState {
   name: string;
@@ -38,10 +36,10 @@ interface JobFormState {
   limitMemory: string;
 }
 
-const STEPS = [
-  { title: "Basics" },
-  { title: "Container" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Basics", sub: "Name & job config" },
+  { label: "Container", sub: "Image & resources" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): JobFormState {
@@ -65,7 +63,7 @@ function initialState(): JobFormState {
   };
 }
 
-export default function JobWizard() {
+export default function JobWizard({ onClose }: { onClose: () => void }) {
   const currentStep = useSignal(0);
   const form = useSignal<JobFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -219,227 +217,221 @@ export default function JobWizard() {
     }
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  completions: ${
+      f.completions || 1
+    }\n  parallelism: ${f.parallelism || 1}\n  backoffLimit: ${
+      f.backoffLimit || 6
+    }\n  template:\n    spec:\n      restartPolicy: ${f.restartPolicy}\n      containers:\n        - name: ${name}\n          image: ${
+      f.image || "<image>"
+    }`;
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const nextLabel = currentStep.value === 0
+    ? "Continue"
+    : currentStep.value === 1
+    ? "Preview YAML"
+    : "Close";
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Job
-        </h1>
-        <a
-          href="/workloads/jobs"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Job"
+      subtitle={form.value.namespace || "default"}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
+          <circle cx="10" cy="10" r="7.5" />
+          <path d="M10 6v4l2.5 2.5" />
+          <path d="M7.5 2.5l5 0" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i <= currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onNext={() => {
+        if (currentStep.value < 2) goNext();
+        else onClose();
+      }}
+      nextLabel={nextLabel}
+      yaml={currentStep.value < 2 ? manifest() : previewYaml.value}
+    >
+      {currentStep.value === 0 && (
+        <div class="space-y-6 max-w-2xl">
+          {/* Name */}
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-text-secondary">
+              Job Name <span class="text-danger">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField(
+                  "name",
+                  (e.target as HTMLInputElement).value,
+                )}
+              placeholder="my-batch-job"
+              class={WIZARD_INPUT_CLASS}
+            />
+            {errors.value.name && (
+              <p class="text-sm text-danger">{errors.value.name}</p>
+            )}
+          </div>
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="space-y-6 max-w-2xl">
-            {/* Name */}
-            <div class="space-y-1">
-              <label class="block text-sm font-medium text-text-secondary">
-                Job Name <span class="text-danger">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField(
-                    "name",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="my-batch-job"
-                class={WIZARD_INPUT_CLASS}
-              />
-              {errors.value.name && (
-                <p class="text-sm text-danger">{errors.value.name}</p>
-              )}
-            </div>
-
-            {/* Namespace */}
-            <div class="space-y-1">
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-danger">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-              {errors.value.namespace && (
-                <p class="text-sm text-danger">{errors.value.namespace}</p>
-              )}
-            </div>
-
-            {/* Completions */}
-            <div class="space-y-1">
-              <label class="block text-sm font-medium text-text-secondary">
-                Completions
-              </label>
-              <input
-                type="number"
-                value={form.value.completions}
-                onInput={(e) =>
-                  updateField(
-                    "completions",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="1"
-                min={0}
-                class={WIZARD_INPUT_CLASS}
-              />
-              {errors.value.completions && (
-                <p class="text-sm text-danger">{errors.value.completions}</p>
-              )}
-              <p class="text-xs text-text-muted">
-                Number of successful completions required.
-              </p>
-            </div>
-
-            {/* Parallelism */}
-            <div class="space-y-1">
-              <label class="block text-sm font-medium text-text-secondary">
-                Parallelism
-              </label>
-              <input
-                type="number"
-                value={form.value.parallelism}
-                onInput={(e) =>
-                  updateField(
-                    "parallelism",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="1"
-                min={0}
-                class={WIZARD_INPUT_CLASS}
-              />
-              {errors.value.parallelism && (
-                <p class="text-sm text-danger">{errors.value.parallelism}</p>
-              )}
-              <p class="text-xs text-text-muted">
-                Maximum number of pods running in parallel.
-              </p>
-            </div>
-
-            {/* Backoff Limit */}
-            <div class="space-y-1">
-              <label class="block text-sm font-medium text-text-secondary">
-                Backoff Limit
-              </label>
-              <input
-                type="number"
-                value={form.value.backoffLimit}
-                onInput={(e) =>
-                  updateField(
-                    "backoffLimit",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="6"
-                min={0}
-                class={WIZARD_INPUT_CLASS}
-              />
-              {errors.value.backoffLimit && (
-                <p class="text-sm text-danger">{errors.value.backoffLimit}</p>
-              )}
-              <p class="text-xs text-text-muted">
-                Number of retries before marking the job as failed.
-              </p>
-            </div>
-
-            {/* Restart Policy */}
-            <Select
-              label="Restart Policy"
-              value={form.value.restartPolicy}
+          {/* Namespace */}
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-text-secondary">
+              Namespace <span class="text-danger">*</span>
+            </label>
+            <select
+              value={form.value.namespace}
               onChange={(e) =>
                 updateField(
-                  "restartPolicy",
+                  "namespace",
                   (e.target as HTMLSelectElement).value,
                 )}
-              options={RESTART_POLICY_OPTIONS}
-            />
+              class={WIZARD_INPUT_CLASS}
+            >
+              {namespaces.value.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              ))}
+            </select>
+            {errors.value.namespace && (
+              <p class="text-sm text-danger">{errors.value.namespace}</p>
+            )}
           </div>
-        )}
 
-        {currentStep.value === 1 && (
-          <ContainerForm
-            image={form.value.image}
-            command={form.value.command}
-            args={form.value.args}
-            ports={form.value.ports}
-            envVars={form.value.envVars}
-            requestCpu={form.value.requestCpu}
-            requestMemory={form.value.requestMemory}
-            limitCpu={form.value.limitCpu}
-            limitMemory={form.value.limitMemory}
-            errors={errors.value}
-            onChange={updateField}
+          {/* Completions */}
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-text-secondary">
+              Completions
+            </label>
+            <input
+              type="number"
+              value={form.value.completions}
+              onInput={(e) =>
+                updateField(
+                  "completions",
+                  (e.target as HTMLInputElement).value,
+                )}
+              placeholder="1"
+              min={0}
+              class={WIZARD_INPUT_CLASS}
+            />
+            {errors.value.completions && (
+              <p class="text-sm text-danger">{errors.value.completions}</p>
+            )}
+            <p class="text-xs text-text-muted">
+              Number of successful completions required.
+            </p>
+          </div>
+
+          {/* Parallelism */}
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-text-secondary">
+              Parallelism
+            </label>
+            <input
+              type="number"
+              value={form.value.parallelism}
+              onInput={(e) =>
+                updateField(
+                  "parallelism",
+                  (e.target as HTMLInputElement).value,
+                )}
+              placeholder="1"
+              min={0}
+              class={WIZARD_INPUT_CLASS}
+            />
+            {errors.value.parallelism && (
+              <p class="text-sm text-danger">{errors.value.parallelism}</p>
+            )}
+            <p class="text-xs text-text-muted">
+              Maximum number of pods running in parallel.
+            </p>
+          </div>
+
+          {/* Backoff Limit */}
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-text-secondary">
+              Backoff Limit
+            </label>
+            <input
+              type="number"
+              value={form.value.backoffLimit}
+              onInput={(e) =>
+                updateField(
+                  "backoffLimit",
+                  (e.target as HTMLInputElement).value,
+                )}
+              placeholder="6"
+              min={0}
+              class={WIZARD_INPUT_CLASS}
+            />
+            {errors.value.backoffLimit && (
+              <p class="text-sm text-danger">{errors.value.backoffLimit}</p>
+            )}
+            <p class="text-xs text-text-muted">
+              Number of retries before marking the job as failed.
+            </p>
+          </div>
+
+          {/* Restart Policy */}
+          <Select
+            label="Restart Policy"
+            value={form.value.restartPolicy}
+            onChange={(e) =>
+              updateField(
+                "restartPolicy",
+                (e.target as HTMLSelectElement).value,
+              )}
+            options={RESTART_POLICY_OPTIONS}
           />
-        )}
-
-        {currentStep.value === 2 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/workloads/jobs"
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {currentStep.value < 2 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 1 ? "Preview YAML" : "Next"}
-          </Button>
         </div>
       )}
 
-      {currentStep.value === 2 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <ContainerForm
+          image={form.value.image}
+          command={form.value.command}
+          args={form.value.args}
+          ports={form.value.ports}
+          envVars={form.value.envVars}
+          requestCpu={form.value.requestCpu}
+          requestMemory={form.value.requestMemory}
+          limitCpu={form.value.limitCpu}
+          limitMemory={form.value.limitMemory}
+          errors={errors.value}
+          onChange={updateField}
+        />
       )}
-    </div>
+
+      {currentStep.value === 2 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/jobs"
+        />
+      )}
+    </WizardShell>
   );
 }

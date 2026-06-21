@@ -1,14 +1,12 @@
 import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface HPAMetricState {
   type: "Resource";
@@ -27,10 +25,25 @@ interface HPAFormState {
   metrics: HPAMetricState[];
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Target, replicas & metrics" },
+  { label: "Review", sub: "Preview & apply" },
 ];
+
+const HPA_ICON = (
+  <svg
+    width="21"
+    height="21"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M3 10h14M13 6l4 4-4 4M7 14l-4-4 4-4" />
+  </svg>
+);
 
 function initialState(): HPAFormState {
   const ns = initialNamespace();
@@ -50,7 +63,7 @@ function initialState(): HPAFormState {
   };
 }
 
-export default function HPAWizard() {
+export default function HPAWizard({ onClose }: { onClose: () => void }) {
   const currentStep = useSignal(0);
   const form = useSignal<HPAFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -152,10 +165,6 @@ export default function HPAWizard() {
     await fetchPreview();
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
-  };
-
   const fetchPreview = async () => {
     previewLoading.value = true;
     previewError.value = null;
@@ -191,320 +200,312 @@ export default function HPAWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: ${f.targetKind}\n    name: ${
+      f.targetName || "<target>"
+    }\n  minReplicas: ${f.minReplicas}\n  maxReplicas: ${f.maxReplicas}`;
+  };
+
+  const nextLabel = currentStep.value === 0 ? "Preview YAML" : "Close";
+
+  const handleNext = () => {
+    if (currentStep.value === 1) {
+      onClose();
+    } else {
+      goNext();
+    }
+  };
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create HorizontalPodAutoscaler
-        </h1>
-        <a
-          href="/scaling/hpas"
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
+    <WizardShell
+      title="Create HorizontalPodAutoscaler"
+      icon={HPA_ICON}
+      subtitle="Automatically scale workload replicas"
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => {
+        if (currentStep.value > 0) currentStep.value = 0;
+      }}
+      onNext={handleNext}
+      nextLabel={nextLabel}
+      yaml={currentStep.value === 1 ? undefined : manifest()}
+    >
+      {currentStep.value === 0 && (
+        <div class="mx-auto max-w-lg space-y-4">
+          {/* Name */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Name <span class="text-danger">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class={WIZARD_INPUT_CLASS}
+              placeholder="e.g. my-app-hpa"
+            />
+            {errors.value.name && (
+              <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
+            )}
+          </div>
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
+          {/* Namespace */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Namespace <span class="text-danger">*</span>
+            </label>
+            <select
+              value={form.value.namespace}
+              onChange={(e) =>
+                updateField(
+                  "namespace",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {namespaces.value.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              ))}
+            </select>
+            {errors.value.namespace && (
+              <p class="mt-1 text-xs text-danger">
+                {errors.value.namespace}
+              </p>
+            )}
+          </div>
 
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            {/* Name */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-danger">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. my-app-hpa"
-              />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-danger">{errors.value.name}</p>
-              )}
-            </div>
-
-            {/* Namespace */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-danger">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-              {errors.value.namespace && (
-                <p class="mt-1 text-xs text-danger">
-                  {errors.value.namespace}
-                </p>
-              )}
-            </div>
-
-            {/* Scale Target */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Scale Target
-              </label>
-              <div class="mt-2 grid grid-cols-2 gap-3">
-                <div>
-                  <label class="block text-xs text-text-muted mb-1">
-                    Kind
-                  </label>
-                  <select
-                    value={form.value.targetKind}
-                    onChange={(e) =>
-                      updateField(
-                        "targetKind",
-                        (e.target as HTMLSelectElement).value,
-                      )}
-                    class={WIZARD_INPUT_CLASS}
-                  >
-                    <option value="Deployment">Deployment</option>
-                    <option value="StatefulSet">StatefulSet</option>
-                    <option value="ReplicaSet">ReplicaSet</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="block text-xs text-text-muted mb-1">
-                    Name <span class="text-danger">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={form.value.targetName}
-                    onInput={(e) =>
-                      updateField(
-                        "targetName",
-                        (e.target as HTMLInputElement).value,
-                      )}
-                    class={WIZARD_INPUT_CLASS}
-                    placeholder="e.g. my-app"
-                  />
-                  {errors.value.targetName && (
-                    <p class="mt-1 text-xs text-danger">
-                      {errors.value.targetName}
-                    </p>
-                  )}
-                </div>
+          {/* Scale Target */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Scale Target
+            </label>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-text-muted mb-1">
+                  Kind
+                </label>
+                <select
+                  value={form.value.targetKind}
+                  onChange={(e) =>
+                    updateField(
+                      "targetKind",
+                      (e.target as HTMLSelectElement).value,
+                    )}
+                  class={WIZARD_INPUT_CLASS}
+                >
+                  <option value="Deployment">Deployment</option>
+                  <option value="StatefulSet">StatefulSet</option>
+                  <option value="ReplicaSet">ReplicaSet</option>
+                </select>
               </div>
-            </div>
-
-            {/* Replicas */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Replicas
-              </label>
-              <div class="mt-2 grid grid-cols-2 gap-3">
-                <div>
-                  <label class="block text-xs text-text-muted mb-1">
-                    Min Replicas
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.value.minReplicas}
-                    onInput={(e) =>
-                      updateField(
-                        "minReplicas",
-                        parseInt((e.target as HTMLInputElement).value, 10) || 1,
-                      )}
-                    class={WIZARD_INPUT_CLASS}
-                  />
-                  {errors.value.minReplicas && (
-                    <p class="mt-1 text-xs text-danger">
-                      {errors.value.minReplicas}
-                    </p>
-                  )}
-                </div>
-                <div>
-                  <label class="block text-xs text-text-muted mb-1">
-                    Max Replicas <span class="text-danger">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={form.value.maxReplicas}
-                    onInput={(e) =>
-                      updateField(
-                        "maxReplicas",
-                        parseInt((e.target as HTMLInputElement).value, 10) || 1,
-                      )}
-                    class={WIZARD_INPUT_CLASS}
-                  />
-                  {errors.value.maxReplicas && (
-                    <p class="mt-1 text-xs text-danger">
-                      {errors.value.maxReplicas}
-                    </p>
-                  )}
-                </div>
+              <div>
+                <label class="block text-xs text-text-muted mb-1">
+                  Name <span class="text-danger">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.value.targetName}
+                  onInput={(e) =>
+                    updateField(
+                      "targetName",
+                      (e.target as HTMLInputElement).value,
+                    )}
+                  class={WIZARD_INPUT_CLASS}
+                  placeholder="e.g. my-app"
+                />
+                {errors.value.targetName && (
+                  <p class="mt-1 text-xs text-danger">
+                    {errors.value.targetName}
+                  </p>
+                )}
               </div>
-            </div>
-
-            {/* Metrics */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Metrics
-              </label>
-              <div class="mt-2 space-y-3">
-                {form.value.metrics.map((metric, i) => (
-                  <div
-                    key={i}
-                    class="rounded-md border border-border-primary p-3 space-y-3"
-                  >
-                    <div class="flex items-center justify-between">
-                      <span class="text-xs font-medium text-text-muted">
-                        Metric {i + 1}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => removeMetric(i)}
-                        class="rounded p-1 text-text-muted hover:bg-danger-dim hover:text-danger"
-                        title="Remove metric"
-                      >
-                        <svg
-                          class="h-4 w-4"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width={2}
-                            d="M6 18L18 6M6 6l12 12"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                    <div class="grid grid-cols-3 gap-2">
-                      <div>
-                        <label class="block text-xs text-text-muted mb-1">
-                          Resource
-                        </label>
-                        <select
-                          value={metric.resourceName}
-                          onChange={(e) =>
-                            updateMetric(
-                              i,
-                              "resourceName",
-                              (e.target as HTMLSelectElement).value,
-                            )}
-                          class={WIZARD_INPUT_CLASS}
-                        >
-                          <option value="cpu">CPU</option>
-                          <option value="memory">Memory</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label class="block text-xs text-text-muted mb-1">
-                          Target Type
-                        </label>
-                        <select
-                          value={metric.targetType}
-                          onChange={(e) =>
-                            updateMetric(
-                              i,
-                              "targetType",
-                              (e.target as HTMLSelectElement).value,
-                            )}
-                          class={WIZARD_INPUT_CLASS}
-                        >
-                          <option value="Utilization">Utilization</option>
-                          <option value="AverageValue">AverageValue</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label class="block text-xs text-text-muted mb-1">
-                          Target Value <span class="text-danger">*</span>
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={metric.targetAverageValue}
-                          onInput={(e) =>
-                            updateMetric(
-                              i,
-                              "targetAverageValue",
-                              parseInt(
-                                (e.target as HTMLInputElement).value,
-                                10,
-                              ) || 1,
-                            )}
-                          class={WIZARD_INPUT_CLASS}
-                          placeholder="80"
-                        />
-                        {errors.value[`metrics_${i}_targetAverageValue`] && (
-                          <p class="mt-1 text-xs text-danger">
-                            {errors.value[`metrics_${i}_targetAverageValue`]}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={addMetric}
-                class="mt-2 text-sm text-brand hover:text-brand/80"
-              >
-                + Add metric
-              </button>
             </div>
           </div>
-        )}
 
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/scaling/hpas"
-          />
-        )}
-      </div>
+          {/* Replicas */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Replicas
+            </label>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-text-muted mb-1">
+                  Min Replicas
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={form.value.minReplicas}
+                  onInput={(e) =>
+                    updateField(
+                      "minReplicas",
+                      parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                    )}
+                  class={WIZARD_INPUT_CLASS}
+                />
+                {errors.value.minReplicas && (
+                  <p class="mt-1 text-xs text-danger">
+                    {errors.value.minReplicas}
+                  </p>
+                )}
+              </div>
+              <div>
+                <label class="block text-xs text-text-muted mb-1">
+                  Max Replicas <span class="text-danger">*</span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={form.value.maxReplicas}
+                  onInput={(e) =>
+                    updateField(
+                      "maxReplicas",
+                      parseInt((e.target as HTMLInputElement).value, 10) || 1,
+                    )}
+                  class={WIZARD_INPUT_CLASS}
+                />
+                {errors.value.maxReplicas && (
+                  <p class="mt-1 text-xs text-danger">
+                    {errors.value.maxReplicas}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
 
-      {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-end">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+          {/* Metrics */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Metrics
+            </label>
+            <div class="mt-2 space-y-3">
+              {form.value.metrics.map((metric, i) => (
+                <div
+                  key={i}
+                  class="rounded-md border border-border-primary p-3 space-y-3"
+                >
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-text-muted">
+                      Metric {i + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeMetric(i)}
+                      class="rounded p-1 text-text-muted hover:bg-danger-dim hover:text-danger"
+                      title="Remove metric"
+                    >
+                      <svg
+                        class="h-4 w-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width={2}
+                          d="M6 18L18 6M6 6l12 12"
+                        />
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="grid grid-cols-3 gap-2">
+                    <div>
+                      <label class="block text-xs text-text-muted mb-1">
+                        Resource
+                      </label>
+                      <select
+                        value={metric.resourceName}
+                        onChange={(e) =>
+                          updateMetric(
+                            i,
+                            "resourceName",
+                            (e.target as HTMLSelectElement).value,
+                          )}
+                        class={WIZARD_INPUT_CLASS}
+                      >
+                        <option value="cpu">CPU</option>
+                        <option value="memory">Memory</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs text-text-muted mb-1">
+                        Target Type
+                      </label>
+                      <select
+                        value={metric.targetType}
+                        onChange={(e) =>
+                          updateMetric(
+                            i,
+                            "targetType",
+                            (e.target as HTMLSelectElement).value,
+                          )}
+                        class={WIZARD_INPUT_CLASS}
+                      >
+                        <option value="Utilization">Utilization</option>
+                        <option value="AverageValue">AverageValue</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="block text-xs text-text-muted mb-1">
+                        Target Value <span class="text-danger">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={metric.targetAverageValue}
+                        onInput={(e) =>
+                          updateMetric(
+                            i,
+                            "targetAverageValue",
+                            parseInt(
+                              (e.target as HTMLInputElement).value,
+                              10,
+                            ) || 1,
+                          )}
+                        class={WIZARD_INPUT_CLASS}
+                        placeholder="80"
+                      />
+                      {errors.value[`metrics_${i}_targetAverageValue`] && (
+                        <p class="mt-1 text-xs text-danger">
+                          {errors.value[`metrics_${i}_targetAverageValue`]}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addMetric}
+              class="mt-2 text-sm text-brand hover:text-brand/80"
+            >
+              + Add metric
+            </button>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/scaling/hpas"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

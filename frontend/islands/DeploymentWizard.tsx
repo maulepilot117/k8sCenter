@@ -1,6 +1,5 @@
 import { useSignal } from "@preact/signals";
 import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -11,13 +10,12 @@ import {
   MAX_PORT,
   MAX_REPLICAS,
 } from "@/lib/wizard-constants.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { DeploymentBasicsStep } from "@/components/wizard/DeploymentBasicsStep.tsx";
 import { DeploymentNetworkStep } from "@/components/wizard/DeploymentNetworkStep.tsx";
 import { DeploymentResourcesStep } from "@/components/wizard/DeploymentResourcesStep.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { ProbeState } from "@/lib/wizard-types.ts";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface DeploymentFormState {
   name: string;
@@ -42,11 +40,11 @@ interface DeploymentFormState {
   strategy: { type: string; maxSurge: string; maxUnavailable: string };
 }
 
-const STEPS = [
-  { title: "Basics" },
-  { title: "Networking" },
-  { title: "Resources" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Basics", sub: "Name, image & replicas" },
+  { label: "Networking", sub: "Ports & env vars" },
+  { label: "Resources", sub: "CPU, memory & probes" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): DeploymentFormState {
@@ -69,7 +67,7 @@ function initialState(): DeploymentFormState {
   };
 }
 
-export default function DeploymentWizard() {
+export default function DeploymentWizard({ onClose }: { onClose: () => void }) {
   const currentStep = useSignal(0);
   const form = useSignal<DeploymentFormState>(initialState());
   const namespaces = useNamespaces();
@@ -142,12 +140,6 @@ export default function DeploymentWizard() {
       await fetchPreview();
     } else {
       currentStep.value = currentStep.value + 1;
-    }
-  };
-
-  const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
     }
   };
 
@@ -227,111 +219,99 @@ export default function DeploymentWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    const img = f.image || "<image>";
+    return `apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  replicas: ${f.replicas}\n  selector:\n    matchLabels:\n      app: ${name}\n  template:\n    metadata:\n      labels:\n        app: ${name}\n    spec:\n      containers:\n        - name: ${name}\n          image: ${img}`;
+  };
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Deployment
-        </h1>
-        <a
-          href="/workloads/deployments"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Deployment"
+      subtitle={`${form.value.namespace || "default"}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <DeploymentBasicsStep
-            name={form.value.name}
-            namespace={form.value.namespace}
-            image={form.value.image}
-            replicas={form.value.replicas}
-            labels={form.value.labels}
-            namespaces={namespaces.value}
-            errors={errors.value}
-            onChange={updateField}
-            onNamespaceCreated={(ns) => {
-              if (!namespaces.value.includes(ns)) {
-                namespaces.value = [...namespaces.value, ns].sort();
-              }
-            }}
-          />
-        )}
-
-        {currentStep.value === 1 && (
-          <DeploymentNetworkStep
-            ports={form.value.ports}
-            envVars={form.value.envVars}
-            errors={errors.value}
-            onChange={updateField}
-          />
-        )}
-
-        {currentStep.value === 2 && (
-          <DeploymentResourcesStep
-            cpuRequest={form.value.cpuRequest}
-            memoryRequest={form.value.memoryRequest}
-            cpuLimit={form.value.cpuLimit}
-            memoryLimit={form.value.memoryLimit}
-            livenessProbe={form.value.livenessProbe}
-            readinessProbe={form.value.readinessProbe}
-            strategy={form.value.strategy}
-            errors={errors.value}
-            onChange={updateField}
-          />
-        )}
-
-        {currentStep.value === 3 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/workloads/deployments"
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {currentStep.value < 3 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 2 ? "Preview YAML" : "Next"}
-          </Button>
-        </div>
+          <path d="M10 2.5 17 6v8l-7 3.5L3 14V6l7-3.5Z" />
+          <path d="M3 6l7 3.5L17 6" />
+          <path d="M10 9.5V17" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i <= currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onNext={() => {
+        if (currentStep.value < 3) goNext();
+        else onClose();
+      }}
+      nextLabel={currentStep.value < 3 ? "Continue" : "Close"}
+      yaml={currentStep.value < 3 ? manifest() : previewYaml.value}
+    >
+      {currentStep.value === 0 && (
+        <DeploymentBasicsStep
+          name={form.value.name}
+          namespace={form.value.namespace}
+          image={form.value.image}
+          replicas={form.value.replicas}
+          labels={form.value.labels}
+          namespaces={namespaces.value}
+          errors={errors.value}
+          onChange={updateField}
+          onNamespaceCreated={(ns) => {
+            if (!namespaces.value.includes(ns)) {
+              namespaces.value = [...namespaces.value, ns].sort();
+            }
+          }}
+        />
       )}
 
-      {currentStep.value === 3 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <DeploymentNetworkStep
+          ports={form.value.ports}
+          envVars={form.value.envVars}
+          errors={errors.value}
+          onChange={updateField}
+        />
       )}
-    </div>
+
+      {currentStep.value === 2 && (
+        <DeploymentResourcesStep
+          cpuRequest={form.value.cpuRequest}
+          memoryRequest={form.value.memoryRequest}
+          cpuLimit={form.value.cpuLimit}
+          memoryLimit={form.value.memoryLimit}
+          livenessProbe={form.value.livenessProbe}
+          readinessProbe={form.value.readinessProbe}
+          strategy={form.value.strategy}
+          errors={errors.value}
+          onChange={updateField}
+        />
+      )}
+
+      {currentStep.value === 3 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/deployments"
+        />
+      )}
+    </WizardShell>
   );
 }

@@ -1,13 +1,34 @@
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
+import { IS_BROWSER } from "fresh/runtime";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
+import DeploymentWizard from "@/islands/DeploymentWizard.tsx";
+import StatefulSetWizard from "@/islands/StatefulSetWizard.tsx";
+import DaemonSetWizard from "@/islands/DaemonSetWizard.tsx";
+import JobWizard from "@/islands/JobWizard.tsx";
+import CronJobWizard from "@/islands/CronJobWizard.tsx";
 
 const workloadsSection = DOMAIN_SECTIONS.find((s) => s.id === "workloads")!;
+
+/** Map from resource kind to a wizard component. Only kinds that have wizards. */
+const WIZARD_MAP: Record<
+  string,
+  (({ onClose }: { onClose: () => void }) => preact.JSX.Element) | null
+> = {
+  deployments: DeploymentWizard,
+  statefulsets: StatefulSetWizard,
+  daemonsets: DaemonSetWizard,
+  jobs: JobWizard,
+  cronjobs: CronJobWizard,
+};
 
 function resolveKind(currentPath: string): {
   kind: string;
   title: string;
+  /** Deep-link fallback kept for direct URL access */
   createHref?: string;
 } {
   const tabs = flattenGroups(workloadsSection);
@@ -41,6 +62,25 @@ export default function WorkloadsDashboard(
   const _ns = selectedNamespace.value;
 
   const { kind, title, createHref } = resolveKind(currentPath);
+  const WizardComponent = WIZARD_MAP[kind] ?? null;
+
+  // Wizard modal signal — open=true shows the floating WizardShell
+  const wizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (
+      new URL(globalThis.location.href).searchParams.get("action") ===
+        "create" && WizardComponent
+    ) {
+      wizardOpen.value = true;
+      // Clean the query param so back-navigation doesn't re-open
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("action");
+      globalThis.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   // Derive subtitle from live counts in the shared store.
   const total = getCount(kind) ?? 0;
@@ -54,6 +94,11 @@ export default function WorkloadsDashboard(
 
   return (
     <div class="flex flex-col h-full">
+      {/* Floating wizard modal — rendered above everything when open */}
+      {wizardOpen.value && WizardComponent && (
+        <WizardComponent onClose={() => (wizardOpen.value = false)} />
+      )}
+
       {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
@@ -87,39 +132,78 @@ export default function WorkloadsDashboard(
             {subtitle}
           </p>
         </div>
-        {createHref && (
-          <a
-            href={createHref}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "8px 16px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "var(--bg-base)",
-              background: "var(--accent)",
-              borderRadius: "9px",
-              textDecoration: "none",
-              border: "none",
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
+        {/* If the kind has a wizard, open the modal. Otherwise fall back to href. */}
+        {WizardComponent
+          ? (
+            <button
+              type="button"
+              onClick={() => (wizardOpen.value = true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "8px 16px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--bg-base)",
+                background: "var(--accent)",
+                borderRadius: "9px",
+                textDecoration: "none",
+                border: "none",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                fontFamily: "inherit",
+              }}
             >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            New {title.replace(/s$/, "")}
-          </a>
-        )}
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="M4 8h8M8 4v8" />
+              </svg>
+              New {title.replace(/s$/, "")}
+            </button>
+          )
+          : createHref
+          ? (
+            <a
+              href={createHref}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "8px 16px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--bg-base)",
+                background: "var(--accent)",
+                borderRadius: "9px",
+                textDecoration: "none",
+                border: "none",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="M4 8h8M8 4v8" />
+              </svg>
+              New {title.replace(/s$/, "")}
+            </a>
+          )
+          : null}
       </div>
 
       {/* Resource table — solid surface, no backdrop-filter */}

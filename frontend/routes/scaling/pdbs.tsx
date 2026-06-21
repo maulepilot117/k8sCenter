@@ -1,12 +1,6 @@
 import { define } from "@/utils.ts";
-import ResourceTable from "@/islands/ResourceTable.tsx";
+import PDBsDashboard from "@/islands/PDBsDashboard.tsx";
 
 export default define.page(function PDBsPage() {
-  return (
-    <ResourceTable
-      kind="poddisruptionbudgets"
-      title="PodDisruptionBudgets"
-      createHref="/scaling/pdbs/new"
-    />
-  );
+  return <PDBsDashboard />;
 });
