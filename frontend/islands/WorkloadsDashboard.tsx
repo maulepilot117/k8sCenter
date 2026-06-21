@@ -7,6 +7,7 @@ import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface SummaryData {
   totalDeployments: number;
@@ -210,76 +211,69 @@ export default function WorkloadsDashboard(
 
   return (
     <div class="flex flex-col h-full">
-      {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+      {/* Page header \u2014 24/700 per archetype spec */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+          marginBottom: "20px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            Workloads
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            {title}
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             Manage deployments, pods, jobs, and other workload resources
           </p>
         </div>
-        <div class="flex gap-2">
-          <button
-            type="button"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "7px 14px",
-              fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--text-secondary)",
-              background: "transparent",
-              border: "1px solid var(--border-primary)",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontFamily: "inherit",
-            }}
+        <a
+          href={createHref ?? "/workloads/deployments/new"}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
+            padding: "8px 16px",
+            fontSize: "13px",
+            fontWeight: 600,
+            color: "var(--bg-base)",
+            background: "var(--accent)",
+            borderRadius: "9px",
+            textDecoration: "none",
+            border: "none",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
           >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path d="M2 4h12M5 8h6M8 12h0" />
-            </svg>
-            Filter
-          </button>
-          <a
-            href={createHref ?? "/workloads/deployments/new"}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "7px 14px",
-              fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--bg-base)",
-              background: "var(--accent)",
-              borderRadius: "6px",
-              textDecoration: "none",
-              border: "none",
-              cursor: "pointer",
-            }}
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            New Workload
-          </a>
-        </div>
+            <path d="M4 8h8M8 4v8" />
+          </svg>
+          New {title.replace(/s$/, "")}
+        </a>
       </div>
 
       {/* Sub-navigation */}
@@ -288,61 +282,61 @@ export default function WorkloadsDashboard(
         currentPath={currentPath}
       />
 
-      {/* Summary strip */}
+      {/* Summary strip \u2014 WidgetShell (glass) cards per dashboard archetype */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          gap: "var(--grid-gap, 12px)",
+          gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+          gap: "12px",
           marginBottom: "20px",
         }}
       >
         {summaryCards.map((card) => (
-          <div
-            key={card.label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              padding: "14px 16px",
-              borderRadius: "10px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <SummaryRing
-              value={loading.value ? 0 : card.ringValue}
-              max={card.max}
-              size={40}
-              color={card.color}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {card.label}
-              </div>
-              <div
-                style={{
-                  fontSize: "16px",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  color: card.color,
-                }}
-              >
-                {loading.value ? "\u2014" : card.displayValue}
+          <WidgetShell key={card.label} padding={16}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <SummaryRing
+                value={loading.value ? 0 : card.ringValue}
+                max={card.max}
+                size={40}
+                color={card.color}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    color: "var(--text-muted)",
+                    marginBottom: "2px",
+                  }}
+                >
+                  {card.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: "20px",
+                    fontWeight: 700,
+                    fontFamily: "var(--font-mono)",
+                    color: card.color,
+                    lineHeight: 1.1,
+                  }}
+                >
+                  {loading.value ? "\u2014" : card.displayValue}
+                </div>
               </div>
             </div>
-          </div>
+          </WidgetShell>
         ))}
       </div>
 
-      {/* Resource table */}
+      {/* Resource table \u2014 solid surface, no backdrop-filter */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <ResourceTable
           kind={kind}

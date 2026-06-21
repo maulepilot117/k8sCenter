@@ -16,7 +16,10 @@ import {
   RESOURCE_DETAIL_PATHS,
 } from "@/lib/constants.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
-import { DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable, {
+  type Column as UIColumn,
+  type Row as UIRow,
+} from "@/components/ui/ResourceTable.tsx";
 import { ScaleDialog } from "@/components/ui/ScaleDialog.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
@@ -31,7 +34,7 @@ import { useAuth } from "@/lib/auth.ts";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { canPerform as canPerformCheck } from "@/lib/permissions.ts";
 
-interface ResourceTableProps {
+interface ResourceTableIslandProps {
   /** API kind string matching backend route, e.g."pods","deployments" */
   kind: string;
   /** Display title for the page header */
@@ -40,7 +43,7 @@ interface ResourceTableProps {
   clusterScoped?: boolean;
   /** Whether to subscribe to WebSocket events (false for secrets) */
   enableWS?: boolean;
-  /** URL for"Create" button (if provided, shows a Create button in header) */
+  /** URL for "Create" button (if provided, shows a Create button in header) */
   createHref?: string;
   /** Hide the built-in title/create header (when wrapped by a parent dashboard) */
   hideHeader?: boolean;
@@ -48,14 +51,14 @@ interface ResourceTableProps {
 
 const PAGE_SIZE = 100;
 
-export default function ResourceTable({
+export default function ResourceTableIsland({
   kind,
   title,
   clusterScoped = false,
   enableWS = true,
   hideHeader = false,
   createHref,
-}: ResourceTableProps) {
+}: ResourceTableIslandProps) {
   const items = useSignal<K8sResource[]>([]);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
@@ -303,15 +306,6 @@ export default function ResourceTable({
     globalThis.location.href = url;
   }, [kind]);
 
-  const handleSort = (key: string) => {
-    if (sortKey.value === key) {
-      sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
-    } else {
-      sortKey.value = key;
-      sortDir.value = "asc";
-    }
-  };
-
   // Close action menu when clicking outside
   useEffect(() => {
     if (!IS_BROWSER || !actionMenuOpen.value) return;
@@ -375,7 +369,7 @@ export default function ResourceTable({
     runAction(actionId, resource);
   };
 
-  // Item count display — show"X of Y" when total is known and more exist
+  // Item count display — show "X of Y" when total is known and more exist
   const itemCountText = useComputed(() => {
     if (loading.value) return "Loading...";
     const shown = displayed.value.length;
@@ -392,7 +386,7 @@ export default function ResourceTable({
   );
 
   // Kebab menu renderer for each row — reads actions.value reactively inside the callback
-  const renderActions = (resource: K8sResource) => {
+  const renderKebab = (resource: K8sResource) => {
     const currentActions = actions.value;
     if (currentActions.length === 0) return null;
     const isOpen = actionMenuOpen.value === resource.metadata.uid;
@@ -441,6 +435,46 @@ export default function ResourceTable({
     );
   };
 
+  // Map RESOURCE_COLUMNS (DataTable format) → UIColumn[] for ResourceTable
+  const uiColumns: UIColumn[] = columns.map((col) => ({
+    key: col.key,
+    label: col.label,
+    // Right-align numeric/age columns
+    align: (col.key === "age" || col.key === "restarts" ||
+        col.key === "replicas" || col.key === "completions" ||
+        col.key === "active" || col.key === "upToDate")
+      ? "right"
+      : "left",
+  }));
+
+  // Build UIRow[] from K8sResource[] using the existing render functions
+  const uiRows = useComputed((): UIRow[] => {
+    const currentActions = actions.value;
+    return displayed.value.map((resource): UIRow => {
+      const cells: Record<string, import("preact").ComponentChildren> = {};
+      for (const col of columns) {
+        cells[col.key] = col.render ? col.render(resource) : String(
+          (resource as Record<string, unknown>)[col.key] ?? "",
+        );
+      }
+      // Inject kebab menu as last "actions" cell when there are actions
+      if (currentActions.length > 0) {
+        cells["_actions"] = renderKebab(resource);
+      }
+      return {
+        id: resource.metadata.uid,
+        cells,
+        onClick: () => handleRowClick(resource),
+      };
+    });
+  });
+
+  // Columns including optional actions column
+  const uiColumnsWithActions = useComputed((): UIColumn[] => {
+    if (actions.value.length === 0) return uiColumns;
+    return [...uiColumns, { key: "_actions", label: "", width: "40px" }];
+  });
+
   // Confirmation dialog
   const confirmMeta = confirmAction.value
     ? getActionMeta(
@@ -451,49 +485,92 @@ export default function ResourceTable({
   const isDestructive = confirmMeta?.confirm === "destructive";
   const confirmName = confirmAction.value?.resource.metadata.name ?? "";
 
+  // Empty / loading state rows
+  const emptyRows: UIRow[] = loading.value
+    ? [
+      {
+        id: "__loading__",
+        cells: Object.fromEntries(
+          uiColumns.map((c) => [
+            c.key,
+            <span
+              key={c.key}
+              style={{
+                display: "block",
+                height: "12px",
+                width: "80px",
+                background: "var(--bg-elevated)",
+                borderRadius: "4px",
+                opacity: 0.6,
+              }}
+            />,
+          ]),
+        ),
+      },
+    ]
+    : [];
+
+  const finalRows = loading.value ? emptyRows : uiRows.value;
+
   return (
     <div class="space-y-4">
-      {/* Header — hidden when inside a parent dashboard */}
+      {/* Page header — shown when not nested in a parent dashboard */}
       {!hideHeader && (
-        <div class="flex items-center justify-between">
-          <h1 class="text-xl font-semibold text-text-primary">
-            {title}
-          </h1>
-          <div class="flex items-center gap-3">
-            <span class="text-sm text-text-muted">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            justifyContent: "space-between",
+            gap: "16px",
+            marginBottom: "4px",
+          }}
+        >
+          <div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: "24px",
+                fontWeight: 700,
+                color: "var(--text-primary)",
+                lineHeight: 1.2,
+              }}
+            >
+              {title}
+            </h1>
+            <p
+              style={{
+                margin: "4px 0 0",
+                fontSize: "13px",
+                color: "var(--text-muted)",
+              }}
+            >
               {itemCountText.value}
-            </span>
-            {createHref &&
-              canPerformCheck(rbac.value, kind, "create", ns.value) && (
-              <a
-                href={createHref}
-                class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90 transition-colors"
-                style={{ color: "var(--bg-base)" }}
-              >
-                <svg
-                  class="w-4 h-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  stroke-width="2"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    d="M12 4v16m8-8H4"
-                  />
-                </svg>
-                Create
-              </a>
-            )}
+            </p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <button
               type="button"
               onClick={() => fetchResources()}
-              class="rounded-md p-1.5 text-text-muted hover:bg-hover hover:text-text-primary"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "32px",
+                height: "32px",
+                border: "1px solid var(--border-primary)",
+                borderRadius: "8px",
+                background: "transparent",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+              }}
               title="Refresh"
             >
               <svg
-                class={`h-4 w-4 ${loading.value ? "animate-spin" : ""}`}
+                style={{
+                  width: "15px",
+                  height: "15px",
+                  animation: loading.value ? "spin 1s linear infinite" : "none",
+                }}
                 viewBox="0 0 16 16"
                 fill="none"
                 stroke="currentColor"
@@ -503,6 +580,39 @@ export default function ResourceTable({
                 <path d="M14 2v4h-4" />
               </svg>
             </button>
+            {createHref &&
+              canPerformCheck(rbac.value, kind, "create", ns.value) && (
+              <a
+                href={createHref}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "8px 16px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  color: "var(--bg-base)",
+                  background: "var(--accent)",
+                  borderRadius: "9px",
+                  textDecoration: "none",
+                  border: "none",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                >
+                  <path d="M4 8h8M8 4v8" />
+                </svg>
+                New {title.replace(/s$/, "")}
+              </a>
+            )}
           </div>
         </div>
       )}
@@ -510,100 +620,96 @@ export default function ResourceTable({
       {/* Error state */}
       {error.value && <ErrorBanner message={error.value} />}
 
-      {/* Toolbar + Table wrapper */}
+      {/* Toolbar */}
       <div
         style={{
-          border: "1px solid var(--border-primary)",
-          borderRadius: "var(--radius, 8px)",
-          background: "var(--bg-surface)",
-          overflow: "hidden",
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          marginBottom: "8px",
         }}
       >
-        {/* Toolbar */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--border-primary)",
-          }}
-        >
-          <div class="max-w-sm">
-            <SearchBar
-              value={search.value}
-              onInput={(v) => {
-                search.value = v;
-              }}
-              placeholder={`Search ${title.toLowerCase()}...`}
-            />
-          </div>
-          {showFilterChips && (
-            <div
-              style={{ display: "flex", gap: "6px", alignItems: "center" }}
-            >
-              {filterChips.map((chip) => {
-                const val = chip.toLowerCase();
-                const isActive = statusFilter.value === val;
-                return (
-                  <button
-                    key={chip}
-                    type="button"
-                    onClick={() => {
-                      statusFilter.value = val;
-                    }}
-                    style={{
-                      padding: "4px 10px",
-                      borderRadius: "12px",
-                      fontSize: "11px",
-                      fontWeight: 500,
-                      background: isActive
-                        ? "var(--accent-dim)"
-                        : "var(--bg-elevated)",
-                      border: `1px solid ${
-                        isActive ? "var(--accent)" : "var(--border-primary)"
-                      }`,
-                      color: isActive
-                        ? "var(--accent)"
-                        : "var(--text-secondary)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {chip}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <span
-            style={{
-              marginLeft: "auto",
-              fontSize: "12px",
-              color: "var(--text-muted)",
-              fontFamily: "var(--font-mono, monospace)",
+        <div style={{ maxWidth: "280px", flex: "1 1 auto" }}>
+          <SearchBar
+            value={search.value}
+            onInput={(v) => {
+              search.value = v;
             }}
-          >
-            {displayed.value.length} {kind}
-          </span>
-        </div>
-
-        {/* Table */}
-        <div>
-          <DataTable
-            columns={columns}
-            data={displayed.value}
-            sortKey={sortKey.value}
-            sortDir={sortDir.value}
-            onSort={handleSort}
-            rowKey={(r) => r.metadata.uid}
-            onRowClick={handleRowClick}
-            emptyMessage={loading.value
-              ? "Loading resources..."
-              : `No ${title.toLowerCase()} found`}
-            renderRowActions={renderActions}
+            placeholder={`Search ${title.toLowerCase()}...`}
           />
         </div>
+        {showFilterChips && (
+          <div
+            style={{ display: "flex", gap: "6px", alignItems: "center" }}
+          >
+            {filterChips.map((chip) => {
+              const val = chip.toLowerCase();
+              const isActive = statusFilter.value === val;
+              return (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => {
+                    statusFilter.value = val;
+                  }}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "9px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: isActive
+                      ? "color-mix(in srgb, var(--accent) 14%, transparent)"
+                      : "var(--bg-elevated)",
+                    border: `1px solid ${
+                      isActive ? "var(--accent)" : "var(--border-primary)"
+                    }`,
+                    color: isActive ? "var(--accent)" : "var(--text-muted)",
+                    cursor: "pointer",
+                    transition: "all 120ms ease",
+                  }}
+                >
+                  {chip}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <span
+          style={{
+            marginLeft: "auto",
+            fontSize: "12px",
+            color: "var(--text-muted)",
+            fontFamily: "var(--font-mono, monospace)",
+          }}
+        >
+          {displayed.value.length} {kind}
+        </span>
       </div>
+
+      {/* ResourceTable — solid surface (bg-surface), glass rule: data = solid */}
+      {finalRows.length === 0 && !loading.value
+        ? (
+          <div
+            style={{
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "16px",
+              padding: "48px",
+              textAlign: "center",
+              color: "var(--text-muted)",
+              fontSize: "13px",
+            }}
+          >
+            No {title.toLowerCase()} found
+          </div>
+        )
+        : (
+          <ResourceTable
+            columns={uiColumnsWithActions.value}
+            rows={finalRows}
+            chevron
+          />
+        )}
 
       {/* Load More */}
       {continueToken.value && (
@@ -612,9 +718,19 @@ export default function ResourceTable({
             type="button"
             onClick={() => fetchResources(true)}
             disabled={loadingMore.value}
-            class="rounded-md border border-border-primary bg-surface px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover disabled:opacity-50"
+            style={{
+              padding: "8px 20px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "9px",
+              cursor: loadingMore.value ? "not-allowed" : "pointer",
+              opacity: loadingMore.value ? 0.5 : 1,
+            }}
           >
-            {loadingMore.value ? "Loading..." : "Load More"}
+            {loadingMore.value ? "Loading..." : "Load more"}
           </button>
         </div>
       )}
