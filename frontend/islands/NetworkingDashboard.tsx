@@ -1,13 +1,28 @@
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
+import { IS_BROWSER } from "fresh/runtime";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import FlowViewer from "@/islands/FlowViewer.tsx";
 import NetworkOverview from "@/islands/NetworkOverview.tsx";
+import ServiceWizard from "@/islands/ServiceWizard.tsx";
+import IngressWizard from "@/islands/IngressWizard.tsx";
+import NetworkPolicyWizard from "@/islands/NetworkPolicyWizard.tsx";
+
+type WizardComponent =
+  | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
+  | null;
+
+const WIZARD_MAP: Record<string, WizardComponent> = {
+  services: ServiceWizard,
+  ingresses: IngressWizard,
+  networkpolicies: NetworkPolicyWizard,
+};
 
 function resolveTab(currentPath: string): {
   kind: string;
   title: string;
-  createHref?: string;
   createLabel?: string;
   isFlows: boolean;
   isCni: boolean;
@@ -18,7 +33,6 @@ function resolveTab(currentPath: string): {
     return {
       kind: "services",
       title: "Services",
-      createHref: "/networking/services/new",
       createLabel: "New Service",
       isFlows: false,
       isCni: false,
@@ -33,7 +47,6 @@ function resolveTab(currentPath: string): {
     return {
       kind: "ingresses",
       title: "Ingresses",
-      createHref: "/networking/ingresses/new",
       createLabel: "New Ingress",
       isFlows: false,
       isCni: false,
@@ -44,7 +57,6 @@ function resolveTab(currentPath: string): {
     return {
       kind: "networkpolicies",
       title: "Network Policies",
-      createHref: "/networking/networkpolicies/new",
       createLabel: "New Network Policy",
       isFlows: false,
       isCni: false,
@@ -55,8 +67,6 @@ function resolveTab(currentPath: string): {
     return {
       kind: "ciliumnetworkpolicies",
       title: "Cilium Network Policies",
-      createHref: "/networking/cilium-policies/new",
-      createLabel: "New Cilium Policy",
       isFlows: false,
       isCni: false,
     };
@@ -80,7 +90,7 @@ function resolveTab(currentPath: string): {
     };
   }
 
-  // Default (landing /networking): show CNI overview as the landing page
+  // Default (landing /networking): show CNI overview
   return {
     kind: "",
     title: "Overview",
@@ -92,15 +102,28 @@ function resolveTab(currentPath: string): {
 export default function NetworkingDashboard(
   { currentPath }: { currentPath: string },
 ) {
-  // Reading selectedNamespace.value here wires reactivity — the shared
-  // resource-counts store re-fetches when namespace changes.
   const _ns = selectedNamespace.value;
 
-  const { kind, title, createHref, createLabel, isFlows, isCni } = resolveTab(
-    currentPath,
-  );
+  const { kind, title, createLabel, isFlows, isCni } = resolveTab(currentPath);
+  const WizardComponent = WIZARD_MAP[kind] ?? null;
 
-  // Subtitle derived from live counts — no invented data.
+  // Wizard modal signal — open=true shows the floating WizardShell
+  const wizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (
+      new URL(globalThis.location.href).searchParams.get("action") ===
+        "create" && WizardComponent
+    ) {
+      wizardOpen.value = true;
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("action");
+      globalThis.history.replaceState({}, "", url.toString());
+    }
+  }, []);
+
   const total = kind ? (getCount(kind) ?? 0) : 0;
   const countsReady = resourceCounts.value !== null;
   const pageTitle = isCni ? "Network" : title;
@@ -115,6 +138,11 @@ export default function NetworkingDashboard(
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Floating wizard modal — rendered above everything when open */}
+      {wizardOpen.value && WizardComponent && (
+        <WizardComponent onClose={() => (wizardOpen.value = false)} />
+      )}
+
       {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
@@ -148,39 +176,42 @@ export default function NetworkingDashboard(
             {subtitle}
           </p>
         </div>
-        {createHref && (
-          <a
-            href={createHref}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "8px 16px",
-              fontSize: "13px",
-              fontWeight: 600,
-              color: "var(--bg-base)",
-              background: "var(--accent)",
-              borderRadius: "9px",
-              textDecoration: "none",
-              border: "none",
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-            }}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
+        {WizardComponent
+          ? (
+            <button
+              type="button"
+              onClick={() => (wizardOpen.value = true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "8px 16px",
+                fontSize: "13px",
+                fontWeight: 600,
+                color: "var(--bg-base)",
+                background: "var(--accent)",
+                borderRadius: "9px",
+                border: "none",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+                fontFamily: "inherit",
+              }}
             >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            {createLabel ?? `New ${title.replace(/s$/, "")}`}
-          </a>
-        )}
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path d="M4 8h8M8 4v8" />
+              </svg>
+              {createLabel ?? `New ${title.replace(/s$/, "")}`}
+            </button>
+          )
+          : null}
       </div>
 
       {/* Content area */}
@@ -189,7 +220,6 @@ export default function NetworkingDashboard(
           <ResourceTable
             kind={kind}
             title={title}
-            createHref={createHref}
             hideHeader
           />
         )}

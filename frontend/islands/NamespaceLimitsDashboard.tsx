@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { limitsApi } from "@/lib/api.ts";
+import NamespaceLimitsWizard from "@/islands/NamespaceLimitsWizard.tsx";
 import type {
   LimitsStatus,
   NamespaceLimits,
@@ -43,6 +44,22 @@ export default function NamespaceLimitsDashboard() {
   const filterStatus = useSignal<string>("all");
   const page = useSignal(1);
   const refreshing = useSignal(false);
+
+  // Wizard modal signal
+  const wizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (
+      new URL(globalThis.location.href).searchParams.get("action") === "create"
+    ) {
+      wizardOpen.value = true;
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("action");
+      globalThis.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   // Slide-out panel state
   const selectedNamespace = useSignal<string | null>(null);
@@ -147,6 +164,11 @@ export default function NamespaceLimitsDashboard() {
 
   return (
     <div style={{ display: "flex", height: "100%" }}>
+      {/* Floating wizard modal — rendered above everything when open */}
+      {wizardOpen.value && (
+        <NamespaceLimitsWizard onClose={() => (wizardOpen.value = false)} />
+      )}
+
       {/* Main content */}
       <div
         style={{
@@ -179,11 +201,13 @@ export default function NamespaceLimitsDashboard() {
           </h1>
           {!loading.value && (
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <a href="/config/namespace-limits/new">
-                <Button type="button" variant="primary">
-                  Create Limits
-                </Button>
-              </a>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => (wizardOpen.value = true)}
+              >
+                Create Limits
+              </Button>
               <Button
                 type="button"
                 variant="ghost"

@@ -81,6 +81,14 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Create ConfigMap", href: "/config/configmaps?action=create" },
     { label: "Create Secret", href: "/config/secrets?action=create" },
     { label: "Create Ingress", href: "/networking/ingresses?action=create" },
+    {
+      label: "Create Network Policy",
+      href: "/networking/networkpolicies?action=create",
+    },
+    {
+      label: "Create Namespace Limits",
+      href: "/config/namespace-limits?action=create",
+    },
     { label: "Create HPA", href: "/scaling/hpas?action=create" },
     { label: "Create PDB", href: "/scaling/pdbs?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },

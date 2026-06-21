@@ -1,57 +1,49 @@
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
+import { IS_BROWSER } from "fresh/runtime";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
+import ConfigMapWizard from "@/islands/ConfigMapWizard.tsx";
+import SecretWizard from "@/islands/SecretWizard.tsx";
+
+type WizardComponent =
+  | (({ onClose }: { onClose: () => void }) => preact.JSX.Element)
+  | null;
+
+const WIZARD_MAP: Record<string, WizardComponent> = {
+  configmaps: ConfigMapWizard,
+  secrets: SecretWizard,
+};
 
 function resolveTab(currentPath: string): {
   kind: string;
   title: string;
-  createHref?: string;
 } {
   const path = currentPath.replace(/\/$/, "");
 
   if (path === "/config/configmaps") {
-    return {
-      kind: "configmaps",
-      title: "ConfigMaps",
-      createHref: "/config/configmaps/new",
-    };
+    return { kind: "configmaps", title: "ConfigMaps" };
   }
 
   if (path === "/config/secrets") {
-    return {
-      kind: "secrets",
-      title: "Secrets",
-      createHref: "/config/secrets/new",
-    };
+    return { kind: "secrets", title: "Secrets" };
   }
 
   if (path === "/config/serviceaccounts") {
-    return {
-      kind: "serviceaccounts",
-      title: "Service Accounts",
-    };
+    return { kind: "serviceaccounts", title: "Service Accounts" };
   }
 
   if (path === "/config/resourcequotas") {
-    return {
-      kind: "resourcequotas",
-      title: "Resource Quotas",
-    };
+    return { kind: "resourcequotas", title: "Resource Quotas" };
   }
 
   if (path === "/config/limitranges") {
-    return {
-      kind: "limitranges",
-      title: "Limit Ranges",
-    };
+    return { kind: "limitranges", title: "Limit Ranges" };
   }
 
   // Default (landing /config): show ConfigMaps
-  return {
-    kind: "configmaps",
-    title: "ConfigMaps",
-    createHref: "/config/configmaps/new",
-  };
+  return { kind: "configmaps", title: "ConfigMaps" };
 }
 
 export default function ConfigDashboard(
@@ -61,7 +53,25 @@ export default function ConfigDashboard(
   // resource-counts store re-fetches when namespace changes.
   const _ns = selectedNamespace.value;
 
-  const { kind, title, createHref } = resolveTab(currentPath);
+  const { kind, title } = resolveTab(currentPath);
+  const WizardComponent = WIZARD_MAP[kind] ?? null;
+
+  // Wizard modal signal — open=true shows the floating WizardShell
+  const wizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    if (
+      new URL(globalThis.location.href).searchParams.get("action") ===
+        "create" && WizardComponent
+    ) {
+      wizardOpen.value = true;
+      const url = new URL(globalThis.location.href);
+      url.searchParams.delete("action");
+      globalThis.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   // Subtitle derived from live counts — no invented data.
   const total = getCount(kind) ?? 0;
@@ -73,12 +83,18 @@ export default function ConfigDashboard(
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Floating wizard modal — rendered above everything when open */}
+      {wizardOpen.value && WizardComponent && (
+        <WizardComponent onClose={() => (wizardOpen.value = false)} />
+      )}
+
       {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
+          gap: "16px",
           marginBottom: "20px",
         }}
       >
@@ -105,38 +121,10 @@ export default function ConfigDashboard(
             {subtitle}
           </p>
         </div>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <a
-            href="/config/secrets/new"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "8px 14px",
-              fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--text-muted)",
-              background: "transparent",
-              borderRadius: "9px",
-              textDecoration: "none",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-            }}
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            New Secret
-          </a>
-          <a
-            href="/config/configmaps/new"
+        {WizardComponent && (
+          <button
+            type="button"
+            onClick={() => (wizardOpen.value = true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -147,9 +135,11 @@ export default function ConfigDashboard(
               color: "var(--bg-base)",
               background: "var(--accent)",
               borderRadius: "9px",
-              textDecoration: "none",
               border: "none",
               cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
+              fontFamily: "inherit",
             }}
           >
             <svg
@@ -162,9 +152,9 @@ export default function ConfigDashboard(
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
-            New ConfigMap
-          </a>
-        </div>
+            New {title.replace(/s$/, "")}
+          </button>
+        )}
       </div>
 
       {/* Content area */}
@@ -172,7 +162,6 @@ export default function ConfigDashboard(
         <ResourceTable
           kind={kind}
           title={title}
-          createHref={createHref}
           hideHeader
         />
       </div>
