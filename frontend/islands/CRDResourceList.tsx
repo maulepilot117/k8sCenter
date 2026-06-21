@@ -7,6 +7,7 @@ import type { CRDInfo, PrinterColumn } from "@/lib/crd-types.ts";
 import { age } from "@/lib/format.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
+import StatusBadge, { StatusDot } from "@/components/ui/glass/StatusBadge.tsx";
 
 interface Props {
   group: string;
@@ -446,243 +447,263 @@ export default function CRDResourceList({ group, resource }: Props) {
         </span>
       </div>
 
-      {/* Resource table */}
+      {/* Resource table — solid surface per archetype */}
       <div
         style={{
           flex: 1,
           minHeight: 0,
           overflow: "auto",
-          border: "1px solid var(--border-subtle)",
-          borderRadius: "var(--radius)",
+          background: "var(--bg-surface)",
+          border: "1px solid var(--border-primary)",
+          borderRadius: "16px",
         }}
       >
-        <table
+        {/* Header row */}
+        <div
           style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: "12px",
+            display: "grid",
+            gridTemplateColumns: crdGridTemplate(
+              isNamespaced,
+              printerColumns,
+            ),
+            gap: "12px",
+            padding: "11px 18px",
+            borderBottom: "1px solid var(--border-subtle)",
+            position: "sticky",
+            top: 0,
+            background: "var(--bg-surface)",
+            zIndex: 1,
+            fontSize: "11px",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+            color: "var(--text-muted)",
           }}
         >
-          <thead>
-            <tr
+          <span>Name</span>
+          {isNamespaced && <span>Namespace</span>}
+          <span>Status</span>
+          {printerColumns.map((col) => (
+            <span key={col.name} title={col.description}>{col.name}</span>
+          ))}
+          <span>Age</span>
+          <span />
+        </div>
+
+        {/* Empty state */}
+        {filtered.length === 0 && (
+          <div
+            style={{
+              padding: "48px",
+              textAlign: "center",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            {items.value.length === 0
+              ? `No ${instanceLabel} found`
+              : "No matching results"}
+          </div>
+        )}
+
+        {/* Data rows */}
+        {filtered.map((item) => {
+          const status = getReadyStatus(item);
+          const statusTone = status === "Ready"
+            ? "ok"
+            : status === "NotReady"
+            ? "crit"
+            : "neutral";
+          const ns = item.metadata.namespace;
+          const detailNs = ns ?? "_";
+          const detailHref =
+            `/extensions/${group}/${resource}/${detailNs}/${item.metadata.name}`;
+          const menuId = item.metadata.uid;
+
+          return (
+            <div
+              key={item.metadata.uid}
               style={{
-                background: "var(--bg-surface)",
-                position: "sticky",
-                top: 0,
-                zIndex: 1,
+                display: "grid",
+                gridTemplateColumns: crdGridTemplate(
+                  isNamespaced,
+                  printerColumns,
+                ),
+                gap: "12px",
+                padding: "12px 18px",
+                borderBottom: "1px solid var(--border-subtle)",
+                alignItems: "center",
+                cursor: "pointer",
+                transition: "background 120ms ease",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLElement).style.background =
+                  "var(--bg-hover)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLElement).style.background = "";
+              }}
+              onClick={() => {
+                globalThis.location.href = detailHref;
               }}
             >
-              <th style={thStyle}>Name</th>
-              {isNamespaced && <th style={thStyle}>Namespace</th>}
-              <th style={thStyle}>Status</th>
-              {printerColumns.map((col) => (
-                <th key={col.name} style={thStyle} title={col.description}>
-                  {col.name}
-                </th>
-              ))}
-              <th style={thStyle}>Age</th>
-              <th style={{ ...thStyle, width: "40px" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0
-              ? (
-                <tr>
-                  <td
-                    colSpan={3 + (isNamespaced ? 1 : 0) +
-                      printerColumns.length + 1}
-                    style={{
-                      padding: "32px 14px",
-                      textAlign: "center",
-                      color: "var(--text-muted)",
-                      fontSize: "13px",
-                    }}
-                  >
-                    {items.value.length === 0
-                      ? `No ${instanceLabel} found`
-                      : "No matching results"}
-                  </td>
-                </tr>
-              )
-              : filtered.map((item) => {
-                const status = getReadyStatus(item);
-                const ns = item.metadata.namespace;
-                const detailNs = ns ?? "_";
-                const detailHref =
-                  `/extensions/${group}/${resource}/${detailNs}/${item.metadata.name}`;
-                const menuId = item.metadata.uid;
+              {/* Name — StatusDot + monospace name */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  minWidth: 0,
+                }}
+              >
+                <StatusDot tone={statusTone} size={7} />
+                <a
+                  href={detailHref}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    color: "var(--text-primary)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    textDecoration: "none",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {item.metadata.name}
+                </a>
+              </div>
 
-                return (
-                  <tr
-                    key={item.metadata.uid}
-                    style={{
-                      borderBottom: "1px solid var(--border-subtle)",
-                    }}
-                    onMouseEnter={(e) => {
-                      (e.currentTarget as HTMLElement).style.background =
-                        "var(--bg-hover)";
-                    }}
-                    onMouseLeave={(e) => {
-                      (e.currentTarget as HTMLElement).style.background = "";
-                    }}
-                  >
-                    {/* Name */}
-                    <td style={tdStyle}>
-                      <a
-                        href={detailHref}
-                        style={{
-                          color: "var(--accent)",
-                          fontWeight: 500,
-                          textDecoration: "none",
-                        }}
-                      >
-                        {item.metadata.name}
-                      </a>
-                    </td>
+              {/* Namespace */}
+              {isNamespaced && (
+                <span
+                  style={{
+                    fontSize: "13px",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {ns ?? "—"}
+                </span>
+              )}
 
-                    {/* Namespace */}
-                    {isNamespaced && (
-                      <td
-                        style={{
-                          ...tdStyle,
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        {ns ?? "-"}
-                      </td>
-                    )}
-
-                    {/* Status */}
-                    <td style={tdStyle}>
-                      {status === "Unknown"
-                        ? (
-                          <span style={{ color: "var(--text-muted)" }}>
-                            &mdash;
-                          </span>
-                        )
-                        : (
-                          <span
-                            style={{
-                              display: "inline-block",
-                              padding: "2px 8px",
-                              borderRadius: "var(--radius-sm)",
-                              fontSize: "11px",
-                              fontWeight: 500,
-                              background: status === "Ready"
-                                ? "var(--success-dim)"
-                                : "var(--error-dim)",
-                              color: status === "Ready"
-                                ? "var(--success)"
-                                : "var(--error)",
-                            }}
-                          >
-                            {status === "Ready" ? "Ready" : "Not Ready"}
-                          </span>
-                        )}
-                    </td>
-
-                    {/* Additional printer columns */}
-                    {printerColumns.map((col) => {
-                      const val = extractJsonPath(
-                        item as unknown as Record<string, unknown>,
-                        col.jsonPath,
-                      );
-                      return (
-                        <td
-                          key={col.name}
-                          style={{
-                            ...tdStyle,
-                            fontFamily: "var(--font-mono)",
-                            color: "var(--text-secondary)",
-                          }}
-                        >
-                          {val != null ? String(val) : "-"}
-                        </td>
-                      );
-                    })}
-
-                    {/* Age */}
-                    <td
-                      style={{
-                        ...tdStyle,
-                        color: "var(--text-muted)",
-                        fontFamily: "var(--font-mono)",
-                      }}
+              {/* Status badge */}
+              <div>
+                {status === "Unknown"
+                  ? (
+                    <span
+                      style={{ fontSize: "13px", color: "var(--text-muted)" }}
                     >
-                      {age(item.metadata.creationTimestamp)}
-                    </td>
+                      —
+                    </span>
+                  )
+                  : (
+                    <StatusBadge
+                      label={status === "Ready" ? "Ready" : "Not Ready"}
+                      tone={statusTone}
+                    />
+                  )}
+              </div>
 
-                    {/* Kebab menu */}
-                    <td style={{ ...tdStyle, position: "relative" }}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openMenu.value = openMenu.value === menuId
-                            ? null
-                            : menuId;
-                        }}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          cursor: "pointer",
-                          padding: "4px 8px",
-                          fontSize: "16px",
-                          color: "var(--text-muted)",
-                          lineHeight: 1,
-                        }}
-                      >
-                        &#8942;
-                      </button>
-                      {openMenu.value === menuId && (
-                        <div
-                          class="glass-elevated"
-                          style={{
-                            position: "absolute",
-                            right: "14px",
-                            top: "100%",
-                            borderRadius: "var(--radius)",
-                            zIndex: 10,
-                            minWidth: "100px",
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openMenu.value = null;
-                              confirmDelete.value = item;
-                            }}
-                            style={{
-                              display: "block",
-                              width: "100%",
-                              padding: "8px 14px",
-                              fontSize: "12px",
-                              color: "var(--error)",
-                              background: "none",
-                              border: "none",
-                              cursor: "pointer",
-                              textAlign: "left",
-                            }}
-                            onMouseEnter={(e) => {
-                              (e.currentTarget as HTMLElement).style
-                                .background = "var(--bg-hover)";
-                            }}
-                            onMouseLeave={(e) => {
-                              (e.currentTarget as HTMLElement).style
-                                .background = "";
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+              {/* Printer columns */}
+              {printerColumns.map((col) => {
+                const val = extractJsonPath(
+                  item as unknown as Record<string, unknown>,
+                  col.jsonPath,
+                );
+                return (
+                  <span
+                    key={col.name}
+                    style={{
+                      fontSize: "13px",
+                      fontFamily: "var(--font-mono)",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {val != null ? String(val) : "—"}
+                  </span>
                 );
               })}
-          </tbody>
-        </table>
+
+              {/* Age */}
+              <span
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  fontFamily: "var(--font-mono)",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {age(item.metadata.creationTimestamp)}
+              </span>
+
+              {/* Kebab menu */}
+              <div style={{ position: "relative", textAlign: "right" }}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    openMenu.value = openMenu.value === menuId ? null : menuId;
+                  }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: "4px 8px",
+                    fontSize: "16px",
+                    color: "var(--text-muted)",
+                    lineHeight: 1,
+                  }}
+                >
+                  &#8942;
+                </button>
+                {openMenu.value === menuId && (
+                  <div
+                    class="glass-elevated"
+                    style={{
+                      position: "absolute",
+                      right: 0,
+                      top: "100%",
+                      borderRadius: "12px",
+                      zIndex: 10,
+                      minWidth: "110px",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openMenu.value = null;
+                        confirmDelete.value = item;
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        padding: "9px 14px",
+                        fontSize: "13px",
+                        color: "var(--error)",
+                        background: "none",
+                        border: "none",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        borderRadius: "12px",
+                      }}
+                      onMouseEnter={(e) => {
+                        (e.currentTarget as HTMLElement).style.background =
+                          "var(--bg-hover)";
+                      }}
+                      onMouseLeave={(e) => {
+                        (e.currentTarget as HTMLElement).style.background = "";
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Load more */}
@@ -790,22 +811,19 @@ export default function CRDResourceList({ group, resource }: Props) {
   );
 }
 
-/** Table header cell style */
-const thStyle: Record<string, string> = {
-  padding: "10px 14px",
-  fontSize: "11px",
-  fontWeight: "600",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  color: "var(--text-muted)",
-  textAlign: "left",
-  borderBottom: "1px solid var(--border-subtle)",
-  whiteSpace: "nowrap",
-};
-
-/** Table data cell style */
-const tdStyle: Record<string, string> = {
-  padding: "10px 14px",
-  fontSize: "12px",
-  whiteSpace: "nowrap",
-};
+/**
+ * Build a CSS grid-template-columns string for the CRD resource table.
+ * Name is 1.8fr, namespace (if present) 120px, status 100px,
+ * each printer column 1fr, age 80px, kebab 40px.
+ */
+function crdGridTemplate(
+  isNamespaced: boolean,
+  printerColumns: PrinterColumn[],
+): string {
+  const cols: string[] = ["1.8fr"];
+  if (isNamespaced) cols.push("120px");
+  cols.push("100px");
+  for (let i = 0; i < printerColumns.length; i++) cols.push("1fr");
+  cols.push("80px", "40px");
+  return cols.join(" ");
+}

@@ -8,6 +8,7 @@ import type {
   CRDInfo,
 } from "@/lib/crd-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
+import GlassCard from "@/components/ui/GlassCard.tsx";
 
 export default function ExtensionsHub() {
   const crds = useSignal<CRDGroupedResponse>({});
@@ -104,13 +105,13 @@ export default function ExtensionsHub() {
   }
 
   return (
-    <div class="flex flex-col h-full">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Page header */}
       <div style={{ marginBottom: "20px" }}>
         <h1
           style={{
-            fontSize: "20px",
-            fontWeight: 600,
+            fontSize: "24px",
+            fontWeight: 700,
             letterSpacing: "-0.02em",
             color: "var(--text-primary)",
             margin: 0,
@@ -120,9 +121,9 @@ export default function ExtensionsHub() {
         </h1>
         <p
           style={{
-            fontSize: "12px",
+            fontSize: "13px",
             color: "var(--text-muted)",
-            marginTop: "2px",
+            marginTop: "4px",
           }}
         >
           {totalCRDs} CRDs across {groupCount}{" "}
@@ -130,19 +131,20 @@ export default function ExtensionsHub() {
         </p>
       </div>
 
-      {/* Search bar */}
+      {/* Search bar — glass-elevated input */}
       <div style={{ marginBottom: "20px" }}>
         <input
           type="text"
-          placeholder="Search CRDs by kind or resource name..."
+          placeholder="Search CRDs by kind or resource name…"
           value={search.value}
-          onInput={(e) => search.value = (e.target as HTMLInputElement).value}
+          onInput={(e) =>
+            search.value = (e.target as HTMLInputElement).value}
           style={{
             width: "100%",
             maxWidth: "400px",
-            background: "var(--bg-surface)",
+            background: "var(--bg-elevated)",
             border: "1px solid var(--border-primary)",
-            borderRadius: "6px",
+            borderRadius: "9px",
             padding: "8px 12px",
             fontSize: "13px",
             color: "var(--text-primary)",
@@ -162,25 +164,19 @@ export default function ExtensionsHub() {
               justifyContent: "center",
               flex: 1,
               color: "var(--text-muted)",
-              fontSize: "14px",
+              fontSize: "13px",
             }}
           >
             No custom resource definitions found in this cluster.
           </div>
         )
         : (
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: "auto",
-            }}
-          >
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
             {sortedGroups.map(([group, items]) => {
               const instances = groupInstanceCount(items);
               return (
                 <div key={group} style={{ marginBottom: "28px" }}>
-                  {/* Group header */}
+                  {/* Group section label */}
                   <div
                     style={{
                       display: "flex",
@@ -205,7 +201,7 @@ export default function ExtensionsHub() {
                       style={{
                         flex: 1,
                         height: "1px",
-                        background: "var(--border-primary)",
+                        background: "var(--border-subtle)",
                       }}
                     />
                     <span
@@ -221,7 +217,7 @@ export default function ExtensionsHub() {
                     </span>
                   </div>
 
-                  {/* CRD card grid */}
+                  {/* CRD card grid — GlassCard per card */}
                   <div
                     class="stagger-in"
                     style={{
@@ -240,89 +236,81 @@ export default function ExtensionsHub() {
                         <a
                           key={fullName}
                           href={`/extensions/${info.group}/${info.resource}`}
-                          style={{
-                            display: "block",
-                            background: "var(--bg-surface)",
-                            border: "1px solid var(--border-primary)",
-                            borderRadius: "var(--radius)",
-                            padding: "12px 14px",
-                            cursor: "pointer",
-                            textDecoration: "none",
-                            transition:
-                              "border-color 0.15s ease, background 0.15s ease",
-                          }}
-                          onMouseEnter={(e) => {
-                            (e.currentTarget as HTMLElement).style
-                              .borderColor = "var(--accent)";
-                          }}
-                          onMouseLeave={(e) => {
-                            (e.currentTarget as HTMLElement).style
-                              .borderColor = "var(--border-primary)";
-                          }}
+                          style={{ textDecoration: "none", display: "block" }}
                         >
-                          {/* Kind name */}
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              marginBottom: "4px",
-                            }}
+                          <GlassCard
+                            padding="12px 14px"
+                            radius={16}
+                            style={{ cursor: "pointer" }}
                           >
-                            <span
+                            {/* Kind name + instance count */}
+                            <div
                               style={{
-                                fontSize: "13px",
-                                fontWeight: 500,
-                                color: "var(--text-primary)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                marginBottom: "6px",
                               }}
                             >
-                              {info.kind}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: "12px",
-                                fontFamily: "var(--font-mono)",
-                                color: "var(--text-secondary)",
-                              }}
-                            >
-                              {instanceCount}
-                            </span>
-                          </div>
+                              <span
+                                style={{
+                                  fontSize: "14px",
+                                  fontWeight: 650,
+                                  color: "var(--text-primary)",
+                                }}
+                              >
+                                {info.kind}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: "13px",
+                                  fontFamily: "var(--font-mono)",
+                                  fontWeight: 600,
+                                  color: "var(--accent)",
+                                  tabularNums: "tabular-nums",
+                                }}
+                              >
+                                {instanceCount}
+                              </span>
+                            </div>
 
-                          {/* Full resource name + scope */}
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "space-between",
-                              gap: "8px",
-                            }}
-                          >
-                            <span
+                            {/* Full resource name + scope pill */}
+                            <div
                               style={{
-                                fontSize: "11px",
-                                fontFamily: "var(--font-mono)",
-                                color: "var(--text-muted)",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: "8px",
                               }}
                             >
-                              {fullName}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: "10px",
-                                color: "var(--text-muted)",
-                                whiteSpace: "nowrap",
-                                padding: "1px 6px",
-                                borderRadius: "var(--radius-sm)",
-                                background: "var(--bg-base)",
-                              }}
-                            >
-                              {info.scope}
-                            </span>
-                          </div>
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontFamily: "var(--font-mono)",
+                                  color: "var(--text-muted)",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {fullName}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  color: "var(--text-muted)",
+                                  whiteSpace: "nowrap",
+                                  padding: "2px 7px",
+                                  borderRadius: "6px",
+                                  background:
+                                    "color-mix(in srgb, var(--text-muted) 12%, transparent)",
+                                }}
+                              >
+                                {info.scope}
+                              </span>
+                            </div>
+                          </GlassCard>
                         </a>
                       );
                     })}
