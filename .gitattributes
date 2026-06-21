@@ -3,3 +3,8 @@
 # Without this, a commit authored on Windows (core.autocrlf=true) can store
 # CRLF and silently break scripts/*.sh in CI.
 *.sh text eol=lf
+
+# Source + config files use LF everywhere. CI runs on Linux (LF); without this,
+# a Windows checkout (core.autocrlf=true) presents CRLF working-tree files that
+# `deno fmt --check` rejects, and risks committing CRLF that breaks CI.
+* text=auto eol=lf
