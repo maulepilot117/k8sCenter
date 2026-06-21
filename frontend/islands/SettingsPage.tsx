@@ -8,6 +8,7 @@ import { showToast } from "@/islands/ToastProvider.tsx";
 import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { AlertingFields } from "@/components/settings/AlertingFields.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface Settings {
   monitoringPrometheusUrl?: string | null;
@@ -147,8 +148,8 @@ export default function SettingsPage() {
 
   if (loading.value) {
     return (
-      <div class="text-sm text-text-muted">
-        Loading settings...
+      <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+        Loading settings…
       </div>
     );
   }
@@ -158,60 +159,39 @@ export default function SettingsPage() {
   }
 
   return (
-    <div class="space-y-4">
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Monitoring Section */}
-      <details
-        open
-        class="rounded-lg border border-border-primary"
+      <WidgetShell
+        title="Monitoring"
+        action={
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={saveMonitoring}
+            disabled={!dirtyMonitoring.value ||
+              savingSection.value === "monitoring"}
+            loading={savingSection.value === "monitoring"}
+          >
+            Save Monitoring
+          </Button>
+        }
       >
-        <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-text-primary">
-          Monitoring
-        </summary>
-        <div class="border-t border-border-primary px-4 py-4">
-          <MonitoringFields
-            promUrl={promUrl}
-            grafUrl={grafUrl}
-            grafToken={grafToken}
-            monNs={monNs}
-            onDirty={() => {
-              dirtyMonitoring.value = true;
-            }}
-          />
-          <div class="mt-4 flex justify-end">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={saveMonitoring}
-              disabled={!dirtyMonitoring.value ||
-                savingSection.value === "monitoring"}
-              loading={savingSection.value === "monitoring"}
-            >
-              Save Monitoring
-            </Button>
-          </div>
-        </div>
-      </details>
+        <MonitoringFields
+          promUrl={promUrl}
+          grafUrl={grafUrl}
+          grafToken={grafToken}
+          monNs={monNs}
+          onDirty={() => {
+            dirtyMonitoring.value = true;
+          }}
+        />
+      </WidgetShell>
 
       {/* Alerting Section */}
-      <details class="rounded-lg border border-border-primary">
-        <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-text-primary">
-          Alerting
-        </summary>
-        <div class="border-t border-border-primary px-4 py-4">
-          <AlertingFields
-            alertEnabled={alertEnabled}
-            smtpHost={smtpHost}
-            smtpPort={smtpPort}
-            smtpUser={smtpUser}
-            smtpPass={smtpPass}
-            smtpFrom={smtpFrom}
-            alertRate={alertRate}
-            alertRecipients={alertRecipients}
-            onDirty={() => {
-              dirtyAlerting.value = true;
-            }}
-          />
-          <div class="mt-4 flex items-center justify-end gap-3">
+      <WidgetShell
+        title="Alerting"
+        action={
+          <div style={{ display: "flex", gap: "8px" }}>
             <Button variant="ghost" size="sm" onClick={testEmail}>
               Send Test Email
             </Button>
@@ -226,8 +206,22 @@ export default function SettingsPage() {
               Save Alerting
             </Button>
           </div>
-        </div>
-      </details>
+        }
+      >
+        <AlertingFields
+          alertEnabled={alertEnabled}
+          smtpHost={smtpHost}
+          smtpPort={smtpPort}
+          smtpUser={smtpUser}
+          smtpPass={smtpPass}
+          smtpFrom={smtpFrom}
+          alertRate={alertRate}
+          alertRecipients={alertRecipients}
+          onDirty={() => {
+            dirtyAlerting.value = true;
+          }}
+        />
+      </WidgetShell>
     </div>
   );
 }
