@@ -37,6 +37,7 @@ import type {
 import type { Column } from "@/components/ui/DataTable.tsx";
 import { statusColor } from "@/lib/status-colors.ts";
 import { age } from "@/lib/format.ts";
+import { StatusDot, type Tone } from "@/components/ui/glass/StatusBadge.tsx";
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
 function badge(text: string): ComponentChildren {
@@ -70,15 +71,24 @@ const ageCol: Column<K8sResource> = {
 
 // ---- Shared styled column helpers matching the mockup design ----
 
-function styledName(name: string): ComponentChildren {
+function styledName(name: string, tone: Tone = "neutral"): ComponentChildren {
   return h("span", {
     style: {
-      color: "var(--accent)",
-      fontFamily: "var(--font-mono, monospace)",
-      fontWeight: 500,
-      fontSize: "13px",
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "7px",
     },
-  }, name);
+  }, [
+    h(StatusDot, { tone, size: 6 }),
+    h("span", {
+      style: {
+        color: "var(--accent)",
+        fontFamily: "var(--font-mono, monospace)",
+        fontWeight: 500,
+        fontSize: "13px",
+      },
+    }, name),
+  ]);
 }
 
 function styledNamespace(ns: string): ComponentChildren {
@@ -226,7 +236,15 @@ const podColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const phase = (r as Pod).status?.phase ?? "Unknown";
+      const tone: Tone = (phase === "Running" || phase === "Succeeded")
+        ? "ok"
+        : phase === "Pending"
+        ? "warn"
+        : "crit";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -286,7 +304,17 @@ const deploymentColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const dep = r as Deployment;
+      const available = dep.status?.availableReplicas ?? 0;
+      const replicas = dep.spec?.replicas ?? 0;
+      const tone: Tone = (available === 0 && replicas > 0)
+        ? "crit"
+        : available < replicas
+        ? "warn"
+        : "ok";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -346,7 +374,17 @@ const statefulsetColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const s = r as StatefulSet;
+      const ready = s.status?.readyReplicas ?? 0;
+      const desired = s.spec?.replicas ?? 0;
+      const tone: Tone = (ready === 0 && desired > 0)
+        ? "crit"
+        : ready < desired
+        ? "warn"
+        : "ok";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -401,7 +439,17 @@ const daemonsetColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const ds = r as DaemonSet;
+      const ready = ds.status?.numberReady ?? 0;
+      const desired = ds.status?.desiredNumberScheduled ?? 0;
+      const tone: Tone = (ready === 0 && desired > 0)
+        ? "crit"
+        : ready < desired
+        ? "warn"
+        : "ok";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -457,7 +505,7 @@ const serviceColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "ok"),
   },
   {
     key: "namespace",
@@ -506,7 +554,11 @@ const ingressColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const hasAddress =
+        ((r as Ingress).status?.loadBalancer?.ingress?.length ?? 0) > 0;
+      return styledName(r.metadata.name, hasAddress ? "ok" : "warn");
+    },
   },
   {
     key: "namespace",
@@ -547,7 +599,7 @@ const configmapColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -576,7 +628,7 @@ const secretColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -656,7 +708,15 @@ const pvcColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const phase = (r as PersistentVolumeClaim).status?.phase ?? "Pending";
+      const tone: Tone = phase === "Bound"
+        ? "ok"
+        : phase === "Pending"
+        ? "warn"
+        : "crit";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -704,7 +764,17 @@ const jobColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const j = r as Job;
+      const tone: Tone = j.status?.completionTime
+        ? "ok"
+        : (j.status?.failed ?? 0) > 0
+        ? "crit"
+        : (j.status?.active ?? 0) > 0
+        ? "info"
+        : "warn";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -747,7 +817,10 @@ const cronjobColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const suspended = (r as CronJob).spec?.suspend;
+      return styledName(r.metadata.name, suspended ? "warn" : "ok");
+    },
   },
   {
     key: "namespace",
@@ -791,7 +864,7 @@ const networkpolicyColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -990,7 +1063,17 @@ const replicasetColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const rs = r as ReplicaSet;
+      const ready = rs.status?.readyReplicas ?? 0;
+      const desired = rs.spec?.replicas ?? 0;
+      const tone: Tone = (ready === 0 && desired > 0)
+        ? "crit"
+        : ready < desired
+        ? "warn"
+        : "ok";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -1034,7 +1117,23 @@ const endpointColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const ep = r as Endpoints;
+      const readyCount = ep.subsets?.reduce(
+        (s, sub) => s + (sub.addresses?.length ?? 0),
+        0,
+      ) ?? 0;
+      const notReadyCount = ep.subsets?.reduce(
+        (s, sub) => s + (sub.notReadyAddresses?.length ?? 0),
+        0,
+      ) ?? 0;
+      const tone: Tone = readyCount === 0 && notReadyCount > 0
+        ? "crit"
+        : notReadyCount > 0
+        ? "warn"
+        : "ok";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -1112,7 +1211,15 @@ const pvColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const phase = (r as PersistentVolume).status?.phase ?? "Available";
+      const tone: Tone = (phase === "Available" || phase === "Bound")
+        ? "ok"
+        : phase === "Released"
+        ? "warn"
+        : "crit";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "capacity",
@@ -1176,7 +1283,7 @@ const storageclassColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "provisioner",
@@ -1211,7 +1318,7 @@ const resourcequotaColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -1232,7 +1339,7 @@ const limitrangeColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -1253,7 +1360,7 @@ const serviceaccountColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => styledName(r.metadata.name, "neutral"),
   },
   {
     key: "namespace",
@@ -1314,7 +1421,17 @@ const endpointsliceColumns: Column<K8sResource>[] = [
     key: "name",
     label: "Name",
     sortable: true,
-    render: (r) => styledName(r.metadata.name),
+    render: (r) => {
+      const eps = (r as EndpointSlice).endpoints ?? [];
+      const allReady = eps.length > 0 &&
+        eps.every((e) => e.conditions?.ready !== false);
+      const tone: Tone = eps.length === 0
+        ? "neutral"
+        : allReady
+        ? "ok"
+        : "warn";
+      return styledName(r.metadata.name, tone);
+    },
   },
   {
     key: "namespace",
@@ -1357,7 +1474,12 @@ const endpointsliceColumns: Column<K8sResource>[] = [
 ];
 
 const ciliumnetworkpolicyColumns: Column<K8sResource>[] = [
-  nameCol,
+  {
+    key: "name",
+    label: "Name",
+    sortable: true,
+    render: (r) => styledName(r.metadata.name, "neutral"),
+  },
   namespaceCol,
   {
     key: "endpointSelector",

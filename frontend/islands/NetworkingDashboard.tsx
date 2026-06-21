@@ -34,6 +34,7 @@ function resolveTab(currentPath: string): {
   kind: string;
   title: string;
   createHref?: string;
+  createLabel?: string;
   isFlows: boolean;
   isCni: boolean;
 } {
@@ -44,6 +45,7 @@ function resolveTab(currentPath: string): {
       kind: "services",
       title: "Services",
       createHref: "/networking/services/new",
+      createLabel: "New Service",
       isFlows: false,
       isCni: false,
     };
@@ -58,6 +60,7 @@ function resolveTab(currentPath: string): {
       kind: "ingresses",
       title: "Ingresses",
       createHref: "/networking/ingresses/new",
+      createLabel: "New Ingress",
       isFlows: false,
       isCni: false,
     };
@@ -68,6 +71,7 @@ function resolveTab(currentPath: string): {
       kind: "networkpolicies",
       title: "Network Policies",
       createHref: "/networking/networkpolicies/new",
+      createLabel: "New Network Policy",
       isFlows: false,
       isCni: false,
     };
@@ -78,6 +82,7 @@ function resolveTab(currentPath: string): {
       kind: "ciliumnetworkpolicies",
       title: "Cilium Network Policies",
       createHref: "/networking/cilium-policies/new",
+      createLabel: "New Cilium Policy",
       isFlows: false,
       isCni: false,
     };
@@ -152,7 +157,9 @@ export default function NetworkingDashboard(
     fetchSummary();
   }, [namespace]);
 
-  const { kind, title, createHref, isFlows, isCni } = resolveTab(currentPath);
+  const { kind, title, createHref, createLabel, isFlows, isCni } = resolveTab(
+    currentPath,
+  );
   const s = summary.value;
 
   const summaryCards = [
@@ -208,76 +215,71 @@ export default function NetworkingDashboard(
 
   return (
     <div class="flex flex-col h-full">
-      {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+      {/* Page header — 24/700 per archetype spec */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+          marginBottom: "20px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            Network
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            {isCni ? "Network" : title}
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             Manage services, ingresses, network policies, and endpoints
           </p>
         </div>
-        <div class="flex gap-2">
+        {createHref && (
           <a
-            href="/networking/ingresses/new"
+            href={createHref}
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--text-secondary)",
-              background: "transparent",
-              borderRadius: "6px",
-              textDecoration: "none",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-            }}
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            New Ingress
-          </a>
-          <a
-            href="/networking/services/new"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "7px 14px",
-              fontSize: "13px",
-              fontWeight: 500,
+              fontWeight: 600,
               color: "var(--bg-base)",
               background: "var(--accent)",
-              borderRadius: "6px",
+              borderRadius: "9px",
               textDecoration: "none",
               border: "none",
               cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
-            New Service
+            {createLabel ?? `New ${title.replace(/s$/, "")}`}
           </a>
-        </div>
+        )}
       </div>
 
       {/* Sub-navigation */}
