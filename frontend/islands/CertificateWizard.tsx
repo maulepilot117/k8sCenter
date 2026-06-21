@@ -1,15 +1,12 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { CertificateForm } from "@/components/wizard/CertificateForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { Issuer } from "@/lib/certmanager-types.ts";
 
 export interface CertificateWizardForm {
@@ -29,9 +26,9 @@ export interface CertificateWizardForm {
   isCA: boolean;
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Name, issuer & SANs" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialForm(): CertificateWizardForm {
@@ -49,8 +46,7 @@ function initialForm(): CertificateWizardForm {
   };
 }
 
-// decodeIssuerRef splits "Kind:Name" into its parts, using indexOf so names
-// containing further colons (won't happen for DNS labels but guards future changes)
+// decodeIssuerRef splits "Kind:Name" — uses indexOf so names containing colons
 // don't truncate. Returns null for malformed or empty input.
 function decodeIssuerRef(
   encoded: string,
@@ -65,17 +61,46 @@ function decodeIssuerRef(
 }
 
 function splitDnsNames(input: string): string[] {
-  return input
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  return input.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-export default function CertificateWizard() {
-  const currentStep = useSignal(0);
+function buildManifest(f: CertificateWizardForm): string {
+  const ref = decodeIssuerRef(f.issuerRefValue);
+  const dnsNames = splitDnsNames(f.dnsNamesInput);
+  const dnsBlock = dnsNames.length > 0
+    ? `\n  dnsNames:\n${dnsNames.map((n) => `    - ${n}`).join("\n")}`
+    : "";
+  const cnBlock = f.commonName.trim()
+    ? `\n  commonName: ${f.commonName.trim()}`
+    : "";
+  const caBlock = f.isCA ? "\n  isCA: true" : "";
+  const sizeBlock = f.privateKey.algorithm !== "Ed25519"
+    ? `\n      size: ${f.privateKey.size}`
+    : "";
+  return `apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${f.name || "<name>"}
+  namespace: ${f.namespace || "<namespace>"}
+spec:
+  secretName: ${f.secretName || "<secret-name>"}
+  issuerRef:
+    kind: ${ref?.kind || "Issuer"}
+    name: ${ref?.name || "<issuer>"}
+    group: cert-manager.io
+  duration: ${f.duration || "2160h"}
+  renewBefore: ${f.renewBefore || "360h"}${dnsBlock}${cnBlock}${caBlock}
+  privateKey:
+    algorithm: ${f.privateKey.algorithm}
+    rotationPolicy: ${f.privateKey.rotationPolicy}${sizeBlock}`;
+}
+
+export default function CertificateWizard(
+  { onClose }: { onClose: () => void },
+) {
+  const step = useSignal(0);
   const form = useSignal<CertificateWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
 
   const issuers = useSignal<Issuer[]>([]);
   const issuersLoading = useSignal(true);
@@ -85,10 +110,7 @@ export default function CertificateWizard() {
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
 
-  useDirtyGuard(dirty);
-
   useEffect(() => {
-    if (!IS_BROWSER) return;
     Promise.all([
       apiGet<Issuer[]>("/v1/certificates/issuers"),
       apiGet<Issuer[]>("/v1/certificates/clusterissuers"),
@@ -98,20 +120,15 @@ export default function CertificateWizard() {
         const clList = Array.isArray(cl.data) ? cl.data : [];
         issuers.value = [...nsList, ...clList];
       })
-      .catch(() => {
-        // Dropdown shows empty state; user can still type.
-      })
+      .catch(() => {})
       .finally(() => {
         issuersLoading.value = false;
       });
   }, []);
 
   const updateField = (field: string, value: unknown) => {
-    dirty.value = true;
     const f = { ...form.value, [field]: value };
-    // Auto-derive secretName from name as long as it still matches the
-    // previously-derived value. Only fires for non-empty new names so clearing
-    // `name` doesn't wipe the user's secretName entry alongside it.
+    // Auto-derive secretName from name until the user has diverged it
     if (
       field === "name" && typeof value === "string" && value !== "" &&
       (f.secretName === "" || f.secretName === form.value.name + "-tls")
@@ -122,9 +139,7 @@ export default function CertificateWizard() {
   };
 
   const updatePrivateKey = (field: string, value: unknown) => {
-    dirty.value = true;
     const pk = { ...form.value.privateKey, [field]: value };
-    // Sensible default size when algorithm changes.
     if (field === "algorithm") {
       if (value === "RSA") pk.size = 2048;
       else if (value === "ECDSA") pk.size = 256;
@@ -133,14 +148,9 @@ export default function CertificateWizard() {
     form.value = { ...form.value, privateKey: pk };
   };
 
-  const validateStep = (step: number): boolean => {
-    if (step !== 0) {
-      errors.value = {};
-      return true;
-    }
+  const validateStep = (): boolean => {
     const f = form.value;
     const errs: Record<string, string> = {};
-
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
         "Must be a valid DNS label (lowercase, alphanumeric, hyphens)";
@@ -160,7 +170,6 @@ export default function CertificateWizard() {
     if (dnsNames.length === 0 && f.commonName.trim() === "") {
       errs.dnsNames = "At least one DNS name or a common name is required";
     }
-
     errors.value = errs;
     return Object.keys(errs).length === 0;
   };
@@ -168,7 +177,6 @@ export default function CertificateWizard() {
   const fetchPreview = async () => {
     previewLoading.value = true;
     previewError.value = null;
-
     const f = form.value;
     const ref = decodeIssuerRef(f.issuerRefValue);
     if (!ref) {
@@ -177,33 +185,23 @@ export default function CertificateWizard() {
       return;
     }
     const dnsNames = splitDnsNames(f.dnsNamesInput);
-
     const payload: Record<string, unknown> = {
       name: f.name,
       namespace: f.namespace,
       secretName: f.secretName,
-      issuerRef: {
-        kind: ref.kind,
-        name: ref.name,
-        group: "cert-manager.io",
-      },
+      issuerRef: { kind: ref.kind, name: ref.name, group: "cert-manager.io" },
     };
     if (dnsNames.length > 0) payload.dnsNames = dnsNames;
     if (f.commonName.trim() !== "") payload.commonName = f.commonName.trim();
     if (f.duration.trim() !== "") payload.duration = f.duration.trim();
-    if (f.renewBefore.trim() !== "") {
-      payload.renewBefore = f.renewBefore.trim();
-    }
+    if (f.renewBefore.trim() !== "") payload.renewBefore = f.renewBefore.trim();
     const pk: Record<string, unknown> = {
       algorithm: f.privateKey.algorithm,
       rotationPolicy: f.privateKey.rotationPolicy,
     };
-    if (f.privateKey.algorithm !== "Ed25519") {
-      pk.size = f.privateKey.size;
-    }
+    if (f.privateKey.algorithm !== "Ed25519") pk.size = f.privateKey.size;
     payload.privateKey = pk;
     if (f.isCA) payload.isCA = true;
-
     try {
       const resp = await apiPost<{ yaml: string }>(
         "/v1/wizards/certificate/preview",
@@ -219,87 +217,71 @@ export default function CertificateWizard() {
     }
   };
 
-  const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
-    if (currentStep.value === 0) {
-      currentStep.value = 1;
+  const handleNext = async () => {
+    if (step.value === 0) {
+      if (!validateStep()) return;
+      step.value = 1;
       await fetchPreview();
+    } else {
+      onClose();
     }
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
-  };
-
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
   return (
-    <div class="p-6 max-w-4xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Certificate
-        </h1>
-        <a
-          href="/security/certificates"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Certificate"
+      subtitle={`Step ${
+        step.value + 1
+      } of 2 · namespace ${form.value.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <CertificateForm
-            form={form.value}
-            errors={errors.value}
-            issuers={issuers.value}
-            issuersLoading={issuersLoading.value}
-            namespaces={namespaces.value}
-            onUpdate={updateField}
-            onUpdatePrivateKey={updatePrivateKey}
-          />
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/security/certificates"
-          />
-        )}
-      </div>
-
-      {currentStep.value < 1 && (
-        <div class="flex justify-between mt-8">
-          <Button variant="ghost" onClick={goBack} disabled>
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
-        </div>
+          <circle cx="10" cy="9" r="5" />
+          <path d="M7 14l-2 4M13 14l2 4M8 18h4" />
+        </svg>
+      }
+      steps={STEPS}
+      current={step.value}
+      onStep={(i) => {
+        if (i < step.value) step.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onNext={handleNext}
+      nextLabel={step.value === 0 ? "Preview YAML" : "Done"}
+      yaml={step.value === 0 ? buildManifest(form.value) : undefined}
+    >
+      {step.value === 0 && (
+        <CertificateForm
+          form={form.value}
+          errors={errors.value}
+          issuers={issuers.value}
+          issuersLoading={issuersLoading.value}
+          namespaces={namespaces.value}
+          onUpdate={updateField}
+          onUpdatePrivateKey={updatePrivateKey}
+        />
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>Back</Button>
-        </div>
+      {step.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/security/certificates"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

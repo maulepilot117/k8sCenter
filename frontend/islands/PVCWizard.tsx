@@ -1,20 +1,17 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useEffect } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
-import {
-  ACCESS_MODES,
-  DNS_LABEL_REGEX,
-  WIZARD_INPUT_CLASS,
-} from "@/lib/wizard-constants.ts";
+import { ACCESS_MODES, DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
-import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
+import Select from "@/components/ui/form/Select.tsx";
+import Segmented from "@/components/ui/form/Segmented.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 
 interface PVCFormState {
   name: string;
@@ -25,16 +22,18 @@ interface PVCFormState {
   accessMode: string;
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Name, size & access" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
+const SIZE_UNITS = ["Mi", "Gi", "Ti"];
+const ACCESS_MODE_VALUES = ACCESS_MODES.map((m) => m.value);
+
 function initialState(): PVCFormState {
-  const ns = initialNamespace();
   return {
     name: "",
-    namespace: ns,
+    namespace: initialNamespace(),
     storageClassName: "",
     sizeValue: "10",
     sizeUnit: "Gi",
@@ -42,11 +41,28 @@ function initialState(): PVCFormState {
   };
 }
 
-export default function PVCWizard() {
-  const currentStep = useSignal(0);
+function buildManifest(f: PVCFormState): string {
+  const accessMode = f.accessMode || "ReadWriteOnce";
+  const storageClass = f.storageClassName
+    ? `\n  storageClassName: ${f.storageClassName}`
+    : "";
+  return `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${f.name || "<name>"}
+  namespace: ${f.namespace || "<namespace>"}
+spec:
+  accessModes:
+    - ${accessMode}${storageClass}
+  resources:
+    requests:
+      storage: ${f.sizeValue || "10"}${f.sizeUnit}`;
+}
+
+export default function PVCWizard({ onClose }: { onClose: () => void }) {
+  const step = useSignal(0);
   const form = useSignal<PVCFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
   const storageClasses = useStorageClasses();
@@ -57,9 +73,7 @@ export default function PVCWizard() {
 
   // Auto-select first storage class when loaded
   useEffect(() => {
-    if (
-      storageClasses.value.length > 0 && !form.value.storageClassName
-    ) {
+    if (storageClasses.value.length > 0 && !form.value.storageClassName) {
       form.value = {
         ...form.value,
         storageClassName: storageClasses.value[0].metadata.name,
@@ -67,61 +81,37 @@ export default function PVCWizard() {
     }
   }, [storageClasses.value]);
 
-  useDirtyGuard(dirty);
-
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
+  const updateField = (field: string, value: unknown) => {
     form.value = { ...form.value, [field]: value };
-  }, []);
+  };
 
   const validateStep = (): boolean => {
     const f = form.value;
     const errs: Record<string, string> = {};
-
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
         "Must be lowercase alphanumeric with hyphens, 1-63 characters";
     }
     if (!f.namespace) errs.namespace = "Required";
     if (!f.storageClassName) errs.storageClassName = "Required";
-
     const size = parseFloat(f.sizeValue);
-    if (isNaN(size) || size <= 0) {
-      errs.sizeValue = "Must be a positive number";
-    }
-
+    if (isNaN(size) || size <= 0) errs.sizeValue = "Must be a positive number";
     errors.value = errs;
     return Object.keys(errs).length === 0;
-  };
-
-  const goNext = async () => {
-    if (!validateStep()) return;
-    currentStep.value = 1;
-    await fetchPreview();
-  };
-
-  const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
   };
 
   const fetchPreview = async () => {
     previewLoading.value = true;
     previewError.value = null;
-
     const f = form.value;
-    const payload = {
-      name: f.name,
-      namespace: f.namespace,
-      storageClassName: f.storageClassName,
-      size: `${f.sizeValue}${f.sizeUnit}`,
-      accessMode: f.accessMode,
-    };
-
     try {
-      const resp = await apiPost<{ yaml: string }>(
-        "/v1/wizards/pvc/preview",
-        payload,
-      );
+      const resp = await apiPost<{ yaml: string }>("/v1/wizards/pvc/preview", {
+        name: f.name,
+        namespace: f.namespace,
+        storageClassName: f.storageClassName,
+        size: `${f.sizeValue}${f.sizeUnit}`,
+        accessMode: f.accessMode,
+      });
       previewYaml.value = resp.data.yaml;
     } catch (err) {
       previewError.value = err instanceof Error
@@ -132,197 +122,167 @@ export default function PVCWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const handleNext = async () => {
+    if (step.value === 0) {
+      if (!validateStep()) return;
+      step.value = 1;
+      await fetchPreview();
+    } else {
+      onClose();
+    }
+  };
+
+  const scNames = storageClasses.value.map((sc: StorageClassItem) =>
+    sc.metadata.name
+  );
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Persistent Volume Claim
-        </h1>
-        <a
-          href="/storage/pvcs"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create PVC"
+      subtitle={`Step ${
+        step.value + 1
+      } of 2 · namespace ${form.value.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
+          <rect x="3" y="5" width="14" height="10" rx="2" />
+          <path d="M7 10h6M10 7v6" />
+        </svg>
+      }
+      steps={STEPS}
+      current={step.value}
+      onStep={(i) => {
+        if (i < step.value) step.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onNext={handleNext}
+      nextLabel={step.value === 0 ? "Preview YAML" : "Done"}
+      yaml={step.value === 0 ? buildManifest(form.value) : undefined}
+    >
+      {step.value === 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "18px",
+            maxWidth: "440px",
+          }}
+        >
+          <Field label="Name">
+            <TextField
+              value={form.value.name}
+              onInput={(v) => updateField("name", v)}
+              placeholder="e.g. my-data"
+            />
+            {errors.value.name && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.name}
+              </p>
+            )}
+          </Field>
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
+          <Field label="Namespace">
+            <Select
+              value={form.value.namespace}
+              options={namespaces.value}
+              onChange={(v) => updateField("namespace", v)}
+            />
+            {errors.value.namespace && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.namespace}
+              </p>
+            )}
+          </Field>
 
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. my-data"
+          <Field label="Storage Class">
+            <Select
+              value={form.value.storageClassName}
+              options={["", ...scNames]}
+              onChange={(v) => updateField("storageClassName", v)}
+            />
+            {errors.value.storageClassName && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.storageClassName}
+              </p>
+            )}
+          </Field>
+
+          <Field label="Size">
+            <div style={{ display: "flex", gap: "10px" }}>
+              <TextField
+                value={form.value.sizeValue}
+                onInput={(v) => updateField("sizeValue", v)}
+                mono
+                width="100px"
+                placeholder="10"
               />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
-              )}
+              <Segmented
+                value={form.value.sizeUnit}
+                options={SIZE_UNITS}
+                onChange={(v) => updateField("sizeUnit", v)}
+              />
             </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
+            {errors.value.sizeValue && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
               >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-            </div>
+                {errors.value.sizeValue}
+              </p>
+            )}
+          </Field>
 
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Storage Class <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.storageClassName}
-                onChange={(e) =>
-                  updateField(
-                    "storageClassName",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                <option value="">Select a storage class...</option>
-                {storageClasses.value.map((sc: StorageClassItem) => (
-                  <option key={sc.metadata.name} value={sc.metadata.name}>
-                    {sc.metadata.name}
-                  </option>
-                ))}
-              </select>
-              {errors.value.storageClassName && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.storageClassName}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Size <span class="text-error">*</span>
-              </label>
-              <div class="mt-1 flex gap-2">
-                <input
-                  type="number"
-                  min="1"
-                  value={form.value.sizeValue}
-                  onInput={(e) =>
-                    updateField(
-                      "sizeValue",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class="w-32 rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                />
-                <select
-                  value={form.value.sizeUnit}
-                  onChange={(e) =>
-                    updateField(
-                      "sizeUnit",
-                      (e.target as HTMLSelectElement).value,
-                    )}
-                  class="rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
-                >
-                  <option value="Mi">Mi</option>
-                  <option value="Gi">Gi</option>
-                  <option value="Ti">Ti</option>
-                </select>
-              </div>
-              {errors.value.sizeValue && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.sizeValue}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Access Mode
-              </label>
-              <div class="mt-2 space-y-2">
-                {ACCESS_MODES.map((mode) => (
-                  <label
-                    key={mode.value}
-                    class="flex items-center gap-3 rounded-md border border-border-primary px-3 py-2 cursor-pointer hover:bg-surface /50"
-                  >
-                    <input
-                      type="radio"
-                      name="accessMode"
-                      value={mode.value}
-                      checked={form.value.accessMode === mode.value}
-                      onChange={() => updateField("accessMode", mode.value)}
-                      class="text-brand focus:ring-brand"
-                    />
-                    <div>
-                      <span class="text-sm font-medium text-text-secondary">
-                        {mode.label}
-                      </span>
-                      <span class="ml-2 text-xs text-text-muted">
-                        {mode.desc}
-                      </span>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/storage/pvcs"
-          />
-        )}
-      </div>
-
-      {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-end">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+          <Field label="Access Mode">
+            <Segmented
+              value={form.value.accessMode}
+              options={ACCESS_MODE_VALUES}
+              onChange={(v) => updateField("accessMode", v)}
+            />
+          </Field>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {step.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/storage/pvcs"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

@@ -105,7 +105,10 @@ function buildSearchIndex(): SearchItem[] {
       label: "View Expiring Certificates",
       href: "/security/certificates?status=expiring",
     },
-    { label: "Create Certificate", href: "/security/certificates/new" },
+    {
+      label: "Create Certificate",
+      href: "/security/certificates?action=create",
+    },
     {
       label: "Create Issuer",
       href: "/security/certificates/issuers/new",
@@ -114,6 +117,10 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create ClusterIssuer",
       href: "/security/certificates/cluster-issuers/new",
     },
+    { label: "Create PVC", href: "/storage/pvcs?action=create" },
+    { label: "Create StorageClass", href: "/storage/overview?action=create" },
+    { label: "Create Volume Snapshot", href: "/storage/snapshots/new" },
+    { label: "Schedule Snapshot", href: "/storage/snapshots/schedule" },
     {
       label: "External Secrets Dashboard",
       href: "/external-secrets/dashboard",

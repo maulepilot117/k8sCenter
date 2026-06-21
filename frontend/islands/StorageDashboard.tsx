@@ -1,3 +1,5 @@
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
 import { selectedNamespace } from "@/lib/namespace.ts";
 import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
@@ -5,6 +7,8 @@ import SnapshotList from "@/islands/SnapshotList.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import BarRow from "@/components/charts/BarRow.tsx";
+import PVCWizard from "@/islands/PVCWizard.tsx";
+import StorageClassWizard from "@/islands/StorageClassWizard.tsx";
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -80,6 +84,21 @@ export default function StorageDashboard(
   // resource-counts store re-fetches when namespace changes.
   const _ns = selectedNamespace.value;
 
+  const pvcWizardOpen = useSignal(false);
+  const scWizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    const params = new URLSearchParams(globalThis.location?.search ?? "");
+    if (params.get("action") === "create") {
+      if (currentPath.includes("storageclasses")) {
+        scWizardOpen.value = true;
+      } else {
+        pvcWizardOpen.value = true;
+      }
+    }
+  }, []);
+
   const { kind, title, createHref, clusterScoped, isOverview, isSnapshots } =
     resolveTab(currentPath);
 
@@ -153,8 +172,9 @@ export default function StorageDashboard(
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-          <a
-            href="/storage/pvcs/new"
+          <button
+            type="button"
+            onClick={() => (pvcWizardOpen.value = true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -165,10 +185,10 @@ export default function StorageDashboard(
               color: "var(--bg-base)",
               background: "var(--accent)",
               borderRadius: "9px",
-              textDecoration: "none",
               border: "none",
               cursor: "pointer",
               whiteSpace: "nowrap",
+              fontFamily: "inherit",
             }}
           >
             <svg
@@ -182,9 +202,10 @@ export default function StorageDashboard(
               <path d="M4 8h8M8 4v8" />
             </svg>
             New PVC
-          </a>
-          <a
-            href="/tools/storageclass-wizard"
+          </button>
+          <button
+            type="button"
+            onClick={() => (scWizardOpen.value = true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -195,10 +216,10 @@ export default function StorageDashboard(
               color: "var(--text-primary)",
               background: "transparent",
               borderRadius: "9px",
-              textDecoration: "none",
               border: "1px solid var(--border-primary)",
               cursor: "pointer",
               whiteSpace: "nowrap",
+              fontFamily: "inherit",
             }}
           >
             <svg
@@ -212,8 +233,15 @@ export default function StorageDashboard(
               <path d="M4 8h8M8 4v8" />
             </svg>
             New StorageClass
-          </a>
+          </button>
         </div>
+
+        {pvcWizardOpen.value && (
+          <PVCWizard onClose={() => (pvcWizardOpen.value = false)} />
+        )}
+        {scWizardOpen.value && (
+          <StorageClassWizard onClose={() => (scWizardOpen.value = false)} />
+        )}
       </div>
 
       {/* Content area */}
@@ -363,7 +391,7 @@ export default function StorageDashboard(
               <ResourceTable
                 kind="pvcs"
                 title="Persistent Volume Claims"
-                createHref="/storage/pvcs/new"
+                createHref="/storage/pvcs?action=create"
                 hideHeader
               />
             </div>

@@ -1,16 +1,16 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useEffect } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
-import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
+import Select from "@/components/ui/form/Select.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 
 interface SnapshotFormState {
   name: string;
@@ -35,9 +35,9 @@ interface SnapshotClassItem {
   isDefault: boolean;
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Source PVC & snapshot class" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function generateSnapshotName(pvcName: string): string {
@@ -51,39 +51,40 @@ function generateSnapshotName(pvcName: string): string {
   return `${pvcName}-snap-${ts}`;
 }
 
-function initialState(
-  preselectedNs?: string,
-  preselectedPvc?: string,
-): SnapshotFormState {
-  const ns = preselectedNs || initialNamespace();
-  return {
-    name: preselectedPvc ? generateSnapshotName(preselectedPvc) : "",
-    namespace: ns,
-    sourcePVC: preselectedPvc || "",
-    volumeSnapshotClassName: "",
-  };
+function buildManifest(f: SnapshotFormState): string {
+  const classLine = f.volumeSnapshotClassName
+    ? `\n  volumeSnapshotClassName: ${f.volumeSnapshotClassName}`
+    : "";
+  return `apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: ${f.name || "<name>"}
+  namespace: ${f.namespace || "<namespace>"}
+spec:
+  source:
+    persistentVolumeClaimName: ${f.sourcePVC || "<source-pvc>"}${classLine}`;
 }
 
-export default function SnapshotWizard() {
-  // Parse URL query params for pre-selection (from PVC action menu)
-  const urlParams = IS_BROWSER
-    ? new URLSearchParams(globalThis.location.search)
-    : null;
-  const preselectedNs = urlParams?.get("ns") || undefined;
-  const preselectedPvc = urlParams?.get("pvc") || undefined;
-
-  const currentStep = useSignal(0);
-  const form = useSignal<SnapshotFormState>(
-    initialState(preselectedNs, preselectedPvc),
-  );
+export default function SnapshotWizard(
+  { onClose, preselectedNs, preselectedPvc }: {
+    onClose: () => void;
+    preselectedNs?: string;
+    preselectedPvc?: string;
+  },
+) {
+  const step = useSignal(0);
+  const form = useSignal<SnapshotFormState>({
+    name: preselectedPvc ? generateSnapshotName(preselectedPvc) : "",
+    namespace: preselectedNs || initialNamespace(),
+    sourcePVC: preselectedPvc || "",
+    volumeSnapshotClassName: "",
+  });
   const errors = useSignal<Record<string, string>>({});
-  const dirty = useSignal(false);
 
   const namespaces = useNamespaces();
   const pvcs = useSignal<PVCItem[]>([]);
   const snapshotClasses = useSignal<SnapshotClassItem[]>([]);
   const storageClasses = useStorageClasses();
-
   const snapshotsAvailable = useSignal(true);
 
   const previewYaml = useSignal("");
@@ -92,7 +93,6 @@ export default function SnapshotWizard() {
 
   // Fetch snapshot classes
   useEffect(() => {
-    if (!IS_BROWSER) return;
     apiGet<{ data: SnapshotClassItem[]; metadata: { available: boolean } }>(
       "/v1/storage/snapshot-classes",
     )
@@ -109,41 +109,32 @@ export default function SnapshotWizard() {
 
   // Fetch PVCs when namespace changes
   useEffect(() => {
-    if (!IS_BROWSER) return;
     const ns = form.value.namespace;
     if (!ns) return;
-
     apiGet<PVCItem[]>(`/v1/resources/pvcs/${ns}?limit=500`)
       .then((resp) => {
-        if (Array.isArray(resp.data)) {
-          pvcs.value = resp.data;
-        }
+        if (Array.isArray(resp.data)) pvcs.value = resp.data;
       })
       .catch(() => {
         pvcs.value = [];
       });
   }, [form.value.namespace]);
 
-  useDirtyGuard(dirty);
-
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
+  const updateField = (field: string, value: unknown) => {
     form.value = { ...form.value, [field]: value };
-  }, []);
+  };
 
-  // Filter PVCs to only show Bound
+  // Filter PVCs to Bound only
   const boundPVCs = pvcs.value.filter((p) => p.status?.phase === "Bound");
 
-  // Get the provisioner for the selected PVC's storage class
-  const selectedPVC = boundPVCs.find(
-    (p) => p.metadata.name === form.value.sourcePVC,
+  // Filter snapshot classes by PVC's provisioner
+  const selectedPVC = boundPVCs.find((p) =>
+    p.metadata.name === form.value.sourcePVC
   );
   const pvcStorageClass = selectedPVC?.spec?.storageClassName || "";
   const pvcProvisioner = storageClasses.value.find(
     (sc: StorageClassItem) => sc.metadata.name === pvcStorageClass,
   )?.provisioner || "";
-
-  // Filter snapshot classes to those matching the PVC's provisioner
   const filteredSnapshotClasses = pvcProvisioner
     ? snapshotClasses.value.filter((sc) => sc.driver === pvcProvisioner)
     : snapshotClasses.value;
@@ -151,32 +142,19 @@ export default function SnapshotWizard() {
   const validateStep = (): boolean => {
     const f = form.value;
     const errs: Record<string, string> = {};
-
     if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
       errs.name =
         "Must be lowercase alphanumeric with hyphens, 1-63 characters";
     }
     if (!f.namespace) errs.namespace = "Required";
     if (!f.sourcePVC) errs.sourcePVC = "Required";
-
     errors.value = errs;
     return Object.keys(errs).length === 0;
-  };
-
-  const goNext = async () => {
-    if (!validateStep()) return;
-    currentStep.value = 1;
-    await fetchPreview();
-  };
-
-  const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
   };
 
   const fetchPreview = async () => {
     previewLoading.value = true;
     previewError.value = null;
-
     const f = form.value;
     const payload: Record<string, string> = {
       name: f.name,
@@ -186,7 +164,6 @@ export default function SnapshotWizard() {
     if (f.volumeSnapshotClassName) {
       payload.volumeSnapshotClassName = f.volumeSnapshotClassName;
     }
-
     try {
       const resp = await apiPost<{ yaml: string }>(
         "/v1/wizards/snapshot/preview",
@@ -202,219 +179,229 @@ export default function SnapshotWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const handleNext = async () => {
+    if (step.value === 0) {
+      if (!validateStep()) return;
+      step.value = 1;
+      await fetchPreview();
+    } else {
+      onClose();
+    }
+  };
 
+  // CRD unavailable — render inline notice inside the modal body
   if (!snapshotsAvailable.value) {
     return (
-      <div class="p-6">
-        <div class="rounded-lg border border-warning bg-warning-dim p-6 text-center">
-          <p class="text-lg font-medium text-warning">
+      <WizardShell
+        title="Create Volume Snapshot"
+        steps={STEPS}
+        current={0}
+        onStep={() => {}}
+        onCancel={onClose}
+        onBack={() => {}}
+        onNext={onClose}
+        nextLabel="Close"
+      >
+        <div
+          style={{
+            padding: "24px",
+            borderRadius: "12px",
+            border: "1px solid var(--warning)",
+            background: "color-mix(in srgb, var(--warning) 8%, transparent)",
+            maxWidth: "480px",
+          }}
+        >
+          <p
+            style={{
+              fontSize: "15px",
+              fontWeight: 600,
+              color: "var(--warning)",
+              margin: "0 0 8px",
+            }}
+          >
             VolumeSnapshot CRDs Not Installed
           </p>
-          <p class="mt-2 text-sm text-warning">
+          <p style={{ fontSize: "13px", color: "var(--warning)", margin: 0 }}>
             This cluster does not have the snapshot.storage.k8s.io CRDs
-            installed. Install the{""}
+            installed. Install the{" "}
             <a
               href="https://github.com/kubernetes-csi/external-snapshotter"
               target="_blank"
               rel="noopener noreferrer"
-              class="underline"
+              style={{ textDecoration: "underline" }}
             >
               CSI snapshot controller
-            </a>
-            {""}
+            </a>{" "}
             to enable VolumeSnapshot support.
           </p>
-          <a
-            href="/storage/snapshots"
-            class="mt-4 inline-block text-sm text-warning hover:text-warning"
-          >
-            Back to Snapshots
-          </a>
         </div>
-      </div>
+      </WizardShell>
     );
   }
 
+  const f = form.value;
+  // Snapshot class select: use raw names as option values; "(default)" shown as hint
+  const snapshotClassSelectOptions = [
+    "",
+    ...filteredSnapshotClasses.map((sc) => sc.name),
+  ];
+  const defaultSnapshotClass =
+    filteredSnapshotClasses.find((sc) => sc.isDefault)?.name ?? "";
+
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Volume Snapshot
-        </h1>
-        <a
-          href="/storage/snapshots"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Volume Snapshot"
+      subtitle={`Step ${step.value + 1} of 2 · namespace ${f.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) => {
-                  const ns = (e.target as HTMLSelectElement).value;
-                  updateField("namespace", ns);
-                  // Reset PVC selection when namespace changes
-                  form.value = {
-                    ...form.value,
-                    namespace: ns,
-                    sourcePVC: "",
-                    name: "",
-                  };
+          <circle cx="10" cy="10" r="7" />
+          <path d="M10 6v4l3 3" />
+        </svg>
+      }
+      steps={STEPS}
+      current={step.value}
+      onStep={(i) => {
+        if (i < step.value) step.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onNext={handleNext}
+      nextLabel={step.value === 0 ? "Preview YAML" : "Done"}
+      yaml={step.value === 0 ? buildManifest(f) : undefined}
+    >
+      {step.value === 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "18px",
+            maxWidth: "440px",
+          }}
+        >
+          <Field label="Namespace">
+            <Select
+              value={f.namespace}
+              options={namespaces.value}
+              onChange={(v) => {
+                form.value = { ...f, namespace: v, sourcePVC: "", name: "" };
+              }}
+            />
+            {errors.value.namespace && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
                 }}
-                class={WIZARD_INPUT_CLASS}
               >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-              {errors.value.namespace && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.namespace}
-                </p>
-              )}
-            </div>
+                {errors.value.namespace}
+              </p>
+            )}
+          </Field>
 
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Source PVC <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.sourcePVC}
-                onChange={(e) => {
-                  const pvc = (e.target as HTMLSelectElement).value;
-                  updateField("sourcePVC", pvc);
-                  // Auto-generate name when PVC is selected
-                  if (pvc) {
-                    form.value = {
-                      ...form.value,
-                      sourcePVC: pvc,
-                      name: generateSnapshotName(pvc),
-                      volumeSnapshotClassName: "",
-                    };
-                  }
+          <Field label="Source PVC">
+            <Select
+              value={f.sourcePVC}
+              options={["", ...boundPVCs.map((p) => p.metadata.name)]}
+              onChange={(v) => {
+                form.value = {
+                  ...f,
+                  sourcePVC: v,
+                  name: v ? generateSnapshotName(v) : "",
+                  volumeSnapshotClassName: "",
+                };
+              }}
+            />
+            {errors.value.sourcePVC && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
                 }}
-                class={WIZARD_INPUT_CLASS}
               >
-                <option value="">Select a PVC...</option>
-                {boundPVCs.map((pvc) => {
-                  const size = pvc.spec?.resources?.requests?.storage ||
-                    "unknown";
-                  const sc = pvc.spec?.storageClassName || "default";
-                  return (
-                    <option key={pvc.metadata.name} value={pvc.metadata.name}>
-                      {pvc.metadata.name} ({size}, {sc})
-                    </option>
-                  );
-                })}
-              </select>
-              {boundPVCs.length === 0 && pvcs.value.length > 0 && (
-                <p class="mt-1 text-xs text-text-muted">
-                  No bound PVCs in this namespace
-                </p>
-              )}
-              {errors.value.sourcePVC && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.sourcePVC}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                VolumeSnapshot Class
-              </label>
-              <select
-                value={form.value.volumeSnapshotClassName}
-                onChange={(e) =>
-                  updateField(
-                    "volumeSnapshotClassName",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
+                {errors.value.sourcePVC}
+              </p>
+            )}
+            {boundPVCs.length === 0 && pvcs.value.length > 0 && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--text-muted)",
+                  marginTop: "5px",
+                }}
               >
-                <option value="">Auto (cluster default)</option>
-                {filteredSnapshotClasses.map((sc) => (
-                  <option key={sc.name} value={sc.name}>
-                    {sc.name}
-                    {sc.isDefault ? " (default)" : ""}
-                  </option>
-                ))}
-              </select>
-              {pvcProvisioner && filteredSnapshotClasses.length === 0 &&
-                snapshotClasses.value.length > 0 && (
-                <p class="mt-1 text-xs text-warning">
-                  No snapshot classes match the provisioner"{pvcProvisioner}"
-                </p>
-              )}
-            </div>
+                No bound PVCs in this namespace
+              </p>
+            )}
+          </Field>
 
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. my-pvc-snap-20260323-120000"
-              />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
-              )}
-            </div>
-          </div>
-        )}
+          <Field
+            label="VolumeSnapshot Class"
+            hint={defaultSnapshotClass
+              ? `Cluster default: ${defaultSnapshotClass}`
+              : "Leave blank to use cluster default"}
+          >
+            <Select
+              value={f.volumeSnapshotClassName}
+              options={snapshotClassSelectOptions}
+              onChange={(v) => updateField("volumeSnapshotClassName", v)}
+            />
+            {pvcProvisioner && filteredSnapshotClasses.length === 0 &&
+              snapshotClasses.value.length > 0 && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--warning)",
+                  marginTop: "5px",
+                }}
+              >
+                No snapshot classes match provisioner "{pvcProvisioner}"
+              </p>
+            )}
+          </Field>
 
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/storage/snapshots"
-          />
-        )}
-      </div>
-
-      {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-end">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+          <Field label="Name">
+            <TextField
+              value={f.name}
+              onInput={(v) => updateField("name", v)}
+              placeholder="e.g. my-pvc-snap-20260323-120000"
+            />
+            {errors.value.name && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.name}
+              </p>
+            )}
+          </Field>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {step.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/storage/snapshots"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

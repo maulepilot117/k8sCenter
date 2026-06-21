@@ -1,12 +1,12 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useEffect } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
+import Select from "@/components/ui/form/Select.tsx";
+import Toggle from "@/components/ui/form/Toggle.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
-import { Input } from "@/components/ui/Input.tsx";
 
 interface PresetParam {
   default: string;
@@ -32,10 +32,10 @@ interface FormState {
   mountOptions: Array<{ value: string }>;
 }
 
-const STEPS = [
-  { title: "Basics" },
-  { title: "Parameters" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Basics", sub: "Name & provisioner" },
+  { label: "Parameters", sub: "Driver config & options" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): FormState {
@@ -51,19 +51,41 @@ function initialState(): FormState {
   };
 }
 
-export default function StorageClassWizard() {
-  const currentStep = useSignal(0);
+function buildManifest(f: FormState): string {
+  const annotations = f.isDefault
+    ? `\n  annotations:\n    storageclass.kubernetes.io/is-default-class: "true"`
+    : "";
+  const params = f.parameters.filter((p) => p.key).map((p) =>
+    `\n  ${p.key}: "${p.value}"`
+  ).join("");
+  const paramsBlock = params ? `\nparameters:${params}` : "";
+  const opts = f.mountOptions.map((o) => o.value).filter(Boolean);
+  const mountBlock = opts.length > 0
+    ? `\nmountOptions:\n${opts.map((o) => `  - ${o}`).join("\n")}`
+    : "";
+  return `apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${f.name || "<name>"}${annotations}
+provisioner: ${f.provisioner || "<provisioner>"}
+reclaimPolicy: ${f.reclaimPolicy}
+volumeBindingMode: ${f.volumeBindingMode}
+allowVolumeExpansion: ${f.allowVolumeExpansion}${paramsBlock}${mountBlock}`;
+}
+
+export default function StorageClassWizard(
+  { onClose }: { onClose: () => void },
+) {
+  const step = useSignal(0);
   const form = useSignal<FormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
   const presets = useSignal<Record<string, PresetInfo>>({});
+
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
-  const dirty = useSignal(false);
 
-  // Fetch presets
   useEffect(() => {
-    if (!IS_BROWSER) return;
     apiGet<Record<string, PresetInfo>>("/v1/storage/presets")
       .then((resp) => {
         if (resp.data) presets.value = resp.data;
@@ -71,68 +93,40 @@ export default function StorageClassWizard() {
       .catch(() => {});
   }, []);
 
-  useDirtyGuard(dirty);
-
-  const updateField = useCallback((field: string, value: unknown) => {
-    dirty.value = true;
+  const updateField = (field: string, value: unknown) => {
     form.value = { ...form.value, [field]: value };
-  }, []);
+  };
 
   const applyPreset = (driverName: string) => {
     const preset = presets.value[driverName];
     if (!preset) return;
-    const params = Object.entries(preset.parameters).map(([key, p]) => ({
-      key,
-      value: p.default,
-    }));
     form.value = {
       ...form.value,
       provisioner: driverName,
-      parameters: params,
+      parameters: Object.entries(preset.parameters).map(([key, p]) => ({
+        key,
+        value: p.default,
+      })),
     };
-    dirty.value = true;
   };
 
-  const validateStep = (step: number): boolean => {
+  const validateStep = (s: number): boolean => {
     const f = form.value;
     const errs: Record<string, string> = {};
-
-    if (step === 0) {
-      if (
-        !f.name ||
-        !/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(f.name)
-      ) {
+    if (s === 0) {
+      if (!f.name || !/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/.test(f.name)) {
         errs.name =
           "Must be a valid DNS subdomain (lowercase, hyphens, dots, max 253)";
       }
       if (!f.provisioner) errs.provisioner = "Required";
     }
-
     errors.value = errs;
     return Object.keys(errs).length === 0;
-  };
-
-  const goNext = async () => {
-    if (!validateStep(currentStep.value)) return;
-
-    if (currentStep.value === 1) {
-      currentStep.value = 2;
-      await fetchPreview();
-    } else {
-      currentStep.value = currentStep.value + 1;
-    }
-  };
-
-  const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
   };
 
   const fetchPreview = async () => {
     previewLoading.value = true;
     previewError.value = null;
-
     const f = form.value;
     const payload: Record<string, unknown> = {
       name: f.name,
@@ -142,15 +136,11 @@ export default function StorageClassWizard() {
       allowVolumeExpansion: f.allowVolumeExpansion,
       isDefault: f.isDefault,
     };
-
-    // Convert parameters array to map
     const params: Record<string, string> = {};
     for (const p of f.parameters) {
       if (p.key) params[p.key] = p.value;
     }
     if (Object.keys(params).length > 0) payload.parameters = params;
-
-    // Mount options
     const opts = f.mountOptions.map((o) => o.value).filter(Boolean);
     if (opts.length > 0) payload.mountOptions = opts;
 
@@ -169,212 +159,271 @@ export default function StorageClassWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const handleNext = async () => {
+    if (!validateStep(step.value)) return;
+    if (step.value === 1) {
+      step.value = 2;
+      await fetchPreview();
+    } else if (step.value < 2) {
+      step.value += 1;
+    } else {
+      onClose();
+    }
+  };
+
+  const presetNames = Object.keys(presets.value);
+  const f = form.value;
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create StorageClass
-        </h1>
-        <a
-          href="/storage/overview"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create StorageClass"
+      subtitle={`Step ${step.value + 1} of 3`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <BasicsStep
-            form={form.value}
-            errors={errors.value}
-            presets={presets.value}
-            onChange={updateField}
-            onApplyPreset={applyPreset}
-          />
-        )}
-
-        {currentStep.value === 1 && (
-          <ParametersStep
-            form={form.value}
-            presets={presets.value}
-            onChange={updateField}
-          />
-        )}
-
-        {currentStep.value === 2 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/storage/overview"
-          />
-        )}
-      </div>
-
-      {currentStep.value < 2 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 1 ? "Preview YAML" : "Next"}
-          </Button>
-        </div>
-      )}
-
-      {currentStep.value === 2 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BasicsStep(
-  { form, errors, presets, onChange, onApplyPreset }: {
-    form: FormState;
-    errors: Record<string, string>;
-    presets: Record<string, PresetInfo>;
-    onChange: (field: string, value: unknown) => void;
-    onApplyPreset: (driver: string) => void;
-  },
-) {
-  const presetNames = Object.keys(presets);
-
-  return (
-    <div class="space-y-6 max-w-xl">
-      {/* Preset selector */}
-      {presetNames.length > 0 && (
-        <div>
-          <label class="block text-sm font-medium text-text-secondary mb-2">
-            Quick Start (optional)
-          </label>
-          <div class="flex gap-2 flex-wrap">
-            {presetNames.map((driver) => (
-              <button
-                key={driver}
-                type="button"
-                onClick={() => onApplyPreset(driver)}
-                class={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                  form.provisioner === driver
-                    ? "border-brand bg-brand/10 text-brand"
-                    : "border-border-primary text-text-secondary hover:border-brand/50"
-                }`}
+          <ellipse cx="10" cy="6" rx="7" ry="3" />
+          <path d="M3 6v4c0 1.66 3.13 3 7 3s7-1.34 7-3V6" />
+          <path d="M3 10v4c0 1.66 3.13 3 7 3s7-1.34 7-3v-4" />
+        </svg>
+      }
+      steps={STEPS}
+      current={step.value}
+      onStep={(i) => {
+        if (i < step.value) step.value = i;
+      }}
+      onCancel={onClose}
+      onBack={() => (step.value = Math.max(0, step.value - 1))}
+      onNext={handleNext}
+      nextLabel={step.value === 1
+        ? "Preview YAML"
+        : step.value === 2
+        ? "Done"
+        : "Continue"}
+      yaml={step.value < 2 ? buildManifest(f) : undefined}
+    >
+      {step.value === 0 && (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "18px",
+            maxWidth: "480px",
+          }}
+        >
+          {/* Preset quick-start */}
+          {presetNames.length > 0 && (
+            <div>
+              <div
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  color: "var(--text-secondary)",
+                  marginBottom: "8px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
               >
-                {presets[driver].displayName}
-              </button>
-            ))}
+                Quick Start (optional)
+              </div>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                {presetNames.map((driver) => (
+                  <button
+                    key={driver}
+                    type="button"
+                    onClick={() => applyPreset(driver)}
+                    style={{
+                      padding: "6px 14px",
+                      fontSize: "12px",
+                      borderRadius: "8px",
+                      border: `1px solid ${
+                        f.provisioner === driver
+                          ? "var(--accent)"
+                          : "var(--border-subtle)"
+                      }`,
+                      background: f.provisioner === driver
+                        ? "var(--accent-dim)"
+                        : "transparent",
+                      color: f.provisioner === driver
+                        ? "var(--accent)"
+                        : "var(--text-secondary)",
+                      cursor: "pointer",
+                      fontWeight: 600,
+                      fontFamily: "inherit",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {presets.value[driver].displayName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <Field label="Name">
+            <TextField
+              value={f.name}
+              onInput={(v) => updateField("name", v)}
+              placeholder="e.g. fast-storage"
+            />
+            {errors.value.name && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.name}
+              </p>
+            )}
+          </Field>
+
+          <Field label="Provisioner">
+            <TextField
+              value={f.provisioner}
+              onInput={(v) => updateField("provisioner", v)}
+              mono
+              placeholder="e.g. ebs.csi.aws.com"
+            />
+            {errors.value.provisioner && (
+              <p
+                style={{
+                  fontSize: "11.5px",
+                  color: "var(--error)",
+                  marginTop: "5px",
+                }}
+              >
+                {errors.value.provisioner}
+              </p>
+            )}
+          </Field>
+
+          <Field label="Reclaim Policy">
+            <Select
+              value={f.reclaimPolicy}
+              options={["Delete", "Retain"]}
+              onChange={(v) => updateField("reclaimPolicy", v)}
+            />
+          </Field>
+
+          <Field label="Volume Binding Mode">
+            <Select
+              value={f.volumeBindingMode}
+              options={["Immediate", "WaitForFirstConsumer"]}
+              onChange={(v) => updateField("volumeBindingMode", v)}
+            />
+          </Field>
+
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "16px",
+                padding: "12px 14px",
+                borderRadius: "10px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  Allow Volume Expansion
+                </div>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                    marginTop: "1px",
+                  }}
+                >
+                  Permit resizing PVCs backed by this class
+                </div>
+              </div>
+              <Toggle
+                checked={f.allowVolumeExpansion}
+                onChange={(v) => updateField("allowVolumeExpansion", v)}
+              />
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "16px",
+                padding: "12px 14px",
+                borderRadius: "10px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  Set as Default
+                </div>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                    marginTop: "1px",
+                  }}
+                >
+                  Use this StorageClass when none is specified
+                </div>
+              </div>
+              <Toggle
+                checked={f.isDefault}
+                onChange={(v) => updateField("isDefault", v)}
+              />
+            </div>
           </div>
         </div>
       )}
 
-      <Input
-        label="Name"
-        value={form.name}
-        error={errors.name}
-        onInput={(e) => onChange("name", (e.target as HTMLInputElement).value)}
-        placeholder="e.g., fast-storage"
-      />
+      {step.value === 1 && (
+        <ParametersStep
+          form={f}
+          presets={presets.value}
+          onChange={updateField}
+        />
+      )}
 
-      <Input
-        label="Provisioner"
-        value={form.provisioner}
-        error={errors.provisioner}
-        onInput={(e) =>
-          onChange("provisioner", (e.target as HTMLInputElement).value)}
-        placeholder="e.g., ebs.csi.aws.com"
-      />
-
-      <div>
-        <label class="block text-sm font-medium text-text-secondary mb-1">
-          Reclaim Policy
-        </label>
-        <select
-          value={form.reclaimPolicy}
-          onChange={(e) =>
-            onChange(
-              "reclaimPolicy",
-              (e.target as HTMLSelectElement).value,
-            )}
-          class="w-full px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
-        >
-          <option value="Delete">Delete</option>
-          <option value="Retain">Retain</option>
-        </select>
-      </div>
-
-      <div>
-        <label class="block text-sm font-medium text-text-secondary mb-1">
-          Volume Binding Mode
-        </label>
-        <select
-          value={form.volumeBindingMode}
-          onChange={(e) =>
-            onChange(
-              "volumeBindingMode",
-              (e.target as HTMLSelectElement).value,
-            )}
-          class="w-full px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
-        >
-          <option value="Immediate">Immediate</option>
-          <option value="WaitForFirstConsumer">WaitForFirstConsumer</option>
-        </select>
-      </div>
-
-      <div class="flex gap-6">
-        <label class="flex items-center gap-2 text-sm text-text-secondary">
-          <input
-            type="checkbox"
-            checked={form.allowVolumeExpansion}
-            onChange={(e) =>
-              onChange(
-                "allowVolumeExpansion",
-                (e.target as HTMLInputElement).checked,
-              )}
-            class="rounded border-border-primary"
-          />
-          Allow Volume Expansion
-        </label>
-
-        <label class="flex items-center gap-2 text-sm text-text-secondary">
-          <input
-            type="checkbox"
-            checked={form.isDefault}
-            onChange={(e) =>
-              onChange(
-                "isDefault",
-                (e.target as HTMLInputElement).checked,
-              )}
-            class="rounded border-border-primary"
-          />
-          Set as Default StorageClass
-        </label>
-      </div>
-    </div>
+      {step.value === 2 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/storage/overview"
+        />
+      )}
+    </WizardShell>
   );
 }
 
@@ -419,34 +468,106 @@ function ParametersStep(
     onChange("mountOptions", updated);
   };
 
+  const inputStyle = {
+    width: "100%",
+    padding: "8px 12px",
+    border: "1px solid var(--border-subtle)",
+    borderRadius: "8px",
+    background: "var(--bg-elevated)",
+    color: "var(--text-primary)",
+    fontSize: "13px",
+    fontFamily: "inherit",
+    outline: "none",
+  };
+
+  const removeBtn = {
+    padding: "6px 10px",
+    border: "none",
+    background: "transparent",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    fontSize: "16px",
+    lineHeight: 1,
+    borderRadius: "6px",
+    fontFamily: "inherit",
+  };
+
   return (
-    <div class="space-y-6 max-w-2xl">
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: "28px",
+        maxWidth: "540px",
+      }}
+    >
       {/* Parameters */}
       <div>
-        <div class="flex items-center justify-between mb-2">
-          <label class="text-sm font-medium text-text-secondary">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "10px",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}
+          >
             Parameters
-          </label>
-          <Button variant="ghost" onClick={addParameter}>
-            + Add Parameter
-          </Button>
+          </span>
+          <button
+            type="button"
+            onClick={addParameter}
+            style={{
+              padding: "5px 12px",
+              fontSize: "12px",
+              fontWeight: 600,
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "7px",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            + Add
+          </button>
         </div>
 
         {form.parameters.length === 0 && (
-          <p class="text-sm text-text-muted py-2">
-            No parameters configured.
+          <p
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              padding: "8px 0",
+            }}
+          >
             {preset
-              ? " Preset parameters were applied from the quick start selection."
-              : " Add driver-specific parameters as needed."}
+              ? "Preset parameters were applied from Quick Start."
+              : "No parameters yet. Add driver-specific key-value pairs."}
           </p>
         )}
 
-        <div class="space-y-2">
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {form.parameters.map((p, i) => {
             const presetParam = preset?.parameters[p.key];
             return (
-              <div key={i} class="flex gap-2 items-start">
-                <div class="flex-1">
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  gap: "8px",
+                  alignItems: "flex-start",
+                }}
+              >
+                <div style={{ flex: 1 }}>
                   <input
                     type="text"
                     value={p.key}
@@ -457,15 +578,21 @@ function ParametersStep(
                         (e.target as HTMLInputElement).value,
                       )}
                     placeholder="Key"
-                    class="w-full px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
+                    style={inputStyle}
                   />
                   {presetParam && (
-                    <p class="text-xs text-text-muted mt-0.5">
+                    <p
+                      style={{
+                        fontSize: "11px",
+                        color: "var(--text-muted)",
+                        marginTop: "3px",
+                      }}
+                    >
                       {presetParam.description}
                     </p>
                   )}
                 </div>
-                <div class="flex-1">
+                <div style={{ flex: 1 }}>
                   {presetParam?.options
                     ? (
                       <select
@@ -476,7 +603,7 @@ function ParametersStep(
                             "value",
                             (e.target as HTMLSelectElement).value,
                           )}
-                        class="w-full px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
+                        style={inputStyle}
                       >
                         {presetParam.options.map((opt) => (
                           <option key={opt} value={opt}>{opt}</option>
@@ -494,16 +621,16 @@ function ParametersStep(
                             (e.target as HTMLInputElement).value,
                           )}
                         placeholder="Value"
-                        class="w-full px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
+                        style={inputStyle}
                       />
                     )}
                 </div>
                 <button
                   type="button"
                   onClick={() => removeParameter(i)}
-                  class="px-2 py-2 text-text-muted hover:text-error"
+                  style={removeBtn}
                 >
-                  x
+                  ×
                 </button>
               </div>
             );
@@ -513,41 +640,74 @@ function ParametersStep(
 
       {/* Mount Options */}
       <div>
-        <div class="flex items-center justify-between mb-2">
-          <label class="text-sm font-medium text-text-secondary">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "10px",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+            }}
+          >
             Mount Options
-          </label>
-          <Button variant="ghost" onClick={addMountOption}>
-            + Add Mount Option
-          </Button>
+          </span>
+          <button
+            type="button"
+            onClick={addMountOption}
+            style={{
+              padding: "5px 12px",
+              fontSize: "12px",
+              fontWeight: 600,
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "7px",
+              background: "transparent",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            + Add
+          </button>
         </div>
 
         {form.mountOptions.length === 0 && (
-          <p class="text-sm text-text-muted py-2">
+          <p
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              padding: "8px 0",
+            }}
+          >
             No mount options configured.
           </p>
         )}
 
-        <div class="space-y-2">
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
           {form.mountOptions.map((o, i) => (
-            <div key={i} class="flex gap-2">
+            <div key={i} style={{ display: "flex", gap: "8px" }}>
               <input
                 type="text"
                 value={o.value}
                 onInput={(e) =>
-                  updateMountOption(
-                    i,
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="e.g., debug, noatime"
-                class="flex-1 px-3 py-2 border border-border-primary rounded-lg bg-surface text-text-primary text-sm"
+                  updateMountOption(i, (e.target as HTMLInputElement).value)}
+                placeholder="e.g. debug, noatime"
+                style={{ ...inputStyle, flex: 1 }}
               />
               <button
                 type="button"
-                onClick={() => removeMountOption(i)}
-                class="px-2 py-2 text-text-muted hover:text-error"
+                onClick={() =>
+                  removeMountOption(i)}
+                style={removeBtn}
               >
-                x
+                ×
               </button>
             </div>
           ))}

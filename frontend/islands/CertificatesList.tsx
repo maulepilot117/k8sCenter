@@ -11,6 +11,7 @@ import {
   StatusBadge,
 } from "@/components/ui/CertificateBadges.tsx";
 import type { Certificate } from "@/lib/certmanager-types.ts";
+import CertificateWizard from "@/islands/CertificateWizard.tsx";
 
 const PAGE_SIZE = 100;
 
@@ -20,11 +21,19 @@ export default function CertificatesList() {
   const certs = useSignal<Certificate[]>([]);
   const search = useSignal("");
   const page = useSignal(1);
+  const wizardOpen = useSignal(false);
 
   // Check URL param for pre-filter
   const expiringOnly = IS_BROWSER &&
     new URLSearchParams(globalThis.location.search).get("status") ===
       "expiring";
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
+  }, []);
 
   async function fetchData() {
     try {
@@ -105,8 +114,9 @@ export default function CertificatesList() {
             {expiringOnly && " Showing expiring and expired certificates only."}
           </p>
         </div>
-        <a
-          href="/security/certificates/new"
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -117,14 +127,18 @@ export default function CertificatesList() {
             color: "var(--bg-base)",
             background: "var(--accent)",
             borderRadius: "9px",
-            textDecoration: "none",
             border: "none",
             cursor: "pointer",
             whiteSpace: "nowrap",
+            fontFamily: "inherit",
           }}
         >
           Create Certificate
-        </a>
+        </button>
+
+        {wizardOpen.value && (
+          <CertificateWizard onClose={() => (wizardOpen.value = false)} />
+        )}
       </div>
 
       {/* Filters */}
