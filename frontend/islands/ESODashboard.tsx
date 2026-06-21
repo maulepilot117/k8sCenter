@@ -1,17 +1,13 @@
-/** External Secrets Operator dashboard — Phase B Unit 8b.
+/** External Secrets Operator dashboard — Liquid Glass re-skin (Phase 8).
  *
  * Surfaces sync health at a glance:
  *   - Hero gauge ring: synced / total ExternalSecrets
  *   - Secondary cards: SyncFailed / Stale / Drifted / Unknown counts
- *   - Tertiary row: stores by provider + cost-tier stub (Phase F)
+ *   - Tertiary row: stores by provider + cost-tier stub
  *   - Failure table: ExternalSecrets in non-Synced/non-Refreshing state
  *
- * Data sources (loaded concurrently via Promise.all):
- *   - esoApi.status() — ESO discovery
- *   - esoApi.listExternalSecrets() — primary inventory
- *   - esoApi.listStores() / listClusterStores() — store provider breakdown
- *
- * Theme tokens only — no hardcoded color classes.
+ * Glass = chrome/widget cards. Solid = failure data table (data surface rule).
+ * Tokens only — no hardcoded colors. var(--danger) removed → var(--error).
  */
 
 import { useSignal } from "@preact/signals";
@@ -19,6 +15,8 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import { Card } from "@/components/ui/Card.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
@@ -33,9 +31,6 @@ import type {
 
 const FAILURE_TABLE_LIMIT = 50;
 
-/** Severity ordering for the broken-ES table. Synced/Refreshing rows are
- * filtered out before sort. Drifted falls below Stale because Drifted is
- * "config out of band" while Stale is "controller hasn't synced in too long". */
 const FAILURE_SEVERITY: Record<Status, number> = {
   SyncFailed: 0,
   Stale: 1,
@@ -45,10 +40,24 @@ const FAILURE_SEVERITY: Record<Status, number> = {
   Synced: 5,
 };
 
-/** Hero gauge — synced / total. Renders the SVG ring inline (no external
- * chart lib) using `var(--success)` for the synced arc and the standard
- * GaugeRing primitive isn't reused here because we want a fraction display
- * (`X / Y`) rather than the percentage label GaugeRing emits. */
+/** Map ESO status → StatusDot tone for the failure table name column. */
+function esoStatusToDot(
+  status: Status,
+): "error" | "warning" | "info" | "neutral" {
+  switch (status) {
+    case "SyncFailed":
+      return "error";
+    case "Stale":
+      return "warning";
+    case "Drifted":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+/** Hero gauge — synced / total. Inline SVG ring so layout stays self-contained.
+ * Uses var(--success) for the synced arc; var(--bg-elevated) for the track. */
 function SyncHealthRing(
   { synced, total }: { synced: number; total: number },
 ) {
@@ -94,7 +103,7 @@ function SyncHealthRing(
       </svg>
       <div class="absolute inset-0 flex flex-col items-center justify-center">
         <span
-          class="font-bold text-text-primary"
+          class="font-bold text-text-primary tabular-nums"
           style={{
             fontSize: "32px",
             fontFamily: "var(--font-mono, monospace)",
@@ -102,7 +111,14 @@ function SyncHealthRing(
         >
           {synced} / {total}
         </span>
-        <span class="text-xs text-text-muted mt-1">
+        <span
+          class="mt-1 text-xs uppercase tracking-wide"
+          style={{
+            fontSize: "11px",
+            fontWeight: 600,
+            color: "var(--text-muted)",
+          }}
+        >
           ExternalSecrets synced
         </span>
       </div>
@@ -110,7 +126,7 @@ function SyncHealthRing(
   );
 }
 
-interface SecondaryCardProps {
+interface StatCardProps {
   label: string;
   count: number;
   color: string;
@@ -118,32 +134,39 @@ interface SecondaryCardProps {
   href?: string;
 }
 
-function SecondaryCard(
-  { label, count, color, subText, href }: SecondaryCardProps,
-) {
+function StatCard({ label, count, color, subText, href }: StatCardProps) {
   const inner = (
-    <div
-      class="rounded-lg border border-border-primary p-4 bg-elevated h-full flex flex-col"
-      aria-label={`${label}: ${count}`}
-    >
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-xs font-medium uppercase tracking-wide text-text-muted">
-          {label}
-        </span>
-      </div>
+    <Card glass class="h-full flex flex-col" aria-label={`${label}: ${count}`}>
       <span
-        class="font-bold"
+        style={{
+          fontSize: "11px",
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+          color: "var(--text-muted)",
+        }}
+      >
+        {label}
+      </span>
+      <span
+        class="mt-2 tabular-nums"
         style={{
           color,
           fontSize: "28px",
+          fontWeight: 700,
           fontFamily: "var(--font-mono, monospace)",
           lineHeight: 1.1,
         }}
       >
         {count}
       </span>
-      <p class="text-xs text-text-muted mt-2 leading-snug">{subText}</p>
-    </div>
+      <p
+        class="mt-2 leading-snug"
+        style={{ fontSize: "12px", color: "var(--text-muted)" }}
+      >
+        {subText}
+      </p>
+    </Card>
   );
   if (href && count > 0) {
     return (
@@ -155,8 +178,6 @@ function SecondaryCard(
   return inner;
 }
 
-/** Aggregate provider counts across Namespaced + Cluster stores.
- * Empty/unset providers fold into the "(none)" bucket. */
 function aggregateProviders(stores: SecretStore[]): Array<[string, number]> {
   const counts = new Map<string, number>();
   for (const s of stores) {
@@ -166,10 +187,6 @@ function aggregateProviders(stores: SecretStore[]): Array<[string, number]> {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
 }
 
-/** Mirror of backend's ResolveBillingProvider — Phase F Unit 16. Returns
- * an empty string for self-hosted / unknown providers so callers can filter
- * the cost card to paid-tier stores only. AWS disambiguation reads
- * spec.service the same way the backend does. */
 function resolveBillingProvider(s: SecretStore): string {
   switch (s.provider) {
     case "aws": {
@@ -188,14 +205,6 @@ function resolveBillingProvider(s: SecretStore): string {
   }
 }
 
-/** Static rate-card snapshot date — must be kept in sync with the backend's
- * `cost_tier.go` rate-card `LastUpdated` values. Surfaced on the dashboard
- * caveat so operators know how fresh the estimate is without drilling into a
- * single store.
- *
- * Drift risk: if a single rate card's date diverges from the others, this
- * constant becomes a lie for that provider. Switch to a backend-derived
- * snapshot endpoint when more than one card moves independently. */
 const RATE_CARD_SNAPSHOT_DATE = "2026-04-30";
 
 function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
@@ -208,16 +217,20 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
   const billingProviders = [...counts.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
-    <div
-      class="rounded-lg border border-border-primary p-4 bg-elevated"
-      aria-label="Cost estimate"
-    >
-      <h2 class="text-sm font-medium text-text-primary mb-3">
+    <Card glass aria-label="Cost estimate">
+      <h2
+        class="mb-3"
+        style={{
+          fontSize: "14px",
+          fontWeight: 650,
+          color: "var(--text-primary)",
+        }}
+      >
         Per-provider cost estimate
       </h2>
       {billingProviders.length === 0
         ? (
-          <p class="text-xs text-text-muted">
+          <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
             No paid-tier stores visible — self-hosted providers (Vault,
             Kubernetes) carry no per-request charge.
           </p>
@@ -227,21 +240,32 @@ function ProviderCostCard({ stores }: { stores: SecretStore[] }) {
             {billingProviders.map(([key, n]) => (
               <li
                 key={key}
-                class="flex items-center justify-between gap-3 text-sm"
+                class="flex items-center justify-between gap-3"
               >
-                <span class="text-text-primary font-mono text-xs">{key}</span>
-                <span class="text-xs text-text-muted">
+                <span
+                  style={{
+                    fontSize: "12px",
+                    fontFamily: "var(--font-mono, monospace)",
+                    color: "var(--text-primary)",
+                  }}
+                >
+                  {key}
+                </span>
+                <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                   {n} {n === 1 ? "store" : "stores"}
                 </span>
               </li>
             ))}
           </ul>
         )}
-      <p class="text-xs text-text-muted mt-3 leading-snug">
+      <p
+        class="mt-3 leading-snug"
+        style={{ fontSize: "12px", color: "var(--text-muted)" }}
+      >
         Per-store dollar estimates render on each store's detail page. Rates as
         of {RATE_CARD_SNAPSHOT_DATE}; not connected to live billing.
       </p>
-    </div>
+    </Card>
   );
 }
 
@@ -290,9 +314,6 @@ export default function ESODashboard() {
 
   if (!IS_BROWSER) return null;
 
-  // Aggregate counts client-side. Backend already RBAC-filters.
-  // selectedNamespace.value read here (synchronous render path) ensures the
-  // island re-filters automatically when the global namespace picker changes.
   const ns = selectedNamespace.value;
   const allExternalSecrets = externalSecrets.value;
   const items = filterByNamespace(allExternalSecrets, ns);
@@ -307,12 +328,10 @@ export default function ESODashboard() {
   } satisfies Record<Status, number>;
   for (const it of items) counts[it.status]++;
 
-  // Namespaced stores filtered; ClusterSecretStores are cluster-scoped → left unfiltered.
   const filteredStores = filterByNamespace(stores.value, ns);
   const allStores = [...filteredStores, ...clusterStores.value];
   const providerCounts = aggregateProviders(allStores);
 
-  // Failure table — non-Synced / non-Refreshing only.
   const broken = items
     .filter((i) => i.status !== "Synced" && i.status !== "Refreshing")
     .sort((a, b) => {
@@ -329,8 +348,18 @@ export default function ESODashboard() {
 
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">External Secrets</h1>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
+          External Secrets
+        </h1>
         {!loading.value && (
           <Button
             type="button"
@@ -338,11 +367,14 @@ export default function ESODashboard() {
             onClick={handleRefresh}
             disabled={refreshing.value}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            {refreshing.value ? "Refreshing…" : "Refresh"}
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        class="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Sync health across ExternalSecret resources, source stores by provider,
         and currently broken syncs.
       </p>
@@ -353,22 +385,25 @@ export default function ESODashboard() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && !detected && <ESONotDetected />}
 
       {!loading.value && !error.value && detected && (
         <>
-          {
-            /* Hero — sync health ring. Renders 0/0 when no ExternalSecrets are
-           * visible so the dashboard's vertical rhythm doesn't shift the moment
-           * the first ES appears. */
-          }
-          <div class="rounded-lg border border-border-primary p-6 bg-elevated mb-6 flex flex-col items-center">
+          {/* Hero — sync health ring in a glass card */}
+          <Card glass class="mb-6 flex flex-col items-center">
             <SyncHealthRing synced={counts.Synced} total={total} />
             {total === 0
               ? (
-                <p class="text-xs text-text-muted mt-3">
+                <p
+                  class="mt-3"
+                  style={{ fontSize: "12px", color: "var(--text-muted)" }}
+                >
                   {ns !== "all" && ns
                     ? `No ExternalSecrets in namespace "${ns}".`
                     : "No ExternalSecrets visible yet."}
@@ -376,35 +411,38 @@ export default function ESODashboard() {
               )
               : ns !== "all" && ns
               ? (
-                <p class="text-xs text-text-muted mt-1">
+                <p
+                  class="mt-1"
+                  style={{ fontSize: "12px", color: "var(--text-muted)" }}
+                >
                   {total} of {allExternalSecrets.length} total (namespace: {ns})
                 </p>
               )
               : null}
-          </div>
+          </Card>
 
-          {/* Secondary cards row */}
+          {/* Secondary stat cards row */}
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <SecondaryCard
+            <StatCard
               label="Sync Failed"
               count={counts.SyncFailed}
-              color="var(--danger)"
+              color="var(--error)"
               subText="ExternalSecrets the controller could not reconcile."
               href="/external-secrets/external-secrets?status=SyncFailed"
             />
-            <SecondaryCard
+            <StatCard
               label="Stale"
               count={counts.Stale}
               color="var(--warning)"
               subText="Phase D resolves stale thresholds — count is 0 until that ships."
             />
-            <SecondaryCard
+            <StatCard
               label="Drifted"
               count={counts.Drifted}
-              color="var(--accent-secondary)"
+              color="var(--accent-2)"
               subText="Cached hint refreshed every ~90s; detail page is source of truth."
             />
-            <SecondaryCard
+            <StatCard
               label="Unknown"
               count={counts.Unknown}
               color="var(--text-muted)"
@@ -414,16 +452,20 @@ export default function ESODashboard() {
 
           {/* Tertiary row — providers + cost stub */}
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-            <div
-              class="rounded-lg border border-border-primary p-4 bg-elevated"
-              aria-label="Stores by provider"
-            >
-              <h2 class="text-sm font-medium text-text-primary mb-3">
+            <Card glass aria-label="Stores by provider">
+              <h2
+                class="mb-3"
+                style={{
+                  fontSize: "14px",
+                  fontWeight: 650,
+                  color: "var(--text-primary)",
+                }}
+              >
                 Stores by provider
               </h2>
               {providerCounts.length === 0
                 ? (
-                  <p class="text-xs text-text-muted">
+                  <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                     No SecretStores or ClusterSecretStores visible.
                   </p>
                 )
@@ -435,109 +477,221 @@ export default function ESODashboard() {
                         class="flex items-center justify-between gap-3"
                       >
                         <ProviderBadge provider={provider} />
-                        <span class="text-xs font-mono text-text-secondary">
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            fontFamily: "var(--font-mono, monospace)",
+                            color: "var(--text-muted)",
+                          }}
+                        >
                           {n} {n === 1 ? "store" : "stores"}
                         </span>
                       </li>
                     ))}
                   </ul>
                 )}
-            </div>
+            </Card>
 
             <ProviderCostCard stores={allStores} />
           </div>
 
-          {/* Failure table */}
-          <div class="mb-1">
-            <h2 class="text-lg font-semibold text-text-primary">
+          {/* Failure table — solid data surface */}
+          <div class="mb-3">
+            <h2
+              style={{
+                fontSize: "17px",
+                fontWeight: 650,
+                color: "var(--text-primary)",
+              }}
+            >
               Broken ExternalSecrets right now
             </h2>
-            <p class="text-sm text-text-muted mb-3">
+            <p
+              class="mt-1"
+              style={{ fontSize: "13px", color: "var(--text-muted)" }}
+            >
               ExternalSecrets currently in SyncFailed, Stale, Drifted, or
               Unknown state.
             </p>
           </div>
+
           {broken.length === 0
             ? (
-              <div class="text-center py-8 rounded-lg border border-border-primary bg-elevated">
-                <p class="text-text-muted">
+              <div
+                class="text-center py-8 rounded-2xl"
+                style={{
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border-subtle)",
+                }}
+              >
+                <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
                   No broken ExternalSecrets — everything synced!
                 </p>
               </div>
             )
             : (
-              <div class="overflow-x-auto rounded-lg border border-border-primary">
+              <div
+                class="overflow-x-auto rounded-lg"
+                style={{
+                  background: "var(--bg-surface)",
+                  border: "1px solid var(--border-subtle)",
+                }}
+              >
                 <table class="w-full text-sm">
                   <thead>
-                    <tr class="border-b border-border-primary bg-surface">
+                    <tr
+                      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+                    >
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                       >
                         Namespace
                       </th>
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                       >
                         Name
                       </th>
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                       >
                         Status
                       </th>
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                       >
                         Reason
                       </th>
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                       >
                         Last Sync
                       </th>
                       <th
                         scope="col"
-                        class="px-3 py-2 text-left text-xs font-medium text-text-muted"
+                        class="px-3 py-2 text-left"
+                        style={{
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: "var(--text-muted)",
+                        }}
                         title="Affected workload counts ship in Phase I (chain visualization)."
                       >
                         Affected workloads
                       </th>
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-border-subtle">
+                  <tbody>
                     {brokenDisplayed.map((es) => {
                       const href = `/external-secrets/external-secrets/${
                         encodeURIComponent(es.namespace)
                       }/${encodeURIComponent(es.name)}`;
                       return (
-                        <tr key={es.uid} class="hover:bg-hover/30">
-                          <td class="px-3 py-2 text-text-secondary">
+                        <tr
+                          key={es.uid}
+                          style={{
+                            borderTop: "1px solid var(--border-subtle)",
+                          }}
+                          class="hover:bg-hover/30"
+                        >
+                          <td
+                            class="px-3 py-2"
+                            style={{
+                              fontSize: "13px",
+                              color: "var(--text-muted)",
+                            }}
+                          >
                             {es.namespace}
                           </td>
                           <td class="px-3 py-2">
                             <a
                               href={href}
-                              class="text-brand hover:underline font-medium"
+                              class="inline-flex items-center gap-2 hover:underline"
+                              style={{ color: "var(--accent)" }}
                             >
-                              {es.name}
+                              <StatusDot
+                                status={esoStatusToDot(es.status)}
+                              />
+                              <span
+                                style={{
+                                  fontSize: "13px",
+                                  fontWeight: 500,
+                                  fontFamily: "var(--font-mono, monospace)",
+                                }}
+                              >
+                                {es.name}
+                              </span>
                             </a>
                           </td>
                           <td class="px-3 py-2">
                             <StatusBadge status={es.status} />
                           </td>
-                          <td class="px-3 py-2 text-text-secondary text-xs">
+                          <td
+                            class="px-3 py-2"
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                            }}
+                          >
                             {es.readyReason ?? "—"}
                           </td>
-                          <td class="px-3 py-2 text-text-secondary text-xs">
+                          <td
+                            class="px-3 py-2 tabular-nums"
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                            }}
+                          >
                             {es.lastSyncTime ? timeAgo(es.lastSyncTime) : "—"}
                           </td>
                           <td
-                            class="px-3 py-2 text-text-muted text-xs"
+                            class="px-3 py-2"
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                            }}
                             title="Affected workload counts ship in Phase I (chain visualization)."
                           >
                             —
@@ -548,7 +702,15 @@ export default function ESODashboard() {
                   </tbody>
                 </table>
                 {brokenOverflow > 0 && (
-                  <div class="px-3 py-2 border-t border-border-primary bg-surface text-xs text-text-muted text-center">
+                  <div
+                    class="px-3 py-2 text-center"
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      background: "var(--bg-surface)",
+                      fontSize: "12px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
                     +{brokenOverflow} more
                   </div>
                 )}

@@ -3,6 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
@@ -10,9 +11,33 @@ import { timeAgo } from "@/lib/timeAgo.ts";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
 
-/** Debounce window (ms) for namespace input → re-fetch. Long enough to
- *  coalesce typing, short enough to feel responsive once the user stops. */
 const NAMESPACE_DEBOUNCE_MS = 300;
+
+/** Map ESO status → StatusDot tone. */
+function esoToDot(
+  status: string,
+): "success" | "error" | "warning" | "info" | "neutral" {
+  switch (status) {
+    case "Synced":
+      return "success";
+    case "SyncFailed":
+      return "error";
+    case "Stale":
+      return "warning";
+    case "Drifted":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+const TH_STYLE = {
+  fontSize: "11px",
+  fontWeight: 600,
+  textTransform: "uppercase" as const,
+  letterSpacing: "0.05em",
+  color: "var(--text-muted)",
+};
 
 export default function ESOExternalSecretsList() {
   const items = useSignal<ExternalSecret[]>([]);
@@ -20,14 +45,9 @@ export default function ESOExternalSecretsList() {
   const error = useSignal<string | null>(null);
   const namespace = useSignal("");
   const search = useSignal("");
-  // null = unknown (still loading), true = ESO present, false = render install prompt.
   const detected = useSignal<boolean | null>(null);
   const showRefreshDialog = useSignal(false);
 
-  // Sequence counter: every fetch captures a token; a response is applied
-  // only if its token is still the latest. Stops slow earlier responses
-  // from overwriting state from later, faster ones (`apiGet` does not
-  // expose an AbortSignal, so the sequence guard is the canonical guard).
   const fetchSeq = useRef(0);
   const debounceHandle = useRef<number | null>(null);
 
@@ -36,7 +56,7 @@ export default function ESOExternalSecretsList() {
     try {
       const ns = namespace.value.trim() || undefined;
       const res = await esoApi.listExternalSecrets(ns);
-      if (seq !== fetchSeq.current) return; // stale — drop
+      if (seq !== fetchSeq.current) return;
       items.value = Array.isArray(res.data) ? res.data : [];
       error.value = null;
     } catch {
@@ -54,8 +74,6 @@ export default function ESOExternalSecretsList() {
         detected.value = present;
         if (present) await fetchData();
       } catch {
-        // Status probe failed — assume present and let fetchData surface the
-        // real error rather than masking it as "ESO not installed".
         detected.value = true;
         await fetchData();
       } finally {
@@ -72,9 +90,7 @@ export default function ESOExternalSecretsList() {
 
   function handleNamespaceChange(value: string) {
     namespace.value = value;
-    if (debounceHandle.current !== null) {
-      clearTimeout(debounceHandle.current);
-    }
+    if (debounceHandle.current !== null) clearTimeout(debounceHandle.current);
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
       fetchData();
@@ -86,7 +102,15 @@ export default function ESOExternalSecretsList() {
   if (!loading.value && detected.value === false) {
     return (
       <div class="p-6">
-        <h1 class="text-2xl font-bold text-text-primary mb-6">
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+          class="mb-6"
+        >
           ExternalSecrets
         </h1>
         <ESONotDetected />
@@ -94,8 +118,6 @@ export default function ESOExternalSecretsList() {
     );
   }
 
-  // selectedNamespace.value read in synchronous render so the island re-filters
-  // when the global namespace picker changes.
   const nsByGlobal = selectedNamespace.value;
   const byNamespace = filterByNamespace(items.value, nsByGlobal);
   const filtered = byNamespace.filter((es) => {
@@ -109,23 +131,45 @@ export default function ESOExternalSecretsList() {
     );
   });
 
+  const inputStyle =
+    "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
+
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-start justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">ExternalSecrets</h1>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
+          ExternalSecrets
+        </h1>
         <div class="flex items-center gap-2">
           {namespace.value.trim() !== "" && (
             <button
               type="button"
               onClick={() => (showRefreshDialog.value = true)}
-              class="px-3 py-1.5 text-sm rounded border border-border-primary text-text-primary hover:bg-base"
+              class={inputStyle}
+              style={{
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+                color: "var(--text-primary)",
+              }}
             >
               Refresh namespace
             </button>
           )}
           <a
             href="/external-secrets/external-secrets/new"
-            class="px-3 py-1.5 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
+            style={{
+              background: "var(--accent)",
+              color: "var(--bg-base)",
+            }}
           >
             + New ExternalSecret
           </a>
@@ -139,7 +183,10 @@ export default function ESOExternalSecretsList() {
           onClose={() => (showRefreshDialog.value = false)}
         />
       )}
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        class="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         ExternalSecrets sync data from a SecretStore into a Kubernetes Secret.
       </p>
 
@@ -147,7 +194,11 @@ export default function ESOExternalSecretsList() {
       <div class="mb-4 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-es-ns"
           >
             Namespace
@@ -155,7 +206,12 @@ export default function ESOExternalSecretsList() {
           <input
             id="eso-es-ns"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
             placeholder="All namespaces"
             value={namespace.value}
             aria-describedby="eso-es-ns-hint"
@@ -168,7 +224,11 @@ export default function ESOExternalSecretsList() {
         </div>
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-es-search"
           >
             Search
@@ -176,15 +236,20 @@ export default function ESOExternalSecretsList() {
           <input
             id="eso-es-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
-            placeholder="name, store, target..."
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
+            placeholder="name, store, target…"
             value={search.value}
             onInput={(e) => {
               search.value = (e.target as HTMLInputElement).value;
             }}
           />
         </div>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {byNamespace.length} ExternalSecrets
           {byNamespace.length < items.value.length &&
             ` (${items.value.length} total)`}
@@ -198,77 +263,108 @@ export default function ESOExternalSecretsList() {
       )}
 
       {!loading.value && error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
+        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
+          {error.value}
+        </p>
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+        <div
+          class="overflow-x-auto rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <table class="w-full">
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Name
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Namespace
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Status
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Store
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Target Secret
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Last Sync
                 </th>
+                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody>
               {filtered.map((es) => (
-                <tr key={es.uid} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
-                    <a
-                      href={`/external-secrets/external-secrets/${
+                <tr
+                  key={es.uid}
+                  class="hover:bg-hover/30 cursor-pointer"
+                  style={{ borderTop: "1px solid var(--border-subtle)" }}
+                  onClick={() => {
+                    globalThis.location.href =
+                      `/external-secrets/external-secrets/${
                         encodeURIComponent(es.namespace)
-                      }/${encodeURIComponent(es.name)}`}
-                      class="font-medium text-brand hover:underline"
-                    >
-                      {es.name}
-                    </a>
+                      }/${encodeURIComponent(es.name)}`;
+                  }}
+                >
+                  <td class="px-3 py-2">
+                    <span class="inline-flex items-center gap-2">
+                      <StatusDot status={esoToDot(es.status)} />
+                      <a
+                        href={`/external-secrets/external-secrets/${
+                          encodeURIComponent(es.namespace)
+                        }/${encodeURIComponent(es.name)}`}
+                        class="hover:underline"
+                        style={{
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          fontFamily: "var(--font-mono, monospace)",
+                          color: "var(--text-primary)",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {es.name}
+                      </a>
+                    </span>
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">{es.namespace}</td>
+                  <td
+                    class="px-3 py-2"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
+                    {es.namespace}
+                  </td>
                   <td class="px-3 py-2">
                     <StatusBadge status={es.status} />
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  <td
+                    class="px-3 py-2"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {es.storeRef.name}
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  <td
+                    class="px-3 py-2"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {es.targetSecretName ?? "—"}
                   </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs">
+                  <td
+                    class="px-3 py-2 tabular-nums"
+                    style={{ fontSize: "12px", color: "var(--text-muted)" }}
+                  >
                     {es.lastSyncTime ? timeAgo(es.lastSyncTime) : "—"}
+                  </td>
+                  <td
+                    class="px-3 py-2 text-right"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    ›
                   </td>
                 </tr>
               ))}
@@ -279,22 +375,38 @@ export default function ESOExternalSecretsList() {
 
       {!loading.value && !error.value && filtered.length === 0 &&
         byNamespace.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             No ExternalSecrets match your filters.
           </p>
         </div>
       )}
 
       {!loading.value && !error.value && byNamespace.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted mb-3">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p
+            class="mb-3"
+            style={{ fontSize: "13px", color: "var(--text-muted)" }}
+          >
             No ExternalSecrets in this namespace. Create one to start syncing
             secrets from a SecretStore.
           </p>
           <a
             href="/external-secrets/external-secrets/new"
-            class="inline-block px-4 py-2 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+            class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
+            style={{ background: "var(--accent)", color: "var(--bg-base)" }}
           >
             New ExternalSecret
           </a>

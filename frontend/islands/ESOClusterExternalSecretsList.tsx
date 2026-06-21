@@ -3,9 +3,36 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { ClusterExternalSecret } from "@/lib/eso-types.ts";
+
+/** Map ESO status → StatusDot tone. */
+function esoToDot(
+  status: string,
+): "success" | "error" | "warning" | "info" | "neutral" {
+  switch (status) {
+    case "Synced":
+      return "success";
+    case "SyncFailed":
+      return "error";
+    case "Stale":
+      return "warning";
+    case "Drifted":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+const TH_STYLE = {
+  fontSize: "11px",
+  fontWeight: 600,
+  textTransform: "uppercase" as const,
+  letterSpacing: "0.05em",
+  color: "var(--text-muted)",
+};
 
 export default function ESOClusterExternalSecretsList() {
   const items = useSignal<ClusterExternalSecret[]>([]);
@@ -46,7 +73,15 @@ export default function ESOClusterExternalSecretsList() {
   if (!loading.value && detected.value === false) {
     return (
       <div class="p-6">
-        <h1 class="text-2xl font-bold text-text-primary mb-6">
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+          class="mb-6"
+        >
           ClusterExternalSecrets
         </h1>
         <ESONotDetected />
@@ -64,14 +99,28 @@ export default function ESOClusterExternalSecretsList() {
     );
   });
 
+  const inputStyle =
+    "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
+
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-start justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
           ClusterExternalSecrets
         </h1>
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        class="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Cluster-scoped resources that fan out the same Secret to multiple
         namespaces.
       </p>
@@ -80,7 +129,11 @@ export default function ESOClusterExternalSecretsList() {
       <div class="mb-4 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-ces-search"
           >
             Search
@@ -88,15 +141,20 @@ export default function ESOClusterExternalSecretsList() {
           <input
             id="eso-ces-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
-            placeholder="name, store, target..."
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
+            placeholder="name, store, target…"
             value={search.value}
             onInput={(e) => {
               search.value = (e.target as HTMLInputElement).value;
             }}
           />
         </div>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {items.value.length} ClusterExternalSecrets
         </span>
       </div>
@@ -108,79 +166,116 @@ export default function ESOClusterExternalSecretsList() {
       )}
 
       {!loading.value && error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
+        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
+          {error.value}
+        </p>
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+        <div
+          class="overflow-x-auto rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <table class="w-full">
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Name
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Status
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Store
                 </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
+                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
                   Target
                 </th>
                 <th
                   scope="col"
-                  class="px-3 py-2 text-right text-xs font-medium text-text-muted"
+                  class="px-3 py-2 text-right"
+                  style={TH_STYLE}
                 >
                   Provisioned
                 </th>
                 <th
                   scope="col"
-                  class="px-3 py-2 text-right text-xs font-medium text-text-muted"
+                  class="px-3 py-2 text-right"
+                  style={TH_STYLE}
                 >
                   Failed
                 </th>
+                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody>
               {filtered.map((ces) => (
-                <tr key={ces.uid} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
-                    <a
-                      href={`/external-secrets/cluster-external-secrets/${
+                <tr
+                  key={ces.uid}
+                  class="hover:bg-hover/30 cursor-pointer"
+                  style={{ borderTop: "1px solid var(--border-subtle)" }}
+                  onClick={() => {
+                    globalThis.location.href =
+                      `/external-secrets/cluster-external-secrets/${
                         encodeURIComponent(ces.name)
-                      }`}
-                      class="font-medium text-brand hover:underline"
-                    >
-                      {ces.name}
-                    </a>
+                      }`;
+                  }}
+                >
+                  <td class="px-3 py-2">
+                    <span class="inline-flex items-center gap-2">
+                      <StatusDot status={esoToDot(ces.status)} />
+                      <a
+                        href={`/external-secrets/cluster-external-secrets/${
+                          encodeURIComponent(ces.name)
+                        }`}
+                        class="hover:underline"
+                        style={{
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          fontFamily: "var(--font-mono, monospace)",
+                          color: "var(--text-primary)",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {ces.name}
+                      </a>
+                    </span>
                   </td>
                   <td class="px-3 py-2">
                     <StatusBadge status={ces.status} />
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  <td
+                    class="px-3 py-2"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {ces.storeRef.name}
                   </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  <td
+                    class="px-3 py-2"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {ces.targetSecretName ?? "—"}
                   </td>
-                  <td class="px-3 py-2 text-right text-text-secondary tabular-nums">
+                  <td
+                    class="px-3 py-2 text-right tabular-nums"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {(ces.provisionedNamespaces ?? []).length}
                   </td>
-                  <td class="px-3 py-2 text-right text-text-secondary tabular-nums">
+                  <td
+                    class="px-3 py-2 text-right tabular-nums"
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {(ces.failedNamespaces ?? []).length}
+                  </td>
+                  <td
+                    class="px-3 py-2 text-right"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    ›
                   </td>
                 </tr>
               ))}
@@ -191,16 +286,28 @@ export default function ESOClusterExternalSecretsList() {
 
       {!loading.value && !error.value && filtered.length === 0 &&
         items.value.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             No ClusterExternalSecrets match your filters.
           </p>
         </div>
       )}
 
       {!loading.value && !error.value && items.value.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             No ClusterExternalSecrets visible. These sync the same Secret to
             multiple namespaces.
           </p>
