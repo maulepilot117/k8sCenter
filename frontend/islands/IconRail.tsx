@@ -196,7 +196,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
       {/* Logo area — height matches topbar */}
       <div
         style={{
-          height: "var(--topbar-height, 52px)",
+          height: "var(--topbar-height, 56px)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",

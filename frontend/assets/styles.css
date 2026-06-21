@@ -20,7 +20,7 @@ body {
 :root {
   --rail-width: 64px;
   --panel-width: 250px;
-  --topbar-height: 52px;
+  --topbar-height: 56px;
   --radius: 10px;
   --radius-sm: 6px;
   --radius-glass: 18px;
