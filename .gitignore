@@ -111,3 +111,7 @@ tools/theme-gen/deno.lock
 /argocd/
 /.playwright-mcp
 design_handoff_ui_refactor/
+
+# Local visual-smoke artifacts (not committed)
+.playwright-mcp/
+phase0-*.png
