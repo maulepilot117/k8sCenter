@@ -110,3 +110,4 @@ tools/theme-gen/deno.lock
 #ArgoCD Directory
 /argocd/
 /.playwright-mcp
+design_handoff_ui_refactor/
