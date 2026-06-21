@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
-import { DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import {
   SeverityBadge,
   StatusBadge,
@@ -217,16 +217,28 @@ export default function FluxAlerts() {
       <NotificationLoadingSpinner loading={crud.loading.value} />
 
       {crud.error.value && (
-        <p class="text-sm text-danger py-4">{crud.error.value}</p>
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error.value}
+        </p>
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <DataTable
+        <ResourceTable
+          chevron={false}
           columns={[
-            {
-              key: "name",
-              label: "Name",
-              render: (a) => (
+            { key: "name", label: "Name" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "providerRef", label: "Provider" },
+            { key: "eventSeverity", label: "Severity", width: "100px" },
+            { key: "eventSources", label: "Sources", width: "90px" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "createdAt", label: "Created", width: "100px" },
+            { key: "actions", label: "", width: "60px" },
+          ]}
+          rows={displayed.map((a) => ({
+            id: `${a.namespace}/${a.name}`,
+            cells: {
+              name: (
                 <div>
                   <div class="font-medium text-text-primary">{a.name}</div>
                   {a.suspend && (
@@ -236,66 +248,41 @@ export default function FluxAlerts() {
                   )}
                 </div>
               ),
-            },
-            {
-              key: "namespace",
-              label: "Namespace",
-              render: (a) => (
+              namespace: (
                 <span class="text-xs text-text-secondary">{a.namespace}</span>
               ),
-            },
-            {
-              key: "providerRef",
-              label: "Provider",
-              render: (a) => (
+              providerRef: (
                 <span class="text-xs text-text-secondary">{a.providerRef}</span>
               ),
-            },
-            {
-              key: "eventSeverity",
-              label: "Severity",
-              render: (a) => (
+              eventSeverity: (
                 <SeverityBadge severity={a.eventSeverity || "info"} />
               ),
-            },
-            {
-              key: "eventSources",
-              label: "Sources",
-              render: (a) => (
+              eventSources: (
                 <CountBadge items={a.eventSources} label="source" />
               ),
-            },
-            {
-              key: "status",
-              label: "Status",
-              render: (a) => (
+              status: (
                 <StatusBadge status={a.suspend ? "suspended" : a.status} />
               ),
-            },
-            {
-              key: "createdAt",
-              label: "Created",
-              render: (a) => (
+              createdAt: (
                 <span class="text-xs text-text-muted">
                   {a.createdAt ? timeAgo(a.createdAt) : "-"}
                 </span>
               ),
+              actions: (
+                <ActionsDropdown
+                  itemKey={`${a.namespace}/${a.name}`}
+                  suspended={a.suspend}
+                  openDropdown={crud.openDropdown}
+                  onEdit={() =>
+                    openEdit(a)}
+                  onSuspendToggle={() => crud.handleSuspendToggle(a)}
+                  onDelete={() => {
+                    crud.deleteTarget.value = a;
+                  }}
+                />
+              ),
             },
-          ]}
-          data={displayed}
-          rowKey={(a) => `${a.namespace}/${a.name}`}
-          renderRowActions={(a) => (
-            <ActionsDropdown
-              itemKey={`${a.namespace}/${a.name}`}
-              suspended={a.suspend}
-              openDropdown={crud.openDropdown}
-              onEdit={() => openEdit(a)}
-              onSuspendToggle={() => crud.handleSuspendToggle(a)}
-              onDelete={() => {
-                crud.deleteTarget.value = a;
-              }}
-            />
-          )}
+          }))}
         />
       )}
 
@@ -315,13 +302,12 @@ export default function FluxAlerts() {
         totalCount={crud.items.value.length}
         notAvailable={notAvailable}
         kind="Alert"
-        onCreate={() =>
-          crud.openCreate(() => {
-            form.value = {
-              ...EMPTY_FORM,
-              eventSources: [{ kind: "Kustomization", name: "*" }],
-            };
-          })}
+        onCreate={() => crud.openCreate(() => {
+          form.value = {
+            ...EMPTY_FORM,
+            eventSources: [{ kind: "Kustomization", name: "*" }],
+          };
+        })}
       />
 
       {crud.showForm.value && (

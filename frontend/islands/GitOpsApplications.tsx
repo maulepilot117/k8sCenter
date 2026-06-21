@@ -7,7 +7,7 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import { type Column, DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import {
   HEALTH_COLORS,
@@ -37,86 +37,15 @@ const HEALTH_DOT_STATUS: Record<
   unknown: "neutral",
 };
 
-const COLUMNS: Column<NormalizedApp>[] = [
-  {
-    key: "name",
-    label: "Name",
-    render: (app) => (
-      <div class="flex items-start gap-2">
-        <div class="mt-0.5 shrink-0">
-          <StatusDot
-            status={HEALTH_DOT_STATUS[app.healthStatus] ?? "neutral"}
-            size={8}
-          />
-        </div>
-        <div>
-          <div class="font-mono font-medium text-text-primary">{app.name}</div>
-          <div class="text-xs text-text-muted">
-            {app.namespace} &middot; {app.kind}
-          </div>
-        </div>
-      </div>
-    ),
-  },
-  {
-    key: "tool",
-    label: "Tool",
-    class: "w-[100px]",
-    render: (app) => <ToolBadge tool={app.tool} />,
-  },
-  {
-    key: "sync",
-    label: "Sync",
-    class: "w-[120px]",
-    render: (app) => <SyncStatusBadge status={app.syncStatus} />,
-  },
-  {
-    key: "health",
-    label: "Health",
-    class: "w-[120px]",
-    render: (app) => <HealthStatusBadge status={app.healthStatus} />,
-  },
-  {
-    key: "source",
-    label: "Source",
-    render: (app) => (
-      <span class="text-xs text-text-secondary truncate block max-w-[200px]">
-        {app.source.chartName
-          ? app.source.chartName
-          : app.source.repoURL ?? "-"}
-      </span>
-    ),
-  },
-  {
-    key: "revision",
-    label: "Revision",
-    class: "w-[90px]",
-    render: (app) => (
-      <span class="font-mono text-xs text-text-secondary">
-        {app.currentRevision ? app.currentRevision.slice(0, 7) : "-"}
-      </span>
-    ),
-  },
-  {
-    key: "destns",
-    label: "Dest Namespace",
-    class: "w-[120px]",
-    render: (app) => (
-      <span class="text-xs text-text-secondary">
-        {app.destinationNamespace || "-"}
-      </span>
-    ),
-  },
-  {
-    key: "resources",
-    label: "Resources",
-    class: "w-[80px] text-right",
-    render: (app) => (
-      <span class="text-xs text-text-secondary">
-        {app.managedResourceCount}
-      </span>
-    ),
-  },
+const RT_COLUMNS: Column[] = [
+  { key: "name", label: "Name" },
+  { key: "tool", label: "Tool", width: "100px" },
+  { key: "sync", label: "Sync", width: "120px" },
+  { key: "health", label: "Health", width: "120px" },
+  { key: "source", label: "Source" },
+  { key: "revision", label: "Revision", width: "90px" },
+  { key: "destns", label: "Dest Namespace", width: "130px" },
+  { key: "resources", label: "Resources", width: "80px", align: "right" },
 ];
 
 export default function GitOpsApplications() {
@@ -374,20 +303,68 @@ export default function GitOpsApplications() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="rounded-lg border border-border-primary overflow-hidden">
-          <DataTable
-            columns={COLUMNS}
-            data={displayed}
-            rowKey={(app) => app.id}
-            onRowClick={(app) => {
+        <ResourceTable
+          columns={RT_COLUMNS}
+          rows={displayed.map((app) => ({
+            id: app.id,
+            cells: {
+              name: (
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 shrink-0">
+                    <StatusDot
+                      status={HEALTH_DOT_STATUS[app.healthStatus] ?? "neutral"}
+                      size={8}
+                    />
+                  </div>
+                  <div>
+                    <div class="font-mono font-medium text-text-primary">
+                      {app.name}
+                    </div>
+                    <div class="text-xs text-text-muted">
+                      {app.namespace} &middot; {app.kind}
+                    </div>
+                  </div>
+                </div>
+              ),
+              tool: <ToolBadge tool={app.tool} />,
+              sync: <SyncStatusBadge status={app.syncStatus} />,
+              health: <HealthStatusBadge status={app.healthStatus} />,
+              source: (
+                <span class="text-xs text-text-secondary truncate block max-w-[200px]">
+                  {app.source.chartName
+                    ? app.source.chartName
+                    : app.source.repoURL ?? "-"}
+                </span>
+              ),
+              revision: (
+                <span class="font-mono text-xs text-text-secondary">
+                  {app.currentRevision ? app.currentRevision.slice(0, 7) : "-"}
+                </span>
+              ),
+              destns: (
+                <span class="text-xs text-text-secondary">
+                  {app.destinationNamespace || "-"}
+                </span>
+              ),
+              resources: (
+                <span class="text-xs text-text-secondary">
+                  {app.managedResourceCount}
+                </span>
+              ),
+            },
+            onClick: () => {
               globalThis.location.href = "/gitops/applications/" +
                 encodeURIComponent(app.id);
-            }}
-          />
-        </div>
+            },
+          }))}
+        />
       )}
 
       {/* Pagination */}

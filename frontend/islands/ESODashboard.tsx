@@ -7,7 +7,7 @@
  *   - Failure table: ExternalSecrets in non-Synced/non-Refreshing state
  *
  * Glass = chrome/widget cards. Solid = failure data table (data surface rule).
- * Tokens only — no hardcoded colors. var(--danger) removed → var(--error).
+ * Tokens only — no hardcoded colors. All error states use var(--error).
  */
 
 import { useSignal } from "@preact/signals";

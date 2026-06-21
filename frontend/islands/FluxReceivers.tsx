@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
-import { DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import { StatusBadge } from "@/components/ui/NotificationBadges.tsx";
 import {
   ActionsDropdown,
@@ -232,16 +232,28 @@ export default function FluxReceivers() {
       <NotificationLoadingSpinner loading={crud.loading.value} />
 
       {crud.error.value && (
-        <p class="text-sm text-danger py-4">{crud.error.value}</p>
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error.value}
+        </p>
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <DataTable
+        <ResourceTable
+          chevron={false}
           columns={[
-            {
-              key: "name",
-              label: "Name",
-              render: (r) => (
+            { key: "name", label: "Name" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "type", label: "Type", width: "120px" },
+            { key: "resources", label: "Resources", width: "90px" },
+            { key: "webhookPath", label: "Webhook Path" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "createdAt", label: "Created", width: "100px" },
+            { key: "actions", label: "", width: "60px" },
+          ]}
+          rows={displayed.map((r) => ({
+            id: `${r.namespace}/${r.name}`,
+            cells: {
+              name: (
                 <div>
                   <div class="font-medium text-text-primary">{r.name}</div>
                   {r.suspend && (
@@ -251,107 +263,77 @@ export default function FluxReceivers() {
                   )}
                 </div>
               ),
-            },
-            {
-              key: "namespace",
-              label: "Namespace",
-              render: (r) => (
+              namespace: (
                 <span class="text-xs text-text-secondary">{r.namespace}</span>
               ),
-            },
-            {
-              key: "type",
-              label: "Type",
-              render: (r) => (
+              type: (
                 <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent">
                   {r.type}
                 </span>
               ),
-            },
-            {
-              key: "resources",
-              label: "Resources",
-              render: (r) => (
-                <CountBadge items={r.resources} label="resource" />
-              ),
-            },
-            {
-              key: "webhookPath",
-              label: "Webhook Path",
-              render: (r) =>
-                r.webhookPath
-                  ? (
-                    <div class="flex items-center gap-1.5 max-w-[200px]">
-                      <code class="text-xs text-text-secondary truncate">
-                        {r.webhookPath}
-                      </code>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          copyToClipboard(r.webhookPath)}
-                        class="flex-shrink-0 rounded p-0.5 hover:bg-hover text-text-muted hover:text-text-primary"
-                        title="Copy webhook path"
+              resources: <CountBadge items={r.resources} label="resource" />,
+              webhookPath: r.webhookPath
+                ? (
+                  <div class="flex items-center gap-1.5 max-w-[200px]">
+                    <code class="text-xs text-text-secondary truncate">
+                      {r.webhookPath}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(r.webhookPath)}
+                      class="flex-shrink-0 rounded p-0.5 hover:bg-hover text-text-muted hover:text-text-primary"
+                      title="Copy webhook path"
+                    >
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
                       >
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        >
-                          <rect
-                            x="9"
-                            y="9"
-                            width="13"
-                            height="13"
-                            rx="2"
-                            ry="2"
-                          />
-                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                        </svg>
-                      </button>
-                    </div>
-                  )
-                  : (
-                    <span class="text-xs text-text-muted italic">
-                      Pending...
-                    </span>
-                  ),
-            },
-            {
-              key: "status",
-              label: "Status",
-              render: (r) => (
+                        <rect
+                          x="9"
+                          y="9"
+                          width="13"
+                          height="13"
+                          rx="2"
+                          ry="2"
+                        />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                    </button>
+                  </div>
+                )
+                : (
+                  <span class="text-xs text-text-muted italic">
+                    Pending...
+                  </span>
+                ),
+              status: (
                 <StatusBadge status={r.suspend ? "suspended" : r.status} />
               ),
-            },
-            {
-              key: "createdAt",
-              label: "Created",
-              render: (r) => (
+              createdAt: (
                 <span class="text-xs text-text-muted">
                   {r.createdAt ? timeAgo(r.createdAt) : "-"}
                 </span>
               ),
+              actions: (
+                <ActionsDropdown
+                  itemKey={`${r.namespace}/${r.name}`}
+                  suspended={r.suspend}
+                  openDropdown={crud.openDropdown}
+                  onEdit={() => openEdit(r)}
+                  onSuspendToggle={() => crud.handleSuspendToggle(r)}
+                  onDelete={() => {
+                    crud.deleteTarget.value = r;
+                  }}
+                />
+              ),
             },
-          ]}
-          data={displayed}
-          rowKey={(r) => `${r.namespace}/${r.name}`}
-          renderRowActions={(r) => (
-            <ActionsDropdown
-              itemKey={`${r.namespace}/${r.name}`}
-              suspended={r.suspend}
-              openDropdown={crud.openDropdown}
-              onEdit={() => openEdit(r)}
-              onSuspendToggle={() => crud.handleSuspendToggle(r)}
-              onDelete={() => {
-                crud.deleteTarget.value = r;
-              }}
-            />
-          )}
+          }))}
         />
       )}
 

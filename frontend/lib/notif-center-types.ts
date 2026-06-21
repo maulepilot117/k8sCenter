@@ -140,7 +140,7 @@ export const NOTIF_SEVERITIES: NotifSeverity[] = [
 
 /** Severity → CSS color variable mapping. */
 export const NOTIF_SEVERITY_COLORS: Record<NotifSeverity, string> = {
-  critical: "var(--danger)",
+  critical: "var(--error)",
   warning: "var(--warning)",
   info: "var(--accent)",
 };

@@ -339,7 +339,7 @@ export default function NotificationChannels() {
         </span>
       )
       : (
-        <span class="ml-2 text-xs" style={{ color: "var(--danger)" }}>
+        <span class="ml-2 text-xs" style={{ color: "var(--error)" }}>
           {"\u2717"}
         </span>
       );
@@ -363,8 +363,8 @@ export default function NotificationChannels() {
       <div
         class="rounded-md px-4 py-3 text-sm"
         style={{
-          backgroundColor: "color-mix(in srgb, var(--danger) 10%, transparent)",
-          color: "var(--danger)",
+          backgroundColor: "color-mix(in srgb, var(--error) 10%, transparent)",
+          color: "var(--error)",
         }}
       >
         {error.value}
@@ -460,11 +460,11 @@ export default function NotificationChannels() {
                           <span class="inline-flex items-center gap-1.5">
                             <span
                               class="inline-block h-2 w-2 rounded-full"
-                              style={{ backgroundColor: "var(--danger)" }}
+                              style={{ backgroundColor: "var(--error)" }}
                             />
                             <span
                               class="text-xs max-w-[200px] truncate"
-                              style={{ color: "var(--danger)" }}
+                              style={{ color: "var(--error)" }}
                               title={ch.lastError}
                             >
                               {ch.lastError}
@@ -517,7 +517,7 @@ export default function NotificationChannels() {
                         <button
                           type="button"
                           class="text-xs font-medium hover:underline"
-                          style={{ color: "var(--danger)" }}
+                          style={{ color: "var(--error)" }}
                           onClick={() => {
                             deleteTarget.value = ch;
                             deleteConfirmText.value = "";
@@ -643,7 +643,7 @@ export default function NotificationChannels() {
           <div class="w-full max-w-[480px] glass-elevated rounded-2xl p-6">
             <h3
               class="text-base font-semibold mb-2"
-              style={{ color: "var(--danger)" }}
+              style={{ color: "var(--error)" }}
             >
               Delete Channel
             </h3>
@@ -679,7 +679,7 @@ export default function NotificationChannels() {
                 type="button"
                 class="rounded-md px-3 py-1.5 text-sm font-medium"
                 style={{
-                  backgroundColor: "var(--danger)",
+                  backgroundColor: "var(--error)",
                   color: "var(--bg-base)",
                 }}
                 disabled={saving.value ||

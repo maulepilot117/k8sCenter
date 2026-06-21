@@ -8,6 +8,7 @@ import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
 
@@ -26,14 +27,6 @@ function storeToDot(
       return "neutral";
   }
 }
-
-const TH_STYLE = {
-  fontSize: "11px",
-  fontWeight: 600,
-  textTransform: "uppercase" as const,
-  letterSpacing: "0.05em",
-  color: "var(--text-muted)",
-};
 
 export default function ESOStoresList() {
   const items = useSignal<SecretStore[]>([]);
@@ -236,134 +229,97 @@ export default function ESOStoresList() {
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div
-          class="overflow-x-auto rounded-lg"
-          style={{
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-subtle)",
-          }}
-        >
-          <table class="w-full">
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Name
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Namespace
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Status
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Provider
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Ready
-                </th>
-                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((s) => {
-                const detailHref = s.namespace
-                  ? `/external-secrets/stores/${
-                    encodeURIComponent(s.namespace)
-                  }/${encodeURIComponent(s.name)}`
-                  : null;
-                return (
-                  <tr
-                    key={s.uid}
-                    class={`hover:bg-hover/30 ${
-                      detailHref ? "cursor-pointer" : ""
-                    }`}
-                    style={{ borderTop: "1px solid var(--border-subtle)" }}
-                    onClick={() => {
-                      if (detailHref) globalThis.location.href = detailHref;
-                    }}
+        <ResourceTable
+          columns={[
+            { key: "name", label: "Name", width: "1.6fr" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "status", label: "Status", width: "100px" },
+            { key: "provider", label: "Provider", width: "1fr" },
+            { key: "ready", label: "Ready", width: "90px" },
+          ]}
+          rows={filtered.map((s) => {
+            const detailHref = s.namespace
+              ? `/external-secrets/stores/${encodeURIComponent(s.namespace)}/${
+                encodeURIComponent(s.name)
+              }`
+              : null;
+            return {
+              id: s.uid,
+              cells: {
+                name: (
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot status={storeToDot(s.status, s.ready)} />
+                    {detailHref
+                      ? (
+                        <a
+                          href={detailHref}
+                          class="hover:underline"
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            fontFamily: "var(--font-mono, monospace)",
+                            color: "var(--text-primary)",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {s.name}
+                        </a>
+                      )
+                      : (
+                        <span
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            fontFamily: "var(--font-mono, monospace)",
+                            color: "var(--text-primary)",
+                          }}
+                        >
+                          {s.name}
+                        </span>
+                      )}
+                  </span>
+                ),
+                namespace: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
-                    <td class="px-3 py-2">
-                      <span class="inline-flex items-center gap-2">
-                        <StatusDot status={storeToDot(s.status, s.ready)} />
-                        {detailHref
-                          ? (
-                            <a
-                              href={detailHref}
-                              class="hover:underline"
-                              style={{
-                                fontSize: "13px",
-                                fontWeight: 500,
-                                fontFamily: "var(--font-mono, monospace)",
-                                color: "var(--text-primary)",
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              {s.name}
-                            </a>
-                          )
-                          : (
-                            <span
-                              style={{
-                                fontSize: "13px",
-                                fontWeight: 500,
-                                fontFamily: "var(--font-mono, monospace)",
-                                color: "var(--text-primary)",
-                              }}
-                            >
-                              {s.name}
-                            </span>
-                          )}
-                      </span>
-                    </td>
-                    <td
-                      class="px-3 py-2"
-                      style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                    {s.namespace ?? "—"}
+                  </span>
+                ),
+                status: <StatusBadge status={s.status} />,
+                provider: <ProviderBadge provider={s.provider} />,
+                ready: s.ready
+                  ? (
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        color: "var(--success)",
+                      }}
                     >
-                      {s.namespace ?? "—"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge status={s.status} />
-                    </td>
-                    <td class="px-3 py-2">
-                      <ProviderBadge provider={s.provider} />
-                    </td>
-                    <td class="px-3 py-2">
-                      {s.ready
-                        ? (
-                          <span
-                            style={{
-                              fontSize: "12px",
-                              fontWeight: 500,
-                              color: "var(--success)",
-                            }}
-                          >
-                            Ready
-                          </span>
-                        )
-                        : (
-                          <span
-                            style={{
-                              fontSize: "12px",
-                              fontWeight: 500,
-                              color: "var(--error)",
-                            }}
-                          >
-                            Not Ready
-                          </span>
-                        )}
-                    </td>
-                    <td
-                      class="px-3 py-2 text-right"
-                      style={{ color: "var(--text-muted)" }}
+                      Ready
+                    </span>
+                  )
+                  : (
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        color: "var(--error)",
+                      }}
                     >
-                      {detailHref ? "›" : ""}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      Not Ready
+                    </span>
+                  ),
+              },
+              onClick: detailHref
+                ? () => {
+                  globalThis.location.href = detailHref;
+                }
+                : undefined,
+            };
+          })}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&

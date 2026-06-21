@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
-import { DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import {
   ProviderTypeBadge,
   StatusBadge,
@@ -194,16 +194,27 @@ export default function FluxProviders() {
       <NotificationLoadingSpinner loading={crud.loading.value} />
 
       {crud.error.value && (
-        <p class="text-sm text-danger py-4">{crud.error.value}</p>
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error.value}
+        </p>
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <DataTable
+        <ResourceTable
+          chevron={false}
           columns={[
-            {
-              key: "name",
-              label: "Name",
-              render: (p) => (
+            { key: "name", label: "Name" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "type", label: "Type", width: "140px" },
+            { key: "channel", label: "Channel / Address" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "createdAt", label: "Created", width: "100px" },
+            { key: "actions", label: "", width: "60px" },
+          ]}
+          rows={displayed.map((p) => ({
+            id: `${p.namespace}/${p.name}`,
+            cells: {
+              name: (
                 <div>
                   <div class="font-medium text-text-primary">{p.name}</div>
                   {p.suspend && (
@@ -213,60 +224,37 @@ export default function FluxProviders() {
                   )}
                 </div>
               ),
-            },
-            {
-              key: "namespace",
-              label: "Namespace",
-              render: (p) => (
+              namespace: (
                 <span class="text-xs text-text-secondary">{p.namespace}</span>
               ),
-            },
-            {
-              key: "type",
-              label: "Type",
-              render: (p) => <ProviderTypeBadge type={p.type} />,
-            },
-            {
-              key: "channel",
-              label: "Channel / Address",
-              class: "max-w-[240px] truncate",
-              render: (p) => (
-                <span class="text-xs text-text-secondary">
+              type: <ProviderTypeBadge type={p.type} />,
+              channel: (
+                <span class="text-xs text-text-secondary truncate block max-w-[240px]">
                   {p.channel || p.address || "-"}
                 </span>
               ),
-            },
-            {
-              key: "status",
-              label: "Status",
-              render: (p) => (
+              status: (
                 <StatusBadge status={p.suspend ? "suspended" : p.status} />
               ),
-            },
-            {
-              key: "createdAt",
-              label: "Created",
-              render: (p) => (
+              createdAt: (
                 <span class="text-xs text-text-muted">
                   {p.createdAt ? timeAgo(p.createdAt) : "-"}
                 </span>
               ),
+              actions: (
+                <ActionsDropdown
+                  itemKey={`${p.namespace}/${p.name}`}
+                  suspended={p.suspend}
+                  openDropdown={crud.openDropdown}
+                  onEdit={() => openEdit(p)}
+                  onSuspendToggle={() => crud.handleSuspendToggle(p)}
+                  onDelete={() => {
+                    crud.deleteTarget.value = p;
+                  }}
+                />
+              ),
             },
-          ]}
-          data={displayed}
-          rowKey={(p) => `${p.namespace}/${p.name}`}
-          renderRowActions={(p) => (
-            <ActionsDropdown
-              itemKey={`${p.namespace}/${p.name}`}
-              suspended={p.suspend}
-              openDropdown={crud.openDropdown}
-              onEdit={() => openEdit(p)}
-              onSuspendToggle={() => crud.handleSuspendToggle(p)}
-              onDelete={() => {
-                crud.deleteTarget.value = p;
-              }}
-            />
-          )}
+          }))}
         />
       )}
 
@@ -286,10 +274,9 @@ export default function FluxProviders() {
         totalCount={crud.items.value.length}
         notAvailable={notAvailable}
         kind="Provider"
-        onCreate={() =>
-          crud.openCreate(() => {
-            form.value = { ...EMPTY_FORM };
-          })}
+        onCreate={() => crud.openCreate(() => {
+          form.value = { ...EMPTY_FORM };
+        })}
       />
 
       {crud.showForm.value && (

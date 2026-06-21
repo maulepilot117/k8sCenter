@@ -367,7 +367,7 @@ export default function ComplianceTrendChart() {
                 <span
                   class="font-semibold"
                   style={{
-                    color: delta >= 0 ? "var(--success)" : "var(--danger)",
+                    color: delta >= 0 ? "var(--success)" : "var(--error)",
                   }}
                 >
                   {delta >= 0 ? "+" : ""}

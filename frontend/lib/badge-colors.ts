@@ -1,6 +1,6 @@
 /** Shared severity color map for policy, scanning, and other severity-based UIs. */
 export const SEVERITY_COLORS: Record<string, string> = {
-  critical: "var(--danger)",
+  critical: "var(--error)",
   high: "var(--warning)",
   medium: "var(--accent)",
   low: "var(--text-muted)",

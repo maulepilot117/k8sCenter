@@ -7,10 +7,10 @@ import {
 
 /** Per-source color map for visual differentiation. */
 const SOURCE_COLORS: Record<NotifSource, string> = {
-  alert: "var(--danger)",
+  alert: "var(--error)",
   policy: "var(--warning)",
   gitops: "var(--accent)",
-  diagnostic: "var(--danger)",
+  diagnostic: "var(--error)",
   scan: "var(--warning)",
   cluster: "var(--success)",
   audit: "var(--text-muted)",

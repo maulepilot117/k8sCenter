@@ -18,7 +18,7 @@ export const MESH_COLORS: Record<string, string> = {
 export const MTLS_STATE_COLORS: Record<MTLSState, string> = {
   active: "var(--success)",
   mixed: "var(--warning)",
-  inactive: "var(--danger)",
+  inactive: "var(--error)",
   unmeshed: "var(--text-muted)",
 };
 

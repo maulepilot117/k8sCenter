@@ -8,6 +8,7 @@ import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { PushSecret } from "@/lib/eso-types.ts";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
 
@@ -26,14 +27,6 @@ function pushToDot(
       return "neutral";
   }
 }
-
-const TH_STYLE = {
-  fontSize: "11px",
-  fontWeight: 600,
-  textTransform: "uppercase" as const,
-  letterSpacing: "0.05em",
-  color: "var(--text-muted)",
-};
 
 export default function ESOPushSecretsList() {
   const items = useSignal<PushSecret[]>([]);
@@ -230,103 +223,69 @@ export default function ESOPushSecretsList() {
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div
-          class="overflow-x-auto rounded-lg"
-          style={{
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-subtle)",
-          }}
-        >
-          <table class="w-full">
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Name
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Namespace
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Status
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Source Secret
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-right"
-                  style={TH_STYLE}
-                >
-                  Stores
-                </th>
-                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((p) => {
-                const detailHref = `/external-secrets/push-secrets/${
-                  encodeURIComponent(p.namespace)
-                }/${encodeURIComponent(p.name)}`;
-                return (
-                  <tr
-                    key={p.uid}
-                    class="hover:bg-hover/30 cursor-pointer"
-                    style={{ borderTop: "1px solid var(--border-subtle)" }}
-                    onClick={() => {
-                      globalThis.location.href = detailHref;
-                    }}
+        <ResourceTable
+          columns={[
+            { key: "name", label: "Name", width: "1.6fr" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "sourceSecret", label: "Source Secret", width: "1fr" },
+            { key: "stores", label: "Stores", width: "70px", align: "right" },
+          ]}
+          rows={filtered.map((p) => {
+            const detailHref = `/external-secrets/push-secrets/${
+              encodeURIComponent(p.namespace)
+            }/${encodeURIComponent(p.name)}`;
+            return {
+              id: p.uid,
+              cells: {
+                name: (
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot status={pushToDot(p.status)} />
+                    <a
+                      href={detailHref}
+                      class="hover:underline"
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: 500,
+                        fontFamily: "var(--font-mono, monospace)",
+                        color: "var(--text-primary)",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {p.name}
+                    </a>
+                  </span>
+                ),
+                namespace: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
                   >
-                    <td class="px-3 py-2">
-                      <span class="inline-flex items-center gap-2">
-                        <StatusDot status={pushToDot(p.status)} />
-                        <a
-                          href={detailHref}
-                          class="hover:underline"
-                          style={{
-                            fontSize: "13px",
-                            fontWeight: 500,
-                            fontFamily: "var(--font-mono, monospace)",
-                            color: "var(--text-primary)",
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {p.name}
-                        </a>
-                      </span>
-                    </td>
-                    <td
-                      class="px-3 py-2"
-                      style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                    >
-                      {p.namespace}
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge status={p.status} />
-                    </td>
-                    <td
-                      class="px-3 py-2"
-                      style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                    >
-                      {p.sourceSecretName ?? "—"}
-                    </td>
-                    <td
-                      class="px-3 py-2 text-right tabular-nums"
-                      style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                    >
-                      {(p.storeRefs ?? []).length}
-                    </td>
-                    <td
-                      class="px-3 py-2 text-right"
-                      style={{ color: "var(--text-muted)" }}
-                    >
-                      ›
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    {p.namespace}
+                  </span>
+                ),
+                status: <StatusBadge status={p.status} />,
+                sourceSecret: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
+                    {p.sourceSecretName ?? "—"}
+                  </span>
+                ),
+                stores: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                    class="tabular-nums"
+                  >
+                    {(p.storeRefs ?? []).length}
+                  </span>
+                ),
+              },
+              onClick: () => {
+                globalThis.location.href = detailHref;
+              },
+            };
+          })}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&

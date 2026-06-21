@@ -10,6 +10,7 @@ import ESOBulkRefreshDialog from "@/islands/ESOBulkRefreshDialog.tsx";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { ExternalSecret } from "@/lib/eso-types.ts";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
 
@@ -30,14 +31,6 @@ function esoToDot(
       return "neutral";
   }
 }
-
-const TH_STYLE = {
-  fontSize: "11px",
-  fontWeight: 600,
-  textTransform: "uppercase" as const,
-  letterSpacing: "0.05em",
-  color: "var(--text-muted)",
-};
 
 export default function ESOExternalSecretsList() {
   const items = useSignal<ExternalSecret[]>([]);
@@ -269,108 +262,70 @@ export default function ESOExternalSecretsList() {
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div
-          class="overflow-x-auto rounded-lg"
-          style={{
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-subtle)",
-          }}
-        >
-          <table class="w-full">
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Name
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Namespace
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Status
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Store
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Target Secret
-                </th>
-                <th scope="col" class="px-3 py-2 text-left" style={TH_STYLE}>
-                  Last Sync
-                </th>
-                <th scope="col" class="px-3 py-2" style={TH_STYLE} />
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((es) => (
-                <tr
-                  key={es.uid}
-                  class="hover:bg-hover/30 cursor-pointer"
-                  style={{ borderTop: "1px solid var(--border-subtle)" }}
-                  onClick={() => {
-                    globalThis.location.href =
-                      `/external-secrets/external-secrets/${
-                        encodeURIComponent(es.namespace)
-                      }/${encodeURIComponent(es.name)}`;
-                  }}
+        <ResourceTable
+          columns={[
+            { key: "name", label: "Name", width: "1.6fr" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "status", label: "Status", width: "120px" },
+            { key: "store", label: "Store", width: "1fr" },
+            { key: "targetSecret", label: "Target Secret", width: "1fr" },
+            { key: "lastSync", label: "Last Sync", width: "90px" },
+          ]}
+          rows={filtered.map((es) => ({
+            id: es.uid,
+            cells: {
+              name: (
+                <span class="inline-flex items-center gap-2">
+                  <StatusDot status={esoToDot(es.status)} />
+                  <a
+                    href={`/external-secrets/external-secrets/${
+                      encodeURIComponent(es.namespace)
+                    }/${encodeURIComponent(es.name)}`}
+                    class="hover:underline"
+                    style={{
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      fontFamily: "var(--font-mono, monospace)",
+                      color: "var(--text-primary)",
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {es.name}
+                  </a>
+                </span>
+              ),
+              namespace: (
+                <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                  {es.namespace}
+                </span>
+              ),
+              status: <StatusBadge status={es.status} />,
+              store: (
+                <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                  {es.storeRef.name}
+                </span>
+              ),
+              targetSecret: (
+                <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+                  {es.targetSecretName ?? "—"}
+                </span>
+              ),
+              lastSync: (
+                <span
+                  style={{ fontSize: "12px", color: "var(--text-muted)" }}
+                  class="tabular-nums"
                 >
-                  <td class="px-3 py-2">
-                    <span class="inline-flex items-center gap-2">
-                      <StatusDot status={esoToDot(es.status)} />
-                      <a
-                        href={`/external-secrets/external-secrets/${
-                          encodeURIComponent(es.namespace)
-                        }/${encodeURIComponent(es.name)}`}
-                        class="hover:underline"
-                        style={{
-                          fontSize: "13px",
-                          fontWeight: 500,
-                          fontFamily: "var(--font-mono, monospace)",
-                          color: "var(--text-primary)",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {es.name}
-                      </a>
-                    </span>
-                  </td>
-                  <td
-                    class="px-3 py-2"
-                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                  >
-                    {es.namespace}
-                  </td>
-                  <td class="px-3 py-2">
-                    <StatusBadge status={es.status} />
-                  </td>
-                  <td
-                    class="px-3 py-2"
-                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                  >
-                    {es.storeRef.name}
-                  </td>
-                  <td
-                    class="px-3 py-2"
-                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
-                  >
-                    {es.targetSecretName ?? "—"}
-                  </td>
-                  <td
-                    class="px-3 py-2 tabular-nums"
-                    style={{ fontSize: "12px", color: "var(--text-muted)" }}
-                  >
-                    {es.lastSyncTime ? timeAgo(es.lastSyncTime) : "—"}
-                  </td>
-                  <td
-                    class="px-3 py-2 text-right"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    ›
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  {es.lastSyncTime ? timeAgo(es.lastSyncTime) : "—"}
+                </span>
+              ),
+            },
+            onClick: () => {
+              globalThis.location.href = `/external-secrets/external-secrets/${
+                encodeURIComponent(es.namespace)
+              }/${encodeURIComponent(es.name)}`;
+            },
+          }))}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&

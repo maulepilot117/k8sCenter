@@ -7,7 +7,7 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import { type Column, DataTable } from "@/components/ui/DataTable.tsx";
+import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
 import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
@@ -58,134 +58,15 @@ function dotStatus(
   }
 }
 
-const APPSET_COLUMNS: Column<NormalizedAppSet>[] = [
-  {
-    key: "name",
-    label: "Name",
-    class: "w-[2fr]",
-    render: (as) => (
-      <div class="flex items-center gap-2">
-        <StatusDot
-          status={dotStatus(statusTone(as.status))}
-          size={8}
-        />
-        <span class="font-medium text-brand hover:underline">{as.name}</span>
-      </div>
-    ),
-  },
-  {
-    key: "namespace",
-    label: "Namespace",
-    class: "w-[120px]",
-    render: (as) => (
-      <span class="text-text-secondary text-xs">{as.namespace}</span>
-    ),
-  },
-  {
-    key: "generators",
-    label: "Generators",
-    class: "w-[1fr]",
-    render: (as) => (
-      <div class="flex flex-wrap gap-1">
-        {as.generatorTypes.map((g) => (
-          <span
-            key={g}
-            class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent"
-          >
-            {g}
-          </span>
-        ))}
-      </div>
-    ),
-  },
-  {
-    key: "apps",
-    label: "Apps",
-    class: "w-[70px] text-right",
-    render: (as) => (
-      <span class="tabular-nums text-text-primary font-medium">
-        {as.generatedAppCount}
-      </span>
-    ),
-  },
-  {
-    key: "sync",
-    label: "Sync",
-    class: "w-[1fr]",
-    render: (as) => {
-      const syncedCount = as.summary.synced;
-      const oosCount = as.summary.outOfSync;
-      return (
-        <span class="text-xs">
-          {syncedCount > 0 && (
-            <span style={{ color: SYNC_COLORS.synced }}>
-              {syncedCount} synced
-            </span>
-          )}
-          {syncedCount > 0 && oosCount > 0 && (
-            <span class="text-text-muted">,</span>
-          )}
-          {oosCount > 0 && (
-            <span style={{ color: SYNC_COLORS.outofsync }}>
-              {oosCount} out-of-sync
-            </span>
-          )}
-          {syncedCount === 0 && oosCount === 0 && (
-            <span class="text-text-muted">-</span>
-          )}
-        </span>
-      );
-    },
-  },
-  {
-    key: "health",
-    label: "Health",
-    class: "w-[1fr]",
-    render: (as) => {
-      if (as.summary.degraded > 0) {
-        return (
-          <span class="text-xs" style={{ color: "var(--error)" }}>
-            {as.summary.degraded} degraded
-          </span>
-        );
-      }
-      if (as.summary.progressing > 0) {
-        return (
-          <span class="text-xs" style={{ color: "var(--warning)" }}>
-            {as.summary.progressing} progressing
-          </span>
-        );
-      }
-      if (as.generatedAppCount > 0) {
-        return (
-          <span class="text-xs" style={{ color: "var(--success)" }}>
-            all healthy
-          </span>
-        );
-      }
-      return <span class="text-xs text-text-muted">-</span>;
-    },
-  },
-  {
-    key: "status",
-    label: "Status",
-    class: "w-[100px]",
-    render: (as) => {
-      const statusColor = STATUS_COLORS[as.status.toLowerCase()] ??
-        "var(--text-secondary)";
-      return <span style={{ color: statusColor }}>{as.status}</span>;
-    },
-  },
-  {
-    key: "age",
-    label: "Age",
-    class: "w-[80px]",
-    render: (as) => (
-      <span class="text-text-muted text-xs">
-        {as.createdAt ? timeAgo(as.createdAt) : "-"}
-      </span>
-    ),
-  },
+const RT_COLUMNS: Column[] = [
+  { key: "name", label: "Name", width: "2fr" },
+  { key: "namespace", label: "Namespace", width: "120px" },
+  { key: "generators", label: "Generators" },
+  { key: "apps", label: "Apps", width: "70px", align: "right" },
+  { key: "sync", label: "Sync" },
+  { key: "health", label: "Health" },
+  { key: "status", label: "Status", width: "100px" },
+  { key: "age", label: "Age", width: "80px" },
 ];
 
 export default function GitOpsAppSets() {
@@ -310,20 +191,114 @@ export default function GitOpsAppSets() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-error py-4">{error.value}</p>}
+      {error.value && (
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <DataTable
-            columns={APPSET_COLUMNS}
-            data={displayed}
-            rowKey={(as) => as.id}
-            onRowClick={(as) => {
+        <ResourceTable
+          columns={RT_COLUMNS}
+          rows={displayed.map((as) => ({
+            id: as.id,
+            cells: {
+              name: (
+                <div class="flex items-center gap-2">
+                  <StatusDot
+                    status={dotStatus(statusTone(as.status))}
+                    size={8}
+                  />
+                  <span class="font-medium text-brand hover:underline">
+                    {as.name}
+                  </span>
+                </div>
+              ),
+              namespace: (
+                <span class="text-text-secondary text-xs">{as.namespace}</span>
+              ),
+              generators: (
+                <div class="flex flex-wrap gap-1">
+                  {as.generatorTypes.map((g) => (
+                    <span
+                      key={g}
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent"
+                    >
+                      {g}
+                    </span>
+                  ))}
+                </div>
+              ),
+              apps: (
+                <span class="tabular-nums text-text-primary font-medium">
+                  {as.generatedAppCount}
+                </span>
+              ),
+              sync: (() => {
+                const syncedCount = as.summary.synced;
+                const oosCount = as.summary.outOfSync;
+                return (
+                  <span class="text-xs">
+                    {syncedCount > 0 && (
+                      <span style={{ color: SYNC_COLORS.synced }}>
+                        {syncedCount} synced
+                      </span>
+                    )}
+                    {syncedCount > 0 && oosCount > 0 && (
+                      <span class="text-text-muted">,</span>
+                    )}
+                    {oosCount > 0 && (
+                      <span style={{ color: SYNC_COLORS.outofsync }}>
+                        {oosCount} out-of-sync
+                      </span>
+                    )}
+                    {syncedCount === 0 && oosCount === 0 && (
+                      <span class="text-text-muted">-</span>
+                    )}
+                  </span>
+                );
+              })(),
+              health: (() => {
+                if (as.summary.degraded > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--error)" }}>
+                      {as.summary.degraded} degraded
+                    </span>
+                  );
+                }
+                if (as.summary.progressing > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      {as.summary.progressing} progressing
+                    </span>
+                  );
+                }
+                if (as.generatedAppCount > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--success)" }}>
+                      all healthy
+                    </span>
+                  );
+                }
+                return <span class="text-xs text-text-muted">-</span>;
+              })(),
+              status: (() => {
+                const statusColor = STATUS_COLORS[as.status.toLowerCase()] ??
+                  "var(--text-secondary)";
+                return <span style={{ color: statusColor }}>{as.status}</span>;
+              })(),
+              age: (
+                <span class="text-text-muted text-xs">
+                  {as.createdAt ? timeAgo(as.createdAt) : "-"}
+                </span>
+              ),
+            },
+            onClick: () => {
               globalThis.location.href = "/gitops/applicationsets/" +
                 encodeURIComponent(as.id);
-            }}
-          />
-        </div>
+            },
+          }))}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (

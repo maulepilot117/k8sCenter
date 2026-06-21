@@ -6,7 +6,7 @@ import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
  * Drifted (accent-secondary — distinct from failure red), Unknown (muted). */
 const STATUS_COLORS: Record<Status, string> = {
   Synced: "var(--success)",
-  SyncFailed: "var(--danger)",
+  SyncFailed: "var(--error)",
   Refreshing: "var(--accent)",
   Stale: "var(--warning)",
   Drifted: "var(--accent-secondary)",
