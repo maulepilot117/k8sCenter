@@ -6,6 +6,7 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import {
   SEVERITY_COLORS,
   SEVERITY_ORDER,
@@ -32,10 +33,12 @@ function SeverityBar({
         <div
           class="h-full rounded-full"
           style={{
-            width: `${pct}%`,
+            width: "100%",
             backgroundColor: color,
             opacity: 0.8,
-            transition: "width 0.8s cubic-bezier(0.16, 1, 0.3, 1)",
+            transform: `scaleX(${pct / 100})`,
+            transformOrigin: "left center",
+            transition: "transform 0.8s cubic-bezier(0.16, 1, 0.3, 1)",
           }}
         />
       </div>
@@ -97,9 +100,46 @@ export default function ComplianceDashboard() {
     .sort((a, b) => a.score - b.score);
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Compliance</h1>
+    <div
+      style={{
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "20px",
+      }}
+    >
+      {/* Page header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            Compliance
+          </h1>
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Weighted compliance scores based on policy pass/fail rates.
+          </p>
+        </div>
         {!loading.value && (
           <Button
             type="button"
@@ -111,9 +151,6 @@ export default function ComplianceDashboard() {
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
-        Weighted compliance scores based on policy pass/fail rates.
-      </p>
 
       {loading.value && (
         <div class="flex justify-center py-12">
@@ -121,62 +158,73 @@ export default function ComplianceDashboard() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && !clusterScore && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">
-            No compliance data available. Install a policy engine and define
-            policies to see scores.
-          </p>
-        </div>
+        <WidgetShell>
+          <div style={{ textAlign: "center", padding: "32px 0" }}>
+            <p style={{ color: "var(--text-muted)" }}>
+              No compliance data available. Install a policy engine and define
+              policies to see scores.
+            </p>
+          </div>
+        </WidgetShell>
       )}
 
       {!loading.value && !error.value && clusterScore && (
         <>
           {/* Cluster overview */}
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "20px" }}>
             {/* Score ring */}
-            <div class="rounded-lg border border-border-primary p-6 flex flex-col items-center justify-center bg-bg-elevated">
-              <GaugeRing
-                value={clusterScore.score}
-                size={140}
-                strokeWidth={10}
-                color={scoreColor(clusterScore.score)}
-                label="Cluster Score"
-                valueSize="28px"
-              />
-              <p class="mt-3 text-sm text-text-secondary">
-                {clusterScore.pass}/{clusterScore.total} passing
-                {clusterScore.warn > 0 && (
-                  <span class="text-warning ml-2">
-                    ({clusterScore.warn} warnings)
-                  </span>
-                )}
-              </p>
+            <div style={{ flex: "1 1 280px", minWidth: "260px" }}>
+              <WidgetShell title="Cluster Score">
+                <div class="flex flex-col items-center justify-center">
+                  <GaugeRing
+                    value={clusterScore.score}
+                    size={140}
+                    strokeWidth={10}
+                    color={scoreColor(clusterScore.score)}
+                    label="Cluster Score"
+                    valueSize="28px"
+                  />
+                  <p class="mt-3 text-sm text-text-secondary">
+                    {clusterScore.pass}/{clusterScore.total} passing
+                    {clusterScore.warn > 0 && (
+                      <span class="text-warning ml-2">
+                        ({clusterScore.warn} warnings)
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </WidgetShell>
             </div>
 
             {/* Severity breakdown */}
-            <div class="rounded-lg border border-border-primary p-6 bg-bg-elevated">
-              <h2 class="text-sm font-medium text-text-primary mb-4">
-                Severity Breakdown
-              </h2>
-              <div class="space-y-3">
-                {SEVERITY_ORDER.map((sev) => {
-                  const counts = clusterScore.bySeverity?.[sev] ?? {
-                    pass: 0,
-                    fail: 0,
-                    total: 0,
-                  };
-                  if (counts.total === 0) return null;
-                  return <SeverityBar key={sev} label={sev} counts={counts} />;
-                })}
-                {!clusterScore.bySeverity && (
-                  <p class="text-xs text-text-muted">
-                    No severity breakdown available.
-                  </p>
-                )}
-              </div>
+            <div style={{ flex: "2 1 340px", minWidth: "300px" }}>
+              <WidgetShell title="Severity Breakdown">
+                <div class="space-y-3">
+                  {SEVERITY_ORDER.map((sev) => {
+                    const counts = clusterScore.bySeverity?.[sev] ?? {
+                      pass: 0,
+                      fail: 0,
+                      total: 0,
+                    };
+                    if (counts.total === 0) return null;
+                    return (
+                      <SeverityBar key={sev} label={sev} counts={counts} />
+                    );
+                  })}
+                  {!clusterScore.bySeverity && (
+                    <p class="text-xs text-text-muted">
+                      No severity breakdown available.
+                    </p>
+                  )}
+                </div>
+              </WidgetShell>
             </div>
           </div>
 
@@ -186,7 +234,14 @@ export default function ComplianceDashboard() {
           {/* Per-namespace table */}
           {nsScores.length > 0 && (
             <>
-              <h2 class="text-lg font-semibold text-text-primary mb-3">
+              <h2
+                style={{
+                  margin: 0,
+                  fontSize: "17px",
+                  fontWeight: 650,
+                  color: "var(--text-primary)",
+                }}
+              >
                 Per-Namespace Compliance
               </h2>
               <div class="overflow-x-auto rounded-lg border border-border-primary">
@@ -221,7 +276,8 @@ export default function ComplianceDashboard() {
                             href={`/security/violations?namespace=${
                               encodeURIComponent(ns.scope)
                             }`}
-                            class="text-brand hover:underline font-medium"
+                            style={{ color: "var(--accent)" }}
+                            class="hover:underline font-medium"
                           >
                             {ns.scope}
                           </a>
@@ -240,7 +296,10 @@ export default function ComplianceDashboard() {
                         <td class="px-3 py-2">
                           {ns.fail > 0
                             ? (
-                              <span class="text-danger font-medium">
+                              <span
+                                style={{ color: "var(--error)" }}
+                                class="font-medium"
+                              >
                                 {ns.fail}
                               </span>
                             )

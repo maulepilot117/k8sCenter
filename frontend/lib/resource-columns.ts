@@ -50,12 +50,6 @@ function badge(text: string): ComponentChildren {
 }
 
 // Shared columns
-const nameCol: Column<K8sResource> = {
-  key: "name",
-  label: "Name",
-  sortable: true,
-  render: (r) => r.metadata.name,
-};
 const namespaceCol: Column<K8sResource> = {
   key: "namespace",
   label: "Namespace",
@@ -90,6 +84,13 @@ function styledName(name: string, tone: Tone = "neutral"): ComponentChildren {
     }, name),
   ]);
 }
+
+const nameCol: Column<K8sResource> = {
+  key: "name",
+  label: "Name",
+  sortable: true,
+  render: (r) => styledName(r.metadata.name, "neutral"),
+};
 
 function styledNamespace(ns: string): ComponentChildren {
   return h("span", {
