@@ -336,7 +336,7 @@ export default function ResourceDetail({
     if (!resource.value) return "";
     const obj = structuredClone(resource.value);
     if (!showManagedFields.value) {
-      delete (obj.metadata as unknown as Record<string, unknown>).managedFields;
+      delete obj.metadata.managedFields;
     }
     try {
       return stringify(obj, { lineWidth: 0 });

@@ -226,7 +226,8 @@ function AlertTable(
                 <td class="px-4 py-3">
                   <StatusBadge
                     status={alert.severity || "unknown"}
-                    variant={severityColor[alert.severity] as StatusVariant}
+                    variant={(severityColor[alert.severity] ??
+                      "neutral") as StatusVariant}
                   />
                 </td>
                 <td class="px-4 py-3 text-sm text-text-secondary">
