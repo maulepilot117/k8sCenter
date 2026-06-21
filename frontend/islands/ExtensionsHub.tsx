@@ -267,7 +267,7 @@ export default function ExtensionsHub() {
                                   fontFamily: "var(--font-mono)",
                                   fontWeight: 600,
                                   color: "var(--accent)",
-                                  tabularNums: "tabular-nums",
+                                  fontVariantNumeric: "tabular-nums",
                                 }}
                               >
                                 {instanceCount}
