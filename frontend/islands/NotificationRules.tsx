@@ -42,7 +42,7 @@ export default function NotificationRules() {
   const fetchRules = async () => {
     try {
       const res = await notifApi.listRules();
-      rules.value = res.data ?? [];
+      rules.value = res.data.data ?? [];
     } catch {
       error.value = "Failed to load rules";
     }
@@ -52,7 +52,7 @@ export default function NotificationRules() {
   const fetchChannels = async () => {
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data ?? [];
+      channels.value = res.data.data ?? [];
     } catch {
       // channels will be empty — dropdown shows nothing
     }

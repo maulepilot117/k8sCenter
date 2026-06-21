@@ -3,6 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import type { StatusVariant } from "@/lib/status-colors.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
@@ -224,10 +225,9 @@ function AlertTable(
                 </td>
                 <td class="px-4 py-3">
                   <StatusBadge
-                    status={severityColor[alert.severity] ?? "default"}
-                  >
-                    {alert.severity || "unknown"}
-                  </StatusBadge>
+                    status={alert.severity || "unknown"}
+                    variant={severityColor[alert.severity] as StatusVariant}
+                  />
                 </td>
                 <td class="px-4 py-3 text-sm text-text-secondary">
                   {alert.namespace || "-"}
@@ -235,10 +235,9 @@ function AlertTable(
                 {showResolvedColumn && (
                   <td class="px-4 py-3">
                     <StatusBadge
-                      status={alert.status === "firing" ? "danger" : "success"}
-                    >
-                      {alert.status}
-                    </StatusBadge>
+                      status={alert.status}
+                      variant={alert.status === "firing" ? "danger" : "success"}
+                    />
                   </td>
                 )}
                 <td class="px-4 py-3 text-sm text-text-secondary">

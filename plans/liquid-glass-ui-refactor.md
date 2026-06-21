@@ -25,6 +25,7 @@ These apply to **every** task. Copied verbatim from the handoff (`DESIGN_SYSTEM.
 - **Mobile parity:** keep `mobile/` theme in sync by regenerating the Dart theme from the JSON sources (`make check-themes` must pass).
 - **Type/spacing:** Geist / Geist Mono; page title 24/700/-0.02em; card title 14/650; section header 11/600/uppercase; body 13px; `tabular-nums` on numeric columns. Spacing multiples of 4. Radius: cards 16–18, modals/wizards 20, inputs/buttons 9, pills 6.
 - **Verification gate (every phase):** `cd frontend && deno task check` (fmt + lint + check, repo-wide) AND `make test` must pass; `make test-e2e` green before final merge. Plus the per-screen Definition of Done checklist below.
+  - **Baseline note (discovered at execution start):** CI (`ci.yml`) runs only `deno lint` + `deno fmt --check`, NOT `deno check`. `main` had 34 pre-existing `deno check` type errors across 19 files and 65 CRLF-blob files that failed `deno fmt --check` on a Windows checkout. **Foundation Tasks 0.0a/0.0b fix both** (LF normalization + all 34 type errors + add `deno check` to CI + correct the CLAUDE.md "identical to CI" line). After 0.0b the baseline is zero, so the gate above is genuinely `deno task check` fully green AND matches the updated CI.
 
 **Per-screen Definition of Done** (the "test" for visual tasks — there are no unit tests for layout):
 - [ ] No hard-coded colors; all `var(--token)`
@@ -83,6 +84,24 @@ Each phase ends with: `deno task check` green, DoD checklist on every touched sc
 ## PHASE 0 — Foundation
 
 Goal: every existing page renders inside the new 3-pane shell; secondary nav shows grouped children with no horizontal scroll; collapse works; light/dark toggle cleanly; primitives available. **No page content changes yet.**
+
+### Task 0.0a: Normalize line endings to LF — ✅ DONE (commits 18b728f..a9c842d)
+Added `* text=auto eol=lf` to `.gitattributes`; normalized 65 CRLF-blob frontend files to LF. `deno fmt --check` + `deno lint` now green locally.
+
+### Task 0.0b: Fix 34 pre-existing type errors + add `deno check` to CI
+
+**Files:**
+- Modify: the 19 files in `.superpowers/sdd/baseline-type-errors.txt` (e.g. `routes/api/[...path].ts`, `islands/NotificationChannels.tsx`/`NotificationRules.tsx`/`NotificationBell.tsx`, `islands/AlertsPage.tsx`, `islands/ClusterManager.tsx`, `islands/AuditLogViewer.tsx`, `islands/ClusterTopology.tsx`, `islands/StorageDashboard.tsx`, `islands/WorkloadsDashboard.tsx`, `islands/ResourceDetail.tsx`, `islands/NetworkPolicyWizard.tsx`, `islands/PDBWizard.tsx`, `islands/ScheduledSnapshotWizard.tsx`, `lib/wizard-constants.ts`, `components/ui/ConfirmDialog.tsx`, `components/ui/Field.tsx`, `components/k8s/detail/NetworkPolicyOverview.tsx`, `components/k8s/detail/RoleBindingOverview.tsx`)
+- Modify: `.github/workflows/ci.yml` (add a `deno check` step after lint/fmt)
+- Modify: root `CLAUDE.md` (the "identical to CI" line is now true once CI runs `deno check`)
+
+**Interfaces:**
+- Produces: `deno check` exits 0 repo-wide; CI gains a type-check step. Error categories: `Context<State>` handler signature (Fresh 2.x) ×5; `{data:T[]}` vs `T[]` API-unwrap mismatches; `StatusBadgeProps` prop mismatches; missing exports (`LabelEntry`, `formConfig`); assorted property-access. **Fix the type, do not suppress** — where a `.data` unwrap is missing, add it (may be a latent runtime bug); never add `// @ts-ignore` or `as any` to paper over.
+
+- [ ] **Step 1:** Run `cd frontend && deno check 2>&1` — read every error with its file:line.
+- [ ] **Step 2:** Fix each, smallest correct change per the real type (unwrap `.data`, correct handler signature to Fresh 2.x `Context`, align StatusBadge props, export missing members). Per CLAUDE.md Rule 9, re-read each file before editing.
+- [ ] **Step 3:** `deno check` → 0 errors; `deno fmt --check` + `deno lint` still green; `make test` green.
+- [ ] **Step 4:** Add `deno check` step to `ci.yml`; update CLAUDE.md line; commit. `git commit -m "fix(types): clear pre-existing deno check errors; gate deno check in CI"`
 
 ### Task 0.1: Fold refreshed tokens into the dark theme JSON
 

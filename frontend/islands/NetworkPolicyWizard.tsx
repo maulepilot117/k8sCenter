@@ -3,9 +3,9 @@ import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
+import type { LabelEntry } from "@/lib/wizard-types.ts";
 import {
   DNS_LABEL_REGEX,
-  type LabelEntry,
   MAX_PORT,
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";

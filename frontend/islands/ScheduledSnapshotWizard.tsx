@@ -121,7 +121,7 @@ export default function ScheduledSnapshotWizard() {
           if (classes.length > 0 && !form.value.volumeSnapshotClassName) {
             form.value = {
               ...form.value,
-              volumeSnapshotClassName: classes[0].name,
+              volumeSnapshotClassName: classes[0].metadata.name,
             };
           }
         }

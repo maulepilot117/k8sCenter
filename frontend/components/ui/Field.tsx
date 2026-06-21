@@ -1,3 +1,5 @@
+import type { ComponentChildren } from "preact";
+
 /** Reusable label/value field pair for detail views. */
 export function Field({
   label,
@@ -5,7 +7,7 @@ export function Field({
   mono,
 }: {
   label: string;
-  value: string;
+  value: ComponentChildren;
   mono?: boolean;
 }) {
   return (
@@ -25,7 +27,7 @@ export function Field({
 }
 
 /** Section header used across overview components. */
-export function SectionHeader({ children }: { children: string }) {
+export function SectionHeader({ children }: { children: ComponentChildren }) {
   return (
     <h4 class="text-xs font-medium uppercase text-text-muted mb-2">
       {children}

@@ -80,19 +80,19 @@ export default function WorkloadsDashboard(
           apiGet<Record<string, number>>(
             `/v1/resources/counts${nsParam}`,
           ),
-          apiGet<{
-            data: Array<{
+          apiGet<
+            Array<{
               status?: Record<string, unknown>;
-            }>;
-          }>(`/v1/resources/deployments${nsPath}?limit=500`),
-          apiGet<{
-            data: Array<{
+            }>
+          >(`/v1/resources/deployments${nsPath}?limit=500`),
+          apiGet<
+            Array<{
               status?: {
                 phase?: string;
                 conditions?: Array<{ type: string; status: string }>;
               };
-            }>;
-          }>(`/v1/resources/pods${nsPath}?limit=500`),
+            }>
+          >(`/v1/resources/pods${nsPath}?limit=500`),
         ]);
 
         const countsData = countsRes.data ?? {};

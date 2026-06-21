@@ -118,11 +118,11 @@ export default function StorageDashboard(
           apiGet<Record<string, number>>(
             `/v1/resources/counts${nsParam}`,
           ),
-          apiGet<{
-            data: Array<{
+          apiGet<
+            Array<{
               status?: { phase?: string };
-            }>;
-          }>(`/v1/resources/pvcs${nsPath}?limit=500`),
+            }>
+          >(`/v1/resources/pvcs${nsPath}?limit=500`),
         ]);
 
         const countsData = countsRes.data ?? {};

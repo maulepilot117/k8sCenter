@@ -188,12 +188,12 @@ export default function AuditLogViewer() {
                     </td>
                     <td class="px-3 py-2">
                       <StatusBadge
-                        status={e.result === "success"
-                          ? "running"
+                        status={e.result}
+                        variant={e.result === "success"
+                          ? "success"
                           : e.result === "denied"
                           ? "warning"
-                          : "failed"}
-                        label={e.result}
+                          : "danger"}
                       />
                     </td>
                     <td class="max-w-xs truncate px-3 py-2 text-xs text-text-muted">

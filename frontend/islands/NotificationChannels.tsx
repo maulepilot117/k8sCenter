@@ -66,7 +66,7 @@ export default function NotificationChannels() {
     error.value = null;
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data ?? [];
+      channels.value = res.data.data ?? [];
     } catch (err) {
       error.value = err instanceof Error
         ? err.message
@@ -156,14 +156,14 @@ export default function NotificationChannels() {
     }
     // Client-side URL validation for Slack and Webhook channels
     if (formType.value === "slack") {
-      const url = (formConfig.value as Record<string, string>).webhookUrl ?? "";
+      const url = formWebhookUrl.value;
       if (!url || !validateUrl(url)) {
         showToast("Valid Slack webhook URL is required", "error");
         return;
       }
     }
     if (formType.value === "webhook") {
-      const url = (formConfig.value as Record<string, string>).url ?? "";
+      const url = formUrl.value;
       if (!url || !validateUrl(url)) {
         showToast("Valid webhook URL is required", "error");
         return;

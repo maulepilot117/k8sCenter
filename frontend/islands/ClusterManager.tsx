@@ -309,8 +309,8 @@ export default function ClusterManager() {
             </div>
             <div class="flex items-center gap-2">
               <StatusBadge
-                status={c.status === "connected" ? "running" : "failed"}
-                label={c.status}
+                status={c.status}
+                variant={c.status === "connected" ? "success" : "danger"}
               />
               {!c.isLocal && (
                 <>

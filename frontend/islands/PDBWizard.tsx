@@ -3,11 +3,8 @@ import { useCallback } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
-import {
-  DNS_LABEL_REGEX,
-  LabelEntry,
-  WIZARD_INPUT_CLASS,
-} from "@/lib/wizard-constants.ts";
+import type { LabelEntry } from "@/lib/wizard-types.ts";
+import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
