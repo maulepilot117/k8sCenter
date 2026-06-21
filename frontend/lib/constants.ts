@@ -768,6 +768,7 @@ export function getActiveDomain(path: string): string | null {
   if (path.startsWith("/cluster")) return "overview";
   if (path.startsWith("/admin")) return "security";
   if (path.startsWith("/settings")) return "settings";
+  if (path.startsWith("/scaling")) return "workloads";
 
   for (const s of _ALL_SECTIONS) {
     if (s.href === "/" && path === "/") return s.id;
