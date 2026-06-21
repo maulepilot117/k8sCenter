@@ -1,17 +1,21 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useMemo } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { api } from "@/lib/api.ts";
 
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
-import HealthScoreRing from "@/islands/HealthScoreRing.tsx";
-import MetricCard from "@/islands/MetricCard.tsx";
-import UtilizationGauge from "@/islands/UtilizationGauge.tsx";
-import ClusterTopology from "@/islands/ClusterTopology.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import Gauge from "@/components/charts/Gauge.tsx";
+import Donut from "@/components/charts/Donut.tsx";
+import type { DonutSegment } from "@/components/charts/Donut.tsx";
+import BarRow from "@/components/charts/BarRow.tsx";
+import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import { healthStatusColor } from "@/lib/score-color.ts";
 import type { ClusterHealth } from "@/lib/score-color.ts";
+
+// ─── Wire types (unchanged from original) ────────────────────────────────────
 
 interface ClusterInfoData {
   clusterID: string;
@@ -44,8 +48,6 @@ interface DashboardSummary {
     requests: string;
     limits: string;
   } | null;
-  // Added in U4 — absent when backend has not yet shipped the health field
-  // (stale-backend case, R11).
   health?: ClusterHealth;
 }
 
@@ -66,12 +68,297 @@ interface DashboardTrends {
 
 const REFRESH_INTERVAL = 60_000;
 
+// ─── Time range tabs ─────────────────────────────────────────────────────────
+
+const TIME_RANGES = ["15m", "1h", "6h", "24h"] as const;
+type TimeRange = typeof TIME_RANGES[number];
+
+// ─── Multi-series area chart ─────────────────────────────────────────────────
+// Renders two filled area series (CPU + Memory) from trend data.
+// Falls back gracefully to a placeholder when data is absent.
+
+const CHART_W = 400;
+const CHART_H = 80;
+const CHART_PAD = 4;
+
+function buildSeriesPath(data: number[]): { line: string; area: string } {
+  const n = data.length;
+  if (n < 2) return { line: "", area: "" };
+  const min = 0; // % data is always 0–100
+  const range = 100;
+  const x = (i: number) =>
+    CHART_PAD + (i * (CHART_W - 2 * CHART_PAD)) / (n - 1);
+  const y = (v: number) =>
+    CHART_H - CHART_PAD -
+    ((v - min) / range) * (CHART_H - 2 * CHART_PAD);
+  const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const line = `M${pts.join(" L")}`;
+  const area = `${line} L${x(n - 1).toFixed(1)},${
+    (CHART_H - CHART_PAD).toFixed(1)
+  } L${x(0).toFixed(1)},${(CHART_H - CHART_PAD).toFixed(1)} Z`;
+  return { line, area };
+}
+
+interface ResourceChartProps {
+  cpuData: number[] | null;
+  memData: number[] | null;
+}
+
+function ResourceAreaChart({ cpuData, memData }: ResourceChartProps) {
+  const cpuPath = useMemo(
+    () => cpuData && cpuData.length >= 2 ? buildSeriesPath(cpuData) : null,
+    [cpuData],
+  );
+  const memPath = useMemo(
+    () => memData && memData.length >= 2 ? buildSeriesPath(memData) : null,
+    [memData],
+  );
+
+  const cpuGradId = useMemo(
+    () => `cpu-grad-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
+  const memGradId = useMemo(
+    () => `mem-grad-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
+
+  if (!cpuPath && !memPath) {
+    return (
+      <div
+        style={{
+          height: `${CHART_H}px`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "var(--text-muted)",
+          fontSize: "12px",
+        }}
+      >
+        Trend data unavailable (Prometheus not connected)
+      </div>
+    );
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+      preserveAspectRatio="none"
+      width="100%"
+      height={CHART_H}
+      style={{ display: "block" }}
+    >
+      <defs>
+        <linearGradient id={cpuGradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35" />
+          <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
+        </linearGradient>
+        <linearGradient id={memGradId} x1="0" y1="0" x2="0" y2="1">
+          <stop
+            offset="0%"
+            stop-color="var(--accent-secondary)"
+            stop-opacity="0.30"
+          />
+          <stop
+            offset="100%"
+            stop-color="var(--accent-secondary)"
+            stop-opacity="0.02"
+          />
+        </linearGradient>
+      </defs>
+      {memPath && (
+        <>
+          <path d={memPath.area} fill={`url(#${memGradId})`} />
+          <path
+            d={memPath.line}
+            fill="none"
+            stroke="var(--accent-secondary)"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+        </>
+      )}
+      {cpuPath && (
+        <>
+          <path d={cpuPath.area} fill={`url(#${cpuGradId})`} />
+          <path
+            d={cpuPath.line}
+            fill="none"
+            stroke="var(--accent)"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            vector-effect="non-scaling-stroke"
+          />
+        </>
+      )}
+    </svg>
+  );
+}
+
+// ─── Metric tile (CPU%, Memory%, Pods, Net I/O) ───────────────────────────────
+
+interface MetricTileProps {
+  label: string;
+  value: string;
+  unit?: string;
+  delta?: number | null; // positive = up, negative = down
+  sparkData?: number[] | null;
+  sparkColor?: string;
+  href?: string;
+}
+
+function MetricTile(
+  { label, value, unit, delta, sparkData, sparkColor = "var(--accent)", href }:
+    MetricTileProps,
+) {
+  const inner = (
+    <WidgetShell padding={16}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          marginBottom: "6px",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "11px",
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            color: "var(--text-muted)",
+          }}
+        >
+          {label}
+        </span>
+        {delta !== undefined && delta !== null && (
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 500,
+              color: delta >= 0 ? "var(--success)" : "var(--error)",
+              display: "flex",
+              alignItems: "center",
+              gap: "2px",
+            }}
+          >
+            {delta >= 0 ? "▲" : "▼"}
+            {Math.abs(delta)}%
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          gap: "4px",
+          lineHeight: 1,
+        }}
+      >
+        <span
+          style={{
+            fontSize: "28px",
+            fontWeight: 750,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+            fontFamily: "var(--font-sans)",
+          }}
+        >
+          {value}
+        </span>
+        {unit && (
+          <span
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              fontWeight: 500,
+            }}
+          >
+            {unit}
+          </span>
+        )}
+      </div>
+      {sparkData && sparkData.length >= 2 && (
+        <div style={{ marginTop: "10px" }}>
+          <SparklineChart
+            data={sparkData}
+            color={sparkColor}
+            height={30}
+          />
+        </div>
+      )}
+    </WidgetShell>
+  );
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        style={{ textDecoration: "none", color: "inherit", display: "block" }}
+      >
+        {inner}
+      </a>
+    );
+  }
+  return inner;
+}
+
+// ─── Health checklist item ────────────────────────────────────────────────────
+
+interface CheckItemProps {
+  label: string;
+  value: string;
+  status: "success" | "warning" | "error";
+}
+
+function CheckItem({ label, value, status }: CheckItemProps) {
+  const color = status === "success"
+    ? "var(--success)"
+    : status === "warning"
+    ? "var(--warning)"
+    : "var(--error)";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "7px 0",
+        borderBottom: "1px solid var(--glass-border)",
+        fontSize: "13px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <span
+          style={{
+            width: "7px",
+            height: "7px",
+            borderRadius: "50%",
+            background: color,
+            flexShrink: 0,
+          }}
+        />
+        <span style={{ color: "var(--text-secondary)" }}>{label}</span>
+      </div>
+      <span style={{ fontWeight: 600, color }}>{value}</span>
+    </div>
+  );
+}
+
+// ─── Main dashboard ───────────────────────────────────────────────────────────
+
 export default function DashboardV2() {
   const clusterInfo = useSignal<ClusterInfoData | null>(null);
   const summary = useSignal<DashboardSummary | null>(null);
   const trends = useSignal<DashboardTrends | null>(null);
   const events = useSignal<K8sEvent[]>([]);
   const loading = useSignal(true);
+  const timeRange = useSignal<TimeRange>("1h");
+  const syncedAgo = useSignal<string>("");
 
   async function fetchSummary(signal?: AbortSignal) {
     const summaryRes = await api<DashboardSummary>(
@@ -80,6 +367,7 @@ export default function DashboardV2() {
     );
     if (summaryRes.data) {
       summary.value = summaryRes.data;
+      syncedAgo.value = "just now";
     }
   }
 
@@ -152,371 +440,616 @@ export default function DashboardV2() {
     return <div style={{ minHeight: "400px" }} />;
   }
 
+  // ─── Loading skeletons ───────────────────────────────────────────────────
+
   if (loading.value) {
     return (
       <div>
-        <Skeleton class="h-8 w-48 mb-5" />
+        <Skeleton class="h-8 w-56 mb-2" />
+        <Skeleton class="h-4 w-80 mb-6" />
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(12, 1fr)",
+            display: "flex",
+            flexWrap: "wrap",
             gap: "var(--grid-gap, 16px)",
           }}
         >
           <Skeleton
-            class="rounded-lg"
-            style={{ gridColumn: "span 4", height: "280px" }}
+            style={{ flex: "2 1 380px", height: "200px", borderRadius: "18px" }}
           />
           <div
             style={{
-              gridColumn: "span 8",
+              flex: "3 1 380px",
               display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
+              gridTemplateColumns: "1fr 1fr",
               gap: "var(--grid-gap, 16px)",
             }}
           >
             {[1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} class="h-32 rounded-lg" />
+              <Skeleton
+                key={i}
+                style={{ height: "120px", borderRadius: "18px" }}
+              />
             ))}
           </div>
-          <Skeleton class="h-40 rounded-lg" style={{ gridColumn: "span 6" }} />
-          <Skeleton class="h-40 rounded-lg" style={{ gridColumn: "span 6" }} />
           <Skeleton
-            class="rounded-lg"
-            style={{ gridColumn: "span 7", height: "280px" }}
+            style={{ flex: "3 1 380px", height: "160px", borderRadius: "18px" }}
           />
           <Skeleton
-            class="rounded-lg"
-            style={{ gridColumn: "span 5", height: "280px" }}
+            style={{ flex: "2 1 240px", height: "160px", borderRadius: "18px" }}
+          />
+          <Skeleton
+            style={{ flex: "2 1 240px", height: "200px", borderRadius: "18px" }}
+          />
+          <Skeleton
+            style={{ flex: "2 1 240px", height: "200px", borderRadius: "18px" }}
+          />
+          <Skeleton
+            style={{ flex: "2 1 240px", height: "200px", borderRadius: "18px" }}
           />
         </div>
       </div>
     );
   }
 
+  // ─── Derived values ──────────────────────────────────────────────────────
+
   const info = clusterInfo.value;
   const s = summary.value;
   const t = trends.value;
   const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
+  const podCount = s?.pods.total ?? 0;
+  const clusterName = info?.platform ?? info?.clusterID ?? "cluster";
 
-  const greeting = (() => {
-    if (!IS_BROWSER) return "";
-    const hour = new Date().getHours();
-    if (hour < 12) return "Good morning";
-    if (hour < 17) return "Good afternoon";
-    return "Good evening";
-  })();
+  // Health gauge
+  const health = s?.health;
+  const healthScore = health?.score ?? 0;
+  const healthStatus = health?.status ?? "unknown";
+  const healthColor = healthStatusColor(healthStatus);
+  const healthLabel = healthStatus === "unknown"
+    ? "UNKNOWN"
+    : healthStatus.toUpperCase();
+
+  // Workloads degraded: approximate from pods failed
+  const workloadsDegraded = s?.pods.failed ?? 0;
+  const criticalAlerts = s?.alerts.critical ?? 0;
+  const nodesReady = s?.nodes.ready ?? 0;
+
+  // Metric tiles: CPU%, Memory%, Pods, (Net I/O omitted — not in API)
+  const cpuPct = Math.round(s?.cpu?.percentage ?? 0);
+  const memPct = Math.round(s?.memory?.percentage ?? 0);
+
+  // Delta: compare last vs second-to-last in trend series (null when unavailable)
+  function lastDelta(series: number[] | null | undefined): number | null {
+    if (!series || series.length < 2) return null;
+    const last = series[series.length - 1];
+    const prev = series[series.length - 2];
+    if (!Number.isFinite(last) || !Number.isFinite(prev) || prev === 0) {
+      return null;
+    }
+    return Math.round(((last - prev) / prev) * 100);
+  }
+
+  const cpuDelta = lastDelta(t?.cpu);
+  const memDelta = lastDelta(t?.memory);
+  const podDelta = lastDelta(t?.pods);
+
+  // Pod donut segments
+  const podRunning = s?.pods.running ?? 0;
+  const podPending = s?.pods.pending ?? 0;
+  const podFailed = s?.pods.failed ?? 0;
+  const podTotal = podCount || 1;
+  const donutSegments: DonutSegment[] = podTotal > 0
+    ? [
+      {
+        value: podRunning,
+        color: "var(--success)",
+        label: "Running",
+      },
+      {
+        value: podPending,
+        color: "var(--warning)",
+        label: "Pending",
+      },
+      {
+        value: podFailed,
+        color: "var(--error)",
+        label: "Failed",
+      },
+    ]
+    : [{ value: 1, color: "var(--border-subtle)" }];
+
+  // Synced label
+  const syncedLabel = syncedAgo.value ? `synced ${syncedAgo.value}` : "";
+  const subtitleParts = [
+    clusterName,
+    `${nodeCount} node${nodeCount !== 1 ? "s" : ""}`,
+    `${podCount} pods`,
+    ...(syncedLabel ? [syncedLabel] : []),
+  ].join(" · ");
 
   return (
     <div>
-      {/* ===== PAGE HEADER — matches .page-header from mockup ===== */}
-      <div class="flex items-center justify-between mb-5">
+      {/* ── PAGE HEADER ─────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          marginBottom: "20px",
+          gap: "16px",
+          flexWrap: "wrap",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            {greeting ? `${greeting} — ` : ""}Cluster Overview
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+            }}
+          >
+            Cluster Overview
           </h1>
-          {info && (
-            <div class="text-xs text-text-muted mt-0.5">
-              {info.platform} &middot; Kubernetes {info.kubernetesVersion}
-              {` \u00B7 ${nodeCount} node${nodeCount !== 1 ? "s" : ""}`}
-            </div>
-          )}
+          <div
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+            }}
+          >
+            {subtitleParts}
+          </div>
         </div>
-        <div class="flex gap-2">
-          <a
-            href="/workloads/deployments/new"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "7px 14px",
-              borderRadius: "var(--radius-sm)",
-              background: "var(--accent)",
-              color: "var(--bg-base)",
-              fontSize: "13px",
-              fontWeight: 500,
-              textDecoration: "none",
-              border: "none",
-            }}
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
+
+        {/* Time-range segmented tabs */}
+        <div
+          style={{
+            display: "flex",
+            gap: "2px",
+            background: "var(--glass-surface)",
+            border: "1px solid var(--glass-border)",
+            borderRadius: "8px",
+            padding: "3px",
+          }}
+        >
+          {TIME_RANGES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => {
+                timeRange.value = r;
+              }}
+              style={{
+                padding: "5px 12px",
+                borderRadius: "6px",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "12px",
+                fontWeight: 500,
+                background: timeRange.value === r
+                  ? "var(--accent)"
+                  : "transparent",
+                color: timeRange.value === r
+                  ? "var(--bg-base)"
+                  : "var(--text-muted)",
+                transition: "background 0.15s, color 0.15s",
+              }}
             >
-              <path d="M4 8h8M8 4v8" />
-            </svg>
-            Deploy
-          </a>
-          <a
-            href="/tools/yaml-apply"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "6px",
-              padding: "7px 14px",
-              borderRadius: "var(--radius-sm)",
-              background: "transparent",
-              color: "var(--text-secondary)",
-              fontSize: "13px",
-              fontWeight: 500,
-              textDecoration: "none",
-              border: "1px solid var(--border-primary)",
-            }}
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            >
-              <rect x="2" y="3" width="12" height="10" rx="1.5" />
-              <path d="M5 8h6" />
-            </svg>
-            YAML
-          </a>
+              {r}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* ===== SINGLE DASHBOARD GRID — matches .dashboard-grid from mockup ===== */}
+      {/* ── ROW 1: HEALTH + METRIC TILES ────────────────────────────────────── */}
       <div
-        class="stagger-in"
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(12, 1fr)",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "var(--grid-gap, 16px)",
+          marginBottom: "var(--grid-gap, 16px)",
+        }}
+      >
+        {/* Cluster Health card */}
+        <div style={{ flex: "2 1 320px", minWidth: "280px" }}>
+          <WidgetShell title="Cluster Health">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "24px",
+                flexWrap: "wrap",
+              }}
+            >
+              {/* Gauge ring */}
+              <div style={{ flexShrink: 0 }}>
+                <Gauge
+                  value={healthScore}
+                  size={140}
+                  thickness={12}
+                  color={healthColor}
+                  label={`${healthScore}`}
+                  sublabel={healthLabel}
+                />
+              </div>
+
+              {/* Checklist */}
+              <div style={{ flex: 1, minWidth: "160px" }}>
+                <CheckItem
+                  label="Nodes ready"
+                  value={`${nodesReady} / ${nodeCount}`}
+                  status={nodesReady === nodeCount && nodeCount > 0
+                    ? "success"
+                    : "warning"}
+                />
+                <CheckItem
+                  label="Workloads degraded"
+                  value={workloadsDegraded > 0
+                    ? String(workloadsDegraded)
+                    : "0"}
+                  status={workloadsDegraded > 0 ? "warning" : "success"}
+                />
+                <CheckItem
+                  label="Critical alerts"
+                  value={criticalAlerts > 0 ? String(criticalAlerts) : "0"}
+                  status={criticalAlerts > 0 ? "error" : "success"}
+                />
+              </div>
+            </div>
+          </WidgetShell>
+        </div>
+
+        {/* 2×2 Metric tile grid */}
+        <div
+          style={{
+            flex: "3 1 380px",
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "var(--grid-gap, 16px)",
+          }}
+        >
+          <MetricTile
+            label="CPU"
+            value={`${cpuPct}`}
+            unit="%"
+            delta={cpuDelta}
+            sparkData={t?.cpu}
+            sparkColor="var(--accent)"
+            href="/cluster/nodes"
+          />
+          <MetricTile
+            label="Memory"
+            value={`${memPct}`}
+            unit="%"
+            delta={memDelta}
+            sparkData={t?.memory}
+            sparkColor="var(--accent-secondary)"
+            href="/cluster/nodes"
+          />
+          <MetricTile
+            label="Pods"
+            value={String(podCount)}
+            unit={s ? `/${s.pods.running} running` : ""}
+            delta={podDelta}
+            sparkData={t?.pods}
+            sparkColor="var(--success)"
+            href="/workloads/pods"
+          />
+          <MetricTile
+            label="Alerts"
+            value={String(s?.alerts.active ?? 0)}
+            unit={criticalAlerts > 0 ? `${criticalAlerts} critical` : "active"}
+            delta={lastDelta(t?.alerts)}
+            sparkData={t?.alerts}
+            sparkColor="var(--warning)"
+            href="/alerting"
+          />
+        </div>
+      </div>
+
+      {/* ── ROW 2: RESOURCE UTILIZATION CHART + POD STATUS DONUT ────────────── */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "var(--grid-gap, 16px)",
+          marginBottom: "var(--grid-gap, 16px)",
+        }}
+      >
+        {/* Resource utilization area chart */}
+        <div style={{ flex: "3 1 380px", minWidth: "280px" }}>
+          <WidgetShell
+            title="Resource Utilization"
+            action={
+              <div
+                style={{ display: "flex", alignItems: "center", gap: "12px" }}
+              >
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "2px",
+                      background: "var(--accent)",
+                    }}
+                  />
+                  CPU
+                </span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    fontSize: "12px",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "inline-block",
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "2px",
+                      background: "var(--accent-secondary)",
+                    }}
+                  />
+                  Memory
+                </span>
+              </div>
+            }
+          >
+            <ResourceAreaChart
+              cpuData={t?.cpu ?? null}
+              memData={t?.memory ?? null}
+            />
+          </WidgetShell>
+        </div>
+
+        {/* Pod status donut */}
+        <div style={{ flex: "2 1 240px", minWidth: "200px" }}>
+          <WidgetShell title="Pod Status">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "20px",
+                flexWrap: "wrap",
+              }}
+            >
+              <Donut
+                segments={donutSegments}
+                size={112}
+                thickness={18}
+                center={
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: "22px",
+                        fontWeight: 750,
+                        color: "var(--text-primary)",
+                        lineHeight: 1,
+                      }}
+                    >
+                      {podCount}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        color: "var(--text-muted)",
+                        marginTop: "2px",
+                      }}
+                    >
+                      pods
+                    </span>
+                  </div>
+                }
+              />
+              {/* Legend */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  flex: 1,
+                }}
+              >
+                {[
+                  {
+                    label: "Running",
+                    value: podRunning,
+                    color: "var(--success)",
+                  },
+                  {
+                    label: "Pending",
+                    value: podPending,
+                    color: "var(--warning)",
+                  },
+                  {
+                    label: "Failed",
+                    value: podFailed,
+                    color: "var(--error)",
+                  },
+                ].map(({ label, value, color }) => (
+                  <div
+                    key={label}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: "8px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: "8px",
+                          height: "8px",
+                          borderRadius: "50%",
+                          background: color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: "12px",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {label}
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: 600,
+                        color: "var(--text-primary)",
+                        fontFamily: "var(--font-mono, monospace)",
+                      }}
+                    >
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </WidgetShell>
+        </div>
+      </div>
+
+      {/* ── ROW 3: NODES + RECENT EVENTS + ACTIVE ALERTS ────────────────────── */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
           gap: "var(--grid-gap, 16px)",
         }}
       >
-        {/* ===== HEALTH SCORE CARD (span 4) — matches .health-card ===== */}
-        <div
-          style={{
-            gridColumn: "span 4",
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-primary)",
-            borderRadius: "var(--radius)",
-            padding: "20px",
-            overflow: "hidden",
-          }}
-        >
-          {/* Card title — matches .card-title */}
-          <div
-            style={{
-              fontSize: "11px",
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-muted)",
-              marginBottom: "16px",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
+        {/* Nodes BarRow card */}
+        <div style={{ flex: "2 1 260px", minWidth: "220px" }}>
+          <WidgetShell
+            title="Nodes"
+            action={nodeCount > 0
+              ? (
+                <span
+                  style={{
+                    fontSize: "12px",
+                    color: nodesReady === nodeCount
+                      ? "var(--success)"
+                      : "var(--warning)",
+                  }}
+                >
+                  {nodesReady} ready{nodeCount > nodesReady
+                    ? ` · ${nodeCount - nodesReady} under pressure`
+                    : ""}
+                </span>
+              )
+              : undefined}
           >
-            <span
+            {nodeCount === 0
+              ? (
+                <div
+                  style={{
+                    color: "var(--text-muted)",
+                    fontSize: "13px",
+                    textAlign: "center",
+                    padding: "24px 0",
+                  }}
+                >
+                  No node data available
+                </div>
+              )
+              : (
+                <div>
+                  <BarRow
+                    label="CPU"
+                    value={cpuPct}
+                    max={100}
+                    suffix={`${cpuPct}%`}
+                    color="var(--accent)"
+                  />
+                  <BarRow
+                    label="Memory"
+                    value={memPct}
+                    max={100}
+                    suffix={`${memPct}%`}
+                    color="var(--accent-secondary)"
+                  />
+                  <BarRow
+                    label="Pods"
+                    value={podCount}
+                    max={Math.max(podCount, 440)}
+                    suffix={String(podCount)}
+                    color="var(--success)"
+                  />
+                  {/* Node readiness bar */}
+                  <BarRow
+                    label="Ready"
+                    value={nodesReady}
+                    max={nodeCount || 1}
+                    suffix={`${nodesReady}/${nodeCount}`}
+                    color={nodesReady === nodeCount
+                      ? "var(--success)"
+                      : "var(--warning)"}
+                  />
+                </div>
+              )}
+            <a
+              href="/cluster/nodes"
               style={{
-                width: "6px",
-                height: "6px",
-                borderRadius: "50%",
-                background: healthStatusColor(s?.health?.status ?? "unknown"),
-                display: "inline-block",
+                display: "block",
+                marginTop: "12px",
+                fontSize: "12px",
+                color: "var(--accent)",
+                textDecoration: "none",
               }}
-              class="animate-pulse-glow"
-            />
-            Cluster Health
-          </div>
-          <HealthScoreRing health={s?.health} />
+            >
+              View all nodes →
+            </a>
+          </WidgetShell>
         </div>
 
-        {/* ===== METRIC CARDS (span 8) — matches .metrics-grid ===== */}
-        <div
-          class="stagger-in"
-          style={{
-            gridColumn: "span 8",
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gridTemplateRows: "1fr",
-            gap: "var(--grid-gap, 16px)",
-            alignItems: "stretch",
-          }}
-        >
-          <MetricCard
-            value={s?.nodes.total ?? 0}
-            label="Nodes"
-            status={s?.nodes.ready === s?.nodes.total ? "success" : "warning"}
-            statusText={s ? `${s.nodes.ready}/${s.nodes.total} Ready` : "—"}
-            href="/cluster/nodes"
-            sparklineData={t?.nodes ?? undefined}
-            sparklineColor="var(--success)"
-            icon={
-              <>
-                <rect x="2" y="2" width="12" height="12" rx="2" />
-                <circle cx="8" cy="8" r="2" />
-              </>
-            }
-          />
-          <MetricCard
-            value={s?.pods.total ?? 0}
-            label="Pods"
-            status={(s?.pods.pending ?? 0) > 0 ? "warning" : "success"}
-            statusText={s?.pods.total ? `${s.pods.running} Running` : "—"}
-            href="/workloads/pods"
-            sparklineData={t?.pods ?? undefined}
-            sparklineColor="var(--success)"
-            icon={
-              <>
-                <circle cx="8" cy="8" r="6" />
-                <circle cx="8" cy="8" r="2" />
-              </>
-            }
-          />
-          <MetricCard
-            value={s?.services.total ?? 0}
-            label="Services"
-            status="success"
-            statusText="Active"
-            href="/networking/services"
-            sparklineData={t?.services ?? undefined}
-            sparklineColor="var(--success)"
-            icon={
-              <>
-                <path d="M3 8h10M8 3v10" />
-                <circle cx="8" cy="8" r="6" />
-              </>
-            }
-          />
-          <MetricCard
-            value={s?.alerts.active ?? 0}
-            label="Alerts"
-            status={(s?.alerts.critical ?? 0) > 0
-              ? "error"
-              : (s?.alerts.active ?? 0) > 0
-              ? "warning"
-              : "success"}
-            statusText={(s?.alerts.active ?? 0) > 0
-              ? `${s?.alerts.critical ?? 0} Critical`
-              : "\u2713 All Clear"}
-            href="/alerting"
-            sparklineData={t?.alerts ?? undefined}
-            sparklineColor="var(--warning)"
-            icon={
-              <>
-                <path d="M8 2L2 13h12L8 2z" />
-                <path d="M8 7v3M8 11.5v.5" />
-              </>
-            }
-          />
-        </div>
-
-        {/* ===== CPU UTILIZATION (span 6) — matches .util-card ===== */}
-        <div style={{ gridColumn: "span 6" }}>
-          <UtilizationGauge
-            title="CPU Utilization"
-            value={Math.round(s?.cpu?.percentage ?? 0)}
-            used={s?.cpu?.used ?? "N/A"}
-            total={s?.cpu?.total ?? "N/A"}
-            requests={s?.cpu?.requests ?? "—"}
-            limits={s?.cpu?.limits ?? "—"}
-            color="var(--accent)"
-            secondaryColor="var(--success)"
-            trendData={t?.cpu ?? undefined}
-          />
-        </div>
-
-        {/* ===== MEMORY UTILIZATION (span 6) — matches .util-card ===== */}
-        <div style={{ gridColumn: "span 6" }}>
-          <UtilizationGauge
-            title="Memory Utilization"
-            value={Math.round(s?.memory?.percentage ?? 0)}
-            used={s?.memory?.used ?? "N/A"}
-            total={s?.memory?.total ?? "N/A"}
-            requests={s?.memory?.requests ?? "—"}
-            limits={s?.memory?.limits ?? "—"}
-            color="var(--accent-secondary)"
-            secondaryColor="var(--accent)"
-            trendData={t?.memory ?? undefined}
-          />
-        </div>
-
-        {/* ===== TOPOLOGY (span 7) — matches .topology-card ===== */}
-        <div
-          style={{
-            gridColumn: "span 7",
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-primary)",
-            borderRadius: "var(--radius)",
-            padding: "20px",
-            minHeight: "450px",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              fontSize: "11px",
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-muted)",
-              marginBottom: "16px",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            <span
-              style={{
-                width: "6px",
-                height: "6px",
-                borderRadius: "50%",
-                background: "var(--success)",
-                display: "inline-block",
-              }}
-              class="animate-pulse-glow"
-            />
-            Cluster Topology
-          </div>
-          <ClusterTopology />
-        </div>
-
-        {/* ===== EVENTS (span 5) — matches .events-card ===== */}
-        <div
-          style={{
-            gridColumn: "span 5",
-            background: "var(--bg-surface)",
-            border: "1px solid var(--border-primary)",
-            borderRadius: "var(--radius)",
-            padding: "20px",
-            minHeight: "450px",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <div
-            style={{
-              fontSize: "11px",
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.08em",
-              color: "var(--text-muted)",
-              marginBottom: "16px",
-            }}
-          >
-            Recent Events
-          </div>
-          {/* Event list — matches .event-list */}
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              flexDirection: "column",
-              gap: "2px",
-              overflow: "auto",
-            }}
+        {/* Recent Events */}
+        <div style={{ flex: "3 1 300px", minWidth: "240px" }}>
+          <WidgetShell
+            title="Recent Events"
+            action={events.value.length > 0
+              ? (
+                <a
+                  href="/cluster/events"
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--accent)",
+                    textDecoration: "none",
+                  }}
+                >
+                  View all →
+                </a>
+              )
+              : undefined}
           >
             {events.value.length === 0
               ? (
@@ -525,7 +1058,7 @@ export default function DashboardV2() {
                     color: "var(--text-muted)",
                     fontSize: "12px",
                     textAlign: "center",
-                    paddingTop: "40px",
+                    padding: "24px 0",
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "center",
@@ -549,112 +1082,243 @@ export default function DashboardV2() {
                   <span>All quiet — no recent events</span>
                 </div>
               )
-              : events.value.map((evt, idx) => {
-                const isWarning = evt.type === "Warning";
-                const kind = evt.involvedObject?.kind?.toLowerCase() ?? "";
-                // Short kind prefix for display: deploy, pod, svc, etc.
-                const kindAbbr: Record<string, string> = {
-                  deployment: "deploy",
-                  service: "svc",
-                  replicaset: "rs",
-                  statefulset: "sts",
-                  daemonset: "ds",
-                  persistentvolumeclaim: "pvc",
-                  horizontalpodautoscaler: "hpa",
-                  configmap: "cm",
-                  serviceaccount: "sa",
-                  networkpolicy: "netpol",
-                };
-                const prefix = kindAbbr[kind] ?? kind;
-                const resourceLabel = evt.involvedObject?.name
-                  ? `${prefix}/${evt.involvedObject.name}`
-                  : "";
+              : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "2px",
+                  }}
+                >
+                  {events.value.map((evt, idx) => {
+                    const isWarning = evt.type === "Warning";
+                    const kind = evt.involvedObject?.kind?.toLowerCase() ?? "";
+                    const kindAbbr: Record<string, string> = {
+                      deployment: "deploy",
+                      service: "svc",
+                      replicaset: "rs",
+                      statefulset: "sts",
+                      daemonset: "ds",
+                      persistentvolumeclaim: "pvc",
+                      horizontalpodautoscaler: "hpa",
+                      configmap: "cm",
+                      serviceaccount: "sa",
+                      networkpolicy: "netpol",
+                    };
+                    const prefix = kindAbbr[kind] ?? kind;
+                    const resourceLabel = evt.involvedObject?.name
+                      ? `${prefix}/${evt.involvedObject.name}`
+                      : "";
 
-                return (
-                  <div
-                    key={`${evt.metadata?.uid ?? idx}`}
-                    class="event-row"
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: "10px",
-                      padding: "8px 10px",
-                      borderRadius: "var(--radius-sm)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {/* Event dot — matches .event-dot */}
-                    <span
-                      style={{
-                        width: "7px",
-                        height: "7px",
-                        borderRadius: "50%",
-                        marginTop: "5px",
-                        flexShrink: 0,
-                        background: isWarning
-                          ? "var(--warning)"
-                          : "var(--accent)",
-                      }}
-                    />
-                    {/* Event content — matches .event-content */}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {/* Message line — matches .event-msg */}
+                    return (
                       <div
+                        key={`${evt.metadata?.uid ?? idx}`}
                         style={{
-                          fontSize: "12px",
-                          color: "var(--text-secondary)",
-                          lineHeight: 1.4,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
+                          display: "flex",
+                          alignItems: "flex-start",
+                          gap: "10px",
+                          padding: "7px 8px",
+                          borderRadius: "var(--radius-sm)",
                         }}
                       >
-                        {resourceLabel && (
-                          <span
+                        <span
+                          style={{
+                            width: "7px",
+                            height: "7px",
+                            borderRadius: "50%",
+                            marginTop: "4px",
+                            flexShrink: 0,
+                            background: isWarning
+                              ? "var(--warning)"
+                              : "var(--accent)",
+                          }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
                             style={{
-                              color: "var(--accent)",
-                              fontFamily: "var(--font-mono, monospace)",
-                              fontSize: "11px",
+                              fontSize: "12px",
+                              color: "var(--text-secondary)",
+                              lineHeight: 1.4,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
                             }}
                           >
-                            {resourceLabel}
-                          </span>
-                        )}
-                        {resourceLabel ? " " : ""}
-                        {evt.message}
+                            {resourceLabel && (
+                              <span
+                                style={{
+                                  color: "var(--accent)",
+                                  fontFamily: "var(--font-mono, monospace)",
+                                  fontSize: "11px",
+                                }}
+                              >
+                                {resourceLabel}
+                              </span>
+                            )}
+                            {resourceLabel ? " " : ""}
+                            {evt.message}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              color: "var(--text-muted)",
+                              marginTop: "2px",
+                              fontFamily: "var(--font-mono, monospace)",
+                            }}
+                          >
+                            {[
+                              evt.source?.component,
+                              evt.involvedObject?.namespace,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            color: "var(--text-muted)",
+                            fontFamily: "var(--font-mono, monospace)",
+                            whiteSpace: "nowrap",
+                            marginTop: "1px",
+                          }}
+                        >
+                          {evt.metadata?.creationTimestamp
+                            ? age(evt.metadata.creationTimestamp)
+                            : ""}
+                        </span>
                       </div>
-                      {/* Meta line — matches .event-meta */}
-                      <div
-                        style={{
-                          fontSize: "10px",
-                          color: "var(--text-muted)",
-                          marginTop: "2px",
-                          fontFamily: "var(--font-mono, monospace)",
-                        }}
-                      >
-                        {[evt.source?.component, evt.involvedObject?.namespace]
-                          .filter(Boolean)
-                          .join(" \u00B7 ")}
-                      </div>
-                    </div>
-                    {/* Time — matches .event-time */}
-                    <span
+                    );
+                  })}
+                </div>
+              )}
+          </WidgetShell>
+        </div>
+
+        {/* Active Alerts */}
+        <div style={{ flex: "2 1 240px", minWidth: "200px" }}>
+          <WidgetShell
+            title="Active Alerts"
+            action={(s?.alerts.active ?? 0) > 0
+              ? (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    padding: "3px 8px",
+                    borderRadius: "10px",
+                    background: criticalAlerts > 0
+                      ? "var(--error-dim)"
+                      : "var(--warning-dim)",
+                    color: criticalAlerts > 0
+                      ? "var(--error)"
+                      : "var(--warning)",
+                  }}
+                >
+                  {s?.alerts.active ?? 0} firing
+                </span>
+              )
+              : undefined}
+          >
+            {(s?.alerts.active ?? 0) === 0
+              ? (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "24px 0",
+                    color: "var(--text-muted)",
+                    fontSize: "12px",
+                    textAlign: "center",
+                  }}
+                >
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="var(--success)"
+                    stroke-width="2"
+                  >
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                    <polyline points="22 4 12 14.01 9 11.01" />
+                  </svg>
+                  <span>All clear</span>
+                </div>
+              )
+              : (
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "2px",
+                  }}
+                >
+                  {/* Summary line */}
+                  {criticalAlerts > 0 && (
+                    <div
                       style={{
-                        fontSize: "11px",
-                        color: "var(--text-muted)",
-                        fontFamily: "var(--font-mono, monospace)",
-                        whiteSpace: "nowrap",
-                        marginTop: "1px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "7px 0",
+                        borderBottom: "1px solid var(--glass-border)",
+                        marginBottom: "6px",
                       }}
                     >
-                      {evt.metadata?.creationTimestamp
-                        ? age(evt.metadata.creationTimestamp)
-                        : ""}
-                    </span>
+                      <span
+                        style={{
+                          width: "7px",
+                          height: "7px",
+                          borderRadius: "50%",
+                          background: "var(--error)",
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span
+                        style={{
+                          fontSize: "13px",
+                          color: "var(--error)",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {criticalAlerts} critical
+                      </span>
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      fontSize: "12px",
+                      color: "var(--text-muted)",
+                      marginTop: "8px",
+                    }}
+                  >
+                    {(s?.alerts.active ?? 0) - criticalAlerts > 0 && (
+                      <span>
+                        +{(s?.alerts.active ?? 0) - criticalAlerts} warning
+                        {(s?.alerts.active ?? 0) - criticalAlerts !== 1
+                          ? "s"
+                          : ""}
+                      </span>
+                    )}
                   </div>
-                );
-              })}
-          </div>
+                  <a
+                    href="/alerting"
+                    style={{
+                      display: "block",
+                      marginTop: "12px",
+                      fontSize: "12px",
+                      color: "var(--accent)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    View all alerts →
+                  </a>
+                </div>
+              )}
+          </WidgetShell>
         </div>
       </div>
     </div>
