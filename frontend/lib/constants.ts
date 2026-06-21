@@ -348,7 +348,7 @@ export const NAV_SECTIONS = [
 // or more named groups, each with a list of NavItems. The SecondaryNav island
 // (built in a later task) will render these vertically.
 // `health` drives the colored dot ("ok" | "warn" | "crit").
-// `kind` + `count` let SubNav / SecondaryNav show a live resource count badge.
+// `kind` + `count` let SecondaryNav show a live resource count badge.
 // ============================================================================
 
 export type Health = "ok" | "warn" | "crit";
@@ -377,8 +377,7 @@ export interface DomainSection {
 
 /**
  * Flatten all groups[].items into a single ordered array.
- * Used by SubNav and other flat-list consumers during the transition period
- * while SecondaryNav (vertical grouped view) is being built.
+ * Used by CommandPalette, WorkloadsDashboard, and other flat-list consumers.
  */
 export function flattenGroups(section: DomainSection): NavItem[] {
   if (!section.groups) return [];
