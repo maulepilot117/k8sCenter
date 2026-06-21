@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
 import SubNav from "@/islands/SubNav.tsx";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
+import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import FluxProviders from "@/islands/FluxProviders.tsx";
 import FluxAlerts from "@/islands/FluxAlerts.tsx";
 import FluxReceivers from "@/islands/FluxReceivers.tsx";
@@ -31,7 +31,7 @@ export default define.page(function NotificationsPage(ctx) {
   const tab = ctx.url.searchParams.get("tab") ?? "providers";
   return (
     <>
-      <SubNav tabs={section.tabs ?? []} currentPath={ctx.url.pathname} />
+      <SubNav tabs={flattenGroups(section)} currentPath={ctx.url.pathname} />
       {/* Sub-tab bar */}
       <div
         class="flex gap-1 px-6 pt-4 border-b"

@@ -1,6 +1,6 @@
 import { define } from "@/utils.ts";
 import SubNav from "@/islands/SubNav.tsx";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
+import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import SecretStoreFromTemplateEditor from "@/islands/SecretStoreFromTemplateEditor.tsx";
 import {
   ESO_YAML_TEMPLATES,
@@ -27,7 +27,7 @@ export default define.page(function SecretStoreFromTemplatePage(ctx) {
     return (
       <>
         <SubNav
-          tabs={section.tabs ?? []}
+          tabs={flattenGroups(section)}
           currentPath="/external-secrets/stores"
         />
         <SecretStoreFromTemplateEditor provider={provider} />
@@ -54,7 +54,7 @@ export default define.page(function SecretStoreFromTemplatePage(ctx) {
   return (
     <>
       <SubNav
-        tabs={section.tabs ?? []}
+        tabs={flattenGroups(section)}
         currentPath="/external-secrets/stores"
       />
       <div class="space-y-4">

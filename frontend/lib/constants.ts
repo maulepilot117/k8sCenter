@@ -341,297 +341,403 @@ export const NAV_SECTIONS = [
   },
 ] as const;
 
-/** Domain-oriented navigation for the redesigned icon rail. */
+// ============================================================================
+// Grouped, domain-oriented navigation for the two-pane shell.
+//
+// `groups` replaces the old flat `tabs` array. Each domain section holds one
+// or more named groups, each with a list of NavItems. The SecondaryNav island
+// (built in a later task) will render these vertically.
+// `health` drives the colored dot ("ok" | "warn" | "crit").
+// `kind` + `count` let SubNav / SecondaryNav show a live resource count badge.
+// ============================================================================
+
+export type Health = "ok" | "warn" | "crit";
+
+export interface NavItem {
+  label: string;
+  href: string;
+  kind?: string; // k8s plural kind for live count, e.g. "deployments"
+  count?: boolean; // show count badge
+  health?: Health;
+}
+
+export interface NavGroup {
+  header: string;
+  items: NavItem[];
+}
+
 export interface DomainSection {
   id: string;
   label: string;
-  icon: string;
-  href: string;
-  tabs?: { label: string; href: string; kind?: string; count?: boolean }[];
+  icon: string; // key into IconRail ICONS map
+  href: string; // landing route when the rail icon is clicked
+  alert?: Health; // rail badge dot
+  groups?: NavGroup[];
+}
+
+/**
+ * Flatten all groups[].items into a single ordered array.
+ * Used by SubNav and other flat-list consumers during the transition period
+ * while SecondaryNav (vertical grouped view) is being built.
+ */
+export function flattenGroups(section: DomainSection): NavItem[] {
+  if (!section.groups) return [];
+  return section.groups.flatMap((g) => g.items);
 }
 
 export const DOMAIN_SECTIONS: DomainSection[] = [
-  {
-    id: "overview",
-    label: "Overview",
-    icon: "grid",
-    href: "/",
-  },
+  { id: "overview", label: "Overview", icon: "grid", href: "/" },
+
   {
     id: "workloads",
     label: "Workloads",
     icon: "box",
-    href: "/workloads",
-    tabs: [
+    href: "/workloads/deployments",
+    groups: [
       {
-        label: "Deployments",
-        href: "/workloads/deployments",
-        kind: "deployments",
-        count: true,
+        header: "Controllers",
+        items: [
+          {
+            label: "Deployments",
+            href: "/workloads/deployments",
+            kind: "deployments",
+            count: true,
+          },
+          {
+            label: "StatefulSets",
+            href: "/workloads/statefulsets",
+            kind: "statefulsets",
+            count: true,
+          },
+          {
+            label: "DaemonSets",
+            href: "/workloads/daemonsets",
+            kind: "daemonsets",
+            count: true,
+          },
+          {
+            label: "ReplicaSets",
+            href: "/workloads/replicasets",
+            kind: "replicasets",
+            count: true,
+          },
+        ],
       },
       {
-        label: "StatefulSets",
-        href: "/workloads/statefulsets",
-        kind: "statefulsets",
-        count: true,
-      },
-      {
-        label: "DaemonSets",
-        href: "/workloads/daemonsets",
-        kind: "daemonsets",
-        count: true,
-      },
-      { label: "Pods", href: "/workloads/pods", kind: "pods", count: true },
-      { label: "Jobs", href: "/workloads/jobs", kind: "jobs", count: true },
-      {
-        label: "CronJobs",
-        href: "/workloads/cronjobs",
-        kind: "cronjobs",
-        count: true,
-      },
-      {
-        label: "ReplicaSets",
-        href: "/workloads/replicasets",
-        kind: "replicasets",
-        count: true,
+        header: "Pods & Jobs",
+        items: [
+          { label: "Pods", href: "/workloads/pods", kind: "pods", count: true },
+          { label: "Jobs", href: "/workloads/jobs", kind: "jobs", count: true },
+          {
+            label: "CronJobs",
+            href: "/workloads/cronjobs",
+            kind: "cronjobs",
+            count: true,
+          },
+        ],
       },
     ],
   },
+
   {
     id: "network",
     label: "Network",
     icon: "globe",
     href: "/networking",
-    tabs: [
-      { label: "Overview", href: "/networking" },
+    groups: [
       {
-        label: "Services",
-        href: "/networking/services",
-        kind: "services",
-        count: true,
+        header: "Connectivity",
+        items: [
+          {
+            label: "Services",
+            href: "/networking/services",
+            kind: "services",
+            count: true,
+          },
+          {
+            label: "Ingresses",
+            href: "/networking/ingresses",
+            kind: "ingresses",
+            count: true,
+          },
+          {
+            label: "Endpoints",
+            href: "/networking/endpoints",
+            kind: "endpoints",
+            count: true,
+          },
+          {
+            label: "EndpointSlices",
+            href: "/networking/endpointslices",
+            kind: "endpointslices",
+            count: true,
+          },
+        ],
       },
       {
-        label: "Ingresses",
-        href: "/networking/ingresses",
-        kind: "ingresses",
-        count: true,
+        header: "Policies",
+        items: [
+          {
+            label: "Network Policies",
+            href: "/networking/networkpolicies",
+            kind: "networkpolicies",
+            count: true,
+          },
+          {
+            label: "Cilium Policies",
+            href: "/networking/cilium-policies",
+            kind: "ciliumnetworkpolicies",
+            count: true,
+          },
+        ],
       },
       {
-        label: "Network Policies",
-        href: "/networking/networkpolicies",
-        kind: "networkpolicies",
-        count: true,
+        header: "Service Mesh",
+        items: [
+          { label: "Overview", href: "/networking/mesh" },
+          { label: "Traffic Routing", href: "/networking/mesh/routing" },
+          { label: "mTLS Posture", href: "/networking/mesh/mtls" },
+          { label: "Gateway API", href: "/networking/gateway-api" },
+          { label: "Live Flows", href: "/networking/flows" },
+        ],
       },
-      {
-        label: "Cilium Policies",
-        href: "/networking/cilium-policies",
-        kind: "ciliumnetworkpolicies",
-        count: true,
-      },
-      { label: "Flows", href: "/networking/flows" },
-      {
-        label: "Endpoints",
-        href: "/networking/endpoints",
-        kind: "endpoints",
-        count: true,
-      },
-      {
-        label: "EndpointSlices",
-        href: "/networking/endpointslices",
-        kind: "endpointslices",
-        count: true,
-      },
-      { label: "Gateway API", href: "/networking/gateway-api" },
-      { label: "Service Mesh", href: "/networking/mesh" },
-      { label: "Mesh Routing", href: "/networking/mesh/routing" },
-      { label: "mTLS Posture", href: "/networking/mesh/mtls" },
     ],
   },
+
   {
     id: "storage",
     label: "Storage",
     icon: "harddrive",
-    href: "/storage",
-    tabs: [
-      { label: "Overview", href: "/storage/overview" },
+    href: "/storage/overview",
+    groups: [
       {
-        label: "PVCs",
-        href: "/storage/pvcs",
-        kind: "persistentvolumeclaims",
-        count: true,
+        header: "Volumes",
+        items: [
+          {
+            label: "Persistent Volume Claims",
+            href: "/storage/pvcs",
+            kind: "persistentvolumeclaims",
+            count: true,
+          },
+          {
+            label: "Persistent Volumes",
+            href: "/cluster/pvs",
+            kind: "persistentvolumes",
+            count: true,
+          },
+          {
+            label: "Storage Classes",
+            href: "/cluster/storageclasses",
+            kind: "storageclasses",
+            count: true,
+          },
+          { label: "Snapshots", href: "/storage/snapshots" },
+        ],
       },
-      {
-        label: "PVs",
-        href: "/cluster/pvs",
-        kind: "persistentvolumes",
-        count: true,
-      },
-      {
-        label: "Storage Classes",
-        href: "/cluster/storageclasses",
-        kind: "storageclasses",
-        count: true,
-      },
-      { label: "Snapshots", href: "/storage/snapshots" },
     ],
   },
+
   {
     id: "config",
     label: "Config",
     icon: "sliders",
-    href: "/config",
-    tabs: [
+    href: "/config/configmaps",
+    groups: [
       {
-        label: "ConfigMaps",
-        href: "/config/configmaps",
-        kind: "configmaps",
-        count: true,
+        header: "Application",
+        items: [
+          {
+            label: "ConfigMaps",
+            href: "/config/configmaps",
+            kind: "configmaps",
+            count: true,
+          },
+          {
+            label: "Secrets",
+            href: "/config/secrets",
+            kind: "secrets",
+            count: true,
+          },
+          {
+            label: "Service Accounts",
+            href: "/config/serviceaccounts",
+            kind: "serviceaccounts",
+            count: true,
+          },
+        ],
       },
       {
-        label: "Secrets",
-        href: "/config/secrets",
-        kind: "secrets",
-        count: true,
-      },
-      {
-        label: "Service Accounts",
-        href: "/config/serviceaccounts",
-        kind: "serviceaccounts",
-        count: true,
-      },
-      {
-        label: "Resource Quotas",
-        href: "/config/resourcequotas",
-        kind: "resourcequotas",
-        count: true,
-      },
-      {
-        label: "Limit Ranges",
-        href: "/config/limitranges",
-        kind: "limitranges",
-        count: true,
-      },
-      {
-        label: "Namespace Limits",
-        href: "/config/namespace-limits",
+        header: "Governance",
+        items: [
+          {
+            label: "Resource Quotas",
+            href: "/config/resourcequotas",
+            kind: "resourcequotas",
+            count: true,
+          },
+          {
+            label: "Limit Ranges",
+            href: "/config/limitranges",
+            kind: "limitranges",
+            count: true,
+          },
+          { label: "Namespace Limits", href: "/config/namespace-limits" },
+        ],
       },
     ],
   },
+
   {
     id: "security",
     label: "Security",
     icon: "shield",
-    href: "/rbac",
-    tabs: [
-      { label: "Overview", href: "/rbac/overview" },
-      { label: "Roles", href: "/rbac/roles", kind: "roles", count: true },
+    href: "/rbac/overview",
+    groups: [
       {
-        label: "Cluster Roles",
-        href: "/rbac/clusterroles",
-        kind: "clusterroles",
-        count: true,
+        header: "Access Control",
+        items: [
+          { label: "Roles", href: "/rbac/roles", kind: "roles", count: true },
+          {
+            label: "Cluster Roles",
+            href: "/rbac/clusterroles",
+            kind: "clusterroles",
+            count: true,
+          },
+          {
+            label: "Role Bindings",
+            href: "/rbac/rolebindings",
+            kind: "rolebindings",
+            count: true,
+          },
+          {
+            label: "Cluster Role Bindings",
+            href: "/rbac/clusterrolebindings",
+            kind: "clusterrolebindings",
+            count: true,
+          },
+          { label: "Webhooks", href: "/admin/validatingwebhooks" },
+        ],
       },
       {
-        label: "Role Bindings",
-        href: "/rbac/rolebindings",
-        kind: "rolebindings",
-        count: true,
+        header: "Posture",
+        items: [
+          { label: "Policies", href: "/security/policies" },
+          { label: "Violations", href: "/security/violations" },
+          { label: "Compliance", href: "/security/compliance" },
+          { label: "Vulnerabilities", href: "/security/vulnerabilities" },
+          { label: "Certificates", href: "/security/certificates" },
+        ],
       },
-      {
-        label: "Cluster Role Bindings",
-        href: "/rbac/clusterrolebindings",
-        kind: "clusterrolebindings",
-        count: true,
-      },
-      { label: "Webhooks", href: "/admin/validatingwebhooks" },
-      { label: "Policies", href: "/security/policies" },
-      { label: "Violations", href: "/security/violations" },
-      { label: "Compliance", href: "/security/compliance" },
-      { label: "Vulnerabilities", href: "/security/vulnerabilities" },
-      { label: "Certificates", href: "/security/certificates" },
     ],
   },
+
   {
     id: "observability",
     label: "Observability",
     icon: "activity",
     href: "/monitoring",
-    tabs: [
-      { label: "Overview", href: "/monitoring" },
-      { label: "Log Explorer", href: "/observability/logs" },
-      { label: "Topology", href: "/observability/topology" },
-      { label: "Investigate", href: "/observability/investigate" },
-      { label: "Dashboards", href: "/monitoring/dashboards" },
-      { label: "Prometheus", href: "/monitoring/prometheus" },
-      { label: "Alerts", href: "/alerting" },
-      { label: "Alert Rules", href: "/alerting/rules" },
+    groups: [
+      {
+        header: "Explore",
+        items: [
+          { label: "Service Topology", href: "/observability/topology" },
+          { label: "Log Explorer", href: "/observability/logs" },
+          { label: "Investigate", href: "/observability/investigate" },
+        ],
+      },
+      {
+        header: "Metrics",
+        items: [
+          { label: "Overview", href: "/monitoring" },
+          { label: "Dashboards", href: "/monitoring/dashboards" },
+          { label: "Prometheus", href: "/monitoring/prometheus" },
+        ],
+      },
+      {
+        header: "Alerts",
+        items: [
+          { label: "Active Alerts", href: "/alerting" },
+          { label: "Alert Rules", href: "/alerting/rules" },
+        ],
+      },
     ],
   },
+
   {
     id: "gitops",
     label: "GitOps",
     icon: "git-branch",
-    href: "/gitops",
-    tabs: [
-      { label: "Applications", href: "/gitops/applications" },
-      { label: "ApplicationSets", href: "/gitops/applicationsets" },
-      { label: "Notifications", href: "/gitops/notifications" },
+    href: "/gitops/applications",
+    groups: [
+      {
+        header: "Delivery",
+        items: [
+          { label: "Applications", href: "/gitops/applications" },
+          { label: "ApplicationSets", href: "/gitops/applicationsets" },
+          { label: "Notifications", href: "/gitops/notifications" },
+        ],
+      },
     ],
   },
+
   {
     id: "external-secrets",
     label: "External Secrets",
     icon: "key",
-    href: "/external-secrets",
-    tabs: [
-      { label: "Dashboard", href: "/external-secrets/dashboard" },
+    href: "/external-secrets/dashboard",
+    groups: [
       {
-        label: "ExternalSecrets",
-        href: "/external-secrets/external-secrets",
+        header: "External Secrets",
+        items: [
+          { label: "Dashboard", href: "/external-secrets/dashboard" },
+          {
+            label: "ExternalSecrets",
+            href: "/external-secrets/external-secrets",
+          },
+          {
+            label: "ClusterExternalSecrets",
+            href: "/external-secrets/cluster-external-secrets",
+          },
+          { label: "Secret Stores", href: "/external-secrets/stores" },
+          { label: "Cluster Stores", href: "/external-secrets/cluster-stores" },
+          { label: "PushSecrets", href: "/external-secrets/push-secrets" },
+          { label: "Provider Chain", href: "/external-secrets/chain" },
+        ],
       },
-      {
-        label: "ClusterExternalSecrets",
-        href: "/external-secrets/cluster-external-secrets",
-      },
-      { label: "Stores", href: "/external-secrets/stores" },
-      {
-        label: "ClusterStores",
-        href: "/external-secrets/cluster-stores",
-      },
-      {
-        label: "Create from template",
-        href: "/external-secrets/stores/new-from-template",
-      },
-      { label: "PushSecrets", href: "/external-secrets/push-secrets" },
-      { label: "Chain", href: "/external-secrets/chain" },
     ],
   },
+
   {
     id: "backup",
     label: "Backup",
     icon: "archive",
-    href: "/backup",
-    tabs: [
-      { label: "Backups", href: "/backup/backups" },
-      { label: "Restores", href: "/backup/restores" },
-      { label: "Schedules", href: "/backup/schedules" },
+    href: "/backup/backups",
+    groups: [
+      {
+        header: "Protection",
+        items: [
+          { label: "Backups", href: "/backup/backups" },
+          { label: "Restores", href: "/backup/restores" },
+          { label: "Schedules", href: "/backup/schedules" },
+        ],
+      },
     ],
   },
+
   {
     id: "tools",
     label: "Tools",
     icon: "wrench",
-    href: "/tools",
-    tabs: [
-      { label: "YAML Apply", href: "/tools/yaml-apply" },
-      { label: "StorageClass Wizard", href: "/tools/storageclass-wizard" },
+    href: "/tools/yaml-apply",
+    groups: [
+      {
+        header: "Tools",
+        items: [
+          { label: "YAML Apply", href: "/tools/yaml-apply" },
+          { label: "StorageClass Wizard", href: "/tools/storageclass-wizard" },
+        ],
+      },
     ],
-  },
-  {
-    id: "extensions",
-    label: "Extensions",
-    icon: "puzzle",
-    href: "/extensions",
   },
 ];
 
@@ -640,11 +746,44 @@ export const SETTINGS_SECTION: DomainSection = {
   label: "Settings",
   icon: "settings",
   href: "/settings/general",
-  tabs: [
-    { label: "General", href: "/settings/general" },
-    { label: "Clusters", href: "/settings/clusters" },
-    { label: "Users", href: "/settings/users" },
-    { label: "Authentication", href: "/settings/auth" },
-    { label: "Audit Log", href: "/settings/audit" },
+  groups: [
+    {
+      header: "Settings",
+      items: [
+        { label: "General", href: "/settings/general" },
+        { label: "Clusters", href: "/settings/clusters" },
+        { label: "Users", href: "/settings/users" },
+        { label: "Authentication", href: "/settings/auth" },
+        { label: "Audit Log", href: "/settings/audit" },
+      ],
+    },
   ],
 };
+
+const _ALL_SECTIONS = [...DOMAIN_SECTIONS, SETTINGS_SECTION];
+
+/** Which top-level domain owns this path. */
+export function getActiveDomain(path: string): string | null {
+  // Explicit overrides for routes that don't share a domain's prefix.
+  if (path.startsWith("/cluster")) return "overview";
+  if (path.startsWith("/admin")) return "security";
+  if (path.startsWith("/settings")) return "settings";
+
+  for (const s of _ALL_SECTIONS) {
+    if (s.href === "/" && path === "/") return s.id;
+    if (s.href !== "/" && path.startsWith("/" + s.id)) return s.id;
+    if (
+      s.groups?.some((g) =>
+        g.items.some((it) => path === it.href || path.startsWith(it.href + "/"))
+      )
+    ) {
+      return s.id;
+    }
+  }
+  return null;
+}
+
+export function domainById(id: string | null): DomainSection | undefined {
+  if (!id) return undefined;
+  return _ALL_SECTIONS.find((s) => s.id === id);
+}

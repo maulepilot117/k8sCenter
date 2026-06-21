@@ -3,7 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
+import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import FlowViewer from "@/islands/FlowViewer.tsx";
@@ -281,7 +281,7 @@ export default function NetworkingDashboard(
       </div>
 
       {/* Sub-navigation */}
-      <SubNav tabs={networkSection.tabs ?? []} currentPath={currentPath} />
+      <SubNav tabs={flattenGroups(networkSection)} currentPath={currentPath} />
 
       {/* Summary strip */}
       <div

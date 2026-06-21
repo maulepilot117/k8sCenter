@@ -1,7 +1,11 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
+import {
+  DOMAIN_SECTIONS,
+  flattenGroups,
+  SETTINGS_SECTION,
+} from "@/lib/constants.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
 import type { SearchItem } from "@/lib/fuzzy-search.ts";
 
@@ -18,47 +22,41 @@ function buildSearchIndex(): SearchItem[] {
       href: section.href,
       icon: section.icon,
     });
-    if (section.tabs) {
-      for (const tab of section.tabs) {
-        items.push({
-          id: `nav-${section.id}-${tab.label}`,
-          type: "navigation",
-          label: tab.label,
-          detail: `${section.label} > ${tab.label}`,
-          href: tab.href,
-          icon: section.icon,
-        });
-      }
-    }
-  }
-
-  // Settings section
-  if (SETTINGS_SECTION.tabs) {
-    for (const tab of SETTINGS_SECTION.tabs) {
+    for (const tab of flattenGroups(section)) {
       items.push({
-        id: `nav-settings-${tab.label}`,
+        id: `nav-${section.id}-${tab.label}`,
         type: "navigation",
         label: tab.label,
-        detail: `Settings > ${tab.label}`,
+        detail: `${section.label} > ${tab.label}`,
         href: tab.href,
-        icon: "settings",
+        icon: section.icon,
       });
     }
   }
 
-  // Resource items derived from DOMAIN_SECTIONS tabs
+  // Settings section
+  for (const tab of flattenGroups(SETTINGS_SECTION)) {
+    items.push({
+      id: `nav-settings-${tab.label}`,
+      type: "navigation",
+      label: tab.label,
+      detail: `Settings > ${tab.label}`,
+      href: tab.href,
+      icon: "settings",
+    });
+  }
+
+  // Resource items derived from DOMAIN_SECTIONS groups
   for (const section of DOMAIN_SECTIONS) {
-    if (section.tabs) {
-      for (const tab of section.tabs) {
-        if (tab.kind) {
-          items.push({
-            id: `res-${tab.label}`,
-            type: "resource",
-            label: tab.label,
-            detail: tab.href,
-            href: tab.href,
-          });
-        }
+    for (const tab of flattenGroups(section)) {
+      if (tab.kind) {
+        items.push({
+          id: `res-${tab.label}`,
+          type: "resource",
+          label: tab.label,
+          detail: tab.href,
+          href: tab.href,
+        });
       }
     }
   }

@@ -3,7 +3,11 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 
-import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
+import {
+  DOMAIN_SECTIONS,
+  getActiveDomain,
+  SETTINGS_SECTION,
+} from "@/lib/constants.ts";
 import type { DomainSection } from "@/lib/constants.ts";
 
 /** SVG icon path strings keyed by icon name. viewBox is 0 0 20 20. */
@@ -33,40 +37,6 @@ const ICONS: Record<string, string> = {
   settings:
     '<circle cx="10" cy="10" r="7"/><circle cx="10" cy="10" r="3"/><path d="M13 10h4M3 10h4M10 3v4M10 13v4"/>',
 };
-
-function getActiveDomain(path: string): string | null {
-  // Special cases
-  if (path.startsWith("/cluster")) return "overview";
-  if (path.startsWith("/scaling")) return "workloads";
-  if (path.startsWith("/admin")) return "settings";
-  if (path.startsWith("/settings")) return "settings";
-
-  // Check SETTINGS_SECTION tabs
-  if (
-    SETTINGS_SECTION.tabs?.some((t) =>
-      path === t.href || path.startsWith(t.href + "/")
-    )
-  ) {
-    return "settings";
-  }
-
-  // Check each domain section
-  for (const section of DOMAIN_SECTIONS) {
-    if (section.href === "/" && path === "/") return section.id;
-    if (section.href !== "/" && path.startsWith(section.href)) {
-      return section.id;
-    }
-    if (
-      section.tabs?.some((t) =>
-        path === t.href || path.startsWith(t.href + "/")
-      )
-    ) {
-      return section.id;
-    }
-  }
-
-  return null;
-}
 
 interface IconRailProps {
   currentPath: string;

@@ -1,4 +1,4 @@
-import { SETTINGS_SECTION } from "@/lib/constants.ts";
+import { flattenGroups, SETTINGS_SECTION } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import SettingsPage from "@/islands/SettingsPage.tsx";
 import ClusterManager from "@/islands/ClusterManager.tsx";
@@ -36,7 +36,10 @@ export default function SettingsDashboard(
       </div>
 
       {/* Sub-navigation */}
-      <SubNav tabs={SETTINGS_SECTION.tabs ?? []} currentPath={currentPath} />
+      <SubNav
+        tabs={flattenGroups(SETTINGS_SECTION)}
+        currentPath={currentPath}
+      />
 
       {/* Content area */}
       <div class="flex-1 min-h-0 overflow-auto">

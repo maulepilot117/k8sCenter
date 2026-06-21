@@ -3,7 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
+import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
 import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
@@ -33,7 +33,7 @@ function resolveKind(currentPath: string): {
   title: string;
   createHref?: string;
 } {
-  const tabs = workloadsSection.tabs ?? [];
+  const tabs = flattenGroups(workloadsSection);
   for (const tab of tabs) {
     if (
       tab.href === currentPath ||
@@ -283,7 +283,10 @@ export default function WorkloadsDashboard(
       </div>
 
       {/* Sub-navigation */}
-      <SubNav tabs={workloadsSection.tabs ?? []} currentPath={currentPath} />
+      <SubNav
+        tabs={flattenGroups(workloadsSection)}
+        currentPath={currentPath}
+      />
 
       {/* Summary strip */}
       <div
