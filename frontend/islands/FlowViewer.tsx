@@ -1,6 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
+import type { JSX } from "preact";
 import { apiGet, getAccessToken } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
@@ -62,18 +63,29 @@ function formatEndpoint(
 const VERDICT_OPTIONS = ["", "FORWARDED", "DROPPED", "ERROR", "AUDIT"];
 const MAX_FLOWS = 1000;
 
-function verdictBadgeClass(verdict: string): string {
+function verdictStyle(verdict: string): JSX.CSSProperties {
   switch (verdict) {
     case "FORWARDED":
-      return "bg-success-dim text-success";
+      return {
+        background: "color-mix(in srgb, var(--success) 15%, transparent)",
+        color: "var(--success)",
+      };
     case "DROPPED":
-      return "bg-danger-dim text-danger";
-    case "AUDIT":
-      return "bg-warning-dim text-warning";
     case "ERROR":
-      return "bg-danger-dim text-danger";
+      return {
+        background: "color-mix(in srgb, var(--error) 15%, transparent)",
+        color: "var(--error)",
+      };
+    case "AUDIT":
+      return {
+        background: "color-mix(in srgb, var(--warning) 15%, transparent)",
+        color: "var(--warning)",
+      };
     default:
-      return "bg-elevated text-text-secondary bg-surface text-text-secondary";
+      return {
+        background: "var(--bg-elevated)",
+        color: "var(--text-muted)",
+      };
   }
 }
 
@@ -234,8 +246,14 @@ export default function FlowViewer() {
 
   if (!IS_BROWSER) {
     return (
-      <div class="p-6">
-        <h1 class="text-2xl font-semibold text-text-primary">
+      <div style={{ padding: "24px" }}>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            color: "var(--text-primary)",
+          }}
+        >
           Network Flows
         </h1>
       </div>
@@ -243,20 +261,68 @@ export default function FlowViewer() {
   }
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3">
-          <h1 class="text-2xl font-semibold text-text-primary">
+    <div style={{ padding: "24px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "24px",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              color: "var(--text-primary)",
+            }}
+          >
             Network Flows
           </h1>
           {wsState.value === "live" && (
-            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-success-dim text-success">
-              <span class="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "3px 10px",
+                borderRadius: "12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                background:
+                  "color-mix(in srgb, var(--success) 15%, transparent)",
+                color: "var(--success)",
+              }}
+            >
+              <span
+                style={{
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "50%",
+                  background: "var(--success)",
+                  animation: "pulse 2s infinite",
+                }}
+              />
               Live
             </span>
           )}
           {wsState.value === "connecting" && (
-            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium bg-warning-dim text-warning">
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "3px 10px",
+                borderRadius: "12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                background:
+                  "color-mix(in srgb, var(--warning) 15%, transparent)",
+                color: "var(--warning)",
+              }}
+            >
               Connecting...
             </span>
           )}
@@ -271,16 +337,41 @@ export default function FlowViewer() {
       </div>
 
       {/* Filters */}
-      <div class="flex items-center gap-4 mb-4">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "16px",
+          marginBottom: "16px",
+        }}
+      >
         <div>
-          <label class="block text-xs font-medium text-text-muted mb-1">
+          <label
+            style={{
+              display: "block",
+              fontSize: "11px",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              color: "var(--text-muted)",
+              marginBottom: "4px",
+            }}
+          >
             Namespace
           </label>
           <select
             value={namespace.value}
             onChange={(e) =>
               namespace.value = (e.target as HTMLSelectElement).value}
-            class="rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
+            style={{
+              borderRadius: "9px",
+              border: "1px solid var(--border-primary)",
+              background: "var(--bg-surface)",
+              padding: "6px 12px",
+              fontSize: "13px",
+              color: "var(--text-primary)",
+              fontFamily: "inherit",
+            }}
           >
             {namespaces.value.map((ns) => (
               <option key={ns} value={ns}>{ns}</option>
@@ -288,42 +379,155 @@ export default function FlowViewer() {
           </select>
         </div>
         <div>
-          <label class="block text-xs font-medium text-text-muted mb-1">
+          <label
+            style={{
+              display: "block",
+              fontSize: "11px",
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.07em",
+              color: "var(--text-muted)",
+              marginBottom: "4px",
+            }}
+          >
             Verdict
           </label>
           <select
             value={verdict.value}
             onChange={(e) =>
               verdict.value = (e.target as HTMLSelectElement).value}
-            class="rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
+            style={{
+              borderRadius: "9px",
+              border: "1px solid var(--border-primary)",
+              background: "var(--bg-surface)",
+              padding: "6px 12px",
+              fontSize: "13px",
+              color: "var(--text-primary)",
+              fontFamily: "inherit",
+            }}
           >
             {VERDICT_OPTIONS.map((v) => (
               <option key={v} value={v}>{v || "All"}</option>
             ))}
           </select>
         </div>
-        <div class="text-xs text-text-muted self-end pb-1.5">
+        <div
+          style={{
+            fontSize: "12px",
+            color: "var(--text-muted)",
+            alignSelf: "flex-end",
+          }}
+        >
           {flows.value.length} flows
         </div>
       </div>
 
       {error.value && (
-        <div class="mb-4 rounded-md bg-danger-dim p-3 border border-danger">
-          <p class="text-sm text-danger">{error.value}</p>
+        <div
+          style={{
+            marginBottom: "16px",
+            borderRadius: "9px",
+            background: "color-mix(in srgb, var(--error) 12%, transparent)",
+            border:
+              "1px solid color-mix(in srgb, var(--error) 30%, transparent)",
+            padding: "12px 16px",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--error)", margin: 0 }}>
+            {error.value}
+          </p>
         </div>
       )}
 
-      {/* Flow table */}
-      <div class="overflow-x-auto rounded-lg border border-border-primary">
-        <table class="min-w-full text-sm">
+      {/* Flow table — solid surface */}
+      <div
+        style={{
+          overflowX: "auto",
+          borderRadius: "9px",
+          border: "1px solid var(--border-primary)",
+        }}
+      >
+        <table
+          style={{
+            minWidth: "100%",
+            fontSize: "13px",
+            borderCollapse: "collapse",
+          }}
+        >
           <thead>
-            <tr class="bg-surface/50 text-left text-text-secondary">
-              <th class="py-2 px-3 font-medium">Time</th>
-              <th class="py-2 px-3 font-medium">Direction</th>
-              <th class="py-2 px-3 font-medium">Source</th>
-              <th class="py-2 px-3 font-medium">Destination</th>
-              <th class="py-2 px-3 font-medium">Protocol</th>
-              <th class="py-2 px-3 font-medium">Verdict</th>
+            <tr style={{ background: "var(--bg-surface)", textAlign: "left" }}>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Time
+              </th>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Direction
+              </th>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Source
+              </th>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Destination
+              </th>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Protocol
+              </th>
+              <th
+                style={{
+                  padding: "10px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                Verdict
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -331,7 +535,12 @@ export default function FlowViewer() {
               <tr>
                 <td
                   colSpan={6}
-                  class="py-8 px-3 text-center text-text-muted"
+                  style={{
+                    padding: "48px 12px",
+                    textAlign: "center",
+                    color: "var(--text-muted)",
+                    fontSize: "13px",
+                  }}
                 >
                   {error.value
                     ? "Failed to load flows"
@@ -342,93 +551,141 @@ export default function FlowViewer() {
               </tr>
             )}
             {flows.value.map((f, i) => (
-              <tr
+              <FlowRow
                 key={`${f.time}-${i}`}
-                class="border-t border-border-subtle/50 hover:bg-hover/30"
-              >
-                <td class="py-1.5 px-3 text-text-muted whitespace-nowrap font-mono text-xs">
-                  {formatTime(f.time)}
-                </td>
-                <td class="py-1.5 px-3">
-                  <span class="text-xs text-text-secondary">
-                    {f.direction === "INGRESS" ? "\u2B07" : "\u2B06"}
-                    {""}
-                    {f.direction}
-                  </span>
-                </td>
-                <td class="py-1.5 px-3 whitespace-nowrap">
-                  {(() => {
-                    const ep = formatEndpoint(
-                      f.srcNamespace,
-                      f.srcPod,
-                      f.srcIP,
-                      f.srcNames,
-                      f.srcService,
-                      f.srcLabels,
-                    );
-                    return (
-                      <div>
-                        <span class="text-text-primary">
-                          {ep.primary}
-                        </span>
-                        {ep.detail && (
-                          <span class="ml-1 text-xs text-text-muted">
-                            {ep.detail}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </td>
-                <td class="py-1.5 px-3 whitespace-nowrap">
-                  {(() => {
-                    const ep = formatEndpoint(
-                      f.dstNamespace,
-                      f.dstPod,
-                      f.dstIP,
-                      f.dstNames,
-                      f.dstService,
-                      f.dstLabels,
-                    );
-                    return (
-                      <div>
-                        <span class="text-text-primary">
-                          {ep.primary}
-                          {f.dstPort ? `:${f.dstPort}` : ""}
-                        </span>
-                        {ep.detail && (
-                          <span class="ml-1 text-xs text-text-muted">
-                            {ep.detail}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </td>
-                <td class="py-1.5 px-3 text-text-secondary">
-                  {f.protocol}
-                </td>
-                <td class="py-1.5 px-3">
-                  <span
-                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                      verdictBadgeClass(f.verdict)
-                    }`}
-                    title={f.dropReason || undefined}
-                  >
-                    {f.verdict}
-                  </span>
-                  {f.dropReason && (
-                    <span class="ml-1 text-xs text-error">
-                      {f.dropReason}
-                    </span>
-                  )}
-                </td>
-              </tr>
+                f={f}
+              />
             ))}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+function FlowRow({ f }: { f: FlowRecord }) {
+  const hovered = useSignal(false);
+
+  const src = formatEndpoint(
+    f.srcNamespace,
+    f.srcPod,
+    f.srcIP,
+    f.srcNames,
+    f.srcService,
+    f.srcLabels,
+  );
+  const dst = formatEndpoint(
+    f.dstNamespace,
+    f.dstPod,
+    f.dstIP,
+    f.dstNames,
+    f.dstService,
+    f.dstLabels,
+  );
+
+  return (
+    <tr
+      style={{
+        borderTop: "1px solid var(--border-subtle)",
+        background: hovered.value
+          ? "color-mix(in srgb, var(--accent) 5%, transparent)"
+          : "transparent",
+        transition: "background 0.1s ease",
+      }}
+      onMouseEnter={() => {
+        hovered.value = true;
+      }}
+      onMouseLeave={() => {
+        hovered.value = false;
+      }}
+    >
+      <td
+        style={{
+          padding: "6px 12px",
+          color: "var(--text-muted)",
+          fontFamily: "var(--font-mono)",
+          fontSize: "12px",
+          whiteSpace: "nowrap",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {formatTime(f.time)}
+      </td>
+      <td
+        style={{
+          padding: "6px 12px",
+          fontSize: "12px",
+          color: "var(--text-muted)",
+        }}
+      >
+        {f.direction === "INGRESS" ? "⬇" : "⬆"} {f.direction}
+      </td>
+      <td style={{ padding: "6px 12px", whiteSpace: "nowrap" }}>
+        <div>
+          <span style={{ color: "var(--text-primary)" }}>{src.primary}</span>
+          {src.detail && (
+            <span
+              style={{
+                marginLeft: "4px",
+                fontSize: "11px",
+                color: "var(--text-muted)",
+              }}
+            >
+              {src.detail}
+            </span>
+          )}
+        </div>
+      </td>
+      <td style={{ padding: "6px 12px", whiteSpace: "nowrap" }}>
+        <div>
+          <span style={{ color: "var(--text-primary)" }}>
+            {dst.primary}
+            {f.dstPort ? `:${f.dstPort}` : ""}
+          </span>
+          {dst.detail && (
+            <span
+              style={{
+                marginLeft: "4px",
+                fontSize: "11px",
+                color: "var(--text-muted)",
+              }}
+            >
+              {dst.detail}
+            </span>
+          )}
+        </div>
+      </td>
+      <td style={{ padding: "6px 12px", color: "var(--text-muted)" }}>
+        {f.protocol}
+      </td>
+      <td style={{ padding: "6px 12px" }}>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            padding: "2px 8px",
+            borderRadius: "6px",
+            fontSize: "11px",
+            fontWeight: 600,
+            ...verdictStyle(f.verdict),
+          }}
+          title={f.dropReason || undefined}
+        >
+          {f.verdict}
+        </span>
+        {f.dropReason && (
+          <span
+            style={{
+              marginLeft: "4px",
+              fontSize: "11px",
+              color: "var(--error)",
+            }}
+          >
+            {f.dropReason}
+          </span>
+        )}
+      </td>
+    </tr>
   );
 }
 

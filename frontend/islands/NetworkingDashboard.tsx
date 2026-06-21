@@ -9,6 +9,7 @@ import ResourceTable from "@/islands/ResourceTable.tsx";
 import FlowViewer from "@/islands/FlowViewer.tsx";
 import NetworkOverview from "@/islands/NetworkOverview.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface SummaryData {
   totalServices: number;
@@ -214,7 +215,7 @@ export default function NetworkingDashboard(
   ];
 
   return (
-    <div class="flex flex-col h-full">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
@@ -295,47 +296,43 @@ export default function NetworkingDashboard(
         }}
       >
         {summaryCards.map((card) => (
-          <div
-            key={card.label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              padding: "14px 16px",
-              borderRadius: "10px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <SummaryRing
-              value={loading.value ? 0 : card.ringValue}
-              max={card.max}
-              size={40}
-              color={card.color}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {card.label}
-              </div>
-              <div
-                style={{
-                  fontSize: "16px",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  color: card.color,
-                }}
-              >
-                {loading.value ? "\u2014" : card.displayValue}
+          <WidgetShell key={card.label} padding={14}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <SummaryRing
+                value={loading.value ? 0 : card.ringValue}
+                max={card.max}
+                size={40}
+                color={card.color}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {card.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: "16px",
+                    fontWeight: 600,
+                    fontFamily: "var(--font-mono)",
+                    color: card.color,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {loading.value ? "\u2014" : card.displayValue}
+                </div>
               </div>
             </div>
-          </div>
+          </WidgetShell>
         ))}
       </div>
 

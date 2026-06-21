@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/MeshBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { MTLSPostureResponse, WorkloadMTLS } from "@/lib/mesh-types.ts";
 
 /** Warning-level error keys (metric/truncation issues) vs. error-level (pod/policy fetch failures). */
@@ -81,6 +82,7 @@ function buildCards(workloads: WorkloadMTLS[]): NamespaceCard[] {
 
 /** A single workload row in the drill-down table. */
 function WorkloadRow({ w }: { w: WorkloadMTLS }) {
+  const hovered = useSignal(false);
   const kindLabel = w.workloadKind ?? "—";
   const workloadLabel = `${kindLabel}/${w.workload}`;
 
@@ -96,14 +98,43 @@ function WorkloadRow({ w }: { w: WorkloadMTLS }) {
   }
 
   return (
-    <tr class="hover:bg-hover/30">
-      <td class="px-3 py-2">
-        <div class="flex items-center gap-1 font-medium text-text-primary">
+    <tr
+      style={{
+        borderBottom: "1px solid var(--border-primary)",
+        background: hovered.value
+          ? "color-mix(in srgb, var(--accent) 5%, transparent)"
+          : "transparent",
+      }}
+      onMouseEnter={() => {
+        hovered.value = true;
+      }}
+      onMouseLeave={() => {
+        hovered.value = false;
+      }}
+    >
+      <td style={{ padding: "8px 12px" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "4px",
+            fontWeight: 500,
+            color: "var(--text-primary)",
+          }}
+        >
           <span>{workloadLabel}</span>
           {!w.workloadKindConfident && (
             <button
               type="button"
-              class="text-text-muted cursor-help ml-0.5"
+              style={{
+                color: "var(--text-muted)",
+                cursor: "help",
+                marginLeft: "2px",
+                background: "none",
+                border: "none",
+                padding: 0,
+                font: "inherit",
+              }}
               aria-label="Workload kind inferred from ReplicaSet name (no owner-reference lookup)"
               title="Workload kind inferred from ReplicaSet name (no owner-reference lookup)"
             >
@@ -112,19 +143,37 @@ function WorkloadRow({ w }: { w: WorkloadMTLS }) {
           )}
         </div>
       </td>
-      <td class="px-3 py-2">
+      <td style={{ padding: "8px 12px" }}>
         <MTLSStateBadge state={w.state} />
       </td>
-      <td class="px-3 py-2">
-        <div class="flex flex-col gap-0.5">
+      <td style={{ padding: "8px 12px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
           <MTLSSourceBadge source={w.source} />
           {defaultSubLine && (
-            <span class="text-xs text-text-muted">{defaultSubLine}</span>
+            <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+              {defaultSubLine}
+            </span>
           )}
         </div>
       </td>
-      <td class="px-3 py-2 text-sm text-text-secondary">{istioMode}</td>
-      <td class="px-3 py-2 text-sm text-text-secondary">{sourceDetail}</td>
+      <td
+        style={{
+          padding: "8px 12px",
+          fontSize: "13px",
+          color: "var(--text-secondary)",
+        }}
+      >
+        {istioMode}
+      </td>
+      <td
+        style={{
+          padding: "8px 12px",
+          fontSize: "13px",
+          color: "var(--text-secondary)",
+        }}
+      >
+        {sourceDetail}
+      </td>
     </tr>
   );
 }
@@ -132,28 +181,85 @@ function WorkloadRow({ w }: { w: WorkloadMTLS }) {
 /** The drill-down table for a namespace card's workloads. */
 function WorkloadTable({ workloads }: { workloads: WorkloadMTLS[] }) {
   return (
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
+    <div style={{ overflowX: "auto" }}>
+      <table
+        style={{ width: "100%", fontSize: "13px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary bg-surface">
-            <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+          <tr
+            style={{
+              borderBottom: "1px solid var(--border-primary)",
+              background: "var(--bg-surface)",
+            }}
+          >
+            <th
+              style={{
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.07em",
+                color: "var(--text-muted)",
+                textAlign: "left",
+              }}
+            >
               Workload
             </th>
-            <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+            <th
+              style={{
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.07em",
+                color: "var(--text-muted)",
+                textAlign: "left",
+              }}
+            >
               State
             </th>
-            <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+            <th
+              style={{
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.07em",
+                color: "var(--text-muted)",
+                textAlign: "left",
+              }}
+            >
               Source
             </th>
-            <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+            <th
+              style={{
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.07em",
+                color: "var(--text-muted)",
+                textAlign: "left",
+              }}
+            >
               Istio Mode
             </th>
-            <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+            <th
+              style={{
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.07em",
+                color: "var(--text-muted)",
+                textAlign: "left",
+              }}
+            >
               Source Detail
             </th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {workloads.map((w) => (
             <WorkloadRow key={`${w.namespace}/${w.workload}`} w={w} />
           ))}
@@ -195,19 +301,37 @@ function NamespacePostureCard(
   }
 
   return (
-    <div class="rounded-lg border border-border-primary bg-bg-elevated overflow-hidden">
+    <WidgetShell style={{ overflow: "hidden", padding: 0 }}>
       <button
         type="button"
-        class="w-full px-4 py-4 flex items-center justify-between text-left hover:bg-hover/20 transition-colors"
+        style={{
+          width: "100%",
+          padding: "16px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
         onClick={onToggle}
         aria-expanded={expanded}
       >
-        <div class="flex flex-col gap-1">
-          <span class="font-semibold text-text-primary">{card.namespace}</span>
-          <div class="flex items-center gap-2">
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+          <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>
+            {card.namespace}
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <span
-              class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
               style={{
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "2px 8px",
+                borderRadius: "9999px",
+                fontSize: "11px",
+                fontWeight: 500,
+                fontVariantNumeric: "tabular-nums",
                 color: pillColor,
                 backgroundColor:
                   `color-mix(in srgb, ${pillColor} 15%, transparent)`,
@@ -215,22 +339,30 @@ function NamespacePostureCard(
             >
               {pillLabel}
             </span>
-            {subLine && <span class="text-xs text-text-muted">{subLine}</span>}
+            {subLine && (
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                {subLine}
+              </span>
+            )}
           </div>
         </div>
         <span
-          class="text-text-muted text-sm transition-transform"
-          style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+          style={{
+            color: "var(--text-muted)",
+            fontSize: "13px",
+            transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.15s ease",
+          }}
         >
           ▾
         </span>
       </button>
       {expanded && (
-        <div class="border-t border-border-primary">
+        <div style={{ borderTop: "1px solid var(--border-primary)" }}>
           <WorkloadTable workloads={card.all} />
         </div>
       )}
-    </div>
+    </WidgetShell>
   );
 }
 
@@ -246,34 +378,56 @@ function NotInMeshSection(
   const allWorkloads = cards.flatMap((c) => c.all);
 
   return (
-    <div class="rounded-lg border border-border-primary bg-bg-elevated overflow-hidden">
+    <WidgetShell style={{ overflow: "hidden", padding: 0 }}>
       <button
         type="button"
-        class="w-full px-4 py-4 flex items-center justify-between text-left hover:bg-hover/20 transition-colors"
+        style={{
+          width: "100%",
+          padding: "16px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
         onClick={onToggle}
         aria-expanded={expanded}
       >
-        <div class="flex flex-col gap-1">
-          <span class="font-semibold text-text-muted">Not in mesh</span>
-          <span class="text-xs text-text-muted">
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+          <span style={{ fontWeight: 600, color: "var(--text-muted)" }}>
+            Not in mesh
+          </span>
+          <span
+            style={{
+              fontSize: "11px",
+              color: "var(--text-muted)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
             {totalWorkloads} workload{totalWorkloads !== 1 ? "s" : ""} across
             {" "}
             {cards.length} namespace{cards.length !== 1 ? "s" : ""}
           </span>
         </div>
         <span
-          class="text-text-muted text-sm transition-transform"
-          style={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)" }}
+          style={{
+            color: "var(--text-muted)",
+            fontSize: "13px",
+            transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.15s ease",
+          }}
         >
           ▾
         </span>
       </button>
       {expanded && (
-        <div class="border-t border-border-primary">
+        <div style={{ borderTop: "1px solid var(--border-primary)" }}>
           <WorkloadTable workloads={allWorkloads} />
         </div>
       )}
-    </div>
+    </WidgetShell>
   );
 }
 
@@ -282,19 +436,24 @@ function ErrorBanner(
   { errorKey, message }: { errorKey: string; message: string },
 ) {
   const isWarn = WARN_KEYS.has(errorKey);
-  const color = isWarn ? "var(--warning)" : "var(--danger)";
+  const color = isWarn ? "var(--warning)" : "var(--error)";
   return (
     <div
-      class="rounded-lg px-4 py-3 text-sm flex items-start gap-3"
       style={{
+        borderRadius: "9px",
+        padding: "12px 16px",
+        fontSize: "13px",
+        display: "flex",
+        alignItems: "flex-start",
+        gap: "12px",
         backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
         border: `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
       }}
     >
-      <span class="font-medium shrink-0" style={{ color }}>
+      <span style={{ color, fontWeight: 600, flexShrink: 0 }}>
         {isWarn ? "Notice" : "Error"}
       </span>
-      <span class="text-text-primary">{message}</span>
+      <span style={{ color: "var(--text-primary)" }}>{message}</span>
     </div>
   );
 }
@@ -401,9 +560,25 @@ export default function MTLSPosture() {
   );
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">mTLS Posture</h1>
+    <div style={{ padding: "24px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "4px",
+        }}
+      >
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            color: "var(--text-primary)",
+            margin: 0,
+          }}
+        >
+          mTLS Posture
+        </h1>
         {!loading.value && (
           <Button
             type="button"
@@ -415,14 +590,32 @@ export default function MTLSPosture() {
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        style={{
+          fontSize: "13px",
+          color: "var(--text-muted)",
+          marginTop: "4px",
+          marginBottom: "24px",
+        }}
+      >
         Per-namespace mutual TLS posture across your service mesh.
       </p>
 
       {/* Namespace filter */}
-      <div class="mb-6 flex items-center gap-3">
+      <div
+        style={{
+          marginBottom: "24px",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+        }}
+      >
         <label
-          class="text-sm font-medium text-text-secondary shrink-0"
+          style={{
+            fontSize: "13px",
+            color: "var(--text-muted)",
+            flexShrink: 0,
+          }}
           htmlFor="mtls-ns-filter"
         >
           Namespace
@@ -430,7 +623,16 @@ export default function MTLSPosture() {
         <input
           id="mtls-ns-filter"
           type="text"
-          class="rounded border border-border-primary px-3 py-1.5 text-sm bg-bg-base text-text-primary max-w-xs"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            background: "var(--bg-surface)",
+            padding: "6px 12px",
+            fontSize: "13px",
+            color: "var(--text-primary)",
+            fontFamily: "inherit",
+            maxWidth: "320px",
+          }}
           placeholder="All namespaces"
           value={namespace.value}
           onInput={(e) =>
@@ -439,7 +641,15 @@ export default function MTLSPosture() {
         {namespace.value && (
           <button
             type="button"
-            class="text-xs text-text-muted hover:text-text-primary"
+            style={{
+              fontSize: "11px",
+              color: "var(--text-muted)",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              font: "inherit",
+            }}
             onClick={() => handleNamespaceChange("")}
           >
             Clear
@@ -449,7 +659,14 @@ export default function MTLSPosture() {
 
       {/* Error / notice banners */}
       {errorKeys.length > 0 && (
-        <div class="flex flex-col gap-2 mb-6">
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+            marginBottom: "24px",
+          }}
+        >
           {errorKeys.map((key) => (
             <ErrorBanner key={key} errorKey={key} message={errors[key]} />
           ))}
@@ -458,26 +675,47 @@ export default function MTLSPosture() {
 
       {/* Loading state */}
       {loading.value && (
-        <div class="flex justify-center py-12">
-          <Spinner class="text-brand" />
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "48px 0",
+          }}
+        >
+          <Spinner />
         </div>
       )}
 
       {/* Error state */}
       {!loading.value && error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
+        <p
+          style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
+        >
+          {error.value}
+        </p>
       )}
 
       {/* Empty state */}
       {!loading.value && !error.value && workloads.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">No workloads in mesh.</p>
-        </div>
+        <WidgetShell>
+          <div style={{ textAlign: "center", padding: "48px 24px" }}>
+            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              No workloads in mesh.
+            </p>
+          </div>
+        </WidgetShell>
       )}
 
       {/* Main card grid */}
       {!loading.value && !error.value && meshedCards.length > 0 && (
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+            gap: "16px",
+            marginBottom: "24px",
+          }}
+        >
           {meshedCards.map((card) => (
             <NamespacePostureCard
               key={card.namespace}
@@ -491,7 +729,7 @@ export default function MTLSPosture() {
 
       {/* Not in mesh section */}
       {!loading.value && !error.value && unmeshedOnlyCards.length > 0 && (
-        <div class="mt-4">
+        <div style={{ marginTop: "16px" }}>
           <NotInMeshSection
             cards={unmeshedOnlyCards}
             expanded={expandedNotInMesh.value}
