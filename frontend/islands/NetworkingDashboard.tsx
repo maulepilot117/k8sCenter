@@ -1,35 +1,8 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
-import SubNav from "@/islands/SubNav.tsx";
+import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import FlowViewer from "@/islands/FlowViewer.tsx";
 import NetworkOverview from "@/islands/NetworkOverview.tsx";
-import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
-import WidgetShell from "@/components/ui/WidgetShell.tsx";
-
-interface SummaryData {
-  totalServices: number;
-  totalIngresses: number;
-  networkPolicies: number;
-  ciliumPolicies: number;
-  endpoints: number;
-  endpointSlices: number;
-}
-
-const EMPTY_SUMMARY: SummaryData = {
-  totalServices: 0,
-  totalIngresses: 0,
-  networkPolicies: 0,
-  ciliumPolicies: 0,
-  endpoints: 0,
-  endpointSlices: 0,
-};
-
-const networkSection = DOMAIN_SECTIONS.find((s) => s.id === "network")!;
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -119,100 +92,26 @@ function resolveTab(currentPath: string): {
 export default function NetworkingDashboard(
   { currentPath }: { currentPath: string },
 ) {
-  const summary = useSignal<SummaryData>(EMPTY_SUMMARY);
-  const loading = useSignal(true);
-  const namespace = selectedNamespace.value;
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-
-    loading.value = true;
-
-    const fetchSummary = async () => {
-      try {
-        const nsParam = namespace && namespace !== "all"
-          ? `?namespace=${encodeURIComponent(namespace)}`
-          : "";
-
-        const countsRes = await apiGet<Record<string, number>>(
-          `/v1/resources/counts${nsParam}`,
-        );
-
-        const countsData = countsRes.data ?? {};
-
-        summary.value = {
-          totalServices: countsData["services"] ?? 0,
-          totalIngresses: countsData["ingresses"] ?? 0,
-          networkPolicies: countsData["networkpolicies"] ?? 0,
-          ciliumPolicies: countsData["ciliumnetworkpolicies"] ?? 0,
-          endpoints: countsData["endpoints"] ?? 0,
-          endpointSlices: countsData["endpointslices"] ?? 0,
-        };
-      } catch {
-        summary.value = EMPTY_SUMMARY;
-      } finally {
-        loading.value = false;
-      }
-    };
-
-    fetchSummary();
-  }, [namespace]);
+  // Reading selectedNamespace.value here wires reactivity — the shared
+  // resource-counts store re-fetches when namespace changes.
+  const _ns = selectedNamespace.value;
 
   const { kind, title, createHref, createLabel, isFlows, isCni } = resolveTab(
     currentPath,
   );
-  const s = summary.value;
 
-  const summaryCards = [
-    {
-      label: "Total Services",
-      value: s.totalServices,
-      displayValue: String(s.totalServices),
-      max: Math.max(s.totalServices, 1),
-      ringValue: s.totalServices,
-      color: "var(--accent)",
-    },
-    {
-      label: "Total Ingresses",
-      value: s.totalIngresses,
-      displayValue: String(s.totalIngresses),
-      max: Math.max(s.totalIngresses, 1),
-      ringValue: s.totalIngresses,
-      color: "var(--accent-secondary)",
-    },
-    {
-      label: "Network Policies",
-      value: s.networkPolicies,
-      displayValue: String(s.networkPolicies),
-      max: Math.max(s.networkPolicies, 1),
-      ringValue: s.networkPolicies,
-      color: "var(--success)",
-    },
-    {
-      label: "Cilium Policies",
-      value: s.ciliumPolicies,
-      displayValue: String(s.ciliumPolicies),
-      max: Math.max(s.ciliumPolicies, 1),
-      ringValue: s.ciliumPolicies,
-      color: "var(--success)",
-    },
-    {
-      label: "Endpoints",
-      value: s.endpoints,
-      displayValue: String(s.endpoints),
-      max: Math.max(s.endpoints, 1),
-      ringValue: s.endpoints,
-      color: "var(--accent)",
-    },
-    {
-      label: "EndpointSlices",
-      value: s.endpointSlices,
-      displayValue: String(s.endpointSlices),
-      max: Math.max(s.endpointSlices, 1),
-      ringValue: s.endpointSlices,
-      color: "var(--accent)",
-    },
-  ];
+  // Subtitle derived from live counts — no invented data.
+  const total = kind ? (getCount(kind) ?? 0) : 0;
+  const countsReady = resourceCounts.value !== null;
+  const pageTitle = isCni ? "Network" : title;
+
+  const subtitle = isCni
+    ? "Manage services, ingresses, network policies, and endpoints"
+    : isFlows
+    ? "Live network flow visualization"
+    : countsReady
+    ? `${total} ${title.toLowerCase()}`
+    : `Loading ${title.toLowerCase()}…`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -232,11 +131,12 @@ export default function NetworkingDashboard(
               margin: 0,
               fontSize: "24px",
               fontWeight: 700,
+              letterSpacing: "-0.02em",
               color: "var(--text-primary)",
               lineHeight: 1.2,
             }}
           >
-            {isCni ? "Network" : title}
+            {pageTitle}
           </h1>
           <p
             style={{
@@ -245,7 +145,7 @@ export default function NetworkingDashboard(
               color: "var(--text-muted)",
             }}
           >
-            Manage services, ingresses, network policies, and endpoints
+            {subtitle}
           </p>
         </div>
         {createHref && (
@@ -281,59 +181,6 @@ export default function NetworkingDashboard(
             {createLabel ?? `New ${title.replace(/s$/, "")}`}
           </a>
         )}
-      </div>
-
-      {/* Sub-navigation */}
-      <SubNav tabs={flattenGroups(networkSection)} currentPath={currentPath} />
-
-      {/* Summary strip */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          gap: "var(--grid-gap, 12px)",
-          marginBottom: "20px",
-        }}
-      >
-        {summaryCards.map((card) => (
-          <WidgetShell key={card.label} padding={14}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-              }}
-            >
-              <SummaryRing
-                value={loading.value ? 0 : card.ringValue}
-                max={card.max}
-                size={40}
-                color={card.color}
-              />
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: "12px",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {card.label}
-                </div>
-                <div
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: 600,
-                    fontFamily: "var(--font-mono)",
-                    color: card.color,
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {loading.value ? "\u2014" : card.displayValue}
-                </div>
-              </div>
-            </div>
-          </WidgetShell>
-        ))}
       </div>
 
       {/* Content area */}

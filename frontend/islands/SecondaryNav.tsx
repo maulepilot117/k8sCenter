@@ -7,6 +7,7 @@ import {
   type NavItem,
 } from "@/lib/constants.ts";
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
+import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 
 function dotColor(h?: Health): string {
   return h === "ok"
@@ -29,6 +30,9 @@ interface SecondaryNavProps {
  * Width is controlled by the parent grid column (var(--panel-width)); this
  * island flips that var to 0px when collapsed via the navCollapsed signal.
  * The snap is instant — NO CSS transition on the grid track.
+ *
+ * Count badges are wired to the shared resource-counts store so SecondaryNav
+ * shows live per-kind numbers without any additional network requests.
  */
 export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
   const query = useSignal("");
@@ -64,8 +68,18 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
     }))
     .filter((g) => g.items.length);
 
+  // Total nav items in this domain (for the "N items" header badge).
+  const totalItems = domain.groups.reduce(
+    (sum, g) => sum + g.items.length,
+    0,
+  );
+
   const isActive = (it: NavItem) =>
     currentPath === it.href || currentPath.startsWith(it.href + "/");
+
+  // Reading resourceCounts.value here creates a Preact signal subscription —
+  // the component re-renders automatically when counts update.
+  const countsLoaded = resourceCounts.value !== null;
 
   return (
     <nav
@@ -80,7 +94,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
         zIndex: 30,
       }}
     >
-      {/* header */}
+      {/* header — domain label + "N items" badge + collapse button */}
       <div
         style={{
           height: "var(--topbar-height, 56px)",
@@ -92,17 +106,34 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <span
-          style={{
-            fontSize: "15px",
-            fontWeight: 650,
-            letterSpacing: "-0.01em",
-            whiteSpace: "nowrap",
-            color: "var(--text-primary)",
-          }}
-        >
-          {domain.label}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span
+            style={{
+              fontSize: "15px",
+              fontWeight: 650,
+              letterSpacing: "-0.01em",
+              whiteSpace: "nowrap",
+              color: "var(--text-primary)",
+            }}
+          >
+            {domain.label}
+          </span>
+          {/* "N items" badge next to domain label, per archetype spec */}
+          <span
+            style={{
+              fontSize: "11px",
+              fontWeight: 600,
+              color: "var(--text-muted)",
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "6px",
+              padding: "1px 6px",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {totalItems} items
+          </span>
+        </div>
         <button
           type="button"
           onClick={toggleNav}
@@ -199,6 +230,11 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
             </div>
             {g.items.map((it) => {
               const active = isActive(it);
+              // Live count from shared store. null = still loading.
+              const liveCount = (it.count && it.kind)
+                ? getCount(it.kind)
+                : undefined;
+
               return (
                 <a
                   key={it.href}
@@ -253,7 +289,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
                   >
                     {it.label}
                   </span>
-                  {/* Replace with a live count from your resource store when kind+count set */}
+                  {/* Live count badge — wired to shared resource-counts store */}
                   {it.count && it.kind && (
                     <span
                       style={{
@@ -261,9 +297,16 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
                         fontWeight: 600,
                         color: "var(--text-muted)",
                         fontVariantNumeric: "tabular-nums",
+                        opacity: countsLoaded ? 1 : 0.4,
+                        minWidth: "16px",
+                        textAlign: "right",
                       }}
                       data-count-kind={it.kind}
-                    />
+                    >
+                      {liveCount !== null && liveCount !== undefined
+                        ? liveCount
+                        : "·"}
+                    </span>
                   )}
                 </a>
               );

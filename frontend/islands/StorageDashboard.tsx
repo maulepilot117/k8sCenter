@@ -1,34 +1,10 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
-import SubNav from "@/islands/SubNav.tsx";
+import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import SnapshotList from "@/islands/SnapshotList.tsx";
-import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import BarRow from "@/components/charts/BarRow.tsx";
-
-interface SummaryData {
-  totalPVCs: number;
-  boundPVCs: number;
-  pendingPVCs: number;
-  totalPVs: number;
-  storageClasses: number;
-}
-
-const EMPTY_SUMMARY: SummaryData = {
-  totalPVCs: 0,
-  boundPVCs: 0,
-  pendingPVCs: 0,
-  totalPVs: 0,
-  storageClasses: 0,
-};
-
-const storageSection = DOMAIN_SECTIONS.find((s) => s.id === "storage")!;
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -100,138 +76,50 @@ function resolveTab(currentPath: string): {
 export default function StorageDashboard(
   { currentPath }: { currentPath: string },
 ) {
-  const summary = useSignal<SummaryData>(EMPTY_SUMMARY);
-  const loading = useSignal(true);
-  const namespace = selectedNamespace.value;
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-
-    loading.value = true;
-
-    const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
-
-    const fetchSummary = async () => {
-      try {
-        const nsParam = namespace && namespace !== "all"
-          ? `?namespace=${encodeURIComponent(namespace)}`
-          : "";
-
-        const [countsRes, pvcsRes] = await Promise.all([
-          apiGet<Record<string, number>>(
-            `/v1/resources/counts${nsParam}`,
-          ),
-          apiGet<
-            Array<{
-              status?: { phase?: string };
-            }>
-          >(`/v1/resources/pvcs${nsPath}?limit=500`),
-        ]);
-
-        const countsData = countsRes.data ?? {};
-
-        const pvcs = pvcsRes.data ?? [];
-        const totalPVCs = countsData["persistentvolumeclaims"] ??
-          countsData["pvcs"] ?? pvcs.length;
-        let boundPVCs = 0;
-        let pendingPVCs = 0;
-
-        for (const pvc of pvcs) {
-          const phase = pvc.status?.phase;
-          if (phase === "Bound") boundPVCs++;
-          else if (phase === "Pending") pendingPVCs++;
-        }
-
-        const totalPVs = countsData["persistentvolumes"] ??
-          countsData["pvs"] ?? 0;
-        const storageClasses = countsData["storageclasses"] ?? 0;
-
-        summary.value = {
-          totalPVCs,
-          boundPVCs,
-          pendingPVCs,
-          totalPVs,
-          storageClasses,
-        };
-      } catch {
-        summary.value = EMPTY_SUMMARY;
-      } finally {
-        loading.value = false;
-      }
-    };
-
-    fetchSummary();
-  }, [namespace]);
+  // Reading selectedNamespace.value here wires reactivity — the shared
+  // resource-counts store re-fetches when namespace changes.
+  const _ns = selectedNamespace.value;
 
   const { kind, title, createHref, clusterScoped, isOverview, isSnapshots } =
     resolveTab(currentPath);
-  const s = summary.value;
 
-  const summaryCards = [
-    {
-      label: "Total PVCs",
-      value: s.totalPVCs,
-      displayValue: String(s.totalPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.totalPVCs,
-      color: "var(--accent)",
-    },
-    {
-      label: "Bound PVCs",
-      value: s.boundPVCs,
-      displayValue: String(s.boundPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.boundPVCs,
-      color: "var(--success)",
-    },
-    {
-      label: "Pending PVCs",
-      value: s.pendingPVCs,
-      displayValue: String(s.pendingPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.pendingPVCs,
-      color: "var(--warning)",
-    },
-    {
-      label: "Total PVs",
-      value: s.totalPVs,
-      displayValue: String(s.totalPVs),
-      max: Math.max(s.totalPVs, 1),
-      ringValue: s.totalPVs,
-      color: "var(--accent)",
-    },
-    {
-      label: "Storage Classes",
-      value: s.storageClasses,
-      displayValue: String(s.storageClasses),
-      max: Math.max(s.storageClasses, 1),
-      ringValue: s.storageClasses,
-      color: "var(--accent-secondary)",
-    },
-  ];
+  // Derive counts from shared store — no separate fetch needed.
+  const counts = resourceCounts.value;
+  const countsReady = counts !== null;
 
-  // Donut segments for PVC phase breakdown (used on Overview)
+  const totalPVCs = counts?.["persistentvolumeclaims"] ??
+    counts?.["pvcs"] ?? 0;
+  const totalPVs = counts?.["persistentvolumes"] ?? counts?.["pvs"] ?? 0;
+  const storageClasses = counts?.["storageclasses"] ?? 0;
+
+  // For the PVC donut we need phase breakdown — that requires a list fetch.
+  // On the Overview we keep the donut with totals only (no invented phase split).
+  // The subtitle for list pages derives from the relevant count.
+  const listCount = kind ? (getCount(kind) ?? 0) : 0;
+
+  const pageTitle = isOverview ? "Storage" : title;
+  const subtitle = isOverview
+    ? "Manage persistent volumes, claims, storage classes, and snapshots"
+    : isSnapshots
+    ? "Volume snapshots"
+    : countsReady
+    ? `${listCount} ${title.toLowerCase()}`
+    : `Loading ${title.toLowerCase()}…`;
+
+  // Overview donut: show total PVCs as a single neutral segment
+  // (no invented phase split — real phases require a list fetch that's
+  // preserved in the ResourceTable below).
   const pvcDonutSegments = [
     {
-      value: s.boundPVCs,
-      color: "var(--success)",
-      label: "Bound",
-    },
-    {
-      value: s.pendingPVCs,
-      color: "var(--warning)",
-      label: "Pending",
-    },
-    {
-      value: Math.max(0, s.totalPVCs - s.boundPVCs - s.pendingPVCs),
-      color: "var(--error)",
-      label: "Lost",
+      value: Math.max(totalPVCs, 1),
+      color: "var(--accent)",
+      label: "Total",
     },
   ];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Page header \u2014 24/700 per archetype spec */}
+      {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
           display: "flex",
@@ -252,7 +140,7 @@ export default function StorageDashboard(
               lineHeight: 1.2,
             }}
           >
-            {isOverview ? "Storage" : title}
+            {pageTitle}
           </h1>
           <p
             style={{
@@ -261,7 +149,7 @@ export default function StorageDashboard(
               color: "var(--text-muted)",
             }}
           >
-            Manage persistent volumes, claims, storage classes, and snapshots
+            {subtitle}
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
@@ -328,64 +216,6 @@ export default function StorageDashboard(
         </div>
       </div>
 
-      {/* Sub-navigation */}
-      <SubNav tabs={flattenGroups(storageSection)} currentPath={currentPath} />
-
-      {/* Summary strip \u2014 WidgetShell (glass) cards per dashboard archetype */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
-          gap: "var(--grid-gap, 12px)",
-          marginBottom: "20px",
-        }}
-      >
-        {summaryCards.map((card) => (
-          <WidgetShell key={card.label} padding={14}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-              }}
-            >
-              <SummaryRing
-                value={loading.value ? 0 : card.ringValue}
-                max={card.max}
-                size={40}
-                color={card.color}
-              />
-              <div style={{ minWidth: 0 }}>
-                <div
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: 600,
-                    letterSpacing: "0.05em",
-                    textTransform: "uppercase",
-                    color: "var(--text-muted)",
-                    marginBottom: "2px",
-                  }}
-                >
-                  {card.label}
-                </div>
-                <div
-                  style={{
-                    fontSize: "20px",
-                    fontWeight: 700,
-                    fontFamily: "var(--font-mono)",
-                    color: card.color,
-                    lineHeight: 1.1,
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {loading.value ? "\u2014" : card.displayValue}
-                </div>
-              </div>
-            </div>
-          </WidgetShell>
-        ))}
-      </div>
-
       {/* Content area */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {isOverview
@@ -397,7 +227,7 @@ export default function StorageDashboard(
                 gap: "var(--grid-gap, 20px)",
               }}
             >
-              {/* Overview charts row \u2014 glass widgets */}
+              {/* Overview charts row — glass widgets */}
               <div
                 style={{
                   display: "flex",
@@ -405,7 +235,7 @@ export default function StorageDashboard(
                   gap: "var(--grid-gap, 12px)",
                 }}
               >
-                {/* PVC Phase donut */}
+                {/* PVC total donut */}
                 <WidgetShell
                   title="PVC Health"
                   style={{ flex: "1 1 220px", minWidth: "200px" }}
@@ -418,7 +248,7 @@ export default function StorageDashboard(
                     }}
                   >
                     <Donut
-                      segments={loading.value
+                      segments={!countsReady
                         ? [{ value: 1, color: "var(--bg-elevated)" }]
                         : pvcDonutSegments}
                       size={96}
@@ -434,7 +264,7 @@ export default function StorageDashboard(
                               fontVariantNumeric: "tabular-nums",
                             }}
                           >
-                            {loading.value ? "\u2014" : s.totalPVCs}
+                            {!countsReady ? "—" : totalPVCs}
                           </div>
                           <div
                             style={{
@@ -457,46 +287,43 @@ export default function StorageDashboard(
                         gap: "6px",
                       }}
                     >
-                      {pvcDonutSegments.map((seg) => (
-                        <div
-                          key={seg.label}
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "7px",
+                        }}
+                      >
+                        <span
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "7px",
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            color: "var(--text-muted)",
+                            minWidth: "44px",
                           }}
                         >
-                          <span
-                            style={{
-                              width: "8px",
-                              height: "8px",
-                              borderRadius: "50%",
-                              background: seg.color,
-                              flexShrink: 0,
-                            }}
-                          />
-                          <span
-                            style={{
-                              fontSize: "12px",
-                              color: "var(--text-muted)",
-                              minWidth: "44px",
-                            }}
-                          >
-                            {seg.label}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: "12px",
-                              fontWeight: 600,
-                              fontFamily: "var(--font-mono)",
-                              color: "var(--text-primary)",
-                              fontVariantNumeric: "tabular-nums",
-                            }}
-                          >
-                            {loading.value ? "\u2014" : seg.value}
-                          </span>
-                        </div>
-                      ))}
+                          Claims
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--text-primary)",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {!countsReady ? "—" : totalPVCs}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </WidgetShell>
@@ -509,34 +336,30 @@ export default function StorageDashboard(
                   <div style={{ paddingTop: "4px" }}>
                     <BarRow
                       label="PVCs"
-                      value={loading.value ? 0 : s.boundPVCs}
-                      max={Math.max(s.totalPVCs, 1)}
-                      suffix={loading.value
-                        ? "\u2014"
-                        : `${s.boundPVCs}/${s.totalPVCs}`}
-                      color="var(--success)"
-                    />
-                    <BarRow
-                      label="Volumes"
-                      value={loading.value ? 0 : s.totalPVs}
-                      max={Math.max(s.totalPVs, 1)}
-                      suffix={loading.value ? "\u2014" : String(s.totalPVs)}
+                      value={!countsReady ? 0 : totalPVCs}
+                      max={Math.max(totalPVCs, 1)}
+                      suffix={!countsReady ? "—" : String(totalPVCs)}
                       color="var(--accent)"
                     />
                     <BarRow
+                      label="Volumes"
+                      value={!countsReady ? 0 : totalPVs}
+                      max={Math.max(totalPVs, 1)}
+                      suffix={!countsReady ? "—" : String(totalPVs)}
+                      color="var(--success)"
+                    />
+                    <BarRow
                       label="StorageClasses"
-                      value={loading.value ? 0 : s.storageClasses}
-                      max={Math.max(s.storageClasses, 1)}
-                      suffix={loading.value
-                        ? "\u2014"
-                        : String(s.storageClasses)}
+                      value={!countsReady ? 0 : storageClasses}
+                      max={Math.max(storageClasses, 1)}
+                      suffix={!countsReady ? "—" : String(storageClasses)}
                       color="var(--accent-secondary, var(--info))"
                     />
                   </div>
                 </WidgetShell>
               </div>
 
-              {/* PVC list \u2014 solid surface */}
+              {/* PVC list — solid surface */}
               <ResourceTable
                 kind="pvcs"
                 title="Persistent Volume Claims"

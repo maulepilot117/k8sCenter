@@ -1,30 +1,6 @@
-import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS, flattenGroups } from "@/lib/constants.ts";
-import SubNav from "@/islands/SubNav.tsx";
+import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
-import WidgetShell from "@/components/ui/WidgetShell.tsx";
-
-interface SummaryData {
-  configmaps: number;
-  secrets: number;
-  serviceaccounts: number;
-  resourcequotas: number;
-  limitranges: number;
-}
-
-const EMPTY_SUMMARY: SummaryData = {
-  configmaps: 0,
-  secrets: 0,
-  serviceaccounts: 0,
-  resourcequotas: 0,
-  limitranges: 0,
-};
-
-const configSection = DOMAIN_SECTIONS.find((s) => s.id === "config")!;
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -81,66 +57,23 @@ function resolveTab(currentPath: string): {
 export default function ConfigDashboard(
   { currentPath }: { currentPath: string },
 ) {
-  const summary = useSignal<SummaryData>(EMPTY_SUMMARY);
-  const loading = useSignal(true);
-  const namespace = selectedNamespace.value;
-
-  useEffect(() => {
-    if (!IS_BROWSER) return;
-
-    loading.value = true;
-
-    const fetchSummary = async () => {
-      try {
-        const nsParam = namespace && namespace !== "all"
-          ? `?namespace=${encodeURIComponent(namespace)}`
-          : "";
-
-        const countsRes = await apiGet<Record<string, number>>(
-          `/v1/resources/counts${nsParam}`,
-        );
-
-        const countsData = countsRes.data ?? {};
-
-        summary.value = {
-          configmaps: countsData["configmaps"] ?? 0,
-          secrets: countsData["secrets"] ?? 0,
-          serviceaccounts: countsData["serviceaccounts"] ?? 0,
-          resourcequotas: countsData["resourcequotas"] ?? 0,
-          limitranges: countsData["limitranges"] ?? 0,
-        };
-      } catch {
-        summary.value = EMPTY_SUMMARY;
-      } finally {
-        loading.value = false;
-      }
-    };
-
-    fetchSummary();
-  }, [namespace]);
+  // Reading selectedNamespace.value here wires reactivity — the shared
+  // resource-counts store re-fetches when namespace changes.
+  const _ns = selectedNamespace.value;
 
   const { kind, title, createHref } = resolveTab(currentPath);
-  const s = summary.value;
 
-  const summaryCards = [
-    { label: "ConfigMaps", value: s.configmaps, color: "var(--accent)" },
-    { label: "Secrets", value: s.secrets, color: "var(--accent-2)" },
-    {
-      label: "Service Accounts",
-      value: s.serviceaccounts,
-      color: "var(--success)",
-    },
-    {
-      label: "Resource Quotas",
-      value: s.resourcequotas,
-      color: "var(--warning)",
-    },
-    { label: "Limit Ranges", value: s.limitranges, color: "var(--warning)" },
-  ];
+  // Subtitle derived from live counts — no invented data.
+  const total = getCount(kind) ?? 0;
+  const countsReady = resourceCounts.value !== null;
+
+  const subtitle = countsReady
+    ? `${total} ${title.toLowerCase()}`
+    : `Loading ${title.toLowerCase()}…`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      {/* Page header */}
+      {/* Page header — 24/700 per archetype spec */}
       <div
         style={{
           display: "flex",
@@ -160,7 +93,7 @@ export default function ConfigDashboard(
               lineHeight: 1.2,
             }}
           >
-            Configuration
+            {title}
           </h1>
           <p
             style={{
@@ -169,8 +102,7 @@ export default function ConfigDashboard(
               color: "var(--text-muted)",
             }}
           >
-            Manage ConfigMaps, Secrets, Service Accounts, and resource
-            constraints
+            {subtitle}
           </p>
         </div>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
@@ -233,52 +165,6 @@ export default function ConfigDashboard(
             New ConfigMap
           </a>
         </div>
-      </div>
-
-      {/* Sub-navigation */}
-      <SubNav tabs={flattenGroups(configSection)} currentPath={currentPath} />
-
-      {/* Summary strip \u2014 WidgetShell KPI tiles (glass chrome, data inside) */}
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "12px",
-          marginBottom: "20px",
-        }}
-      >
-        {summaryCards.map((card) => (
-          <WidgetShell
-            key={card.label}
-            padding={16}
-            style={{ flex: "1 1 140px", minWidth: "130px" }}
-          >
-            <div
-              style={{
-                fontSize: "11px",
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-                color: "var(--text-muted)",
-                marginBottom: "6px",
-              }}
-            >
-              {card.label}
-            </div>
-            <div
-              style={{
-                fontSize: "24px",
-                fontWeight: 700,
-                fontFamily: "var(--font-mono)",
-                color: loading.value ? "var(--text-muted)" : card.color,
-                lineHeight: 1,
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              {loading.value ? "\u2014" : String(card.value)}
-            </div>
-          </WidgetShell>
-        ))}
       </div>
 
       {/* Content area */}
