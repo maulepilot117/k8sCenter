@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import { DataTable } from "@/components/ui/DataTable.tsx";
 import {
   ProviderTypeBadge,
   StatusBadge,
@@ -197,84 +198,76 @@ export default function FluxProviders() {
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Type
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Channel / Address
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Status
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Created
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((p) => {
-                const key = `${p.namespace}/${p.name}`;
-                return (
-                  <tr key={key} class="hover:bg-hover/30">
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">{p.name}</div>
-                      {p.suspend && (
-                        <span
-                          class="text-xs"
-                          style={{ color: "var(--warning)" }}
-                        >
-                          suspended
-                        </span>
-                      )}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {p.namespace}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ProviderTypeBadge type={p.type} />
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[240px]">
-                      {p.channel || p.address || "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge
-                        status={p.suspend ? "suspended" : p.status}
-                      />
-                    </td>
-                    <td class="px-3 py-2 text-text-muted text-xs">
-                      {p.createdAt ? timeAgo(p.createdAt) : "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ActionsDropdown
-                        itemKey={key}
-                        suspended={p.suspend}
-                        openDropdown={crud.openDropdown}
-                        onEdit={() => openEdit(p)}
-                        onSuspendToggle={() => crud.handleSuspendToggle(p)}
-                        onDelete={() => {
-                          crud.deleteTarget.value = p;
-                        }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={[
+            {
+              key: "name",
+              label: "Name",
+              render: (p) => (
+                <div>
+                  <div class="font-medium text-text-primary">{p.name}</div>
+                  {p.suspend && (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      suspended
+                    </span>
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: "namespace",
+              label: "Namespace",
+              render: (p) => (
+                <span class="text-xs text-text-secondary">{p.namespace}</span>
+              ),
+            },
+            {
+              key: "type",
+              label: "Type",
+              render: (p) => <ProviderTypeBadge type={p.type} />,
+            },
+            {
+              key: "channel",
+              label: "Channel / Address",
+              class: "max-w-[240px] truncate",
+              render: (p) => (
+                <span class="text-xs text-text-secondary">
+                  {p.channel || p.address || "-"}
+                </span>
+              ),
+            },
+            {
+              key: "status",
+              label: "Status",
+              render: (p) => (
+                <StatusBadge status={p.suspend ? "suspended" : p.status} />
+              ),
+            },
+            {
+              key: "createdAt",
+              label: "Created",
+              render: (p) => (
+                <span class="text-xs text-text-muted">
+                  {p.createdAt ? timeAgo(p.createdAt) : "-"}
+                </span>
+              ),
+            },
+          ]}
+          data={displayed}
+          rowKey={(p) => `${p.namespace}/${p.name}`}
+          renderRowActions={(p) => (
+            <ActionsDropdown
+              itemKey={`${p.namespace}/${p.name}`}
+              suspended={p.suspend}
+              openDropdown={crud.openDropdown}
+              onEdit={() => openEdit(p)}
+              onSuspendToggle={() => crud.handleSuspendToggle(p)}
+              onDelete={() => {
+                crud.deleteTarget.value = p;
+              }}
+            />
+          )}
+        />
       )}
 
       <NotificationPagination

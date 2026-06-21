@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import { DataTable } from "@/components/ui/DataTable.tsx";
 import {
   SeverityBadge,
   StatusBadge,
@@ -220,90 +221,82 @@ export default function FluxAlerts() {
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Provider
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Severity
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Sources
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Status
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Created
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((a) => {
-                const key = `${a.namespace}/${a.name}`;
-                return (
-                  <tr key={key} class="hover:bg-hover/30">
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">{a.name}</div>
-                      {a.suspend && (
-                        <span
-                          class="text-xs"
-                          style={{ color: "var(--warning)" }}
-                        >
-                          suspended
-                        </span>
-                      )}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {a.namespace}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {a.providerRef}
-                    </td>
-                    <td class="px-3 py-2">
-                      <SeverityBadge severity={a.eventSeverity || "info"} />
-                    </td>
-                    <td class="px-3 py-2">
-                      <CountBadge items={a.eventSources} label="source" />
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge
-                        status={a.suspend ? "suspended" : a.status}
-                      />
-                    </td>
-                    <td class="px-3 py-2 text-text-muted text-xs">
-                      {a.createdAt ? timeAgo(a.createdAt) : "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ActionsDropdown
-                        itemKey={key}
-                        suspended={a.suspend}
-                        openDropdown={crud.openDropdown}
-                        onEdit={() => openEdit(a)}
-                        onSuspendToggle={() => crud.handleSuspendToggle(a)}
-                        onDelete={() => {
-                          crud.deleteTarget.value = a;
-                        }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          columns={[
+            {
+              key: "name",
+              label: "Name",
+              render: (a) => (
+                <div>
+                  <div class="font-medium text-text-primary">{a.name}</div>
+                  {a.suspend && (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      suspended
+                    </span>
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: "namespace",
+              label: "Namespace",
+              render: (a) => (
+                <span class="text-xs text-text-secondary">{a.namespace}</span>
+              ),
+            },
+            {
+              key: "providerRef",
+              label: "Provider",
+              render: (a) => (
+                <span class="text-xs text-text-secondary">{a.providerRef}</span>
+              ),
+            },
+            {
+              key: "eventSeverity",
+              label: "Severity",
+              render: (a) => (
+                <SeverityBadge severity={a.eventSeverity || "info"} />
+              ),
+            },
+            {
+              key: "eventSources",
+              label: "Sources",
+              render: (a) => (
+                <CountBadge items={a.eventSources} label="source" />
+              ),
+            },
+            {
+              key: "status",
+              label: "Status",
+              render: (a) => (
+                <StatusBadge status={a.suspend ? "suspended" : a.status} />
+              ),
+            },
+            {
+              key: "createdAt",
+              label: "Created",
+              render: (a) => (
+                <span class="text-xs text-text-muted">
+                  {a.createdAt ? timeAgo(a.createdAt) : "-"}
+                </span>
+              ),
+            },
+          ]}
+          data={displayed}
+          rowKey={(a) => `${a.namespace}/${a.name}`}
+          renderRowActions={(a) => (
+            <ActionsDropdown
+              itemKey={`${a.namespace}/${a.name}`}
+              suspended={a.suspend}
+              openDropdown={crud.openDropdown}
+              onEdit={() => openEdit(a)}
+              onSuspendToggle={() => crud.handleSuspendToggle(a)}
+              onDelete={() => {
+                crud.deleteTarget.value = a;
+              }}
+            />
+          )}
+        />
       )}
 
       <NotificationPagination

@@ -9,16 +9,16 @@ export const TOOL_COLORS: Record<string, string> = {
 
 export const SYNC_COLORS: Record<string, string> = {
   synced: "var(--success)",
-  outofsync: "var(--danger)",
+  outofsync: "var(--error)",
   progressing: "var(--accent)",
   stalled: "var(--warning)",
-  failed: "var(--danger)",
+  failed: "var(--error)",
   unknown: "var(--text-muted)",
 };
 
 export const HEALTH_COLORS: Record<string, string> = {
   healthy: "var(--success)",
-  degraded: "var(--danger)",
+  degraded: "var(--error)",
   progressing: "var(--accent)",
   suspended: "var(--text-muted)",
   unknown: "var(--text-muted)",

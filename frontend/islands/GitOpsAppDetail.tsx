@@ -22,6 +22,42 @@ import type {
   RevisionEntry,
 } from "@/lib/gitops-types.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
+import DetailShell from "@/components/k8s/DetailShell.tsx";
+import GlassCard from "@/components/ui/GlassCard.tsx";
+import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
+
+/** Map syncStatus string → DetailShell tone */
+const SYNC_TONE: Record<string, Tone> = {
+  synced: "ok",
+  outofsync: "crit",
+  progressing: "info",
+  stalled: "warn",
+  failed: "crit",
+  unknown: "neutral",
+};
+
+/** GitOps icon — minimal SVG */
+function GitOpsIcon() {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      style={{ color: "var(--accent)" }}
+    >
+      <circle cx="12" cy="12" r="3" />
+      <circle cx="12" cy="5" r="2" />
+      <circle cx="12" cy="19" r="2" />
+      <line x1="12" y1="7" x2="12" y2="9" />
+      <line x1="12" y1="15" x2="12" y2="17" />
+    </svg>
+  );
+}
 
 export default function GitOpsAppDetail({ id }: { id: string }) {
   const detail = useSignal<AppDetail | null>(null);
@@ -30,6 +66,7 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   const refreshing = useSignal(false);
   const actionInFlight = useSignal(false);
   const commits = useSignal<Record<string, CommitInfo>>({});
+  const activeTab = useSignal("overview");
 
   // Confirmation dialog state
   const confirmAction = useSignal<
@@ -213,12 +250,6 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
   if (error.value || !detail.value) {
     return (
       <div class="p-6">
-        <a
-          href="/gitops/applications"
-          class="text-sm text-brand hover:underline mb-4 inline-block"
-        >
-          &larr; Back to Applications
-        </a>
         <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted mb-4">
             {error.value ?? "Application not found"}
@@ -238,362 +269,478 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
     ? app.source.repoURL!.replace(/\.git$/, "")
     : null;
 
-  return (
-    <div class="p-6">
-      {/* Back link */}
-      <a
-        href="/gitops/applications"
-        class="text-sm text-brand hover:underline mb-4 inline-block"
+  const syncLabel = {
+    synced: "Synced",
+    outofsync: "Out of Sync",
+    progressing: "Progressing",
+    stalled: "Stalled",
+    failed: "Failed",
+    unknown: "Unknown",
+  }[app.syncStatus] ?? app.syncStatus;
+
+  const syncTone: Tone = SYNC_TONE[app.syncStatus] ?? "neutral";
+
+  /* ── Action buttons (passed to DetailShell as `actions` prop) ─── */
+  const actionButtons = (
+    <>
+      <Button
+        type="button"
+        variant="primary"
+        onClick={handleSync}
+        disabled={actionInFlight.value || isSyncing ||
+          (app.suspended && !isArgo)}
+        title={app.suspended && !isArgo
+          ? "Resume before reconciling"
+          : isSyncing
+          ? "Sync in progress"
+          : undefined}
       >
-        &larr; Back to Applications
-      </a>
+        {isArgo ? "Sync" : "Reconcile"}
+      </Button>
 
-      {/* Header */}
-      <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3 flex-wrap">
-          <h1 class="text-2xl font-bold text-text-primary">{app.name}</h1>
-          <ToolBadge tool={app.tool as string} />
-          <SyncStatusBadge status={app.syncStatus} />
-          <HealthStatusBadge status={app.healthStatus} />
-          {app.suspended && (
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium text-text-muted bg-bg-elevated">
-              Suspended
-            </span>
-          )}
-        </div>
-
-        {/* Action buttons */}
-        <div class="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="primary"
-            onClick={handleSync}
-            disabled={actionInFlight.value || isSyncing ||
-              (app.suspended && !isArgo)}
-            title={app.suspended && !isArgo
-              ? "Resume before reconciling"
-              : isSyncing
-              ? "Sync in progress"
-              : undefined}
-          >
-            {isArgo ? "Sync" : "Reconcile"}
-          </Button>
-
-          {app.suspended
-            ? (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => handleSuspend(false)}
-                disabled={actionInFlight.value}
-              >
-                Resume
-              </Button>
-            )
-            : (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => handleSuspend(true)}
-                disabled={actionInFlight.value}
-              >
-                Suspend
-              </Button>
-            )}
-
+      {app.suspended
+        ? (
           <Button
             type="button"
             variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value || actionInFlight.value}
+            onClick={() => handleSuspend(false)}
+            disabled={actionInFlight.value}
           >
-            {refreshing.value ? "Refreshing..." : "Refresh"}
+            Resume
           </Button>
-        </div>
-      </div>
+        )
+        : (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => handleSuspend(true)}
+            disabled={actionInFlight.value}
+          >
+            Suspend
+          </Button>
+        )}
 
-      {/* Source panel */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
-        <h2 class="text-sm font-medium text-text-muted mb-3">Source</h2>
-        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-          {app.source.repoURL && (
-            <div>
-              <dt class="text-text-muted">Repository</dt>
-              <dd class="text-text-primary">
-                {/^https?:\/\//i.test(app.source.repoURL)
-                  ? (
-                    <a
-                      href={app.source.repoURL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="text-brand hover:underline break-all"
-                    >
-                      {app.source.repoURL}
-                    </a>
-                  )
-                  : <span class="break-all">{app.source.repoURL}</span>}
-              </dd>
-            </div>
-          )}
-          {app.source.path && (
-            <div>
-              <dt class="text-text-muted">Path</dt>
-              <dd class="font-mono text-text-primary">{app.source.path}</dd>
-            </div>
-          )}
-          {app.source.targetRevision && (
-            <div>
-              <dt class="text-text-muted">Target Revision</dt>
-              <dd class="font-mono text-text-primary">
-                {app.source.targetRevision}
-              </dd>
-            </div>
-          )}
-          {app.source.chartName && (
-            <div>
-              <dt class="text-text-muted">Chart</dt>
-              <dd class="text-text-primary">
-                {app.source.chartName}
-                {app.source.chartVersion ? ` v${app.source.chartVersion}` : ""}
-              </dd>
-            </div>
-          )}
-          {app.destinationNamespace && (
-            <div>
-              <dt class="text-text-muted">Destination Namespace</dt>
-              <dd class="text-text-primary">{app.destinationNamespace}</dd>
-            </div>
-          )}
-          {app.destinationCluster && (
-            <div>
-              <dt class="text-text-muted">Destination Cluster</dt>
-              <dd class="text-text-primary">{app.destinationCluster}</dd>
-            </div>
-          )}
-        </dl>
-      </div>
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={handleRefresh}
+        disabled={refreshing.value || actionInFlight.value}
+      >
+        {refreshing.value ? "Refreshing..." : "Refresh"}
+      </Button>
+    </>
+  );
 
-      {/* Managed Resources table */}
-      <div class="mb-6">
-        <h2 class="text-lg font-semibold text-text-primary mb-3">
-          Managed Resources
-          {resources && resources.length > 0 && (
-            <span class="text-sm font-normal text-text-muted ml-2">
-              ({resources.length})
-            </span>
-          )}
-        </h2>
-        {resources && resources.length > 0
-          ? (
-            <div class="overflow-x-auto rounded-lg border border-border-primary">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="border-b border-border-primary bg-surface">
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Kind
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Name
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Namespace
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Status
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Health
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border-subtle">
-                  {resources.map((r: ManagedResource, i: number) => {
-                    const href = resourceHref(r.kind, r.namespace, r.name);
-                    const syncColor = SYNC_COLORS[r.status.toLowerCase()] ??
-                      "var(--text-secondary)";
-                    const healthColor = r.health
-                      ? (HEALTH_COLORS[r.health.toLowerCase()] ??
-                        "var(--text-secondary)")
-                      : undefined;
-                    return (
-                      <tr
-                        key={`${r.kind}-${r.namespace}-${r.name}-${i}`}
-                        class="hover:bg-hover/30"
+  /* ── Overview tab ─────────────────────────────────────────────── */
+  const overviewPanel = (
+    <GlassCard>
+      <div class="flex items-center gap-2 flex-wrap mb-4">
+        <ToolBadge tool={app.tool as string} />
+        <SyncStatusBadge status={app.syncStatus} />
+        <HealthStatusBadge status={app.healthStatus} />
+        {app.suspended && (
+          <span
+            class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium"
+            style={{
+              color: "var(--text-muted)",
+              background: "var(--bg-elevated)",
+            }}
+          >
+            Suspended
+          </span>
+        )}
+      </div>
+      <h2
+        class="text-xs font-semibold uppercase tracking-wider mb-3"
+        style={{ color: "var(--text-muted)" }}
+      >
+        Source
+      </h2>
+      <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+        {app.source.repoURL && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>Repository</dt>
+            <dd style={{ color: "var(--text-primary)" }}>
+              {/^https?:\/\//i.test(app.source.repoURL)
+                ? (
+                  <a
+                    href={app.source.repoURL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="hover:underline break-all"
+                    style={{ color: "var(--accent)" }}
+                  >
+                    {app.source.repoURL}
+                  </a>
+                )
+                : <span class="break-all">{app.source.repoURL}</span>}
+            </dd>
+          </div>
+        )}
+        {app.source.path && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>Path</dt>
+            <dd class="font-mono" style={{ color: "var(--text-primary)" }}>
+              {app.source.path}
+            </dd>
+          </div>
+        )}
+        {app.source.targetRevision && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>Target Revision</dt>
+            <dd class="font-mono" style={{ color: "var(--text-primary)" }}>
+              {app.source.targetRevision}
+            </dd>
+          </div>
+        )}
+        {app.source.chartName && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>Chart</dt>
+            <dd style={{ color: "var(--text-primary)" }}>
+              {app.source.chartName}
+              {app.source.chartVersion ? ` v${app.source.chartVersion}` : ""}
+            </dd>
+          </div>
+        )}
+        {app.destinationNamespace && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>
+              Destination Namespace
+            </dt>
+            <dd style={{ color: "var(--text-primary)" }}>
+              {app.destinationNamespace}
+            </dd>
+          </div>
+        )}
+        {app.destinationCluster && (
+          <div>
+            <dt style={{ color: "var(--text-muted)" }}>Destination Cluster</dt>
+            <dd style={{ color: "var(--text-primary)" }}>
+              {app.destinationCluster}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </GlassCard>
+  );
+
+  /* ── Resources tab ────────────────────────────────────────────── */
+  const resourcesPanel = resources && resources.length > 0
+    ? (
+      <div
+        class="overflow-x-auto rounded-lg border"
+        style={{ borderColor: "var(--border-primary)" }}
+      >
+        <table class="w-full text-sm">
+          <thead>
+            <tr
+              class="border-b"
+              style={{
+                borderColor: "var(--border-primary)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Kind
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Name
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Namespace
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Status
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Health
+              </th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border-subtle">
+            {resources.map((r: ManagedResource, i: number) => {
+              const href = resourceHref(r.kind, r.namespace, r.name);
+              const syncColor = SYNC_COLORS[r.status.toLowerCase()] ??
+                "var(--text-secondary)";
+              const healthColor = r.health
+                ? (HEALTH_COLORS[r.health.toLowerCase()] ??
+                  "var(--text-secondary)")
+                : undefined;
+              return (
+                <tr
+                  key={`${r.kind}-${r.namespace}-${r.name}-${i}`}
+                  class="hover:bg-hover/30"
+                >
+                  <td
+                    class="px-3 py-2"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    {r.kind}
+                  </td>
+                  <td class="px-3 py-2">
+                    {href
+                      ? (
+                        <a
+                          href={href}
+                          class="hover:underline"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          {r.name}
+                        </a>
+                      )
+                      : (
+                        <span style={{ color: "var(--text-primary)" }}>
+                          {r.name}
+                        </span>
+                      )}
+                  </td>
+                  <td class="px-3 py-2" style={{ color: "var(--text-muted)" }}>
+                    {r.namespace ?? "-"}
+                  </td>
+                  <td class="px-3 py-2">
+                    <span style={{ color: syncColor }}>{r.status}</span>
+                  </td>
+                  <td class="px-3 py-2">
+                    {r.health
+                      ? (
+                        <span style={{ color: healthColor }}>
+                          {r.health}
+                        </span>
+                      )
+                      : <span style={{ color: "var(--text-muted)" }}>-</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    )
+    : (
+      <div
+        class="text-center py-8 rounded-lg border"
+        style={{
+          borderColor: "var(--border-primary)",
+          background: "var(--bg-elevated)",
+        }}
+      >
+        <p style={{ color: "var(--text-muted)" }}>
+          No managed resources found.
+        </p>
+      </div>
+    );
+
+  /* ── History tab ──────────────────────────────────────────────── */
+  const historyPanel = history && history.length > 0
+    ? (
+      <div
+        class="overflow-x-auto rounded-lg border"
+        style={{ borderColor: "var(--border-primary)" }}
+      >
+        <table class="w-full text-sm">
+          <thead>
+            <tr
+              class="border-b"
+              style={{
+                borderColor: "var(--border-primary)",
+                background: "var(--bg-surface)",
+              }}
+            >
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Revision
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Status
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Message
+              </th>
+              <th
+                class="px-3 py-2 text-left text-xs font-medium"
+                style={{ color: "var(--text-muted)" }}
+              >
+                Deployed At
+              </th>
+              {isArgo && (
+                <th
+                  class="px-3 py-2 text-right text-xs font-medium"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Action
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border-subtle">
+            {history.map((h: RevisionEntry, i: number) => {
+              const syncColor = SYNC_COLORS[h.status.toLowerCase()] ??
+                "var(--text-secondary)";
+              const ci = commits.value[h.revision];
+              const commitUrl = ci?.webUrl?.startsWith("https://")
+                ? ci.webUrl
+                : undefined;
+              const shortSha = h.revision.length > 7
+                ? h.revision.slice(0, 7)
+                : h.revision;
+              const prevRevision = i > 0 ? history[i - 1].revision : null;
+              return (
+                <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
+                  <td
+                    class="px-3 py-2 font-mono"
+                    style={{ color: "var(--text-primary)" }}
+                  >
+                    {commitUrl
+                      ? (
+                        <a
+                          href={commitUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="hover:underline"
+                          style={{ color: "var(--accent)" }}
+                        >
+                          {shortSha}
+                        </a>
+                      )
+                      : shortSha}
+                    {compareBase && prevRevision && (
+                      <a
+                        href={`${compareBase}/compare/${prevRevision}...${h.revision}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="ml-2 text-xs hover:underline"
+                        style={{ color: "var(--text-muted)" }}
+                        title="Compare with previous deployment"
                       >
-                        <td class="px-3 py-2 text-text-secondary">{r.kind}</td>
-                        <td class="px-3 py-2">
-                          {href
-                            ? (
-                              <a
-                                href={href}
-                                class="text-brand hover:underline"
-                              >
-                                {r.name}
-                              </a>
-                            )
-                            : <span class="text-text-primary">{r.name}</span>}
-                        </td>
-                        <td class="px-3 py-2 text-text-muted">
-                          {r.namespace ?? "-"}
-                        </td>
-                        <td class="px-3 py-2">
-                          <span style={{ color: syncColor }}>{r.status}</span>
-                        </td>
-                        <td class="px-3 py-2">
-                          {r.health
-                            ? (
-                              <span style={{ color: healthColor }}>
-                                {r.health}
-                              </span>
-                            )
-                            : <span class="text-text-muted">-</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )
-          : (
-            <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
-              <p class="text-text-muted">No managed resources found.</p>
-            </div>
-          )}
-      </div>
-
-      {/* Revision History */}
-      <div>
-        <h2 class="text-lg font-semibold text-text-primary mb-3">
-          Revision History
-        </h2>
-        {history && history.length > 0
-          ? (
-            <div class="overflow-x-auto rounded-lg border border-border-primary">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="border-b border-border-primary bg-surface">
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Revision
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Status
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Message
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Deployed At
-                    </th>
-                    {isArgo && (
-                      <th class="px-3 py-2 text-right text-xs font-medium text-text-muted">
-                        Action
-                      </th>
+                        diff
+                      </a>
                     )}
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border-subtle">
-                  {history.map((h: RevisionEntry, i: number) => {
-                    const syncColor = SYNC_COLORS[h.status.toLowerCase()] ??
-                      "var(--text-secondary)";
-                    const ci = commits.value[h.revision];
-                    const commitUrl = ci?.webUrl?.startsWith("https://")
-                      ? ci.webUrl
-                      : undefined;
-                    const shortSha = h.revision.length > 7
-                      ? h.revision.slice(0, 7)
-                      : h.revision;
-                    const prevRevision = i > 0 ? history[i - 1].revision : null;
-                    return (
-                      <tr key={`${h.revision}-${i}`} class="hover:bg-hover/30">
-                        <td class="px-3 py-2 font-mono text-text-primary">
-                          {commitUrl
-                            ? (
-                              <a
-                                href={commitUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="hover:underline text-brand"
-                              >
-                                {shortSha}
-                              </a>
-                            )
-                            : shortSha}
-                          {compareBase && prevRevision && (
-                            <a
-                              href={`${compareBase}/compare/${prevRevision}...${h.revision}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              class="ml-2 text-xs text-text-muted hover:text-brand"
-                              title="Compare with previous deployment"
-                            >
-                              diff
-                            </a>
-                          )}
-                        </td>
-                        <td class="px-3 py-2">
-                          <span style={{ color: syncColor }}>{h.status}</span>
-                        </td>
-                        <td class="px-3 py-2 text-text-secondary max-w-xs">
-                          {ci
-                            ? (
-                              <div class="min-w-0">
-                                <div class="truncate text-sm text-text-primary">
-                                  {commitUrl
-                                    ? (
-                                      <a
-                                        href={commitUrl}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        class="hover:underline"
-                                      >
-                                        {ci.title}
-                                      </a>
-                                    )
-                                    : ci.title}
-                                </div>
-                                <div class="text-xs text-text-muted truncate">
-                                  {ci.authorName}
-                                </div>
-                              </div>
-                            )
-                            : (h.message ?? "-")}
-                        </td>
-                        <td class="px-3 py-2 text-text-muted">
-                          {h.deployedAt
-                            ? new Date(h.deployedAt).toLocaleString()
-                            : "-"}
-                        </td>
-                        {isArgo && (
-                          <td class="px-3 py-2 text-right">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleRollback(h.revision, h.deployedAt)}
-                              disabled={actionInFlight.value || isSyncing}
-                              class="text-xs text-brand hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              Rollback
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )
-          : (
-            <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
-              <p class="text-text-muted">
-                Revision history not available for this application type.
-              </p>
-            </div>
-          )}
+                  </td>
+                  <td class="px-3 py-2">
+                    <span style={{ color: syncColor }}>{h.status}</span>
+                  </td>
+                  <td
+                    class="px-3 py-2 max-w-xs"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    {ci
+                      ? (
+                        <div class="min-w-0">
+                          <div
+                            class="truncate text-sm"
+                            style={{ color: "var(--text-primary)" }}
+                          >
+                            {commitUrl
+                              ? (
+                                <a
+                                  href={commitUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  class="hover:underline"
+                                >
+                                  {ci.title}
+                                </a>
+                              )
+                              : ci.title}
+                          </div>
+                          <div
+                            class="text-xs truncate"
+                            style={{ color: "var(--text-muted)" }}
+                          >
+                            {ci.authorName}
+                          </div>
+                        </div>
+                      )
+                      : (h.message ?? "-")}
+                  </td>
+                  <td class="px-3 py-2" style={{ color: "var(--text-muted)" }}>
+                    {h.deployedAt
+                      ? new Date(h.deployedAt).toLocaleString()
+                      : "-"}
+                  </td>
+                  {isArgo && (
+                    <td class="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleRollback(h.revision, h.deployedAt)}
+                        disabled={actionInFlight.value || isSyncing}
+                        class="text-xs hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        Rollback
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
+    )
+    : (
+      <div
+        class="text-center py-8 rounded-lg border"
+        style={{
+          borderColor: "var(--border-primary)",
+          background: "var(--bg-elevated)",
+        }}
+      >
+        <p style={{ color: "var(--text-muted)" }}>
+          Revision history not available for this application type.
+        </p>
+      </div>
+    );
 
-      {/* Confirmation dialog */}
+  return (
+    <>
+      <DetailShell
+        icon={<GitOpsIcon />}
+        title={app.name}
+        subtitle={`${
+          isArgo ? "Argo CD" : "Flux"
+        } · ${app.namespace} · ${app.kind}`}
+        status={{ label: syncLabel, tone: syncTone }}
+        actions={actionButtons}
+        tabs={[
+          { id: "overview", label: "Overview" },
+          { id: "resources", label: `Resources (${resources?.length ?? 0})` },
+          { id: "history", label: "History" },
+        ]}
+        active={activeTab.value}
+        onTab={(id) => {
+          activeTab.value = id;
+        }}
+      >
+        {activeTab.value === "overview" && overviewPanel}
+        {activeTab.value === "resources" && resourcesPanel}
+        {activeTab.value === "history" && historyPanel}
+      </DetailShell>
+
+      {/* Confirmation dialog — floats above DetailShell */}
       {confirmAction.value && (
         <ConfirmDialog
           title={confirmAction.value.title}
@@ -607,6 +754,6 @@ export default function GitOpsAppDetail({ id }: { id: string }) {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
