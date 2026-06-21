@@ -8,6 +8,9 @@ import SubNav from "@/islands/SubNav.tsx";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import SnapshotList from "@/islands/SnapshotList.tsx";
 import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import Donut from "@/components/charts/Donut.tsx";
+import BarRow from "@/components/charts/BarRow.tsx";
 
 interface SummaryData {
   totalPVCs: number;
@@ -207,43 +210,86 @@ export default function StorageDashboard(
     },
   ];
 
+  // Donut segments for PVC phase breakdown (used on Overview)
+  const pvcDonutSegments = [
+    {
+      value: s.boundPVCs,
+      color: "var(--success)",
+      label: "Bound",
+    },
+    {
+      value: s.pendingPVCs,
+      color: "var(--warning)",
+      label: "Pending",
+    },
+    {
+      value: Math.max(0, s.totalPVCs - s.boundPVCs - s.pendingPVCs),
+      color: "var(--error)",
+      label: "Lost",
+    },
+  ];
+
   return (
-    <div class="flex flex-col h-full">
-      {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Page header \u2014 24/700 per archetype spec */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+          marginBottom: "20px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            Storage
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            {isOverview ? "Storage" : title}
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             Manage persistent volumes, claims, storage classes, and snapshots
           </p>
         </div>
-        <div class="flex gap-2">
+        <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
           <a
             href="/storage/pvcs/new"
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
+              fontWeight: 600,
               color: "var(--bg-base)",
               background: "var(--accent)",
-              borderRadius: "6px",
+              borderRadius: "9px",
               textDecoration: "none",
               border: "none",
               cursor: "pointer",
+              whiteSpace: "nowrap",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
@@ -255,20 +301,21 @@ export default function StorageDashboard(
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--text-secondary)",
+              fontWeight: 600,
+              color: "var(--text-primary)",
               background: "transparent",
-              borderRadius: "6px",
+              borderRadius: "9px",
               textDecoration: "none",
               border: "1px solid var(--border-primary)",
               cursor: "pointer",
+              whiteSpace: "nowrap",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
@@ -284,57 +331,58 @@ export default function StorageDashboard(
       {/* Sub-navigation */}
       <SubNav tabs={flattenGroups(storageSection)} currentPath={currentPath} />
 
-      {/* Summary strip */}
+      {/* Summary strip \u2014 WidgetShell (glass) cards per dashboard archetype */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
           gap: "var(--grid-gap, 12px)",
           marginBottom: "20px",
         }}
       >
         {summaryCards.map((card) => (
-          <div
-            key={card.label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              padding: "14px 16px",
-              borderRadius: "10px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <SummaryRing
-              value={loading.value ? 0 : card.ringValue}
-              max={card.max}
-              size={40}
-              color={card.color}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {card.label}
-              </div>
-              <div
-                style={{
-                  fontSize: "16px",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  color: card.color,
-                }}
-              >
-                {loading.value ? "\u2014" : card.displayValue}
+          <WidgetShell key={card.label} padding={14}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <SummaryRing
+                value={loading.value ? 0 : card.ringValue}
+                max={card.max}
+                size={40}
+                color={card.color}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    color: "var(--text-muted)",
+                    marginBottom: "2px",
+                  }}
+                >
+                  {card.label}
+                </div>
+                <div
+                  style={{
+                    fontSize: "20px",
+                    fontWeight: 700,
+                    fontFamily: "var(--font-mono)",
+                    color: card.color,
+                    lineHeight: 1.1,
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {loading.value ? "\u2014" : card.displayValue}
+                </div>
               </div>
             </div>
-          </div>
+          </WidgetShell>
         ))}
       </div>
 
@@ -342,12 +390,160 @@ export default function StorageDashboard(
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {isOverview
           ? (
-            <ResourceTable
-              kind="pvcs"
-              title="Persistent Volume Claims"
-              createHref="/storage/pvcs/new"
-              hideHeader
-            />
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--grid-gap, 20px)",
+              }}
+            >
+              {/* Overview charts row \u2014 glass widgets */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "var(--grid-gap, 12px)",
+                }}
+              >
+                {/* PVC Phase donut */}
+                <WidgetShell
+                  title="PVC Health"
+                  style={{ flex: "1 1 220px", minWidth: "200px" }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "20px",
+                    }}
+                  >
+                    <Donut
+                      segments={loading.value
+                        ? [{ value: 1, color: "var(--bg-elevated)" }]
+                        : pvcDonutSegments}
+                      size={96}
+                      thickness={14}
+                      center={
+                        <div style={{ textAlign: "center" }}>
+                          <div
+                            style={{
+                              fontSize: "20px",
+                              fontWeight: 700,
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--text-primary)",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {loading.value ? "\u2014" : s.totalPVCs}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 600,
+                              letterSpacing: "0.05em",
+                              textTransform: "uppercase",
+                              color: "var(--text-muted)",
+                            }}
+                          >
+                            total
+                          </div>
+                        </div>
+                      }
+                    />
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "6px",
+                      }}
+                    >
+                      {pvcDonutSegments.map((seg) => (
+                        <div
+                          key={seg.label}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "7px",
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: "8px",
+                              height: "8px",
+                              borderRadius: "50%",
+                              background: seg.color,
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-muted)",
+                              minWidth: "44px",
+                            }}
+                          >
+                            {seg.label}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: "12px",
+                              fontWeight: 600,
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--text-primary)",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {loading.value ? "\u2014" : seg.value}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </WidgetShell>
+
+                {/* Storage resources bar chart */}
+                <WidgetShell
+                  title="Storage Resources"
+                  style={{ flex: "2 1 320px", minWidth: "280px" }}
+                >
+                  <div style={{ paddingTop: "4px" }}>
+                    <BarRow
+                      label="PVCs"
+                      value={loading.value ? 0 : s.boundPVCs}
+                      max={Math.max(s.totalPVCs, 1)}
+                      suffix={loading.value
+                        ? "\u2014"
+                        : `${s.boundPVCs}/${s.totalPVCs}`}
+                      color="var(--success)"
+                    />
+                    <BarRow
+                      label="Volumes"
+                      value={loading.value ? 0 : s.totalPVs}
+                      max={Math.max(s.totalPVs, 1)}
+                      suffix={loading.value ? "\u2014" : String(s.totalPVs)}
+                      color="var(--accent)"
+                    />
+                    <BarRow
+                      label="StorageClasses"
+                      value={loading.value ? 0 : s.storageClasses}
+                      max={Math.max(s.storageClasses, 1)}
+                      suffix={loading.value
+                        ? "\u2014"
+                        : String(s.storageClasses)}
+                      color="var(--accent-secondary, var(--info))"
+                    />
+                  </div>
+                </WidgetShell>
+              </div>
+
+              {/* PVC list \u2014 solid surface */}
+              <ResourceTable
+                kind="pvcs"
+                title="Persistent Volume Claims"
+                createHref="/storage/pvcs/new"
+                hideHeader
+              />
+            </div>
           )
           : isSnapshots
           ? <SnapshotList />
