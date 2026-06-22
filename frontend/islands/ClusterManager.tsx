@@ -4,11 +4,15 @@ import { useEffect } from "preact/hooks";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import { Input } from "@/components/ui/Input.tsx";
-import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
+import type { Column, Row } from "@/components/ui/ResourceTable.tsx";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
+import Toggle from "@/components/ui/form/Toggle.tsx";
 
 interface ClusterInfo {
   id: string;
@@ -115,7 +119,9 @@ export default function ClusterManager() {
 
   if (loading.value) {
     return (
-      <div class="flex justify-center py-12">
+      <div
+        style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
+      >
         <Spinner class="text-accent" />
       </div>
     );
@@ -124,84 +130,133 @@ export default function ClusterManager() {
   // Add Cluster Wizard
   if (step.value === "connect") {
     return (
-      <Card title="Add Cluster">
-        <div class="space-y-4">
+      <WidgetShell title="Add Cluster">
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           {error.value && <ErrorBanner message={error.value} />}
 
-          <Input
-            label="Cluster Name"
-            type="text"
-            placeholder="production-us-east"
-            value={name.value}
-            onInput={(e) => {
-              name.value = (e.target as HTMLInputElement).value;
-            }}
-            required
-          />
-          <Input
-            label="Display Name (optional)"
-            type="text"
-            placeholder="Production US East"
-            value={displayName.value}
-            onInput={(e) => {
-              displayName.value = (e.target as HTMLInputElement).value;
-            }}
-          />
-          <Input
-            label="API Server URL"
-            type="url"
-            placeholder="https://k8s-api.example.com:6443"
-            value={apiServerUrl.value}
-            onInput={(e) => {
-              apiServerUrl.value = (e.target as HTMLInputElement).value;
-            }}
-            required
-          />
-          <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
-              Service Account Token
-            </label>
+          <Field label="Cluster Name">
+            <TextField
+              value={name.value}
+              onInput={(v) => {
+                name.value = v;
+              }}
+              placeholder="production-us-east"
+            />
+          </Field>
+
+          <Field label="Display Name" hint="Optional human-readable label">
+            <TextField
+              value={displayName.value}
+              onInput={(v) => {
+                displayName.value = v;
+              }}
+              placeholder="Production US East"
+            />
+          </Field>
+
+          <Field label="API Server URL">
+            <TextField
+              value={apiServerUrl.value}
+              onInput={(v) => {
+                apiServerUrl.value = v;
+              }}
+              placeholder="https://k8s-api.example.com:6443"
+            />
+          </Field>
+
+          <Field label="Service Account Token">
             <textarea
-              class="w-full rounded-md border border-border-primary px-3 py-2 text-sm font-mono bg-surface text-text-secondary"
-              rows={3}
-              placeholder="eyJhbGciOiJSUzI1NiIs..."
               value={token.value}
               onInput={(e) => {
                 token.value = (e.target as HTMLTextAreaElement).value;
               }}
-            />
-          </div>
-          <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
-              CA Certificate (optional with insecure TLS opt-in below)
-            </label>
-            <textarea
-              class="w-full rounded-md border border-border-primary px-3 py-2 text-sm font-mono bg-surface text-text-secondary"
               rows={3}
-              placeholder="-----BEGIN CERTIFICATE-----"
+              placeholder="eyJhbGciOiJSUzI1NiIs..."
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: "9px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+                color: "var(--text-primary)",
+                fontSize: "13.5px",
+                fontFamily: "var(--font-mono)",
+                outline: "none",
+                resize: "vertical",
+                boxSizing: "border-box",
+              }}
+            />
+          </Field>
+
+          <Field
+            label="CA Certificate"
+            hint="Optional when insecure TLS opt-in is enabled below"
+          >
+            <textarea
               value={caCert.value}
               onInput={(e) => {
                 caCert.value = (e.target as HTMLTextAreaElement).value;
               }}
+              rows={3}
+              placeholder="-----BEGIN CERTIFICATE-----"
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: "9px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-subtle)",
+                color: "var(--text-primary)",
+                fontSize: "13.5px",
+                fontFamily: "var(--font-mono)",
+                outline: "none",
+                resize: "vertical",
+                boxSizing: "border-box",
+              }}
             />
-          </div>
+          </Field>
+
           {/* F#2 — admin-only opt-in for unverified TLS. Default-off. */}
-          <div class="rounded-md border border-warning bg-warning-dim p-3 text-sm">
-            <label class="flex items-start gap-2 text-text-primary cursor-pointer">
-              <input
-                type="checkbox"
-                class="mt-0.5"
+          <div
+            style={{
+              borderRadius: "9px",
+              border: "1px solid var(--warning)",
+              background: "var(--warning-dim)",
+              padding: "12px",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "10px",
+                cursor: "pointer",
+              }}
+            >
+              <Toggle
                 checked={allowInsecureTLS.value}
-                onChange={(e) => {
-                  allowInsecureTLS.value =
-                    (e.target as HTMLInputElement).checked;
+                onChange={(v) => {
+                  allowInsecureTLS.value = v;
                 }}
               />
               <span>
-                <span class="font-medium">
+                <span
+                  style={{
+                    display: "block",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    color: "var(--text-primary)",
+                  }}
+                >
                   Allow insecure TLS (self-signed CA, homelab only)
                 </span>
-                <span class="block mt-1 text-xs text-warning">
+                <span
+                  style={{
+                    display: "block",
+                    marginTop: "4px",
+                    fontSize: "12px",
+                    color: "var(--warning)",
+                  }}
+                >
                   Bearer tokens will be sent over an unverified TLS connection.
                   Only enable for trusted homelab self-signed certs. Admin role
                   required.
@@ -209,7 +264,8 @@ export default function ClusterManager() {
               </span>
             </label>
           </div>
-          <div class="flex gap-3">
+
+          <div style={{ display: "flex", gap: "12px", paddingTop: "4px" }}>
             <Button
               type="button"
               variant="primary"
@@ -231,19 +287,190 @@ export default function ClusterManager() {
             </Button>
           </div>
         </div>
-      </Card>
+      </WidgetShell>
     );
   }
 
   // Cluster List
+  const columns: Column[] = [
+    { key: "name", label: "Cluster", width: "2fr" },
+    { key: "version", label: "Version", width: "120px" },
+    { key: "nodes", label: "Nodes", width: "80px", align: "right" },
+    { key: "status", label: "Status", width: "140px" },
+    { key: "actions", label: "", width: "160px", align: "right" },
+  ];
+
+  const rows: Row[] = clusters.value.map((c) => ({
+    id: c.id,
+    cells: {
+      name: (
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-primary)",
+            }}
+          >
+            <span
+              style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "50%",
+                flexShrink: 0,
+                background: c.status === "connected"
+                  ? "var(--success)"
+                  : "var(--error)",
+              }}
+            />
+            {c.displayName || c.name}
+            {c.isLocal && (
+              <span
+                style={{
+                  borderRadius: "6px",
+                  padding: "1px 6px",
+                  fontSize: "11px",
+                  background: "var(--accent-dim)",
+                  color: "var(--accent)",
+                }}
+              >
+                local
+              </span>
+            )}
+            {c.allowInsecureTLS && !c.isLocal && (
+              <span
+                style={{
+                  borderRadius: "6px",
+                  padding: "1px 6px",
+                  fontSize: "11px",
+                  background: "var(--error-dim)",
+                  color: "var(--error)",
+                }}
+                title="TLS verification disabled — bearer tokens are sent over an unverified connection"
+              >
+                ⚠ Insecure TLS
+              </span>
+            )}
+          </div>
+          <div
+            style={{
+              marginTop: "2px",
+              fontSize: "12px",
+              color: "var(--text-muted)",
+            }}
+          >
+            {c.apiServerUrl || c.id}
+            {c.lastProbedAt && (
+              <span>
+                {` · checked ${new Date(c.lastProbedAt).toLocaleTimeString()}`}
+              </span>
+            )}
+          </div>
+          {c.status !== "connected" && c.statusMessage && (
+            <div
+              style={{
+                marginTop: "2px",
+                fontSize: "12px",
+                color: "var(--error)",
+              }}
+            >
+              {c.statusMessage}
+            </div>
+          )}
+        </div>
+      ),
+      version: (
+        <span
+          style={{
+            fontSize: "13px",
+            color: "var(--text-muted)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {c.k8sVersion || "—"}
+        </span>
+      ),
+      nodes: (
+        <span
+          style={{
+            fontSize: "13px",
+            color: "var(--text-primary)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {c.nodeCount}
+        </span>
+      ),
+      status: (
+        <StatusBadge
+          label={c.status}
+          tone={c.status === "connected" ? "ok" : "crit"}
+        />
+      ),
+      actions: !c.isLocal
+        ? (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: "6px",
+            }}
+          >
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={async () => {
+                try {
+                  const res = await apiPost<ClusterInfo>(
+                    `/v1/clusters/${c.id}/test`,
+                  );
+                  clusters.value = clusters.value.map((cl) =>
+                    cl.id === c.id ? { ...cl, ...res.data } : cl
+                  );
+                  showToast(
+                    res.data.status === "connected"
+                      ? "Connection successful"
+                      : "Connection failed",
+                    res.data.status === "connected" ? "success" : "error",
+                  );
+                } catch {
+                  showToast("Test failed", "error");
+                }
+              }}
+            >
+              Test
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              size="sm"
+              onClick={() => deleteCluster(c.id)}
+            >
+              Remove
+            </Button>
+          </div>
+        )
+        : null,
+    },
+  }));
+
   return (
-    <div class="space-y-4">
-      <div class="flex items-center justify-between">
-        <p class="text-sm text-text-muted">
-          {clusters.value.length}
-          {""}
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+          {clusters.value.length}{" "}
           cluster{clusters.value.length !== 1 ? "s" : ""} registered
-        </p>
+        </span>
         <Button
           type="button"
           variant="primary"
@@ -255,110 +482,29 @@ export default function ClusterManager() {
         </Button>
       </div>
 
-      <div class="divide-y divide-border-primary rounded-lg border border-border-primary">
-        {clusters.value.map((c) => (
+      {clusters.value.length === 0
+        ? (
           <div
-            key={c.id}
-            class="flex items-center justify-between px-4 py-3"
+            style={{
+              background: "var(--bg-surface)",
+              border: "1px solid var(--border-primary)",
+              borderRadius: "16px",
+              padding: "48px",
+              textAlign: "center",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
           >
-            <div class="flex items-center gap-3">
-              <span
-                class={`h-2.5 w-2.5 rounded-full ${
-                  c.status === "connected" ? "bg-success" : "bg-danger"
-                }`}
-              />
-              <div>
-                <p class="text-sm font-medium text-text-primary">
-                  {c.displayName || c.name}
-                  {c.isLocal && (
-                    <span class="ml-2 rounded px-1.5 py-0.5 text-xs bg-accent-dim text-accent">
-                      local
-                    </span>
-                  )}
-                  {c.allowInsecureTLS && !c.isLocal && (
-                    <span
-                      // F#14 (round-3) — was bg-warning-dim/text-warning
-                      // (amber). Insecure-TLS clusters leak bearer tokens
-                      // over an unverified connection; amber under-sells
-                      // the risk relative to a misconfigured-production
-                      // worst case. Red/error tokens match the severity
-                      // operators should perceive when scanning the list.
-                      class="ml-2 rounded px-1.5 py-0.5 text-xs bg-error-dim text-error"
-                      title="TLS verification disabled — bearer tokens are sent over an unverified connection"
-                    >
-                      ⚠ Insecure TLS
-                    </span>
-                  )}
-                </p>
-                <p class="text-xs text-text-muted">
-                  {c.k8sVersion || "unknown"} &middot; {c.nodeCount}
-                  {""}
-                  nodes &middot; {c.apiServerUrl || c.id}
-                  {c.lastProbedAt && (
-                    <span>
-                      {` · checked ${
-                        new Date(c.lastProbedAt).toLocaleTimeString()
-                      }`}
-                    </span>
-                  )}
-                </p>
-                {c.status !== "connected" && c.statusMessage && (
-                  <p class="text-xs text-danger mt-0.5">{c.statusMessage}</p>
-                )}
-              </div>
-            </div>
-            <div class="flex items-center gap-2">
-              <StatusBadge
-                status={c.status === "connected" ? "running" : "failed"}
-                label={c.status}
-              />
-              {!c.isLocal && (
-                <>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={async () => {
-                      try {
-                        const res = await apiPost<ClusterInfo>(
-                          `/v1/clusters/${c.id}/test`,
-                        );
-                        // Update the cluster in the list with fresh probe data
-                        clusters.value = clusters.value.map((cl) =>
-                          cl.id === c.id ? { ...cl, ...res.data } : cl
-                        );
-                        showToast(
-                          res.data.status === "connected"
-                            ? "Connection successful"
-                            : "Connection failed",
-                          res.data.status === "connected" ? "success" : "error",
-                        );
-                      } catch {
-                        showToast("Test failed", "error");
-                      }
-                    }}
-                  >
-                    Test
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    onClick={() => deleteCluster(c.id)}
-                  >
-                    Remove
-                  </Button>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-        {clusters.value.length === 0 && (
-          <p class="px-4 py-8 text-center text-sm text-text-muted">
             No clusters registered. Add a cluster to get started.
-          </p>
+          </div>
+        )
+        : (
+          <ResourceTable
+            columns={columns}
+            rows={rows}
+            chevron={false}
+          />
         )}
-      </div>
     </div>
   );
 }

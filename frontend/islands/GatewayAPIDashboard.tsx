@@ -5,6 +5,7 @@ import { apiGet } from "@/lib/api.ts";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type {
   GatewayAPIStatus,
   GatewayAPISummary,
@@ -38,7 +39,7 @@ const SUMMARY_KEYS: Record<GatewayResourceKind, keyof GatewayAPISummary> = {
 };
 
 function formatAge(ageStr: string): string {
-  if (!ageStr) return "\u2014";
+  if (!ageStr) return "—";
   const date = new Date(ageStr);
   if (isNaN(date.getTime())) {
     // Already a relative string like "2d" from the backend
@@ -67,15 +68,24 @@ function getAcceptedStatus(
   return accepted?.status === "True";
 }
 
-function StatusBadge(
+function GatewayStatusBadge(
   { conditions }: { conditions?: { type: string; status: string }[] },
 ) {
   const ok = getAcceptedStatus(conditions);
   return (
     <span
-      class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-        ok ? "bg-success/15 text-success" : "bg-danger/15 text-danger"
-      }`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        borderRadius: "9999px",
+        padding: "2px 8px",
+        fontSize: "12px",
+        fontWeight: 500,
+        background: ok
+          ? "color-mix(in srgb, var(--success) 15%, transparent)"
+          : "color-mix(in srgb, var(--error) 15%, transparent)",
+        color: ok ? "var(--success)" : "var(--error)",
+      }}
     >
       {ok ? "Accepted" : "Not Ready"}
     </span>
@@ -171,27 +181,40 @@ export default function GatewayAPIDashboard() {
 
   if (loading.value) {
     return (
-      <div class="flex justify-center py-12">
-        <Spinner class="text-brand" />
+      <div
+        style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
+      >
+        <Spinner />
       </div>
     );
   }
 
   if (error.value) {
-    return <p class="text-sm text-danger py-4">{error.value}</p>;
+    return (
+      <p style={{ fontSize: "14px", color: "var(--error)", padding: "16px 0" }}>
+        {error.value}
+      </p>
+    );
   }
 
   if (!status.value?.available) {
     return (
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-8 text-center">
-        <h3 class="text-lg font-medium text-text-primary">
+      <WidgetShell style={{ textAlign: "center" }}>
+        <h3
+          style={{
+            fontSize: "18px",
+            fontWeight: 500,
+            color: "var(--text-primary)",
+            margin: "0 0 8px 0",
+          }}
+        >
           Gateway API Not Detected
         </h3>
-        <p class="mt-2 text-sm text-text-muted">
+        <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>
           No Gateway API CRDs found in this cluster. Install Gateway API to
           manage Gateways, HTTPRoutes, and other resources.
         </p>
-      </div>
+      </WidgetShell>
     );
   }
 
@@ -206,10 +229,30 @@ export default function GatewayAPIDashboard() {
             listData.value = null;
             search.value = "";
           }}
-          class="mb-4 inline-flex items-center gap-1 text-sm text-text-muted hover:text-text-primary transition-colors"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "4px",
+            marginBottom: "16px",
+            fontSize: "14px",
+            color: "var(--text-muted)",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            padding: 0,
+            transition: "color 0.15s",
+          }}
+          onMouseEnter={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.color =
+              "var(--text-primary)";
+          }}
+          onMouseLeave={(e) => {
+            (e.currentTarget as HTMLButtonElement).style.color =
+              "var(--text-muted)";
+          }}
         >
           <svg
-            class="h-4 w-4"
+            style={{ width: "16px", height: "16px" }}
             viewBox="0 0 20 20"
             fill="currentColor"
           >
@@ -222,12 +265,27 @@ export default function GatewayAPIDashboard() {
           Back to overview
         </button>
 
-        <h2 class="text-xl font-semibold text-text-primary mb-4">
+        <h2
+          style={{
+            fontSize: "20px",
+            fontWeight: 600,
+            color: "var(--text-primary)",
+            margin: "0 0 16px 0",
+          }}
+        >
           {KIND_LABELS[activeKind.value]}
         </h2>
 
-        <div class="mb-4 flex flex-wrap items-center gap-4">
-          <div class="flex-1 max-w-xs">
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "16px",
+            marginBottom: "16px",
+          }}
+        >
+          <div style={{ flex: 1, maxWidth: "320px" }}>
             <SearchBar
               value={search.value}
               onInput={(v) => {
@@ -246,7 +304,7 @@ export default function GatewayAPIDashboard() {
                 ns,
               ).length;
             return (
-              <span class="text-xs text-text-muted">
+              <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
                 {ns !== "all"
                   ? `${visibleCount} of ${totalItems} total`
                   : `${totalItems} total`}
@@ -256,8 +314,14 @@ export default function GatewayAPIDashboard() {
         </div>
 
         {listLoading.value && (
-          <div class="flex justify-center py-12">
-            <Spinner class="text-brand" />
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              padding: "48px 0",
+            }}
+          >
+            <Spinner />
           </div>
         )}
 
@@ -279,19 +343,32 @@ export default function GatewayAPIDashboard() {
 
   if (visibleKinds.length === 0) {
     return (
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-8 text-center">
-        <h3 class="text-lg font-medium text-text-primary">
+      <WidgetShell style={{ textAlign: "center" }}>
+        <h3
+          style={{
+            fontSize: "18px",
+            fontWeight: 500,
+            color: "var(--text-primary)",
+            margin: "0 0 8px 0",
+          }}
+        >
           No Gateway API Resources
         </h3>
-        <p class="mt-2 text-sm text-text-muted">
+        <p style={{ fontSize: "14px", color: "var(--text-muted)", margin: 0 }}>
           Gateway API CRDs are installed but no resource kinds were detected.
         </p>
-      </div>
+      </WidgetShell>
     );
   }
 
   return (
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+        gap: "16px",
+      }}
+    >
       {visibleKinds.map((kind) => {
         const kindSummary: KindSummary = summary.value
           ? summary.value[SUMMARY_KEYS[kind]]
@@ -301,32 +378,56 @@ export default function GatewayAPIDashboard() {
             type="button"
             key={kind}
             onClick={() => handleCardClick(kind)}
-            class="rounded-lg border border-border-primary bg-bg-elevated p-5 text-left transition-colors hover:border-border-hover hover:bg-hover/30"
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              width: "100%",
+              padding: 0,
+            }}
           >
-            <div class="text-sm font-medium text-text-muted">
-              {KIND_LABELS[kind]}
-            </div>
-            <div class="mt-1 text-2xl font-semibold text-text-primary">
-              {kindSummary.total}
-            </div>
-            <div class="mt-1 text-xs">
-              {kindSummary.healthy > 0 && (
-                <span class="text-success">
-                  {kindSummary.healthy} healthy
-                </span>
-              )}
-              {kindSummary.degraded > 0 && (
-                <span class="text-danger ml-2">
-                  {kindSummary.degraded} degraded
-                </span>
-              )}
-              {kindSummary.healthy === 0 && kindSummary.degraded === 0 &&
-                kindSummary.total > 0 && (
-                <span class="text-text-muted">
-                  {kindSummary.total} total
-                </span>
-              )}
-            </div>
+            <WidgetShell
+              title={KIND_LABELS[kind]}
+              style={{ textAlign: "left" }}
+            >
+              <div
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 700,
+                  color: "var(--text-primary)",
+                  fontVariantNumeric: "tabular-nums",
+                  lineHeight: 1.2,
+                }}
+              >
+                {kindSummary.total}
+              </div>
+              <div
+                style={{
+                  marginTop: "6px",
+                  fontSize: "12px",
+                  display: "flex",
+                  gap: "8px",
+                  flexWrap: "wrap",
+                }}
+              >
+                {kindSummary.healthy > 0 && (
+                  <span style={{ color: "var(--success)" }}>
+                    {kindSummary.healthy} healthy
+                  </span>
+                )}
+                {kindSummary.degraded > 0 && (
+                  <span style={{ color: "var(--error)" }}>
+                    {kindSummary.degraded} degraded
+                  </span>
+                )}
+                {kindSummary.healthy === 0 && kindSummary.degraded === 0 &&
+                  kindSummary.total > 0 && (
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {kindSummary.total} total
+                  </span>
+                )}
+              </div>
+            </WidgetShell>
           </button>
         );
       })}
@@ -362,9 +463,45 @@ function getDetailHref(
   }
 }
 
-const TH = "px-3 py-2 text-left text-xs font-medium text-text-muted";
-const TD = "px-3 py-2";
-const TD_SEC = "px-3 py-2 text-text-secondary";
+const thStyle: JSX.CSSProperties = {
+  fontSize: "11px",
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.07em",
+  color: "var(--text-muted)",
+  padding: "10px 12px",
+  textAlign: "left",
+};
+
+const tdStyle: JSX.CSSProperties = {
+  padding: "8px 12px",
+  color: "var(--text-primary)",
+  fontSize: "14px",
+};
+
+const tdSecStyle: JSX.CSSProperties = {
+  padding: "8px 12px",
+  color: "var(--text-secondary)",
+  fontSize: "14px",
+};
+
+const tableWrapStyle: JSX.CSSProperties = {
+  overflowX: "auto",
+  borderRadius: "9px",
+  border: "1px solid var(--border-primary)",
+};
+
+const theadRowStyle: JSX.CSSProperties = {
+  borderBottom: "1px solid var(--border-primary)",
+  background: "var(--surface)",
+};
+
+const tbodyRowStyle: JSX.CSSProperties = {
+  borderBottom: "1px solid var(--border-subtle)",
+  cursor: "pointer",
+};
+
+import type { JSX } from "preact";
 
 function renderTable(
   kind: GatewayResourceKind,
@@ -409,8 +546,16 @@ function renderTable(
 
 function EmptyTable({ message }: { message: string }) {
   return (
-    <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-      <p class="text-text-muted">{message}</p>
+    <div
+      style={{
+        textAlign: "center",
+        padding: "48px 0",
+        borderRadius: "9px",
+        border: "1px solid var(--border-primary)",
+        background: "var(--bg-elevated)",
+      }}
+    >
+      <p style={{ color: "var(--text-muted)", margin: 0 }}>{message}</p>
     </div>
   );
 }
@@ -420,46 +565,75 @@ function renderGatewayClassesTable(items: GatewayClassSummary[]) {
     return <EmptyTable message="No gateway classes found." />;
   }
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-primary">
-      <table class="w-full text-sm">
+    <div style={tableWrapStyle}>
+      <table
+        style={{ width: "100%", fontSize: "14px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary bg-surface">
-            <th class={TH}>Name</th>
-            <th class={TH}>Controller</th>
-            <th class={TH}>Description</th>
-            <th class={TH}>Status</th>
-            <th class={TH}>Age</th>
+          <tr style={theadRowStyle}>
+            <th style={thStyle}>Name</th>
+            <th style={thStyle}>Controller</th>
+            <th style={thStyle}>Description</th>
+            <th style={thStyle}>Status</th>
+            <th style={thStyle}>Age</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {items.map((item) => (
             <tr
               key={item.name}
-              class="hover:bg-hover/30 cursor-pointer"
+              style={tbodyRowStyle}
               onClick={() => {
                 globalThis.location.href = getDetailHref(
                   "gatewayclasses",
                   item,
                 );
               }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background =
+                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = "";
+              }}
             >
-              <td class={TD}>
+              <td style={tdStyle}>
                 <a
                   href={getDetailHref("gatewayclasses", item)}
-                  class="font-medium text-brand hover:underline"
+                  style={{
+                    fontWeight: 500,
+                    color: "var(--brand)",
+                    textDecoration: "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "underline";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "none";
+                  }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   {item.name}
                 </a>
               </td>
-              <td class={TD_SEC}>{item.controllerName}</td>
-              <td class={`${TD_SEC} max-w-[200px] truncate`}>
-                {item.description || "\u2014"}
+              <td style={tdSecStyle}>{item.controllerName}</td>
+              <td
+                style={{
+                  ...tdSecStyle,
+                  maxWidth: "200px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.description || "—"}
               </td>
-              <td class={TD}>
-                <StatusBadge conditions={item.conditions} />
+              <td style={tdStyle}>
+                <GatewayStatusBadge conditions={item.conditions} />
               </td>
-              <td class={TD_SEC}>{formatAge(item.age)}</td>
+              <td style={tdSecStyle}>{formatAge(item.age)}</td>
             </tr>
           ))}
         </tbody>
@@ -473,49 +647,79 @@ function renderGatewaysTable(items: GatewaySummary[]) {
     return <EmptyTable message="No gateways found." />;
   }
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-primary">
-      <table class="w-full text-sm">
+    <div style={tableWrapStyle}>
+      <table
+        style={{ width: "100%", fontSize: "14px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary bg-surface">
-            <th class={TH}>Name</th>
-            <th class={TH}>Namespace</th>
-            <th class={TH}>Class</th>
-            <th class={TH}>Listeners</th>
-            <th class={TH}>Addresses</th>
-            <th class={TH}>Status</th>
-            <th class={TH}>Age</th>
+          <tr style={theadRowStyle}>
+            <th style={thStyle}>Name</th>
+            <th style={thStyle}>Namespace</th>
+            <th style={thStyle}>Class</th>
+            <th style={thStyle}>Listeners</th>
+            <th style={thStyle}>Addresses</th>
+            <th style={thStyle}>Status</th>
+            <th style={thStyle}>Age</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {items.map((item) => (
             <tr
               key={`${item.namespace}/${item.name}`}
-              class="hover:bg-hover/30 cursor-pointer"
+              style={tbodyRowStyle}
               onClick={() => {
                 globalThis.location.href = getDetailHref("gateways", item);
               }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background =
+                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = "";
+              }}
             >
-              <td class={TD}>
+              <td style={tdStyle}>
                 <a
                   href={getDetailHref("gateways", item)}
-                  class="font-medium text-brand hover:underline"
+                  style={{
+                    fontWeight: 500,
+                    color: "var(--brand)",
+                    textDecoration: "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "underline";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "none";
+                  }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   {item.name}
                 </a>
               </td>
-              <td class={TD_SEC}>{item.namespace}</td>
-              <td class={TD_SEC}>{item.gatewayClassName}</td>
-              <td class={TD_SEC}>
+              <td style={tdSecStyle}>{item.namespace}</td>
+              <td style={tdSecStyle}>{item.gatewayClassName}</td>
+              <td style={{ ...tdSecStyle, fontVariantNumeric: "tabular-nums" }}>
                 {item.listeners?.length ?? 0}
               </td>
-              <td class={`${TD_SEC} max-w-[200px] truncate text-xs`}>
-                {(item.addresses ?? []).join(", ") || "\u2014"}
+              <td
+                style={{
+                  ...tdSecStyle,
+                  maxWidth: "200px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: "12px",
+                }}
+              >
+                {(item.addresses ?? []).join(", ") || "—"}
               </td>
-              <td class={TD}>
-                <StatusBadge conditions={item.conditions} />
+              <td style={tdStyle}>
+                <GatewayStatusBadge conditions={item.conditions} />
               </td>
-              <td class={TD_SEC}>{formatAge(item.age)}</td>
+              <td style={tdSecStyle}>{formatAge(item.age)}</td>
             </tr>
           ))}
         </tbody>
@@ -529,51 +733,81 @@ function renderHTTPRoutesTable(items: HTTPRouteSummary[]) {
     return <EmptyTable message="No HTTP routes found." />;
   }
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-primary">
-      <table class="w-full text-sm">
+    <div style={tableWrapStyle}>
+      <table
+        style={{ width: "100%", fontSize: "14px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary bg-surface">
-            <th class={TH}>Name</th>
-            <th class={TH}>Namespace</th>
-            <th class={TH}>Hostnames</th>
-            <th class={TH}>Parents</th>
-            <th class={TH}>Backends</th>
-            <th class={TH}>Status</th>
-            <th class={TH}>Age</th>
+          <tr style={theadRowStyle}>
+            <th style={thStyle}>Name</th>
+            <th style={thStyle}>Namespace</th>
+            <th style={thStyle}>Hostnames</th>
+            <th style={thStyle}>Parents</th>
+            <th style={thStyle}>Backends</th>
+            <th style={thStyle}>Status</th>
+            <th style={thStyle}>Age</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {items.map((item) => (
             <tr
               key={`${item.namespace}/${item.name}`}
-              class="hover:bg-hover/30 cursor-pointer"
+              style={tbodyRowStyle}
               onClick={() => {
                 globalThis.location.href = getDetailHref("httproutes", item);
               }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background =
+                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = "";
+              }}
             >
-              <td class={TD}>
+              <td style={tdStyle}>
                 <a
                   href={getDetailHref("httproutes", item)}
-                  class="font-medium text-brand hover:underline"
+                  style={{
+                    fontWeight: 500,
+                    color: "var(--brand)",
+                    textDecoration: "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "underline";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "none";
+                  }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   {item.name}
                 </a>
               </td>
-              <td class={TD_SEC}>{item.namespace}</td>
-              <td class={`${TD_SEC} max-w-[200px] truncate text-xs`}>
-                {(item.hostnames ?? []).join(", ") || "\u2014"}
+              <td style={tdSecStyle}>{item.namespace}</td>
+              <td
+                style={{
+                  ...tdSecStyle,
+                  maxWidth: "200px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: "12px",
+                }}
+              >
+                {(item.hostnames ?? []).join(", ") || "—"}
               </td>
-              <td class={TD_SEC}>
+              <td style={{ ...tdSecStyle, fontVariantNumeric: "tabular-nums" }}>
                 {item.parentRefs?.length ?? 0}
               </td>
-              <td class={TD_SEC}>
+              <td style={{ ...tdSecStyle, fontVariantNumeric: "tabular-nums" }}>
                 {item.backendCount ?? 0}
               </td>
-              <td class={TD}>
-                <StatusBadge conditions={item.conditions} />
+              <td style={tdStyle}>
+                <GatewayStatusBadge conditions={item.conditions} />
               </td>
-              <td class={TD_SEC}>{formatAge(item.age)}</td>
+              <td style={tdSecStyle}>{formatAge(item.age)}</td>
             </tr>
           ))}
         </tbody>
@@ -594,43 +828,64 @@ function renderRoutesTable(
     );
   }
   return (
-    <div class="overflow-x-auto rounded-lg border border-border-primary">
-      <table class="w-full text-sm">
+    <div style={tableWrapStyle}>
+      <table
+        style={{ width: "100%", fontSize: "14px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary bg-surface">
-            <th class={TH}>Name</th>
-            <th class={TH}>Namespace</th>
-            <th class={TH}>Parents</th>
-            <th class={TH}>Status</th>
-            <th class={TH}>Age</th>
+          <tr style={theadRowStyle}>
+            <th style={thStyle}>Name</th>
+            <th style={thStyle}>Namespace</th>
+            <th style={thStyle}>Parents</th>
+            <th style={thStyle}>Status</th>
+            <th style={thStyle}>Age</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {items.map((item) => (
             <tr
               key={`${item.namespace}/${item.name}`}
-              class="hover:bg-hover/30 cursor-pointer"
+              style={tbodyRowStyle}
               onClick={() => {
                 globalThis.location.href = getDetailHref(kind, item);
               }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background =
+                  "color-mix(in srgb, var(--hover) 30%, transparent)";
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLTableRowElement).style.background = "";
+              }}
             >
-              <td class={TD}>
+              <td style={tdStyle}>
                 <a
                   href={getDetailHref(kind, item)}
-                  class="font-medium text-brand hover:underline"
+                  style={{
+                    fontWeight: 500,
+                    color: "var(--brand)",
+                    textDecoration: "none",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "underline";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLAnchorElement).style
+                      .textDecoration = "none";
+                  }}
                   onClick={(e) => e.stopPropagation()}
                 >
                   {item.name}
                 </a>
               </td>
-              <td class={TD_SEC}>{item.namespace}</td>
-              <td class={TD_SEC}>
+              <td style={tdSecStyle}>{item.namespace}</td>
+              <td style={{ ...tdSecStyle, fontVariantNumeric: "tabular-nums" }}>
                 {item.parentRefs?.length ?? 0}
               </td>
-              <td class={TD}>
-                <StatusBadge conditions={item.conditions} />
+              <td style={tdStyle}>
+                <GatewayStatusBadge conditions={item.conditions} />
               </td>
-              <td class={TD_SEC}>{formatAge(item.age)}</td>
+              <td style={tdSecStyle}>{formatAge(item.age)}</td>
             </tr>
           ))}
         </tbody>

@@ -7,6 +7,8 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { SYNC_COLORS } from "@/components/ui/GitOpsBadges.tsx";
 import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
@@ -20,9 +22,52 @@ const PAGE_SIZE = 100;
 
 const STATUS_COLORS: Record<string, string> = {
   healthy: "var(--success)",
-  error: "var(--danger)",
+  error: "var(--error)",
   progressing: "var(--warning)",
 };
+
+function statusTone(
+  status: string,
+): "ok" | "warn" | "crit" | "info" | "neutral" {
+  switch (status.toLowerCase()) {
+    case "healthy":
+      return "ok";
+    case "error":
+      return "crit";
+    case "progressing":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+function dotStatus(
+  tone: "ok" | "warn" | "crit" | "info" | "neutral",
+): "success" | "warning" | "error" | "info" | "neutral" {
+  switch (tone) {
+    case "ok":
+      return "success";
+    case "warn":
+      return "warning";
+    case "crit":
+      return "error";
+    case "info":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
+const RT_COLUMNS: Column[] = [
+  { key: "name", label: "Name", width: "2fr" },
+  { key: "namespace", label: "Namespace", width: "120px" },
+  { key: "generators", label: "Generators" },
+  { key: "apps", label: "Apps", width: "70px", align: "right" },
+  { key: "sync", label: "Sync" },
+  { key: "health", label: "Health" },
+  { key: "status", label: "Status", width: "100px" },
+  { key: "age", label: "Age", width: "80px" },
+];
 
 export default function GitOpsAppSets() {
   const appSets = useSignal<NormalizedAppSet[]>([]);
@@ -90,7 +135,12 @@ export default function GitOpsAppSets() {
     <div class="p-6">
       <div class="flex items-center justify-between mb-1">
         <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-bold text-text-primary">ApplicationSets</h1>
+          <h1
+            class="font-bold text-text-primary"
+            style={{ fontSize: "24px", fontWeight: 700 }}
+          >
+            ApplicationSets
+          </h1>
           {wsStatus.value === "connected" && (
             <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
               <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
@@ -141,128 +191,114 @@ export default function GitOpsAppSets() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Generators
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Apps
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Sync
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Health
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Status
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Age
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((as) => {
-                const statusColor = STATUS_COLORS[as.status.toLowerCase()] ??
-                  "var(--text-secondary)";
+        <ResourceTable
+          columns={RT_COLUMNS}
+          rows={displayed.map((as) => ({
+            id: as.id,
+            cells: {
+              name: (
+                <div class="flex items-center gap-2">
+                  <StatusDot
+                    status={dotStatus(statusTone(as.status))}
+                    size={8}
+                  />
+                  <span class="font-medium text-brand hover:underline">
+                    {as.name}
+                  </span>
+                </div>
+              ),
+              namespace: (
+                <span class="text-text-secondary text-xs">{as.namespace}</span>
+              ),
+              generators: (
+                <div class="flex flex-wrap gap-1">
+                  {as.generatorTypes.map((g) => (
+                    <span
+                      key={g}
+                      class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent/10 text-accent"
+                    >
+                      {g}
+                    </span>
+                  ))}
+                </div>
+              ),
+              apps: (
+                <span class="tabular-nums text-text-primary font-medium">
+                  {as.generatedAppCount}
+                </span>
+              ),
+              sync: (() => {
                 const syncedCount = as.summary.synced;
                 const oosCount = as.summary.outOfSync;
                 return (
-                  <tr
-                    key={as.id}
-                    class="hover:bg-hover/30 cursor-pointer"
-                    onClick={() => {
-                      globalThis.location.href = "/gitops/applicationsets/" +
-                        encodeURIComponent(as.id);
-                    }}
-                  >
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-brand hover:underline">
-                        {as.name}
-                      </div>
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {as.namespace}
-                    </td>
-                    <td class="px-3 py-2">
-                      <div class="flex flex-wrap gap-1">
-                        {as.generatorTypes.map((g) => (
-                          <span
-                            key={g}
-                            class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-brand/10 text-brand"
-                          >
-                            {g}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td class="px-3 py-2 text-text-primary font-medium">
-                      {as.generatedAppCount}
-                    </td>
-                    <td class="px-3 py-2 text-xs">
-                      {syncedCount > 0 && (
-                        <span style={{ color: SYNC_COLORS.synced }}>
-                          {syncedCount} synced
-                        </span>
-                      )}
-                      {syncedCount > 0 && oosCount > 0 && (
-                        <span class="text-text-muted">,</span>
-                      )}
-                      {oosCount > 0 && (
-                        <span style={{ color: SYNC_COLORS.outofsync }}>
-                          {oosCount} out-of-sync
-                        </span>
-                      )}
-                      {syncedCount === 0 && oosCount === 0 && (
-                        <span class="text-text-muted">-</span>
-                      )}
-                    </td>
-                    <td class="px-3 py-2 text-xs">
-                      {as.summary.degraded > 0
-                        ? (
-                          <span style={{ color: "var(--danger)" }}>
-                            {as.summary.degraded} degraded
-                          </span>
-                        )
-                        : as.summary.progressing > 0
-                        ? (
-                          <span style={{ color: "var(--warning)" }}>
-                            {as.summary.progressing} progressing
-                          </span>
-                        )
-                        : as.generatedAppCount > 0
-                        ? (
-                          <span style={{ color: "var(--success)" }}>
-                            all healthy
-                          </span>
-                        )
-                        : <span class="text-text-muted">-</span>}
-                    </td>
-                    <td class="px-3 py-2">
-                      <span style={{ color: statusColor }}>{as.status}</span>
-                    </td>
-                    <td class="px-3 py-2 text-text-muted text-xs">
-                      {as.createdAt ? timeAgo(as.createdAt) : "-"}
-                    </td>
-                  </tr>
+                  <span class="text-xs">
+                    {syncedCount > 0 && (
+                      <span style={{ color: SYNC_COLORS.synced }}>
+                        {syncedCount} synced
+                      </span>
+                    )}
+                    {syncedCount > 0 && oosCount > 0 && (
+                      <span class="text-text-muted">,</span>
+                    )}
+                    {oosCount > 0 && (
+                      <span style={{ color: SYNC_COLORS.outofsync }}>
+                        {oosCount} out-of-sync
+                      </span>
+                    )}
+                    {syncedCount === 0 && oosCount === 0 && (
+                      <span class="text-text-muted">-</span>
+                    )}
+                  </span>
                 );
-              })}
-            </tbody>
-          </table>
-        </div>
+              })(),
+              health: (() => {
+                if (as.summary.degraded > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--error)" }}>
+                      {as.summary.degraded} degraded
+                    </span>
+                  );
+                }
+                if (as.summary.progressing > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      {as.summary.progressing} progressing
+                    </span>
+                  );
+                }
+                if (as.generatedAppCount > 0) {
+                  return (
+                    <span class="text-xs" style={{ color: "var(--success)" }}>
+                      all healthy
+                    </span>
+                  );
+                }
+                return <span class="text-xs text-text-muted">-</span>;
+              })(),
+              status: (() => {
+                const statusColor = STATUS_COLORS[as.status.toLowerCase()] ??
+                  "var(--text-secondary)";
+                return <span style={{ color: statusColor }}>{as.status}</span>;
+              })(),
+              age: (
+                <span class="text-text-muted text-xs">
+                  {as.createdAt ? timeAgo(as.createdAt) : "-"}
+                </span>
+              ),
+            },
+            onClick: () => {
+              globalThis.location.href = "/gitops/applicationsets/" +
+                encodeURIComponent(as.id);
+            },
+          }))}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (

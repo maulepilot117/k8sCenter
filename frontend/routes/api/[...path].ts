@@ -51,7 +51,7 @@ export const handler = define.handlers({
 });
 
 async function proxyRequest(
-  ctx: { req: Request; params: { path: string } },
+  ctx: { req: Request; params: Record<string, string> },
 ): Promise<Response> {
   const backendPath = ctx.params.path;
 

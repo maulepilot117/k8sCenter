@@ -6,7 +6,11 @@ import { useAuth } from "@/lib/auth.ts";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
+import type { Column, Row } from "@/components/ui/ResourceTable.tsx";
+import { Button } from "@/components/ui/Button.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
+import UserWizard from "@/islands/UserWizard.tsx";
 
 type DialogState =
   | { kind: "idle" }
@@ -21,6 +25,7 @@ export default function UserManager() {
   const error = useSignal<string | null>(null);
   const dialog = useSignal<DialogState>({ kind: "idle" });
   const actionLoading = useSignal(false);
+  const wizardOpen = useSignal(false);
 
   const fetchUsers = useCallback(async () => {
     loading.value = true;
@@ -48,7 +53,7 @@ export default function UserManager() {
     users.value = users.value.filter((u) => u.id !== user.id);
     try {
       await apiDelete(`/v1/users/${user.id}`);
-      showToast(`Deleted user"${user.username}"`, "success");
+      showToast(`Deleted user "${user.username}"`, "success");
       dialog.value = { kind: "idle" };
     } catch (err) {
       // Restore on failure
@@ -65,7 +70,7 @@ export default function UserManager() {
     actionLoading.value = true;
     try {
       await apiPut(`/v1/users/${user.id}/password`, { password });
-      showToast(`Password updated for"${user.username}"`, "success");
+      showToast(`Password updated for "${user.username}"`, "success");
       dialog.value = { kind: "idle" };
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Update failed";
@@ -77,145 +82,180 @@ export default function UserManager() {
 
   const currentUserId = currentUser.value?.id;
 
+  const columns: Column[] = [
+    { key: "username", label: "Username", width: "2fr" },
+    { key: "k8sIdentity", label: "Kubernetes Identity", width: "2fr" },
+    { key: "roles", label: "Roles", width: "1.5fr" },
+    { key: "actions", label: "", width: "180px", align: "right" },
+  ];
+
+  const buildRows = (): Row[] => {
+    if (loading.value && users.value.length === 0) {
+      return [{
+        id: "__loading__",
+        cells: {
+          username: (
+            <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              Loading users…
+            </span>
+          ),
+          k8sIdentity: null,
+          roles: null,
+          actions: null,
+        },
+      }];
+    }
+    if (users.value.length === 0) {
+      return [{
+        id: "__empty__",
+        cells: {
+          username: (
+            <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              No local users found
+            </span>
+          ),
+          k8sIdentity: null,
+          roles: null,
+          actions: null,
+        },
+      }];
+    }
+    return users.value.map((user) => {
+      const isSelf = user.id === currentUserId;
+      return {
+        id: user.id,
+        cells: {
+          username: (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                fontSize: "13px",
+                fontWeight: 500,
+                color: "var(--text-primary)",
+              }}
+            >
+              {user.username}
+              {isSelf && (
+                <span
+                  style={{
+                    borderRadius: "6px",
+                    padding: "1px 6px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    background: "var(--accent-dim)",
+                    color: "var(--accent)",
+                  }}
+                >
+                  you
+                </span>
+              )}
+            </div>
+          ),
+          k8sIdentity: (
+            <span
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                fontFamily: "var(--font-mono)",
+              }}
+            >
+              {user.k8sUsername}
+            </span>
+          ),
+          roles: (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+              {user.roles.map((role) => (
+                <span
+                  key={role}
+                  style={{
+                    borderRadius: "6px",
+                    padding: "1px 6px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    background: role === "admin"
+                      ? "var(--warning-dim)"
+                      : "var(--bg-elevated)",
+                    color: role === "admin"
+                      ? "var(--warning)"
+                      : "var(--text-muted)",
+                  }}
+                >
+                  {role}
+                </span>
+              ))}
+            </div>
+          ),
+          actions: (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "6px",
+              }}
+            >
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  dialog.value = {
+                    kind: "changePassword",
+                    user,
+                    password: "",
+                  };
+                }}
+              >
+                Change Password
+              </Button>
+              <Button
+                type="button"
+                variant="danger"
+                size="sm"
+                disabled={isSelf}
+                onClick={() => {
+                  dialog.value = { kind: "confirmDelete", user };
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+          ),
+        },
+      };
+    });
+  };
+
   return (
-    <div class="space-y-4">
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Create User button */}
-      <div class="flex justify-end">
-        <a
-          href="/settings/users/new"
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
           class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
           style={{ color: "var(--bg-base)" }}
         >
           Create User
-        </a>
+        </button>
       </div>
 
       {/* Error */}
       {error.value && <ErrorBanner message={error.value} />}
 
       {/* Table */}
-      <div class="rounded-lg border border-border-primary bg-surface">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary">
-                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Username
-                </th>
-                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Kubernetes Identity
-                </th>
-                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Roles
-                </th>
-                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider text-text-muted">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {loading.value && users.value.length === 0
-                ? (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      class="px-4 py-12 text-center text-sm text-text-muted"
-                    >
-                      Loading users...
-                    </td>
-                  </tr>
-                )
-                : users.value.length === 0
-                ? (
-                  <tr>
-                    <td
-                      colSpan={4}
-                      class="px-4 py-12 text-center text-sm text-text-muted"
-                    >
-                      No local users found
-                    </td>
-                  </tr>
-                )
-                : users.value.map((user) => {
-                  const isSelf = user.id === currentUserId;
-                  return (
-                    <tr
-                      key={user.id}
-                      class="transition-colors hover:bg-hover/50"
-                    >
-                      <td class="px-4 py-3 text-text-secondary">
-                        <span class="font-medium">{user.username}</span>
-                        {isSelf && (
-                          <span class="ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-accent-dim text-accent">
-                            you
-                          </span>
-                        )}
-                      </td>
-                      <td class="px-4 py-3 text-text-muted">
-                        {user.k8sUsername}
-                      </td>
-                      <td class="px-4 py-3">
-                        <div class="flex flex-wrap gap-1">
-                          {user.roles.map((role) => (
-                            <span
-                              key={role}
-                              class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                                role === "admin"
-                                  ? "bg-warning-dim text-warning"
-                                  : "bg-elevated text-text-secondary bg-elevated text-text-muted"
-                              }`}
-                            >
-                              {role}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td class="px-4 py-3 text-right">
-                        <div class="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              dialog.value = {
-                                kind: "changePassword",
-                                user,
-                                password: "",
-                              };
-                            }}
-                            class="rounded px-2 py-1 text-xs font-medium text-text-secondary hover:bg-hover"
-                          >
-                            Change Password
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isSelf}
-                            onClick={() => {
-                              dialog.value = {
-                                kind: "confirmDelete",
-                                user,
-                              };
-                            }}
-                            class="rounded px-2 py-1 text-xs font-medium hover:bg-danger-dim disabled:cursor-not-allowed disabled:opacity-40 text-danger"
-                            title={isSelf
-                              ? "Cannot delete your own account"
-                              : `Delete ${user.username}`}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ResourceTable
+        columns={columns}
+        rows={buildRows()}
+        chevron={false}
+      />
 
       {/* Delete Confirm Dialog */}
       {dialog.value.kind === "confirmDelete" && (
         <ConfirmDialog
           title={`Delete ${dialog.value.user.username}`}
-          message={`This will permanently delete the user"${dialog.value.user.username}" and revoke their access.`}
+          message={`This will permanently delete the user "${dialog.value.user.username}" and revoke their access.`}
           confirmLabel="Delete"
           danger
           typeToConfirm={dialog.value.user.username}
@@ -249,6 +289,16 @@ export default function UserManager() {
           }}
           onCancel={() => {
             dialog.value = { kind: "idle" };
+          }}
+        />
+      )}
+
+      {/* Create User Wizard */}
+      {wizardOpen.value && (
+        <UserWizard
+          onClose={() => {
+            wizardOpen.value = false;
+            fetchUsers();
           }}
         />
       )}
@@ -298,12 +348,25 @@ function PasswordDialog({
       >
         <h3
           id="password-dialog-title"
-          class="text-lg font-semibold text-text-primary"
+          style={{
+            fontSize: "17px",
+            fontWeight: 650,
+            color: "var(--text-primary)",
+            margin: 0,
+          }}
         >
           Change Password for {username}
         </h3>
-        <div class="mt-4">
-          <label class="block text-sm text-text-secondary">
+        <div style={{ marginTop: "16px" }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              marginBottom: "7px",
+            }}
+          >
             New Password
           </label>
           <input
@@ -312,32 +375,50 @@ function PasswordDialog({
             value={password}
             onInput={(e) =>
               onPasswordInput((e.target as HTMLInputElement).value)}
-            class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              borderRadius: "9px",
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+              fontSize: "13.5px",
+              outline: "none",
+              boxSizing: "border-box",
+            }}
             placeholder="Minimum 8 characters"
           />
           {password.length > 0 && !isValid && (
-            <p class="mt-1 text-xs text-error">
+            <p
+              style={{
+                marginTop: "4px",
+                fontSize: "12px",
+                color: "var(--error)",
+              }}
+            >
               Password must be at least 8 characters
             </p>
           )}
         </div>
-        <div class="mt-6 flex justify-end gap-3">
-          <button
-            type="button"
-            onClick={onCancel}
-            class="rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
-          >
+        <div
+          style={{
+            marginTop: "24px",
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: "8px",
+          }}
+        >
+          <Button type="button" variant="ghost" onClick={onCancel}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="primary"
             disabled={!isValid || loading}
             onClick={onConfirm}
-            class="rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90 disabled:opacity-50"
-            style={{ color: "var(--bg-base)" }}
           >
-            {loading ? "..." : "Update Password"}
-          </button>
+            {loading ? "…" : "Update Password"}
+          </Button>
         </div>
       </div>
     </div>

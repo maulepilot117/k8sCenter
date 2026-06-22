@@ -1,5 +1,7 @@
-interface StatusDotProps {
-  status: "success" | "warning" | "error" | "info" | "neutral";
+export type StatusValue = "success" | "warning" | "error" | "info" | "neutral";
+
+export interface StatusDotProps {
+  status: StatusValue;
   pulse?: boolean;
   size?: number;
 }

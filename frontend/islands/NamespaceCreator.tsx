@@ -6,7 +6,12 @@ import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { NS_NAME_REGEX } from "@/lib/wizard-constants.ts";
 
-export default function NamespaceCreator() {
+interface NamespaceCreatorProps {
+  onClose?: () => void;
+}
+
+export default function NamespaceCreator({ onClose }: NamespaceCreatorProps) {
+  const close = onClose ?? (() => globalThis.history.back());
   const name = useSignal("");
   const labels = useSignal<Array<{ key: string; value: string }>>([
     { key: "", value: "" },
@@ -57,7 +62,7 @@ export default function NamespaceCreator() {
           labels: Object.keys(nsLabels).length > 0 ? nsLabels : undefined,
         },
       });
-      globalThis.location.href = "/cluster/namespaces";
+      close();
     } catch (err: unknown) {
       const msg = err instanceof Error
         ? err.message
@@ -88,12 +93,13 @@ export default function NamespaceCreator() {
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Namespace
         </h1>
-        <a
-          href="/cluster/namespaces"
+        <button
+          type="button"
+          onClick={close}
           class="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
-        </a>
+        </button>
       </div>
 
       {error.value && (
@@ -128,12 +134,13 @@ export default function NamespaceCreator() {
           >
             {submitting.value ? "Creating..." : "Create Namespace"}
           </Button>
-          <a
-            href="/cluster/namespaces"
+          <button
+            type="button"
+            onClick={close}
             class="text-sm text-text-muted hover:text-text-secondary"
           >
             Cancel
-          </a>
+          </button>
         </div>
       </form>
     </div>

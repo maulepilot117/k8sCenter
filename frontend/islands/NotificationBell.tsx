@@ -24,7 +24,7 @@ export default function NotificationBell() {
   /** Fetch the absolute unread count from the server. */
   const fetchUnreadCount = () => {
     notifApi.unreadCount().then((res) => {
-      unreadCount.value = res.data.count;
+      unreadCount.value = res.data.data.count;
     }).catch(() => {});
   };
 
@@ -91,7 +91,7 @@ export default function NotificationBell() {
       loading.value = true;
       try {
         const res = await notifApi.list({ limit: 20 });
-        recent.value = res.data ?? [];
+        recent.value = res.data.data ?? [];
       } catch {
         // Silently fail — panel shows empty state
       }
@@ -176,7 +176,7 @@ export default function NotificationBell() {
               minWidth: "16px",
               height: "16px",
               borderRadius: "8px",
-              background: "var(--danger)",
+              background: "var(--error)",
               color: "var(--bg-base)",
               fontSize: "10px",
               fontWeight: 600,

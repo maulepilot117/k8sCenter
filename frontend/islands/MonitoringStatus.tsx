@@ -2,10 +2,11 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 interface ComponentStatus {
   available: boolean;
@@ -86,106 +87,179 @@ export default function MonitoringStatus() {
   if (!s) return null;
 
   return (
-    <div class="space-y-6">
-      {/* Header with rescan */}
-      <div class="flex items-center justify-between">
-        <h2 class="text-lg font-semibold text-text-primary">
-          Monitoring Status
-        </h2>
-        <Button
-          variant="secondary"
-          onClick={handleRescan}
-          disabled={rescanning.value}
-        >
-          {rescanning.value ? "Scanning..." : "Re-scan Cluster"}
-        </Button>
-      </div>
-
-      {/* Component cards */}
-      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* Component cards — glass chrome widgets */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "16px",
+        }}
+      >
         {/* Prometheus */}
-        <div class="rounded-lg border border-border-primary bg-surface p-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-medium text-text-primary">
-              Prometheus
-            </h3>
+        <WidgetShell
+          title="Prometheus"
+          action={
             <StatusBadge
-              status={s.prometheus.available ? "Running" : "Unavailable"}
+              label={s.prometheus.available ? "Running" : "Unavailable"}
+              tone={s.prometheus.available ? "ok" : "crit"}
             />
+          }
+          style={{ flex: "1 1 240px", minWidth: "200px" }}
+        >
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+          >
+            {s.prometheus.url && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  margin: 0,
+                }}
+              >
+                <span style={{ fontWeight: 500 }}>URL:</span> {s.prometheus.url}
+              </p>
+            )}
+            {s.prometheus.detectionMethod && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  margin: 0,
+                }}
+              >
+                <span style={{ fontWeight: 500 }}>Detected via:</span>{" "}
+                {s.prometheus.detectionMethod}
+              </p>
+            )}
+            <p
+              style={{
+                fontSize: "12px",
+                color: "var(--text-muted)",
+                margin: 0,
+              }}
+            >
+              Last checked: {s.prometheus.lastChecked}
+            </p>
           </div>
-          {s.prometheus.url && (
-            <p class="mt-2 text-sm text-text-muted">
-              <span class="font-medium">URL:</span> {s.prometheus.url}
-            </p>
-          )}
-          {s.prometheus.detectionMethod && (
-            <p class="mt-1 text-sm text-text-muted">
-              <span class="font-medium">Detected via:</span>
-              {""}
-              {s.prometheus.detectionMethod}
-            </p>
-          )}
-          <p class="mt-1 text-xs text-text-muted">
-            Last checked: {s.prometheus.lastChecked}
-          </p>
-        </div>
+        </WidgetShell>
 
         {/* Grafana */}
-        <div class="rounded-lg border border-border-primary bg-surface p-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-medium text-text-primary">Grafana</h3>
+        <WidgetShell
+          title="Grafana"
+          action={
             <StatusBadge
-              status={s.grafana.available ? "Running" : "Unavailable"}
+              label={s.grafana.available ? "Running" : "Unavailable"}
+              tone={s.grafana.available ? "ok" : "crit"}
             />
+          }
+          style={{ flex: "1 1 240px", minWidth: "200px" }}
+        >
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+          >
+            {s.grafana.url && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  margin: 0,
+                }}
+              >
+                <span style={{ fontWeight: 500 }}>URL:</span> {s.grafana.url}
+              </p>
+            )}
+            {s.grafana.detectionMethod && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  margin: 0,
+                }}
+              >
+                <span style={{ fontWeight: 500 }}>Detected via:</span>{" "}
+                {s.grafana.detectionMethod}
+              </p>
+            )}
+            <p
+              style={{
+                fontSize: "12px",
+                color: "var(--text-muted)",
+                margin: 0,
+              }}
+            >
+              Last checked: {s.grafana.lastChecked}
+            </p>
           </div>
-          {s.grafana.url && (
-            <p class="mt-2 text-sm text-text-muted">
-              <span class="font-medium">URL:</span> {s.grafana.url}
-            </p>
-          )}
-          {s.grafana.detectionMethod && (
-            <p class="mt-1 text-sm text-text-muted">
-              <span class="font-medium">Detected via:</span>
-              {""}
-              {s.grafana.detectionMethod}
-            </p>
-          )}
-          <p class="mt-1 text-xs text-text-muted">
-            Last checked: {s.grafana.lastChecked}
-          </p>
-        </div>
+        </WidgetShell>
 
         {/* Dashboards */}
-        <div class="rounded-lg border border-border-primary bg-surface p-4">
-          <div class="flex items-center justify-between">
-            <h3 class="font-medium text-text-primary">
-              Dashboards
-            </h3>
+        <WidgetShell
+          title="Dashboards"
+          action={
             <StatusBadge
-              status={s.dashboards.provisioned
+              label={s.dashboards.provisioned
                 ? "Provisioned"
                 : "Not provisioned"}
+              tone={s.dashboards.provisioned ? "ok" : "neutral"}
             />
+          }
+          style={{ flex: "1 1 240px", minWidth: "200px" }}
+        >
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "6px" }}
+          >
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                margin: 0,
+              }}
+            >
+              <span style={{ fontWeight: 500 }}>Count:</span>{" "}
+              {s.dashboards.count}
+            </p>
+            {s.dashboards.error && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--error)",
+                  margin: 0,
+                }}
+              >
+                {s.dashboards.error}
+              </p>
+            )}
           </div>
-          <p class="mt-2 text-sm text-text-muted">
-            <span class="font-medium">Count:</span> {s.dashboards.count}
-          </p>
-          {s.dashboards.error && (
-            <p class="mt-1 text-sm text-error">{s.dashboards.error}</p>
-          )}
-        </div>
+        </WidgetShell>
       </div>
 
-      {/* Operator info */}
-      <div class="rounded-lg border border-border-primary bg-surface p-4">
-        <p class="text-sm text-text-secondary">
-          <span class="font-medium">Prometheus Operator:</span>
-          {""}
+      {/* Operator info + rescan action */}
+      <WidgetShell
+        title="Prometheus Operator"
+        action={
+          <Button
+            variant="secondary"
+            onClick={handleRescan}
+            disabled={rescanning.value}
+          >
+            {rescanning.value ? "Scanning..." : "Re-scan Cluster"}
+          </Button>
+        }
+      >
+        <p
+          style={{
+            fontSize: "13px",
+            color: "var(--text-muted)",
+            margin: 0,
+          }}
+        >
           {s.hasOperator
             ? "Detected (ServiceMonitor CRD found)"
             : "Not detected"}
         </p>
-      </div>
+      </WidgetShell>
     </div>
   );
 }

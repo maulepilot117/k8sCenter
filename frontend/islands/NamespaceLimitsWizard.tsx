@@ -1,17 +1,21 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
-import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
+import { NamespacePresetStep } from "@/components/wizard/NamespacePresetStep.tsx";
+import { QuotaValuesStep } from "@/components/wizard/QuotaValuesStep.tsx";
+import { LimitRangeValuesStep } from "@/components/wizard/LimitRangeValuesStep.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
-// Preset configurations
-const PRESETS = {
+// ---------------------------------------------------------------------------
+// Shared types & constants — exported for step components
+// ---------------------------------------------------------------------------
+
+export const PRESETS = {
   small: {
     label: "Small",
     description: "For development or small workloads",
@@ -58,18 +62,17 @@ const PRESETS = {
   },
 } as const;
 
-type PresetKey = keyof typeof PRESETS;
+export type PresetKey = keyof typeof PRESETS;
 
-interface ResourcePair {
+export interface ResourcePair {
   cpu: string;
   memory: string;
 }
 
-interface QuotaConfig {
+export interface QuotaConfig {
   cpuHard: string;
   memoryHard: string;
   podsHard: number;
-  // Advanced
   secretsHard?: number;
   configMapsHard?: number;
   servicesHard?: number;
@@ -79,18 +82,17 @@ interface QuotaConfig {
   criticalThreshold?: number;
 }
 
-interface LimitConfig {
+export interface LimitConfig {
   containerDefault: ResourcePair;
   containerDefaultRequest: ResourcePair;
   containerMax: ResourcePair;
   containerMin: ResourcePair;
-  // Advanced
   podMax?: ResourcePair;
   pvcMinStorage?: string;
   pvcMaxStorage?: string;
 }
 
-interface FormState {
+export interface FormState {
   namespace: string;
   preset: PresetKey;
   quotaName: string;
@@ -99,11 +101,15 @@ interface FormState {
   limits: LimitConfig;
 }
 
-const STEPS = [
-  { title: "Namespace & Preset" },
-  { title: "Quota Values" },
-  { title: "LimitRange Values" },
-  { title: "Review" },
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+const STEPS: WizardStep[] = [
+  { label: "Namespace & Preset", sub: "Scope & baseline" },
+  { label: "Quota Values", sub: "CPU, memory & pods" },
+  { label: "LimitRange Values", sub: "Container limits" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): FormState {
@@ -124,20 +130,29 @@ function initialState(): FormState {
   };
 }
 
-export default function NamespaceLimitsWizard() {
+function buildManifest(f: FormState): string {
+  return `apiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: ${f.quotaName}\n  namespace: ${f.namespace}\nspec:\n  hard:\n    cpu: "${f.quota.cpuHard}"\n    memory: "${f.quota.memoryHard}"\n    pods: "${f.quota.podsHard}"\n---\napiVersion: v1\nkind: LimitRange\nmetadata:\n  name: ${f.limitRangeName}\n  namespace: ${f.namespace}\nspec:\n  limits:\n    - type: Container\n      default:\n        cpu: "${f.limits.containerDefault.cpu}"\n        memory: "${f.limits.containerDefault.memory}"\n      defaultRequest:\n        cpu: "${f.limits.containerDefaultRequest.cpu}"\n        memory: "${f.limits.containerDefaultRequest.memory}"`;
+}
+
+// ---------------------------------------------------------------------------
+// Island
+// ---------------------------------------------------------------------------
+
+export default function NamespaceLimitsWizard(
+  { onClose }: { onClose?: () => void },
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<FormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
   const dirty = useSignal(false);
-
-  const showAdvancedQuota = useSignal(false);
-  const showAdvancedLimits = useSignal(false);
 
   const namespaces = useNamespaces();
 
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
@@ -258,6 +273,7 @@ export default function NamespaceLimitsWizard() {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -299,708 +315,88 @@ export default function NamespaceLimitsWizard() {
         "/v1/wizards/namespace-limits/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
   const f = form.value;
+  const nextLabel = currentStep.value === 3 ? "Close" : "Continue";
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Namespace Limits
-        </h1>
-        <a
-          href="/config/namespace-limits"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Namespace Limits"
+      subtitle={`Step ${currentStep.value + 1} of 4 · namespace ${f.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {/* Step 1: Namespace & Preset */}
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-6">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
-              </label>
-              <select
-                value={f.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-              {errors.value.namespace && (
-                <p class="mt-1 text-xs text-error">{errors.value.namespace}</p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Preset
-              </label>
-              <div class="mt-2 grid grid-cols-2 gap-3">
-                {(Object.keys(PRESETS) as PresetKey[]).map((key) => {
-                  const p = PRESETS[key];
-                  const isSelected = f.preset === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => applyPreset(key)}
-                      class={`rounded-lg border p-3 text-left transition-colors ${
-                        isSelected
-                          ? "border-brand bg-brand/5"
-                          : "border-border-primary hover:border-text-muted"
-                      }`}
-                    >
-                      <div class="font-medium text-text-primary">{p.label}</div>
-                      <div class="text-xs text-text-muted">{p.description}</div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                ResourceQuota Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={f.quotaName}
-                onInput={(e) =>
-                  updateField(
-                    "quotaName",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. default-quota"
-              />
-              {errors.value.quotaName && (
-                <p class="mt-1 text-xs text-error">{errors.value.quotaName}</p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                LimitRange Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={f.limitRangeName}
-                onInput={(e) =>
-                  updateField(
-                    "limitRangeName",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. default-limits"
-              />
-              {errors.value.limitRangeName && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.limitRangeName}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Step 2: Quota Values */}
-        {currentStep.value === 1 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  CPU Hard Limit <span class="text-error">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={f.quota.cpuHard}
-                  onInput={(e) =>
-                    updateQuota(
-                      "cpuHard",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class={WIZARD_INPUT_CLASS}
-                  placeholder="e.g. 8 or 8000m"
-                />
-                {errors.value.cpuHard && (
-                  <p class="mt-1 text-xs text-error">{errors.value.cpuHard}</p>
-                )}
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Memory Hard Limit <span class="text-error">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={f.quota.memoryHard}
-                  onInput={(e) =>
-                    updateQuota(
-                      "memoryHard",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class={WIZARD_INPUT_CLASS}
-                  placeholder="e.g. 16Gi"
-                />
-                {errors.value.memoryHard && (
-                  <p class="mt-1 text-xs text-error">
-                    {errors.value.memoryHard}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Max Pods <span class="text-error">*</span>
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={f.quota.podsHard}
-                onInput={(e) =>
-                  updateQuota(
-                    "podsHard",
-                    parseInt((e.target as HTMLInputElement).value) || 1,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              />
-              {errors.value.podsHard && (
-                <p class="mt-1 text-xs text-error">{errors.value.podsHard}</p>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                showAdvancedQuota.value = !showAdvancedQuota.value;
-              }}
-              class="text-sm text-brand hover:text-brand/80 flex items-center gap-1"
-            >
-              <svg
-                class={`w-4 h-4 transition-transform ${
-                  showAdvancedQuota.value ? "rotate-90" : ""
-                }`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M9 5l7 7-7 7"
-                />
-              </svg>
-              {showAdvancedQuota.value ? "Hide" : "Show"} advanced options
-            </button>
-
-            {showAdvancedQuota.value && (
-              <div class="space-y-4 rounded-lg border border-border-primary p-4">
-                <h4 class="text-sm font-medium text-text-muted">
-                  Count Limits (Optional)
-                </h4>
-                <div class="grid grid-cols-2 gap-4">
-                  <div>
-                    <label class="block text-xs text-text-muted">Secrets</label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={f.quota.secretsHard ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota("secretsHard", isNaN(v) ? undefined : v);
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      ConfigMaps
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={f.quota.configMapsHard ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota("configMapsHard", isNaN(v) ? undefined : v);
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Services
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={f.quota.servicesHard ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota("servicesHard", isNaN(v) ? undefined : v);
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">PVCs</label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={f.quota.pvcsHard ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota("pvcsHard", isNaN(v) ? undefined : v);
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                </div>
-
-                <h4 class="text-sm font-medium text-text-muted mt-4">
-                  GPU Limit
-                </h4>
-                <input
-                  type="text"
-                  value={f.quota.gpuHard ?? ""}
-                  onInput={(e) =>
-                    updateQuota(
-                      "gpuHard",
-                      (e.target as HTMLInputElement).value || undefined,
-                    )}
-                  class={WIZARD_INPUT_CLASS}
-                  placeholder="e.g. 1 (nvidia.com/gpu)"
-                />
-
-                <h4 class="text-sm font-medium text-text-muted mt-4">
-                  Alert Thresholds (%)
-                </h4>
-                <div class="grid grid-cols-2 gap-4">
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Warning (default: 80)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={f.quota.warnThreshold ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota("warnThreshold", isNaN(v) ? undefined : v);
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="80"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Critical (default: 95)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      value={f.quota.criticalThreshold ?? ""}
-                      onInput={(e) => {
-                        const v = parseInt(
-                          (e.target as HTMLInputElement).value,
-                        );
-                        updateQuota(
-                          "criticalThreshold",
-                          isNaN(v) ? undefined : v,
-                        );
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="95"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Step 3: LimitRange Values */}
-        {currentStep.value === 2 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <h3 class="text-sm font-semibold text-text-primary">
-              Container Limits
-            </h3>
-
-            <div class="rounded-lg border border-border-primary p-4 space-y-4">
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Default Limits (applied to containers without explicit limits)
-                </label>
-                <div class="grid grid-cols-2 gap-4 mt-2">
-                  <div>
-                    <label class="block text-xs text-text-muted">CPU</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerDefault.cpu}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerDefault",
-                          "cpu",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 250m"
-                    />
-                    {errors.value.containerDefaultCpu && (
-                      <p class="mt-1 text-xs text-error">
-                        {errors.value.containerDefaultCpu}
-                      </p>
-                    )}
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">Memory</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerDefault.memory}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerDefault",
-                          "memory",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 256Mi"
-                    />
-                    {errors.value.containerDefaultMemory && (
-                      <p class="mt-1 text-xs text-error">
-                        {errors.value.containerDefaultMemory}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Default Requests
-                </label>
-                <div class="grid grid-cols-2 gap-4 mt-2">
-                  <div>
-                    <label class="block text-xs text-text-muted">CPU</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerDefaultRequest.cpu}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerDefaultRequest",
-                          "cpu",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 100m"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">Memory</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerDefaultRequest.memory}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerDefaultRequest",
-                          "memory",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 128Mi"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Maximum Limits
-                </label>
-                <div class="grid grid-cols-2 gap-4 mt-2">
-                  <div>
-                    <label class="block text-xs text-text-muted">CPU</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerMax.cpu}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerMax",
-                          "cpu",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 2"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">Memory</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerMax.memory}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerMax",
-                          "memory",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 4Gi"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Minimum Limits
-                </label>
-                <div class="grid grid-cols-2 gap-4 mt-2">
-                  <div>
-                    <label class="block text-xs text-text-muted">CPU</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerMin.cpu}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerMin",
-                          "cpu",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 10m"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">Memory</label>
-                    <input
-                      type="text"
-                      value={f.limits.containerMin.memory}
-                      onInput={(e) =>
-                        updateResourcePair(
-                          "containerMin",
-                          "memory",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 8Mi"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                showAdvancedLimits.value = !showAdvancedLimits.value;
-              }}
-              class="text-sm text-brand hover:text-brand/80 flex items-center gap-1"
-            >
-              <svg
-                class={`w-4 h-4 transition-transform ${
-                  showAdvancedLimits.value ? "rotate-90" : ""
-                }`}
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M9 5l7 7-7 7"
-                />
-              </svg>
-              {showAdvancedLimits.value ? "Hide" : "Show"} advanced options
-            </button>
-
-            {showAdvancedLimits.value && (
-              <div class="space-y-4 rounded-lg border border-border-primary p-4">
-                <h4 class="text-sm font-medium text-text-muted">
-                  Pod Limits (Optional)
-                </h4>
-                <div class="grid grid-cols-2 gap-4">
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Max CPU per Pod
-                    </label>
-                    <input
-                      type="text"
-                      value={f.limits.podMax?.cpu ?? ""}
-                      onInput={(e) => {
-                        const cpu = (e.target as HTMLInputElement).value;
-                        const current = f.limits.podMax ?? {
-                          cpu: "",
-                          memory: "",
-                        };
-                        updateLimits(
-                          "podMax",
-                          cpu || current.memory
-                            ? { ...current, cpu }
-                            : undefined,
-                        );
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Max Memory per Pod
-                    </label>
-                    <input
-                      type="text"
-                      value={f.limits.podMax?.memory ?? ""}
-                      onInput={(e) => {
-                        const memory = (e.target as HTMLInputElement).value;
-                        const current = f.limits.podMax ?? {
-                          cpu: "",
-                          memory: "",
-                        };
-                        updateLimits(
-                          "podMax",
-                          memory || current.cpu
-                            ? { ...current, memory }
-                            : undefined,
-                        );
-                      }}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="No limit"
-                    />
-                  </div>
-                </div>
-
-                <h4 class="text-sm font-medium text-text-muted mt-4">
-                  PVC Storage Limits (Optional)
-                </h4>
-                <div class="grid grid-cols-2 gap-4">
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Min Storage
-                    </label>
-                    <input
-                      type="text"
-                      value={f.limits.pvcMinStorage ?? ""}
-                      onInput={(e) =>
-                        updateLimits(
-                          "pvcMinStorage",
-                          (e.target as HTMLInputElement).value || undefined,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 1Gi"
-                    />
-                  </div>
-                  <div>
-                    <label class="block text-xs text-text-muted">
-                      Max Storage
-                    </label>
-                    <input
-                      type="text"
-                      value={f.limits.pvcMaxStorage ?? ""}
-                      onInput={(e) =>
-                        updateLimits(
-                          "pvcMaxStorage",
-                          (e.target as HTMLInputElement).value || undefined,
-                        )}
-                      class={WIZARD_INPUT_CLASS}
-                      placeholder="e.g. 100Gi"
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Step 4: Review */}
-        {currentStep.value === 3 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/config/namespace-limits"
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {currentStep.value < 3 && (
-        <div class="mt-8 flex justify-between">
-          {currentStep.value > 0
-            ? (
-              <Button variant="ghost" onClick={goBack}>
-                Back
-              </Button>
-            )
-            : <div />}
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 2 ? "Preview YAML" : "Next"}
-          </Button>
-        </div>
+          <path d="M4 4h12v4H4zM4 10h5v6H4zM11 10h5v6h-5z" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={currentStep.value === 3 ? close : goNext}
+      nextLabel={nextLabel}
+      yaml={currentStep.value < 3 ? buildManifest(f) : undefined}
+    >
+      {currentStep.value === 0 && (
+        <NamespacePresetStep
+          form={f}
+          errors={errors}
+          namespaces={namespaces}
+          onUpdateField={updateField}
+          onApplyPreset={applyPreset}
+        />
       )}
 
-      {currentStep.value === 3 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <QuotaValuesStep
+          quota={f.quota}
+          errors={errors}
+          onUpdateQuota={updateQuota}
+        />
       )}
-    </div>
+
+      {currentStep.value === 2 && (
+        <LimitRangeValuesStep
+          limits={f.limits}
+          errors={errors}
+          onUpdateLimits={updateLimits}
+          onUpdateResourcePair={updateResourcePair}
+        />
+      )}
+
+      {currentStep.value === 3 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/config/namespace-limits"
+        />
+      )}
+    </WizardShell>
   );
 }

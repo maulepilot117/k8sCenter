@@ -14,7 +14,7 @@
       "tags": ["fresh", "recommended"]
     }
   },
-  "exclude": ["**/_fresh/*"],
+  "exclude": ["**/_fresh/*", "**/.impeccable/*"],
   "imports": {
     "@/": "./",
     "fresh": "jsr:@fresh/core@^2.2.0",

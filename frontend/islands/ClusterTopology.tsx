@@ -109,7 +109,7 @@ function getHealthStatus(
   resource: K8sNode | K8sPod | K8sPVC | K8sService | K8sWorkload,
 ): "healthy" | "warning" | "error" {
   if (kind === "pod") {
-    const phase = resource.status?.phase;
+    const phase = (resource as K8sPod).status?.phase;
     if (phase === "Running" || phase === "Succeeded") return "healthy";
     if (phase === "Pending") return "warning";
     return "error";
@@ -122,7 +122,7 @@ function getHealthStatus(
     return ready?.status === "True" ? "healthy" : "error";
   }
   if (kind === "pvc") {
-    const phase = resource.status?.phase;
+    const phase = (resource as K8sPVC).status?.phase;
     if (phase === "Bound") return "healthy";
     if (phase === "Pending") return "warning";
     return "error";
@@ -273,9 +273,7 @@ export default function ClusterTopology() {
       const extractArr = <T,>(
         res: PromiseSettledResult<{ data: T[] }>,
       ): T[] =>
-        res.status === "fulfilled" && Array.isArray(res.data)
-          ? res.data
-          : res.status === "fulfilled" && Array.isArray(res.value?.data)
+        res.status === "fulfilled" && Array.isArray(res.value?.data)
           ? res.value.data
           : [];
 

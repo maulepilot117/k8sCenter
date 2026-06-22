@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import {
   ProviderTypeBadge,
   StatusBadge,
@@ -193,88 +194,68 @@ export default function FluxProviders() {
       <NotificationLoadingSpinner loading={crud.loading.value} />
 
       {crud.error.value && (
-        <p class="text-sm text-danger py-4">{crud.error.value}</p>
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error.value}
+        </p>
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Type
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Channel / Address
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Status
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Created
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((p) => {
-                const key = `${p.namespace}/${p.name}`;
-                return (
-                  <tr key={key} class="hover:bg-hover/30">
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">{p.name}</div>
-                      {p.suspend && (
-                        <span
-                          class="text-xs"
-                          style={{ color: "var(--warning)" }}
-                        >
-                          suspended
-                        </span>
-                      )}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {p.namespace}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ProviderTypeBadge type={p.type} />
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[240px]">
-                      {p.channel || p.address || "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge
-                        status={p.suspend ? "suspended" : p.status}
-                      />
-                    </td>
-                    <td class="px-3 py-2 text-text-muted text-xs">
-                      {p.createdAt ? timeAgo(p.createdAt) : "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ActionsDropdown
-                        itemKey={key}
-                        suspended={p.suspend}
-                        openDropdown={crud.openDropdown}
-                        onEdit={() => openEdit(p)}
-                        onSuspendToggle={() => crud.handleSuspendToggle(p)}
-                        onDelete={() => {
-                          crud.deleteTarget.value = p;
-                        }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          chevron={false}
+          columns={[
+            { key: "name", label: "Name" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "type", label: "Type", width: "140px" },
+            { key: "channel", label: "Channel / Address" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "createdAt", label: "Created", width: "100px" },
+            { key: "actions", label: "", width: "60px" },
+          ]}
+          rows={displayed.map((p) => ({
+            id: `${p.namespace}/${p.name}`,
+            cells: {
+              name: (
+                <div>
+                  <div class="font-medium text-text-primary">{p.name}</div>
+                  {p.suspend && (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      suspended
+                    </span>
+                  )}
+                </div>
+              ),
+              namespace: (
+                <span class="text-xs text-text-secondary">{p.namespace}</span>
+              ),
+              type: <ProviderTypeBadge type={p.type} />,
+              channel: (
+                <span class="text-xs text-text-secondary truncate block max-w-[240px]">
+                  {p.channel || p.address || "-"}
+                </span>
+              ),
+              status: (
+                <StatusBadge status={p.suspend ? "suspended" : p.status} />
+              ),
+              createdAt: (
+                <span class="text-xs text-text-muted">
+                  {p.createdAt ? timeAgo(p.createdAt) : "-"}
+                </span>
+              ),
+              actions: (
+                <ActionsDropdown
+                  itemKey={`${p.namespace}/${p.name}`}
+                  suspended={p.suspend}
+                  openDropdown={crud.openDropdown}
+                  onEdit={() => openEdit(p)}
+                  onSuspendToggle={() => crud.handleSuspendToggle(p)}
+                  onDelete={() => {
+                    crud.deleteTarget.value = p;
+                  }}
+                />
+              ),
+            },
+          }))}
+        />
       )}
 
       <NotificationPagination
@@ -293,10 +274,9 @@ export default function FluxProviders() {
         totalCount={crud.items.value.length}
         notAvailable={notAvailable}
         kind="Provider"
-        onCreate={() =>
-          crud.openCreate(() => {
-            form.value = { ...EMPTY_FORM };
-          })}
+        onCreate={() => crud.openCreate(() => {
+          form.value = { ...EMPTY_FORM };
+        })}
       />
 
       {crud.showForm.value && (

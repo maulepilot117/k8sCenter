@@ -1,6 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
@@ -10,10 +9,9 @@ import {
 } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface ContainerState {
   image: string;
@@ -46,10 +44,10 @@ interface CronJobFormState {
   container: ContainerState;
 }
 
-const STEPS = [
-  { title: "Basics & Schedule" },
-  { title: "Container" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Schedule", sub: "Name & cron expression" },
+  { label: "Container", sub: "Image & resources" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 const SCHEDULE_PRESETS: { label: string; value: string }[] = [
@@ -100,7 +98,25 @@ function initialState(): CronJobFormState {
   };
 }
 
-export default function CronJobWizard() {
+const CRONJOB_ICON = (
+  <svg
+    width="21"
+    height="21"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect x="2.5" y="4" width="15" height="13.5" rx="2" />
+    <path d="M2.5 8.5h15M6.5 2.5v3M13.5 2.5v3" />
+    <path d="M6 12h2.5l1.5-2 1.5 4 1-2H14" />
+  </svg>
+);
+
+export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<CronJobFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -111,6 +127,7 @@ export default function CronJobWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
@@ -166,13 +183,8 @@ export default function CronJobWizard() {
     }
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) {
-      currentStep.value = currentStep.value - 1;
-    }
-  };
-
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -249,297 +261,285 @@ export default function CronJobWizard() {
         "/v1/wizards/cronjob/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  schedule: "${
+      f.schedule || "0 0 * * *"
+    }"\n  concurrencyPolicy: ${f.concurrencyPolicy}\n  suspend: ${f.suspend}\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          restartPolicy: ${f.restartPolicy}\n          containers:\n            - name: ${name}\n              image: ${
+      f.container.image || "<image>"
+    }`;
+  };
+
+  const nextLabel = currentStep.value === 2 ? "Close" : "Continue";
+
+  const handleNext = () => {
+    if (currentStep.value === 2) {
+      close();
+    } else {
+      goNext();
+    }
+  };
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create CronJob
-        </h1>
-        <a
-          href="/workloads/cronjobs"
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
+    <WizardShell
+      title="Create CronJob"
+      icon={CRONJOB_ICON}
+      subtitle="Schedule recurring jobs"
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={() => {
+        if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
+      }}
+      onNext={handleNext}
+      nextLabel={nextLabel}
+      yaml={currentStep.value === 2 ? undefined : manifest()}
+    >
+      {/* Step 0: Basics & Schedule */}
+      {currentStep.value === 0 && (
+        <div class="mx-auto max-w-lg space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Name <span class="text-error">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class={WIZARD_INPUT_CLASS}
+              placeholder="e.g. data-cleanup"
+            />
+            {errors.value.name && (
+              <p class="mt-1 text-xs text-error">{errors.value.name}</p>
+            )}
+          </div>
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Namespace <span class="text-error">*</span>
+            </label>
+            <select
+              value={form.value.namespace}
+              onChange={(e) =>
+                updateField(
+                  "namespace",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {namespaces.value.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              ))}
+            </select>
+          </div>
 
-      <div class="mt-6">
-        {/* Step 0: Basics & Schedule */}
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-error">*</span>
-              </label>
+          {/* Schedule with presets */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Schedule <span class="text-error">*</span>
+            </label>
+            <div class="mt-2 flex flex-wrap gap-2">
+              {SCHEDULE_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    if (preset.value) {
+                      updateField("schedule", preset.value);
+                      updateField("schedulePreset", preset.value);
+                    } else {
+                      updateField("schedulePreset", "");
+                    }
+                  }}
+                  class={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                    (preset.value &&
+                        form.value.schedulePreset === preset.value) ||
+                      (!preset.value && form.value.schedulePreset === "")
+                      ? "border-brand bg-brand/10 text-brand font-medium"
+                      : "border-border-primary text-text-muted hover:border-border-primary"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            {form.value.schedulePreset === "" && (
               <input
                 type="text"
-                value={form.value.name}
+                value={form.value.schedule}
                 onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. data-cleanup"
+                  updateField(
+                    "schedule",
+                    (e.target as HTMLInputElement).value,
+                  )}
+                class={`${WIZARD_INPUT_CLASS} mt-2`}
+                placeholder="e.g. */5 * * * *"
               />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Schedule with presets */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Schedule <span class="text-error">*</span>
-              </label>
-              <div class="mt-2 flex flex-wrap gap-2">
-                {SCHEDULE_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => {
-                      if (preset.value) {
-                        updateField("schedule", preset.value);
-                        updateField("schedulePreset", preset.value);
-                      } else {
-                        updateField("schedulePreset", "");
-                      }
-                    }}
-                    class={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
-                      (preset.value &&
-                          form.value.schedulePreset === preset.value) ||
-                        (!preset.value && form.value.schedulePreset === "")
-                        ? "border-brand bg-brand/10 text-brand font-medium"
-                        : "border-border-primary text-text-muted hover:border-border-primary"
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-              {form.value.schedulePreset === "" && (
-                <input
-                  type="text"
-                  value={form.value.schedule}
-                  onInput={(e) =>
-                    updateField(
-                      "schedule",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class={`${WIZARD_INPUT_CLASS} mt-2`}
-                  placeholder="e.g. */5 * * * *"
-                />
-              )}
-              {form.value.schedule && (
-                <p class="mt-1 text-xs text-text-muted">
-                  {cronToHuman(form.value.schedule)}
-                </p>
-              )}
-              {errors.value.schedule && (
-                <p class="mt-1 text-xs text-error">
-                  {errors.value.schedule}
-                </p>
-              )}
-            </div>
-
-            {/* Concurrency Policy */}
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Concurrency Policy
-              </label>
-              <select
-                value={form.value.concurrencyPolicy}
-                onChange={(e) =>
-                  updateField(
-                    "concurrencyPolicy",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {CONCURRENCY_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+            )}
+            {form.value.schedule && (
               <p class="mt-1 text-xs text-text-muted">
-                {form.value.concurrencyPolicy === "Allow" &&
-                  "Multiple jobs can run concurrently."}
-                {form.value.concurrencyPolicy === "Forbid" &&
-                  "Skip new run if previous job is still running."}
-                {form.value.concurrencyPolicy === "Replace" &&
-                  "Cancel the running job and start a new one."}
+                {cronToHuman(form.value.schedule)}
               </p>
-            </div>
+            )}
+            {errors.value.schedule && (
+              <p class="mt-1 text-xs text-error">
+                {errors.value.schedule}
+              </p>
+            )}
+          </div>
 
-            {/* Restart Policy */}
+          {/* Concurrency Policy */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Concurrency Policy
+            </label>
+            <select
+              value={form.value.concurrencyPolicy}
+              onChange={(e) =>
+                updateField(
+                  "concurrencyPolicy",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {CONCURRENCY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <p class="mt-1 text-xs text-text-muted">
+              {form.value.concurrencyPolicy === "Allow" &&
+                "Multiple jobs can run concurrently."}
+              {form.value.concurrencyPolicy === "Forbid" &&
+                "Skip new run if previous job is still running."}
+              {form.value.concurrencyPolicy === "Replace" &&
+                "Cancel the running job and start a new one."}
+            </p>
+          </div>
+
+          {/* Restart Policy */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Restart Policy
+            </label>
+            <select
+              value={form.value.restartPolicy}
+              onChange={(e) =>
+                updateField(
+                  "restartPolicy",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {RESTART_POLICY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* History limits */}
+          <div class="grid grid-cols-2 gap-4">
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                Restart Policy
+                Successful History
               </label>
-              <select
-                value={form.value.restartPolicy}
-                onChange={(e) =>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={form.value.successfulJobsHistoryLimit}
+                onInput={(e) =>
                   updateField(
-                    "restartPolicy",
-                    (e.target as HTMLSelectElement).value,
+                    "successfulJobsHistoryLimit",
+                    (e.target as HTMLInputElement).value,
                   )}
                 class={WIZARD_INPUT_CLASS}
-              >
-                {RESTART_POLICY_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* History limits */}
-            <div class="grid grid-cols-2 gap-4">
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Successful History
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={form.value.successfulJobsHistoryLimit}
-                  onInput={(e) =>
-                    updateField(
-                      "successfulJobsHistoryLimit",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class={WIZARD_INPUT_CLASS}
-                />
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Failed History
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={form.value.failedJobsHistoryLimit}
-                  onInput={(e) =>
-                    updateField(
-                      "failedJobsHistoryLimit",
-                      (e.target as HTMLInputElement).value,
-                    )}
-                  class={WIZARD_INPUT_CLASS}
-                />
-              </div>
-            </div>
-
-            {/* Suspend toggle */}
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form.value.suspend}
-                onChange={(e) =>
-                  updateField(
-                    "suspend",
-                    (e.target as HTMLInputElement).checked,
-                  )}
-                class="rounded border-border-primary"
               />
-              <span class="text-sm text-text-secondary">
-                Create suspended (will not run until resumed)
-              </span>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-text-secondary">
+                Failed History
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={form.value.failedJobsHistoryLimit}
+                onInput={(e) =>
+                  updateField(
+                    "failedJobsHistoryLimit",
+                    (e.target as HTMLInputElement).value,
+                  )}
+                class={WIZARD_INPUT_CLASS}
+              />
             </div>
           </div>
-        )}
 
-        {/* Step 1: Container */}
-        {currentStep.value === 1 && (
-          <ContainerForm
-            image={form.value.container.image}
-            command={form.value.container.command}
-            args={form.value.container.args}
-            ports={form.value.container.ports}
-            envVars={form.value.container.envVars}
-            requestCpu={form.value.container.requestCpu}
-            requestMemory={form.value.container.requestMemory}
-            limitCpu={form.value.container.limitCpu}
-            limitMemory={form.value.container.limitMemory}
-            errors={errors.value}
-            onChange={updateContainerField}
-          />
-        )}
-
-        {/* Step 2: Review */}
-        {currentStep.value === 2 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/workloads/cronjobs"
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {currentStep.value < 2 && (
-        <div class="mt-8 flex justify-between">
-          {currentStep.value > 0
-            ? (
-              <Button variant="ghost" onClick={goBack}>
-                Back
-              </Button>
-            )
-            : <div />}
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 1 ? "Preview YAML" : "Next"}
-          </Button>
+          {/* Suspend toggle */}
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.value.suspend}
+              onChange={(e) =>
+                updateField(
+                  "suspend",
+                  (e.target as HTMLInputElement).checked,
+                )}
+              class="rounded border-border-primary"
+            />
+            <span class="text-sm text-text-secondary">
+              Create suspended (will not run until resumed)
+            </span>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 2 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {/* Step 1: Container */}
+      {currentStep.value === 1 && (
+        <ContainerForm
+          image={form.value.container.image}
+          command={form.value.container.command}
+          args={form.value.container.args}
+          ports={form.value.container.ports}
+          envVars={form.value.container.envVars}
+          requestCpu={form.value.container.requestCpu}
+          requestMemory={form.value.container.requestMemory}
+          limitCpu={form.value.container.limitCpu}
+          limitMemory={form.value.container.limitMemory}
+          errors={errors.value}
+          onChange={updateContainerField}
+        />
       )}
-    </div>
+
+      {/* Step 2: Review */}
+      {currentStep.value === 2 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/cronjobs"
+        />
+      )}
+    </WizardShell>
   );
 }

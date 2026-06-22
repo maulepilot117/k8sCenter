@@ -1,13 +1,12 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { BackupStorageLocation } from "@/lib/velero-types.ts";
 
 interface BackupFormState {
@@ -20,7 +19,10 @@ interface BackupFormState {
   snapshotVolumes: boolean;
 }
 
-const STEPS = [{ title: "Configure" }, { title: "Review & Apply" }];
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Name, namespaces & storage" },
+  { label: "Review", sub: "Preview & apply" },
+];
 
 const TTL_OPTIONS = [
   { value: "", label: "Default" },
@@ -54,7 +56,12 @@ function initialState(): BackupFormState {
   };
 }
 
-export default function VeleroBackupWizard() {
+interface Props {
+  onClose?: () => void;
+}
+
+export default function VeleroBackupWizard({ onClose }: Props) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<BackupFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -66,6 +73,7 @@ export default function VeleroBackupWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   // Fetch BSLs
   useEffect(() => {
@@ -104,6 +112,7 @@ export default function VeleroBackupWizard() {
   }, []);
 
   const fetchPreview = useCallback(async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     try {
@@ -124,11 +133,13 @@ export default function VeleroBackupWizard() {
         "/v1/wizards/velero-backup/preview",
         body,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (e: unknown) {
+      if (gen !== previewGen.current) return;
       previewError.value = e instanceof Error ? e.message : "Preview failed";
     }
-    previewLoading.value = false;
+    if (gen === previewGen.current) previewLoading.value = false;
   }, []);
 
   const goNext = useCallback(async () => {
@@ -143,164 +154,161 @@ export default function VeleroBackupWizard() {
     currentStep.value--;
   }, []);
 
-  if (!IS_BROWSER) return null;
-
   return (
-    <div class="max-w-3xl mx-auto p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-2">New Backup</h1>
-      <p class="text-sm text-text-muted mb-6">
-        Create a one-time Velero backup of cluster resources.
-      </p>
-
-      <WizardStepper steps={STEPS} currentStep={currentStep.value} />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="space-y-6">
-            {/* Name */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Backup Name
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="my-backup"
-              />
-              {errors.value.name && (
-                <p class="text-xs text-error mt-1">{errors.value.name}</p>
-              )}
-            </div>
-
-            {/* Included Namespaces */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Include Namespaces
-              </label>
-              <p class="text-xs text-text-muted mb-2">
-                Leave empty to back up all namespaces. Use Ctrl/Cmd+click to
-                select multiple.
-              </p>
-              <select
-                multiple
-                onChange={(e) => {
-                  const select = e.target as HTMLSelectElement;
-                  const selected = Array.from(select.selectedOptions).map((o) =>
-                    o.value
-                  );
-                  updateField("includedNamespaces", selected);
-                }}
-                class={`${WIZARD_INPUT_CLASS} h-32`}
-              >
-                {namespaces.value.map((ns) => (
-                  <option
-                    key={ns}
-                    value={ns}
-                    selected={form.value.includedNamespaces.includes(ns)}
-                  >
-                    {ns}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Storage Location */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Storage Location
-              </label>
-              <select
-                value={form.value.storageLocation}
-                onChange={(e) =>
-                  updateField(
-                    "storageLocation",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                <option value="">Default</option>
-                {bsls.value.map((bsl) => (
-                  <option key={bsl.name} value={bsl.name}>
-                    {bsl.name} ({bsl.provider})
-                    {bsl.default ? " - default" : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* TTL */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Retention (TTL)
-              </label>
-              <select
-                value={form.value.ttl}
-                onChange={(e) =>
-                  updateField("ttl", (e.target as HTMLSelectElement).value)}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {TTL_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Snapshot Volumes */}
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="snapshotVolumes"
-                checked={form.value.snapshotVolumes}
-                onChange={(e) =>
-                  updateField(
-                    "snapshotVolumes",
-                    (e.target as HTMLInputElement).checked,
-                  )}
-                class="rounded border-border"
-              />
-              <label
-                for="snapshotVolumes"
-                class="text-sm font-medium text-text-primary"
-              >
-                Snapshot persistent volumes
-              </label>
-            </div>
-          </div>
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => (previewYaml.value = v)}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/backup/backups"
-          />
-        )}
-      </div>
-
+    <WizardShell
+      title="Create Backup"
+      icon={
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 2a8 8 0 0 1 8 8v1a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V10a8 8 0 0 1 8-8z" />
+          <path d="M12 14v6M9 17l3 3 3-3" />
+        </svg>
+      }
+      subtitle={`Step ${currentStep.value + 1} of 2`}
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={currentStep.value === 0 ? goNext : close}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
+      yaml={previewYaml.value || undefined}
+    >
       {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-between">
-          <a href="/backup/backups">
-            <Button type="button" variant="ghost">Cancel</Button>
-          </a>
-          <Button type="button" variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+        <div class="space-y-6">
+          {/* Name */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Backup Name
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class={WIZARD_INPUT_CLASS}
+              placeholder="my-backup"
+            />
+            {errors.value.name && (
+              <p class="text-xs text-error mt-1">{errors.value.name}</p>
+            )}
+          </div>
+
+          {/* Included Namespaces */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Include Namespaces
+            </label>
+            <p class="text-xs text-text-muted mb-2">
+              Leave empty to back up all namespaces. Use Ctrl/Cmd+click to
+              select multiple.
+            </p>
+            <select
+              multiple
+              onChange={(e) => {
+                const select = e.target as HTMLSelectElement;
+                const selected = Array.from(select.selectedOptions).map((o) =>
+                  o.value
+                );
+                updateField("includedNamespaces", selected);
+              }}
+              class={`${WIZARD_INPUT_CLASS} h-32`}
+            >
+              {namespaces.value.map((ns) => (
+                <option
+                  key={ns}
+                  value={ns}
+                  selected={form.value.includedNamespaces.includes(ns)}
+                >
+                  {ns}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Storage Location */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Storage Location
+            </label>
+            <select
+              value={form.value.storageLocation}
+              onChange={(e) =>
+                updateField(
+                  "storageLocation",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              <option value="">Default</option>
+              {bsls.value.map((bsl) => (
+                <option key={bsl.name} value={bsl.name}>
+                  {bsl.name} ({bsl.provider})
+                  {bsl.default ? " - default" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* TTL */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Retention (TTL)
+            </label>
+            <select
+              value={form.value.ttl}
+              onChange={(e) =>
+                updateField("ttl", (e.target as HTMLSelectElement).value)}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {TTL_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Snapshot Volumes */}
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="snapshotVolumes"
+              checked={form.value.snapshotVolumes}
+              onChange={(e) =>
+                updateField(
+                  "snapshotVolumes",
+                  (e.target as HTMLInputElement).checked,
+                )}
+              class="rounded border-border"
+            />
+            <label
+              for="snapshotVolumes"
+              class="text-sm font-medium text-text-primary"
+            >
+              Snapshot persistent volumes
+            </label>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button type="button" variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => (previewYaml.value = v)}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/backup/backups"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

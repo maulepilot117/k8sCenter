@@ -4,19 +4,21 @@
 
 /* ── Liquid Glass ── */
 :root {
-  --bg-base: #05080f;
-  --bg-surface: #0d1422;
-  --bg-elevated: #141c2e;
-  --bg-hover: #1c2640;
-  --border-primary: #263350;
-  --border-subtle: #1a2338;
-  --text-primary: #edf2fb;
-  --text-secondary: #97a4c0;
-  --text-muted: #66738f;
-  --accent: #3daeff;
-  --accent-glow: rgba(61, 174, 255, 0.16);
-  --accent-dim: rgba(61, 174, 255, 0.09);
-  --accent-secondary: #8e7bff;
+  --bg-base: #080b16;
+  --bg-surface: #0d1322;
+  --bg-elevated: #141b2d;
+  --bg-hover: #1b2440;
+  --border-primary: #243150;
+  --border-subtle: #19223a;
+  --text-primary: #eef2fb;
+  --text-secondary: #9aa6c4;
+  --text-muted: #647189;
+  --text-on-accent: #ffffff;
+  --accent: #43b0ff;
+  --accent-glow: rgba(67, 174, 255, 0.16);
+  --accent-dim: rgba(67, 174, 255, 0.12);
+  --accent-secondary: #9b87ff;
+  --accent-2: #9b87ff;
   --success: #34d399;
   --success-dim: rgba(52, 211, 153, 0.12);
   --warning: #fbbf24;
@@ -24,9 +26,46 @@
   --error: #fb7185;
   --error-dim: rgba(251, 113, 133, 0.12);
   --info: #7dd3fc;
-  --glass-surface: rgba(15, 21, 36, 0.55);
-  --glass-elevated: rgba(22, 30, 49, 0.66);
-  --glass-border: rgba(151, 180, 228, 0.16);
+  --glass-surface: rgba(15, 21, 38, 0.55);
+  --glass-elevated: rgba(22, 30, 52, 0.66);
+  --glass-border: rgba(150, 178, 228, 0.16);
   --glass-highlight: rgba(255, 255, 255, 0.07);
-  --glass-scrim: rgba(3, 6, 12, 0.50);
+  --glass-scrim: rgba(4, 7, 14, 0.55);
+  --glass-rim-light: rgba(255, 255, 255, 0.16);
+  --glass-rim-soft: rgba(255, 255, 255, 0.06);
+  --glass-rim-dark: rgba(0, 0, 0, 0.30);
+}
+
+/* ── Liquid Glass Light ── */
+.theme-light {
+  --bg-base: #eaeef6;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-hover: #eef3fa;
+  --border-primary: #d6deec;
+  --border-subtle: #e7ecf5;
+  --text-primary: #141a2b;
+  --text-secondary: #4d5972;
+  --text-muted: #8492ad;
+  --text-on-accent: #ffffff;
+  --accent: #2a7fe0;
+  --accent-glow: rgba(42, 127, 224, 0.16);
+  --accent-dim: rgba(42, 127, 224, 0.10);
+  --accent-secondary: #7a63f0;
+  --accent-2: #7a63f0;
+  --success: #10a877;
+  --success-dim: rgba(16, 168, 119, 0.12);
+  --warning: #d99411;
+  --warning-dim: rgba(217, 148, 17, 0.12);
+  --error: #e0556a;
+  --error-dim: rgba(224, 85, 106, 0.12);
+  --info: #3aa0d8;
+  --glass-surface: rgba(255, 255, 255, 0.62);
+  --glass-elevated: rgba(255, 255, 255, 0.80);
+  --glass-border: rgba(40, 60, 110, 0.13);
+  --glass-highlight: rgba(255, 255, 255, 0.60);
+  --glass-scrim: rgba(214, 222, 236, 0.55);
+  --glass-rim-light: rgba(255, 255, 255, 0.85);
+  --glass-rim-soft: rgba(255, 255, 255, 0.50);
+  --glass-rim-dark: rgba(60, 80, 120, 0.10);
 }

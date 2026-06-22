@@ -2,7 +2,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import type { CiliumBGPResponse } from "@/lib/cilium-types.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 export default function BgpStatus() {
@@ -44,14 +44,10 @@ export default function BgpStatus() {
     <Card title="BGP Peering">
       <div class="flex justify-between items-center -mt-2 mb-3">
         <StatusBadge
-          status={allEstablished
+          label={allEstablished
             ? "All Established"
             : `${established}/${peers.length} Established`}
-          variant={allEstablished
-            ? "success"
-            : established > 0
-            ? "warning"
-            : "danger"}
+          tone={allEstablished ? "ok" : established > 0 ? "warn" : "crit"}
         />
       </div>
       <div class="space-y-2">

@@ -7,6 +7,7 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import {
   BlockingBadge,
   EngineBadge,
@@ -95,94 +96,184 @@ export default function PolicyDashboard() {
   );
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-bold text-text-primary">Policies</h1>
+    <div
+      style={{
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "20px",
+      }}
+    >
+      {/* Page header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            Policies
+          </h1>
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Policy engine integration — Kyverno &amp; OPA Gatekeeper.
+          </p>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            flexShrink: 0,
+          }}
+        >
           {wsStatus.value === "connected" && (
             <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-success bg-success/10">
               <span class="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
               Live
             </span>
           )}
+          {!loading.value && (
+            <>
+              {!noEngine && (
+                <a href="/security/create-policy">
+                  <Button type="button" variant="primary">Create Policy</Button>
+                </a>
+              )}
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={handleRefresh}
+                disabled={refreshing.value}
+              >
+                {refreshing.value ? "Refreshing..." : "Refresh"}
+              </Button>
+            </>
+          )}
         </div>
-        {!loading.value && (
-          <div class="flex items-center gap-2">
-            {!noEngine && (
-              <a href="/security/create-policy">
-                <Button type="button" variant="primary">Create Policy</Button>
-              </a>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={handleRefresh}
-              disabled={refreshing.value}
-            >
-              {refreshing.value ? "Refreshing..." : "Refresh"}
-            </Button>
-          </div>
-        )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
-        Policy engine integration — Kyverno &amp; OPA Gatekeeper.
-      </p>
 
       {/* Engine status banner */}
       {status.value && !noEngine && (
-        <div class="mb-6 rounded-lg border border-border-primary p-4 flex items-center gap-4 bg-bg-elevated">
-          <div class="flex items-center gap-2">
-            <span class="text-sm font-medium text-text-primary">
-              Engines detected:
+        <WidgetShell title="Policy Engines">
+          <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span
+                style={{
+                  fontSize: "13px",
+                  fontWeight: 500,
+                  color: "var(--text-primary)",
+                }}
+              >
+                Engines detected:
+              </span>
+              {(status.value.detected === "kyverno" ||
+                status.value.detected === "both") && (
+                <EngineBadge engine="kyverno" />
+              )}
+              {(status.value.detected === "gatekeeper" ||
+                status.value.detected === "both") && (
+                <EngineBadge engine="gatekeeper" />
+              )}
+            </div>
+            <span
+              style={{
+                fontSize: "12px",
+                color: "var(--text-muted)",
+                marginLeft: "auto",
+              }}
+            >
+              Last checked:{" "}
+              {new Date(status.value.lastChecked).toLocaleString()}
             </span>
-            {(status.value.detected === "kyverno" ||
-              status.value.detected === "both") && (
-              <EngineBadge engine="kyverno" />
-            )}
-            {(status.value.detected === "gatekeeper" ||
-              status.value.detected === "both") && (
-              <EngineBadge engine="gatekeeper" />
-            )}
           </div>
-          <span class="text-xs text-text-muted ml-auto">
-            Last checked: {new Date(status.value.lastChecked).toLocaleString()}
-          </span>
-        </div>
+        </WidgetShell>
       )}
 
       {/* No engine state */}
       {noEngine && !loading.value && (
-        <div class="mb-6 rounded-lg border border-border-primary p-6 text-center bg-bg-elevated">
-          <p class="text-lg font-medium text-text-primary mb-2">
-            No policy engine detected
-          </p>
-          <p class="text-sm text-text-muted mb-4">
-            Install Kyverno or OPA Gatekeeper to enable policy management.
-          </p>
-          <div class="flex justify-center gap-4">
-            <a
-              href="https://kyverno.io/docs/installation/"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-sm text-brand hover:underline"
+        <WidgetShell title="Policy Engines">
+          <div style={{ textAlign: "center", padding: "16px 0" }}>
+            <p
+              style={{
+                fontSize: "16px",
+                fontWeight: 500,
+                color: "var(--text-primary)",
+                margin: "0 0 8px",
+              }}
             >
-              Install Kyverno &rarr;
-            </a>
-            <a
-              href="https://open-policy-agent.github.io/gatekeeper/website/docs/install/"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-sm text-brand hover:underline"
+              No policy engine detected
+            </p>
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                margin: "0 0 16px",
+              }}
             >
-              Install Gatekeeper &rarr;
-            </a>
+              Install Kyverno or OPA Gatekeeper to enable policy management.
+            </p>
+            <div
+              style={{ display: "flex", justifyContent: "center", gap: "16px" }}
+            >
+              <a
+                href="https://kyverno.io/docs/installation/"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontSize: "13px",
+                  color: "var(--accent)",
+                  textDecoration: "none",
+                }}
+                class="hover:underline"
+              >
+                Install Kyverno &rarr;
+              </a>
+              <a
+                href="https://open-policy-agent.github.io/gatekeeper/website/docs/install/"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  fontSize: "13px",
+                  color: "var(--accent)",
+                  textDecoration: "none",
+                }}
+                class="hover:underline"
+              >
+                Install Gatekeeper &rarr;
+              </a>
+            </div>
           </div>
-        </div>
+        </WidgetShell>
       )}
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "16px",
+        }}
+      >
+        <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
             value={search.value}
             onInput={(v) => {
@@ -193,7 +284,15 @@ export default function PolicyDashboard() {
           />
         </div>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            padding: "6px 8px",
+            fontSize: "13px",
+            background: "var(--bg-elevated)",
+            color: "var(--text-primary)",
+            cursor: "pointer",
+          }}
           value={filterEngine.value}
           onChange={(e) => {
             filterEngine.value = (e.target as HTMLSelectElement).value;
@@ -205,7 +304,15 @@ export default function PolicyDashboard() {
           <option value="gatekeeper">Gatekeeper</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            padding: "6px 8px",
+            fontSize: "13px",
+            background: "var(--bg-elevated)",
+            color: "var(--text-primary)",
+            cursor: "pointer",
+          }}
           value={filterSeverity.value}
           onChange={(e) => {
             filterSeverity.value = (e.target as HTMLSelectElement).value;
@@ -219,7 +326,15 @@ export default function PolicyDashboard() {
           <option value="low">Low</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            padding: "6px 8px",
+            fontSize: "13px",
+            background: "var(--bg-elevated)",
+            color: "var(--text-primary)",
+            cursor: "pointer",
+          }}
           value={filterBlocking.value}
           onChange={(e) => {
             filterBlocking.value = (e.target as HTMLSelectElement).value;
@@ -230,7 +345,7 @@ export default function PolicyDashboard() {
           <option value="blocking">Enforce</option>
           <option value="audit">Audit</option>
         </select>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {policies.value.length} policies
         </span>
       </div>
@@ -241,7 +356,13 @@ export default function PolicyDashboard() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p
+          style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
+        >
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
         <div class="overflow-x-auto rounded-lg border border-border-primary">
@@ -301,7 +422,8 @@ export default function PolicyDashboard() {
                           href={`/security/violations?policy=${
                             encodeURIComponent(p.name)
                           }`}
-                          class="text-danger hover:underline font-medium"
+                          style={{ color: "var(--error)", fontWeight: 500 }}
+                          class="hover:underline"
                         >
                           {p.violationCount}
                         </a>
@@ -333,7 +455,13 @@ export default function PolicyDashboard() {
 
       {/* Pagination */}
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
           <p class="text-sm text-text-muted">
             {filtered.length} policies &middot; Page {page.value} of{" "}
             {totalPages}
@@ -363,15 +491,22 @@ export default function PolicyDashboard() {
         </div>
       )}
 
-      {!loading.value && !error.value && filtered.length === 0 &&
-        !noEngine && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">
+      {/* Empty state */}
+      {!loading.value && !error.value && filtered.length === 0 && !noEngine && (
+        <WidgetShell>
+          <p
+            style={{
+              textAlign: "center",
+              color: "var(--text-muted)",
+              padding: "32px 0",
+              margin: 0,
+            }}
+          >
             {policies.value.length === 0
               ? "No policies found. Policies will appear here once defined in your cluster."
               : "No policies match your filters."}
           </p>
-        </div>
+        </WidgetShell>
       )}
     </div>
   );

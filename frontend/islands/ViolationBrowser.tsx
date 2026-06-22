@@ -7,6 +7,7 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import {
   ActionBadge,
   EngineBadge,
@@ -115,10 +116,58 @@ export default function ViolationBrowser() {
     page.value * PAGE_SIZE,
   );
 
+  const selectStyle = {
+    borderRadius: "9px",
+    border: "1px solid var(--border-primary)",
+    background: "var(--bg-elevated)",
+    color: "var(--text-primary)",
+    padding: "6px 10px",
+    fontSize: "13px",
+    outline: "none",
+  };
+
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Violations</h1>
+    <div
+      style={{
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "20px",
+      }}
+    >
+      {/* Page header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+        }}
+      >
+        <div>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            Violations
+          </h1>
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Policy violations across the cluster — denied, warned, and audited
+            resources.
+          </p>
+        </div>
         {!loading.value && (
           <Button
             type="button"
@@ -130,14 +179,17 @@ export default function ViolationBrowser() {
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
-        Policy violations across the cluster — denied, warned, and audited
-        resources.
-      </p>
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "12px",
+        }}
+      >
+        <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
             value={search.value}
             onInput={(v) => {
@@ -148,7 +200,7 @@ export default function ViolationBrowser() {
           />
         </div>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={selectStyle}
           value={filterNamespace.value}
           onChange={(e) => {
             filterNamespace.value = (e.target as HTMLSelectElement).value;
@@ -163,7 +215,7 @@ export default function ViolationBrowser() {
           ))}
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={selectStyle}
           value={filterSeverity.value}
           onChange={(e) => {
             filterSeverity.value = (e.target as HTMLSelectElement).value;
@@ -177,7 +229,7 @@ export default function ViolationBrowser() {
           <option value="low">Low</option>
         </select>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={selectStyle}
           value={filterEngine.value}
           onChange={(e) => {
             filterEngine.value = (e.target as HTMLSelectElement).value;
@@ -188,18 +240,30 @@ export default function ViolationBrowser() {
           <option value="kyverno">Kyverno</option>
           <option value="gatekeeper">Gatekeeper</option>
         </select>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {violations.value.length} violations
         </span>
       </div>
 
       {loading.value && (
-        <div class="flex justify-center py-12">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "48px 0",
+          }}
+        >
           <Spinner class="text-brand" />
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p
+          style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
+        >
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
         <div class="overflow-x-auto rounded-lg border border-border-primary">
@@ -251,7 +315,11 @@ export default function ViolationBrowser() {
                     <td class="px-3 py-2">
                       {href
                         ? (
-                          <a href={href} class="text-brand hover:underline">
+                          <a
+                            href={href}
+                            style={{ color: "var(--accent)" }}
+                            class="hover:underline"
+                          >
                             {v.kind}/{v.name}
                           </a>
                         )
@@ -283,12 +351,18 @@ export default function ViolationBrowser() {
 
       {/* Pagination */}
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
-          <p class="text-sm text-text-muted">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             {filtered.length} violations &middot; Page {page.value} of{" "}
             {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div style={{ display: "flex", gap: "8px" }}>
             <Button
               type="button"
               variant="ghost"
@@ -313,14 +387,23 @@ export default function ViolationBrowser() {
         </div>
       )}
 
+      {/* Empty state — glass card */}
       {!loading.value && !error.value && filtered.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">
-            {violations.value.length === 0
-              ? "No violations found. Your cluster is compliant!"
-              : "No violations match your filters."}
-          </p>
-        </div>
+        <WidgetShell>
+          <div style={{ textAlign: "center", padding: "48px 24px" }}>
+            <p
+              style={{
+                margin: 0,
+                color: "var(--text-muted)",
+                fontSize: "14px",
+              }}
+            >
+              {violations.value.length === 0
+                ? "No violations found. Your cluster is compliant!"
+                : "No violations match your filters."}
+            </p>
+          </div>
+        </WidgetShell>
       )}
     </div>
   );

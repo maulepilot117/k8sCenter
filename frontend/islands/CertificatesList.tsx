@@ -5,11 +5,13 @@ import { apiGet } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import {
   ExpiryBadge,
   StatusBadge,
 } from "@/components/ui/CertificateBadges.tsx";
 import type { Certificate } from "@/lib/certmanager-types.ts";
+import CertificateWizard from "@/islands/CertificateWizard.tsx";
 
 const PAGE_SIZE = 100;
 
@@ -19,11 +21,19 @@ export default function CertificatesList() {
   const certs = useSignal<Certificate[]>([]);
   const search = useSignal("");
   const page = useSignal(1);
+  const wizardOpen = useSignal(false);
 
   // Check URL param for pre-filter
   const expiringOnly = IS_BROWSER &&
     new URLSearchParams(globalThis.location.search).get("status") ===
       "expiring";
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
+  }, []);
 
   async function fetchData() {
     try {
@@ -73,25 +83,74 @@ export default function CertificatesList() {
   );
 
   return (
-    <div class="p-6">
-      <div class="flex items-start justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Certificates</h1>
-        <a
-          href="/security/certificates/new"
-          class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90"
-          style={{ color: "var(--bg-base)" }}
+    <div
+      style={{
+        padding: "24px",
+        display: "flex",
+        flexDirection: "column",
+        gap: "20px",
+      }}
+    >
+      {/* Page header */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>
+            Certificates
+          </h1>
+          <p
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              margin: "4px 0 0",
+            }}
+          >
+            cert-manager certificates across all namespaces.
+            {expiringOnly && " Showing expiring and expired certificates only."}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "6px",
+            padding: "8px 16px",
+            fontSize: "13px",
+            fontWeight: 600,
+            color: "var(--bg-base)",
+            background: "var(--accent)",
+            borderRadius: "9px",
+            border: "none",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            fontFamily: "inherit",
+          }}
         >
           Create Certificate
-        </a>
+        </button>
+
+        {wizardOpen.value && (
+          <CertificateWizard onClose={() => (wizardOpen.value = false)} />
+        )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
-        cert-manager certificates across all namespaces.
-        {expiringOnly && " Showing expiring and expired certificates only."}
-      </p>
 
       {/* Filters */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "16px",
+        }}
+      >
+        <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
             value={search.value}
             onInput={(v) => {
@@ -101,18 +160,30 @@ export default function CertificatesList() {
             placeholder="Filter by name, namespace, issuer..."
           />
         </div>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {certs.value.length} certificates
         </span>
       </div>
 
       {loading.value && (
-        <div class="flex justify-center py-12">
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "48px 0",
+          }}
+        >
           <Spinner class="text-brand" />
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p
+          style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
+        >
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
         <div class="overflow-x-auto rounded-lg border border-border-primary">
@@ -145,7 +216,8 @@ export default function CertificatesList() {
                   <td class="px-3 py-2">
                     <a
                       href={`/security/certificates/${c.namespace}/${c.name}`}
-                      class="font-medium text-brand hover:underline"
+                      class="font-medium hover:underline"
+                      style={{ color: "var(--accent)" }}
                     >
                       {c.name}
                     </a>
@@ -160,7 +232,7 @@ export default function CertificatesList() {
                     {c.issuerRef.name}
                   </td>
                   <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[200px]">
-                    {(c.dnsNames ?? []).join(", ") || "\u2014"}
+                    {(c.dnsNames ?? []).join(", ") || "—"}
                   </td>
                   <td class="px-3 py-2">
                     <ExpiryBadge daysRemaining={c.daysRemaining} />
@@ -174,12 +246,18 @@ export default function CertificatesList() {
 
       {/* Pagination */}
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
           <p class="text-sm text-text-muted">
             {filtered.length} certificates &middot; Page {page.value} of{" "}
             {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div style={{ display: "flex", gap: "8px" }}>
             <Button
               type="button"
               variant="ghost"
@@ -204,14 +282,23 @@ export default function CertificatesList() {
         </div>
       )}
 
+      {/* Empty state */}
       {!loading.value && !error.value && filtered.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">
-            {certs.value.length === 0
-              ? "No certificates found. Certificates will appear here once cert-manager issues them."
-              : "No certificates match your filters."}
-          </p>
-        </div>
+        <WidgetShell>
+          <div style={{ textAlign: "center", padding: "48px 24px" }}>
+            <p
+              style={{
+                color: "var(--text-muted)",
+                fontSize: "14px",
+                margin: 0,
+              }}
+            >
+              {certs.value.length === 0
+                ? "No certificates found. Certificates will appear here once cert-manager issues them."
+                : "No certificates match your filters."}
+            </p>
+          </div>
+        </WidgetShell>
       )}
     </div>
   );

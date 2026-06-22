@@ -3,10 +3,12 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet } from "@/lib/api.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
+import SnapshotWizard from "@/islands/SnapshotWizard.tsx";
+import ScheduledSnapshotWizard from "@/islands/ScheduledSnapshotWizard.tsx";
 
 interface SnapshotInfo {
   name: string;
@@ -31,6 +33,8 @@ export default function SnapshotList() {
   const error = useSignal<string | null>(null);
   const deleteTarget = useSignal<SnapshotInfo | null>(null);
   const deleting = useSignal(false);
+  const snapshotWizardOpen = useSignal(false);
+  const scheduleWizardOpen = useSignal(false);
 
   const fetchSnapshots = () => {
     loading.value = true;
@@ -195,20 +199,41 @@ export default function SnapshotList() {
     <div class="space-y-4">
       {/* Action buttons */}
       <div class="flex gap-2">
-        <a
-          href="/storage/snapshots/new"
+        <button
+          type="button"
+          onClick={() => (snapshotWizardOpen.value = true)}
           class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
-          style={{ color: "var(--bg-base)" }}
+          style={{
+            color: "var(--bg-base)",
+            fontFamily: "inherit",
+            border: "none",
+            cursor: "pointer",
+          }}
         >
           Create Snapshot
-        </a>
-        <a
-          href="/storage/snapshots/schedule"
+        </button>
+        <button
+          type="button"
+          onClick={() => (scheduleWizardOpen.value = true)}
           class="inline-flex items-center rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
+          style={{
+            fontFamily: "inherit",
+            cursor: "pointer",
+            background: "transparent",
+          }}
         >
           Schedule Snapshots
-        </a>
+        </button>
       </div>
+
+      {snapshotWizardOpen.value && (
+        <SnapshotWizard onClose={() => (snapshotWizardOpen.value = false)} />
+      )}
+      {scheduleWizardOpen.value && (
+        <ScheduledSnapshotWizard
+          onClose={() => (scheduleWizardOpen.value = false)}
+        />
+      )}
 
       {snapshots.value.length === 0
         ? (
@@ -275,14 +300,14 @@ export default function SnapshotList() {
                         {snap.errorMessage
                           ? (
                             <StatusBadge
-                              status="Error"
-                              variant="danger"
+                              label="Error"
+                              tone="crit"
                             />
                           )
                           : (
                             <StatusBadge
-                              status={snap.readyToUse ? "Ready" : "Pending"}
-                              variant={snap.readyToUse ? "success" : "warning"}
+                              label={snap.readyToUse ? "Ready" : "Pending"}
+                              tone={snap.readyToUse ? "ok" : "warn"}
                             />
                           )}
                         {snap.errorMessage && (

@@ -1,5 +1,6 @@
 import type { Signal } from "@preact/signals";
-import { settingsInputClass } from "@/components/settings/shared.ts";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
 
 interface MonitoringFieldsProps {
   promUrl: Signal<string>;
@@ -14,67 +15,48 @@ export function MonitoringFields(
 ) {
   return (
     <div class="grid gap-4 sm:grid-cols-2">
-      <div>
-        <label class="mb-1 block text-sm font-medium text-text-secondary">
-          Prometheus URL
-        </label>
-        <input
-          type="url"
+      <Field label="Prometheus URL">
+        <TextField
           value={promUrl.value}
-          onInput={(e) => {
-            promUrl.value = (e.target as HTMLInputElement).value;
+          onInput={(v) => {
+            promUrl.value = v;
             onDirty?.();
           }}
           placeholder="http://prometheus:9090"
-          class={settingsInputClass}
         />
-      </div>
-      <div>
-        <label class="mb-1 block text-sm font-medium text-text-secondary">
-          Grafana URL
-        </label>
-        <input
-          type="url"
+      </Field>
+      <Field label="Grafana URL">
+        <TextField
           value={grafUrl.value}
-          onInput={(e) => {
-            grafUrl.value = (e.target as HTMLInputElement).value;
+          onInput={(v) => {
+            grafUrl.value = v;
             onDirty?.();
           }}
           placeholder="http://grafana:3000"
-          class={settingsInputClass}
         />
-      </div>
-      <div>
-        <label class="mb-1 block text-sm font-medium text-text-secondary">
-          Grafana API Token
-        </label>
-        <input
+      </Field>
+      <Field label="Grafana API Token">
+        <TextField
           type="password"
           value={grafToken.value}
-          onInput={(e) => {
-            grafToken.value = (e.target as HTMLInputElement).value;
+          onInput={(v) => {
+            grafToken.value = v;
             onDirty?.();
           }}
           placeholder={grafToken.value === "****" ? "****" : "Enter token"}
-          class={settingsInputClass}
         />
-      </div>
+      </Field>
       {monNs && (
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            Monitoring Namespace
-          </label>
-          <input
-            type="text"
+        <Field label="Monitoring Namespace">
+          <TextField
             value={monNs.value}
-            onInput={(e) => {
-              monNs.value = (e.target as HTMLInputElement).value;
+            onInput={(v) => {
+              monNs.value = v;
               onDirty?.();
             }}
             placeholder="monitoring"
-            class={settingsInputClass}
           />
-        </div>
+        </Field>
       )}
     </div>
   );

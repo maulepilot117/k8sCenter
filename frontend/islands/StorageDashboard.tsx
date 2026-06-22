@@ -1,31 +1,14 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
-import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
-import SubNav from "@/islands/SubNav.tsx";
+import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
 import ResourceTable from "@/islands/ResourceTable.tsx";
 import SnapshotList from "@/islands/SnapshotList.tsx";
-import { SummaryRing } from "@/components/ui/SummaryRing.tsx";
-
-interface SummaryData {
-  totalPVCs: number;
-  boundPVCs: number;
-  pendingPVCs: number;
-  totalPVs: number;
-  storageClasses: number;
-}
-
-const EMPTY_SUMMARY: SummaryData = {
-  totalPVCs: 0,
-  boundPVCs: 0,
-  pendingPVCs: 0,
-  totalPVs: 0,
-  storageClasses: 0,
-};
-
-const storageSection = DOMAIN_SECTIONS.find((s) => s.id === "storage")!;
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
+import Donut from "@/components/charts/Donut.tsx";
+import BarRow from "@/components/charts/BarRow.tsx";
+import PVCWizard from "@/islands/PVCWizard.tsx";
+import StorageClassWizard from "@/islands/StorageClassWizard.tsx";
 
 function resolveTab(currentPath: string): {
   kind: string;
@@ -97,178 +80,151 @@ function resolveTab(currentPath: string): {
 export default function StorageDashboard(
   { currentPath }: { currentPath: string },
 ) {
-  const summary = useSignal<SummaryData>(EMPTY_SUMMARY);
-  const loading = useSignal(true);
-  const namespace = selectedNamespace.value;
+  // Reading selectedNamespace.value here wires reactivity — the shared
+  // resource-counts store re-fetches when namespace changes.
+  const _ns = selectedNamespace.value;
 
+  const pvcWizardOpen = useSignal(false);
+  const scWizardOpen = useSignal(false);
+
+  // Auto-open wizard when navigated with ?action=create (e.g. from CommandPalette)
   useEffect(() => {
-    if (!IS_BROWSER) return;
-
-    loading.value = true;
-
-    const nsPath = namespace && namespace !== "all" ? `/${namespace}` : "";
-
-    const fetchSummary = async () => {
-      try {
-        const nsParam = namespace && namespace !== "all"
-          ? `?namespace=${encodeURIComponent(namespace)}`
-          : "";
-
-        const [countsRes, pvcsRes] = await Promise.all([
-          apiGet<Record<string, number>>(
-            `/v1/resources/counts${nsParam}`,
-          ),
-          apiGet<{
-            data: Array<{
-              status?: { phase?: string };
-            }>;
-          }>(`/v1/resources/pvcs${nsPath}?limit=500`),
-        ]);
-
-        const countsData = countsRes.data ?? {};
-
-        const pvcs = pvcsRes.data ?? [];
-        const totalPVCs = countsData["persistentvolumeclaims"] ??
-          countsData["pvcs"] ?? pvcs.length;
-        let boundPVCs = 0;
-        let pendingPVCs = 0;
-
-        for (const pvc of pvcs) {
-          const phase = pvc.status?.phase;
-          if (phase === "Bound") boundPVCs++;
-          else if (phase === "Pending") pendingPVCs++;
-        }
-
-        const totalPVs = countsData["persistentvolumes"] ??
-          countsData["pvs"] ?? 0;
-        const storageClasses = countsData["storageclasses"] ?? 0;
-
-        summary.value = {
-          totalPVCs,
-          boundPVCs,
-          pendingPVCs,
-          totalPVs,
-          storageClasses,
-        };
-      } catch {
-        summary.value = EMPTY_SUMMARY;
-      } finally {
-        loading.value = false;
+    const params = new URLSearchParams(globalThis.location?.search ?? "");
+    if (params.get("action") === "create") {
+      if (currentPath.includes("storageclasses")) {
+        scWizardOpen.value = true;
+      } else {
+        pvcWizardOpen.value = true;
       }
-    };
-
-    fetchSummary();
-  }, [namespace]);
+    }
+  }, []);
 
   const { kind, title, createHref, clusterScoped, isOverview, isSnapshots } =
     resolveTab(currentPath);
-  const s = summary.value;
 
-  const summaryCards = [
+  // Derive counts from shared store — no separate fetch needed.
+  const counts = resourceCounts.value;
+  const countsReady = counts !== null;
+
+  const totalPVCs = counts?.["persistentvolumeclaims"] ??
+    counts?.["pvcs"] ?? 0;
+  const totalPVs = counts?.["persistentvolumes"] ?? counts?.["pvs"] ?? 0;
+  const storageClasses = counts?.["storageclasses"] ?? 0;
+
+  // For the PVC donut we need phase breakdown — that requires a list fetch.
+  // On the Overview we keep the donut with totals only (no invented phase split).
+  // The subtitle for list pages derives from the relevant count.
+  const listCount = kind ? (getCount(kind) ?? 0) : 0;
+
+  const pageTitle = isOverview ? "Storage" : title;
+  const subtitle = isOverview
+    ? "Manage persistent volumes, claims, storage classes, and snapshots"
+    : isSnapshots
+    ? "Volume snapshots"
+    : countsReady
+    ? `${listCount} ${title.toLowerCase()}`
+    : `Loading ${title.toLowerCase()}…`;
+
+  // Overview donut: show total PVCs as a single neutral segment
+  // (no invented phase split — real phases require a list fetch that's
+  // preserved in the ResourceTable below).
+  const pvcDonutSegments = [
     {
-      label: "Total PVCs",
-      value: s.totalPVCs,
-      displayValue: String(s.totalPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.totalPVCs,
+      value: Math.max(totalPVCs, 1),
       color: "var(--accent)",
-    },
-    {
-      label: "Bound PVCs",
-      value: s.boundPVCs,
-      displayValue: String(s.boundPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.boundPVCs,
-      color: "var(--success)",
-    },
-    {
-      label: "Pending PVCs",
-      value: s.pendingPVCs,
-      displayValue: String(s.pendingPVCs),
-      max: Math.max(s.totalPVCs, 1),
-      ringValue: s.pendingPVCs,
-      color: "var(--warning)",
-    },
-    {
-      label: "Total PVs",
-      value: s.totalPVs,
-      displayValue: String(s.totalPVs),
-      max: Math.max(s.totalPVs, 1),
-      ringValue: s.totalPVs,
-      color: "var(--accent)",
-    },
-    {
-      label: "Storage Classes",
-      value: s.storageClasses,
-      displayValue: String(s.storageClasses),
-      max: Math.max(s.storageClasses, 1),
-      ringValue: s.storageClasses,
-      color: "var(--accent-secondary)",
+      label: "Total",
     },
   ];
 
   return (
-    <div class="flex flex-col h-full">
-      {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Page header — 24/700 per archetype spec */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: "16px",
+          marginBottom: "20px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
-            Storage
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+              lineHeight: 1.2,
+            }}
+          >
+            {pageTitle}
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
-            Manage persistent volumes, claims, storage classes, and snapshots
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            {subtitle}
           </p>
         </div>
-        <div class="flex gap-2">
-          <a
-            href="/storage/pvcs/new"
+        <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => (pvcWizardOpen.value = true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
+              fontWeight: 600,
               color: "var(--bg-base)",
               background: "var(--accent)",
-              borderRadius: "6px",
-              textDecoration: "none",
+              borderRadius: "9px",
               border: "none",
               cursor: "pointer",
+              whiteSpace: "nowrap",
+              fontFamily: "inherit",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
-              stroke-width="2"
+              stroke-width="2.5"
             >
               <path d="M4 8h8M8 4v8" />
             </svg>
             New PVC
-          </a>
-          <a
-            href="/tools/storageclass-wizard"
+          </button>
+          <button
+            type="button"
+            onClick={() => (scWizardOpen.value = true)}
             style={{
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
-              padding: "7px 14px",
+              padding: "8px 16px",
               fontSize: "13px",
-              fontWeight: 500,
-              color: "var(--text-secondary)",
+              fontWeight: 600,
+              color: "var(--text-primary)",
               background: "transparent",
-              borderRadius: "6px",
-              textDecoration: "none",
+              borderRadius: "9px",
               border: "1px solid var(--border-primary)",
               cursor: "pointer",
+              whiteSpace: "nowrap",
+              fontFamily: "inherit",
             }}
           >
             <svg
-              width="15"
-              height="15"
+              width="14"
+              height="14"
               viewBox="0 0 16 16"
               fill="none"
               stroke="currentColor"
@@ -277,77 +233,168 @@ export default function StorageDashboard(
               <path d="M4 8h8M8 4v8" />
             </svg>
             New StorageClass
-          </a>
+          </button>
         </div>
-      </div>
 
-      {/* Sub-navigation */}
-      <SubNav tabs={storageSection.tabs ?? []} currentPath={currentPath} />
-
-      {/* Summary strip */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-          gap: "var(--grid-gap, 12px)",
-          marginBottom: "20px",
-        }}
-      >
-        {summaryCards.map((card) => (
-          <div
-            key={card.label}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              padding: "14px 16px",
-              borderRadius: "10px",
-              background: "var(--bg-surface)",
-              border: "1px solid var(--border-primary)",
-              cursor: "pointer",
-              transition: "border-color 0.2s ease",
-            }}
-          >
-            <SummaryRing
-              value={loading.value ? 0 : card.ringValue}
-              max={card.max}
-              size={40}
-              color={card.color}
-            />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  fontSize: "12px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                {card.label}
-              </div>
-              <div
-                style={{
-                  fontSize: "16px",
-                  fontWeight: 600,
-                  fontFamily: "var(--font-mono)",
-                  color: card.color,
-                }}
-              >
-                {loading.value ? "\u2014" : card.displayValue}
-              </div>
-            </div>
-          </div>
-        ))}
+        {pvcWizardOpen.value && (
+          <PVCWizard onClose={() => (pvcWizardOpen.value = false)} />
+        )}
+        {scWizardOpen.value && (
+          <StorageClassWizard onClose={() => (scWizardOpen.value = false)} />
+        )}
       </div>
 
       {/* Content area */}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {isOverview
           ? (
-            <ResourceTable
-              kind="pvcs"
-              title="Persistent Volume Claims"
-              createHref="/storage/pvcs/new"
-              hideHeader
-            />
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "var(--grid-gap, 20px)",
+              }}
+            >
+              {/* Overview charts row — glass widgets */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "var(--grid-gap, 12px)",
+                }}
+              >
+                {/* PVC total donut */}
+                <WidgetShell
+                  title="PVC Health"
+                  style={{ flex: "1 1 220px", minWidth: "200px" }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "20px",
+                    }}
+                  >
+                    <Donut
+                      segments={!countsReady
+                        ? [{ value: 1, color: "var(--bg-elevated)" }]
+                        : pvcDonutSegments}
+                      size={96}
+                      thickness={14}
+                      center={
+                        <div style={{ textAlign: "center" }}>
+                          <div
+                            style={{
+                              fontSize: "20px",
+                              fontWeight: 700,
+                              fontFamily: "var(--font-mono)",
+                              color: "var(--text-primary)",
+                              fontVariantNumeric: "tabular-nums",
+                            }}
+                          >
+                            {!countsReady ? "—" : totalPVCs}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 600,
+                              letterSpacing: "0.05em",
+                              textTransform: "uppercase",
+                              color: "var(--text-muted)",
+                            }}
+                          >
+                            total
+                          </div>
+                        </div>
+                      }
+                    />
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "6px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "7px",
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: "8px",
+                            height: "8px",
+                            borderRadius: "50%",
+                            background: "var(--accent)",
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            color: "var(--text-muted)",
+                            minWidth: "44px",
+                          }}
+                        >
+                          Claims
+                        </span>
+                        <span
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--text-primary)",
+                            fontVariantNumeric: "tabular-nums",
+                          }}
+                        >
+                          {!countsReady ? "—" : totalPVCs}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </WidgetShell>
+
+                {/* Storage resources bar chart */}
+                <WidgetShell
+                  title="Storage Resources"
+                  style={{ flex: "2 1 320px", minWidth: "280px" }}
+                >
+                  <div style={{ paddingTop: "4px" }}>
+                    <BarRow
+                      label="PVCs"
+                      value={!countsReady ? 0 : totalPVCs}
+                      max={Math.max(totalPVCs, 1)}
+                      suffix={!countsReady ? "—" : String(totalPVCs)}
+                      color="var(--accent)"
+                    />
+                    <BarRow
+                      label="Volumes"
+                      value={!countsReady ? 0 : totalPVs}
+                      max={Math.max(totalPVs, 1)}
+                      suffix={!countsReady ? "—" : String(totalPVs)}
+                      color="var(--success)"
+                    />
+                    <BarRow
+                      label="StorageClasses"
+                      value={!countsReady ? 0 : storageClasses}
+                      max={Math.max(storageClasses, 1)}
+                      suffix={!countsReady ? "—" : String(storageClasses)}
+                      color="var(--accent-secondary, var(--info))"
+                    />
+                  </div>
+                </WidgetShell>
+              </div>
+
+              {/* PVC list — solid surface */}
+              <ResourceTable
+                kind="pvcs"
+                title="Persistent Volume Claims"
+                createHref="/storage/pvcs?action=create"
+                hideHeader
+              />
+            </div>
           )
           : isSnapshots
           ? <SnapshotList />

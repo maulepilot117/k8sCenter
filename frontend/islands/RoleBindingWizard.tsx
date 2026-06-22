@@ -1,14 +1,13 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
 
 interface SubjectRow {
@@ -31,13 +30,14 @@ interface RoleItem {
 
 interface RoleBindingWizardProps {
   clusterScoped: boolean;
+  onClose?: () => void;
 }
 
-const STEPS = [
-  { title: "Basics" },
-  { title: "Role Reference" },
-  { title: "Subjects" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Basics", sub: "Name & namespace" },
+  { label: "Role", sub: "Role reference" },
+  { label: "Subjects", sub: "Users, groups & service accounts" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(clusterScoped: boolean): BindingFormState {
@@ -52,8 +52,9 @@ function initialState(clusterScoped: boolean): BindingFormState {
 }
 
 export default function RoleBindingWizard(
-  { clusterScoped }: RoleBindingWizardProps,
+  { clusterScoped, onClose }: RoleBindingWizardProps,
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<BindingFormState>(initialState(clusterScoped));
   const errors = useSignal<Record<string, string>>({});
@@ -71,6 +72,7 @@ export default function RoleBindingWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   // Fetch roles when namespace changes (for namespaced bindings)
   useEffect(() => {
@@ -175,6 +177,7 @@ export default function RoleBindingWizard(
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -199,13 +202,15 @@ export default function RoleBindingWizard(
         "/v1/wizards/rolebinding/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -220,366 +225,338 @@ export default function RoleBindingWizard(
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
   const basePath = clusterScoped
     ? "/rbac/clusterrolebindings"
     : "/rbac/rolebindings";
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create {clusterScoped ? "ClusterRoleBinding" : "RoleBinding"}
-        </h1>
-        <a
-          href={basePath}
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {/* Step 1: Basics */}
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                placeholder="e.g. my-binding"
-              />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
-              )}
-            </div>
-
-            {!clusterScoped && (
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Namespace <span class="text-error">*</span>
-                </label>
-                <select
-                  value={form.value.namespace}
-                  onChange={(e) =>
-                    updateField(
-                      "namespace",
-                      (e.target as HTMLSelectElement).value,
-                    )}
-                  class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                >
-                  {namespaces.value.map((ns) => (
-                    <option key={ns} value={ns}>{ns}</option>
-                  ))}
-                </select>
-                {errors.value.namespace && (
-                  <p class="mt-1 text-xs text-error">
-                    {errors.value.namespace}
-                  </p>
-                )}
-              </div>
+    <WizardShell
+      title={`Create ${clusterScoped ? "ClusterRoleBinding" : "RoleBinding"}`}
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={async () => {
+        if (currentStep.value === 3) {
+          close();
+        } else {
+          await goNext();
+        }
+      }}
+      nextLabel={currentStep.value === 3 ? "Close" : "Continue"}
+      yaml={previewYaml.value || undefined}
+    >
+      {/* Step 1: Basics */}
+      {currentStep.value === 0 && (
+        <div class="mx-auto max-w-lg space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Name <span class="text-error">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              placeholder="e.g. my-binding"
+            />
+            {errors.value.name && (
+              <p class="mt-1 text-xs text-error">{errors.value.name}</p>
             )}
           </div>
-        )}
 
-        {/* Step 2: Role Reference */}
-        {currentStep.value === 1 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            {!clusterScoped && (
-              <div>
-                <label class="block text-sm font-medium text-text-secondary">
-                  Role Type
-                </label>
-                <select
-                  value={form.value.roleRefKind}
-                  onChange={(e) => {
-                    updateField(
-                      "roleRefKind",
-                      (e.target as HTMLSelectElement).value,
-                    );
-                    updateField("roleRefName", "");
-                  }}
-                  class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
-                >
-                  <option value="ClusterRole">ClusterRole</option>
-                  <option value="Role">Role (namespace-scoped)</option>
-                </select>
-              </div>
-            )}
-
+          {!clusterScoped && (
             <div>
               <label class="block text-sm font-medium text-text-secondary">
-                {form.value.roleRefKind === "Role" ? "Role" : "ClusterRole"}
-                {""}
-                <span class="text-error">*</span>
+                Namespace <span class="text-error">*</span>
               </label>
               <select
-                value={form.value.roleRefName}
+                value={form.value.namespace}
                 onChange={(e) =>
                   updateField(
-                    "roleRefName",
+                    "namespace",
                     (e.target as HTMLSelectElement).value,
                   )}
                 class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
               >
-                <option value="">Select a role...</option>
-                {(form.value.roleRefKind === "Role"
-                  ? roles.value
-                  : clusterRoles.value)
-                  .map((r) => (
-                    <option key={r.metadata.name} value={r.metadata.name}>
-                      {r.metadata.name}
-                    </option>
-                  ))}
+                {namespaces.value.map((ns) => (
+                  <option key={ns} value={ns}>{ns}</option>
+                ))}
               </select>
-              {errors.value.roleRefName && (
+              {errors.value.namespace && (
                 <p class="mt-1 text-xs text-error">
-                  {errors.value.roleRefName}
+                  {errors.value.namespace}
                 </p>
               )}
             </div>
-          </div>
-        )}
-
-        {/* Step 3: Subjects */}
-        {currentStep.value === 2 && (
-          <div class="space-y-4">
-            {errors.value.subjects && (
-              <p class="text-sm text-error">{errors.value.subjects}</p>
-            )}
-
-            <div class="rounded-lg border border-border-primary bg-surface">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="border-b border-border-primary">
-                    <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                      Kind
-                    </th>
-                    <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                      Name
-                    </th>
-                    <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
-                      Namespace
-                    </th>
-                    <th class="px-4 py-2 w-20"></th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border-subtle">
-                  {form.value.subjects.map((subject, idx) => (
-                    <tr key={idx}>
-                      <td class="px-4 py-2">
-                        <select
-                          value={subject.kind}
-                          onChange={(e) =>
-                            updateSubject(idx, {
-                              kind: (e.target as HTMLSelectElement)
-                                .value as SubjectRow["kind"],
-                            })}
-                          class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
-                        >
-                          <option value="User">User</option>
-                          <option value="Group">Group</option>
-                          <option value="ServiceAccount">ServiceAccount</option>
-                        </select>
-                      </td>
-                      <td class="px-4 py-2">
-                        <div class="flex gap-1">
-                          <input
-                            type="text"
-                            value={subject.name}
-                            onInput={(e) =>
-                              updateSubject(idx, {
-                                name: (e.target as HTMLInputElement).value,
-                              })}
-                            class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
-                            placeholder="Subject name"
-                          />
-                          {subject.kind === "User" && (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                await fetchLocalUsers();
-                                showUserPicker.value =
-                                  showUserPicker.value === idx
-                                    ? null
-                                    : idx;
-                              }}
-                              class="shrink-0 rounded border border-border-primary px-2 py-1 text-xs text-text-secondary hover:bg-surface text-text-muted"
-                              title="Select from local users"
-                            >
-                              Local
-                            </button>
-                          )}
-                        </div>
-                        {showUserPicker.value === idx &&
-                          localUsers.value.length > 0 && (
-                          <div class="mt-1 rounded border border-border-primary bg-surface shadow-sm">
-                            {localUsers.value.map((u) => (
-                              <button
-                                key={u.id}
-                                type="button"
-                                onClick={() => {
-                                  updateSubject(idx, {
-                                    name: u.k8sUsername,
-                                  });
-                                  showUserPicker.value = null;
-                                }}
-                                class="block w-full px-3 py-1 text-left text-sm hover:bg-hover"
-                              >
-                                {u.k8sUsername}
-                                {""}
-                                <span class="text-xs text-text-muted">
-                                  ({u.username})
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {errors.value[`subjects[${idx}].name`] && (
-                          <p class="mt-1 text-xs text-error">
-                            {errors.value[`subjects[${idx}].name`]}
-                          </p>
-                        )}
-                      </td>
-                      <td class="px-4 py-2">
-                        {subject.kind === "ServiceAccount"
-                          ? (
-                            <div>
-                              <input
-                                type="text"
-                                value={subject.namespace}
-                                onInput={(e) =>
-                                  updateSubject(idx, {
-                                    namespace:
-                                      (e.target as HTMLInputElement).value,
-                                  })}
-                                class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
-                                placeholder="Namespace"
-                              />
-                              {errors.value[`subjects[${idx}].namespace`] && (
-                                <p class="mt-1 text-xs text-error">
-                                  {errors.value[`subjects[${idx}].namespace`]}
-                                </p>
-                              )}
-                            </div>
-                          )
-                          : <span class="text-xs text-text-muted">N/A</span>}
-                      </td>
-                      <td class="px-4 py-2 text-right">
-                        {form.value.subjects.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const subs = form.value.subjects.filter(
-                                (_, i) => i !== idx,
-                              );
-                              updateField("subjects", subs);
-                            }}
-                            class="rounded p-1 text-error hover:bg-danger-dim"
-                            title="Remove subject"
-                          >
-                            <svg
-                              class="h-4 w-4"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              stroke-width="2"
-                            >
-                              <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="M6 18L18 6M6 6l12 12"
-                              />
-                            </svg>
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <button
-              type="button"
-              disabled={form.value.subjects.length >= 50}
-              onClick={() => {
-                if (form.value.subjects.length >= 50) return;
-                updateField("subjects", [
-                  ...form.value.subjects,
-                  { kind: "User", name: "", namespace: "" },
-                ]);
-              }}
-              class="inline-flex items-center gap-1 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 text-text-muted"
-            >
-              <svg
-                class="h-4 w-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M12 4v16m8-8H4"
-                />
-              </svg>
-              Add Subject
-            </button>
-          </div>
-        )}
-
-        {/* Step 4: Review */}
-        {currentStep.value === 3 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath={basePath}
-          />
-        )}
-      </div>
-
-      {/* Navigation buttons */}
-      {(currentStep.value < 3 ||
-        (currentStep.value === 3 && !previewLoading.value &&
-          previewError.value === null)) && (
-        <div class="mt-8 flex justify-between">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          {currentStep.value < 3 && (
-            <Button variant="primary" onClick={goNext}>
-              {currentStep.value === 2 ? "Preview YAML" : "Next"}
-            </Button>
           )}
         </div>
       )}
-    </div>
+
+      {/* Step 2: Role Reference */}
+      {currentStep.value === 1 && (
+        <div class="mx-auto max-w-lg space-y-4">
+          {!clusterScoped && (
+            <div>
+              <label class="block text-sm font-medium text-text-secondary">
+                Role Type
+              </label>
+              <select
+                value={form.value.roleRefKind}
+                onChange={(e) => {
+                  updateField(
+                    "roleRefKind",
+                    (e.target as HTMLSelectElement).value,
+                  );
+                  updateField("roleRefName", "");
+                }}
+                class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              >
+                <option value="ClusterRole">ClusterRole</option>
+                <option value="Role">Role (namespace-scoped)</option>
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              {form.value.roleRefKind === "Role" ? "Role" : "ClusterRole"}
+              {""}
+              <span class="text-error">*</span>
+            </label>
+            <select
+              value={form.value.roleRefName}
+              onChange={(e) =>
+                updateField(
+                  "roleRefName",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            >
+              <option value="">Select a role...</option>
+              {(form.value.roleRefKind === "Role"
+                ? roles.value
+                : clusterRoles.value)
+                .map((r) => (
+                  <option key={r.metadata.name} value={r.metadata.name}>
+                    {r.metadata.name}
+                  </option>
+                ))}
+            </select>
+            {errors.value.roleRefName && (
+              <p class="mt-1 text-xs text-error">
+                {errors.value.roleRefName}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Subjects */}
+      {currentStep.value === 2 && (
+        <div class="space-y-4">
+          {errors.value.subjects && (
+            <p class="text-sm text-error">{errors.value.subjects}</p>
+          )}
+
+          <div class="rounded-lg border border-border-primary bg-surface">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-border-primary">
+                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                    Kind
+                  </th>
+                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                    Name
+                  </th>
+                  <th class="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-text-muted">
+                    Namespace
+                  </th>
+                  <th class="px-4 py-2 w-20"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border-subtle">
+                {form.value.subjects.map((subject, idx) => (
+                  <tr key={idx}>
+                    <td class="px-4 py-2">
+                      <select
+                        value={subject.kind}
+                        onChange={(e) =>
+                          updateSubject(idx, {
+                            kind: (e.target as HTMLSelectElement)
+                              .value as SubjectRow["kind"],
+                          })}
+                        class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                      >
+                        <option value="User">User</option>
+                        <option value="Group">Group</option>
+                        <option value="ServiceAccount">ServiceAccount</option>
+                      </select>
+                    </td>
+                    <td class="px-4 py-2">
+                      <div class="flex gap-1">
+                        <input
+                          type="text"
+                          value={subject.name}
+                          onInput={(e) =>
+                            updateSubject(idx, {
+                              name: (e.target as HTMLInputElement).value,
+                            })}
+                          class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                          placeholder="Subject name"
+                        />
+                        {subject.kind === "User" && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await fetchLocalUsers();
+                              showUserPicker.value =
+                                showUserPicker.value === idx
+                                  ? null
+                                  : idx;
+                            }}
+                            class="shrink-0 rounded border border-border-primary px-2 py-1 text-xs text-text-secondary hover:bg-surface text-text-muted"
+                            title="Select from local users"
+                          >
+                            Local
+                          </button>
+                        )}
+                      </div>
+                      {showUserPicker.value === idx &&
+                        localUsers.value.length > 0 && (
+                        <div class="mt-1 rounded border border-border-primary bg-surface shadow-sm">
+                          {localUsers.value.map((u) => (
+                            <button
+                              key={u.id}
+                              type="button"
+                              onClick={() => {
+                                updateSubject(idx, {
+                                  name: u.k8sUsername,
+                                });
+                                showUserPicker.value = null;
+                              }}
+                              class="block w-full px-3 py-1 text-left text-sm hover:bg-hover"
+                            >
+                              {u.k8sUsername}
+                              {""}
+                              <span class="text-xs text-text-muted">
+                                ({u.username})
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {errors.value[`subjects[${idx}].name`] && (
+                        <p class="mt-1 text-xs text-error">
+                          {errors.value[`subjects[${idx}].name`]}
+                        </p>
+                      )}
+                    </td>
+                    <td class="px-4 py-2">
+                      {subject.kind === "ServiceAccount"
+                        ? (
+                          <div>
+                            <input
+                              type="text"
+                              value={subject.namespace}
+                              onInput={(e) =>
+                                updateSubject(idx, {
+                                  namespace:
+                                    (e.target as HTMLInputElement).value,
+                                })}
+                              class="w-full rounded border border-border-primary bg-surface px-2 py-1 text-sm text-text-primary"
+                              placeholder="Namespace"
+                            />
+                            {errors.value[`subjects[${idx}].namespace`] && (
+                              <p class="mt-1 text-xs text-error">
+                                {errors.value[`subjects[${idx}].namespace`]}
+                              </p>
+                            )}
+                          </div>
+                        )
+                        : <span class="text-xs text-text-muted">N/A</span>}
+                    </td>
+                    <td class="px-4 py-2 text-right">
+                      {form.value.subjects.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const subs = form.value.subjects.filter(
+                              (_, i) => i !== idx,
+                            );
+                            updateField("subjects", subs);
+                          }}
+                          class="rounded p-1 text-error hover:bg-danger-dim"
+                          title="Remove subject"
+                        >
+                          <svg
+                            class="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              d="M6 18L18 6M6 6l12 12"
+                            />
+                          </svg>
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <button
+            type="button"
+            disabled={form.value.subjects.length >= 50}
+            onClick={() => {
+              if (form.value.subjects.length >= 50) return;
+              updateField("subjects", [
+                ...form.value.subjects,
+                { kind: "User", name: "", namespace: "" },
+              ]);
+            }}
+            class="inline-flex items-center gap-1 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40 text-text-muted"
+          >
+            <svg
+              class="h-4 w-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+            Add Subject
+          </button>
+        </div>
+      )}
+
+      {/* Step 4: Review */}
+      {currentStep.value === 3 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath={basePath}
+        />
+      )}
+    </WizardShell>
   );
 }

@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiPost, apiPut } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import {
   SeverityBadge,
   StatusBadge,
@@ -216,94 +217,73 @@ export default function FluxAlerts() {
       <NotificationLoadingSpinner loading={crud.loading.value} />
 
       {crud.error.value && (
-        <p class="text-sm text-danger py-4">{crud.error.value}</p>
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {crud.error.value}
+        </p>
       )}
 
       {!crud.loading.value && !crud.error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Provider
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Severity
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Sources
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Status
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Created
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((a) => {
-                const key = `${a.namespace}/${a.name}`;
-                return (
-                  <tr key={key} class="hover:bg-hover/30">
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">{a.name}</div>
-                      {a.suspend && (
-                        <span
-                          class="text-xs"
-                          style={{ color: "var(--warning)" }}
-                        >
-                          suspended
-                        </span>
-                      )}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {a.namespace}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {a.providerRef}
-                    </td>
-                    <td class="px-3 py-2">
-                      <SeverityBadge severity={a.eventSeverity || "info"} />
-                    </td>
-                    <td class="px-3 py-2">
-                      <CountBadge items={a.eventSources} label="source" />
-                    </td>
-                    <td class="px-3 py-2">
-                      <StatusBadge
-                        status={a.suspend ? "suspended" : a.status}
-                      />
-                    </td>
-                    <td class="px-3 py-2 text-text-muted text-xs">
-                      {a.createdAt ? timeAgo(a.createdAt) : "-"}
-                    </td>
-                    <td class="px-3 py-2">
-                      <ActionsDropdown
-                        itemKey={key}
-                        suspended={a.suspend}
-                        openDropdown={crud.openDropdown}
-                        onEdit={() => openEdit(a)}
-                        onSuspendToggle={() => crud.handleSuspendToggle(a)}
-                        onDelete={() => {
-                          crud.deleteTarget.value = a;
-                        }}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          chevron={false}
+          columns={[
+            { key: "name", label: "Name" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "providerRef", label: "Provider" },
+            { key: "eventSeverity", label: "Severity", width: "100px" },
+            { key: "eventSources", label: "Sources", width: "90px" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "createdAt", label: "Created", width: "100px" },
+            { key: "actions", label: "", width: "60px" },
+          ]}
+          rows={displayed.map((a) => ({
+            id: `${a.namespace}/${a.name}`,
+            cells: {
+              name: (
+                <div>
+                  <div class="font-medium text-text-primary">{a.name}</div>
+                  {a.suspend && (
+                    <span class="text-xs" style={{ color: "var(--warning)" }}>
+                      suspended
+                    </span>
+                  )}
+                </div>
+              ),
+              namespace: (
+                <span class="text-xs text-text-secondary">{a.namespace}</span>
+              ),
+              providerRef: (
+                <span class="text-xs text-text-secondary">{a.providerRef}</span>
+              ),
+              eventSeverity: (
+                <SeverityBadge severity={a.eventSeverity || "info"} />
+              ),
+              eventSources: (
+                <CountBadge items={a.eventSources} label="source" />
+              ),
+              status: (
+                <StatusBadge status={a.suspend ? "suspended" : a.status} />
+              ),
+              createdAt: (
+                <span class="text-xs text-text-muted">
+                  {a.createdAt ? timeAgo(a.createdAt) : "-"}
+                </span>
+              ),
+              actions: (
+                <ActionsDropdown
+                  itemKey={`${a.namespace}/${a.name}`}
+                  suspended={a.suspend}
+                  openDropdown={crud.openDropdown}
+                  onEdit={() =>
+                    openEdit(a)}
+                  onSuspendToggle={() => crud.handleSuspendToggle(a)}
+                  onDelete={() => {
+                    crud.deleteTarget.value = a;
+                  }}
+                />
+              ),
+            },
+          }))}
+        />
       )}
 
       <NotificationPagination
@@ -322,13 +302,12 @@ export default function FluxAlerts() {
         totalCount={crud.items.value.length}
         notAvailable={notAvailable}
         kind="Alert"
-        onCreate={() =>
-          crud.openCreate(() => {
-            form.value = {
-              ...EMPTY_FORM,
-              eventSources: [{ kind: "Kustomization", name: "*" }],
-            };
-          })}
+        onCreate={() => crud.openCreate(() => {
+          form.value = {
+            ...EMPTY_FORM,
+            eventSources: [{ kind: "Kustomization", name: "*" }],
+          };
+        })}
       />
 
       {crud.showForm.value && (

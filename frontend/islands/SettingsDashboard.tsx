@@ -1,5 +1,3 @@
-import { SETTINGS_SECTION } from "@/lib/constants.ts";
-import SubNav from "@/islands/SubNav.tsx";
 import SettingsPage from "@/islands/SettingsPage.tsx";
 import ClusterManager from "@/islands/ClusterManager.tsx";
 import UserManager from "@/islands/UserManager.tsx";
@@ -22,24 +20,42 @@ export default function SettingsDashboard(
   { currentPath }: { currentPath: string },
 ) {
   return (
-    <div class="flex flex-col h-full">
-      {/* Page header */}
-      <div class="flex items-center justify-between mb-5">
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {/* Page header — 24/700/-0.02em per archetype spec */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          marginBottom: "24px",
+        }}
+      >
         <div>
-          <h1 class="text-xl font-semibold tracking-tight text-text-primary">
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "24px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              color: "var(--text-primary)",
+            }}
+          >
             Settings
           </h1>
-          <p class="text-xs text-text-muted mt-0.5">
+          <p
+            style={{
+              margin: "4px 0 0",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
             Configure application settings, clusters, users, and authentication
           </p>
         </div>
       </div>
 
-      {/* Sub-navigation */}
-      <SubNav tabs={SETTINGS_SECTION.tabs ?? []} currentPath={currentPath} />
-
       {/* Content area */}
-      <div class="flex-1 min-h-0 overflow-auto">
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         {resolveContent(currentPath)}
       </div>
     </div>

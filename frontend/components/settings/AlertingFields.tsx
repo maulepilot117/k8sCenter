@@ -1,5 +1,7 @@
 import type { Signal } from "@preact/signals";
-import { settingsInputClass } from "@/components/settings/shared.ts";
+import Field from "@/components/ui/form/Field.tsx";
+import TextField from "@/components/ui/form/TextField.tsx";
+import Toggle from "@/components/ui/form/Toggle.tsx";
 
 interface AlertingFieldsProps {
   alertEnabled: Signal<boolean>;
@@ -28,128 +30,99 @@ export function AlertingFields(
 ) {
   return (
     <>
-      <div class="mb-4">
-        <label class="flex items-center gap-2 text-sm text-text-secondary">
-          <input
-            type="checkbox"
-            checked={alertEnabled.value}
-            onChange={(e) => {
-              alertEnabled.value = (e.target as HTMLInputElement).checked;
-              onDirty?.();
-            }}
-          />
+      <div class="mb-4 flex items-center gap-3">
+        <Toggle
+          checked={alertEnabled.value}
+          onChange={(v) => {
+            alertEnabled.value = v;
+            onDirty?.();
+          }}
+        />
+        <span
+          style={{
+            fontSize: "13px",
+            color: "var(--text-secondary)",
+          }}
+        >
           Enable email alerting
-        </label>
+        </span>
       </div>
       <div class="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            SMTP Host
-          </label>
-          <input
-            type="text"
+        <Field label="SMTP Host">
+          <TextField
             value={smtpHost.value}
-            onInput={(e) => {
-              smtpHost.value = (e.target as HTMLInputElement).value;
+            onInput={(v) => {
+              smtpHost.value = v;
               onDirty?.();
             }}
             placeholder="smtp.example.com"
-            class={settingsInputClass}
           />
-        </div>
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            SMTP Port
-          </label>
-          <input
-            type="number"
-            value={smtpPort.value}
-            onInput={(e) => {
-              smtpPort.value = parseInt((e.target as HTMLInputElement).value) ||
-                587;
+        </Field>
+        <Field label="SMTP Port">
+          <TextField
+            value={String(smtpPort.value)}
+            onInput={(v) => {
+              smtpPort.value = parseInt(v) || 587;
               onDirty?.();
             }}
-            class={settingsInputClass}
           />
-        </div>
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            SMTP Username
-          </label>
-          <input
-            type="text"
+        </Field>
+        <Field label="SMTP Username">
+          <TextField
             value={smtpUser.value}
-            onInput={(e) => {
-              smtpUser.value = (e.target as HTMLInputElement).value;
+            onInput={(v) => {
+              smtpUser.value = v;
               onDirty?.();
             }}
-            class={settingsInputClass}
           />
-        </div>
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            SMTP Password
-          </label>
-          <input
+        </Field>
+        <Field label="SMTP Password">
+          <TextField
             type="password"
             value={smtpPass.value}
-            onInput={(e) => {
-              smtpPass.value = (e.target as HTMLInputElement).value;
+            onInput={(v) => {
+              smtpPass.value = v;
               onDirty?.();
             }}
             placeholder={smtpPass.value === "****" ? "****" : ""}
-            class={settingsInputClass}
           />
-        </div>
-        <div>
-          <label class="mb-1 block text-sm font-medium text-text-secondary">
-            From Address
-          </label>
-          <input
-            type="email"
+        </Field>
+        <Field label="From Address">
+          <TextField
             value={smtpFrom.value}
-            onInput={(e) => {
-              smtpFrom.value = (e.target as HTMLInputElement).value;
+            onInput={(v) => {
+              smtpFrom.value = v;
               onDirty?.();
             }}
             placeholder="alerts@example.com"
-            class={settingsInputClass}
           />
-        </div>
+        </Field>
         {alertRate && (
-          <div>
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
-              Rate Limit (per hour)
-            </label>
-            <input
-              type="number"
-              value={alertRate.value}
-              onInput={(e) => {
-                alertRate.value =
-                  parseInt((e.target as HTMLInputElement).value) || 5;
+          <Field label="Rate Limit (per hour)">
+            <TextField
+              value={String(alertRate.value)}
+              onInput={(v) => {
+                alertRate.value = parseInt(v) || 5;
                 onDirty?.();
               }}
-              min="1"
-              max="100"
-              class={settingsInputClass}
             />
-          </div>
+          </Field>
         )}
         {alertRecipients && (
           <div class="sm:col-span-2">
-            <label class="mb-1 block text-sm font-medium text-text-secondary">
-              Recipients (comma-separated)
-            </label>
-            <input
-              type="text"
-              value={alertRecipients.value}
-              onInput={(e) => {
-                alertRecipients.value = (e.target as HTMLInputElement).value;
-                onDirty?.();
-              }}
-              placeholder="admin@example.com, ops@example.com"
-              class={settingsInputClass}
-            />
+            <Field
+              label="Recipients"
+              hint="Comma-separated email addresses"
+            >
+              <TextField
+                value={alertRecipients.value}
+                onInput={(v) => {
+                  alertRecipients.value = v;
+                  onDirty?.();
+                }}
+                placeholder="admin@example.com, ops@example.com"
+              />
+            </Field>
           </div>
         )}
       </div>

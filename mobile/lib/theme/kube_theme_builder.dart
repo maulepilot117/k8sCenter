@@ -250,9 +250,20 @@ class KubeColors extends ThemeExtension<KubeColors> {
 
 /// Builds a Material 3 [ThemeData] for the named theme id. Falls back to
 /// [defaultThemeId] when [id] is not in [kubeThemes].
+///
+/// Brightness is derived from the theme id: any id containing `"light"`
+/// produces [Brightness.light] with [ColorScheme.light]; all other ids
+/// (including the default dark theme) use [Brightness.dark] with
+/// [ColorScheme.dark]. This ensures [ThemeMode.system] engages the correct
+/// platform brightness for the `liquid-glass-light` theme.
 ThemeData buildKubeTheme(String id) {
   final theme = kubeThemes[id] ?? kubeThemes[defaultThemeId]!;
   final c = theme.colors;
+
+  // Derive brightness from the theme id so light variants are correctly
+  // recognised by Flutter's ThemeMode.system and platform accessibility APIs.
+  final isLight = id.contains('light');
+  final brightness = isLight ? Brightness.light : Brightness.dark;
 
   final colors = KubeColors(
     bgBase: _parseColor(c.bgBase),
@@ -282,23 +293,40 @@ ThemeData buildKubeTheme(String id) {
     glassScrim: _parseColor(c.glassScrim),
   );
 
-  final colorScheme = ColorScheme.dark(
-    primary: colors.accent,
-    onPrimary: colors.bgBase,
-    secondary: colors.accentSecondary,
-    onSecondary: colors.bgBase,
-    error: colors.error,
-    onError: colors.bgBase,
-    surface: colors.bgSurface,
-    onSurface: colors.textPrimary,
-    surfaceContainerHighest: colors.bgElevated,
-    outline: colors.borderPrimary,
-    outlineVariant: colors.borderSubtle,
-  );
+  final colorScheme = isLight
+      ? ColorScheme.light(
+          primary: colors.accent,
+          onPrimary: colors.bgBase,
+          secondary: colors.accentSecondary,
+          onSecondary: colors.bgBase,
+          error: colors.error,
+          onError: colors.bgBase,
+          surface: colors.bgSurface,
+          onSurface: colors.textPrimary,
+          surfaceContainerHighest: colors.bgElevated,
+          outline: colors.borderPrimary,
+          outlineVariant: colors.borderSubtle,
+        )
+      : ColorScheme.dark(
+          primary: colors.accent,
+          onPrimary: colors.bgBase,
+          secondary: colors.accentSecondary,
+          onSecondary: colors.bgBase,
+          error: colors.error,
+          onError: colors.bgBase,
+          surface: colors.bgSurface,
+          onSurface: colors.textPrimary,
+          surfaceContainerHighest: colors.bgElevated,
+          outline: colors.borderPrimary,
+          outlineVariant: colors.borderSubtle,
+        );
+
+  final typography = Typography.material2021(platform: TargetPlatform.iOS);
+  final baseTextTheme = isLight ? typography.black : typography.white;
 
   return ThemeData(
     useMaterial3: true,
-    brightness: Brightness.dark,
+    brightness: brightness,
     colorScheme: colorScheme,
     scaffoldBackgroundColor: colors.bgBase,
     canvasColor: colors.bgBase,
@@ -323,12 +351,10 @@ ThemeData buildKubeTheme(String id) {
       iconColor: colors.textSecondary,
       textColor: colors.textPrimary,
     ),
-    textTheme: Typography.material2021(platform: TargetPlatform.iOS)
-        .white
-        .apply(
-          bodyColor: colors.textPrimary,
-          displayColor: colors.textPrimary,
-        ),
+    textTheme: baseTextTheme.apply(
+      bodyColor: colors.textPrimary,
+      displayColor: colors.textPrimary,
+    ),
     extensions: [colors],
   );
 }

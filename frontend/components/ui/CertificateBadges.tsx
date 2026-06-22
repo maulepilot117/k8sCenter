@@ -4,8 +4,8 @@ import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 const STATUS_COLORS: Record<CertStatus, string> = {
   Ready: "var(--success)",
   Issuing: "var(--accent)",
-  Failed: "var(--danger)",
-  Expired: "var(--danger)",
+  Failed: "var(--error)",
+  Expired: "var(--error)",
   Expiring: "var(--warning)",
   Unknown: "var(--text-muted)",
 };
@@ -47,12 +47,10 @@ export function ExpiryBadge(
     return <span class="text-xs text-text-muted">&mdash;</span>;
   }
   if (daysRemaining < 0) {
-    return <ColorBadge label="Expired" color="var(--danger)" />;
+    return <ColorBadge label="Expired" color="var(--error)" />;
   }
   if (daysRemaining <= 7) {
-    return (
-      <ColorBadge label={`${daysRemaining}d left`} color="var(--danger)" />
-    );
+    return <ColorBadge label={`${daysRemaining}d left`} color="var(--error)" />;
   }
   if (daysRemaining <= 30) {
     return (

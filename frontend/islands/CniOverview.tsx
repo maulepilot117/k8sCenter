@@ -3,7 +3,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
@@ -129,8 +129,8 @@ export default function CniOverview() {
           <div class="flex justify-between">
             <span class="text-text-muted">CRDs</span>
             <StatusBadge
-              status={info.hasCRDs ? "Installed" : "Not Found"}
-              variant={info.hasCRDs ? "success" : "neutral"}
+              label={info.hasCRDs ? "Installed" : "Not Found"}
+              tone={info.hasCRDs ? "ok" : "neutral"}
             />
           </div>
         </div>
@@ -143,8 +143,8 @@ export default function CniOverview() {
             <div class="flex justify-between items-center">
               <span class="text-text-muted">Status</span>
               <StatusBadge
-                status={info.status.healthy ? "Healthy" : "Degraded"}
-                variant={info.status.healthy ? "success" : "warning"}
+                label={info.status.healthy ? "Healthy" : "Degraded"}
+                tone={info.status.healthy ? "ok" : "warn"}
               />
             </div>
             <div class="flex justify-between">

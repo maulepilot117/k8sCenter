@@ -17,10 +17,12 @@ class KubeThemeColors {
     required this.textPrimary,
     required this.textSecondary,
     required this.textMuted,
+    required this.textOnAccent,
     required this.accent,
     required this.accentGlow,
     required this.accentDim,
     required this.accentSecondary,
+    required this.accent2,
     required this.success,
     required this.successDim,
     required this.warning,
@@ -33,6 +35,9 @@ class KubeThemeColors {
     required this.glassBorder,
     required this.glassHighlight,
     required this.glassScrim,
+    required this.glassRimLight,
+    required this.glassRimSoft,
+    required this.glassRimDark,
   });
 
   final String bgBase;
@@ -44,10 +49,12 @@ class KubeThemeColors {
   final String textPrimary;
   final String textSecondary;
   final String textMuted;
+  final String textOnAccent;
   final String accent;
   final String accentGlow;
   final String accentDim;
   final String accentSecondary;
+  final String accent2;
   final String success;
   final String successDim;
   final String warning;
@@ -60,6 +67,9 @@ class KubeThemeColors {
   final String glassBorder;
   final String glassHighlight;
   final String glassScrim;
+  final String glassRimLight;
+  final String glassRimSoft;
+  final String glassRimDark;
 }
 
 class KubeTheme {
@@ -79,31 +89,72 @@ const Map<String, KubeTheme> kubeThemes = {
     id: 'liquid-glass',
     name: 'Liquid Glass',
     colors: KubeThemeColors(
-      bgBase: '#05080F',
-      bgSurface: '#0D1422',
-      bgElevated: '#141C2E',
-      bgHover: '#1C2640',
-      borderPrimary: '#263350',
-      borderSubtle: '#1A2338',
-      textPrimary: '#EDF2FB',
-      textSecondary: '#97A4C0',
-      textMuted: '#66738F',
-      accent: '#3DAEFF',
-      accentGlow: 'rgba(61, 174, 255, 0.16)',
-      accentDim: 'rgba(61, 174, 255, 0.09)',
-      accentSecondary: '#8E7BFF',
-      success: '#34D399',
+      bgBase: '#080b16',
+      bgSurface: '#0d1322',
+      bgElevated: '#141b2d',
+      bgHover: '#1b2440',
+      borderPrimary: '#243150',
+      borderSubtle: '#19223a',
+      textPrimary: '#eef2fb',
+      textSecondary: '#9aa6c4',
+      textMuted: '#647189',
+      textOnAccent: '#ffffff',
+      accent: '#43b0ff',
+      accentGlow: 'rgba(67, 174, 255, 0.16)',
+      accentDim: 'rgba(67, 174, 255, 0.12)',
+      accentSecondary: '#9b87ff',
+      accent2: '#9b87ff',
+      success: '#34d399',
       successDim: 'rgba(52, 211, 153, 0.12)',
-      warning: '#FBBF24',
+      warning: '#fbbf24',
       warningDim: 'rgba(251, 191, 36, 0.12)',
-      error: '#FB7185',
+      error: '#fb7185',
       errorDim: 'rgba(251, 113, 133, 0.12)',
-      info: '#7DD3FC',
-      glassSurface: 'rgba(15, 21, 36, 0.55)',
-      glassElevated: 'rgba(22, 30, 49, 0.66)',
-      glassBorder: 'rgba(151, 180, 228, 0.16)',
+      info: '#7dd3fc',
+      glassSurface: 'rgba(15, 21, 38, 0.55)',
+      glassElevated: 'rgba(22, 30, 52, 0.66)',
+      glassBorder: 'rgba(150, 178, 228, 0.16)',
       glassHighlight: 'rgba(255, 255, 255, 0.07)',
-      glassScrim: 'rgba(3, 6, 12, 0.50)',
+      glassScrim: 'rgba(4, 7, 14, 0.55)',
+      glassRimLight: 'rgba(255, 255, 255, 0.16)',
+      glassRimSoft: 'rgba(255, 255, 255, 0.06)',
+      glassRimDark: 'rgba(0, 0, 0, 0.30)',
+    ),
+  ),
+  'liquid-glass-light': KubeTheme(
+    id: 'liquid-glass-light',
+    name: 'Liquid Glass Light',
+    colors: KubeThemeColors(
+      bgBase: '#eaeef6',
+      bgSurface: '#ffffff',
+      bgElevated: '#ffffff',
+      bgHover: '#eef3fa',
+      borderPrimary: '#d6deec',
+      borderSubtle: '#e7ecf5',
+      textPrimary: '#141a2b',
+      textSecondary: '#4d5972',
+      textMuted: '#8492ad',
+      textOnAccent: '#ffffff',
+      accent: '#2a7fe0',
+      accentGlow: 'rgba(42, 127, 224, 0.16)',
+      accentDim: 'rgba(42, 127, 224, 0.10)',
+      accentSecondary: '#7a63f0',
+      accent2: '#7a63f0',
+      success: '#10a877',
+      successDim: 'rgba(16, 168, 119, 0.12)',
+      warning: '#d99411',
+      warningDim: 'rgba(217, 148, 17, 0.12)',
+      error: '#e0556a',
+      errorDim: 'rgba(224, 85, 106, 0.12)',
+      info: '#3aa0d8',
+      glassSurface: 'rgba(255, 255, 255, 0.62)',
+      glassElevated: 'rgba(255, 255, 255, 0.80)',
+      glassBorder: 'rgba(40, 60, 110, 0.13)',
+      glassHighlight: 'rgba(255, 255, 255, 0.60)',
+      glassScrim: 'rgba(214, 222, 236, 0.55)',
+      glassRimLight: 'rgba(255, 255, 255, 0.85)',
+      glassRimSoft: 'rgba(255, 255, 255, 0.50)',
+      glassRimDark: 'rgba(60, 80, 120, 0.10)',
     ),
   ),
 };

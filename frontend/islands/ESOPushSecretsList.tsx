@@ -3,12 +3,30 @@ import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { PushSecret } from "@/lib/eso-types.ts";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
+
+/** Map PushSecret status → StatusDot tone. */
+function pushToDot(
+  status: string,
+): "success" | "error" | "warning" | "info" | "neutral" {
+  switch (status) {
+    case "Synced":
+      return "success";
+    case "SyncFailed":
+      return "error";
+    case "Stale":
+      return "warning";
+    default:
+      return "neutral";
+  }
+}
 
 export default function ESOPushSecretsList() {
   const items = useSignal<PushSecret[]>([]);
@@ -60,9 +78,7 @@ export default function ESOPushSecretsList() {
 
   function handleNamespaceChange(value: string) {
     namespace.value = value;
-    if (debounceHandle.current !== null) {
-      clearTimeout(debounceHandle.current);
-    }
+    if (debounceHandle.current !== null) clearTimeout(debounceHandle.current);
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
       fetchData();
@@ -74,14 +90,22 @@ export default function ESOPushSecretsList() {
   if (!loading.value && detected.value === false) {
     return (
       <div class="p-6">
-        <h1 class="text-2xl font-bold text-text-primary mb-6">PushSecrets</h1>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+          class="mb-6"
+        >
+          PushSecrets
+        </h1>
         <ESONotDetected />
       </div>
     );
   }
 
-  // selectedNamespace.value read in synchronous render so the island re-filters
-  // when the global namespace picker changes.
   const nsByGlobal = selectedNamespace.value;
   const byNamespace = filterByNamespace(items.value, nsByGlobal);
   const filtered = byNamespace.filter((p) => {
@@ -94,12 +118,28 @@ export default function ESOPushSecretsList() {
     );
   });
 
+  const inputStyle =
+    "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
+
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-start justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">PushSecrets</h1>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
+          PushSecrets
+        </h1>
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        class="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         PushSecrets push Kubernetes Secrets out to a remote backend (the reverse
         direction of ExternalSecrets).
       </p>
@@ -108,7 +148,11 @@ export default function ESOPushSecretsList() {
       <div class="mb-4 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-ps-ns"
           >
             Namespace
@@ -116,7 +160,12 @@ export default function ESOPushSecretsList() {
           <input
             id="eso-ps-ns"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
             placeholder="All namespaces"
             value={namespace.value}
             aria-describedby="eso-ps-ns-hint"
@@ -129,7 +178,11 @@ export default function ESOPushSecretsList() {
         </div>
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-ps-search"
           >
             Search
@@ -137,15 +190,20 @@ export default function ESOPushSecretsList() {
           <input
             id="eso-ps-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
-            placeholder="name, source..."
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
+            placeholder="name, source…"
             value={search.value}
             onInput={(e) => {
               search.value = (e.target as HTMLInputElement).value;
             }}
           />
         </div>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {byNamespace.length} PushSecrets
           {byNamespace.length < items.value.length &&
             ` (${items.value.length} total)`}
@@ -159,86 +217,101 @@ export default function ESOPushSecretsList() {
       )}
 
       {!loading.value && error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
+        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
+          {error.value}
+        </p>
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Name
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Namespace
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Status
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Source Secret
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-right text-xs font-medium text-text-muted"
-                >
-                  Stores
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {filtered.map((p) => (
-                <tr key={p.uid} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
+        <ResourceTable
+          columns={[
+            { key: "name", label: "Name", width: "1.6fr" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "status", label: "Status", width: "110px" },
+            { key: "sourceSecret", label: "Source Secret", width: "1fr" },
+            { key: "stores", label: "Stores", width: "70px", align: "right" },
+          ]}
+          rows={filtered.map((p) => {
+            const detailHref = `/external-secrets/push-secrets/${
+              encodeURIComponent(p.namespace)
+            }/${encodeURIComponent(p.name)}`;
+            return {
+              id: p.uid,
+              cells: {
+                name: (
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot status={pushToDot(p.status)} />
                     <a
-                      href={`/external-secrets/push-secrets/${
-                        encodeURIComponent(p.namespace)
-                      }/${encodeURIComponent(p.name)}`}
-                      class="font-medium text-brand hover:underline"
+                      href={detailHref}
+                      class="hover:underline"
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: 500,
+                        fontFamily: "var(--font-mono, monospace)",
+                        color: "var(--text-primary)",
+                      }}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       {p.name}
                     </a>
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary">{p.namespace}</td>
-                  <td class="px-3 py-2">
-                    <StatusBadge status={p.status} />
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  </span>
+                ),
+                namespace: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
+                    {p.namespace}
+                  </span>
+                ),
+                status: <StatusBadge status={p.status} />,
+                sourceSecret: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {p.sourceSecretName ?? "—"}
-                  </td>
-                  <td class="px-3 py-2 text-right text-text-secondary tabular-nums">
+                  </span>
+                ),
+                stores: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                    class="tabular-nums"
+                  >
                     {(p.storeRefs ?? []).length}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </span>
+                ),
+              },
+              onClick: () => {
+                globalThis.location.href = detailHref;
+              },
+            };
+          })}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&
         byNamespace.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">No PushSecrets match your filters.</p>
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            No PushSecrets match your filters.
+          </p>
         </div>
       )}
 
       {!loading.value && !error.value && byNamespace.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             No PushSecrets in this namespace. PushSecrets push Kubernetes
             Secrets back out to a source store (uncommon).
           </p>

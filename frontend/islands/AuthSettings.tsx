@@ -4,8 +4,8 @@ import { useEffect } from "preact/hooks";
 import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
-import { Card } from "@/components/ui/Card.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { ProviderInfo } from "@/lib/k8s-types.ts";
 
 type TabType = "providers" | "oidc" | "ldap";
@@ -84,184 +84,277 @@ export default function AuthSettings() {
 
   if (loading.value) {
     return (
-      <div class="flex items-center justify-center py-12">
+      <div
+        style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}
+      >
         <Spinner class="text-accent" />
       </div>
     );
   }
 
+  const tabs: { key: TabType; label: string }[] = [
+    { key: "providers", label: "Providers" },
+    { key: "oidc", label: "OIDC" },
+    { key: "ldap", label: "LDAP" },
+  ];
+
   return (
-    <div>
-      {/* Tabs */}
-      <div class="border-b border-border-primary">
-        <nav class="-mb-px flex space-x-6">
-          {(
-            [
-              ["providers", "Providers"],
-              ["oidc", "OIDC"],
-              ["ldap", "LDAP"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              type="button"
-              key={key}
-              onClick={() => {
-                activeTab.value = key;
-                testResult.value = "";
-              }}
-              class={`border-b-2 pb-3 text-sm font-medium ${
-                activeTab.value === key
-                  ? "border-accent text-accent"
-                  : "border-transparent text-text-muted hover:border-border-primary hover:text-text-secondary text-text-muted"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+    <div style={{ display: "flex", flexDirection: "column", gap: "0" }}>
+      {/* Tab strip — underline style, accent active indicator */}
+      <div
+        style={{
+          display: "flex",
+          gap: "24px",
+          borderBottom: "1px solid var(--border-primary)",
+          marginBottom: "24px",
+        }}
+      >
+        {tabs.map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => {
+              activeTab.value = key;
+              testResult.value = "";
+            }}
+            style={{
+              padding: "0 0 12px",
+              fontSize: "14px",
+              fontWeight: activeTab.value === key ? 650 : 400,
+              color: activeTab.value === key
+                ? "var(--accent)"
+                : "var(--text-muted)",
+              border: "none",
+              borderBottom: activeTab.value === key
+                ? "2px solid var(--accent)"
+                : "2px solid transparent",
+              background: "none",
+              cursor: "pointer",
+              transition: "color 120ms ease, border-color 120ms ease",
+              marginBottom: "-1px",
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Tab content */}
-      <div class="mt-6">
-        {activeTab.value === "providers" && (
-          <Card title="Configured Providers">
-            <div class="divide-y divide-border-primary">
-              {providers.value.map((p) => (
-                <div
-                  key={p.id}
-                  class="flex items-center justify-between py-3"
-                >
-                  <div>
-                    <p class="text-sm font-medium text-text-primary">
-                      {p.displayName}
-                    </p>
-                    <p class="text-xs text-text-muted">
-                      {p.type} &middot; {p.id}
-                    </p>
-                  </div>
-                  <span
-                    class={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                      p.type === "local"
-                        ? "bg-success-dim text-success"
-                        : p.type === "oidc"
-                        ? "bg-accent-dim text-accent"
-                        : "bg-accent-dim text-accent-secondary"
-                    }`}
+      {/* Providers tab */}
+      {activeTab.value === "providers" && (
+        <WidgetShell title="Configured Providers">
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0",
+            }}
+          >
+            {providers.value.map((p, i) => (
+              <div
+                key={p.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "12px 0",
+                  borderBottom: i < providers.value.length - 1
+                    ? "1px solid var(--border-subtle)"
+                    : "none",
+                }}
+              >
+                <div>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      color: "var(--text-primary)",
+                    }}
                   >
-                    {p.type.toUpperCase()}
-                  </span>
+                    {p.displayName}
+                  </p>
+                  <p
+                    style={{
+                      margin: "2px 0 0",
+                      fontSize: "12px",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {p.type} · {p.id}
+                  </p>
                 </div>
-              ))}
-              {providers.value.length === 0 && (
-                <p class="py-4 text-sm text-text-muted">
-                  No providers configured.
-                </p>
+                <span
+                  style={{
+                    borderRadius: "6px",
+                    padding: "2px 8px",
+                    fontSize: "11px",
+                    fontWeight: 500,
+                    background: p.type === "local"
+                      ? "var(--success-dim)"
+                      : "var(--accent-dim)",
+                    color: p.type === "local"
+                      ? "var(--success)"
+                      : p.type === "oidc"
+                      ? "var(--accent)"
+                      : "var(--accent-2)",
+                  }}
+                >
+                  {p.type.toUpperCase()}
+                </span>
+              </div>
+            ))}
+            {providers.value.length === 0 && (
+              <p
+                style={{
+                  margin: 0,
+                  padding: "16px 0",
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                }}
+              >
+                No providers configured.
+              </p>
+            )}
+          </div>
+        </WidgetShell>
+      )}
+
+      {/* OIDC tab */}
+      {activeTab.value === "oidc" && (
+        <WidgetShell title="OIDC Provider Configuration">
+          <p
+            style={{
+              margin: "0 0 16px",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Configure OIDC providers via environment variables or the YAML
+            config file. Use{" "}
+            <code
+              style={{
+                borderRadius: "6px",
+                padding: "1px 5px",
+                background: "var(--bg-elevated)",
+                fontSize: "12px",
+                fontFamily: "var(--font-mono)",
+                color: "var(--text-primary)",
+              }}
+            >
+              KUBECENTER_AUTH_OIDC_0_ISSUERURL
+            </code>{" "}
+            pattern for env vars.
+          </p>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            <Input
+              label="Test Issuer URL"
+              type="url"
+              placeholder="https://accounts.google.com"
+              value={oidcIssuerURL.value}
+              onInput={(e) => {
+                oidcIssuerURL.value = (e.target as HTMLInputElement).value;
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <Button
+                type="button"
+                variant="secondary"
+                loading={testLoading.value}
+                onClick={testOIDCConnection}
+              >
+                Test Discovery
+              </Button>
+              {testResult.value && (
+                <span
+                  style={{
+                    fontSize: "13px",
+                    color: testResult.value.includes("successful")
+                      ? "var(--success)"
+                      : "var(--error)",
+                  }}
+                >
+                  {testResult.value}
+                </span>
               )}
             </div>
-          </Card>
-        )}
+          </div>
+        </WidgetShell>
+      )}
 
-        {activeTab.value === "oidc" && (
-          <Card title="OIDC Provider Configuration">
-            <p class="mb-4 text-sm text-text-muted">
-              Configure OIDC providers via environment variables or the YAML
-              config file. Use{""}
-              <code class="rounded bg-elevated px-1 bg-elevated">
-                KUBECENTER_AUTH_OIDC_0_ISSUERURL
-              </code>
-              {""}
-              pattern for env vars.
-            </p>
-            <div class="space-y-3">
-              <Input
-                label="Test Issuer URL"
-                type="url"
-                placeholder="https://accounts.google.com"
-                value={oidcIssuerURL.value}
-                onInput={(e) => {
-                  oidcIssuerURL.value = (e.target as HTMLInputElement).value;
-                }}
-              />
-              <div class="flex items-center gap-3">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  loading={testLoading.value}
-                  onClick={testOIDCConnection}
+      {/* LDAP tab */}
+      {activeTab.value === "ldap" && (
+        <WidgetShell title="LDAP Provider Configuration">
+          <p
+            style={{
+              margin: "0 0 16px",
+              fontSize: "13px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Configure LDAP providers via environment variables or the YAML
+            config file. Use{" "}
+            <code
+              style={{
+                borderRadius: "6px",
+                padding: "1px 5px",
+                background: "var(--bg-elevated)",
+                fontSize: "12px",
+                fontFamily: "var(--font-mono)",
+                color: "var(--text-primary)",
+              }}
+            >
+              KUBECENTER_AUTH_LDAP_0_URL
+            </code>{" "}
+            pattern for env vars.
+          </p>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "12px" }}
+          >
+            <Input
+              label="Test LDAP URL"
+              type="url"
+              placeholder="ldaps://ldap.example.com:636"
+              value={ldapURL.value}
+              onInput={(e) => {
+                ldapURL.value = (e.target as HTMLInputElement).value;
+              }}
+            />
+            <Input
+              label="Test Bind DN"
+              type="text"
+              placeholder="cn=readonly,dc=example,dc=com"
+              value={ldapBindDN.value}
+              onInput={(e) => {
+                ldapBindDN.value = (e.target as HTMLInputElement).value;
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <Button
+                type="button"
+                variant="secondary"
+                loading={testLoading.value}
+                onClick={testLDAPConnection}
+              >
+                Test Connection
+              </Button>
+              {testResult.value && (
+                <span
+                  style={{
+                    fontSize: "13px",
+                    color: testResult.value.includes("successful")
+                      ? "var(--success)"
+                      : "var(--error)",
+                  }}
                 >
-                  Test Discovery
-                </Button>
-                {testResult.value && (
-                  <span
-                    class={`text-sm ${
-                      testResult.value.includes("successful")
-                        ? "text-success"
-                        : "text-danger"
-                    }`}
-                  >
-                    {testResult.value}
-                  </span>
-                )}
-              </div>
+                  {testResult.value}
+                </span>
+              )}
             </div>
-          </Card>
-        )}
-
-        {activeTab.value === "ldap" && (
-          <Card title="LDAP Provider Configuration">
-            <p class="mb-4 text-sm text-text-muted">
-              Configure LDAP providers via environment variables or the YAML
-              config file. Use{""}
-              <code class="rounded bg-elevated px-1 bg-elevated">
-                KUBECENTER_AUTH_LDAP_0_URL
-              </code>
-              {""}
-              pattern for env vars.
-            </p>
-            <div class="space-y-3">
-              <Input
-                label="Test LDAP URL"
-                type="url"
-                placeholder="ldaps://ldap.example.com:636"
-                value={ldapURL.value}
-                onInput={(e) => {
-                  ldapURL.value = (e.target as HTMLInputElement).value;
-                }}
-              />
-              <Input
-                label="Test Bind DN"
-                type="text"
-                placeholder="cn=readonly,dc=example,dc=com"
-                value={ldapBindDN.value}
-                onInput={(e) => {
-                  ldapBindDN.value = (e.target as HTMLInputElement).value;
-                }}
-              />
-              <div class="flex items-center gap-3">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  loading={testLoading.value}
-                  onClick={testLDAPConnection}
-                >
-                  Test Connection
-                </Button>
-                {testResult.value && (
-                  <span
-                    class={`text-sm ${
-                      testResult.value.includes("successful")
-                        ? "text-success"
-                        : "text-danger"
-                    }`}
-                  >
-                    {testResult.value}
-                  </span>
-                )}
-              </div>
-            </div>
-          </Card>
-        )}
-      </div>
+          </div>
+        </WidgetShell>
+      )}
     </div>
   );
 }

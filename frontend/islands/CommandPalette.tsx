@@ -1,7 +1,11 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { DOMAIN_SECTIONS, SETTINGS_SECTION } from "@/lib/constants.ts";
+import {
+  DOMAIN_SECTIONS,
+  flattenGroups,
+  SETTINGS_SECTION,
+} from "@/lib/constants.ts";
 import { fuzzySearch } from "@/lib/fuzzy-search.ts";
 import type { SearchItem } from "@/lib/fuzzy-search.ts";
 
@@ -18,47 +22,41 @@ function buildSearchIndex(): SearchItem[] {
       href: section.href,
       icon: section.icon,
     });
-    if (section.tabs) {
-      for (const tab of section.tabs) {
-        items.push({
-          id: `nav-${section.id}-${tab.label}`,
-          type: "navigation",
-          label: tab.label,
-          detail: `${section.label} > ${tab.label}`,
-          href: tab.href,
-          icon: section.icon,
-        });
-      }
-    }
-  }
-
-  // Settings section
-  if (SETTINGS_SECTION.tabs) {
-    for (const tab of SETTINGS_SECTION.tabs) {
+    for (const tab of flattenGroups(section)) {
       items.push({
-        id: `nav-settings-${tab.label}`,
+        id: `nav-${section.id}-${tab.label}`,
         type: "navigation",
         label: tab.label,
-        detail: `Settings > ${tab.label}`,
+        detail: `${section.label} > ${tab.label}`,
         href: tab.href,
-        icon: "settings",
+        icon: section.icon,
       });
     }
   }
 
-  // Resource items derived from DOMAIN_SECTIONS tabs
+  // Settings section
+  for (const tab of flattenGroups(SETTINGS_SECTION)) {
+    items.push({
+      id: `nav-settings-${tab.label}`,
+      type: "navigation",
+      label: tab.label,
+      detail: `Settings > ${tab.label}`,
+      href: tab.href,
+      icon: "settings",
+    });
+  }
+
+  // Resource items derived from DOMAIN_SECTIONS groups
   for (const section of DOMAIN_SECTIONS) {
-    if (section.tabs) {
-      for (const tab of section.tabs) {
-        if (tab.kind) {
-          items.push({
-            id: `res-${tab.label}`,
-            type: "resource",
-            label: tab.label,
-            detail: tab.href,
-            href: tab.href,
-          });
-        }
+    for (const tab of flattenGroups(section)) {
+      if (tab.kind) {
+        items.push({
+          id: `res-${tab.label}`,
+          type: "resource",
+          label: tab.label,
+          detail: tab.href,
+          href: tab.href,
+        });
       }
     }
   }
@@ -68,15 +66,40 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create Deployment",
       href: "/workloads/deployments?action=create",
     },
+    {
+      label: "Create StatefulSet",
+      href: "/workloads/statefulsets?action=create",
+    },
+    {
+      label: "Create DaemonSet",
+      href: "/workloads/daemonsets?action=create",
+    },
+    { label: "Create Job", href: "/workloads/jobs?action=create" },
+    { label: "Create CronJob", href: "/workloads/cronjobs?action=create" },
     { label: "Create Service", href: "/networking/services?action=create" },
     { label: "Apply YAML", href: "/tools/yaml-apply" },
     { label: "Create ConfigMap", href: "/config/configmaps?action=create" },
     { label: "Create Secret", href: "/config/secrets?action=create" },
     { label: "Create Ingress", href: "/networking/ingresses?action=create" },
+    {
+      label: "Create Network Policy",
+      href: "/networking/networkpolicies?action=create",
+    },
+    {
+      label: "Create Namespace Limits",
+      href: "/config/namespace-limits?action=create",
+    },
     { label: "Create HPA", href: "/scaling/hpas?action=create" },
+    { label: "Create PDB", href: "/scaling/pdbs?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },
     { label: "Investigate Resource", href: "/observability/investigate" },
+    { label: "Create RoleBinding", href: "/rbac/rolebindings/new" },
+    {
+      label: "Create ClusterRoleBinding",
+      href: "/rbac/clusterrolebindings/new",
+    },
     { label: "Create Policy", href: "/security/create-policy" },
+    { label: "Create User", href: "/settings/users?action=create" },
     { label: "View Policies", href: "/security/policies" },
     { label: "View Violations", href: "/security/violations" },
     { label: "View GitOps Applications", href: "/gitops/applications" },
@@ -88,7 +111,10 @@ function buildSearchIndex(): SearchItem[] {
       label: "View Expiring Certificates",
       href: "/security/certificates?status=expiring",
     },
-    { label: "Create Certificate", href: "/security/certificates/new" },
+    {
+      label: "Create Certificate",
+      href: "/security/certificates?action=create",
+    },
     {
       label: "Create Issuer",
       href: "/security/certificates/issuers/new",
@@ -97,6 +123,10 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create ClusterIssuer",
       href: "/security/certificates/cluster-issuers/new",
     },
+    { label: "Create PVC", href: "/storage/pvcs?action=create" },
+    { label: "Create StorageClass", href: "/storage/overview?action=create" },
+    { label: "Create Volume Snapshot", href: "/storage/snapshots/new" },
+    { label: "Schedule Snapshot", href: "/storage/snapshots/schedule" },
     {
       label: "External Secrets Dashboard",
       href: "/external-secrets/dashboard",
@@ -107,7 +137,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create ExternalSecret",
-      href: "/external-secrets/external-secrets/new",
+      href: "/external-secrets/external-secrets?action=create",
     },
     {
       label: "View SecretStores",
@@ -115,7 +145,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create SecretStore",
-      href: "/external-secrets/stores/new",
+      href: "/external-secrets/stores?action=create",
     },
     {
       label: "View ClusterSecretStores",
@@ -123,7 +153,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create ClusterSecretStore",
-      href: "/external-secrets/cluster-stores/new",
+      href: "/external-secrets/cluster-stores?action=create",
     },
     {
       label: "View ExternalSecrets Chain",
@@ -141,6 +171,9 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create Namespace Limits",
       href: "/config/namespace-limits/new",
     },
+    { label: "Create Backup", href: "/backup/backups?action=create" },
+    { label: "Create Restore", href: "/backup/restores?action=create" },
+    { label: "Create Schedule", href: "/backup/schedules?action=create" },
   ];
   for (const a of actions) {
     items.push({
@@ -206,7 +239,7 @@ export default function CommandPalette() {
     }
   }
 
-  // Keyboard shortcut: Cmd+K / Ctrl+K
+  // Keyboard shortcut: Cmd+K / Ctrl+K + custom event from TopBarV2 search trigger
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -218,22 +251,13 @@ export default function CommandPalette() {
         }
       }
     };
-    globalThis.addEventListener("keydown", handleKeyDown);
-    return () => globalThis.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // Listen for custom event from TopBarV2 search trigger
-  useEffect(() => {
     const handleOpen = () => openPalette();
-    globalThis.addEventListener(
-      "open-command-palette",
-      handleOpen,
-    );
-    return () =>
-      globalThis.removeEventListener(
-        "open-command-palette",
-        handleOpen,
-      );
+    globalThis.addEventListener("keydown", handleKeyDown);
+    globalThis.addEventListener("open-command-palette", handleOpen);
+    return () => {
+      globalThis.removeEventListener("keydown", handleKeyDown);
+      globalThis.removeEventListener("open-command-palette", handleOpen);
+    };
   }, []);
 
   if (!IS_BROWSER) return null;

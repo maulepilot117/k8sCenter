@@ -1,9 +1,6 @@
 import { define } from "@/utils.ts";
-import SubNav from "@/islands/SubNav.tsx";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 
-export default define.page(function ToolsPage(ctx) {
-  const section = DOMAIN_SECTIONS.find((s) => s.id === "tools")!;
+export default define.page(function ToolsPage(_ctx) {
   return (
     <div class="flex flex-col h-full">
       <div class="px-5 pt-4 pb-3">
@@ -14,7 +11,6 @@ export default define.page(function ToolsPage(ctx) {
           YAML tools, wizards, and cluster utilities
         </p>
       </div>
-      <SubNav tabs={section.tabs ?? []} currentPath={ctx.url.pathname} />
       <div class="flex-1 flex items-center justify-center px-5 py-10">
         <div class="text-center">
           <p class="text-sm text-text-muted mb-4">

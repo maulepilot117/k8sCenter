@@ -2,5 +2,11 @@ import { define } from "@/utils.ts";
 import NamespaceLimitsWizard from "@/islands/NamespaceLimitsWizard.tsx";
 
 export default define.page(function NewNamespaceLimitsPage() {
-  return <NamespaceLimitsWizard />;
+  return (
+    <NamespaceLimitsWizard
+      onClose={() => {
+        globalThis.location.href = "/config/namespace-limits";
+      }}
+    />
+  );
 });

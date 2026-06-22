@@ -9,7 +9,7 @@ export const ENGINE_COLORS: Record<string, string> = {
 };
 
 export const ACTION_LABELS: Record<string, { label: string; color: string }> = {
-  denied: { label: "Denied", color: "var(--danger)" },
+  denied: { label: "Denied", color: "var(--error)" },
   warned: { label: "Warned", color: "var(--warning)" },
   audited: { label: "Audited", color: "var(--text-muted)" },
 };
@@ -33,7 +33,7 @@ export function EngineBadge({ engine }: { engine: string }) {
 }
 
 export function BlockingBadge({ blocking }: { blocking: boolean }) {
-  const color = blocking ? "var(--danger)" : "var(--text-muted)";
+  const color = blocking ? "var(--error)" : "var(--text-muted)";
   const label = blocking ? "Enforce" : "Audit";
   const title = blocking ? "Blocks admission" : "Audit only";
   return (

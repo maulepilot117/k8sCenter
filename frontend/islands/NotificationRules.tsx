@@ -42,7 +42,7 @@ export default function NotificationRules() {
   const fetchRules = async () => {
     try {
       const res = await notifApi.listRules();
-      rules.value = res.data ?? [];
+      rules.value = res.data.data ?? [];
     } catch {
       error.value = "Failed to load rules";
     }
@@ -52,7 +52,7 @@ export default function NotificationRules() {
   const fetchChannels = async () => {
     try {
       const res = await notifApi.listChannels();
-      channels.value = res.data ?? [];
+      channels.value = res.data.data ?? [];
     } catch {
       // channels will be empty — dropdown shows nothing
     }
@@ -194,9 +194,9 @@ export default function NotificationRules() {
 
   const dangerBtnStyle: Record<string, string> = {
     ...btnStyle,
-    background: "var(--danger)",
+    background: "var(--error)",
     color: "var(--bg-base)",
-    border: "1px solid var(--danger)",
+    border: "1px solid var(--error)",
   };
 
   // --- Render ---
@@ -248,8 +248,8 @@ export default function NotificationRules() {
             padding: "8px 12px",
             marginBottom: "12px",
             borderRadius: "6px",
-            background: "color-mix(in srgb, var(--danger) 10%, transparent)",
-            color: "var(--danger)",
+            background: "color-mix(in srgb, var(--error) 10%, transparent)",
+            color: "var(--error)",
             fontSize: "13px",
           }}
         >
@@ -359,7 +359,7 @@ export default function NotificationRules() {
                         )
                         : rule.severityFilter.map((sev) => {
                           const color = sev === "critical"
-                            ? "var(--danger)"
+                            ? "var(--error)"
                             : sev === "warning"
                             ? "var(--warning)"
                             : "var(--accent)";
@@ -452,7 +452,7 @@ export default function NotificationRules() {
                             style={{
                               ...btnStyle,
                               padding: "4px 10px",
-                              color: "var(--danger)",
+                              color: "var(--error)",
                             }}
                             onClick={() => confirmDeleteId.value = rule.id}
                           >

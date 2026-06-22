@@ -1,6 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
@@ -10,14 +9,13 @@ import {
 } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface NodeSelectorEntry {
   key: string;
@@ -42,9 +40,9 @@ interface DaemonSetFormState {
   maxUnavailable: string;
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Container, nodes & update" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): DaemonSetFormState {
@@ -66,7 +64,8 @@ function initialState(): DaemonSetFormState {
   };
 }
 
-export default function DaemonSetWizard() {
+export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<DaemonSetFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -77,6 +76,7 @@ export default function DaemonSetWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
@@ -114,6 +114,7 @@ export default function DaemonSetWizard() {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -176,13 +177,15 @@ export default function DaemonSetWizard() {
         "/v1/wizards/daemonset/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -192,192 +195,185 @@ export default function DaemonSetWizard() {
     await fetchPreview();
   };
 
-  const goBack = () => {
-    if (currentStep.value > 0) currentStep.value = 0;
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  selector:\n    matchLabels:\n      app: ${name}\n  template:\n    metadata:\n      labels:\n        app: ${name}\n    spec:\n      containers:\n        - name: ${name}\n          image: ${
+      f.image || "<image>"
+    }`;
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create DaemonSet
-        </h1>
-        <a
-          href="/workloads/daemonsets"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create DaemonSet"
+      subtitle={form.value.namespace || "default"}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="space-y-8">
-            {/* Name & Namespace */}
-            <div class="max-w-lg space-y-4">
-              <Input
-                label="Name"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                placeholder="my-daemonset"
-                error={errors.value.name}
-                required
-              />
-
-              <NamespaceSelect
-                value={form.value.namespace}
-                namespaces={namespaces.value}
-                error={errors.value.namespace}
-                onChange={(ns) => updateField("namespace", ns)}
-              />
-            </div>
-
-            {/* Container Form */}
-            <ContainerForm
-              image={form.value.image}
-              command={form.value.command}
-              args={form.value.args}
-              ports={form.value.ports}
-              envVars={form.value.envVars}
-              requestCpu={form.value.requestCpu}
-              requestMemory={form.value.requestMemory}
-              limitCpu={form.value.limitCpu}
-              limitMemory={form.value.limitMemory}
-              errors={errors.value}
-              onChange={updateField}
+          <circle cx="10" cy="10" r="2.5" />
+          <path d="M10 3v3M10 14v3M3 10h3M14 10h3" />
+          <path d="M5.6 5.6l2.1 2.1M12.3 12.3l2.1 2.1M5.6 14.4l2.1-2.1M12.3 7.7l2.1-2.1" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i <= currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
+      onNext={() => {
+        if (currentStep.value === 0) goNext();
+        else close();
+      }}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
+      yaml={currentStep.value === 0 ? manifest() : previewYaml.value}
+    >
+      {currentStep.value === 0 && (
+        <div class="space-y-8">
+          {/* Name & Namespace */}
+          <div class="max-w-lg space-y-4">
+            <Input
+              label="Name"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              placeholder="my-daemonset"
+              error={errors.value.name}
+              required
             />
 
-            {/* Node Selector */}
-            <div class="max-w-2xl space-y-3">
-              <label class="block text-sm font-medium text-text-secondary">
-                Node Selector
-              </label>
-              <p class="text-xs text-text-muted">
-                Optional. Constrain the DaemonSet to nodes matching these
-                labels.
-              </p>
-              {form.value.nodeSelector.map((entry, i) => (
-                <div key={i} class="flex items-end gap-2">
-                  <div class="flex-1">
-                    <Input
-                      label={i === 0 ? "Key" : undefined}
-                      value={entry.key}
-                      onInput={(e) => {
-                        const updated = [...form.value.nodeSelector];
-                        updated[i] = {
-                          ...updated[i],
-                          key: (e.target as HTMLInputElement).value,
-                        };
-                        updateField("nodeSelector", updated);
-                      }}
-                      placeholder="kubernetes.io/os"
-                    />
-                  </div>
-                  <div class="flex-1">
-                    <Input
-                      label={i === 0 ? "Value" : undefined}
-                      value={entry.value}
-                      onInput={(e) => {
-                        const updated = [...form.value.nodeSelector];
-                        updated[i] = {
-                          ...updated[i],
-                          value: (e.target as HTMLInputElement).value,
-                        };
-                        updateField("nodeSelector", updated);
-                      }}
-                      placeholder="linux"
-                    />
-                  </div>
-                  <RemoveButton
-                    onClick={() =>
-                      updateField(
-                        "nodeSelector",
-                        form.value.nodeSelector.filter((_, idx) =>
-                          idx !== i
-                        ),
-                      )}
-                    title="Remove selector"
-                    class="p-2 mb-1"
+            <NamespaceSelect
+              value={form.value.namespace}
+              namespaces={namespaces.value}
+              error={errors.value.namespace}
+              onChange={(ns) => updateField("namespace", ns)}
+            />
+          </div>
+
+          {/* Container Form */}
+          <ContainerForm
+            image={form.value.image}
+            command={form.value.command}
+            args={form.value.args}
+            ports={form.value.ports}
+            envVars={form.value.envVars}
+            requestCpu={form.value.requestCpu}
+            requestMemory={form.value.requestMemory}
+            limitCpu={form.value.limitCpu}
+            limitMemory={form.value.limitMemory}
+            errors={errors.value}
+            onChange={updateField}
+          />
+
+          {/* Node Selector */}
+          <div class="max-w-2xl space-y-3">
+            <label class="block text-sm font-medium text-text-secondary">
+              Node Selector
+            </label>
+            <p class="text-xs text-text-muted">
+              Optional. Constrain the DaemonSet to nodes matching these labels.
+            </p>
+            {form.value.nodeSelector.map((entry, i) => (
+              <div key={i} class="flex items-end gap-2">
+                <div class="flex-1">
+                  <Input
+                    label={i === 0 ? "Key" : undefined}
+                    value={entry.key}
+                    onInput={(e) => {
+                      const updated = [...form.value.nodeSelector];
+                      updated[i] = {
+                        ...updated[i],
+                        key: (e.target as HTMLInputElement).value,
+                      };
+                      updateField("nodeSelector", updated);
+                    }}
+                    placeholder="kubernetes.io/os"
                   />
                 </div>
-              ))}
-              {form.value.nodeSelector.length < 50 && (
-                <button
-                  type="button"
+                <div class="flex-1">
+                  <Input
+                    label={i === 0 ? "Value" : undefined}
+                    value={entry.value}
+                    onInput={(e) => {
+                      const updated = [...form.value.nodeSelector];
+                      updated[i] = {
+                        ...updated[i],
+                        value: (e.target as HTMLInputElement).value,
+                      };
+                      updateField("nodeSelector", updated);
+                    }}
+                    placeholder="linux"
+                  />
+                </div>
+                <RemoveButton
                   onClick={() =>
-                    updateField("nodeSelector", [
-                      ...form.value.nodeSelector,
-                      { key: "", value: "" },
-                    ])}
-                  class="text-sm text-brand hover:text-brand/80"
-                >
-                  + Add Node Selector
-                </button>
-              )}
-            </div>
-
-            {/* Max Unavailable */}
-            <div class="max-w-lg">
-              <Input
-                label="Max Unavailable"
-                value={form.value.maxUnavailable}
-                onInput={(e) =>
-                  updateField(
-                    "maxUnavailable",
-                    (e.target as HTMLInputElement).value,
-                  )}
-                placeholder="1 or 25%"
-              />
-              <p class="mt-1 text-xs text-text-muted">
-                Maximum number of pods that can be unavailable during a rolling
-                update. Accepts an integer or percentage.
-              </p>
-            </div>
+                    updateField(
+                      "nodeSelector",
+                      form.value.nodeSelector.filter((_, idx) =>
+                        idx !== i
+                      ),
+                    )}
+                  title="Remove selector"
+                  class="p-2 mb-1"
+                />
+              </div>
+            ))}
+            {form.value.nodeSelector.length < 50 && (
+              <button
+                type="button"
+                onClick={() =>
+                  updateField("nodeSelector", [
+                    ...form.value.nodeSelector,
+                    { key: "", value: "" },
+                  ])}
+                class="text-sm text-brand hover:text-brand/80"
+              >
+                + Add Node Selector
+              </button>
+            )}
           </div>
-        )}
 
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/workloads/daemonsets"
-          />
-        )}
-      </div>
-
-      {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-end">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+          {/* Max Unavailable */}
+          <div class="max-w-lg">
+            <Input
+              label="Max Unavailable"
+              value={form.value.maxUnavailable}
+              onInput={(e) =>
+                updateField(
+                  "maxUnavailable",
+                  (e.target as HTMLInputElement).value,
+                )}
+              placeholder="1 or 25%"
+            />
+            <p class="mt-1 text-xs text-text-muted">
+              Maximum number of pods that can be unavailable during a rolling
+              update. Accepts an integer or percentage.
+            </p>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/daemonsets"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

@@ -20,7 +20,6 @@ import {
   subscribe,
 } from "@/lib/ws.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
-import { Tabs } from "@/components/ui/Tabs.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { ResourceIcon } from "@/components/k8s/ResourceIcon.tsx";
@@ -40,9 +39,11 @@ import PerformancePanel from "@/islands/PerformancePanel.tsx";
 import LogViewer from "@/islands/LogViewer.tsx";
 import PodTerminal from "@/islands/PodTerminal.tsx";
 import RelatedPods from "@/islands/RelatedPods.tsx";
-import SplitPane from "@/islands/SplitPane.tsx";
 import RoleBindingsList from "@/islands/RoleBindingsList.tsx";
+import MetricsRail from "@/islands/MetricsRail.tsx";
 import { CodeMirrorEditor } from "@/components/ui/CodeMirrorEditor.tsx";
+import DetailShell, { type DetailTab } from "@/components/k8s/DetailShell.tsx";
+import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 
 interface ResourceDetailProps {
   kind: string;
@@ -61,6 +62,138 @@ function pluralize(s: string): string {
   ) return s + "es";
   return s + "s";
 }
+
+/** A condition shape shared across Deployment, Job, and other resource statuses. */
+interface K8sCondition {
+  type: string;
+  status: string;
+  reason?: string;
+}
+
+/** Derive a StatusBadge label+tone from a K8sResource. */
+function deriveStatus(
+  kind: string,
+  resource: K8sResource,
+): { label: string; tone: Tone } {
+  // Deployments — use Available/Progressing conditions (only Deployment has them typed)
+  if (kind === "deployments") {
+    const dep = resource as Deployment;
+    const conds = dep.status?.conditions ?? [];
+    const available = conds.find((c) => c.type === "Available");
+    if (available?.status === "True") return { label: "Available", tone: "ok" };
+    const progressing = conds.find((c) => c.type === "Progressing");
+    if (progressing?.status === "True") {
+      return { label: "Progressing", tone: "warn" };
+    }
+    return { label: available?.reason ?? "Unavailable", tone: "crit" };
+  }
+
+  // StatefulSets — derive from readyReplicas vs spec.replicas
+  if (kind === "statefulsets") {
+    const ss = resource as StatefulSet;
+    const ready = ss.status?.readyReplicas ?? 0;
+    const desired = ss.spec?.replicas ?? 0;
+    if (desired === 0 || ready >= desired) {
+      return { label: "Available", tone: "ok" };
+    }
+    if (ready > 0) return { label: "Progressing", tone: "warn" };
+    return { label: "Unavailable", tone: "crit" };
+  }
+
+  // DaemonSets — derive from numberReady vs desiredNumberScheduled
+  if (kind === "daemonsets") {
+    const ds = resource as DaemonSet;
+    const ready = ds.status?.numberReady ?? 0;
+    const desired = ds.status?.desiredNumberScheduled ?? 0;
+    if (desired === 0 || ready >= desired) {
+      return { label: "Available", tone: "ok" };
+    }
+    if (ready > 0) return { label: "Progressing", tone: "warn" };
+    return { label: "Unavailable", tone: "crit" };
+  }
+
+  // Pods — use phase
+  if (kind === "pods") {
+    const pod = resource as Pod;
+    const phase = pod.status?.phase ?? "Unknown";
+    if (phase === "Running") {
+      const allReady = pod.status?.containerStatuses?.every((c) => c.ready) ??
+        false;
+      return allReady
+        ? { label: "Running", tone: "ok" }
+        : { label: "Not Ready", tone: "warn" };
+    }
+    if (phase === "Succeeded") return { label: "Succeeded", tone: "ok" };
+    if (phase === "Pending") return { label: "Pending", tone: "warn" };
+    return { label: phase, tone: "crit" };
+  }
+
+  // Jobs — cast status.conditions since K8sResource.status is typed as {}
+  if (kind === "jobs") {
+    const conds =
+      (resource.status as { conditions?: K8sCondition[] } | undefined)
+        ?.conditions ?? [];
+    if (conds.find((c) => c.type === "Complete" && c.status === "True")) {
+      return { label: "Complete", tone: "ok" };
+    }
+    if (conds.find((c) => c.type === "Failed" && c.status === "True")) {
+      return { label: "Failed", tone: "crit" };
+    }
+    return { label: "Active", tone: "warn" };
+  }
+
+  // CronJobs
+  if (kind === "cronjobs") {
+    const suspended = (resource.spec as { suspend?: boolean } | undefined)
+      ?.suspend;
+    if (suspended) return { label: "Suspended", tone: "warn" };
+    return { label: "Active", tone: "ok" };
+  }
+
+  return { label: "Ready", tone: "ok" };
+}
+
+/** Build subtitle: "Deployment · namespace prod · 6/6 replicas" */
+function deriveSubtitle(
+  title: string,
+  kind: string,
+  namespace: string | undefined,
+  resource: K8sResource,
+): string {
+  const parts: string[] = [title];
+  if (namespace) parts.push(`namespace ${namespace}`);
+
+  if (kind === "deployments") {
+    const dep = resource as Deployment;
+    const ready = dep.status?.readyReplicas ?? 0;
+    const desired = dep.spec?.replicas ?? 0;
+    parts.push(`${ready}/${desired} replicas ready`);
+  } else if (kind === "statefulsets") {
+    const ss = resource as StatefulSet;
+    const ready = ss.status?.readyReplicas ?? 0;
+    const desired = ss.spec?.replicas ?? 0;
+    parts.push(`${ready}/${desired} replicas ready`);
+  } else if (kind === "daemonsets") {
+    const ds = resource as DaemonSet;
+    const ready = ds.status?.numberReady ?? 0;
+    const desired = ds.status?.desiredNumberScheduled ?? 0;
+    parts.push(`${ready}/${desired} pods ready`);
+  } else if (kind === "pods") {
+    const pod = resource as Pod;
+    const created = pod.metadata.creationTimestamp;
+    if (created) parts.push(`age ${age(created)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+// Kinds that get a live metrics rail
+const RAIL_KINDS = new Set([
+  "deployments",
+  "statefulsets",
+  "daemonsets",
+  "pods",
+]);
 
 export default function ResourceDetail({
   kind,
@@ -158,9 +291,7 @@ export default function ResourceDetail({
     runAction(actionId);
   };
 
-  // Dirty state navigation guard (D9)
-  // Uses a ref to track the original yamlContent so the computed dirty signal
-  // can compare against it.
+  // Dirty state navigation guard
   const yamlContentRef = useRef("");
   const yamlDirty = useComputed(() =>
     yamlEditing.value && yamlEditContent.value !== yamlContentRef.current
@@ -221,11 +352,10 @@ export default function ResourceDetail({
       const res = await apiGet<K8sResource>(path);
       resource.value = res.data;
       updated.value = false;
-      // Allow events to be re-fetched after a resource refresh
       eventsFetched.current = false;
     } catch (err) {
       if (err instanceof Error && err.message.includes("404")) {
-        error.value = `${title}"${name}" not found`;
+        error.value = `${title} "${name}" not found`;
       } else if (err instanceof Error && err.message.includes("403")) {
         error.value =
           `You don't have permission to view this ${title.toLowerCase()}`;
@@ -243,7 +373,6 @@ export default function ResourceDetail({
   useEffect(() => {
     if (!IS_BROWSER) return;
 
-    // Don't subscribe WS for secrets
     const enableWS = kind !== "secrets";
     let unsubscribe: (() => void) | undefined;
 
@@ -257,7 +386,6 @@ export default function ResourceDetail({
           if (!object || typeof object !== "object") return;
           const obj = object as K8sResource;
 
-          // Only process events for this specific resource
           if (
             resource.value && obj.metadata?.uid !== resource.value.metadata.uid
           ) {
@@ -266,7 +394,6 @@ export default function ResourceDetail({
 
           switch (eventType) {
             case EVENT_MODIFIED:
-              // Show"updated" banner instead of auto-refreshing YAML
               if (activeTab.value === "yaml") {
                 updated.value = true;
               } else {
@@ -291,7 +418,7 @@ export default function ResourceDetail({
     };
   }, [kind, name, namespace]);
 
-  // Fetch events when Events tab is first activated — server-side filtered
+  // Fetch events when Events tab is first activated
   const fetchEvents = useCallback(async () => {
     if (eventsFetched.current) return;
     eventsFetched.current = true;
@@ -331,12 +458,12 @@ export default function ResourceDetail({
     [fetchEvents],
   );
 
-  // Generate YAML from resource — memoized to avoid re-stringify on unrelated renders
+  // Generate YAML from resource
   const yamlContent = useMemo(() => {
     if (!resource.value) return "";
     const obj = structuredClone(resource.value);
     if (!showManagedFields.value) {
-      delete (obj.metadata as Record<string, unknown>).managedFields;
+      delete obj.metadata.managedFields;
     }
     try {
       return stringify(obj, { lineWidth: 0 });
@@ -351,266 +478,10 @@ export default function ResourceDetail({
   // Build back-to-list URL
   const listUrl = RESOURCE_DETAIL_PATHS[kind] ?? "/";
 
-  // Force age() to use tick for reactivity (read tick.value so signal is tracked)
+  // Force age() to use tick for reactivity
   void tick.value;
 
-  const tabDefs = [
-    {
-      id: "overview",
-      label: "Overview",
-      content: () => {
-        if (loading.value) {
-          return <LoadingSpinner />;
-        }
-        if (!resource.value) return null;
-        const OverviewComponent = getOverviewComponent(kind);
-        return (
-          <div class="space-y-6 p-6">
-            {kind !== "deployments" && (
-              <MetadataSection resource={resource.value} />
-            )}
-            <OverviewComponent resource={resource.value} />
-            {(kind === "roles" || kind === "clusterroles") && (
-              <RoleBindingsList
-                roleName={name}
-                roleKind={kind === "clusterroles" ? "ClusterRole" : "Role"}
-                namespace={namespace}
-              />
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      id: "yaml",
-      label: "YAML",
-      content: () => {
-        if (loading.value || !resource.value) {
-          return <LoadingSpinner />;
-        }
-
-        return (
-          <div class="p-6 space-y-4">
-            {/* Updated externally banner */}
-            {updated.value && (
-              <div class="flex items-center gap-3 rounded-md border border-info/30 bg-info/10 px-4 py-2 text-sm text-info">
-                Resource was updated externally.
-                <button
-                  type="button"
-                  onClick={() => {
-                    fetchResource();
-                    yamlEditing.value = false;
-                    yamlApplyError.value = null;
-                    yamlApplySuccess.value = false;
-                  }}
-                  class="font-medium underline hover:no-underline"
-                >
-                  Refresh
-                </button>
-              </div>
-            )}
-
-            {/* Apply success banner */}
-            {yamlApplySuccess.value && (
-              <div class="flex items-center gap-3 rounded-md border border-success/30 bg-success-dim px-4 py-2 text-sm text-success">
-                Changes applied successfully.
-                <button
-                  type="button"
-                  onClick={() => {
-                    yamlApplySuccess.value = false;
-                  }}
-                  class="font-medium underline hover:no-underline"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            {/* Apply error banner */}
-            {yamlApplyError.value && (
-              <div class="rounded-md border border-danger/30 bg-danger-dim px-4 py-3 text-sm text-danger">
-                <p class="font-medium">Apply failed</p>
-                <p class="mt-1">{yamlApplyError.value}</p>
-              </div>
-            )}
-
-            {/* Toolbar */}
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <label class="flex items-center gap-2 text-sm text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={showManagedFields.value}
-                    onChange={(e) => {
-                      showManagedFields.value =
-                        (e.target as HTMLInputElement).checked;
-                    }}
-                    class="rounded border-border-primary"
-                    disabled={yamlEditing.value}
-                  />
-                  Show managed fields
-                </label>
-              </div>
-              <div class="flex items-center gap-2">
-                {!yamlEditing.value
-                  ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          yamlEditContent.value = yamlContent;
-                          yamlEditing.value = true;
-                          yamlApplyError.value = null;
-                          yamlApplySuccess.value = false;
-                        }}
-                        disabled={isSecret}
-                        title={isSecret
-                          ? "Secrets cannot be edited via YAML"
-                          : "Edit YAML"}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const exportPath = namespace
-                              ? `/v1/yaml/export/${kind}/${namespace}/${name}`
-                              : `/v1/yaml/export/${kind}/_/${name}`;
-                            const res = await apiGet<string>(exportPath);
-                            const blob = new Blob(
-                              [
-                                typeof res.data === "string"
-                                  ? res.data
-                                  : JSON.stringify(res.data, null, 2),
-                              ],
-                              { type: "text/yaml" },
-                            );
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement("a");
-                            a.href = url;
-                            a.download = `${name}.yaml`;
-                            a.click();
-                            URL.revokeObjectURL(url);
-                          } catch (err) {
-                            yamlApplyError.value = err instanceof Error
-                              ? err.message
-                              : "Export failed";
-                          }
-                        }}
-                        disabled={isSecret}
-                        title={isSecret
-                          ? "Secrets cannot be exported (values are masked)"
-                          : "Export clean YAML"}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Export
-                      </button>
-                    </>
-                  )
-                  : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (yamlApplying.value) return;
-                          yamlApplying.value = true;
-                          yamlApplyError.value = null;
-                          yamlApplySuccess.value = false;
-                          try {
-                            await apiPostRaw(
-                              "/v1/yaml/apply",
-                              yamlEditContent.value,
-                            );
-                            yamlApplySuccess.value = true;
-                            yamlEditing.value = false;
-                            await fetchResource();
-                          } catch (err) {
-                            yamlApplyError.value = err instanceof Error
-                              ? err.message
-                              : "Apply failed";
-                          } finally {
-                            yamlApplying.value = false;
-                          }
-                        }}
-                        disabled={yamlApplying.value ||
-                          yamlEditContent.value === yamlContent}
-                        class="inline-flex items-center gap-1.5 rounded-md bg-accent-primary px-3 py-1.5 text-sm font-medium text-bg-base hover:bg-accent-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {yamlApplying.value ? "Applying..." : "Apply"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          yamlEditing.value = false;
-                          yamlEditContent.value = "";
-                          yamlApplyError.value = null;
-                        }}
-                        disabled={yamlApplying.value}
-                        class="inline-flex items-center gap-1.5 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Discard
-                      </button>
-                    </>
-                  )}
-              </div>
-            </div>
-
-            {/* CodeMirror YAML editor — native DOM, works inline */}
-            <div class="rounded-md border border-border-primary overflow-hidden">
-              <CodeMirrorEditor
-                value={yamlEditing.value ? yamlEditContent.value : yamlContent}
-                onChange={yamlEditing.value
-                  ? (v) => {
-                    yamlEditContent.value = v;
-                  }
-                  : undefined}
-                readOnly={!yamlEditing.value}
-              />
-            </div>
-          </div>
-        );
-      },
-    },
-    {
-      id: "events",
-      label: "Events",
-      content: () => {
-        if (eventsLoading.value) {
-          return <LoadingSpinner />;
-        }
-        if (eventsError.value) {
-          return (
-            <div class="p-6">
-              <ErrorBanner message={eventsError.value} />
-            </div>
-          );
-        }
-        if (events.value.length === 0) {
-          return (
-            <div class="p-12 text-center text-sm text-text-muted">
-              No events found for this resource
-            </div>
-          );
-        }
-        return (
-          <div class="p-6">
-            <EventsTable events={events.value} />
-          </div>
-        );
-      },
-    },
-    {
-      id: "metrics",
-      label: "Metrics",
-      content: () => (
-        <PerformancePanel kind={kind} name={name} namespace={namespace} />
-      ),
-    },
-  ];
-
-  // Compute pod selector for workload kinds (used in split pane)
+  // Compute pod selector for workload kinds
   const isWorkload = ["deployments", "statefulsets", "daemonsets"].includes(
     kind,
   );
@@ -621,7 +492,373 @@ export default function ResourceDetail({
     return Object.entries(matchLabels).map(([k, v]) => `${k}=${v}`).join(",");
   })();
 
-  // Add Logs and Exec tabs for pods
+  // ── tab definitions ────────────────────────────────────────────────────────
+
+  const tabDefs: (DetailTab & { content: () => preact.JSX.Element | null })[] =
+    [
+      {
+        id: "overview",
+        label: "Overview",
+        content: () => {
+          if (loading.value) {
+            return (
+              <div style={{ padding: "32px" }}>
+                <LoadingSpinner />
+              </div>
+            );
+          }
+          if (!resource.value) return null;
+          const OverviewComponent = getOverviewComponent(kind);
+          return (
+            <div style={{ padding: "20px" }}>
+              {kind !== "deployments" && (
+                <MetadataSection resource={resource.value} />
+              )}
+              <OverviewComponent resource={resource.value} />
+              {(kind === "roles" || kind === "clusterroles") && (
+                <RoleBindingsList
+                  roleName={name}
+                  roleKind={kind === "clusterroles" ? "ClusterRole" : "Role"}
+                  namespace={namespace}
+                />
+              )}
+              {/* Related pods for workload kinds — moved from SplitPane */}
+              {isWorkload && namespace && podSelector && (
+                <div style={{ marginTop: "20px" }}>
+                  <RelatedPods
+                    namespace={namespace}
+                    labelSelector={podSelector}
+                    parentName={name}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: "yaml",
+        label: "YAML",
+        content: () => {
+          if (loading.value || !resource.value) {
+            return (
+              <div style={{ padding: "32px" }}>
+                <LoadingSpinner />
+              </div>
+            );
+          }
+
+          return (
+            <div style={{ padding: "20px" }}>
+              {/* Updated externally banner */}
+              {updated.value && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    borderRadius: "8px",
+                    border:
+                      "1px solid color-mix(in srgb, var(--info) 30%, transparent)",
+                    background:
+                      "color-mix(in srgb, var(--info) 10%, transparent)",
+                    padding: "8px 16px",
+                    fontSize: "13px",
+                    color: "var(--info)",
+                    marginBottom: "12px",
+                  }}
+                >
+                  Resource was updated externally.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      fetchResource();
+                      yamlEditing.value = false;
+                      yamlApplyError.value = null;
+                      yamlApplySuccess.value = false;
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "inherit",
+                      fontWeight: 500,
+                      textDecoration: "underline",
+                      fontSize: "13px",
+                    }}
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
+
+              {/* Apply success banner */}
+              {yamlApplySuccess.value && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    borderRadius: "8px",
+                    border:
+                      "1px solid color-mix(in srgb, var(--success) 30%, transparent)",
+                    background:
+                      "color-mix(in srgb, var(--success) 10%, transparent)",
+                    padding: "8px 16px",
+                    fontSize: "13px",
+                    color: "var(--success)",
+                    marginBottom: "12px",
+                  }}
+                >
+                  Changes applied successfully.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      yamlApplySuccess.value = false;
+                    }}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      color: "inherit",
+                      fontWeight: 500,
+                      textDecoration: "underline",
+                      fontSize: "13px",
+                    }}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
+
+              {/* Apply error banner */}
+              {yamlApplyError.value && (
+                <div
+                  style={{
+                    borderRadius: "8px",
+                    border:
+                      "1px solid color-mix(in srgb, var(--error) 30%, transparent)",
+                    background:
+                      "color-mix(in srgb, var(--error) 10%, transparent)",
+                    padding: "12px 16px",
+                    fontSize: "13px",
+                    color: "var(--error)",
+                    marginBottom: "12px",
+                  }}
+                >
+                  <p style={{ fontWeight: 600, margin: "0 0 4px" }}>
+                    Apply failed
+                  </p>
+                  <p style={{ margin: 0 }}>{yamlApplyError.value}</p>
+                </div>
+              )}
+
+              {/* YAML toolbar */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "10px",
+                }}
+              >
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    fontSize: "13px",
+                    color: "var(--text-muted)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showManagedFields.value}
+                    onChange={(e) => {
+                      showManagedFields.value =
+                        (e.target as HTMLInputElement).checked;
+                    }}
+                    disabled={yamlEditing.value}
+                  />
+                  Show managed fields
+                </label>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  {!yamlEditing.value
+                    ? (
+                      <>
+                        <GhostButton
+                          onClick={() => {
+                            yamlEditContent.value = yamlContent;
+                            yamlEditing.value = true;
+                            yamlApplyError.value = null;
+                            yamlApplySuccess.value = false;
+                          }}
+                          disabled={isSecret}
+                          title={isSecret
+                            ? "Secrets cannot be edited via YAML"
+                            : "Edit YAML"}
+                        >
+                          Edit
+                        </GhostButton>
+                        <GhostButton
+                          onClick={async () => {
+                            try {
+                              const exportPath = namespace
+                                ? `/v1/yaml/export/${kind}/${namespace}/${name}`
+                                : `/v1/yaml/export/${kind}/_/${name}`;
+                              const res = await apiGet<string>(exportPath);
+                              const blob = new Blob(
+                                [
+                                  typeof res.data === "string"
+                                    ? res.data
+                                    : JSON.stringify(res.data, null, 2),
+                                ],
+                                { type: "text/yaml" },
+                              );
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement("a");
+                              a.href = url;
+                              a.download = `${name}.yaml`;
+                              a.click();
+                              URL.revokeObjectURL(url);
+                            } catch (err) {
+                              yamlApplyError.value = err instanceof Error
+                                ? err.message
+                                : "Export failed";
+                            }
+                          }}
+                          disabled={isSecret}
+                          title={isSecret
+                            ? "Secrets cannot be exported (values are masked)"
+                            : "Export clean YAML"}
+                        >
+                          Export
+                        </GhostButton>
+                      </>
+                    )
+                    : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (yamlApplying.value) return;
+                            yamlApplying.value = true;
+                            yamlApplyError.value = null;
+                            yamlApplySuccess.value = false;
+                            try {
+                              await apiPostRaw(
+                                "/v1/yaml/apply",
+                                yamlEditContent.value,
+                              );
+                              yamlApplySuccess.value = true;
+                              yamlEditing.value = false;
+                              await fetchResource();
+                            } catch (err) {
+                              yamlApplyError.value = err instanceof Error
+                                ? err.message
+                                : "Apply failed";
+                            } finally {
+                              yamlApplying.value = false;
+                            }
+                          }}
+                          disabled={yamlApplying.value ||
+                            yamlEditContent.value === yamlContent}
+                          style={primaryButtonStyle(
+                            yamlApplying.value ||
+                              yamlEditContent.value === yamlContent,
+                          )}
+                        >
+                          {yamlApplying.value ? "Applying…" : "Apply"}
+                        </button>
+                        <GhostButton
+                          onClick={() => {
+                            yamlEditing.value = false;
+                            yamlEditContent.value = "";
+                            yamlApplyError.value = null;
+                          }}
+                          disabled={yamlApplying.value}
+                        >
+                          Discard
+                        </GhostButton>
+                      </>
+                    )}
+                </div>
+              </div>
+
+              {/* CodeMirror YAML editor */}
+              <div
+                style={{
+                  borderRadius: "9px",
+                  border: "1px solid var(--border-primary)",
+                  overflow: "hidden",
+                }}
+              >
+                <CodeMirrorEditor
+                  value={yamlEditing.value
+                    ? yamlEditContent.value
+                    : yamlContent}
+                  onChange={yamlEditing.value
+                    ? (v) => {
+                      yamlEditContent.value = v;
+                    }
+                    : undefined}
+                  readOnly={!yamlEditing.value}
+                />
+              </div>
+            </div>
+          );
+        },
+      },
+      {
+        id: "events",
+        label: "Events",
+        content: () => {
+          if (eventsLoading.value) {
+            return (
+              <div style={{ padding: "32px" }}>
+                <LoadingSpinner />
+              </div>
+            );
+          }
+          if (eventsError.value) {
+            return (
+              <div style={{ padding: "20px" }}>
+                <ErrorBanner message={eventsError.value} />
+              </div>
+            );
+          }
+          if (events.value.length === 0) {
+            return (
+              <div
+                style={{
+                  padding: "48px",
+                  textAlign: "center",
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                }}
+              >
+                No events found for this resource
+              </div>
+            );
+          }
+          return (
+            <div style={{ padding: "20px" }}>
+              <EventsTable events={events.value} />
+            </div>
+          );
+        },
+      },
+      {
+        id: "metrics",
+        label: "Metrics",
+        content: () => (
+          <PerformancePanel kind={kind} name={name} namespace={namespace} />
+        ),
+      },
+    ];
+
+  // Add Logs and Terminal tabs for pods
   if (kind === "pods" && namespace && IS_BROWSER) {
     tabDefs.push({
       id: "logs",
@@ -663,7 +900,7 @@ export default function ResourceDetail({
     });
   }
 
-  // Add "Loki Logs" tab for workloads and services — links to Log Explorer pre-filtered
+  // Add "Loki Logs" tab for workloads and services
   if (
     namespace &&
     [
@@ -683,13 +920,35 @@ export default function ResourceDetail({
           encodeURIComponent(namespace)
         }&kind=${encodeURIComponent(kind)}&name=${encodeURIComponent(name)}`;
         return (
-          <div class="p-6 text-center">
-            <p class="text-sm text-text-secondary mb-4">
+          <div
+            style={{
+              padding: "32px",
+              textAlign: "center",
+            }}
+          >
+            <p
+              style={{
+                fontSize: "13px",
+                color: "var(--text-muted)",
+                marginBottom: "16px",
+              }}
+            >
               View aggregated logs for this resource in the Log Explorer.
             </p>
             <a
               href={logsUrl}
-              class="inline-flex items-center gap-2 rounded-md bg-accent-primary px-4 py-2 text-sm font-medium text-bg-base hover:bg-accent-primary/90"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 16px",
+                borderRadius: "9px",
+                background: "var(--accent)",
+                color: "var(--bg-base)",
+                fontSize: "13px",
+                fontWeight: 600,
+                textDecoration: "none",
+              }}
             >
               Open Log Explorer
             </a>
@@ -699,221 +958,174 @@ export default function ResourceDetail({
     });
   }
 
+  // ── derived display values ─────────────────────────────────────────────────
+
+  const status = resource.value
+    ? deriveStatus(kind, resource.value)
+    : undefined;
+
+  const subtitle = resource.value
+    ? deriveSubtitle(title, kind, namespace, resource.value)
+    : namespace
+    ? `${title} · namespace ${namespace}`
+    : title;
+
+  // Action buttons for DetailShell
+  const actionButtons = resource.value && actions.value.length > 0
+    ? (
+      <>
+        {actions.value.map((actionId) => {
+          const meta = getActionMeta(actionId, resource.value!);
+          const isDanger = !!meta.danger;
+          return (
+            <button
+              key={actionId}
+              type="button"
+              onClick={() => handleAction(actionId)}
+              disabled={actionLoading.value}
+              style={{
+                padding: "6px 12px",
+                borderRadius: "9px",
+                fontSize: "12px",
+                fontWeight: 600,
+                fontFamily: "inherit",
+                border: isDanger
+                  ? "1px solid color-mix(in srgb, var(--error) 40%, transparent)"
+                  : "1px solid var(--border-primary)",
+                background: "transparent",
+                color: isDanger ? "var(--error)" : "var(--text-muted)",
+                cursor: actionLoading.value ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                opacity: actionLoading.value ? 0.5 : 1,
+                transition: "background 0.15s",
+              }}
+              onMouseOver={(e) => {
+                if (!actionLoading.value) {
+                  (e.currentTarget as HTMLElement).style.background = isDanger
+                    ? "color-mix(in srgb, var(--error) 12%, transparent)"
+                    : "var(--bg-elevated)";
+                }
+              }}
+              onMouseOut={(e) => {
+                (e.currentTarget as HTMLElement).style.background =
+                  "transparent";
+              }}
+            >
+              <ActionIcon actionId={actionId} />
+              {meta.label}
+            </button>
+          );
+        })}
+        {/* Investigate link */}
+        {namespace && (
+          <a
+            href={`/observability/investigate?namespace=${namespace}&kind=${
+              RESOURCE_API_KINDS[kind] ?? kind
+            }&name=${name}`}
+            style={{
+              padding: "6px 12px",
+              borderRadius: "9px",
+              fontSize: "12px",
+              fontWeight: 600,
+              fontFamily: "inherit",
+              border: "1px solid var(--border-primary)",
+              background: "transparent",
+              color: "var(--text-muted)",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              textDecoration: "none",
+              transition: "background 0.15s, color 0.15s",
+            }}
+            onMouseOver={(e) => {
+              (e.currentTarget as HTMLElement).style.background =
+                "var(--bg-elevated)";
+              (e.currentTarget as HTMLElement).style.color = "var(--accent)";
+            }}
+            onMouseOut={(e) => {
+              (e.currentTarget as HTMLElement).style.background = "transparent";
+              (e.currentTarget as HTMLElement).style.color =
+                "var(--text-muted)";
+            }}
+          >
+            Investigate
+          </a>
+        )}
+      </>
+    )
+    : undefined;
+
+  // Metrics rail — only for rail-eligible kinds with a namespace
+  const metricsRail = (IS_BROWSER && RAIL_KINDS.has(kind) && namespace)
+    ? <MetricsRail kind={kind} name={name} namespace={namespace} />
+    : undefined;
+
+  // Active tab content
+  const activeTabDef = tabDefs.find((t) => t.id === activeTab.value);
+
   return (
-    <div class="space-y-4">
+    <>
       {/* Deleted banner */}
       {deleted.value && (
-        <div class="rounded-md border border-warning/30 bg-warning-dim px-4 py-3 text-sm text-warning">
-          This {title.toLowerCase()} was deleted.{""}
-          <a href={listUrl} class="font-medium underline hover:no-underline">
-            Back to {title.toLowerCase()} list
+        <div
+          style={{
+            borderRadius: "9px",
+            border:
+              "1px solid color-mix(in srgb, var(--warning) 30%, transparent)",
+            background: "color-mix(in srgb, var(--warning) 10%, transparent)",
+            padding: "12px 16px",
+            fontSize: "13px",
+            color: "var(--warning)",
+            marginBottom: "12px",
+          }}
+        >
+          This {title.toLowerCase()} was deleted.{" "}
+          <a
+            href={listUrl}
+            style={{
+              fontWeight: 600,
+              color: "inherit",
+              textDecoration: "underline",
+            }}
+          >
+            Back to {pluralize(title.toLowerCase())} list
           </a>
         </div>
       )}
 
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          gap: "14px",
-        }}
+      <DetailShell
+        icon={<ResourceIcon kind={kind} size={22} />}
+        title={name}
+        subtitle={subtitle}
+        status={status}
+        actions={actionButtons}
+        tabs={tabDefs}
+        active={activeTab.value}
+        onTab={handleTabChange}
+        rail={metricsRail}
       >
-        {/* Icon */}
-        <div
-          style={{
-            width: "44px",
-            height: "44px",
-            borderRadius: "var(--radius)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexShrink: 0,
-            background:
-              "linear-gradient(135deg, var(--accent-glow), var(--accent-dim))",
-            border: "1px solid var(--accent-glow)",
-            color: "var(--accent)",
-          }}
-        >
-          <ResourceIcon kind={kind} size={22} />
-        </div>
-        {/* Title section */}
-        <div style={{ flex: 1 }}>
-          <h1
-            style={{
-              fontSize: "18px",
-              fontWeight: 600,
-              fontFamily: "var(--font-mono)",
-              letterSpacing: "-0.02em",
-              margin: 0,
-            }}
-          >
-            {name}
-          </h1>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              fontSize: "12px",
-              color: "var(--text-muted)",
-              marginTop: "4px",
-            }}
-          >
-            <a
-              href={listUrl}
+        {/* Error state */}
+        {error.value && !resource.value
+          ? (
+            <div style={{ padding: "20px" }}>
+              <ErrorBanner message={error.value} />
+            </div>
+          )
+          : (
+            <div
               style={{
-                color: "var(--text-muted)",
-                textDecoration: "none",
-              }}
-              onMouseOver={(e) => {
-                (e.currentTarget as HTMLElement).style.color = "var(--accent)";
-              }}
-              onMouseOut={(e) => {
-                (e.currentTarget as HTMLElement).style.color =
-                  "var(--text-muted)";
+                background: "var(--bg-surface)",
+                borderRadius: "12px",
+                border: "1px solid var(--border-subtle)",
+                overflow: "hidden",
               }}
             >
-              {pluralize(title)}
-            </a>
-            <span style={{ opacity: 0.5 }}>/</span>
-            {namespace && (
-              <>
-                <span style={{ color: "var(--text-secondary)" }}>
-                  {namespace}
-                </span>
-                <span style={{ opacity: 0.5 }}>/</span>
-              </>
-            )}
-            <span style={{ color: "var(--text-secondary)" }}>{name}</span>
-            {namespace && (
-              <a
-                href={`/observability/investigate?namespace=${namespace}&kind=${
-                  RESOURCE_API_KINDS[kind] ?? kind
-                }&name=${name}`}
-                style={{
-                  marginLeft: "8px",
-                  fontSize: "12px",
-                  color: "var(--accent)",
-                  textDecoration: "none",
-                }}
-              >
-                Investigate
-              </a>
-            )}
-          </div>
-        </div>
-        {/* Action buttons */}
-        {resource.value && actions.value.length > 0 && (
-          <div style={{ display: "flex", gap: "6px" }}>
-            {actions.value.map((actionId) => {
-              const meta = getActionMeta(actionId, resource.value!);
-              const isDanger = !!meta.danger;
-              return (
-                <button
-                  key={actionId}
-                  type="button"
-                  onClick={() => handleAction(actionId)}
-                  disabled={actionLoading.value}
-                  style={{
-                    padding: "5px 10px",
-                    borderRadius: "var(--radius-sm)",
-                    fontSize: "12px",
-                    fontWeight: 500,
-                    border: isDanger
-                      ? "1px solid var(--error-dim)"
-                      : "1px solid var(--border-primary)",
-                    background: "transparent",
-                    color: isDanger ? "var(--error)" : "var(--text-secondary)",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "5px",
-                    opacity: actionLoading.value ? 0.5 : 1,
-                  }}
-                  onMouseOver={(e) => {
-                    (e.currentTarget as HTMLElement).style.background = isDanger
-                      ? "var(--error-dim)"
-                      : "var(--bg-elevated)";
-                  }}
-                  onMouseOut={(e) => {
-                    (e.currentTarget as HTMLElement).style.background =
-                      "transparent";
-                  }}
-                >
-                  <ActionIcon actionId={actionId} />
-                  {meta.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Error state */}
-      {error.value && !resource.value && <ErrorBanner message={error.value} />}
-
-      {
-        /* Tab content — SplitPane always rendered for workloads so Fresh includes
-          the island in the bundle. Right pane shows loading until selector is ready. */
-      }
-      {isWorkload && namespace
-        ? (
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              flex: 1,
-              minHeight: 0,
-            }}
-          >
-            <SplitPane
-              defaultRatio={0.6}
-              left={
-                <div class="rounded-lg border border-border-primary bg-surface">
-                  <Tabs
-                    tabs={tabDefs}
-                    activeTab={activeTab.value}
-                    onTabChange={handleTabChange}
-                  />
-                </div>
-              }
-              right={
-                <div style={{ padding: "16px" }}>
-                  {podSelector
-                    ? (
-                      <RelatedPods
-                        namespace={namespace}
-                        labelSelector={podSelector}
-                        parentName={name}
-                      />
-                    )
-                    : (
-                      <div
-                        style={{
-                          color: "var(--text-muted)",
-                          fontSize: "13px",
-                          textAlign: "center",
-                          paddingTop: "40px",
-                        }}
-                      >
-                        Loading pods...
-                      </div>
-                    )}
-                </div>
-              }
-            />
-          </div>
-        )
-        : (
-          <div class="rounded-lg border border-border-primary bg-surface">
-            <Tabs
-              tabs={tabDefs}
-              activeTab={activeTab.value}
-              onTabChange={handleTabChange}
-            />
-          </div>
-        )}
+              {activeTabDef ? activeTabDef.content() : null}
+            </div>
+          )}
+      </DetailShell>
 
       {/* Confirm dialog */}
       {confirmAction.value && resource.value && (() => {
@@ -946,8 +1158,10 @@ export default function ResourceDetail({
         <ConfirmDialog
           title={`Scale ${name}`}
           message={
-            <div class="space-y-3">
-              <p>Set the number of replicas:</p>
+            <div>
+              <p style={{ fontSize: "13px", marginBottom: "12px" }}>
+                Set the number of replicas:
+              </p>
               <input
                 type="number"
                 min="0"
@@ -959,7 +1173,15 @@ export default function ResourceDetail({
                     10,
                   );
                 }}
-                class="w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
+                style={{
+                  width: "100%",
+                  borderRadius: "9px",
+                  border: "1px solid var(--border-primary)",
+                  background: "var(--bg-surface)",
+                  padding: "8px 12px",
+                  fontSize: "13px",
+                  color: "var(--text-primary)",
+                }}
               />
             </div>
           }
@@ -970,7 +1192,61 @@ export default function ResourceDetail({
           }}
         />
       )}
-    </div>
+    </>
+  );
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function primaryButtonStyle(disabled: boolean): preact.JSX.CSSProperties {
+  return {
+    padding: "6px 14px",
+    borderRadius: "9px",
+    fontSize: "12px",
+    fontWeight: 600,
+    fontFamily: "inherit",
+    border: "none",
+    background: "var(--accent)",
+    color: "var(--bg-base)",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.5 : 1,
+  };
+}
+
+function GhostButton(
+  {
+    children,
+    onClick,
+    disabled,
+    title,
+  }: {
+    children: preact.ComponentChildren;
+    onClick?: () => void;
+    disabled?: boolean;
+    title?: string;
+  },
+) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        padding: "6px 12px",
+        borderRadius: "9px",
+        fontSize: "12px",
+        fontWeight: 600,
+        fontFamily: "inherit",
+        border: "1px solid var(--border-primary)",
+        background: "transparent",
+        color: "var(--text-muted)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -1022,51 +1298,98 @@ function ActionIcon({ actionId }: { actionId: ActionId }) {
 
 function EventsTable({ events }: { events: K8sEvent[] }) {
   return (
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
+    <div style={{ overflowX: "auto" }}>
+      <table
+        style={{ width: "100%", fontSize: "13px", borderCollapse: "collapse" }}
+      >
         <thead>
-          <tr class="border-b border-border-primary">
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
-              Type
-            </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
-              Reason
-            </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
-              Message
-            </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
-              Count
-            </th>
-            <th class="px-4 py-2 text-left text-xs font-medium uppercase text-text-muted">
-              Last Seen
-            </th>
+          <tr
+            style={{
+              borderBottom: "1px solid var(--border-primary)",
+            }}
+          >
+            {["Type", "Reason", "Message", "Count", "Last Seen"].map((h) => (
+              <th
+                key={h}
+                style={{
+                  padding: "10px 16px",
+                  textAlign: "left",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.07em",
+                  color: "var(--text-muted)",
+                }}
+              >
+                {h}
+              </th>
+            ))}
           </tr>
         </thead>
-        <tbody class="divide-y divide-border-subtle">
+        <tbody>
           {events.map((e) => (
-            <tr key={e.metadata.uid}>
-              <td class="px-4 py-2">
+            <tr
+              key={e.metadata.uid}
+              style={{ borderBottom: "1px solid var(--border-subtle)" }}
+            >
+              <td style={{ padding: "10px 16px" }}>
                 <span
-                  class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                    e.type === "Warning"
-                      ? "bg-warning-dim text-warning ring-warning/20"
-                      : "bg-elevated text-text-secondary ring-border-primary"
-                  }`}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "2px 8px",
+                    borderRadius: "6px",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    background: e.type === "Warning"
+                      ? "color-mix(in srgb, var(--warning) 14%, transparent)"
+                      : "var(--bg-elevated)",
+                    color: e.type === "Warning"
+                      ? "var(--warning)"
+                      : "var(--text-muted)",
+                  }}
                 >
                   {e.type ?? "Normal"}
                 </span>
               </td>
-              <td class="px-4 py-2 text-text-secondary">
+              <td
+                style={{
+                  padding: "10px 16px",
+                  color: "var(--text-muted)",
+                  fontSize: "13px",
+                }}
+              >
                 {e.reason ?? "-"}
               </td>
-              <td class="px-4 py-2 text-text-secondary max-w-md truncate">
+              <td
+                style={{
+                  padding: "10px 16px",
+                  color: "var(--text-muted)",
+                  fontSize: "13px",
+                  maxWidth: "400px",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
                 {e.message ?? "-"}
               </td>
-              <td class="px-4 py-2 text-text-secondary">
+              <td
+                style={{
+                  padding: "10px 16px",
+                  color: "var(--text-muted)",
+                  fontSize: "13px",
+                }}
+              >
                 {e.count ?? 1}
               </td>
-              <td class="px-4 py-2 text-text-muted">
+              <td
+                style={{
+                  padding: "10px 16px",
+                  color: "var(--text-muted)",
+                  fontSize: "13px",
+                }}
+              >
                 {e.lastTimestamp ? age(e.lastTimestamp) : "-"}
               </td>
             </tr>

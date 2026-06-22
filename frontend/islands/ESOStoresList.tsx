@@ -2,13 +2,32 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
+import SecretStoreWizard from "@/islands/SecretStoreWizard.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 import type { SecretStore } from "@/lib/eso-types.ts";
+import ResourceTable from "@/components/ui/ResourceTable.tsx";
 
 const NAMESPACE_DEBOUNCE_MS = 300;
+
+/** Map SecretStore ready state → StatusDot tone. */
+function storeToDot(
+  status: string,
+  ready: boolean,
+): "success" | "error" | "warning" | "neutral" {
+  if (ready) return "success";
+  switch (status) {
+    case "Ready":
+      return "success";
+    case "NotReady":
+      return "error";
+    default:
+      return "neutral";
+  }
+}
 
 export default function ESOStoresList() {
   const items = useSignal<SecretStore[]>([]);
@@ -17,6 +36,7 @@ export default function ESOStoresList() {
   const namespace = useSignal("");
   const search = useSignal("");
   const detected = useSignal<boolean | null>(null);
+  const wizardOpen = useSignal(false);
 
   const fetchSeq = useRef(0);
   const debounceHandle = useRef<number | null>(null);
@@ -58,11 +78,15 @@ export default function ESOStoresList() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
+  }, []);
+
   function handleNamespaceChange(value: string) {
     namespace.value = value;
-    if (debounceHandle.current !== null) {
-      clearTimeout(debounceHandle.current);
-    }
+    if (debounceHandle.current !== null) clearTimeout(debounceHandle.current);
     debounceHandle.current = setTimeout(() => {
       debounceHandle.current = null;
       fetchData();
@@ -74,14 +98,22 @@ export default function ESOStoresList() {
   if (!loading.value && detected.value === false) {
     return (
       <div class="p-6">
-        <h1 class="text-2xl font-bold text-text-primary mb-6">SecretStores</h1>
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+          class="mb-6"
+        >
+          SecretStores
+        </h1>
         <ESONotDetected />
       </div>
     );
   }
 
-  // selectedNamespace.value read in synchronous render so the island re-filters
-  // when the global namespace picker changes.
   const nsByGlobal = selectedNamespace.value;
   const byNamespace = filterByNamespace(items.value, nsByGlobal);
   const filtered = byNamespace.filter((s) => {
@@ -94,18 +126,36 @@ export default function ESOStoresList() {
     );
   });
 
+  const inputStyle =
+    "rounded-lg px-3 py-1.5 text-sm max-w-xs focus:outline-none focus:ring-1";
+
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-start justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">SecretStores</h1>
-        <a
-          href="/external-secrets/stores/new"
-          class="px-3 py-1.5 text-sm rounded border border-brand text-brand hover:bg-brand/10"
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "var(--text-primary)",
+          }}
+        >
+          SecretStores
+        </h1>
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
+          style={{ background: "var(--accent)", color: "var(--bg-base)" }}
         >
           + New SecretStore
-        </a>
+        </button>
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        class="mb-6"
+        style={{ fontSize: "13px", color: "var(--text-muted)" }}
+      >
         Namespaced SecretStores describe how ESO talks to a secret backend.
       </p>
 
@@ -113,7 +163,11 @@ export default function ESOStoresList() {
       <div class="mb-4 flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-stores-ns"
           >
             Namespace
@@ -121,7 +175,12 @@ export default function ESOStoresList() {
           <input
             id="eso-stores-ns"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
             placeholder="All namespaces"
             value={namespace.value}
             aria-describedby="eso-stores-ns-hint"
@@ -134,7 +193,11 @@ export default function ESOStoresList() {
         </div>
         <div class="flex items-center gap-2">
           <label
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 500,
+              color: "var(--text-muted)",
+            }}
             htmlFor="eso-stores-search"
           >
             Search
@@ -142,15 +205,20 @@ export default function ESOStoresList() {
           <input
             id="eso-stores-search"
             type="text"
-            class="rounded border border-border-primary px-3 py-1.5 text-sm bg-base text-text-primary max-w-xs"
-            placeholder="name, provider..."
+            class={inputStyle}
+            style={{
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-subtle)",
+              color: "var(--text-primary)",
+            }}
+            placeholder="name, provider…"
             value={search.value}
             onInput={(e) => {
               search.value = (e.target as HTMLInputElement).value;
             }}
           />
         </div>
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
           {filtered.length} of {byNamespace.length} SecretStores
           {byNamespace.length < items.value.length &&
             ` (${items.value.length} total)`}
@@ -164,113 +232,140 @@ export default function ESOStoresList() {
       )}
 
       {!loading.value && error.value && (
-        <p class="text-sm text-danger py-4">{error.value}</p>
+        <p style={{ fontSize: "13px", color: "var(--error)" }} class="py-4">
+          {error.value}
+        </p>
       )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Name
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Namespace
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Status
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Provider
-                </th>
-                <th
-                  scope="col"
-                  class="px-3 py-2 text-left text-xs font-medium text-text-muted"
-                >
-                  Ready
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {filtered.map((s) => (
-                <tr key={s.uid} class="hover:bg-hover/30">
-                  <td class="px-3 py-2">
-                    {s.namespace
+        <ResourceTable
+          columns={[
+            { key: "name", label: "Name", width: "1.6fr" },
+            { key: "namespace", label: "Namespace", width: "120px" },
+            { key: "status", label: "Status", width: "100px" },
+            { key: "provider", label: "Provider", width: "1fr" },
+            { key: "ready", label: "Ready", width: "90px" },
+          ]}
+          rows={filtered.map((s) => {
+            const detailHref = s.namespace
+              ? `/external-secrets/stores/${encodeURIComponent(s.namespace)}/${
+                encodeURIComponent(s.name)
+              }`
+              : null;
+            return {
+              id: s.uid,
+              cells: {
+                name: (
+                  <span class="inline-flex items-center gap-2">
+                    <StatusDot status={storeToDot(s.status, s.ready)} />
+                    {detailHref
                       ? (
                         <a
-                          href={`/external-secrets/stores/${
-                            encodeURIComponent(s.namespace)
-                          }/${encodeURIComponent(s.name)}`}
-                          class="font-medium text-brand hover:underline"
+                          href={detailHref}
+                          class="hover:underline"
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            fontFamily: "var(--font-mono, monospace)",
+                            color: "var(--text-primary)",
+                          }}
+                          onClick={(e) => e.stopPropagation()}
                         >
                           {s.name}
                         </a>
                       )
                       : (
-                        // Namespaced list shouldn't return scope=Cluster, but
-                        // type allows it. Render plain text rather than a link
-                        // to a route that requires a namespace segment.
-                        <span class="font-medium text-text-primary">
+                        <span
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 500,
+                            fontFamily: "var(--font-mono, monospace)",
+                            color: "var(--text-primary)",
+                          }}
+                        >
                           {s.name}
                         </span>
                       )}
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary">
+                  </span>
+                ),
+                namespace: (
+                  <span
+                    style={{ fontSize: "13px", color: "var(--text-muted)" }}
+                  >
                     {s.namespace ?? "—"}
-                  </td>
-                  <td class="px-3 py-2">
-                    <StatusBadge status={s.status} />
-                  </td>
-                  <td class="px-3 py-2">
-                    <ProviderBadge provider={s.provider} />
-                  </td>
-                  <td class="px-3 py-2">
-                    {s.ready
-                      ? (
-                        <span class="text-success text-xs font-medium">
-                          Ready
-                        </span>
-                      )
-                      : (
-                        <span class="text-danger text-xs font-medium">
-                          Not Ready
-                        </span>
-                      )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </span>
+                ),
+                status: <StatusBadge status={s.status} />,
+                provider: <ProviderBadge provider={s.provider} />,
+                ready: s.ready
+                  ? (
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        color: "var(--success)",
+                      }}
+                    >
+                      Ready
+                    </span>
+                  )
+                  : (
+                    <span
+                      style={{
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        color: "var(--error)",
+                      }}
+                    >
+                      Not Ready
+                    </span>
+                  ),
+              },
+              onClick: detailHref
+                ? () => {
+                  globalThis.location.href = detailHref;
+                }
+                : undefined,
+            };
+          })}
+        />
       )}
 
       {!loading.value && !error.value && filtered.length === 0 &&
         byNamespace.length > 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">No SecretStores match your filters.</p>
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            No SecretStores match your filters.
+          </p>
         </div>
       )}
 
       {!loading.value && !error.value && byNamespace.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-elevated">
-          <p class="text-text-muted">
+        <div
+          class="text-center py-12 rounded-lg"
+          style={{
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border-subtle)",
+          }}
+        >
+          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
             No SecretStores in this namespace. ExternalSecrets require a
             SecretStore to function.
           </p>
         </div>
+      )}
+
+      {wizardOpen.value && (
+        <SecretStoreWizard
+          scope="namespaced"
+          onClose={() => (wizardOpen.value = false)}
+        />
       )}
     </div>
   );

@@ -97,6 +97,9 @@ jobs:
       - name: Format check
         run: deno fmt --check
 
+      - name: Type check
+        run: deno check
+
       - name: Build
         run: deno task build
 

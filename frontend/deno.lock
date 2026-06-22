@@ -6,9 +6,11 @@
     "jsr:@deno/loader@~0.3.10": "0.3.14",
     "jsr:@fresh/build-id@1": "1.0.1",
     "jsr:@fresh/core@2": "2.3.3",
+    "jsr:@fresh/core@2.3.3": "2.3.3",
     "jsr:@fresh/core@^2.2.0": "2.3.3",
     "jsr:@fresh/core@^2.3.3": "2.3.3",
     "jsr:@fresh/plugin-vite@1": "1.1.2",
+    "jsr:@fresh/plugin-vite@1.1.2": "1.1.2",
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
     "jsr:@std/dotenv@~0.225.5": "0.225.6",
@@ -56,6 +58,7 @@
     "npm:esbuild@~0.25.5": "0.25.12",
     "npm:fuse.js@^7.1.0": "7.3.0",
     "npm:postcss@^8.5.7": "8.5.12",
+    "npm:preact-render-to-string@6": "6.6.7_preact@10.29.1",
     "npm:preact-render-to-string@^6.6.3": "6.6.7_preact@10.29.1",
     "npm:preact@^10.28.2": "10.29.1",
     "npm:preact@^10.28.3": "10.29.1",
@@ -106,7 +109,7 @@
         "npm:@preact/signals@^2.5.1",
         "npm:esbuild-wasm",
         "npm:esbuild@0.25.7",
-        "npm:preact-render-to-string",
+        "npm:preact-render-to-string@^6.6.3",
         "npm:preact@^10.28.2",
         "npm:preact@^10.29.1"
       ]
@@ -1639,6 +1642,10 @@
       "integrity": "sha512-AvbaCLOO2Otw/lW5bmh9d/WEdcDFdQp2Z2ZUH3pX9U2ihyUY0nvLv7J6TrWowklRGPYbB/IuIMfYgxaCPg5Bpg==",
       "bin": true
     }
+  },
+  "remote": {
+    "https://esm.sh/monaco-editor@0.52.2/denonext/esm/vs/editor/editor.api.mjs": "f4edc5cf5ca863c027399b6fa8218dea5cad1ee10840ea958a41c3d352766f1b",
+    "https://esm.sh/monaco-editor@0.52.2/esm/vs/editor/editor.api.js": "854b86e2b552dee71aaf2e641cadefabafa52723580861861fabad24f5580c0c"
   },
   "workspace": {
     "dependencies": [

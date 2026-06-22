@@ -8,6 +8,8 @@ import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
 import { selectedCluster } from "@/lib/cluster.ts";
 import NotificationBell from "@/islands/NotificationBell.tsx";
+import NavToggle from "@/islands/NavToggle.tsx";
+import ThemeToggle from "@/islands/ThemeToggle.tsx";
 
 export default function TopBarV2() {
   const { user, logout, fetchCurrentUser, refreshPermissions } = useAuth();
@@ -54,17 +56,22 @@ export default function TopBarV2() {
     <header
       class="glass-bar"
       style={{
-        height: "var(--topbar-height, 52px)",
+        height: "var(--topbar-height, 56px)",
         borderBottom: "1px solid var(--glass-border)",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
         padding: "0 16px",
         gap: "12px",
+        minWidth: 0,
+        overflow: "hidden",
       }}
     >
-      {/* Left section: Cluster + Namespace + Search */}
+      {/* Left section: NavToggle + Cluster + Namespace + Search */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        {/* Collapse/expand the secondary nav panel */}
+        <NavToggle />
+
         {/* Cluster indicator */}
         <div
           style={{
@@ -167,8 +174,11 @@ export default function TopBarV2() {
         </button>
       </div>
 
-      {/* Right section: notifications + user */}
+      {/* Right section: theme + notifications + user */}
       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* Light / dark */}
+        <ThemeToggle />
+
         {/* Notification bell */}
         <NotificationBell />
 

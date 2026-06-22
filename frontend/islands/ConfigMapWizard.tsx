@@ -1,14 +1,12 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 import type { KeyValueEntry } from "@/components/ui/KeyValueListEditor.tsx";
 
@@ -18,9 +16,9 @@ interface ConfigMapFormState {
   entries: KeyValueEntry[];
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Name & data entries" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialState(): ConfigMapFormState {
@@ -32,7 +30,20 @@ function initialState(): ConfigMapFormState {
   };
 }
 
-export default function ConfigMapWizard() {
+function buildManifest(f: ConfigMapFormState): string {
+  const validEntries = f.entries.filter((e) => e.key.trim());
+  const dataLines = validEntries.length > 0
+    ? validEntries.map((e) => `  ${e.key}: "${e.value}"`).join("\n")
+    : "  # no data yet";
+  return `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${
+    f.name || "<name>"
+  }\n  namespace: ${f.namespace}\ndata:\n${dataLines}`;
+}
+
+export default function ConfigMapWizard(
+  { onClose }: { onClose?: () => void },
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<ConfigMapFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -43,6 +54,7 @@ export default function ConfigMapWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useDirtyGuard(dirty);
 
@@ -127,6 +139,7 @@ export default function ConfigMapWizard() {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -149,188 +162,258 @@ export default function ConfigMapWizard() {
         "/v1/wizards/configmap/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const f = form.value;
 
   return (
-    <div class="p-6">
-      <div class="mb-6 flex items-center justify-between">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create ConfigMap
-        </h1>
-        <a
-          href="/config/configmaps"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create ConfigMap"
+      subtitle={`Step ${currentStep.value + 1} of 2 · namespace ${f.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="mx-auto max-w-lg space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Name <span class="text-error">*</span>
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="e.g. my-config"
-              />
-              {errors.value.name && (
-                <p class="mt-1 text-xs text-error">{errors.value.name}</p>
-              )}
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Namespace <span class="text-error">*</span>
-              </label>
-              <select
-                value={form.value.namespace}
-                onChange={(e) =>
-                  updateField(
-                    "namespace",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                {namespaces.value.map((ns) => (
-                  <option key={ns} value={ns}>{ns}</option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium text-text-secondary">
-                Data
-              </label>
-              <div class="mt-2 space-y-3">
-                {form.value.entries.map((entry, i) => (
-                  <div key={i} class="flex gap-2 items-start">
-                    <div class="flex-1">
-                      <input
-                        type="text"
-                        value={entry.key}
-                        onInput={(e) =>
-                          updateEntry(
-                            i,
-                            "key",
-                            (e.target as HTMLInputElement).value,
-                          )}
-                        class={WIZARD_INPUT_CLASS}
-                        placeholder="Key"
-                      />
-                      {errors.value[`entry_${i}_key`] && (
-                        <p class="mt-1 text-xs text-error">
-                          {errors.value[`entry_${i}_key`]}
-                        </p>
-                      )}
-                    </div>
-                    <div class="flex-1">
-                      <textarea
-                        value={entry.value}
-                        onInput={(e) =>
-                          updateEntry(
-                            i,
-                            "value",
-                            (e.target as HTMLTextAreaElement).value,
-                          )}
-                        class={WIZARD_INPUT_CLASS + " min-h-[38px] resize-y"}
-                        placeholder="Value"
-                        rows={1}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        removeEntry(i)}
-                      class="mt-1 rounded p-2 text-text-muted hover:bg-danger-dim hover:text-error"
-                      title="Remove entry"
-                    >
-                      <svg
-                        class="h-4 w-4"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width={2}
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-              {errors.value.data && (
-                <p class="mt-1 text-xs text-error">{errors.value.data}</p>
-              )}
-              <button
-                type="button"
-                onClick={addEntry}
-                class="mt-2 text-sm text-brand hover:text-brand/80"
-              >
-                + Add entry
-              </button>
-            </div>
-          </div>
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/config/configmaps"
-          />
-        )}
-      </div>
-
+          <rect x="3" y="3" width="14" height="14" rx="2" />
+          <path d="M7 7h6M7 10h6M7 13h4" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={currentStep.value === 0 ? goNext : close}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
+      yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
+    >
       {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-end">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "18px",
+            maxWidth: "480px",
+          }}
+        >
+          {/* Name */}
+          <div>
+            <label
+              style={{
+                display: "block",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                marginBottom: "5px",
+              }}
+            >
+              Name <span style={{ color: "var(--error)" }}>*</span>
+            </label>
+            <input
+              type="text"
+              value={f.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class={WIZARD_INPUT_CLASS}
+              placeholder="e.g. my-config"
+            />
+            {errors.value.name && (
+              <p
+                style={{
+                  marginTop: "4px",
+                  fontSize: "11px",
+                  color: "var(--error)",
+                }}
+              >
+                {errors.value.name}
+              </p>
+            )}
+          </div>
+
+          {/* Namespace */}
+          <div>
+            <label
+              style={{
+                display: "block",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                marginBottom: "5px",
+              }}
+            >
+              Namespace <span style={{ color: "var(--error)" }}>*</span>
+            </label>
+            <select
+              value={f.namespace}
+              onChange={(e) =>
+                updateField(
+                  "namespace",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              {namespaces.value.map((ns) => (
+                <option key={ns} value={ns}>{ns}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Data entries */}
+          <div>
+            <label
+              style={{
+                display: "block",
+                fontSize: "12.5px",
+                fontWeight: 600,
+                color: "var(--text-secondary)",
+                marginBottom: "8px",
+              }}
+            >
+              Data
+            </label>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+            >
+              {f.entries.map((entry, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    gap: "8px",
+                    alignItems: "flex-start",
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <input
+                      type="text"
+                      value={entry.key}
+                      onInput={(e) =>
+                        updateEntry(
+                          i,
+                          "key",
+                          (e.target as HTMLInputElement).value,
+                        )}
+                      class={WIZARD_INPUT_CLASS}
+                      placeholder="Key"
+                    />
+                    {errors.value[`entry_${i}_key`] && (
+                      <p
+                        style={{
+                          marginTop: "3px",
+                          fontSize: "10px",
+                          color: "var(--error)",
+                        }}
+                      >
+                        {errors.value[`entry_${i}_key`]}
+                      </p>
+                    )}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <textarea
+                      value={entry.value}
+                      onInput={(e) =>
+                        updateEntry(
+                          i,
+                          "value",
+                          (e.target as HTMLTextAreaElement).value,
+                        )}
+                      class={WIZARD_INPUT_CLASS}
+                      placeholder="Value"
+                      rows={1}
+                      style={{ minHeight: "36px", resize: "vertical" }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeEntry(i)}
+                    style={{
+                      marginTop: "2px",
+                      padding: "6px",
+                      borderRadius: "6px",
+                      border: "none",
+                      cursor: "pointer",
+                      background: "transparent",
+                      color: "var(--text-muted)",
+                      flexShrink: 0,
+                    }}
+                    title="Remove entry"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      fill="none"
+                      viewBox="0 0 20 20"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                    >
+                      <path d="M5 5l10 10M15 5L5 15" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+            </div>
+            {errors.value.data && (
+              <p
+                style={{
+                  marginTop: "6px",
+                  fontSize: "11px",
+                  color: "var(--error)",
+                }}
+              >
+                {errors.value.data}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={addEntry}
+              style={{
+                marginTop: "10px",
+                fontSize: "12.5px",
+                color: "var(--accent)",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                fontWeight: 600,
+              }}
+            >
+              + Add entry
+            </button>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/config/configmaps"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

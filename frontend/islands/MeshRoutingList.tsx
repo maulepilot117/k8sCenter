@@ -7,6 +7,7 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { KindBadge, MeshBadge } from "@/components/ui/MeshBadges.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import type { RoutingResponse, TrafficRoute } from "@/lib/mesh-types.ts";
 
 const PAGE_SIZE = 100;
@@ -98,9 +99,25 @@ export default function MeshRoutingList() {
   const errorKeys = Object.keys(errors.value);
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-1">
-        <h1 class="text-2xl font-bold text-text-primary">Mesh Routing</h1>
+    <div style={{ padding: "24px" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: "4px",
+        }}
+      >
+        <h1
+          style={{
+            fontSize: "24px",
+            fontWeight: 700,
+            color: "var(--text-primary)",
+            margin: 0,
+          }}
+        >
+          Mesh Routing
+        </h1>
         {!loading.value && (
           <Button
             type="button"
@@ -112,7 +129,14 @@ export default function MeshRoutingList() {
           </Button>
         )}
       </div>
-      <p class="text-sm text-text-muted mb-6">
+      <p
+        style={{
+          fontSize: "13px",
+          color: "var(--text-muted)",
+          marginTop: "4px",
+          marginBottom: "24px",
+        }}
+      >
         Traffic-routing resources across Istio and Linkerd.
       </p>
 
@@ -123,26 +147,39 @@ export default function MeshRoutingList() {
           failures (`istio/VirtualService`, etc.) render as errors. */
       }
       {!loading.value && errorKeys.length > 0 && (
-        <div class="mb-4 flex flex-col gap-2">
+        <div
+          style={{
+            marginBottom: "16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+          }}
+        >
           {errorKeys.map((key) => {
             const isWarn = WARN_KEYS.has(key);
-            const color = isWarn ? "var(--warning)" : "var(--danger)";
+            const color = isWarn ? "var(--warning)" : "var(--error)";
             return (
               <div
                 key={key}
-                class="rounded-lg px-4 py-3 text-sm flex items-start gap-3"
                 style={{
+                  borderRadius: "9px",
+                  padding: "12px 16px",
+                  fontSize: "13px",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "12px",
                   backgroundColor:
                     `color-mix(in srgb, ${color} 12%, transparent)`,
                   border:
                     `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
                 }}
               >
-                <span class="font-medium shrink-0" style={{ color }}>
+                <span style={{ color, fontWeight: 600, flexShrink: 0 }}>
                   {isWarn ? "Notice" : "Error"}
                 </span>
-                <span class="text-text-primary">
-                  <span class="font-medium">{key}:</span> {errors.value[key]}
+                <span style={{ color: "var(--text-primary)" }}>
+                  <span style={{ fontWeight: 600 }}>{key}:</span>{" "}
+                  {errors.value[key]}
                 </span>
               </div>
             );
@@ -152,7 +189,14 @@ export default function MeshRoutingList() {
 
       {/* Summary count strip */}
       {!loading.value && !error.value && routes.value.length > 0 && (
-        <div class="mb-4 flex flex-wrap gap-3">
+        <div
+          style={{
+            marginBottom: "16px",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "12px",
+          }}
+        >
           <SummaryChip label="Istio" count={istioCount} />
           <SummaryChip label="Linkerd" count={linkerdCount} />
           <SummaryChip label="Total" count={totalCount} />
@@ -160,8 +204,16 @@ export default function MeshRoutingList() {
       )}
 
       {/* Filter row */}
-      <div class="mb-4 flex flex-wrap items-center gap-4">
-        <div class="flex-1 max-w-xs">
+      <div
+        style={{
+          marginBottom: "16px",
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "16px",
+        }}
+      >
+        <div style={{ flex: 1, maxWidth: "320px" }}>
           <SearchBar
             value={search.value}
             onInput={(v) => {
@@ -172,7 +224,15 @@ export default function MeshRoutingList() {
           />
         </div>
         <select
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            background: "var(--bg-surface)",
+            padding: "6px 12px",
+            fontSize: "13px",
+            color: "var(--text-primary)",
+            fontFamily: "inherit",
+          }}
           value={filterMesh.value}
           onChange={(e) => {
             filterMesh.value = (e.target as HTMLSelectElement).value as
@@ -188,7 +248,16 @@ export default function MeshRoutingList() {
         </select>
         <input
           type="text"
-          class="rounded border border-border-primary px-2 py-1.5 text-sm bg-bg-base text-text-primary w-36"
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            background: "var(--bg-surface)",
+            padding: "6px 12px",
+            fontSize: "13px",
+            color: "var(--text-primary)",
+            fontFamily: "inherit",
+            width: "144px",
+          }}
           placeholder="Namespace..."
           value={filterNamespace.value}
           onInput={(e) => {
@@ -196,46 +265,135 @@ export default function MeshRoutingList() {
             page.value = 1;
           }}
         />
-        <span class="text-xs text-text-muted">
+        <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
           {filtered.length} of {totalCount} routes
         </span>
       </div>
 
       {loading.value && (
-        <div class="flex justify-center py-12">
-          <Spinner class="text-brand" />
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "48px 0",
+          }}
+        >
+          <Spinner />
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p
+          style={{ fontSize: "13px", color: "var(--error)", padding: "16px 0" }}
+        >
+          {error.value}
+        </p>
+      )}
 
       {/* Table */}
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
+        <div
+          style={{
+            borderRadius: "9px",
+            border: "1px solid var(--border-primary)",
+            overflowX: "auto",
+          }}
+        >
+          <table
+            style={{
+              width: "100%",
+              fontSize: "13px",
+              borderCollapse: "collapse",
+            }}
+          >
             <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+              <tr
+                style={{
+                  borderBottom: "1px solid var(--border-primary)",
+                  background: "var(--bg-surface)",
+                }}
+              >
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Name
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Mesh
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Kind
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Namespace
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Hosts
                 </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                <th
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.07em",
+                    color: "var(--text-muted)",
+                    padding: "10px 12px",
+                    textAlign: "left",
+                  }}
+                >
                   Destinations
                 </th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-border-subtle">
+            <tbody>
               {displayed.map((r) => {
                 const hosts = r.hosts ?? [];
                 const hostsDisplay = hosts.length > 2
@@ -243,33 +401,12 @@ export default function MeshRoutingList() {
                   : hosts.join(", ") || "—";
                 const destCount = (r.destinations ?? []).length;
                 return (
-                  <tr
+                  <RoutingRow
                     key={r.id}
-                    class="hover:bg-hover/30 cursor-pointer"
-                    onClick={() => {
-                      globalThis.location.href = "/networking/mesh/routing/" +
-                        encodeURIComponent(r.id);
-                    }}
-                  >
-                    <td class="px-3 py-2">
-                      <div class="font-medium text-text-primary">{r.name}</div>
-                    </td>
-                    <td class="px-3 py-2">
-                      <MeshBadge mesh={r.mesh} />
-                    </td>
-                    <td class="px-3 py-2">
-                      <KindBadge kind={r.kind} />
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {r.namespace ?? "—"}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs max-w-[220px] truncate">
-                      {hostsDisplay}
-                    </td>
-                    <td class="px-3 py-2 text-text-secondary text-xs">
-                      {destCount}
-                    </td>
-                  </tr>
+                    r={r}
+                    hostsDisplay={hostsDisplay}
+                    destCount={destCount}
+                  />
                 );
               })}
             </tbody>
@@ -279,11 +416,24 @@ export default function MeshRoutingList() {
 
       {/* Pagination */}
       {!loading.value && !error.value && filtered.length > PAGE_SIZE && (
-        <div class="mt-4 flex items-center justify-between">
-          <p class="text-sm text-text-muted">
+        <div
+          style={{
+            marginTop: "16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <p
+            style={{
+              fontSize: "13px",
+              color: "var(--text-muted)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
             {filtered.length} routes &middot; Page {currentPage} of {totalPages}
           </p>
-          <div class="flex gap-2">
+          <div style={{ display: "flex", gap: "8px" }}>
             <Button
               type="button"
               variant="ghost"
@@ -310,22 +460,121 @@ export default function MeshRoutingList() {
 
       {/* Empty states */}
       {!loading.value && !error.value && filtered.length === 0 && (
-        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
-          <p class="text-text-muted">
-            {routes.value.length === 0
-              ? "No routes found. Routes will appear once a mesh is installed and resources exist."
-              : "No routes match your filters."}
-          </p>
-        </div>
+        <WidgetShell>
+          <div style={{ textAlign: "center", padding: "48px 24px" }}>
+            <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+              {routes.value.length === 0
+                ? "No routes found. Routes will appear once a mesh is installed and resources exist."
+                : "No routes match your filters."}
+            </p>
+          </div>
+        </WidgetShell>
       )}
     </div>
   );
 }
 
+/** Individual routing row with hover state via mouse events. */
+function RoutingRow(
+  { r, hostsDisplay, destCount }: {
+    r: TrafficRoute;
+    hostsDisplay: string;
+    destCount: number;
+  },
+) {
+  const hovered = useSignal(false);
+
+  return (
+    <tr
+      style={{
+        borderBottom: "1px solid var(--border-primary)",
+        cursor: "pointer",
+        background: hovered.value
+          ? "color-mix(in srgb, var(--accent) 5%, transparent)"
+          : "transparent",
+      }}
+      onMouseEnter={() => {
+        hovered.value = true;
+      }}
+      onMouseLeave={() => {
+        hovered.value = false;
+      }}
+      onClick={() => {
+        globalThis.location.href = "/networking/mesh/routing/" +
+          encodeURIComponent(r.id);
+      }}
+    >
+      <td style={{ padding: "10px 12px" }}>
+        <div style={{ fontWeight: 500, color: "var(--text-primary)" }}>
+          {r.name}
+        </div>
+      </td>
+      <td style={{ padding: "10px 12px" }}>
+        <MeshBadge mesh={r.mesh} />
+      </td>
+      <td style={{ padding: "10px 12px" }}>
+        <KindBadge kind={r.kind} />
+      </td>
+      <td
+        style={{
+          padding: "10px 12px",
+          color: "var(--text-secondary)",
+          fontSize: "12px",
+        }}
+      >
+        {r.namespace ?? "—"}
+      </td>
+      <td
+        style={{
+          padding: "10px 12px",
+          color: "var(--text-secondary)",
+          fontSize: "12px",
+          maxWidth: "220px",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {hostsDisplay}
+      </td>
+      <td
+        style={{
+          padding: "10px 12px",
+          color: "var(--text-secondary)",
+          fontSize: "12px",
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {destCount}
+      </td>
+    </tr>
+  );
+}
+
 function SummaryChip({ label, count }: { label: string; count: number }) {
   return (
-    <span class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-text-secondary bg-bg-elevated border border-border-primary">
-      <span class="font-bold text-text-primary">{count}</span>
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "6px",
+        padding: "6px 12px",
+        borderRadius: "9px",
+        border: "1px solid var(--border-primary)",
+        background: "transparent",
+        color: "var(--text-muted)",
+        fontSize: "13px",
+      }}
+    >
+      <span
+        style={{
+          color: "var(--text-primary)",
+          fontWeight: 700,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {count}
+      </span>
       {label}
     </span>
   );

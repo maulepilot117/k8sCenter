@@ -6,7 +6,7 @@ import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
@@ -19,7 +19,6 @@ import { KubernetesForm } from "@/components/wizard/secretstore/KubernetesForm.t
 import { DopplerForm } from "@/components/wizard/secretstore/DopplerForm.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { useRef } from "preact/hooks";
 import {
   type ProviderFormProps,
@@ -60,22 +59,23 @@ export interface SecretStoreWizardForm {
 
 export interface SecretStoreWizardProps {
   scope: "namespaced" | "cluster";
+  onClose?: () => void;
 }
 
 // Steps shown when no per-provider form ships yet (or the user picks a
 // "coming soon" provider). The Configure step is interleaved at index 2
 // only when the selected provider's form is ready.
-const STEPS_WITHOUT_CONFIGURE = [
-  { title: "Identity" },
-  { title: "Provider" },
-  { title: "Review" },
+const STEPS_WITHOUT_CONFIGURE: WizardStep[] = [
+  { label: "Identity", sub: "Name & namespace" },
+  { label: "Provider", sub: "Backend type" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
-const STEPS_WITH_CONFIGURE = [
-  { title: "Identity" },
-  { title: "Provider" },
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS_WITH_CONFIGURE: WizardStep[] = [
+  { label: "Identity", sub: "Name & namespace" },
+  { label: "Provider", sub: "Backend type" },
+  { label: "Configure", sub: "Provider settings" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 /** Resolve the active step list based on the currently-selected provider.
@@ -84,7 +84,7 @@ const STEPS_WITH_CONFIGURE = [
  *  the Configure step automatically. */
 function stepsFor(
   provider: SecretStoreProvider | "",
-): typeof STEPS_WITHOUT_CONFIGURE {
+): WizardStep[] {
   if (provider && READY_SECRET_STORE_PROVIDERS.has(provider)) {
     return STEPS_WITH_CONFIGURE;
   }
@@ -101,7 +101,10 @@ function initialForm(scope: "namespaced" | "cluster"): SecretStoreWizardForm {
   };
 }
 
-export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
+export default function SecretStoreWizard(
+  { scope, onClose }: SecretStoreWizardProps,
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<SecretStoreWizardForm>(initialForm(scope));
   const errors = useSignal<Record<string, string>>({});
@@ -322,7 +325,7 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
               // Navigate back to Configure step so field errors are visible.
               const steps = stepsFor(form.value.provider);
               const configureIdx = steps.findIndex((s) =>
-                s.title === "Configure"
+                s.label === "Configure"
               );
               if (configureIdx >= 0) {
                 currentStep.value = configureIdx;
@@ -359,13 +362,13 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
     if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
   }
 
-  if (!IS_BROWSER) return <div class="p-6">Loading wizard...</div>;
+  if (!IS_BROWSER) return null;
 
   // Resolve step list once per render; all step-count references use this
   // local rather than re-calling stepsFor(form.value.provider) six times.
   const steps = stepsFor(form.value.provider);
 
-  const heading = scope === "cluster"
+  const title = scope === "cluster"
     ? "Create ClusterSecretStore"
     : "Create SecretStore";
 
@@ -380,122 +383,118 @@ export default function SecretStoreWizard({ scope }: SecretStoreWizardProps) {
     ? PROVIDER_FORMS[form.value.provider]
     : undefined;
 
+  const isLastStep = currentStep.value === steps.length - 1;
+
+  const storeIcon = (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <ellipse cx="12" cy="5" rx="9" ry="3" />
+      <path d="M21 12c0 1.66-4.03 3-9 3S3 13.66 3 12" />
+      <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+    </svg>
+  );
+
   return (
-    <div class="p-6 max-w-4xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">{heading}</h1>
-        <a
-          href={detailBasePath}
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={steps}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="space-y-5">
-            <div class="grid grid-cols-2 gap-4">
-              <Input
-                id="store-name"
-                label="Name"
-                required
-                value={form.value.name}
-                onInput={(e) =>
-                  update("name", (e.target as HTMLInputElement).value)}
-                placeholder={scope === "cluster"
-                  ? "shared-vault-store"
-                  : "vault-store"}
-                error={errors.value.name}
-              />
-              {scope === "namespaced" && (
-                <NamespaceSelect
-                  value={form.value.namespace}
-                  namespaces={namespaces.value}
-                  error={errors.value.namespace}
-                  onChange={(ns) => update("namespace", ns)}
-                />
-              )}
-            </div>
+    <WizardShell
+      title={title}
+      icon={storeIcon}
+      subtitle={`Step ${currentStep.value + 1} of ${steps.length}`}
+      steps={steps}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={async () => {
+        if (isLastStep) {
+          close();
+        } else {
+          await goNext();
+        }
+      }}
+      nextLabel={isLastStep ? "Close" : "Continue"}
+      yaml={isLastStep ? (previewYaml.value || undefined) : undefined}
+    >
+      {currentStep.value === 0 && (
+        <div class="space-y-5">
+          <div class="grid grid-cols-2 gap-4">
             <Input
-              id="store-refresh"
-              label="Refresh interval"
-              value={form.value.refreshInterval}
+              id="store-name"
+              label="Name"
+              required
+              value={form.value.name}
               onInput={(e) =>
-                update(
-                  "refreshInterval",
-                  (e.target as HTMLInputElement).value,
-                )}
-              placeholder="1h"
-              description="Go duration. Leave blank to use ESO's default. Use `0` to disable polling."
-              error={errors.value.refreshInterval}
+                update("name", (e.target as HTMLInputElement).value)}
+              placeholder={scope === "cluster"
+                ? "shared-vault-store"
+                : "vault-store"}
+              error={errors.value.name}
             />
-          </div>
-        )}
-
-        {currentStep.value === 1 && (
-          <div class="space-y-3">
-            <SecretStoreProviderPickerStep
-              selected={form.value.provider}
-              onSelect={(p) => update("provider", p)}
-            />
-            {errors.value.provider && (
-              <p class="text-sm text-danger">{errors.value.provider}</p>
+            {scope === "namespaced" && (
+              <NamespaceSelect
+                value={form.value.namespace}
+                namespaces={namespaces.value}
+                error={errors.value.namespace}
+                onChange={(ns) => update("namespace", ns)}
+              />
             )}
           </div>
-        )}
-
-        {currentStep.value === 2 && ProviderForm && (
-          <ProviderForm
-            spec={form.value.providerSpec}
-            errors={errors.value}
-            onUpdateSpec={(spec) => update("providerSpec", spec)}
+          <Input
+            id="store-refresh"
+            label="Refresh interval"
+            value={form.value.refreshInterval}
+            onInput={(e) =>
+              update(
+                "refreshInterval",
+                (e.target as HTMLInputElement).value,
+              )}
+            placeholder="1h"
+            description="Go duration. Leave blank to use ESO's default. Use `0` to disable polling."
+            error={errors.value.refreshInterval}
           />
-        )}
-
-        {currentStep.value === steps.length - 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath={detailBasePath}
-          />
-        )}
-      </div>
-
-      {currentStep.value < steps.length - 1 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === steps.length - 2 ? "Preview YAML" : "Next"}
-          </Button>
         </div>
       )}
 
-      {currentStep.value === steps.length - 1 &&
-        !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>Back</Button>
+      {currentStep.value === 1 && (
+        <div class="space-y-3">
+          <SecretStoreProviderPickerStep
+            selected={form.value.provider}
+            onSelect={(p) => update("provider", p)}
+          />
+          {errors.value.provider && (
+            <p class="text-sm text-danger">{errors.value.provider}</p>
+          )}
         </div>
       )}
-    </div>
+
+      {currentStep.value === 2 && ProviderForm && (
+        <ProviderForm
+          spec={form.value.providerSpec}
+          errors={errors.value}
+          onUpdateSpec={(spec) => update("providerSpec", spec)}
+        />
+      )}
+
+      {isLastStep && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath={detailBasePath}
+        />
+      )}
+    </WizardShell>
   );
 }

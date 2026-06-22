@@ -18,8 +18,9 @@ body {
 
 /* ── Layout & typography tokens ── */
 :root {
-  --rail-width: 60px;
-  --topbar-height: 52px;
+  --rail-width: 64px;
+  --panel-width: 250px;
+  --topbar-height: 56px;
   --radius: 10px;
   --radius-sm: 6px;
   --radius-glass: 18px;
@@ -30,12 +31,8 @@ body {
      glass rather than flat frosting (Apple Liquid Glass cue). */
   --glass-saturate: 180%;
   --glass-brightness: 1.08;
-  /* Specular rim: bright top-left bevel → dark bottom-right edge gives the
-     "thick lens" illusion. Literals (not theme tokens) because they are an
-     effect, not a palette colour. */
-  --glass-rim-light: rgba(255, 255, 255, 0.22);
-  --glass-rim-soft: rgba(255, 255, 255, 0.06);
-  --glass-rim-dark: rgba(0, 0, 0, 0.28);
+  /* Specular rim vars (--glass-rim-light/soft/dark) are theme tokens —
+     set per-theme in themes.generated.css, imported below. */
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 

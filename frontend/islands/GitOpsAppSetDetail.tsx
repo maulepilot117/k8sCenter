@@ -16,12 +16,9 @@ import type {
   AppSetDetail,
   NormalizedApp,
 } from "@/lib/gitops-types.ts";
-
-const STATUS_COLORS: Record<string, string> = {
-  healthy: "var(--success)",
-  error: "var(--danger)",
-  progressing: "var(--warning)",
-};
+import DetailShell from "@/components/k8s/DetailShell.tsx";
+import GlassCard from "@/components/ui/GlassCard.tsx";
+import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 
 const GENERATOR_TYPES = [
   "list",
@@ -43,7 +40,41 @@ function detectGeneratorType(gen: Record<string, unknown>): string {
   return keys.length > 0 ? keys[0] : "unknown";
 }
 
+function statusToTone(status: string): Tone {
+  switch (status.toLowerCase()) {
+    case "healthy":
+      return "ok";
+    case "error":
+      return "crit";
+    case "progressing":
+      return "info";
+    default:
+      return "neutral";
+  }
+}
+
 const APP_CAP = 200;
+
+// ApplicationSet icon SVG
+function AppSetIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.5"
+      class="w-5 h-5"
+      style={{ color: "var(--accent)" }}
+      aria-hidden="true"
+    >
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2v-4M9 21H5a2 2 0 0 1-2-2v-4m0 0h18"
+      />
+    </svg>
+  );
+}
 
 export default function GitOpsAppSetDetail({ id }: { id: string }) {
   const detail = useSignal<AppSetDetail | null>(null);
@@ -52,7 +83,7 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   const refreshing = useSignal(false);
   const actionInFlight = useSignal(false);
   const expandedGenerators = useSignal<Record<number, boolean>>({});
-  const conditionsExpanded = useSignal(false);
+  const activeTab = useSignal("generators");
 
   const deleteConfirmOpen = useSignal(false);
 
@@ -136,12 +167,6 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   if (error.value || !detail.value) {
     return (
       <div class="p-6">
-        <a
-          href="/gitops/applicationsets"
-          class="text-sm text-brand hover:underline mb-4 inline-block"
-        >
-          &larr; Back to ApplicationSets
-        </a>
         <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
           <p class="text-text-muted mb-4">
             {error.value ?? "ApplicationSet not found"}
@@ -155,8 +180,6 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
   }
 
   const { appSet, generators, conditions, applications } = detail.value;
-  const statusColor = STATUS_COLORS[appSet.status.toLowerCase()] ??
-    "var(--text-secondary)";
   const appList = applications ?? [];
   const isTruncated = appList.length > APP_CAP;
   const displayedApps = isTruncated ? appList.slice(0, APP_CAP) : appList;
@@ -164,76 +187,68 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
     (c) => c.status === "True" && c.type.toLowerCase().includes("error"),
   );
 
-  return (
-    <div class="p-6">
-      <a
-        href="/gitops/applicationsets"
-        class="text-sm text-brand hover:underline mb-4 inline-block"
+  const tabs = [
+    { id: "generators", label: `Generators (${generators.length})` },
+    { id: "template", label: "Template" },
+    { id: "applications", label: `Applications (${appList.length})` },
+    ...(conditions && conditions.length > 0
+      ? [{ id: "conditions", label: `Conditions (${conditions.length})` }]
+      : []),
+  ];
+
+  const actions = (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={handleRefreshAction}
+        disabled={actionInFlight.value}
       >
-        &larr; Back to ApplicationSets
+        Refresh
+      </Button>
+      <a href="/tools/yaml-apply">
+        <Button type="button" variant="ghost">Edit</Button>
       </a>
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={() => {
+          deleteConfirmOpen.value = true;
+        }}
+        disabled={actionInFlight.value}
+      >
+        <span style={{ color: "var(--error)" }}>Delete</span>
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={handleRefresh}
+        disabled={refreshing.value}
+      >
+        {refreshing.value ? "Refreshing..." : "Reload"}
+      </Button>
+    </>
+  );
 
-      {/* Header */}
-      <div class="flex items-center justify-between mb-6">
-        <div class="flex items-center gap-3 flex-wrap">
-          <h1 class="text-2xl font-bold text-text-primary">{appSet.name}</h1>
-          <span class="text-sm text-text-muted">{appSet.namespace}</span>
-          <span
-            class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
-            style={{
-              color: statusColor,
-              backgroundColor:
-                `color-mix(in srgb, ${statusColor} 15%, transparent)`,
-            }}
-          >
-            {appSet.status}
-          </span>
-        </div>
-        <div class="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={handleRefreshAction}
-            disabled={actionInFlight.value}
-          >
-            Refresh
-          </Button>
-          <a href="/tools/yaml-apply">
-            <Button type="button" variant="ghost">Edit</Button>
-          </a>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => {
-              deleteConfirmOpen.value = true;
-            }}
-            disabled={actionInFlight.value}
-          >
-            <span class="text-danger">Delete</span>
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={handleRefresh}
-            disabled={refreshing.value}
-          >
-            {refreshing.value ? "Refreshing..." : "Reload"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Generators panel */}
-      <div class="mb-6">
-        <h2 class="text-lg font-semibold text-text-primary mb-3">
-          Generators
-          <span class="text-sm font-normal text-text-muted ml-2">
-            ({generators.length})
-          </span>
-        </h2>
-        {generators.length > 0
-          ? (
-            <div class="space-y-3">
-              {generators.map((gen, idx) => {
+  return (
+    <>
+      <DetailShell
+        icon={<AppSetIcon />}
+        title={appSet.name}
+        subtitle={`ApplicationSet · ${appSet.namespace}`}
+        status={{ label: appSet.status, tone: statusToTone(appSet.status) }}
+        actions={actions}
+        tabs={tabs}
+        active={activeTab.value}
+        onTab={(id) => {
+          activeTab.value = id;
+        }}
+      >
+        {/* Generators tab */}
+        {activeTab.value === "generators" && (
+          <div class="space-y-3">
+            {generators.length > 0
+              ? generators.map((gen, idx) => {
                 const genType = detectGeneratorType(gen);
                 const isExpanded = !!expandedGenerators.value[idx];
                 return (
@@ -267,185 +282,176 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                     )}
                   </div>
                 );
-              })}
-            </div>
-          )
-          : (
-            <div class="text-center py-6 rounded-lg border border-border-primary bg-bg-elevated">
-              <p class="text-text-muted">No generators defined.</p>
-            </div>
-          )}
-      </div>
-
-      {/* Template panel */}
-      <div class="rounded-lg border border-border-primary bg-bg-elevated p-4 mb-6">
-        <h2 class="text-sm font-medium text-text-muted mb-3">Template</h2>
-        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-          {appSet.templateSource.repoURL && (
-            <div>
-              <dt class="text-text-muted">Repository</dt>
-              <dd class="text-text-primary">
-                {/^https?:\/\//i.test(appSet.templateSource.repoURL)
-                  ? (
-                    <a
-                      href={appSet.templateSource.repoURL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="text-brand hover:underline break-all"
-                    >
-                      {appSet.templateSource.repoURL}
-                    </a>
-                  )
-                  : (
-                    <span class="break-all">
-                      {appSet.templateSource.repoURL}
-                    </span>
-                  )}
-              </dd>
-            </div>
-          )}
-          {appSet.templateSource.path && (
-            <div>
-              <dt class="text-text-muted">Path</dt>
-              <dd class="font-mono text-text-primary">
-                {appSet.templateSource.path}
-              </dd>
-            </div>
-          )}
-          {appSet.templateSource.targetRevision && (
-            <div>
-              <dt class="text-text-muted">Target Revision</dt>
-              <dd class="font-mono text-text-primary">
-                {appSet.templateSource.targetRevision}
-              </dd>
-            </div>
-          )}
-          {appSet.templateSource.chartName && (
-            <div>
-              <dt class="text-text-muted">Chart</dt>
-              <dd class="text-text-primary">
-                {appSet.templateSource.chartName}
-                {appSet.templateSource.chartVersion
-                  ? ` v${appSet.templateSource.chartVersion}`
-                  : ""}
-              </dd>
-            </div>
-          )}
-          <div>
-            <dt class="text-text-muted">Destination</dt>
-            <dd class="text-text-primary">
-              {appSet.templateDestination || "-"}
-            </dd>
+              })
+              : (
+                <div class="text-center py-6 rounded-lg border border-border-primary bg-bg-elevated">
+                  <p class="text-text-muted">No generators defined.</p>
+                </div>
+              )}
           </div>
-        </dl>
-      </div>
-
-      {/* Generated Applications table */}
-      <div class="mb-6">
-        <h2 class="text-lg font-semibold text-text-primary mb-3">
-          Generated Applications
-          <span class="text-sm font-normal text-text-muted ml-2">
-            ({appList.length})
-          </span>
-        </h2>
-        {isTruncated && (
-          <p class="text-xs text-warning mb-2">
-            Showing first {APP_CAP} of {appList.length} applications.
-          </p>
         )}
-        {displayedApps.length > 0
-          ? (
-            <div class="overflow-x-auto rounded-lg border border-border-primary">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="border-b border-border-primary bg-surface">
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Name
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Sync
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Health
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Revision
-                    </th>
-                    <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                      Dest Namespace
-                    </th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-border-subtle">
-                  {displayedApps.map((app: NormalizedApp) => (
-                    <tr
-                      key={app.id}
-                      class="hover:bg-hover/30 cursor-pointer"
-                      onClick={() => {
-                        globalThis.location.href = "/gitops/applications/" +
-                          encodeURIComponent(app.id);
-                      }}
-                    >
-                      <td class="px-3 py-2">
-                        <span class="text-brand hover:underline font-medium">
-                          {app.name}
-                        </span>
-                      </td>
-                      <td class="px-3 py-2">
-                        <SyncStatusBadge status={app.syncStatus} />
-                      </td>
-                      <td class="px-3 py-2">
-                        <HealthStatusBadge status={app.healthStatus} />
-                      </td>
-                      <td class="px-3 py-2 font-mono text-xs text-text-secondary">
-                        {app.currentRevision
-                          ? app.currentRevision.slice(0, 7)
-                          : "-"}
-                      </td>
-                      <td class="px-3 py-2 text-text-secondary text-xs">
-                        {app.destinationNamespace || "-"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-          : (
-            <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
-              <p class="text-text-muted">
-                No generated applications found.
-              </p>
-            </div>
-          )}
-      </div>
 
-      {/* Conditions panel */}
-      {conditions && conditions.length > 0 && (
-        <div class="mb-6">
-          <button
-            type="button"
-            class="flex items-center gap-2 mb-3"
-            onClick={() => {
-              conditionsExpanded.value = !conditionsExpanded.value;
-            }}
-          >
-            <h2 class="text-lg font-semibold text-text-primary">
-              Conditions
-              <span class="text-sm font-normal text-text-muted ml-2">
-                ({conditions.length})
-              </span>
+        {/* Template tab */}
+        {activeTab.value === "template" && (
+          <GlassCard>
+            <h2
+              class="text-sm font-medium mb-3"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Template
             </h2>
+            <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              {appSet.templateSource.repoURL && (
+                <div>
+                  <dt class="text-text-muted">Repository</dt>
+                  <dd class="text-text-primary">
+                    {/^https?:\/\//i.test(appSet.templateSource.repoURL)
+                      ? (
+                        <a
+                          href={appSet.templateSource.repoURL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="text-brand hover:underline break-all"
+                        >
+                          {appSet.templateSource.repoURL}
+                        </a>
+                      )
+                      : (
+                        <span class="break-all">
+                          {appSet.templateSource.repoURL}
+                        </span>
+                      )}
+                  </dd>
+                </div>
+              )}
+              {appSet.templateSource.path && (
+                <div>
+                  <dt class="text-text-muted">Path</dt>
+                  <dd class="font-mono text-text-primary">
+                    {appSet.templateSource.path}
+                  </dd>
+                </div>
+              )}
+              {appSet.templateSource.targetRevision && (
+                <div>
+                  <dt class="text-text-muted">Target Revision</dt>
+                  <dd class="font-mono text-text-primary">
+                    {appSet.templateSource.targetRevision}
+                  </dd>
+                </div>
+              )}
+              {appSet.templateSource.chartName && (
+                <div>
+                  <dt class="text-text-muted">Chart</dt>
+                  <dd class="text-text-primary">
+                    {appSet.templateSource.chartName}
+                    {appSet.templateSource.chartVersion
+                      ? ` v${appSet.templateSource.chartVersion}`
+                      : ""}
+                  </dd>
+                </div>
+              )}
+              <div>
+                <dt class="text-text-muted">Destination</dt>
+                <dd class="text-text-primary">
+                  {appSet.templateDestination || "-"}
+                </dd>
+              </div>
+            </dl>
+          </GlassCard>
+        )}
+
+        {/* Applications tab */}
+        {activeTab.value === "applications" && (
+          <div>
+            {isTruncated && (
+              <p class="text-xs mb-2" style={{ color: "var(--warning)" }}>
+                Showing first {APP_CAP} of {appList.length} applications.
+              </p>
+            )}
+            {displayedApps.length > 0
+              ? (
+                <div class="overflow-x-auto rounded-lg border border-border-primary">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="border-b border-border-primary bg-surface">
+                        <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          Name
+                        </th>
+                        <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          Sync
+                        </th>
+                        <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          Health
+                        </th>
+                        <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          Revision
+                        </th>
+                        <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                          Dest Namespace
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody class="divide-y divide-border-subtle">
+                      {displayedApps.map((app: NormalizedApp) => (
+                        <tr
+                          key={app.id}
+                          class="hover:bg-hover/30 cursor-pointer"
+                          onClick={() => {
+                            globalThis.location.href = "/gitops/applications/" +
+                              encodeURIComponent(app.id);
+                          }}
+                        >
+                          <td class="px-3 py-2">
+                            <span class="text-brand hover:underline font-medium">
+                              {app.name}
+                            </span>
+                          </td>
+                          <td class="px-3 py-2">
+                            <SyncStatusBadge status={app.syncStatus} />
+                          </td>
+                          <td class="px-3 py-2">
+                            <HealthStatusBadge status={app.healthStatus} />
+                          </td>
+                          <td class="px-3 py-2 font-mono text-xs text-text-secondary">
+                            {app.currentRevision
+                              ? app.currentRevision.slice(0, 7)
+                              : "-"}
+                          </td>
+                          <td class="px-3 py-2 text-text-secondary text-xs">
+                            {app.destinationNamespace || "-"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+              : (
+                <div class="text-center py-8 rounded-lg border border-border-primary bg-bg-elevated">
+                  <p class="text-text-muted">
+                    No generated applications found.
+                  </p>
+                </div>
+              )}
+          </div>
+        )}
+
+        {/* Conditions tab */}
+        {activeTab.value === "conditions" && conditions &&
+          conditions.length > 0 && (
+          <div>
             {hasErrorConditions && (
-              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-danger bg-danger/10">
+              <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium mb-3"
+                style={{
+                  color: "var(--error)",
+                  background: "var(--error-dim)",
+                }}
+              >
                 errors
               </span>
             )}
-            <span class="text-text-muted text-xs">
-              {conditionsExpanded.value ? "Collapse" : "Expand"}
-            </span>
-          </button>
-          {conditionsExpanded.value && (
             <div class="overflow-x-auto rounded-lg border border-border-primary">
               <table class="w-full text-sm">
                 <thead>
@@ -471,16 +477,22 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                     return (
                       <tr key={`${c.type}-${i}`} class="hover:bg-hover/30">
                         <td
-                          class={`px-3 py-2 font-medium ${
-                            isError ? "text-danger" : "text-text-primary"
-                          }`}
+                          class="px-3 py-2 font-medium"
+                          style={{
+                            color: isError
+                              ? "var(--error)"
+                              : "var(--text-primary)",
+                          }}
                         >
                           {c.type}
                         </td>
                         <td
-                          class={`px-3 py-2 ${
-                            isError ? "text-danger" : "text-text-secondary"
-                          }`}
+                          class="px-3 py-2"
+                          style={{
+                            color: isError
+                              ? "var(--error)"
+                              : "var(--text-secondary)",
+                          }}
                         >
                           {c.status}
                         </td>
@@ -496,11 +508,11 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </DetailShell>
 
-      {/* Delete confirmation dialog */}
+      {/* Delete confirmation dialog — rendered outside DetailShell as a modal */}
       {deleteConfirmOpen.value && (
         <ConfirmDialog
           title={`Delete ${appSet.name}?`}
@@ -517,6 +529,6 @@ export default function GitOpsAppSetDetail({ id }: { id: string }) {
           }}
         />
       )}
-    </div>
+    </>
   );
 }

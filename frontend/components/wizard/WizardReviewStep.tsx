@@ -1,7 +1,8 @@
 import { useSignal } from "@preact/signals";
-import { useRef } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { MonacoEditor } from "@/components/ui/MonacoEditor.tsx";
 import { apiPostRaw } from "@/lib/api.ts";
+import { wizardBusy } from "@/lib/wizard-busy.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 
@@ -44,10 +45,17 @@ export function WizardReviewStep({
   const applyResult = useSignal<ApplyResponse | null>(null);
   const applyGuard = useRef(false);
 
+  // Reset the shared wizard-busy flag if this step unmounts mid-apply, so a
+  // stale `true` can never wedge the next wizard's close controls.
+  useEffect(() => () => {
+    wizardBusy.value = false;
+  }, []);
+
   const handleApply = async () => {
     if (!yaml.trim() || applyGuard.current) return;
     applyGuard.current = true;
     applying.value = true;
+    wizardBusy.value = true;
     applyError.value = null;
     applyResult.value = null;
 
@@ -64,6 +72,7 @@ export function WizardReviewStep({
         : "Failed to apply resource";
     } finally {
       applying.value = false;
+      wizardBusy.value = false;
       applyGuard.current = false;
     }
   };

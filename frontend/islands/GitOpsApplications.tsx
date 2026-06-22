@@ -7,7 +7,10 @@ import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
+import ResourceTable, { type Column } from "@/components/ui/ResourceTable.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import {
+  HEALTH_COLORS,
   HealthStatusBadge,
   SYNC_COLORS,
   SyncStatusBadge,
@@ -16,11 +19,34 @@ import {
 import type {
   AppListResponse,
   GitOpsStatus,
+  HealthStatus,
   NormalizedApp,
 } from "@/lib/gitops-types.ts";
 import { filterByNamespace, selectedNamespace } from "@/lib/namespace.ts";
 
 const PAGE_SIZE = 100;
+
+const HEALTH_DOT_STATUS: Record<
+  HealthStatus,
+  "success" | "error" | "info" | "neutral"
+> = {
+  healthy: "success",
+  degraded: "error",
+  progressing: "info",
+  suspended: "neutral",
+  unknown: "neutral",
+};
+
+const RT_COLUMNS: Column[] = [
+  { key: "name", label: "Name" },
+  { key: "tool", label: "Tool", width: "100px" },
+  { key: "sync", label: "Sync", width: "120px" },
+  { key: "health", label: "Health", width: "120px" },
+  { key: "source", label: "Source" },
+  { key: "revision", label: "Revision", width: "90px" },
+  { key: "destns", label: "Dest Namespace", width: "130px" },
+  { key: "resources", label: "Resources", width: "80px", align: "right" },
+];
 
 export default function GitOpsApplications() {
   const status = useSignal<GitOpsStatus | null>(null);
@@ -110,6 +136,7 @@ export default function GitOpsApplications() {
 
   return (
     <div class="p-6">
+      {/* Page header */}
       <div class="flex items-center justify-between mb-1">
         <div class="flex items-center gap-2">
           <h1 class="text-2xl font-bold text-text-primary">Applications</h1>
@@ -132,7 +159,8 @@ export default function GitOpsApplications() {
         )}
       </div>
       <p class="text-sm text-text-muted mb-6">
-        GitOps application management &mdash; Argo CD &amp; Flux.
+        {filtered.length} of {applications.value.length}{" "}
+        applications &mdash; Argo CD &amp; Flux.
       </p>
 
       {/* Summary counts */}
@@ -151,7 +179,7 @@ export default function GitOpsApplications() {
           <SummaryBadge
             label="Degraded"
             count={summary.value.degraded}
-            color="var(--danger)"
+            color={HEALTH_COLORS.degraded}
           />
           <SummaryBadge
             label="Progressing"
@@ -267,9 +295,6 @@ export default function GitOpsApplications() {
           <option value="progressing">Progressing</option>
           <option value="suspended">Suspended</option>
         </select>
-        <span class="text-xs text-text-muted">
-          {filtered.length} of {applications.value.length} applications
-        </span>
       </div>
 
       {loading.value && (
@@ -278,84 +303,68 @@ export default function GitOpsApplications() {
         </div>
       )}
 
-      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+      {error.value && (
+        <p class="text-sm py-4" style={{ color: "var(--error)" }}>
+          {error.value}
+        </p>
+      )}
 
       {!loading.value && !error.value && filtered.length > 0 && (
-        <div class="overflow-x-auto rounded-lg border border-border-primary">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-border-primary bg-surface">
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Name
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Tool
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Sync
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Health
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Source
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Revision
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Dest Namespace
-                </th>
-                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                  Resources
-                </th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-border-subtle">
-              {displayed.map((app) => (
-                <tr
-                  key={app.id}
-                  class="hover:bg-hover/30 cursor-pointer"
-                  onClick={() => {
-                    globalThis.location.href = "/gitops/applications/" +
-                      encodeURIComponent(app.id);
-                  }}
-                >
-                  <td class="px-3 py-2">
-                    <div class="font-medium text-text-primary">{app.name}</div>
-                    <div class="text-xs text-text-muted">{app.namespace}</div>
-                    <div class="text-xs text-text-muted">{app.kind}</div>
-                  </td>
-                  <td class="px-3 py-2">
-                    <ToolBadge tool={app.tool} />
-                  </td>
-                  <td class="px-3 py-2">
-                    <SyncStatusBadge status={app.syncStatus} />
-                  </td>
-                  <td class="px-3 py-2">
-                    <HealthStatusBadge status={app.healthStatus} />
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[200px]">
-                    {app.source.chartName
-                      ? app.source.chartName
-                      : app.source.repoURL ?? "-"}
-                  </td>
-                  <td class="px-3 py-2 font-mono text-xs text-text-secondary">
-                    {app.currentRevision
-                      ? app.currentRevision.slice(0, 7)
-                      : "-"}
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs">
-                    {app.destinationNamespace || "-"}
-                  </td>
-                  <td class="px-3 py-2 text-text-secondary text-xs">
-                    {app.managedResourceCount}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ResourceTable
+          columns={RT_COLUMNS}
+          rows={displayed.map((app) => ({
+            id: app.id,
+            cells: {
+              name: (
+                <div class="flex items-start gap-2">
+                  <div class="mt-0.5 shrink-0">
+                    <StatusDot
+                      status={HEALTH_DOT_STATUS[app.healthStatus] ?? "neutral"}
+                      size={8}
+                    />
+                  </div>
+                  <div>
+                    <div class="font-mono font-medium text-text-primary">
+                      {app.name}
+                    </div>
+                    <div class="text-xs text-text-muted">
+                      {app.namespace} &middot; {app.kind}
+                    </div>
+                  </div>
+                </div>
+              ),
+              tool: <ToolBadge tool={app.tool} />,
+              sync: <SyncStatusBadge status={app.syncStatus} />,
+              health: <HealthStatusBadge status={app.healthStatus} />,
+              source: (
+                <span class="text-xs text-text-secondary truncate block max-w-[200px]">
+                  {app.source.chartName
+                    ? app.source.chartName
+                    : app.source.repoURL ?? "-"}
+                </span>
+              ),
+              revision: (
+                <span class="font-mono text-xs text-text-secondary">
+                  {app.currentRevision ? app.currentRevision.slice(0, 7) : "-"}
+                </span>
+              ),
+              destns: (
+                <span class="text-xs text-text-secondary">
+                  {app.destinationNamespace || "-"}
+                </span>
+              ),
+              resources: (
+                <span class="text-xs text-text-secondary">
+                  {app.managedResourceCount}
+                </span>
+              ),
+            },
+            onClick: () => {
+              globalThis.location.href = "/gitops/applications/" +
+                encodeURIComponent(app.id);
+            },
+          }))}
+        />
       )}
 
       {/* Pagination */}

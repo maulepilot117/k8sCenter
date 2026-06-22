@@ -1,6 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
@@ -10,9 +9,8 @@ import {
 } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 
 interface IngressPathState {
   path: string;
@@ -40,9 +38,9 @@ interface IngressFormState {
   tls: IngressTLSState[];
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Rules & TLS" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 const PATH_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
@@ -71,7 +69,35 @@ function initialState(): IngressFormState {
   };
 }
 
-export default function IngressWizard() {
+function buildManifest(f: IngressFormState): string {
+  const firstRule = f.rules[0];
+  const firstPath = firstRule?.paths[0];
+  const host = firstRule?.host || "<host>";
+  const path = firstPath?.path || "/";
+  const svc = firstPath?.serviceName || "<service>";
+  const port = firstPath?.servicePort ?? 80;
+  let y =
+    `apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: ${
+      f.name || "<name>"
+    }\n  namespace: ${f.namespace}`;
+  if (f.ingressClassName) {
+    y +=
+      `\n  annotations:\n    kubernetes.io/ingress.class: "${f.ingressClassName}"`;
+  }
+  y +=
+    `\nspec:\n  rules:\n    - host: ${host}\n      http:\n        paths:\n          - path: ${path}\n            pathType: ${
+      firstPath?.pathType ?? "Prefix"
+    }\n            backend:\n              service:\n                name: ${svc}\n                port:\n                  number: ${port}`;
+  if (f.enableTLS && f.tls.length > 0) {
+    y += `\n  tls:\n    - hosts:\n        - ${
+      f.tls[0].hosts[0] ?? host
+    }\n      secretName: ${f.tls[0].secretName || "<tls-secret>"}`;
+  }
+  return y;
+}
+
+export default function IngressWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<IngressFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -83,6 +109,7 @@ export default function IngressWizard() {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   const markDirty = useCallback(() => {
     dirty.value = true;
@@ -205,6 +232,7 @@ export default function IngressWizard() {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -240,13 +268,15 @@ export default function IngressWizard() {
         "/v1/wizards/ingress/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -272,7 +302,6 @@ export default function IngressWizard() {
     dirty.value = true;
     const f = form.value;
     if (enabled) {
-      // Collect unique hosts from rules
       const hosts = f.rules
         .map((r) => r.host)
         .filter((h) => h !== "");
@@ -289,79 +318,65 @@ export default function IngressWizard() {
     }
   }, []);
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
+  const f = form.value;
 
   return (
-    <div class="p-6">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create Ingress
-        </h1>
-        <a
-          href="/networking/ingresses"
-          class="text-sm text-text-muted hover:text-text-primary"
+    <WizardShell
+      title="Create Ingress"
+      subtitle={`Step ${currentStep.value + 1} of 2 · namespace ${f.namespace}`}
+      icon={
+        <svg
+          width="21"
+          height="21"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <ConfigureStep
-            form={form.value}
-            namespaces={namespaces.value}
-            errors={errors.value}
-            onFieldChange={updateField}
-            onRuleChange={updateRule}
-            onPathChange={updatePath}
-            onAddRule={addRule}
-            onRemoveRule={removeRule}
-            onAddPath={addPath}
-            onRemovePath={removePath}
-            onToggleTLS={toggleTLS}
-          />
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/networking/ingresses"
-          />
-        )}
-      </div>
-
+          <path d="M3 10h14M10 3l7 7-7 7" />
+        </svg>
+      }
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={goBack}
+      onNext={goNext}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
+      yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
+    >
       {currentStep.value === 0 && (
-        <div class="flex justify-end mt-8">
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
-        </div>
+        <ConfigureStep
+          form={f}
+          namespaces={namespaces.value}
+          errors={errors.value}
+          onFieldChange={updateField}
+          onRuleChange={updateRule}
+          onPathChange={updatePath}
+          onAddRule={addRule}
+          onRemoveRule={removeRule}
+          onAddPath={addPath}
+          onRemovePath={removePath}
+          onToggleTLS={toggleTLS}
+        />
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/networking/ingresses"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }
 
@@ -400,12 +415,26 @@ function ConfigureStep({
   onToggleTLS,
 }: ConfigureStepProps) {
   return (
-    <div class="space-y-6">
+    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
       {/* Name & Namespace */}
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr 1fr",
+          gap: "12px",
+        }}
+      >
         <div>
-          <label class="block text-sm font-medium text-text-secondary">
-            Name <span class="text-danger">*</span>
+          <label
+            style={{
+              display: "block",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              marginBottom: "5px",
+            }}
+          >
+            Name <span style={{ color: "var(--error)" }}>*</span>
           </label>
           <input
             type="text"
@@ -415,11 +444,29 @@ function ConfigureStep({
             placeholder="my-ingress"
             class={WIZARD_INPUT_CLASS}
           />
-          {errors.name && <p class="mt-1 text-xs text-danger">{errors.name}</p>}
+          {errors.name && (
+            <p
+              style={{
+                marginTop: "4px",
+                fontSize: "11px",
+                color: "var(--error)",
+              }}
+            >
+              {errors.name}
+            </p>
+          )}
         </div>
         <div>
-          <label class="block text-sm font-medium text-text-secondary">
-            Namespace <span class="text-danger">*</span>
+          <label
+            style={{
+              display: "block",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              marginBottom: "5px",
+            }}
+          >
+            Namespace <span style={{ color: "var(--error)" }}>*</span>
           </label>
           <select
             value={form.namespace}
@@ -430,11 +477,27 @@ function ConfigureStep({
             {namespaces.map((ns) => <option key={ns} value={ns}>{ns}</option>)}
           </select>
           {errors.namespace && (
-            <p class="mt-1 text-xs text-danger">{errors.namespace}</p>
+            <p
+              style={{
+                marginTop: "4px",
+                fontSize: "11px",
+                color: "var(--error)",
+              }}
+            >
+              {errors.namespace}
+            </p>
           )}
         </div>
         <div>
-          <label class="block text-sm font-medium text-text-secondary">
+          <label
+            style={{
+              display: "block",
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              marginBottom: "5px",
+            }}
+          >
             Ingress Class Name
           </label>
           <input
@@ -453,39 +516,105 @@ function ConfigureStep({
 
       {/* Rules */}
       <div>
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-medium text-text-secondary">
-            Rules <span class="text-danger">*</span>
-          </h3>
-          <Button variant="ghost" onClick={onAddRule}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "10px",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "12.5px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+            }}
+          >
+            Rules <span style={{ color: "var(--error)" }}>*</span>
+          </span>
+          <button
+            type="button"
+            onClick={onAddRule}
+            style={{
+              fontSize: "12px",
+              color: "var(--accent)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
             + Add Rule
-          </Button>
+          </button>
         </div>
-        {errors.rules && <p class="mb-2 text-xs text-danger">{errors.rules}</p>}
+        {errors.rules && (
+          <p
+            style={{
+              marginBottom: "8px",
+              fontSize: "11px",
+              color: "var(--error)",
+            }}
+          >
+            {errors.rules}
+          </p>
+        )}
 
-        <div class="space-y-4">
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {form.rules.map((rule, ruleIdx) => (
             <div
               key={ruleIdx}
-              class="border border-border-primary rounded-lg p-4"
+              style={{
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "10px",
+                padding: "14px",
+              }}
             >
-              <div class="flex items-center justify-between mb-3">
-                <span class="text-sm font-medium text-text-secondary">
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "10px",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: "12.5px",
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                  }}
+                >
                   Rule {ruleIdx + 1}
                 </span>
                 {form.rules.length > 1 && (
                   <button
                     type="button"
                     onClick={() => onRemoveRule(ruleIdx)}
-                    class="text-xs text-danger hover:text-danger/80"
+                    style={{
+                      fontSize: "11px",
+                      color: "var(--error)",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
                   >
                     Remove Rule
                   </button>
                 )}
               </div>
 
-              <div class="mb-3">
-                <label class="block text-xs font-medium text-text-secondary">
+              <div style={{ marginBottom: "10px" }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: "var(--text-muted)",
+                    marginBottom: "4px",
+                  }}
+                >
                   Host (leave empty for wildcard)
                 </label>
                 <input
@@ -500,41 +629,72 @@ function ConfigureStep({
                   placeholder="example.com"
                   class={WIZARD_INPUT_CLASS}
                 />
-                {errors[`rules[${ruleIdx}].host`] && (
-                  <p class="mt-1 text-xs text-danger">
-                    {errors[`rules[${ruleIdx}].host`]}
-                  </p>
-                )}
               </div>
 
               {/* Paths sub-table */}
               <div>
-                <div class="flex items-center justify-between mb-2">
-                  <label class="text-xs font-medium text-text-secondary">
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    marginBottom: "6px",
+                  }}
+                >
+                  <label
+                    style={{
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      color: "var(--text-muted)",
+                    }}
+                  >
                     Paths
                   </label>
                   <button
                     type="button"
                     onClick={() => onAddPath(ruleIdx)}
-                    class="text-xs text-brand hover:text-brand/80"
+                    style={{
+                      fontSize: "11px",
+                      color: "var(--accent)",
+                      background: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
                   >
                     + Add Path
                   </button>
                 </div>
-                {errors[`rules[${ruleIdx}].paths`] && (
-                  <p class="mb-2 text-xs text-danger">
-                    {errors[`rules[${ruleIdx}].paths`]}
-                  </p>
-                )}
 
-                <div class="space-y-2">
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                  }}
+                >
                   {rule.paths.map((p, pathIdx) => (
                     <div
                       key={pathIdx}
-                      class="grid grid-cols-12 gap-2 items-end bg-surface rounded-md p-2"
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "2fr 2fr 3fr 2fr auto",
+                        gap: "6px",
+                        alignItems: "end",
+                        background: "var(--bg-elevated)",
+                        borderRadius: "7px",
+                        padding: "8px",
+                      }}
                     >
-                      <div class="col-span-3">
-                        <label class="block text-xs text-text-muted">
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "10px",
+                            color: "var(--text-muted)",
+                            marginBottom: "3px",
+                          }}
+                        >
                           Path
                         </label>
                         <input
@@ -551,13 +711,26 @@ function ConfigureStep({
                           class={WIZARD_INPUT_CLASS}
                         />
                         {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`] && (
-                          <p class="mt-1 text-xs text-danger">
+                          <p
+                            style={{
+                              fontSize: "10px",
+                              color: "var(--error)",
+                              marginTop: "2px",
+                            }}
+                          >
                             {errors[`rules[${ruleIdx}].paths[${pathIdx}].path`]}
                           </p>
                         )}
                       </div>
-                      <div class="col-span-2">
-                        <label class="block text-xs text-text-muted">
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "10px",
+                            color: "var(--text-muted)",
+                            marginBottom: "3px",
+                          }}
+                        >
                           Path Type
                         </label>
                         <select
@@ -578,8 +751,15 @@ function ConfigureStep({
                           ))}
                         </select>
                       </div>
-                      <div class="col-span-3">
-                        <label class="block text-xs text-text-muted">
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "10px",
+                            color: "var(--text-muted)",
+                            marginBottom: "3px",
+                          }}
+                        >
                           Service Name
                         </label>
                         <input
@@ -598,16 +778,29 @@ function ConfigureStep({
                         {errors[
                           `rules[${ruleIdx}].paths[${pathIdx}].serviceName`
                         ] && (
-                          <p class="mt-1 text-xs text-danger">
+                          <p
+                            style={{
+                              fontSize: "10px",
+                              color: "var(--error)",
+                              marginTop: "2px",
+                            }}
+                          >
                             {errors[
                               `rules[${ruleIdx}].paths[${pathIdx}].serviceName`
                             ]}
                           </p>
                         )}
                       </div>
-                      <div class="col-span-2">
-                        <label class="block text-xs text-text-muted">
-                          Service Port
+                      <div>
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "10px",
+                            color: "var(--text-muted)",
+                            marginBottom: "3px",
+                          }}
+                        >
+                          Port
                         </label>
                         <input
                           type="number"
@@ -629,21 +822,36 @@ function ConfigureStep({
                         {errors[
                           `rules[${ruleIdx}].paths[${pathIdx}].servicePort`
                         ] && (
-                          <p class="mt-1 text-xs text-danger">
+                          <p
+                            style={{
+                              fontSize: "10px",
+                              color: "var(--error)",
+                              marginTop: "2px",
+                            }}
+                          >
                             {errors[
                               `rules[${ruleIdx}].paths[${pathIdx}].servicePort`
                             ]}
                           </p>
                         )}
                       </div>
-                      <div class="col-span-2 flex justify-end">
+                      <div
+                        style={{ display: "flex", justifyContent: "flex-end" }}
+                      >
                         {rule.paths.length > 1 && (
                           <button
                             type="button"
                             onClick={() => onRemovePath(ruleIdx, pathIdx)}
-                            class="text-xs text-danger hover:text-danger/80 mt-5"
+                            style={{
+                              fontSize: "11px",
+                              color: "var(--error)",
+                              background: "transparent",
+                              border: "none",
+                              cursor: "pointer",
+                              padding: 0,
+                            }}
                           >
-                            Remove
+                            ×
                           </button>
                         )}
                       </div>
@@ -657,19 +865,37 @@ function ConfigureStep({
       </div>
 
       {/* TLS Section */}
-      <div class="border border-border-primary rounded-lg p-4">
-        <div class="flex items-center gap-3 mb-3">
+      <div
+        style={{
+          border: "1px solid var(--border-subtle)",
+          borderRadius: "10px",
+          padding: "14px",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            marginBottom: "10px",
+          }}
+        >
           <input
             type="checkbox"
             id="enableTLS"
             checked={form.enableTLS}
             onChange={(e) =>
               onToggleTLS((e.target as HTMLInputElement).checked)}
-            class="rounded border-border-primary text-brand focus:ring-brand"
+            style={{ width: "15px", height: "15px" }}
           />
           <label
             for="enableTLS"
-            class="text-sm font-medium text-text-secondary"
+            style={{
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+            }}
           >
             Enable TLS
           </label>
@@ -677,9 +903,20 @@ function ConfigureStep({
 
         {form.enableTLS &&
           form.tls.map((tlsEntry, tlsIdx) => (
-            <div key={tlsIdx} class="space-y-3 mt-3">
+            <div
+              key={tlsIdx}
+              style={{ display: "flex", flexDirection: "column", gap: "10px" }}
+            >
               <div>
-                <label class="block text-xs font-medium text-text-secondary">
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    marginBottom: "4px",
+                  }}
+                >
                   TLS Hosts (auto-filled from rules)
                 </label>
                 <input
@@ -689,9 +926,7 @@ function ConfigureStep({
                     const val = (e.target as HTMLInputElement).value;
                     const hosts = val
                       .split(",")
-                      .map((h) =>
-                        h.trim()
-                      )
+                      .map((h) => h.trim())
                       .filter((h) => h !== "");
                     const tls = [...form.tls];
                     tls[tlsIdx] = { ...tls[tlsIdx], hosts };
@@ -701,14 +936,28 @@ function ConfigureStep({
                   class={WIZARD_INPUT_CLASS}
                 />
                 {errors[`tls[${tlsIdx}].hosts`] && (
-                  <p class="mt-1 text-xs text-danger">
+                  <p
+                    style={{
+                      marginTop: "4px",
+                      fontSize: "11px",
+                      color: "var(--error)",
+                    }}
+                  >
                     {errors[`tls[${tlsIdx}].hosts`]}
                   </p>
                 )}
               </div>
               <div>
-                <label class="block text-xs font-medium text-text-secondary">
-                  Secret Name <span class="text-danger">*</span>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    marginBottom: "4px",
+                  }}
+                >
+                  Secret Name <span style={{ color: "var(--error)" }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -725,7 +974,13 @@ function ConfigureStep({
                   class={WIZARD_INPUT_CLASS}
                 />
                 {errors[`tls[${tlsIdx}].secretName`] && (
-                  <p class="mt-1 text-xs text-danger">
+                  <p
+                    style={{
+                      marginTop: "4px",
+                      fontSize: "11px",
+                      color: "var(--error)",
+                    }}
+                  >
                     {errors[`tls[${tlsIdx}].secretName`]}
                   </p>
                 )}

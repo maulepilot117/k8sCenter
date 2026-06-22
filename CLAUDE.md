@@ -16,7 +16,7 @@ You are operating within a constrained context window and strict system prompts.
 
 4. FORCED VERIFICATION: Your internal tools mark file writes as successful even if the code does not compile. Before declaring a task complete or pushing, you MUST run the repo-canonical checks REPO-WIDE (not scoped to changed files):
 
-- Frontend: `cd frontend && deno task check` — runs `deno fmt --check . && deno lint . && deno check` across the whole tree, identical to CI.
+- Frontend: `cd frontend && deno task check` — runs `deno fmt --check . && deno lint . && deno check` across the whole tree, identical to CI (which now runs fmt + lint + check + build).
 - Backend: `cd backend && go vet ./... && go test ./...`
 
 Scoped checks (single file or directory) MISS pre-existing issues in sibling files that CI will flag. Always run the repo-wide form before push. Fix ALL resulting errors. If a check is unavailable, state that explicitly instead of claiming success.

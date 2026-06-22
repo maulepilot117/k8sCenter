@@ -1,15 +1,6 @@
 import { define } from "@/utils.ts";
-import SubNav from "@/islands/SubNav.tsx";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 import MeshRoutingList from "@/islands/MeshRoutingList.tsx";
 
-const section = DOMAIN_SECTIONS.find((s) => s.id === "network")!;
-
-export default define.page(function MeshRoutingPage(ctx) {
-  return (
-    <>
-      <SubNav tabs={section.tabs ?? []} currentPath={ctx.url.pathname} />
-      <MeshRoutingList />
-    </>
-  );
+export default define.page(function MeshRoutingPage() {
+  return <MeshRoutingList />;
 });

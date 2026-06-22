@@ -47,6 +47,7 @@ const DART_OUT = resolve(
 // Theme load order matches the existing styles.css for diff stability.
 const ORDER = [
   "liquid-glass",
+  "liquid-glass-light",
 ];
 
 const CSS_VAR_MAP: Record<string, string> = {
@@ -59,10 +60,12 @@ const CSS_VAR_MAP: Record<string, string> = {
   textPrimary: "--text-primary",
   textSecondary: "--text-secondary",
   textMuted: "--text-muted",
+  textOnAccent: "--text-on-accent",
   accent: "--accent",
   accentGlow: "--accent-glow",
   accentDim: "--accent-dim",
   accentSecondary: "--accent-secondary",
+  accent2: "--accent-2",
   success: "--success",
   successDim: "--success-dim",
   warning: "--warning",
@@ -75,6 +78,9 @@ const CSS_VAR_MAP: Record<string, string> = {
   glassBorder: "--glass-border",
   glassHighlight: "--glass-highlight",
   glassScrim: "--glass-scrim",
+  glassRimLight: "--glass-rim-light",
+  glassRimSoft: "--glass-rim-soft",
+  glassRimDark: "--glass-rim-dark",
 };
 
 async function loadThemes(): Promise<Theme[]> {
@@ -120,7 +126,11 @@ function emitCss(themes: Theme[]): string {
   ];
 
   for (const t of themes) {
-    const selector = t.default ? ":root" : `[data-theme="${t.id}"]`;
+    const selector = t.default
+      ? ":root"
+      : t.id === "liquid-glass-light"
+      ? ".theme-light"
+      : `[data-theme="${t.id}"]`;
     lines.push(`/* ── ${t.name} ── */`);
     lines.push(`${selector} {`);
     for (const [key, cssVar] of Object.entries(CSS_VAR_MAP)) {

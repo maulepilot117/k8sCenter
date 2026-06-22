@@ -1,6 +1,4 @@
 import { define } from "@/utils.ts";
-import SubNav from "@/islands/SubNav.tsx";
-import { DOMAIN_SECTIONS } from "@/lib/constants.ts";
 import SecretStoreFromTemplateEditor from "@/islands/SecretStoreFromTemplateEditor.tsx";
 import {
   ESO_YAML_TEMPLATES,
@@ -10,8 +8,6 @@ import {
   isTemplateOnlyProvider,
   type TemplateOnlyProvider,
 } from "@/lib/eso-types.ts";
-
-const section = DOMAIN_SECTIONS.find((s) => s.id === "external-secrets")!;
 
 export default define.page(function SecretStoreFromTemplatePage(ctx) {
   const url = new URL(ctx.req.url);
@@ -24,15 +20,7 @@ export default define.page(function SecretStoreFromTemplatePage(ctx) {
     const provider = isTemplateOnlyProvider(templateParam)
       ? templateParam
       : null;
-    return (
-      <>
-        <SubNav
-          tabs={section.tabs ?? []}
-          currentPath="/external-secrets/stores"
-        />
-        <SecretStoreFromTemplateEditor provider={provider} />
-      </>
-    );
+    return <SecretStoreFromTemplateEditor provider={provider} />;
   }
 
   // No query param — render the gallery of all template-only providers.
@@ -52,48 +40,42 @@ export default define.page(function SecretStoreFromTemplatePage(ctx) {
   );
 
   return (
-    <>
-      <SubNav
-        tabs={section.tabs ?? []}
-        currentPath="/external-secrets/stores"
-      />
-      <div class="space-y-4">
-        <header>
-          <h1 class="text-xl font-semibold text-text-primary">
-            Create SecretStore from template
-          </h1>
-          <p class="mt-1 text-sm text-text-muted">
-            Pick a provider to open a pre-filled YAML template you can edit and
-            apply. For providers with a guided wizard, use the{" "}
-            <a
-              href="/external-secrets/stores/new"
-              class="text-accent hover:underline"
-            >
-              Create wizard
-            </a>{" "}
-            instead.
-          </p>
-        </header>
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {galleryEntries.map(({ provider, template }) => (
-            <a
-              key={provider}
-              href={`/external-secrets/stores/new-from-template?template=${provider}`}
-              class="block rounded-lg border border-border-primary bg-surface p-4 transition-colors hover:border-border-emphasis"
-            >
-              <div class="flex items-center justify-between gap-2">
-                <span class="font-medium text-text-primary">
-                  {template.displayName}
-                </span>
-                <span class="text-xs font-medium text-text-muted whitespace-nowrap">
-                  template
-                </span>
-              </div>
-              <p class="mt-2 text-sm text-text-muted">{template.notes}</p>
-            </a>
-          ))}
-        </div>
+    <div class="space-y-4">
+      <header>
+        <h1 class="text-xl font-semibold text-text-primary">
+          Create SecretStore from template
+        </h1>
+        <p class="mt-1 text-sm text-text-muted">
+          Pick a provider to open a pre-filled YAML template you can edit and
+          apply. For providers with a guided wizard, use the{" "}
+          <a
+            href="/external-secrets/stores/new"
+            class="text-accent hover:underline"
+          >
+            Create wizard
+          </a>{" "}
+          instead.
+        </p>
+      </header>
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {galleryEntries.map(({ provider, template }) => (
+          <a
+            key={provider}
+            href={`/external-secrets/stores/new-from-template?template=${provider}`}
+            class="block rounded-lg border border-border-primary bg-surface p-4 transition-colors hover:border-border-emphasis"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <span class="font-medium text-text-primary">
+                {template.displayName}
+              </span>
+              <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                template
+              </span>
+            </div>
+            <p class="mt-2 text-sm text-text-muted">{template.notes}</p>
+          </a>
+        ))}
       </div>
-    </>
+    </div>
   );
 });

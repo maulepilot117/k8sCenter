@@ -1,9 +1,10 @@
+import type { ComponentChildren } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import { useSignal } from "@preact/signals";
 
 export interface ConfirmDialogProps {
   title: string;
-  message?: string;
+  message?: ComponentChildren;
   confirmLabel: string;
   danger?: boolean;
   /** If provided, user must type this string to enable the confirm button. */
