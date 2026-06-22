@@ -339,7 +339,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                 marginBottom: "5px",
               }}
             >
-              Name <span style={{ color: "var(--danger)" }}>*</span>
+              Name <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="text"
@@ -354,7 +354,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.name}
@@ -373,7 +373,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                 marginBottom: "5px",
               }}
             >
-              Namespace <span style={{ color: "var(--danger)" }}>*</span>
+              Namespace <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <select
               value={f.namespace}
@@ -568,7 +568,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                   <p
                     style={{
                       fontSize: "11px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                     }}
                   >
                     {errors.value.opaqueEntries}
@@ -597,7 +597,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                     }}
                   >
                     Certificate (tls.crt){" "}
-                    <span style={{ color: "var(--danger)" }}>*</span>
+                    <span style={{ color: "var(--error)" }}>*</span>
                   </label>
                   <textarea
                     value={f.tlsCrt}
@@ -616,7 +616,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       style={{
                         marginTop: "4px",
                         fontSize: "11px",
-                        color: "var(--danger)",
+                        color: "var(--error)",
                       }}
                     >
                       {errors.value.tlsCrt}
@@ -634,7 +634,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                     }}
                   >
                     Private Key (tls.key){" "}
-                    <span style={{ color: "var(--danger)" }}>*</span>
+                    <span style={{ color: "var(--error)" }}>*</span>
                   </label>
                   <textarea
                     value={f.tlsKey}
@@ -653,7 +653,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       style={{
                         marginTop: "4px",
                         fontSize: "11px",
-                        color: "var(--danger)",
+                        color: "var(--error)",
                       }}
                     >
                       {errors.value.tlsKey}
@@ -682,7 +682,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       marginBottom: "5px",
                     }}
                   >
-                    Username <span style={{ color: "var(--danger)" }}>*</span>
+                    Username <span style={{ color: "var(--error)" }}>*</span>
                   </label>
                   <input
                     type="text"
@@ -700,7 +700,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       style={{
                         marginTop: "4px",
                         fontSize: "11px",
-                        color: "var(--danger)",
+                        color: "var(--error)",
                       }}
                     >
                       {errors.value.basicUsername}
@@ -777,7 +777,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       marginBottom: "5px",
                     }}
                   >
-                    Username <span style={{ color: "var(--danger)" }}>*</span>
+                    Username <span style={{ color: "var(--error)" }}>*</span>
                   </label>
                   <input
                     type="text"
@@ -795,7 +795,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       style={{
                         marginTop: "4px",
                         fontSize: "11px",
-                        color: "var(--danger)",
+                        color: "var(--error)",
                       }}
                     >
                       {errors.value.dockerUsername}
@@ -812,7 +812,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       marginBottom: "5px",
                     }}
                   >
-                    Password <span style={{ color: "var(--danger)" }}>*</span>
+                    Password <span style={{ color: "var(--error)" }}>*</span>
                   </label>
                   <input
                     type="password"
@@ -830,7 +830,7 @@ export default function SecretWizard({ onClose }: { onClose?: () => void }) {
                       style={{
                         marginTop: "4px",
                         fontSize: "11px",
-                        color: "var(--danger)",
+                        color: "var(--error)",
                       }}
                     >
                       {errors.value.dockerPassword}

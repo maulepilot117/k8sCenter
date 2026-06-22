@@ -37,6 +37,7 @@ export function MonitoringFields(
       </Field>
       <Field label="Grafana API Token">
         <TextField
+          type="password"
           value={grafToken.value}
           onInput={(v) => {
             grafToken.value = v;

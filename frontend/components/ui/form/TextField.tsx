@@ -5,13 +5,17 @@ interface TextFieldProps {
   /** monospace (image refs, ports, CPU/mem) */
   mono?: boolean;
   width?: string;
+  /** input type; use "password" for secret fields (tokens, passwords) */
+  type?: "text" | "password";
 }
 
 export default function TextField(
-  { value, onInput, placeholder, mono, width = "100%" }: TextFieldProps,
+  { value, onInput, placeholder, mono, width = "100%", type = "text" }:
+    TextFieldProps,
 ) {
   return (
     <input
+      type={type}
       value={value}
       placeholder={placeholder}
       onInput={(e) => onInput((e.target as HTMLInputElement).value)}

@@ -430,7 +430,7 @@ function ConfigureStep({
               marginBottom: "5px",
             }}
           >
-            Name <span style={{ color: "var(--danger)" }}>*</span>
+            Name <span style={{ color: "var(--error)" }}>*</span>
           </label>
           <input
             type="text"
@@ -445,7 +445,7 @@ function ConfigureStep({
               style={{
                 marginTop: "4px",
                 fontSize: "11px",
-                color: "var(--danger)",
+                color: "var(--error)",
               }}
             >
               {errors.name}
@@ -462,7 +462,7 @@ function ConfigureStep({
               marginBottom: "5px",
             }}
           >
-            Namespace <span style={{ color: "var(--danger)" }}>*</span>
+            Namespace <span style={{ color: "var(--error)" }}>*</span>
           </label>
           <select
             value={form.namespace}
@@ -477,7 +477,7 @@ function ConfigureStep({
               style={{
                 marginTop: "4px",
                 fontSize: "11px",
-                color: "var(--danger)",
+                color: "var(--error)",
               }}
             >
               {errors.namespace}
@@ -527,7 +527,7 @@ function ConfigureStep({
               color: "var(--text-secondary)",
             }}
           >
-            Rules <span style={{ color: "var(--danger)" }}>*</span>
+            Rules <span style={{ color: "var(--error)" }}>*</span>
           </span>
           <button
             type="button"
@@ -549,7 +549,7 @@ function ConfigureStep({
             style={{
               marginBottom: "8px",
               fontSize: "11px",
-              color: "var(--danger)",
+              color: "var(--error)",
             }}
           >
             {errors.rules}
@@ -589,7 +589,7 @@ function ConfigureStep({
                     onClick={() => onRemoveRule(ruleIdx)}
                     style={{
                       fontSize: "11px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                       background: "transparent",
                       border: "none",
                       cursor: "pointer",
@@ -710,7 +710,7 @@ function ConfigureStep({
                           <p
                             style={{
                               fontSize: "10px",
-                              color: "var(--danger)",
+                              color: "var(--error)",
                               marginTop: "2px",
                             }}
                           >
@@ -777,7 +777,7 @@ function ConfigureStep({
                           <p
                             style={{
                               fontSize: "10px",
-                              color: "var(--danger)",
+                              color: "var(--error)",
                               marginTop: "2px",
                             }}
                           >
@@ -821,7 +821,7 @@ function ConfigureStep({
                           <p
                             style={{
                               fontSize: "10px",
-                              color: "var(--danger)",
+                              color: "var(--error)",
                               marginTop: "2px",
                             }}
                           >
@@ -840,7 +840,7 @@ function ConfigureStep({
                             onClick={() => onRemovePath(ruleIdx, pathIdx)}
                             style={{
                               fontSize: "11px",
-                              color: "var(--danger)",
+                              color: "var(--error)",
                               background: "transparent",
                               border: "none",
                               cursor: "pointer",
@@ -936,7 +936,7 @@ function ConfigureStep({
                     style={{
                       marginTop: "4px",
                       fontSize: "11px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                     }}
                   >
                     {errors[`tls[${tlsIdx}].hosts`]}
@@ -953,7 +953,7 @@ function ConfigureStep({
                     marginBottom: "4px",
                   }}
                 >
-                  Secret Name <span style={{ color: "var(--danger)" }}>*</span>
+                  Secret Name <span style={{ color: "var(--error)" }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -974,7 +974,7 @@ function ConfigureStep({
                     style={{
                       marginTop: "4px",
                       fontSize: "11px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                     }}
                   >
                     {errors[`tls[${tlsIdx}].secretName`]}

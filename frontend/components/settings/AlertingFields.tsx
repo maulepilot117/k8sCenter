@@ -78,6 +78,7 @@ export function AlertingFields(
         </Field>
         <Field label="SMTP Password">
           <TextField
+            type="password"
             value={smtpPass.value}
             onInput={(v) => {
               smtpPass.value = v;

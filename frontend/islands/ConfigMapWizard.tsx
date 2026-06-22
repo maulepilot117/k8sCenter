@@ -222,7 +222,7 @@ export default function ConfigMapWizard(
                 marginBottom: "5px",
               }}
             >
-              Name <span style={{ color: "var(--danger)" }}>*</span>
+              Name <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="text"
@@ -237,7 +237,7 @@ export default function ConfigMapWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.name}
@@ -256,7 +256,7 @@ export default function ConfigMapWizard(
                 marginBottom: "5px",
               }}
             >
-              Namespace <span style={{ color: "var(--danger)" }}>*</span>
+              Namespace <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <select
               value={f.namespace}
@@ -316,7 +316,7 @@ export default function ConfigMapWizard(
                         style={{
                           marginTop: "3px",
                           fontSize: "10px",
-                          color: "var(--danger)",
+                          color: "var(--error)",
                         }}
                       >
                         {errors.value[`entry_${i}_key`]}
@@ -373,7 +373,7 @@ export default function ConfigMapWizard(
                 style={{
                   marginTop: "6px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.data}

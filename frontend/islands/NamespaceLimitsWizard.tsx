@@ -365,7 +365,7 @@ export default function NamespaceLimitsWizard(
                 marginBottom: "5px",
               }}
             >
-              Namespace <span style={{ color: "var(--danger)" }}>*</span>
+              Namespace <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <select
               value={f.namespace}
@@ -385,7 +385,7 @@ export default function NamespaceLimitsWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.namespace}
@@ -469,7 +469,7 @@ export default function NamespaceLimitsWizard(
               }}
             >
               ResourceQuota Name{" "}
-              <span style={{ color: "var(--danger)" }}>*</span>
+              <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="text"
@@ -487,7 +487,7 @@ export default function NamespaceLimitsWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.quotaName}
@@ -505,7 +505,7 @@ export default function NamespaceLimitsWizard(
                 marginBottom: "5px",
               }}
             >
-              LimitRange Name <span style={{ color: "var(--danger)" }}>*</span>
+              LimitRange Name <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="text"
@@ -523,7 +523,7 @@ export default function NamespaceLimitsWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.limitRangeName}
@@ -560,7 +560,7 @@ export default function NamespaceLimitsWizard(
                   marginBottom: "5px",
                 }}
               >
-                CPU Hard Limit <span style={{ color: "var(--danger)" }}>*</span>
+                CPU Hard Limit <span style={{ color: "var(--error)" }}>*</span>
               </label>
               <input
                 type="text"
@@ -578,7 +578,7 @@ export default function NamespaceLimitsWizard(
                   style={{
                     marginTop: "4px",
                     fontSize: "11px",
-                    color: "var(--danger)",
+                    color: "var(--error)",
                   }}
                 >
                   {errors.value.cpuHard}
@@ -596,7 +596,7 @@ export default function NamespaceLimitsWizard(
                 }}
               >
                 Memory Hard Limit{" "}
-                <span style={{ color: "var(--danger)" }}>*</span>
+                <span style={{ color: "var(--error)" }}>*</span>
               </label>
               <input
                 type="text"
@@ -614,7 +614,7 @@ export default function NamespaceLimitsWizard(
                   style={{
                     marginTop: "4px",
                     fontSize: "11px",
-                    color: "var(--danger)",
+                    color: "var(--error)",
                   }}
                 >
                   {errors.value.memoryHard}
@@ -633,7 +633,7 @@ export default function NamespaceLimitsWizard(
                 marginBottom: "5px",
               }}
             >
-              Max Pods <span style={{ color: "var(--danger)" }}>*</span>
+              Max Pods <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="number"
@@ -652,7 +652,7 @@ export default function NamespaceLimitsWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.podsHard}
@@ -926,9 +926,7 @@ export default function NamespaceLimitsWizard(
                   }}
                 >
                   {title}
-                  {required && (
-                    <span style={{ color: "var(--danger)" }}>*</span>
-                  )}
+                  {required && <span style={{ color: "var(--error)" }}>*</span>}
                 </label>
                 {hint && (
                   <p
@@ -978,7 +976,7 @@ export default function NamespaceLimitsWizard(
                         style={{
                           marginTop: "3px",
                           fontSize: "10px",
-                          color: "var(--danger)",
+                          color: "var(--error)",
                         }}
                       >
                         {errors.value.containerDefaultCpu}
@@ -1015,7 +1013,7 @@ export default function NamespaceLimitsWizard(
                         style={{
                           marginTop: "3px",
                           fontSize: "10px",
-                          color: "var(--danger)",
+                          color: "var(--error)",
                         }}
                       >
                         {errors.value.containerDefaultMemory}

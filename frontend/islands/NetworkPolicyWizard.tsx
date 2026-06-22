@@ -482,7 +482,7 @@ export default function NetworkPolicyWizard(
                 marginBottom: "5px",
               }}
             >
-              Name <span style={{ color: "var(--danger)" }}>*</span>
+              Name <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <input
               type="text"
@@ -497,7 +497,7 @@ export default function NetworkPolicyWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.name}
@@ -515,7 +515,7 @@ export default function NetworkPolicyWizard(
                 marginBottom: "5px",
               }}
             >
-              Namespace <span style={{ color: "var(--danger)" }}>*</span>
+              Namespace <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <select
               value={f.namespace}
@@ -535,7 +535,7 @@ export default function NetworkPolicyWizard(
                 style={{
                   marginTop: "4px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.namespace}
@@ -641,7 +641,7 @@ export default function NetworkPolicyWizard(
                     onClick={() => removePodSelectorLabel(idx)}
                     style={{
                       fontSize: "13px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                       background: "transparent",
                       border: "none",
                       cursor: "pointer",
@@ -666,7 +666,7 @@ export default function NetworkPolicyWizard(
                 marginBottom: "8px",
               }}
             >
-              Policy Types <span style={{ color: "var(--danger)" }}>*</span>
+              Policy Types <span style={{ color: "var(--error)" }}>*</span>
             </label>
             <div style={{ display: "flex", gap: "20px" }}>
               {["Ingress", "Egress"].map((type) => (
@@ -705,7 +705,7 @@ export default function NetworkPolicyWizard(
                 style={{
                   marginTop: "6px",
                   fontSize: "11px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors.value.policyTypes}
@@ -979,7 +979,7 @@ function RuleEditor({
           onClick={onRemove}
           style={{
             fontSize: "11px",
-            color: "var(--danger)",
+            color: "var(--error)",
             background: "transparent",
             border: "none",
             cursor: "pointer",
@@ -1136,7 +1136,7 @@ function RuleEditor({
                 onClick={() => onRemovePort(portIdx)}
                 style={{
                   fontSize: "13px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                   background: "transparent",
                   border: "none",
                   cursor: "pointer",
@@ -1147,7 +1147,7 @@ function RuleEditor({
               </button>
               {errors[`${errorPrefix}.ports[${portIdx}].port`] && (
                 <p
-                  style={{ fontSize: "10px", color: "var(--danger)" }}
+                  style={{ fontSize: "10px", color: "var(--error)" }}
                 >
                   {errors[`${errorPrefix}.ports[${portIdx}].port`]}
                 </p>
@@ -1262,7 +1262,7 @@ function PeerEditor({
           onClick={onRemove}
           style={{
             fontSize: "11px",
-            color: "var(--danger)",
+            color: "var(--error)",
             background: "transparent",
             border: "none",
             cursor: "pointer",
@@ -1357,7 +1357,7 @@ function PeerEditor({
                   onClick={() => removeLabel(idx)}
                   style={{
                     fontSize: "13px",
-                    color: "var(--danger)",
+                    color: "var(--error)",
                     background: "transparent",
                     border: "none",
                     cursor: "pointer",
@@ -1402,7 +1402,7 @@ function PeerEditor({
                 style={{
                   marginTop: "3px",
                   fontSize: "10px",
-                  color: "var(--danger)",
+                  color: "var(--error)",
                 }}
               >
                 {errors[`${errorPrefix}.cidr`]}
@@ -1463,7 +1463,7 @@ function PeerEditor({
                     onClick={() => removeExcept(idx)}
                     style={{
                       fontSize: "13px",
-                      color: "var(--danger)",
+                      color: "var(--error)",
                       background: "transparent",
                       border: "none",
                       cursor: "pointer",
