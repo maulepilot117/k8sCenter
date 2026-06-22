@@ -8,9 +8,6 @@ export default define.page(function NewCRDResourcePage(ctx) {
       group={group}
       resource={resource}
       mode="create"
-      onClose={() => {
-        globalThis.location.href = `/extensions/${group}/${resource}`;
-      }}
     />
   );
 });
