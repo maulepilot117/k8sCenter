@@ -21,6 +21,7 @@
     "fresh/runtime": "jsr:@fresh/core@^2.2.0/runtime",
     "@fresh/plugin-vite": "jsr:@fresh/plugin-vite@^1.0.0",
     "vite": "npm:vite@^7.3.5",
+    "@babel/core": "npm:@babel/core@^7.29.6",
     "preact": "npm:preact@^10.28.3",
     "preact/hooks": "npm:preact@^10.28.3/hooks",
     "@preact/signals": "npm:@preact/signals@^2.7.1",
