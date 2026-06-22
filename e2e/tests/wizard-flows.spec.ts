@@ -75,13 +75,21 @@ for (const w of WIZARDS) {
           await input.fill(value);
         }
 
-        // Signal-based stepping: click Next until Apply/Create button is visible
+        // Signal-based stepping: click Next until Apply/Create button is visible.
+        //
+        // Anchor both selectors at the START of the accessible name. The
+        // WizardShell step rail renders a button per step whose name is like
+        // "2 Review Preview & apply" — the substring "apply"/"preview" otherwise
+        // collides with these action buttons, so the unanchored regex matched
+        // the (always-visible, backward-only) rail button and the test clicked
+        // it instead of advancing. Rail buttons start with the step number, so
+        // "^Apply" / "^Continue" / "^Create" match only the real action buttons.
         const submitText = w.submitButton ?? "Apply";
         const submitButton = page.getByRole("button", {
-          name: new RegExp(submitText, "i"),
+          name: new RegExp("^" + submitText, "i"),
         });
         const nextButton = page.getByRole("button", {
-          name: /next|preview|continue/i,
+          name: /^(continue|next)/i,
         });
 
         // Click Next until review step (submit button visible) — max 5 iterations.
