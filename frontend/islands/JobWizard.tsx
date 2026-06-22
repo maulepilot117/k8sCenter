@@ -63,7 +63,8 @@ function initialState(): JobFormState {
   };
 }
 
-export default function JobWizard({ onClose }: { onClose: () => void }) {
+export default function JobWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<JobFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -261,11 +262,11 @@ export default function JobWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i <= currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
       onNext={() => {
         if (currentStep.value < 2) goNext();
-        else onClose();
+        else close();
       }}
       nextLabel={nextLabel}
       yaml={currentStep.value < 2 ? manifest() : previewYaml.value}

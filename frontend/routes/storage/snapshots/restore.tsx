@@ -7,12 +7,5 @@ import RestoreSnapshotWizard from "@/islands/RestoreSnapshotWizard.tsx";
  * as snapshotParams=null here so the island reads them itself on mount.
  */
 export default define.page(function RestoreSnapshotPage() {
-  return (
-    <RestoreSnapshotWizard
-      onClose={() => {
-        globalThis.location.href = "/storage/snapshots";
-      }}
-      snapshotParams={null}
-    />
-  );
+  return <RestoreSnapshotWizard snapshotParams={null} />;
 });

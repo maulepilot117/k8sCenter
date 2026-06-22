@@ -67,7 +67,10 @@ function initialState(): DeploymentFormState {
   };
 }
 
-export default function DeploymentWizard({ onClose }: { onClose: () => void }) {
+export default function DeploymentWizard(
+  { onClose }: { onClose?: () => void },
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<DeploymentFormState>(initialState());
   const namespaces = useNamespaces();
@@ -251,11 +254,11 @@ export default function DeploymentWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i <= currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
       onNext={() => {
         if (currentStep.value < 3) goNext();
-        else onClose();
+        else close();
       }}
       nextLabel={currentStep.value < 3 ? "Continue" : "Close"}
       yaml={currentStep.value < 3 ? manifest() : previewYaml.value}

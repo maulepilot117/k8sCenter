@@ -59,7 +59,7 @@ export interface SecretStoreWizardForm {
 
 export interface SecretStoreWizardProps {
   scope: "namespaced" | "cluster";
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 // Steps shown when no per-provider form ships yet (or the user picks a
@@ -104,6 +104,7 @@ function initialForm(scope: "namespaced" | "cluster"): SecretStoreWizardForm {
 export default function SecretStoreWizard(
   { scope, onClose }: SecretStoreWizardProps,
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<SecretStoreWizardForm>(initialForm(scope));
   const errors = useSignal<Record<string, string>>({});
@@ -412,7 +413,7 @@ export default function SecretStoreWizard(
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={async () => {
         await goNext();

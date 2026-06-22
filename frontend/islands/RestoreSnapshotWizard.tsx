@@ -93,12 +93,13 @@ spec:
 
 export default function RestoreSnapshotWizard(
   { onClose, snapshotParams: snapshotParamsProp }: {
-    onClose: () => void;
+    onClose?: () => void;
     /** Pre-populated from the snapshot's Restore action. Pass null from the
      *  deep-link route — the wizard will read URL search params itself. */
     snapshotParams?: SnapshotParams | null;
   },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   // When rendered from the deep-link route, snapshotParamsProp is null and we
   // fall back to parsing window.location.search on the client.
   const snapshotParams = snapshotParamsProp ?? getSnapshotParamsFromUrl();
@@ -200,7 +201,7 @@ export default function RestoreSnapshotWizard(
       step.value = 1;
       await fetchPreview();
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -217,9 +218,9 @@ export default function RestoreSnapshotWizard(
         steps={STEPS}
         current={0}
         onStep={() => {}}
-        onCancel={onClose}
+        onCancel={close}
         onBack={() => {}}
-        onNext={onClose}
+        onNext={close}
         nextLabel="Close"
       >
         <div
@@ -257,9 +258,9 @@ export default function RestoreSnapshotWizard(
         steps={STEPS}
         current={0}
         onStep={() => {}}
-        onCancel={onClose}
+        onCancel={close}
         onBack={() => {}}
-        onNext={onClose}
+        onNext={close}
         nextLabel="Close"
       >
         <div
@@ -314,7 +315,7 @@ export default function RestoreSnapshotWizard(
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 0 ? "Preview YAML" : "Done"}

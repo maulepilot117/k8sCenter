@@ -1,12 +1,6 @@
 import { define } from "@/utils.ts";
 import VeleroRestoreWizard from "@/islands/VeleroRestoreWizard.tsx";
 
-export default define.page(function NewRestorePage(_ctx) {
-  return (
-    <VeleroRestoreWizard
-      onClose={() => {
-        globalThis.location.href = "/backup/restores";
-      }}
-    />
-  );
+export default define.page(function NewRestorePage() {
+  return <VeleroRestoreWizard />;
 });

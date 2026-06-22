@@ -69,7 +69,8 @@ function buildManifest(f: ServiceFormState): string {
   }`;
 }
 
-export default function ServiceWizard({ onClose }: { onClose: () => void }) {
+export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<ServiceFormState>(initialState());
   const namespaces = useNamespaces();
@@ -248,7 +249,7 @@ export default function ServiceWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={goNext}
       nextLabel={currentStep.value === 1

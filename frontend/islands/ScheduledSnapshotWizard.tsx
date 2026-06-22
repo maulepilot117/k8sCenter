@@ -88,8 +88,9 @@ function initialState(): ScheduledSnapshotFormState {
 }
 
 export default function ScheduledSnapshotWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const step = useSignal(0);
   const form = useSignal<ScheduledSnapshotFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -211,7 +212,7 @@ export default function ScheduledSnapshotWizard(
       step.value = 2;
       await fetchPreview();
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -229,9 +230,9 @@ export default function ScheduledSnapshotWizard(
         steps={STEPS}
         current={0}
         onStep={() => {}}
-        onCancel={onClose}
+        onCancel={close}
         onBack={() => {}}
-        onNext={onClose}
+        onNext={close}
         nextLabel="Close"
       >
         <div
@@ -286,7 +287,7 @@ export default function ScheduledSnapshotWizard(
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 1

@@ -67,11 +67,12 @@ spec:
 
 export default function SnapshotWizard(
   { onClose, preselectedNs, preselectedPvc }: {
-    onClose: () => void;
+    onClose?: () => void;
     preselectedNs?: string;
     preselectedPvc?: string;
   },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const step = useSignal(0);
   const form = useSignal<SnapshotFormState>({
     name: preselectedPvc ? generateSnapshotName(preselectedPvc) : "",
@@ -185,7 +186,7 @@ export default function SnapshotWizard(
       step.value = 1;
       await fetchPreview();
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -197,9 +198,9 @@ export default function SnapshotWizard(
         steps={STEPS}
         current={0}
         onStep={() => {}}
-        onCancel={onClose}
+        onCancel={close}
         onBack={() => {}}
-        onNext={onClose}
+        onNext={close}
         nextLabel="Close"
       >
         <div
@@ -272,7 +273,7 @@ export default function SnapshotWizard(
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 0 ? "Preview YAML" : "Done"}

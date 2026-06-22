@@ -158,7 +158,8 @@ function buildManifest(f: SecretFormState): string {
   } (base64-encoded by server)`;
 }
 
-export default function SecretWizard({ onClose }: { onClose: () => void }) {
+export default function SecretWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<SecretFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -312,9 +313,9 @@ export default function SecretWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : onClose}
+      onNext={currentStep.value === 0 ? goNext : close}
       nextLabel={currentStep.value === 0 ? "Preview YAML" : "Close"}
       yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
     >

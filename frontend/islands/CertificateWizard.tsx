@@ -96,8 +96,9 @@ spec:
 }
 
 export default function CertificateWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const step = useSignal(0);
   const form = useSignal<CertificateWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
@@ -223,7 +224,7 @@ export default function CertificateWizard(
       step.value = 1;
       await fetchPreview();
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -253,7 +254,7 @@ export default function CertificateWizard(
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 0 ? "Preview YAML" : "Done"}

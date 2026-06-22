@@ -127,8 +127,9 @@ function buildManifest(f: NetworkPolicyFormState): string {
 }
 
 export default function NetworkPolicyWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<NetworkPolicyFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -455,7 +456,7 @@ export default function NetworkPolicyWizard(
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={goNext}
       nextLabel={currentStep.value === 1

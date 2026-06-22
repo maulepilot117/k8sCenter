@@ -40,7 +40,8 @@ function initialForm(): PolicyWizardForm {
   };
 }
 
-export default function PolicyWizard({ onClose }: { onClose: () => void }) {
+export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<PolicyWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
@@ -223,7 +224,7 @@ export default function PolicyWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={async () => await goNext()}
       nextLabel={currentStep.value === 0

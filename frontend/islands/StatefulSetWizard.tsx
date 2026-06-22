@@ -87,8 +87,9 @@ function initialState(): StatefulSetFormState {
 }
 
 export default function StatefulSetWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<StatefulSetFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -312,11 +313,11 @@ export default function StatefulSetWizard(
       onStep={(i) => {
         if (i <= currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (currentStep.value = Math.max(0, currentStep.value - 1))}
       onNext={() => {
         if (currentStep.value < 2) goNext();
-        else onClose();
+        else close();
       }}
       nextLabel={currentStep.value < 2 ? "Continue" : "Close"}
       yaml={currentStep.value < 2 ? manifest() : previewYaml.value}

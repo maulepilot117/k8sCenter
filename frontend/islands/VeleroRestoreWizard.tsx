@@ -44,10 +44,11 @@ function initialState(preselectedBackup?: string): RestoreFormState {
 }
 
 interface Props {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 export default function VeleroRestoreWizard({ onClose }: Props) {
+  const close = onClose ?? (() => globalThis.history.back());
   const urlParams = IS_BROWSER
     ? new URLSearchParams(globalThis.location.search)
     : null;
@@ -168,7 +169,7 @@ export default function VeleroRestoreWizard({ onClose }: Props) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={goNext}
       nextLabel={currentStep.value === 0 ? "Preview YAML" : "Apply"}

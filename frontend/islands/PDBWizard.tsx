@@ -49,7 +49,8 @@ function initialState(): PDBFormState {
   };
 }
 
-export default function PDBWizard({ onClose }: { onClose: () => void }) {
+export default function PDBWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<PDBFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -182,7 +183,7 @@ export default function PDBWizard({ onClose }: { onClose: () => void }) {
 
   const handleNext = () => {
     if (currentStep.value === 1) {
-      onClose();
+      close();
     } else {
       goNext();
     }
@@ -198,7 +199,7 @@ export default function PDBWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => {
         if (currentStep.value > 0) currentStep.value = 0;
       }}

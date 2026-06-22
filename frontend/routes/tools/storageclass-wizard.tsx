@@ -2,11 +2,5 @@ import { define } from "@/utils.ts";
 import StorageClassWizard from "@/islands/StorageClassWizard.tsx";
 
 export default define.page(function StorageClassWizardRoute() {
-  return (
-    <StorageClassWizard
-      onClose={() => {
-        globalThis.location.href = "/storage/overview";
-      }}
-    />
-  );
+  return <StorageClassWizard />;
 });

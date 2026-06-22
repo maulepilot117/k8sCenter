@@ -33,7 +33,8 @@ function initialState(): UserFormState {
   };
 }
 
-export default function UserWizard({ onClose }: { onClose: () => void }) {
+export default function UserWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<UserFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -157,7 +158,7 @@ export default function UserWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={currentStep.value === 0 ? goNext : handleSubmit}
       nextLabel={currentStep.value === 0 ? "Next" : "Create User"}
@@ -198,7 +199,7 @@ export default function UserWizard({ onClose }: { onClose: () => void }) {
                 </a>
                 <button
                   type="button"
-                  onClick={onClose}
+                  onClick={close}
                   class="inline-flex items-center rounded-md border border-border-primary px-4 py-2 text-sm font-medium text-text-secondary hover:bg-hover"
                 >
                   Close

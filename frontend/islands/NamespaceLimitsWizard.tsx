@@ -125,8 +125,9 @@ function buildManifest(f: FormState): string {
 }
 
 export default function NamespaceLimitsWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<FormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -342,9 +343,9 @@ export default function NamespaceLimitsWizard(
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 3 ? onClose : goNext}
+      onNext={currentStep.value === 3 ? close : goNext}
       nextLabel={nextLabel}
       yaml={currentStep.value < 3 ? buildManifest(f) : undefined}
     >

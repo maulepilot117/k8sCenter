@@ -74,8 +74,12 @@ allowVolumeExpansion: ${f.allowVolumeExpansion}${paramsBlock}${mountBlock}`;
 }
 
 export default function StorageClassWizard(
-  { onClose }: { onClose: () => void },
+  { onClose }: { onClose?: () => void },
 ) {
+  // When rendered as a full-page route, no onClose is passed (Fresh cannot
+  // serialize a function prop across the route→island boundary). Fall back to
+  // browser history so the wizard chrome's Cancel/Done still work.
+  const close = onClose ?? (() => globalThis.history.back());
   const step = useSignal(0);
   const form = useSignal<FormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -167,7 +171,7 @@ export default function StorageClassWizard(
     } else if (step.value < 2) {
       step.value += 1;
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -199,7 +203,7 @@ export default function StorageClassWizard(
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 1

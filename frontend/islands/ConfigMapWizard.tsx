@@ -40,7 +40,10 @@ function buildManifest(f: ConfigMapFormState): string {
   }\n  namespace: ${f.namespace}\ndata:\n${dataLines}`;
 }
 
-export default function ConfigMapWizard({ onClose }: { onClose: () => void }) {
+export default function ConfigMapWizard(
+  { onClose }: { onClose?: () => void },
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<ConfigMapFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -193,9 +196,9 @@ export default function ConfigMapWizard({ onClose }: { onClose: () => void }) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
-      onNext={currentStep.value === 0 ? goNext : onClose}
+      onNext={currentStep.value === 0 ? goNext : close}
       nextLabel={currentStep.value === 0 ? "Preview YAML" : "Close"}
       yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
     >

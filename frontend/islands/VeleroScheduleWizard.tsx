@@ -57,10 +57,11 @@ function initialState(): ScheduleFormState {
 }
 
 interface Props {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 export default function VeleroScheduleWizard({ onClose }: Props) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<ScheduleFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -189,7 +190,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={handleBack}
       onNext={handleNext}
       nextLabel={currentStep.value === 0 ? "Next" : "Apply"}

@@ -5,7 +5,6 @@ export default define.page(function NewRoleBindingPage() {
   return (
     <RoleBindingWizard
       clusterScoped={false}
-      onClose={() => globalThis.history.back()}
     />
   );
 });

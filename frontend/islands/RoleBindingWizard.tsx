@@ -30,7 +30,7 @@ interface RoleItem {
 
 interface RoleBindingWizardProps {
   clusterScoped: boolean;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 const STEPS: WizardStep[] = [
@@ -54,6 +54,7 @@ function initialState(clusterScoped: boolean): BindingFormState {
 export default function RoleBindingWizard(
   { clusterScoped, onClose }: RoleBindingWizardProps,
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   const currentStep = useSignal(0);
   const form = useSignal<BindingFormState>(initialState(clusterScoped));
   const errors = useSignal<Record<string, string>>({});
@@ -232,7 +233,7 @@ export default function RoleBindingWizard(
       onStep={(i) => {
         if (i < currentStep.value) currentStep.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={goBack}
       onNext={async () => await goNext()}
       nextLabel={currentStep.value < 2

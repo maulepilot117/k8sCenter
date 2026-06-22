@@ -25,7 +25,7 @@ export interface IssuerWizardForm {
 
 interface IssuerWizardProps {
   scope: "namespaced" | "cluster";
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 const STEPS: WizardStep[] = [
@@ -94,6 +94,7 @@ spec:
 }
 
 export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
+  const close = onClose ?? (() => globalThis.history.back());
   const step = useSignal(0);
   const form = useSignal<IssuerWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
@@ -229,7 +230,7 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
     } else if (step.value < 2) {
       step.value += 1;
     } else {
-      onClose();
+      close();
     }
   };
 
@@ -261,7 +262,7 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
       onStep={(i) => {
         if (i < step.value) step.value = i;
       }}
-      onCancel={onClose}
+      onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
       nextLabel={step.value === 1
