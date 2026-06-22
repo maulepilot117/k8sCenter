@@ -135,12 +135,20 @@ jobs:
         # without blocking. Accepted residual findings belong in
         # .trivyignore (created on demand when the first allowlisted
         # CVE shows up) — the audit's "reviewed allowlists" guidance.
+        #
+        # limit-severities-for-sarif=true is REQUIRED: without it the
+        # action builds the SARIF report with ALL severities, which also
+        # drops the severity filter for exit-code — so the build would
+        # fail on fixable LOW/MEDIUM CVEs, not just CRITICAL/HIGH,
+        # contradicting the policy above. With it, both the SARIF and the
+        # exit-code honour severity=CRITICAL,HIGH.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
         with:
           image-ref: k8scenter-backend:scan
           format: sarif
           output: trivy-backend.sarif
           severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
           ignore-unfixed: true
           exit-code: "1"
           trivyignores: ".trivyignore"
@@ -228,6 +236,7 @@ jobs:
           format: sarif
           output: trivy-frontend.sarif
           severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
           ignore-unfixed: true
           exit-code: "1"
           trivyignores: ".trivyignore"
