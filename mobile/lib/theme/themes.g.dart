@@ -17,6 +17,7 @@ class KubeThemeColors {
     required this.textPrimary,
     required this.textSecondary,
     required this.textMuted,
+    required this.textOnAccent,
     required this.accent,
     required this.accentGlow,
     required this.accentDim,
@@ -48,6 +49,7 @@ class KubeThemeColors {
   final String textPrimary;
   final String textSecondary;
   final String textMuted;
+  final String textOnAccent;
   final String accent;
   final String accentGlow;
   final String accentDim;
@@ -96,6 +98,7 @@ const Map<String, KubeTheme> kubeThemes = {
       textPrimary: '#eef2fb',
       textSecondary: '#9aa6c4',
       textMuted: '#647189',
+      textOnAccent: '#ffffff',
       accent: '#43b0ff',
       accentGlow: 'rgba(67, 174, 255, 0.16)',
       accentDim: 'rgba(67, 174, 255, 0.12)',
@@ -131,6 +134,7 @@ const Map<String, KubeTheme> kubeThemes = {
       textPrimary: '#141a2b',
       textSecondary: '#4d5972',
       textMuted: '#8492ad',
+      textOnAccent: '#ffffff',
       accent: '#2a7fe0',
       accentGlow: 'rgba(42, 127, 224, 0.16)',
       accentDim: 'rgba(42, 127, 224, 0.10)',

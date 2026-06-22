@@ -1,4 +1,4 @@
-import { useComputed, useSignal } from "@preact/signals";
+import { type Signal, useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
@@ -51,6 +51,67 @@ interface ResourceTableIslandProps {
 
 const PAGE_SIZE = 100;
 
+/**
+ * Per-row kebab action menu. Defined at module scope (not inside the island)
+ * so its `actionMenuOpen.value` read is scoped to THIS component's render —
+ * toggling the menu re-renders only the kebab cells, not the full `uiRows`
+ * computed (which would otherwise re-map every row × column on each open/close).
+ */
+function KebabCell(
+  { resource, actions, actionMenuOpen, onAction }: {
+    resource: K8sResource;
+    actions: ActionId[];
+    actionMenuOpen: Signal<string | null>;
+    onAction: (actionId: ActionId, resource: K8sResource) => void;
+  },
+) {
+  if (actions.length === 0) return null;
+  const isOpen = actionMenuOpen.value === resource.metadata.uid;
+  return (
+    <div class="relative">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
+        }}
+        class="rounded p-1 text-text-muted hover:bg-hover hover:text-text-primary"
+        title="Actions"
+      >
+        <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="8" cy="3" r="1.5" />
+          <circle cx="8" cy="8" r="1.5" />
+          <circle cx="8" cy="13" r="1.5" />
+        </svg>
+      </button>
+      {isOpen && (
+        <div
+          class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-border-primary bg-surface py-1 shadow-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {actions.map((actionId: ActionId) => {
+            const meta = getActionMeta(actionId, resource);
+            return (
+              <button
+                key={actionId}
+                type="button"
+                onClick={() => onAction(actionId, resource)}
+                class={`w-full px-3 py-1.5 text-left text-sm ${
+                  meta.danger
+                    ? "text-danger hover:bg-danger-dim"
+                    : "text-text-secondary hover:bg-hover"
+                }`}
+              >
+                {meta.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ResourceTableIsland({
   kind,
   title,
@@ -94,7 +155,14 @@ export default function ResourceTableIsland({
   );
 
   // Fetch resources via REST with pagination
+  const fetchAbort = useRef<AbortController | null>(null);
   const fetchResources = useCallback(async (append = false) => {
+    // Cancel any in-flight fetch so a slow response for a previous
+    // namespace/cluster can't land late and overwrite current data.
+    fetchAbort.current?.abort();
+    const ac = new AbortController();
+    fetchAbort.current = ac;
+
     if (append) {
       loadingMore.value = true;
     } else {
@@ -111,7 +179,9 @@ export default function ResourceTableIsland({
       }
       const res = await apiGet<K8sResource[]>(
         `${basePath}?${params.toString()}`,
+        ac.signal,
       );
+      if (ac.signal.aborted) return;
       const newItems = Array.isArray(res.data) ? res.data : [];
       if (append) {
         // Deduplicate by UID when appending
@@ -126,6 +196,13 @@ export default function ResourceTableIsland({
       continueToken.value = res.metadata?.continue ?? null;
       totalCount.value = res.metadata?.total ?? null;
     } catch (err) {
+      // Ignore aborts — a newer fetch (or unmount) superseded this one.
+      if (
+        ac.signal.aborted ||
+        (err instanceof DOMException && err.name === "AbortError")
+      ) {
+        return;
+      }
       error.value = err instanceof Error
         ? err.message
         : "Failed to load resources";
@@ -133,8 +210,11 @@ export default function ResourceTableIsland({
         items.value = [];
       }
     } finally {
-      loading.value = false;
-      loadingMore.value = false;
+      // Only the latest fetch owns the loading flags.
+      if (fetchAbort.current === ac) {
+        loading.value = false;
+        loadingMore.value = false;
+      }
     }
   }, [kind]);
 
@@ -209,6 +289,7 @@ export default function ResourceTableIsland({
 
     return () => {
       unsubscribe?.();
+      fetchAbort.current?.abort();
       if (rafId.current) {
         cancelAnimationFrame(rafId.current);
         rafId.current = 0;
@@ -385,56 +466,6 @@ export default function ResourceTableIsland({
     getVisibleActions(kind, ns.value, rbac.value)
   );
 
-  // Kebab menu renderer for each row — reads actions.value reactively inside the callback
-  const renderKebab = (resource: K8sResource) => {
-    const currentActions = actions.value;
-    if (currentActions.length === 0) return null;
-    const isOpen = actionMenuOpen.value === resource.metadata.uid;
-    return (
-      <div class="relative">
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            actionMenuOpen.value = isOpen ? null : resource.metadata.uid;
-          }}
-          class="rounded p-1 text-text-muted hover:bg-hover hover:text-text-primary"
-          title="Actions"
-        >
-          <svg class="h-4 w-4" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="8" cy="3" r="1.5" />
-            <circle cx="8" cy="8" r="1.5" />
-            <circle cx="8" cy="13" r="1.5" />
-          </svg>
-        </button>
-        {isOpen && (
-          <div
-            class="absolute right-0 z-20 mt-1 w-40 rounded-md border border-border-primary bg-surface py-1 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {currentActions.map((actionId: ActionId) => {
-              const meta = getActionMeta(actionId, resource);
-              return (
-                <button
-                  key={actionId}
-                  type="button"
-                  onClick={() => handleActionClick(actionId, resource)}
-                  class={`w-full px-3 py-1.5 text-left text-sm ${
-                    meta.danger
-                      ? "text-danger hover:bg-danger-dim"
-                      : "text-text-secondary hover:bg-hover"
-                  }`}
-                >
-                  {meta.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   // Map RESOURCE_COLUMNS (DataTable format) → UIColumn[] for ResourceTable
   const uiColumns: UIColumn[] = columns.map((col) => ({
     key: col.key,
@@ -445,7 +476,20 @@ export default function ResourceTableIsland({
         col.key === "active" || col.key === "upToDate")
       ? "right"
       : "left",
+    // The displayed-sort comparator only handles these keys.
+    sortable: col.key === "name" || col.key === "namespace" ||
+      col.key === "age",
   }));
+
+  // Toggle/flip sort when a sortable header is clicked.
+  const handleSort = (key: string) => {
+    if (sortKey.value === key) {
+      sortDir.value = sortDir.value === "asc" ? "desc" : "asc";
+    } else {
+      sortKey.value = key;
+      sortDir.value = "asc";
+    }
+  };
 
   // Build UIRow[] from K8sResource[] using the existing render functions
   const uiRows = useComputed((): UIRow[] => {
@@ -457,9 +501,18 @@ export default function ResourceTableIsland({
           (resource as Record<string, unknown>)[col.key] ?? "",
         );
       }
-      // Inject kebab menu as last "actions" cell when there are actions
+      // Inject kebab menu as last "actions" cell when there are actions.
+      // KebabCell owns the actionMenuOpen read so this computed does not
+      // re-run on every menu open/close.
       if (currentActions.length > 0) {
-        cells["_actions"] = renderKebab(resource);
+        cells["_actions"] = (
+          <KebabCell
+            resource={resource}
+            actions={currentActions}
+            actionMenuOpen={actionMenuOpen}
+            onAction={handleActionClick}
+          />
+        );
       }
       return {
         id: resource.metadata.uid,
@@ -709,6 +762,9 @@ export default function ResourceTableIsland({
             columns={uiColumnsWithActions.value}
             rows={finalRows}
             chevron
+            sortKey={sortKey.value}
+            sortDir={sortDir.value}
+            onSort={handleSort}
           />
         )}
 

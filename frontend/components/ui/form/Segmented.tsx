@@ -37,7 +37,7 @@ export default function Segmented(
               fontFamily: "inherit",
               transition: "all 120ms ease",
               background: sel ? "var(--accent)" : "transparent",
-              color: sel ? "#fff" : "var(--text-secondary)",
+              color: sel ? "var(--text-on-accent)" : "var(--text-secondary)",
             }}
           >
             {o}

@@ -1,5 +1,6 @@
 import type { ComponentChildren } from "preact";
 import YamlView from "@/components/ui/YamlView.tsx";
+import { wizardBusy } from "@/lib/wizard-busy.ts";
 
 export interface WizardStep {
   label: string;
@@ -46,9 +47,15 @@ export default function WizardShell(
     children,
   }: WizardShellProps,
 ) {
+  // While a server-side apply is in flight, suppress every close affordance
+  // (scrim, X, Cancel) so the user cannot abandon the request with no feedback.
+  const busy = wizardBusy.value;
+  const guardedCancel = () => {
+    if (!busy) onCancel();
+  };
   return (
     <div
-      onClick={onCancel}
+      onClick={guardedCancel}
       style={{
         position: "fixed",
         inset: 0,
@@ -124,7 +131,8 @@ export default function WizardShell(
           </div>
           <button
             type="button"
-            onClick={onCancel}
+            onClick={guardedCancel}
+            disabled={busy}
             aria-label="Close"
             style={{
               width: "32px",
@@ -134,9 +142,10 @@ export default function WizardShell(
               alignItems: "center",
               justifyContent: "center",
               border: "none",
-              cursor: "pointer",
+              cursor: busy ? "not-allowed" : "pointer",
               background: "transparent",
               color: "var(--text-muted)",
+              opacity: busy ? 0.4 : 1,
             }}
           >
             <svg
@@ -207,7 +216,7 @@ export default function WizardShell(
                         ? "var(--accent-dim)"
                         : "var(--bg-elevated)",
                       color: status === "done"
-                        ? "#fff"
+                        ? "var(--text-on-accent)"
                         : status === "active"
                         ? "var(--accent)"
                         : "var(--text-muted)",
@@ -340,17 +349,19 @@ export default function WizardShell(
         >
           <button
             type="button"
-            onClick={onCancel}
+            onClick={guardedCancel}
+            disabled={busy}
             style={{
               padding: "9px 16px",
               borderRadius: "9px",
               border: "none",
-              cursor: "pointer",
+              cursor: busy ? "not-allowed" : "pointer",
               background: "transparent",
               color: "var(--text-muted)",
               fontSize: "13px",
               fontWeight: 600,
               fontFamily: "inherit",
+              opacity: busy ? 0.4 : 1,
             }}
           >
             Cancel
@@ -386,7 +397,7 @@ export default function WizardShell(
                 borderRadius: "9px",
                 border: "none",
                 cursor: "pointer",
-                color: "#fff",
+                color: "var(--text-on-accent)",
                 fontSize: "13px",
                 fontWeight: 650,
                 fontFamily: "inherit",

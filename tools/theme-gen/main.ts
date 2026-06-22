@@ -60,6 +60,7 @@ const CSS_VAR_MAP: Record<string, string> = {
   textPrimary: "--text-primary",
   textSecondary: "--text-secondary",
   textMuted: "--text-muted",
+  textOnAccent: "--text-on-accent",
   accent: "--accent",
   accentGlow: "--accent-glow",
   accentDim: "--accent-dim",

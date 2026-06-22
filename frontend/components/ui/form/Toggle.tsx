@@ -27,7 +27,7 @@ export default function Toggle(
           width: "18px",
           height: "18px",
           borderRadius: "50%",
-          background: "#fff",
+          background: "var(--text-on-accent)",
           transition: "left 150ms ease",
           left: checked ? "18px" : "2px",
         }}

@@ -6,6 +6,8 @@ export interface Column {
   /** CSS track size, e.g. "1.6fr" | "120px". Default "1fr". */
   width?: string;
   align?: "left" | "right";
+  /** when true (and onSort is provided) the header toggles sort on this key */
+  sortable?: boolean;
 }
 
 export interface Row {
@@ -19,6 +21,11 @@ interface ResourceTableProps {
   rows: Row[];
   /** show the trailing chevron affordance (default true when rows are clickable) */
   chevron?: boolean;
+  /** active sort column key (enables header sort affordance with onSort) */
+  sortKey?: string;
+  sortDir?: "asc" | "desc";
+  /** called with a column key when a sortable header is clicked */
+  onSort?: (key: string) => void;
 }
 
 /**
@@ -31,7 +38,8 @@ interface ResourceTableProps {
  * Compose cells with status pills / dots from your existing components.
  */
 export default function ResourceTable(
-  { columns, rows, chevron = true }: ResourceTableProps,
+  { columns, rows, chevron = true, sortKey, sortDir, onSort }:
+    ResourceTableProps,
 ) {
   const grid = columns.map((c) => c.width ?? "1fr").join(" ") +
     (chevron ? " 40px" : "");
@@ -62,15 +70,35 @@ export default function ResourceTable(
           color: "var(--text-muted)",
         }}
       >
-        {columns.map((c) => (
-          <span
-            key={c.key}
-            role="columnheader"
-            style={{ textAlign: c.align ?? "left" }}
-          >
-            {c.label}
-          </span>
-        ))}
+        {columns.map((c) => {
+          const canSort = !!onSort && c.sortable;
+          const active = canSort && sortKey === c.key;
+          return (
+            <span
+              key={c.key}
+              role="columnheader"
+              aria-sort={active
+                ? (sortDir === "asc" ? "ascending" : "descending")
+                : undefined}
+              onClick={canSort ? () => onSort(c.key) : undefined}
+              style={{
+                textAlign: c.align ?? "left",
+                cursor: canSort ? "pointer" : "default",
+                userSelect: "none",
+                color: active ? "var(--text-secondary)" : undefined,
+                justifyContent: c.align === "right" ? "flex-end" : "flex-start",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+              }}
+            >
+              {c.label}
+              {active && (
+                <span aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>
+              )}
+            </span>
+          );
+        })}
         {chevron && <span role="columnheader" aria-hidden="true" />}
       </div>
 

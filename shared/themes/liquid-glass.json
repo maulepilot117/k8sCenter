@@ -12,6 +12,7 @@
     "textPrimary": "#eef2fb",
     "textSecondary": "#9aa6c4",
     "textMuted": "#647189",
+    "textOnAccent": "#ffffff",
     "accent": "#43b0ff",
     "accentGlow": "rgba(67, 174, 255, 0.16)",
     "accentDim": "rgba(67, 174, 255, 0.12)",
