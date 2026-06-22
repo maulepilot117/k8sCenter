@@ -298,9 +298,13 @@ export default function ExternalSecretWizard(
       onCancel={close}
       onBack={goBack}
       onNext={async () => {
-        await goNext();
+        if (currentStep.value === STEPS.length - 1) {
+          close();
+        } else {
+          await goNext();
+        }
       }}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Apply"}
+      nextLabel={currentStep.value === STEPS.length - 1 ? "Close" : "Continue"}
       yaml={currentStep.value === STEPS.length - 1
         ? (previewYaml.value || undefined)
         : undefined}

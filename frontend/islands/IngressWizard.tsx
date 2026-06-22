@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import {
@@ -109,6 +109,7 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   const markDirty = useCallback(() => {
     dirty.value = true;
@@ -231,6 +232,7 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -266,13 +268,15 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
         "/v1/wizards/ingress/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 

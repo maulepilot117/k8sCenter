@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback } from "preact/hooks";
+import { useCallback, useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import type { LabelEntry } from "@/lib/wizard-types.ts";
@@ -141,6 +141,7 @@ export default function NetworkPolicyWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   const updateField = useCallback((field: string, value: unknown) => {
     dirty.value = true;
@@ -349,6 +350,23 @@ export default function NetworkPolicyWizard(
                 ] = "Must be a valid CIDR";
               }
             });
+            // FINDING #20: a podSelector/namespaceSelector with no non-empty
+            // label key silently becomes {podSelector:{}} — a match-ALL selector
+            // that widens the policy. Require at least one non-blank key.
+            if (
+              peer.type === "podSelector" || peer.type === "namespaceSelector"
+            ) {
+              const hasKey = peer.labels.some((l) => l.key.trim() !== "");
+              if (!hasKey) {
+                const selectorKind = peer.type === "podSelector"
+                  ? "Pod Selector"
+                  : "Namespace Selector";
+                errs[
+                  `${direction}[${ruleIdx}].peers[${peerIdx}].labels`
+                ] =
+                  `${selectorKind} peer must have at least one label key — an empty selector matches ALL pods/namespaces. Add a label or use IP Block instead.`;
+              }
+            }
           });
         });
       };
@@ -367,6 +385,7 @@ export default function NetworkPolicyWizard(
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -400,13 +419,15 @@ export default function NetworkPolicyWizard(
         "/v1/wizards/networkpolicy/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -1369,6 +1390,17 @@ function PeerEditor({
               </div>
             ))}
           </div>
+          {errors[`${errorPrefix}.labels`] && (
+            <p
+              style={{
+                marginTop: "4px",
+                fontSize: "10px",
+                color: "var(--error)",
+              }}
+            >
+              {errors[`${errorPrefix}.labels`]}
+            </p>
+          )}
         </div>
       )}
 

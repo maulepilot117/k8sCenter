@@ -415,9 +415,13 @@ export default function SecretStoreWizard(
       onCancel={close}
       onBack={goBack}
       onNext={async () => {
-        await goNext();
+        if (isLastStep) {
+          close();
+        } else {
+          await goNext();
+        }
       }}
-      nextLabel={isLastStep ? "Apply" : "Continue"}
+      nextLabel={isLastStep ? "Close" : "Continue"}
       yaml={isLastStep ? (previewYaml.value || undefined) : undefined}
     >
       {currentStep.value === 0 && (

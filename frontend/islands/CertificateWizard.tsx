@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
@@ -110,6 +110,7 @@ export default function CertificateWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useEffect(() => {
     Promise.all([
@@ -176,11 +177,13 @@ export default function CertificateWizard(
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     const f = form.value;
     const ref = decodeIssuerRef(f.issuerRefValue);
     if (!ref) {
+      if (gen !== previewGen.current) return;
       previewError.value = "Invalid issuer selection";
       previewLoading.value = false;
       return;
@@ -208,13 +211,15 @@ export default function CertificateWizard(
         "/v1/wizards/certificate/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 

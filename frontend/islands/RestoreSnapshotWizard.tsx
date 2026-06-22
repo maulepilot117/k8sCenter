@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { ACCESS_MODES, DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
@@ -128,6 +128,7 @@ export default function RestoreSnapshotWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useEffect(() => {
     apiGet<{ metadata: { available: boolean } }>("/v1/storage/snapshot-classes")
@@ -169,6 +170,7 @@ export default function RestoreSnapshotWizard(
 
   const fetchPreview = async () => {
     if (!snapshotParams) return;
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     const f = form.value;
@@ -185,13 +187,15 @@ export default function RestoreSnapshotWizard(
           apiGroup: "snapshot.storage.k8s.io",
         },
       });
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 

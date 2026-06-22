@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
@@ -73,6 +73,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   // Fetch BSLs
   useEffect(() => {
@@ -111,6 +112,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
   }, []);
 
   const fetchPreview = useCallback(async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     try {
@@ -131,11 +133,13 @@ export default function VeleroBackupWizard({ onClose }: Props) {
         "/v1/wizards/velero-backup/preview",
         body,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (e: unknown) {
+      if (gen !== previewGen.current) return;
       previewError.value = e instanceof Error ? e.message : "Preview failed";
     }
-    previewLoading.value = false;
+    if (gen === previewGen.current) previewLoading.value = false;
   }, []);
 
   const goNext = useCallback(async () => {
@@ -176,8 +180,8 @@ export default function VeleroBackupWizard({ onClose }: Props) {
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={goNext}
-      nextLabel={currentStep.value === 0 ? "Continue" : "Apply"}
+      onNext={currentStep.value === 0 ? goNext : close}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
       yaml={previewYaml.value || undefined}
     >
       {currentStep.value === 0 && (

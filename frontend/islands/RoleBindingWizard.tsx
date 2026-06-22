@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -72,6 +72,7 @@ export default function RoleBindingWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   // Fetch roles when namespace changes (for namespaced bindings)
   useEffect(() => {
@@ -176,6 +177,7 @@ export default function RoleBindingWizard(
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -200,13 +202,15 @@ export default function RoleBindingWizard(
         "/v1/wizards/rolebinding/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -235,8 +239,14 @@ export default function RoleBindingWizard(
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={async () => await goNext()}
-      nextLabel={currentStep.value === 3 ? "Apply" : "Continue"}
+      onNext={async () => {
+        if (currentStep.value === 3) {
+          close();
+        } else {
+          await goNext();
+        }
+      }}
+      nextLabel={currentStep.value === 3 ? "Close" : "Continue"}
       yaml={previewYaml.value || undefined}
     >
       {/* Step 1: Basics */}

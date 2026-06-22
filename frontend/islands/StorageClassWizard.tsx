@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import Field from "@/components/ui/form/Field.tsx";
@@ -88,6 +88,7 @@ export default function StorageClassWizard(
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   useEffect(() => {
     apiGet<Record<string, PresetInfo>>("/v1/storage/presets")
@@ -129,6 +130,7 @@ export default function StorageClassWizard(
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     const f = form.value;
@@ -153,13 +155,15 @@ export default function StorageClassWizard(
         "/v1/wizards/storageclass/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 

@@ -1,4 +1,5 @@
 import { useSignal } from "@preact/signals";
+import { useRef } from "preact/hooks";
 import { apiPost } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
@@ -103,6 +104,7 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
 
   const updateField = (field: string, value: unknown) => {
     const f = { ...form.value, [field]: value } as IssuerWizardForm;
@@ -170,10 +172,12 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
     const f = form.value;
     if (!f.type) {
+      if (gen !== previewGen.current) return;
       previewError.value = "Issuer type is not selected";
       previewLoading.value = false;
       return;
@@ -201,6 +205,7 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
       }
       default: {
         const _exhaustive: never = f.type;
+        if (gen !== previewGen.current) return;
         previewError.value = `Unsupported issuer type: ${_exhaustive}`;
         previewLoading.value = false;
         return;
@@ -212,13 +217,15 @@ export default function IssuerWizard({ scope, onClose }: IssuerWizardProps) {
       : "/v1/wizards/issuer/preview";
     try {
       const resp = await apiPost<{ yaml: string }>(endpoint, payload);
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 

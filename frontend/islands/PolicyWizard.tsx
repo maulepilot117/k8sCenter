@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useCallback, useEffect } from "preact/hooks";
+import { useCallback, useEffect, useRef } from "preact/hooks";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
@@ -50,6 +50,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
   const previewYaml = useSignal("");
   const previewLoading = useSignal(false);
   const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
   const engineStatus = useSignal<EngineStatus | null>(null);
 
   useDirtyGuard(dirty);
@@ -163,6 +164,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
   };
 
   const fetchPreview = async () => {
+    const gen = ++previewGen.current;
     previewLoading.value = true;
     previewError.value = null;
 
@@ -189,13 +191,15 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
         "/v1/wizards/policy/preview",
         payload,
       );
+      if (gen !== previewGen.current) return;
       previewYaml.value = resp.data.yaml;
     } catch (err) {
+      if (gen !== previewGen.current) return;
       previewError.value = err instanceof Error
         ? err.message
         : "Failed to generate preview";
     } finally {
-      previewLoading.value = false;
+      if (gen === previewGen.current) previewLoading.value = false;
     }
   };
 
@@ -226,8 +230,14 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
       }}
       onCancel={close}
       onBack={goBack}
-      onNext={async () => await goNext()}
-      nextLabel={currentStep.value === 2 ? "Apply" : "Continue"}
+      onNext={async () => {
+        if (currentStep.value === 2) {
+          close();
+        } else {
+          await goNext();
+        }
+      }}
+      nextLabel={currentStep.value === 2 ? "Close" : "Continue"}
       yaml={previewYaml.value || undefined}
     >
       {engineStatus.value && engineStatus.value.detected === ""
