@@ -6,7 +6,8 @@ import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { age } from "@/lib/format.ts";
-import StatusBadge, { StatusDot } from "@/components/ui/glass/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import BarRow from "@/components/charts/BarRow.tsx";
@@ -648,7 +649,7 @@ function VeleroOverview(
                 }}
                 class="hover:opacity-80"
               >
-                <StatusDot tone={phaseTone(b.phase)} />
+                <StatusDot status={phaseTone(b.phase)} />
                 <span
                   style={{
                     flex: 1,
@@ -696,7 +697,7 @@ function VeleroOverview(
                     "1px solid color-mix(in srgb, var(--border-primary) 50%, transparent)",
                 }}
               >
-                <StatusDot tone={phaseTone(bsl.phase)} />
+                <StatusDot status={phaseTone(bsl.phase)} />
                 <span
                   style={{
                     flex: 1,

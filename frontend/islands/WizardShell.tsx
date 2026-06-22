@@ -1,5 +1,6 @@
 import type { ComponentChildren } from "preact";
 import YamlView from "@/components/ui/YamlView.tsx";
+import StepRail from "@/components/wizard/StepRail.tsx";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
 
 export interface WizardStep {
@@ -165,115 +166,12 @@ export default function WizardShell(
         {/* body */}
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           {/* step rail */}
-          <div
-            style={{
-              width: "218px",
-              flexShrink: 0,
-              padding: "20px 16px",
-              borderRight: "1px solid var(--border-subtle)",
-              display: "flex",
-              flexDirection: "column",
-              gap: "4px",
-            }}
-          >
-            {steps.map((s, i) => {
-              const status = i < current
-                ? "done"
-                : i === current
-                ? "active"
-                : "upcoming";
-              return (
-                <button
-                  key={s.label}
-                  type="button"
-                  onClick={() => onStep(i)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    padding: "10px",
-                    borderRadius: "10px",
-                    border: "none",
-                    cursor: "pointer",
-                    background: "transparent",
-                    textAlign: "left",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "26px",
-                      height: "26px",
-                      borderRadius: "50%",
-                      flexShrink: 0,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "12px",
-                      fontWeight: 700,
-                      background: status === "done"
-                        ? "var(--accent)"
-                        : status === "active"
-                        ? "var(--accent-dim)"
-                        : "var(--bg-elevated)",
-                      color: status === "done"
-                        ? "var(--text-on-accent)"
-                        : status === "active"
-                        ? "var(--accent)"
-                        : "var(--text-muted)",
-                      border: `1.5px solid ${
-                        status === "active"
-                          ? "var(--accent)"
-                          : "var(--border-subtle)"
-                      }`,
-                    }}
-                  >
-                    {status === "done"
-                      ? (
-                        <svg
-                          width="13"
-                          height="13"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2.4"
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                        >
-                          <path d="M4 10l4 4 8-8" />
-                        </svg>
-                      )
-                      : i + 1}
-                  </span>
-                  <span
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "1px",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontSize: "13px",
-                        fontWeight: 600,
-                        color: status === "upcoming"
-                          ? "var(--text-muted)"
-                          : "var(--text-primary)",
-                      }}
-                    >
-                      {s.label}
-                    </span>
-                    {s.sub && (
-                      <span
-                        style={{ fontSize: "11px", color: "var(--text-muted)" }}
-                      >
-                        {s.sub}
-                      </span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
+          <StepRail
+            steps={steps}
+            current={current}
+            onStep={onStep}
+            orientation="vertical"
+          />
 
           {/* form + live yaml */}
           <div style={{ flex: 1, display: "flex", minWidth: 0 }}>

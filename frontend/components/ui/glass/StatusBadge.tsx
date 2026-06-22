@@ -1,4 +1,13 @@
+import type { StatusValue } from "@/components/ui/StatusDot.tsx";
+
 export type Tone = "ok" | "warn" | "crit" | "info" | "neutral";
+
+/** Canonical StatusValue aliases map to their Tone equivalents. */
+const CANONICAL_TO_TONE: Partial<Record<StatusValue, Tone>> = {
+  success: "ok",
+  warning: "warn",
+  error: "crit",
+};
 
 const MAP: Record<Tone, { color: string; bg: string }> = {
   ok: {
@@ -22,9 +31,11 @@ const MAP: Record<Tone, { color: string; bg: string }> = {
 
 /** Pill badge for resource status (Available / Degraded / Failed / …). */
 export default function StatusBadge(
-  { label, tone = "neutral" }: { label: string; tone?: Tone },
+  { label, tone = "neutral" }: { label: string; tone?: Tone | StatusValue },
 ) {
-  const t = MAP[tone];
+  const resolved: Tone = CANONICAL_TO_TONE[tone as StatusValue] ??
+    (tone as Tone);
+  const t = MAP[resolved];
   return (
     <span
       style={{
@@ -39,23 +50,5 @@ export default function StatusBadge(
     >
       {label}
     </span>
-  );
-}
-
-/** Small status dot for inline use in tables/nav. */
-export function StatusDot(
-  { tone = "neutral", size = 8 }: { tone?: Tone; size?: number },
-) {
-  return (
-    <span
-      style={{
-        width: `${size}px`,
-        height: `${size}px`,
-        borderRadius: "50%",
-        flexShrink: 0,
-        display: "inline-block",
-        background: MAP[tone].color,
-      }}
-    />
   );
 }

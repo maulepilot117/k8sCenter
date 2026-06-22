@@ -53,7 +53,14 @@ function newRule(): RuleRow {
   };
 }
 
-export default function CiliumPolicyEditor() {
+interface CiliumPolicyEditorProps {
+  onClose?: () => void;
+}
+
+export default function CiliumPolicyEditor(
+  { onClose }: CiliumPolicyEditorProps,
+) {
+  const close = onClose ?? (() => globalThis.history.back());
   const name = useSignal("");
   const initNs = initialNamespace();
   const namespace = useSignal(initNs);
@@ -217,12 +224,13 @@ export default function CiliumPolicyEditor() {
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Cilium Network Policy
         </h1>
-        <a
-          href="/networking/cilium-policies"
+        <button
+          type="button"
+          onClick={close}
           class="text-sm text-text-muted hover:text-text-secondary"
         >
           Back to list
-        </a>
+        </button>
       </div>
 
       {submitSuccess.value && (
@@ -424,12 +432,13 @@ export default function CiliumPolicyEditor() {
         >
           {submitting.value ? "Creating..." : "Create Policy"}
         </Button>
-        <a
-          href="/networking/cilium-policies"
+        <button
+          type="button"
+          onClick={close}
           class="text-sm text-text-muted hover:text-text-secondary"
         >
           Cancel
-        </a>
+        </button>
       </div>
     </div>
   );

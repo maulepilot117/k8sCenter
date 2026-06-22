@@ -22,6 +22,7 @@ interface SchemaFormProps {
   namespace?: string;
   name?: string;
   mode: "create" | "edit";
+  onClose?: () => void;
 }
 
 interface CRDGetResponse {
@@ -288,8 +289,9 @@ function KeyValueSection(
 // ── Component ───────────────────────────────────────────────────────────
 
 export default function SchemaForm(
-  { group, resource, namespace, name, mode }: SchemaFormProps,
+  { group, resource, namespace, name, mode, onClose }: SchemaFormProps,
 ) {
+  const close = onClose ?? (() => globalThis.history.back());
   // State
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
@@ -470,7 +472,7 @@ export default function SchemaForm(
           body,
         );
         showToast(`Created ${formName.value}`, "success");
-        globalThis.location.href = `/extensions/${group}/${resource}`;
+        close();
       } else {
         const res = await apiPut<Record<string, unknown>>(
           `/v1/extensions/resources/${group}/${resource}/${ns}/${name}`,
@@ -925,17 +927,13 @@ export default function SchemaForm(
           </button>
         )}
 
-        <a
-          href={`/extensions/${group}/${resource}`}
-          style={{
-            ...btnSecondaryStyle,
-            textDecoration: "none",
-            display: "inline-flex",
-            alignItems: "center",
-          }}
+        <button
+          type="button"
+          onClick={close}
+          style={btnSecondaryStyle}
         >
           Cancel
-        </a>
+        </button>
       </div>
     </div>
   );

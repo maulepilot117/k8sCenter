@@ -4,7 +4,8 @@ import ResourceTable, {
   type Column,
   type Row,
 } from "@/components/ui/ResourceTable.tsx";
-import StatusBadge, { StatusDot } from "@/components/ui/glass/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
 
@@ -48,7 +49,7 @@ export function BackupsResourceTable(
     cells: {
       name: (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <StatusDot tone={phaseTone(b.phase)} />
+          <StatusDot status={phaseTone(b.phase)} />
           <div>
             <div
               style={{

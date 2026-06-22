@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import StepRail from "@/components/wizard/StepRail.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Logo } from "@/components/ui/Logo.tsx";
 import { apiPut, setAccessToken } from "@/lib/api.ts";
@@ -10,11 +10,11 @@ import { settingsInputClass } from "@/components/settings/shared.ts";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 const STEPS = [
-  { title: "Welcome" },
-  { title: "Admin Account" },
-  { title: "Monitoring" },
-  { title: "Alerting" },
-  { title: "Review" },
+  { label: "Welcome" },
+  { label: "Admin Account" },
+  { label: "Monitoring" },
+  { label: "Alerting" },
+  { label: "Review" },
 ];
 
 export default function SetupWizard() {
@@ -172,12 +172,13 @@ export default function SetupWizard() {
 
   return (
     <div class="mx-auto max-w-2xl px-4 py-12">
-      <WizardStepper
+      <StepRail
         steps={STEPS}
-        currentStep={step.value}
-        onStepClick={(s) => {
+        current={step.value}
+        onStep={(s) => {
           if (s < step.value) step.value = s;
         }}
+        orientation="horizontal"
       />
 
       {error.value && (

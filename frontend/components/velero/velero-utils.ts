@@ -1,12 +1,12 @@
 import { getPhaseCategory } from "@/lib/velero-types.ts";
-import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
+import type { StatusValue } from "@/components/ui/StatusDot.tsx";
 
-/** Map Velero phase string → StatusBadge tone. */
-export function phaseTone(phase: string): Tone {
+/** Map Velero phase string → canonical StatusDot status. */
+export function phaseTone(phase: string): StatusValue {
   const cat = getPhaseCategory(phase);
-  if (cat === "success") return "ok";
-  if (cat === "error") return "crit";
-  if (cat === "warning") return "warn";
+  if (cat === "success") return "success";
+  if (cat === "error") return "error";
+  if (cat === "warning") return "warning";
   if (cat === "progress") return "info";
   return "neutral";
 }
