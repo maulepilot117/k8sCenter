@@ -110,6 +110,7 @@ export default function DetailShell(
 
         {/* tabs */}
         <div
+          role="tablist"
           style={{
             display: "flex",
             gap: "4px",
@@ -124,6 +125,8 @@ export default function DetailShell(
               <button
                 key={t.id}
                 type="button"
+                role="tab"
+                aria-selected={on}
                 onClick={() => onTab(t.id)}
                 style={{
                   padding: "9px 14px",

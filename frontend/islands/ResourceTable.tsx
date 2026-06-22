@@ -690,6 +690,7 @@ export default function ResourceTableIsland({
       {finalRows.length === 0 && !loading.value
         ? (
           <div
+            role="table"
             style={{
               background: "var(--bg-surface)",
               border: "1px solid var(--border-primary)",

@@ -28,15 +28,15 @@ void main() {
   test('Liquid Glass accent parses to expected ARGB', () {
     final theme = buildKubeTheme('liquid-glass');
     final colors = theme.extension<KubeColors>()!;
-    // accent: '#3DAEFF' → 0xFF3DAEFF
-    expect(colors.accent.toARGB32(), equals(0xFF3DAEFF));
+    // accent: '#43b0ff' → 0xFF43B0FF
+    expect(colors.accent.toARGB32(), equals(0xFF43B0FF));
   });
 
   test('rgba() tokens preserve alpha', () {
     final theme = buildKubeTheme('liquid-glass');
     final colors = theme.extension<KubeColors>()!;
-    // accentDim: 'rgba(61, 174, 255, 0.09)' — alpha 0.09*255 ≈ 23
-    expect(colors.accentDim.a, closeTo(0.09, 0.01));
+    // accentDim: 'rgba(67, 174, 255, 0.12)' — alpha 0.12*255 ≈ 31
+    expect(colors.accentDim.a, closeTo(0.12, 0.01));
   });
 
   test('every theme registers KubeColors as a ThemeExtension', () {
