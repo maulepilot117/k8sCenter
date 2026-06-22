@@ -38,6 +38,7 @@ export default function ResourceTable(
 
   return (
     <div
+      role="table"
       style={{
         background: "var(--bg-surface)",
         border: "1px solid var(--border-primary)",
@@ -47,6 +48,7 @@ export default function ResourceTable(
     >
       {/* header */}
       <div
+        role="row"
         style={{
           display: "grid",
           gridTemplateColumns: grid,
@@ -61,17 +63,22 @@ export default function ResourceTable(
         }}
       >
         {columns.map((c) => (
-          <span key={c.key} style={{ textAlign: c.align ?? "left" }}>
+          <span
+            key={c.key}
+            role="columnheader"
+            style={{ textAlign: c.align ?? "left" }}
+          >
             {c.label}
           </span>
         ))}
-        {chevron && <span />}
+        {chevron && <span role="columnheader" aria-hidden="true" />}
       </div>
 
       {/* rows */}
       {rows.map((r) => (
         <div
           key={r.id}
+          role="row"
           onClick={r.onClick}
           onMouseEnter={(
             e,
@@ -95,6 +102,7 @@ export default function ResourceTable(
           {columns.map((c) => (
             <div
               key={c.key}
+              role="cell"
               style={{ textAlign: c.align ?? "left", minWidth: 0 }}
             >
               {r.cells[c.key]}
@@ -102,6 +110,8 @@ export default function ResourceTable(
           ))}
           {chevron && (
             <svg
+              role="cell"
+              aria-hidden="true"
               width="16"
               height="16"
               viewBox="0 0 20 20"
