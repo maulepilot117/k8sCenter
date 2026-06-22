@@ -384,7 +384,6 @@ export default function SecretStoreWizard(
     : undefined;
 
   const isLastStep = currentStep.value === steps.length - 1;
-  const isPreviewStep = currentStep.value === steps.length - 2;
 
   const storeIcon = (
     <svg
@@ -418,7 +417,7 @@ export default function SecretStoreWizard(
       onNext={async () => {
         await goNext();
       }}
-      nextLabel={isLastStep ? "Apply" : isPreviewStep ? "Preview YAML" : "Next"}
+      nextLabel={isLastStep ? "Apply" : "Continue"}
       yaml={isLastStep ? (previewYaml.value || undefined) : undefined}
     >
       {currentStep.value === 0 && (

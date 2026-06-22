@@ -280,11 +280,7 @@ export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
     }`;
   };
 
-  const nextLabel = currentStep.value === 0
-    ? "Continue"
-    : currentStep.value === 1
-    ? "Preview YAML"
-    : "Close";
+  const nextLabel = currentStep.value === 2 ? "Close" : "Continue";
 
   const handleNext = () => {
     if (currentStep.value === 2) {

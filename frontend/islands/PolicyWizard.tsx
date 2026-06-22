@@ -227,11 +227,7 @@ export default function PolicyWizard({ onClose }: { onClose?: () => void }) {
       onCancel={close}
       onBack={goBack}
       onNext={async () => await goNext()}
-      nextLabel={currentStep.value === 0
-        ? "Next"
-        : currentStep.value === 1
-        ? "Preview YAML"
-        : "Apply"}
+      nextLabel={currentStep.value === 2 ? "Apply" : "Continue"}
       yaml={previewYaml.value || undefined}
     >
       {engineStatus.value && engineStatus.value.detected === ""

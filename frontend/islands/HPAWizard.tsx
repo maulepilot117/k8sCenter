@@ -210,7 +210,7 @@ export default function HPAWizard({ onClose }: { onClose?: () => void }) {
     }\n  minReplicas: ${f.minReplicas}\n  maxReplicas: ${f.maxReplicas}`;
   };
 
-  const nextLabel = currentStep.value === 0 ? "Preview YAML" : "Close";
+  const nextLabel = currentStep.value === 0 ? "Continue" : "Close";
 
   const handleNext = () => {
     if (currentStep.value === 1) {

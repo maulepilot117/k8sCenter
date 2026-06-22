@@ -314,11 +314,7 @@ export default function NamespaceLimitsWizard(
 
   const f = form.value;
 
-  const nextLabel = currentStep.value === 2
-    ? "Preview YAML"
-    : currentStep.value === 3
-    ? "Close"
-    : "Next";
+  const nextLabel = currentStep.value === 3 ? "Close" : "Continue";
 
   return (
     <WizardShell

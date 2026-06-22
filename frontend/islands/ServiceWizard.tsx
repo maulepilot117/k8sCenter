@@ -252,11 +252,7 @@ export default function ServiceWizard({ onClose }: { onClose?: () => void }) {
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 1
-        ? "Preview YAML"
-        : currentStep.value === 2
-        ? "Close"
-        : "Next"}
+      nextLabel={currentStep.value === 2 ? "Close" : "Continue"}
       yaml={currentStep.value < 2 ? buildManifest(f) : undefined}
     >
       {currentStep.value === 0 && (

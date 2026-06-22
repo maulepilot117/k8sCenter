@@ -177,7 +177,7 @@ export default function VeleroBackupWizard({ onClose }: Props) {
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Apply"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Apply"}
       yaml={previewYaml.value || undefined}
     >
       {currentStep.value === 0 && (

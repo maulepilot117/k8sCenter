@@ -81,7 +81,7 @@ for (const w of WIZARDS) {
           name: new RegExp(submitText, "i"),
         });
         const nextButton = page.getByRole("button", {
-          name: /next|preview/i,
+          name: /next|preview|continue/i,
         });
 
         // Click Next until review step (submit button visible) — max 5 iterations.
@@ -108,18 +108,23 @@ for (const w of WIZARDS) {
         await expect(submitButton).toBeVisible({ timeout: 10_000 });
         await submitButton.click();
 
-        // Assert success — either a success message appears or we navigate away
-        // (some wizards redirect to the list page after creation)
+        // Assert success — the review step renders "Applied successfully" with a
+        // per-resource line; some wizards instead redirect to the list page.
+        // Accept either signal, and fail with a clear message if neither occurs
+        // (so a timeout points at the missing confirmation, not at waitForURL).
         const successText = page
           .getByText(/successfully|created|configured|applied/i)
           .first();
-        const redirected = page.waitForURL((url) =>
-          !url.pathname.includes("/new"),
-        );
         await Promise.race([
-          expect(successText).toBeVisible({ timeout: 15_000 }),
-          redirected,
-        ]);
+          expect(successText).toBeVisible({ timeout: 20_000 }),
+          page.waitForURL((url) => !url.pathname.includes("/new"), {
+            timeout: 20_000,
+          }),
+        ]).catch(() => {
+          throw new Error(
+            `${w.kind} wizard: no success confirmation or redirect after Apply`,
+          );
+        });
       } finally {
         // Always clean up, regardless of test outcome
         if (w.namespace) {

@@ -199,7 +199,7 @@ export default function ConfigMapWizard(
       onCancel={close}
       onBack={goBack}
       onNext={currentStep.value === 0 ? goNext : close}
-      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Close"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
       yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
     >
       {currentStep.value === 0 && (

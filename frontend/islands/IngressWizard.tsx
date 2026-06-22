@@ -342,7 +342,7 @@ export default function IngressWizard({ onClose }: { onClose?: () => void }) {
       onCancel={close}
       onBack={goBack}
       onNext={goNext}
-      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Close"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
       yaml={currentStep.value === 0 ? buildManifest(f) : undefined}
     >
       {currentStep.value === 0 && (

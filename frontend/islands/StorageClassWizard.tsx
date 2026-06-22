@@ -206,11 +206,7 @@ export default function StorageClassWizard(
       onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 1
-        ? "Preview YAML"
-        : step.value === 2
-        ? "Done"
-        : "Continue"}
+      nextLabel={step.value === 2 ? "Done" : "Continue"}
       yaml={step.value < 2 ? buildManifest(f) : undefined}
     >
       {step.value === 0 && (

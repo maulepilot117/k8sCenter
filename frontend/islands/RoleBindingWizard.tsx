@@ -236,11 +236,7 @@ export default function RoleBindingWizard(
       onCancel={close}
       onBack={goBack}
       onNext={async () => await goNext()}
-      nextLabel={currentStep.value < 2
-        ? "Next"
-        : currentStep.value === 2
-        ? "Preview YAML"
-        : "Apply"}
+      nextLabel={currentStep.value === 3 ? "Apply" : "Continue"}
       yaml={previewYaml.value || undefined}
     >
       {/* Step 1: Basics */}

@@ -179,7 +179,7 @@ export default function PDBWizard({ onClose }: { onClose?: () => void }) {
     }\n  selector:\n    matchLabels:\n${selectorEntries}`;
   };
 
-  const nextLabel = currentStep.value === 0 ? "Preview YAML" : "Close";
+  const nextLabel = currentStep.value === 0 ? "Continue" : "Close";
 
   const handleNext = () => {
     if (currentStep.value === 1) {

@@ -161,7 +161,7 @@ export default function UserWizard({ onClose }: { onClose?: () => void }) {
       onCancel={close}
       onBack={goBack}
       onNext={currentStep.value === 0 ? goNext : handleSubmit}
-      nextLabel={currentStep.value === 0 ? "Next" : "Create User"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Create User"}
     >
       {created.value
         ? (

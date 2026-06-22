@@ -257,7 +257,7 @@ export default function CertificateWizard(
       onCancel={close}
       onBack={() => (step.value = Math.max(0, step.value - 1))}
       onNext={handleNext}
-      nextLabel={step.value === 0 ? "Preview YAML" : "Done"}
+      nextLabel={step.value === 0 ? "Continue" : "Done"}
       yaml={step.value === 0 ? buildManifest(form.value) : undefined}
     >
       {step.value === 0 && (

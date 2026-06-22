@@ -193,7 +193,7 @@ export default function VeleroScheduleWizard({ onClose }: Props) {
       onCancel={close}
       onBack={handleBack}
       onNext={handleNext}
-      nextLabel={currentStep.value === 0 ? "Next" : "Apply"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Apply"}
       yaml={previewYaml.value || undefined}
     >
       {currentStep.value === 0 && (

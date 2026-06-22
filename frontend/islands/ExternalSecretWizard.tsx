@@ -300,7 +300,7 @@ export default function ExternalSecretWizard(
       onNext={async () => {
         await goNext();
       }}
-      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Apply"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Apply"}
       yaml={currentStep.value === STEPS.length - 1
         ? (previewYaml.value || undefined)
         : undefined}

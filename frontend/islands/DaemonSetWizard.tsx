@@ -231,7 +231,7 @@ export default function DaemonSetWizard({ onClose }: { onClose?: () => void }) {
         if (currentStep.value === 0) goNext();
         else close();
       }}
-      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Close"}
+      nextLabel={currentStep.value === 0 ? "Continue" : "Close"}
       yaml={currentStep.value === 0 ? manifest() : previewYaml.value}
     >
       {currentStep.value === 0 && (
