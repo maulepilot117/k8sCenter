@@ -6,10 +6,9 @@ import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initialNamespace } from "@/lib/namespace.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import { esoApi } from "@/lib/eso-api.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ExternalSecretForm } from "@/components/wizard/ExternalSecretForm.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 
 export interface ExternalSecretWizardDataItem {
   secretKey: string;
@@ -39,9 +38,9 @@ export interface ExternalSecretWizardStoreOption {
   provider: string;
 }
 
-const STEPS = [
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Store & data" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function newDataItem(): ExternalSecretWizardDataItem {
@@ -61,7 +60,13 @@ function initialForm(): ExternalSecretWizardForm {
   };
 }
 
-export default function ExternalSecretWizard() {
+export interface ExternalSecretWizardProps {
+  onClose: () => void;
+}
+
+export default function ExternalSecretWizard(
+  { onClose }: ExternalSecretWizardProps,
+) {
   const currentStep = useSignal(0);
   const form = useSignal<ExternalSecretWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
@@ -260,80 +265,71 @@ export default function ExternalSecretWizard() {
     if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
   }
 
-  if (!IS_BROWSER) return <div class="p-6">Loading wizard...</div>;
+  if (!IS_BROWSER) return null;
+
+  const keyIcon = (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.8"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="7.5" cy="15.5" r="4.5" />
+      <path d="M21 2l-9.6 9.6" />
+      <path d="M15.5 7.5L17 6l3 3-1.5 1.5" />
+    </svg>
+  );
 
   return (
-    <div class="p-6 max-w-4xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">
-          Create ExternalSecret
-        </h1>
-        <a
-          href="/external-secrets/external-secrets"
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
-
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <ExternalSecretForm
-            form={form.value}
-            errors={errors.value}
-            namespaces={namespaces.value}
-            stores={stores.value}
-            storesLoading={storesLoading.value}
-            onUpdate={updateField}
-            onUpdateData={updateData}
-            onAddDataItem={addDataItem}
-            onRemoveDataItem={removeDataItem}
-            onPathFieldTouched={markPathTouched}
-          />
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/external-secrets/external-secrets"
-          />
-        )}
-      </div>
-
-      {currentStep.value < 1 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
-        </div>
+    <WizardShell
+      title="Create ExternalSecret"
+      icon={keyIcon}
+      subtitle={`Step ${currentStep.value + 1} of ${STEPS.length}`}
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={goBack}
+      onNext={async () => {
+        await goNext();
+      }}
+      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Apply"}
+      yaml={currentStep.value === STEPS.length - 1
+        ? (previewYaml.value || undefined)
+        : undefined}
+    >
+      {currentStep.value === 0 && (
+        <ExternalSecretForm
+          form={form.value}
+          errors={errors.value}
+          namespaces={namespaces.value}
+          stores={stores.value}
+          storesLoading={storesLoading.value}
+          onUpdate={updateField}
+          onUpdateData={updateData}
+          onAddDataItem={addDataItem}
+          onRemoveDataItem={removeDataItem}
+          onPathFieldTouched={markPathTouched}
+        />
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>Back</Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/external-secrets/external-secrets"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

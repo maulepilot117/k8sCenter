@@ -5,9 +5,8 @@ import { apiGet, apiPost } from "@/lib/api.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { Backup } from "@/lib/velero-types.ts";
 
 interface RestoreFormState {
@@ -18,7 +17,10 @@ interface RestoreFormState {
   restorePVs: boolean;
 }
 
-const STEPS = [{ title: "Configure" }, { title: "Review & Apply" }];
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Source backup & options" },
+  { label: "Review", sub: "Preview & apply" },
+];
 
 function generateRestoreName(backupName: string): string {
   const now = new Date();
@@ -41,7 +43,11 @@ function initialState(preselectedBackup?: string): RestoreFormState {
   };
 }
 
-export default function VeleroRestoreWizard() {
+interface Props {
+  onClose: () => void;
+}
+
+export default function VeleroRestoreWizard({ onClose }: Props) {
   const urlParams = IS_BROWSER
     ? new URLSearchParams(globalThis.location.search)
     : null;
@@ -138,148 +144,145 @@ export default function VeleroRestoreWizard() {
     currentStep.value--;
   }, []);
 
-  if (!IS_BROWSER) return null;
-
   return (
-    <div class="max-w-3xl mx-auto p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-2">New Restore</h1>
-      <p class="text-sm text-text-muted mb-6">
-        Restore cluster resources from a Velero backup.
-      </p>
-
-      <WizardStepper steps={STEPS} currentStep={currentStep.value} />
-
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <div class="space-y-6">
-            {/* Backup Selection */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Source Backup *
-              </label>
-              <select
-                value={form.value.backupName}
-                onChange={(e) =>
-                  updateField(
-                    "backupName",
-                    (e.target as HTMLSelectElement).value,
-                  )}
-                class={WIZARD_INPUT_CLASS}
-              >
-                <option value="">Select a backup...</option>
-                {backups.value.map((b) => (
-                  <option key={b.name} value={b.name}>
-                    {b.name} ({b.phase})
-                  </option>
-                ))}
-              </select>
-              {errors.value.backupName && (
-                <p class="text-xs text-error mt-1">{errors.value.backupName}</p>
-              )}
-            </div>
-
-            {/* Restore Name */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Restore Name
-              </label>
-              <input
-                type="text"
-                value={form.value.name}
-                onInput={(e) =>
-                  updateField("name", (e.target as HTMLInputElement).value)}
-                class={WIZARD_INPUT_CLASS}
-                placeholder="my-restore"
-              />
-              {errors.value.name && (
-                <p class="text-xs text-error mt-1">{errors.value.name}</p>
-              )}
-            </div>
-
-            {/* Included Namespaces */}
-            <div>
-              <label class="block text-sm font-medium text-text-primary mb-1">
-                Include Namespaces (optional)
-              </label>
-              <p class="text-xs text-text-muted mb-2">
-                Leave empty to restore all namespaces from the backup.
-              </p>
-              <select
-                multiple
-                onChange={(e) => {
-                  const select = e.target as HTMLSelectElement;
-                  const selected = Array.from(select.selectedOptions).map((o) =>
-                    o.value
-                  );
-                  updateField("includedNamespaces", selected);
-                }}
-                class={`${WIZARD_INPUT_CLASS} h-32`}
-              >
-                {namespaces.value.map((ns) => (
-                  <option
-                    key={ns}
-                    value={ns}
-                    selected={form.value.includedNamespaces.includes(ns)}
-                  >
-                    {ns}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Restore PVs */}
-            <div class="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="restorePVs"
-                checked={form.value.restorePVs}
-                onChange={(e) =>
-                  updateField(
-                    "restorePVs",
-                    (e.target as HTMLInputElement).checked,
-                  )}
-                class="rounded border-border"
-              />
-              <label
-                for="restorePVs"
-                class="text-sm font-medium text-text-primary"
-              >
-                Restore persistent volumes
-              </label>
-            </div>
-          </div>
-        )}
-
-        {currentStep.value === 1 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => (previewYaml.value = v)}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/backup/restores"
-          />
-        )}
-      </div>
-
+    <WizardShell
+      title="Create Restore"
+      icon={
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 2a8 8 0 0 1 8 8v1a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V10a8 8 0 0 1 8-8z" />
+          <path d="M12 14v6M15 17l-3 3-3-3" />
+        </svg>
+      }
+      subtitle={`Step ${currentStep.value + 1} of 2`}
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={goBack}
+      onNext={goNext}
+      nextLabel={currentStep.value === 0 ? "Preview YAML" : "Apply"}
+      yaml={previewYaml.value || undefined}
+    >
       {currentStep.value === 0 && (
-        <div class="mt-8 flex justify-between">
-          <a href="/backup/restores">
-            <Button type="button" variant="ghost">Cancel</Button>
-          </a>
-          <Button type="button" variant="primary" onClick={goNext}>
-            Preview YAML
-          </Button>
+        <div class="space-y-6">
+          {/* Backup Selection */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Source Backup *
+            </label>
+            <select
+              value={form.value.backupName}
+              onChange={(e) =>
+                updateField(
+                  "backupName",
+                  (e.target as HTMLSelectElement).value,
+                )}
+              class={WIZARD_INPUT_CLASS}
+            >
+              <option value="">Select a backup...</option>
+              {backups.value.map((b) => (
+                <option key={b.name} value={b.name}>
+                  {b.name} ({b.phase})
+                </option>
+              ))}
+            </select>
+            {errors.value.backupName && (
+              <p class="text-xs text-error mt-1">{errors.value.backupName}</p>
+            )}
+          </div>
+
+          {/* Restore Name */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Restore Name
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)}
+              class={WIZARD_INPUT_CLASS}
+              placeholder="my-restore"
+            />
+            {errors.value.name && (
+              <p class="text-xs text-error mt-1">{errors.value.name}</p>
+            )}
+          </div>
+
+          {/* Included Namespaces */}
+          <div>
+            <label class="block text-sm font-medium text-text-primary mb-1">
+              Include Namespaces (optional)
+            </label>
+            <p class="text-xs text-text-muted mb-2">
+              Leave empty to restore all namespaces from the backup.
+            </p>
+            <select
+              multiple
+              onChange={(e) => {
+                const select = e.target as HTMLSelectElement;
+                const selected = Array.from(select.selectedOptions).map((o) =>
+                  o.value
+                );
+                updateField("includedNamespaces", selected);
+              }}
+              class={`${WIZARD_INPUT_CLASS} h-32`}
+            >
+              {namespaces.value.map((ns) => (
+                <option
+                  key={ns}
+                  value={ns}
+                  selected={form.value.includedNamespaces.includes(ns)}
+                >
+                  {ns}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Restore PVs */}
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="restorePVs"
+              checked={form.value.restorePVs}
+              onChange={(e) =>
+                updateField(
+                  "restorePVs",
+                  (e.target as HTMLInputElement).checked,
+                )}
+              class="rounded border-border"
+            />
+            <label
+              for="restorePVs"
+              class="text-sm font-medium text-text-primary"
+            >
+              Restore persistent volumes
+            </label>
+          </div>
         </div>
       )}
 
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button type="button" variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
+      {currentStep.value === 1 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => (previewYaml.value = v)}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/backup/restores"
+        />
       )}
-    </div>
+    </WizardShell>
   );
 }

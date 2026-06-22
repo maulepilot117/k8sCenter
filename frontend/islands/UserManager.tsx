@@ -10,6 +10,7 @@ import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import type { Column, Row } from "@/components/ui/ResourceTable.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import type { LocalUser } from "@/lib/user-types.ts";
+import UserWizard from "@/islands/UserWizard.tsx";
 
 type DialogState =
   | { kind: "idle" }
@@ -24,6 +25,7 @@ export default function UserManager() {
   const error = useSignal<string | null>(null);
   const dialog = useSignal<DialogState>({ kind: "idle" });
   const actionLoading = useSignal(false);
+  const wizardOpen = useSignal(false);
 
   const fetchUsers = useCallback(async () => {
     loading.value = true;
@@ -229,13 +231,14 @@ export default function UserManager() {
     <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
       {/* Create User button */}
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <a
-          href="/settings/users/new"
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
           class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium hover:bg-brand/90"
           style={{ color: "var(--bg-base)" }}
         >
           Create User
-        </a>
+        </button>
       </div>
 
       {/* Error */}
@@ -286,6 +289,16 @@ export default function UserManager() {
           }}
           onCancel={() => {
             dialog.value = { kind: "idle" };
+          }}
+        />
+      )}
+
+      {/* Create User Wizard */}
+      {wizardOpen.value && (
+        <UserWizard
+          onClose={() => {
+            wizardOpen.value = false;
+            fetchUsers();
           }}
         />
       )}

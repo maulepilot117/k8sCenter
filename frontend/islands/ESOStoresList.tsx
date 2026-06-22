@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
+import SecretStoreWizard from "@/islands/SecretStoreWizard.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
@@ -35,6 +36,7 @@ export default function ESOStoresList() {
   const namespace = useSignal("");
   const search = useSignal("");
   const detected = useSignal<boolean | null>(null);
+  const wizardOpen = useSignal(false);
 
   const fetchSeq = useRef(0);
   const debounceHandle = useRef<number | null>(null);
@@ -74,6 +76,12 @@ export default function ESOStoresList() {
         debounceHandle.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
   }, []);
 
   function handleNamespaceChange(value: string) {
@@ -135,13 +143,14 @@ export default function ESOStoresList() {
         >
           SecretStores
         </h1>
-        <a
-          href="/external-secrets/stores/new"
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
           style={{ background: "var(--accent)", color: "var(--bg-base)" }}
         >
           + New SecretStore
-        </a>
+        </button>
       </div>
       <p
         class="mb-6"
@@ -350,6 +359,13 @@ export default function ESOStoresList() {
             SecretStore to function.
           </p>
         </div>
+      )}
+
+      {wizardOpen.value && (
+        <SecretStoreWizard
+          scope="namespaced"
+          onClose={() => (wizardOpen.value = false)}
+        />
       )}
     </div>
   );

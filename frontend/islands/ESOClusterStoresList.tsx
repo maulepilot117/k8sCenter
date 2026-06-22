@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
+import SecretStoreWizard from "@/islands/SecretStoreWizard.tsx";
 import { ProviderBadge, StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
@@ -22,6 +23,7 @@ export default function ESOClusterStoresList() {
   const error = useSignal<string | null>(null);
   const search = useSignal("");
   const detected = useSignal<boolean | null>(null);
+  const wizardOpen = useSignal(false);
 
   async function fetchData() {
     try {
@@ -48,6 +50,12 @@ export default function ESOClusterStoresList() {
         loading.value = false;
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
   }, []);
 
   if (!IS_BROWSER) return null;
@@ -97,13 +105,14 @@ export default function ESOClusterStoresList() {
         >
           ClusterSecretStores
         </h1>
-        <a
-          href="/external-secrets/cluster-stores/new"
+        <button
+          type="button"
+          onClick={() => (wizardOpen.value = true)}
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
           style={{ background: "var(--accent)", color: "var(--bg-base)" }}
         >
           + New ClusterSecretStore
-        </a>
+        </button>
       </div>
       <p
         class="mb-6"
@@ -292,6 +301,13 @@ export default function ESOClusterStoresList() {
             visibility, or no ClusterSecretStores exist.
           </p>
         </div>
+      )}
+
+      {wizardOpen.value && (
+        <SecretStoreWizard
+          scope="cluster"
+          onClose={() => (wizardOpen.value = false)}
+        />
       )}
     </div>
   );

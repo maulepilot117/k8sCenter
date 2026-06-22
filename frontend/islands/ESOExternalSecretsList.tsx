@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
 import { esoApi } from "@/lib/eso-api.ts";
+import ExternalSecretWizard from "@/islands/ExternalSecretWizard.tsx";
 import { StatusBadge } from "@/components/eso/ESOBadges.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { ESONotDetected } from "@/components/eso/ESONotDetected.tsx";
@@ -40,6 +41,7 @@ export default function ESOExternalSecretsList() {
   const search = useSignal("");
   const detected = useSignal<boolean | null>(null);
   const showRefreshDialog = useSignal(false);
+  const wizardOpen = useSignal(false);
 
   const fetchSeq = useRef(0);
   const debounceHandle = useRef<number | null>(null);
@@ -79,6 +81,12 @@ export default function ESOExternalSecretsList() {
         debounceHandle.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") wizardOpen.value = true;
   }, []);
 
   function handleNamespaceChange(value: string) {
@@ -156,8 +164,9 @@ export default function ESOExternalSecretsList() {
               Refresh namespace
             </button>
           )}
-          <a
-            href="/external-secrets/external-secrets/new"
+          <button
+            type="button"
+            onClick={() => (wizardOpen.value = true)}
             class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
             style={{
               background: "var(--accent)",
@@ -165,7 +174,7 @@ export default function ESOExternalSecretsList() {
             }}
           >
             + New ExternalSecret
-          </a>
+          </button>
         </div>
       </div>
 
@@ -358,14 +367,19 @@ export default function ESOExternalSecretsList() {
             No ExternalSecrets in this namespace. Create one to start syncing
             secrets from a SecretStore.
           </p>
-          <a
-            href="/external-secrets/external-secrets/new"
+          <button
+            type="button"
+            onClick={() => (wizardOpen.value = true)}
             class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-90"
             style={{ background: "var(--accent)", color: "var(--bg-base)" }}
           >
             New ExternalSecret
-          </a>
+          </button>
         </div>
+      )}
+
+      {wizardOpen.value && (
+        <ExternalSecretWizard onClose={() => (wizardOpen.value = false)} />
       )}
     </div>
   );

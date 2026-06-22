@@ -1,14 +1,12 @@
 import { useSignal } from "@preact/signals";
 import { useCallback, useEffect } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { PolicyTemplateStep } from "@/components/wizard/PolicyTemplateStep.tsx";
 import { PolicyConfigStep } from "@/components/wizard/PolicyConfigStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { getTemplate } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
 
@@ -23,10 +21,10 @@ export interface PolicyWizardForm {
   params: Record<string, unknown>;
 }
 
-const STEPS = [
-  { title: "Template" },
-  { title: "Configure" },
-  { title: "Review" },
+const STEPS: WizardStep[] = [
+  { label: "Template", sub: "Choose policy type" },
+  { label: "Configure", sub: "Engine & parameters" },
+  { label: "Review", sub: "Preview & apply" },
 ];
 
 function initialForm(): PolicyWizardForm {
@@ -42,7 +40,7 @@ function initialForm(): PolicyWizardForm {
   };
 }
 
-export default function PolicyWizard() {
+export default function PolicyWizard({ onClose }: { onClose: () => void }) {
   const currentStep = useSignal(0);
   const form = useSignal<PolicyWizardForm>(initialForm());
   const errors = useSignal<Record<string, string>>({});
@@ -217,134 +215,99 @@ export default function PolicyWizard() {
     }
   };
 
-  if (!IS_BROWSER) {
-    return <div class="p-6">Loading wizard...</div>;
-  }
-
-  if (engineStatus.value && engineStatus.value.detected === "") {
-    return (
-      <div class="p-6 max-w-4xl mx-auto">
-        <h1 class="text-2xl font-bold text-text-primary mb-6">
-          Create Policy
-        </h1>
-        <div class="rounded-lg border border-border-primary bg-surface p-8 text-center">
-          <svg
-            class="w-12 h-12 mx-auto mb-4 text-text-muted"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="1.5"
-              d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-            />
-          </svg>
-          <h2 class="text-lg font-semibold text-text-primary mb-2">
-            No Policy Engine Detected
-          </h2>
-          <p class="text-text-muted mb-4">
-            A policy engine is required to create policies. Install one of the
-            following:
-          </p>
-          <div class="flex justify-center gap-6">
-            <a
-              href="https://kyverno.io/docs/installation/"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-brand hover:text-brand/80 font-medium"
-            >
-              Install Kyverno
-            </a>
-            <a
-              href="https://open-policy-agent.github.io/gatekeeper/website/docs/install/"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="text-brand hover:text-brand/80 font-medium"
-            >
-              Install Gatekeeper
-            </a>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div class="p-6 max-w-4xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <h1 class="text-2xl font-bold text-text-primary">Create Policy</h1>
-        <a
-          href="/security/policies"
-          class="text-sm text-text-muted hover:text-text-primary"
-        >
-          Cancel
-        </a>
-      </div>
+    <WizardShell
+      title="Create Policy"
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={goBack}
+      onNext={async () => await goNext()}
+      nextLabel={currentStep.value === 0
+        ? "Next"
+        : currentStep.value === 1
+        ? "Preview YAML"
+        : "Apply"}
+      yaml={previewYaml.value || undefined}
+    >
+      {engineStatus.value && engineStatus.value.detected === ""
+        ? (
+          <div class="rounded-lg border border-border-primary bg-surface p-8 text-center">
+            <svg
+              class="w-12 h-12 mx-auto mb-4 text-text-muted"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.5"
+                d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+              />
+            </svg>
+            <h2 class="text-lg font-semibold text-text-primary mb-2">
+              No Policy Engine Detected
+            </h2>
+            <p class="text-text-muted mb-4">
+              A policy engine is required to create policies. Install one of the
+              following:
+            </p>
+            <div class="flex justify-center gap-6">
+              <a
+                href="https://kyverno.io/docs/installation/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-brand hover:text-brand/80 font-medium"
+              >
+                Install Kyverno
+              </a>
+              <a
+                href="https://open-policy-agent.github.io/gatekeeper/website/docs/install/"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="text-brand hover:text-brand/80 font-medium"
+              >
+                Install Gatekeeper
+              </a>
+            </div>
+          </div>
+        )
+        : (
+          <>
+            {currentStep.value === 0 && (
+              <PolicyTemplateStep
+                selectedId={form.value.templateId}
+                onSelect={(id) => updateField("templateId", id)}
+              />
+            )}
 
-      <WizardStepper
-        steps={STEPS}
-        currentStep={currentStep.value}
-        onStepClick={(step) => {
-          if (step < currentStep.value) currentStep.value = step;
-        }}
-      />
+            {currentStep.value === 1 && (
+              <PolicyConfigStep
+                form={form.value}
+                errors={errors.value}
+                engineStatus={engineStatus.value}
+                onUpdate={updateField}
+                onUpdateParam={updateParam}
+              />
+            )}
 
-      <div class="mt-6">
-        {currentStep.value === 0 && (
-          <PolicyTemplateStep
-            selectedId={form.value.templateId}
-            onSelect={(id) => updateField("templateId", id)}
-          />
+            {currentStep.value === 2 && (
+              <WizardReviewStep
+                yaml={previewYaml.value}
+                onYamlChange={(v) => {
+                  previewYaml.value = v;
+                }}
+                loading={previewLoading.value}
+                error={previewError.value}
+                detailBasePath="/security/policies"
+              />
+            )}
+          </>
         )}
-
-        {currentStep.value === 1 && (
-          <PolicyConfigStep
-            form={form.value}
-            errors={errors.value}
-            engineStatus={engineStatus.value}
-            onUpdate={updateField}
-            onUpdateParam={updateParam}
-          />
-        )}
-
-        {currentStep.value === 2 && (
-          <WizardReviewStep
-            yaml={previewYaml.value}
-            onYamlChange={(v) => {
-              previewYaml.value = v;
-            }}
-            loading={previewLoading.value}
-            error={previewError.value}
-            detailBasePath="/security/policies"
-          />
-        )}
-      </div>
-
-      {currentStep.value < 2 && (
-        <div class="flex justify-between mt-8">
-          <Button
-            variant="ghost"
-            onClick={goBack}
-            disabled={currentStep.value === 0}
-          >
-            Back
-          </Button>
-          <Button variant="primary" onClick={goNext}>
-            {currentStep.value === 1 ? "Preview YAML" : "Next"}
-          </Button>
-        </div>
-      )}
-
-      {currentStep.value === 2 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="flex justify-start mt-4">
-          <Button variant="ghost" onClick={goBack}>
-            Back
-          </Button>
-        </div>
-      )}
-    </div>
+    </WizardShell>
   );
 }

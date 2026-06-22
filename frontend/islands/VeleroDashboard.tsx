@@ -25,6 +25,9 @@ import type {
   VeleroStatus,
 } from "@/lib/velero-types.ts";
 import { getPhaseCategory } from "@/lib/velero-types.ts";
+import VeleroBackupWizard from "@/islands/VeleroBackupWizard.tsx";
+import VeleroRestoreWizard from "@/islands/VeleroRestoreWizard.tsx";
+import VeleroScheduleWizard from "@/islands/VeleroScheduleWizard.tsx";
 
 type Tab = "overview" | "backups" | "restores" | "schedules";
 
@@ -58,6 +61,10 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
   const refreshing = useSignal(false);
   const deleting = useSignal<string | null>(null);
 
+  const backupWizardOpen = useSignal(false);
+  const restoreWizardOpen = useSignal(false);
+  const scheduleWizardOpen = useSignal(false);
+
   async function fetchData() {
     try {
       const [statusRes, backupsRes, restoresRes, schedulesRes, locationsRes] =
@@ -86,6 +93,16 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
     fetchData().then(() => {
       loading.value = false;
     });
+  }, []);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    const params = new URLSearchParams(globalThis.location.search);
+    if (params.get("action") === "create") {
+      if (initialTab === "backups") backupWizardOpen.value = true;
+      else if (initialTab === "restores") restoreWizardOpen.value = true;
+      else if (initialTab === "schedules") scheduleWizardOpen.value = true;
+    }
   }, []);
 
   async function handleRefresh() {
@@ -168,11 +185,6 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
         schedules.value.length !== 1 ? "s" : ""
       }`,
   };
-  const createHrefs: Partial<Record<Tab, string>> = {
-    backups: "/backup/backups/new",
-    restores: "/backup/restores/new",
-    schedules: "/backup/schedules/new",
-  };
   const createLabels: Partial<Record<Tab, string>> = {
     backups: "New Backup",
     restores: "New Restore",
@@ -181,7 +193,6 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
 
   const pageTitle = titles[initialTab];
   const pageSubtitle = subtitles[initialTab];
-  const createHref = createHrefs[initialTab];
   const createLabel = createLabels[initialTab];
 
   return (
@@ -233,23 +244,32 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             flexShrink: 0,
           }}
         >
-          {!loading.value && createHref && createLabel && (
-            <a href={createHref}>
-              <Button type="button" variant="primary">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  style={{ marginRight: "4px", verticalAlign: "middle" }}
-                >
-                  <path d="M4 8h8M8 4v8" />
-                </svg>
-                {createLabel}
-              </Button>
-            </a>
+          {!loading.value && createLabel && (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => {
+                if (initialTab === "backups") backupWizardOpen.value = true;
+                else if (initialTab === "restores") {
+                  restoreWizardOpen.value = true;
+                } else if (initialTab === "schedules") {
+                  scheduleWizardOpen.value = true;
+                }
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                style={{ marginRight: "4px", verticalAlign: "middle" }}
+              >
+                <path d="M4 8h8M8 4v8" />
+              </svg>
+              {createLabel}
+            </Button>
           )}
           {!loading.value && (
             <Button
@@ -365,6 +385,21 @@ export default function VeleroDashboard({ initialTab = "backups" }: Props) {
             </>
           )}
         </>
+      )}
+
+      {/* ── Wizard modals ─────────────────────────────────────────── */}
+      {backupWizardOpen.value && (
+        <VeleroBackupWizard onClose={() => (backupWizardOpen.value = false)} />
+      )}
+      {restoreWizardOpen.value && (
+        <VeleroRestoreWizard
+          onClose={() => (restoreWizardOpen.value = false)}
+        />
+      )}
+      {scheduleWizardOpen.value && (
+        <VeleroScheduleWizard
+          onClose={() => (scheduleWizardOpen.value = false)}
+        />
       )}
     </div>
   );

@@ -5,9 +5,8 @@ import { apiGet, apiPost } from "@/lib/api.ts";
 import { DNS_LABEL_REGEX, WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { WizardStepper } from "@/components/wizard/WizardStepper.tsx";
+import WizardShell, { type WizardStep } from "@/islands/WizardShell.tsx";
 import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import type { BackupStorageLocation } from "@/lib/velero-types.ts";
 
 interface ScheduleFormState {
@@ -22,7 +21,10 @@ interface ScheduleFormState {
   paused: boolean;
 }
 
-const STEPS = [{ title: "Configure" }, { title: "Review" }];
+const STEPS: WizardStep[] = [
+  { label: "Configure", sub: "Name, schedule & storage" },
+  { label: "Review", sub: "Preview & apply" },
+];
 
 const CRON_PRESETS = [
   { value: "0 * * * *", label: "Hourly (at minute 0)" },
@@ -54,7 +56,11 @@ function initialState(): ScheduleFormState {
   };
 }
 
-export default function VeleroScheduleWizard() {
+interface Props {
+  onClose: () => void;
+}
+
+export default function VeleroScheduleWizard({ onClose }: Props) {
   const currentStep = useSignal(0);
   const form = useSignal<ScheduleFormState>(initialState());
   const errors = useSignal<Record<string, string>>({});
@@ -155,19 +161,42 @@ export default function VeleroScheduleWizard() {
     currentStep.value--;
   }, []);
 
-  if (!IS_BROWSER) return null;
-
   return (
-    <div class="max-w-3xl mx-auto p-6">
-      <h1 class="text-2xl font-bold text-text-primary mb-2">New Schedule</h1>
-      <p class="text-sm text-text-muted mb-6">
-        Create a scheduled Velero backup that runs automatically.
-      </p>
-
-      <WizardStepper steps={STEPS} currentStep={currentStep.value} />
-
+    <WizardShell
+      title="Create Schedule"
+      icon={
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+          <line x1="16" y1="2" x2="16" y2="6" />
+          <line x1="8" y1="2" x2="8" y2="6" />
+          <line x1="3" y1="10" x2="21" y2="10" />
+          <circle cx="12" cy="16" r="3" />
+          <path d="M12 14v2l1 1" />
+        </svg>
+      }
+      subtitle={`Step ${currentStep.value + 1} of 2`}
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={onClose}
+      onBack={handleBack}
+      onNext={handleNext}
+      nextLabel={currentStep.value === 0 ? "Next" : "Apply"}
+      yaml={previewYaml.value || undefined}
+    >
       {currentStep.value === 0 && (
-        <div class="mt-6 space-y-6">
+        <div class="space-y-6">
           {/* Name */}
           <div>
             <label class="block text-sm font-medium text-text-primary mb-1">
@@ -336,15 +365,6 @@ export default function VeleroScheduleWizard() {
               </label>
             </div>
           </div>
-
-          <div class="flex justify-end gap-2 pt-4 border-t border-border">
-            <a href="/backup/schedules">
-              <Button type="button" variant="ghost">Cancel</Button>
-            </a>
-            <Button type="button" variant="primary" onClick={handleNext}>
-              Next
-            </Button>
-          </div>
         </div>
       )}
 
@@ -357,15 +377,6 @@ export default function VeleroScheduleWizard() {
           detailBasePath="/backup/schedules"
         />
       )}
-
-      {currentStep.value === 1 && !previewLoading.value &&
-        previewError.value === null && (
-        <div class="mt-4 flex justify-start">
-          <Button type="button" variant="ghost" onClick={handleBack}>
-            Back
-          </Button>
-        </div>
-      )}
-    </div>
+    </WizardShell>
   );
 }

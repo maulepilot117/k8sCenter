@@ -93,7 +93,13 @@ function buildSearchIndex(): SearchItem[] {
     { label: "Create PDB", href: "/scaling/pdbs?action=create" },
     { label: "Create Namespace", href: "/cluster/namespaces?action=create" },
     { label: "Investigate Resource", href: "/observability/investigate" },
+    { label: "Create RoleBinding", href: "/rbac/rolebindings/new" },
+    {
+      label: "Create ClusterRoleBinding",
+      href: "/rbac/clusterrolebindings/new",
+    },
     { label: "Create Policy", href: "/security/create-policy" },
+    { label: "Create User", href: "/settings/users?action=create" },
     { label: "View Policies", href: "/security/policies" },
     { label: "View Violations", href: "/security/violations" },
     { label: "View GitOps Applications", href: "/gitops/applications" },
@@ -131,7 +137,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create ExternalSecret",
-      href: "/external-secrets/external-secrets/new",
+      href: "/external-secrets/external-secrets?action=create",
     },
     {
       label: "View SecretStores",
@@ -139,7 +145,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create SecretStore",
-      href: "/external-secrets/stores/new",
+      href: "/external-secrets/stores?action=create",
     },
     {
       label: "View ClusterSecretStores",
@@ -147,7 +153,7 @@ function buildSearchIndex(): SearchItem[] {
     },
     {
       label: "Create ClusterSecretStore",
-      href: "/external-secrets/cluster-stores/new",
+      href: "/external-secrets/cluster-stores?action=create",
     },
     {
       label: "View ExternalSecrets Chain",
@@ -165,6 +171,9 @@ function buildSearchIndex(): SearchItem[] {
       label: "Create Namespace Limits",
       href: "/config/namespace-limits/new",
     },
+    { label: "Create Backup", href: "/backup/backups?action=create" },
+    { label: "Create Restore", href: "/backup/restores?action=create" },
+    { label: "Create Schedule", href: "/backup/schedules?action=create" },
   ];
   for (const a of actions) {
     items.push({
