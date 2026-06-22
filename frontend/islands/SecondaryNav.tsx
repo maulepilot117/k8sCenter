@@ -1,4 +1,5 @@
 import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import {
   domainById,
@@ -17,6 +18,34 @@ function dotColor(h?: Health): string {
     : h === "crit"
     ? "var(--error)"
     : "var(--border-primary)";
+}
+
+/**
+ * Isolated count badge. Reads resourceCounts.value in its own render scope so
+ * a count update only re-renders this subtree, not the entire SecondaryNav.
+ */
+function CountBadge({ kind }: { kind: string }) {
+  // This is the only place resourceCounts.value is read. Preact signals will
+  // subscribe THIS component (not SecondaryNav) to count updates.
+  const countsLoaded = resourceCounts.value !== null;
+  const liveCount = getCount(kind);
+
+  return (
+    <span
+      style={{
+        fontSize: "11px",
+        fontWeight: 600,
+        color: "var(--text-muted)",
+        fontVariantNumeric: "tabular-nums",
+        opacity: countsLoaded ? 1 : 0.4,
+        minWidth: "16px",
+        textAlign: "right",
+      }}
+      data-count-kind={kind}
+    >
+      {liveCount !== null && liveCount !== undefined ? liveCount : "·"}
+    </span>
+  );
 }
 
 interface SecondaryNavProps {
@@ -40,12 +69,15 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
   const domain = domainById(domainId);
 
   // Keep the grid column width in sync with the collapse state.
-  if (IS_BROWSER) {
+  // Must run in an effect (not the render body) to avoid a synchronous
+  // layout/CSS-grid-track write on every re-render.
+  useEffect(() => {
+    if (!IS_BROWSER) return;
     document.documentElement.style.setProperty(
       "--panel-width",
       navCollapsed.value ? "0px" : "250px",
     );
-  }
+  }, [navCollapsed.value]);
 
   // Overview has no children — collapse the panel for it.
   if (!domain?.groups?.length) {
@@ -76,10 +108,6 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
 
   const isActive = (it: NavItem) =>
     currentPath === it.href || currentPath.startsWith(it.href + "/");
-
-  // Reading resourceCounts.value here creates a Preact signal subscription —
-  // the component re-renders automatically when counts update.
-  const countsLoaded = resourceCounts.value !== null;
 
   return (
     <nav
@@ -230,10 +258,6 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
             </div>
             {g.items.map((it) => {
               const active = isActive(it);
-              // Live count from shared store. null = still loading.
-              const liveCount = (it.count && it.kind)
-                ? getCount(it.kind)
-                : undefined;
 
               return (
                 <a
@@ -289,25 +313,11 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
                   >
                     {it.label}
                   </span>
-                  {/* Live count badge — wired to shared resource-counts store */}
-                  {it.count && it.kind && (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        color: "var(--text-muted)",
-                        fontVariantNumeric: "tabular-nums",
-                        opacity: countsLoaded ? 1 : 0.4,
-                        minWidth: "16px",
-                        textAlign: "right",
-                      }}
-                      data-count-kind={it.kind}
-                    >
-                      {liveCount !== null && liveCount !== undefined
-                        ? liveCount
-                        : "·"}
-                    </span>
-                  )}
+                  {
+                    /* Live count badge — isolated component so count updates
+                      only re-render the badge subtree, not SecondaryNav */
+                  }
+                  {it.count && it.kind && <CountBadge kind={it.kind} />}
                 </a>
               );
             })}

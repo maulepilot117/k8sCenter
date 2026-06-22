@@ -2,7 +2,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import type { CiliumSubsystemsResponse } from "@/lib/cilium-types.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 function formatBytes(bytes: number): string {
@@ -125,9 +125,9 @@ export default function CiliumSubsystems() {
                 <div class="flex justify-between text-sm">
                   <span class="text-text-muted">Engine</span>
                   <StatusBadge
-                    status={mesh.engine.charAt(0).toUpperCase() +
+                    label={mesh.engine.charAt(0).toUpperCase() +
                       mesh.engine.slice(1)}
-                    variant="success"
+                    tone="ok"
                   />
                 </div>
                 {mesh.deploymentMode && (
@@ -159,7 +159,7 @@ export default function CiliumSubsystems() {
           {clusterMesh.enabled
             ? (
               <div class="space-y-1.5">
-                <StatusBadge status="Enabled" variant="success" />
+                <StatusBadge label="Enabled" tone="ok" />
                 {clusterMesh.remoteClusters &&
                   clusterMesh.remoteClusters.length > 0 && (
                   <div class="mt-2 space-y-1">

@@ -1,17 +1,17 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
-import type { StatusVariant } from "@/lib/status-colors.ts";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 
-const severityColor: Record<string, string> = {
-  critical: "danger",
-  warning: "warning",
+const severityTone: Record<string, Tone> = {
+  critical: "crit",
+  warning: "warn",
   info: "info",
 };
 
@@ -23,6 +23,8 @@ export default function AlertsPage() {
   const error = useSignal<string | null>(null);
   const continueToken = useSignal<string | null>(null);
   const expandedRow = useSignal<string | null>(null);
+  // AbortController for in-flight fetchHistory requests (Finding #28).
+  const historyAbortRef = useRef<AbortController | null>(null);
 
   function fetchActive() {
     apiGet<AlertEvent[]>("/v1/alerts")
@@ -39,23 +41,34 @@ export default function AlertsPage() {
   }
 
   function fetchHistory() {
+    // Abort any in-flight request before issuing a new one.
+    historyAbortRef.current?.abort();
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+
     loading.value = true;
     const params = new URLSearchParams({ limit: "50" });
     if (continueToken.value) params.set("continue", continueToken.value);
 
     apiGet<{ items: AlertEvent[]; continue?: string }>(
       `/v1/alerts/history?${params}`,
+      controller.signal,
     )
       .then((res) => {
+        // Guard: ignore stale response if a newer fetch has already started.
+        if (controller.signal.aborted) return;
         historyAlerts.value = res.data?.items ?? [];
         continueToken.value = res.data?.continue ?? null;
         error.value = null;
       })
       .catch((err) => {
+        if (controller.signal.aborted) return;
         error.value = err.message ?? "Failed to fetch alert history";
       })
       .finally(() => {
-        loading.value = false;
+        if (!controller.signal.aborted) {
+          loading.value = false;
+        }
       });
   }
 
@@ -69,6 +82,10 @@ export default function AlertsPage() {
     if (activeTab.value === "history") {
       fetchHistory();
     }
+    // Abort any pending history fetch when the tab changes away.
+    return () => {
+      historyAbortRef.current?.abort();
+    };
   }, [activeTab.value]);
 
   function formatTime(ts: string): string {
@@ -290,9 +307,8 @@ function AlertTable(
                 </td>
                 <td class="px-4 py-3">
                   <StatusBadge
-                    status={alert.severity || "unknown"}
-                    variant={(severityColor[alert.severity] ??
-                      "neutral") as StatusVariant}
+                    label={alert.severity || "unknown"}
+                    tone={severityTone[alert.severity] ?? "neutral"}
                   />
                 </td>
                 <td class="px-4 py-3 text-sm text-text-secondary">
@@ -301,8 +317,8 @@ function AlertTable(
                 {showResolvedColumn && (
                   <td class="px-4 py-3">
                     <StatusBadge
-                      status={alert.status}
-                      variant={alert.status === "firing" ? "danger" : "success"}
+                      label={alert.status}
+                      tone={alert.status === "firing" ? "crit" : "ok"}
                     />
                   </td>
                 )}

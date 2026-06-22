@@ -29,7 +29,7 @@ export default define.page(function App({ Component }) {
         <script
           dangerouslySetInnerHTML={{
             __html:
-              `(function(){try{var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
+              `(function(){try{var t=localStorage.getItem("kc.theme");if(t==="light")document.documentElement.classList.add("theme-light")}catch(e){}})();(function(){try{var a=localStorage.getItem("k8scenter-animations");if(a==="false")document.documentElement.classList.add("no-animations")}catch(e){}})()`,
           }}
         />
       </head>

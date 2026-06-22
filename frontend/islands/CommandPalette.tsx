@@ -239,7 +239,7 @@ export default function CommandPalette() {
     }
   }
 
-  // Keyboard shortcut: Cmd+K / Ctrl+K
+  // Keyboard shortcut: Cmd+K / Ctrl+K + custom event from TopBarV2 search trigger
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -251,22 +251,13 @@ export default function CommandPalette() {
         }
       }
     };
-    globalThis.addEventListener("keydown", handleKeyDown);
-    return () => globalThis.removeEventListener("keydown", handleKeyDown);
-  }, []);
-
-  // Listen for custom event from TopBarV2 search trigger
-  useEffect(() => {
     const handleOpen = () => openPalette();
-    globalThis.addEventListener(
-      "open-command-palette",
-      handleOpen,
-    );
-    return () =>
-      globalThis.removeEventListener(
-        "open-command-palette",
-        handleOpen,
-      );
+    globalThis.addEventListener("keydown", handleKeyDown);
+    globalThis.addEventListener("open-command-palette", handleOpen);
+    return () => {
+      globalThis.removeEventListener("keydown", handleKeyDown);
+      globalThis.removeEventListener("open-command-palette", handleOpen);
+    };
   }, []);
 
   if (!IS_BROWSER) return null;

@@ -72,9 +72,15 @@ function scheduleCountsFetch(ns: string, _cluster: string) {
   }, 150);
 }
 
+/**
+ * Disposer returned by the module-level effect subscription.
+ * Held at module scope so teardownCounts() can stop it.
+ */
+let effectDisposer: (() => void) | null = null;
+
 // Wire the reactive side-effect only in the browser.
 if (IS_BROWSER) {
-  effect(() => {
+  effectDisposer = effect(() => {
     const ns = selectedNamespace.value;
     const cluster = selectedCluster.value;
     if (ns === lastNs && cluster === lastCluster) return;
@@ -82,4 +88,29 @@ if (IS_BROWSER) {
     lastCluster = cluster;
     scheduleCountsFetch(ns, cluster);
   });
+}
+
+/**
+ * Tears down the module-level counts subscription and aborts any in-flight
+ * fetch. Safe to call multiple times.
+ *
+ * NOTE: SecondaryNav is NOT the sole consumer of resourceCounts (WorkloadsDashboard,
+ * NetworkingDashboard, StorageDashboard, ConfigDashboard, PDBsDashboard, and
+ * HPAsDashboard also subscribe). Do NOT wire this into SecondaryNav's cleanup
+ * unless you are certain it is the last consumer — prefer a refcount approach
+ * or leave teardown to app-level shutdown.
+ */
+export function teardownCounts(): void {
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+  if (effectDisposer) {
+    effectDisposer();
+    effectDisposer = null;
+  }
 }

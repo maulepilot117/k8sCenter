@@ -7,14 +7,15 @@ import type { CRDInfo, PrinterColumn } from "@/lib/crd-types.ts";
 import { age } from "@/lib/format.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
-import StatusBadge, { StatusDot } from "@/components/ui/glass/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
+import { StatusDot } from "@/components/ui/StatusDot.tsx";
 
 interface Props {
   group: string;
   resource: string;
 }
 
-interface CRDItem {
+interface CRDItem extends Record<string, unknown> {
   metadata: {
     name: string;
     namespace?: string;
@@ -31,7 +32,6 @@ interface CRDItem {
     }>;
     [key: string]: unknown;
   };
-  [key: string]: unknown;
 }
 
 /** Extract a value from an object using a simple jsonPath-like string. */
@@ -509,11 +509,17 @@ export default function CRDResourceList({ group, resource }: Props) {
         {/* Data rows */}
         {filtered.map((item) => {
           const status = getReadyStatus(item);
+          // tone for the glass StatusBadge pill; dotStatus for the old StatusDot
           const statusTone = status === "Ready"
             ? "ok"
             : status === "NotReady"
             ? "crit"
-            : "neutral";
+            : "neutral" as const;
+          const dotStatus = status === "Ready"
+            ? "success"
+            : status === "NotReady"
+            ? "error"
+            : "neutral" as const;
           const ns = item.metadata.namespace;
           const detailNs = ns ?? "_";
           const detailHref =
@@ -556,7 +562,7 @@ export default function CRDResourceList({ group, resource }: Props) {
                   minWidth: 0,
                 }}
               >
-                <StatusDot tone={statusTone} size={7} />
+                <StatusDot status={dotStatus} size={7} />
                 <a
                   href={detailHref}
                   onClick={(e) => e.stopPropagation()}
@@ -607,10 +613,7 @@ export default function CRDResourceList({ group, resource }: Props) {
 
               {/* Printer columns */}
               {printerColumns.map((col) => {
-                const val = extractJsonPath(
-                  item as unknown as Record<string, unknown>,
-                  col.jsonPath,
-                );
+                const val = extractJsonPath(item, col.jsonPath);
                 return (
                   <span
                     key={col.name}

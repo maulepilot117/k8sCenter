@@ -2,7 +2,7 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet, apiPost } from "@/lib/api.ts";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -101,7 +101,8 @@ export default function MonitoringStatus() {
           title="Prometheus"
           action={
             <StatusBadge
-              status={s.prometheus.available ? "Running" : "Unavailable"}
+              label={s.prometheus.available ? "Running" : "Unavailable"}
+              tone={s.prometheus.available ? "ok" : "crit"}
             />
           }
           style={{ flex: "1 1 240px", minWidth: "200px" }}
@@ -149,7 +150,8 @@ export default function MonitoringStatus() {
           title="Grafana"
           action={
             <StatusBadge
-              status={s.grafana.available ? "Running" : "Unavailable"}
+              label={s.grafana.available ? "Running" : "Unavailable"}
+              tone={s.grafana.available ? "ok" : "crit"}
             />
           }
           style={{ flex: "1 1 240px", minWidth: "200px" }}
@@ -197,9 +199,10 @@ export default function MonitoringStatus() {
           title="Dashboards"
           action={
             <StatusBadge
-              status={s.dashboards.provisioned
+              label={s.dashboards.provisioned
                 ? "Provisioned"
                 : "Not provisioned"}
+              tone={s.dashboards.provisioned ? "ok" : "neutral"}
             />
           }
           style={{ flex: "1 1 240px", minWidth: "200px" }}

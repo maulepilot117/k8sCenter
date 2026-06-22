@@ -59,4 +59,22 @@ void main() {
     expect(from.lerp(to, 0).accent, equals(from.accent));
     expect(from.lerp(to, 1).accent, equals(to.accent));
   });
+
+  test('liquid-glass-light theme has Brightness.light', () {
+    final theme = buildKubeTheme('liquid-glass-light');
+    expect(
+      theme.colorScheme.brightness,
+      equals(Brightness.light),
+      reason: 'liquid-glass-light must use ColorScheme.light so ThemeMode.system engages correctly',
+    );
+  });
+
+  test('liquid-glass (dark) theme has Brightness.dark', () {
+    final theme = buildKubeTheme('liquid-glass');
+    expect(
+      theme.colorScheme.brightness,
+      equals(Brightness.dark),
+      reason: 'liquid-glass must use ColorScheme.dark',
+    );
+  });
 }

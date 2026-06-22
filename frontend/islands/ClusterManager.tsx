@@ -4,7 +4,7 @@ import { useEffect } from "preact/hooks";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Button } from "@/components/ui/Button.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
@@ -406,8 +406,8 @@ export default function ClusterManager() {
       ),
       status: (
         <StatusBadge
-          status={c.status}
-          variant={c.status === "connected" ? "success" : "danger"}
+          label={c.status}
+          tone={c.status === "connected" ? "ok" : "crit"}
         />
       ),
       actions: !c.isLocal

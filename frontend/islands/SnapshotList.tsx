@@ -3,7 +3,7 @@ import { useEffect } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiDelete, apiGet } from "@/lib/api.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
@@ -300,14 +300,14 @@ export default function SnapshotList() {
                         {snap.errorMessage
                           ? (
                             <StatusBadge
-                              status="Error"
-                              variant="danger"
+                              label="Error"
+                              tone="crit"
                             />
                           )
                           : (
                             <StatusBadge
-                              status={snap.readyToUse ? "Ready" : "Pending"}
-                              variant={snap.readyToUse ? "success" : "warning"}
+                              label={snap.readyToUse ? "Ready" : "Pending"}
+                              tone={snap.readyToUse ? "ok" : "warn"}
                             />
                           )}
                         {snap.errorMessage && (

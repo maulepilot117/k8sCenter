@@ -4,7 +4,7 @@ import { useEffect } from "preact/hooks";
 import { api } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import ResourceTable from "@/components/ui/ResourceTable.tsx";
 import type { Column, Row } from "@/components/ui/ResourceTable.tsx";
@@ -181,12 +181,12 @@ export default function AuditLogViewer() {
         ),
         result: (
           <StatusBadge
-            status={e.result}
-            variant={e.result === "success"
-              ? "success"
+            label={e.result}
+            tone={e.result === "success"
+              ? "ok"
               : e.result === "denied"
-              ? "warning"
-              : "danger"}
+              ? "warn"
+              : "crit"}
           />
         ),
         detail: (

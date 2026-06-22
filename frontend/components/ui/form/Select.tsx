@@ -1,7 +1,9 @@
+type SelectOption = string | { value: string; label: string };
+
 export default function Select(
   { value, options, onChange }: {
     value: string;
-    options: string[];
+    options: SelectOption[];
     onChange: (v: string) => void;
   },
 ) {
@@ -22,7 +24,11 @@ export default function Select(
         cursor: "pointer",
       }}
     >
-      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      {options.map((o) =>
+        typeof o === "string"
+          ? <option key={o} value={o}>{o}</option>
+          : <option key={o.value} value={o.value}>{o.label}</option>
+      )}
     </select>
   );
 }

@@ -2,7 +2,7 @@ import { IS_BROWSER } from "fresh/runtime";
 import { usePoll } from "@/lib/hooks/use-poll.ts";
 import type { CiliumIPAMResponse } from "@/lib/cilium-types.ts";
 import { Card } from "@/components/ui/Card.tsx";
-import { StatusBadge } from "@/components/ui/StatusBadge.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 
 export default function IpamStatus() {
@@ -39,12 +39,6 @@ export default function IpamStatus() {
   const total = resp.total ?? 0;
 
   const pct = total > 0 ? Math.round((allocated / total) * 100) : 0;
-
-  const riskVariant = resp.exhaustionRisk === "high"
-    ? "danger"
-    : resp.exhaustionRisk === "medium"
-    ? "warning"
-    : "success";
 
   return (
     <Card title="IP Address Management">
@@ -92,11 +86,15 @@ export default function IpamStatus() {
         <div class="flex justify-between">
           <span class="text-text-muted">Exhaustion Risk</span>
           <StatusBadge
-            status={resp.exhaustionRisk === "none"
+            label={resp.exhaustionRisk === "none"
               ? "None"
               : resp.exhaustionRisk.charAt(0).toUpperCase() +
                 resp.exhaustionRisk.slice(1)}
-            variant={riskVariant}
+            tone={resp.exhaustionRisk === "high"
+              ? "crit"
+              : resp.exhaustionRisk === "medium"
+              ? "warn"
+              : "ok"}
           />
         </div>
 
