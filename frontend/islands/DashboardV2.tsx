@@ -1,9 +1,9 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { api } from "@/lib/api.ts";
 
-import { age } from "@/lib/format.ts";
+import { age, percentile } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
@@ -15,6 +15,7 @@ import { healthStatusColor } from "@/lib/score-color.ts";
 import type { ClusterHealth } from "@/lib/score-color.ts";
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
+import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { CheckItem } from "@/components/ui/CheckItem.tsx";
 
 // ─── Wire types (unchanged from original) ────────────────────────────────────
@@ -61,9 +62,13 @@ interface DashboardTrends {
   nodes: number[] | null;
   pods: number[] | null;
   services: number[] | null;
-  alerts: number[] | null;
   cpu: number[] | null;
   memory: number[] | null;
+  // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
+  // tile derives its displayed RX/TX p95 from these series, so the value tracks
+  // whichever time-range tab is active.
+  networkRx: number[] | null;
+  networkTx: number[] | null;
   window: string;
   step: string;
 }
@@ -83,8 +88,16 @@ export default function DashboardV2() {
   const trends = useSignal<DashboardTrends | null>(null);
   const events = useSignal<K8sEvent[]>([]);
   const loading = useSignal(true);
+  // timeRange is the selected tab; trendsPeriod is the range the currently
+  // displayed series actually belongs to. They differ only while a tab-switch
+  // fetch is in flight — the NetworkTile label reads trendsPeriod so it never
+  // shows a window the data hasn't caught up to yet.
   const timeRange = useSignal<TimeRange>("1h");
+  const trendsPeriod = useSignal<TimeRange>("1h");
   const syncedAgo = useSignal<string>("");
+  // Cancels the prior in-flight tab-switch trends fetch so a slower earlier
+  // response can't land after a newer one and clobber trends.value out of order.
+  const tabAbort = useRef<AbortController | null>(null);
 
   async function fetchSummary(signal?: AbortSignal) {
     const summaryRes = await api<DashboardSummary>(
@@ -97,14 +110,25 @@ export default function DashboardV2() {
     }
   }
 
-  async function fetchTrends(signal?: AbortSignal) {
+  async function fetchTrends(range: TimeRange, signal?: AbortSignal) {
     const trendsRes = await api<DashboardTrends>(
-      "/v1/cluster/dashboard-trends",
+      `/v1/cluster/dashboard-trends?range=${range}`,
       { method: "GET", signal },
     );
     if (trendsRes.data) {
       trends.value = trendsRes.data;
+      trendsPeriod.value = range;
     }
+  }
+
+  // Tab-switch fetch: abort any prior tab fetch first, then issue the new one
+  // under a fresh signal. Errors (including AbortError) are swallowed — the 60s
+  // interval refresh self-heals, and an aborted request is expected, not a fault.
+  function fetchTrendsForTab(range: TimeRange) {
+    tabAbort.current?.abort();
+    const controller = new AbortController();
+    tabAbort.current = controller;
+    fetchTrends(range, controller.signal).catch(() => {});
   }
 
   useEffect(() => {
@@ -122,7 +146,7 @@ export default function DashboardV2() {
             signal: controller.signal,
           }),
           fetchSummary(controller.signal),
-          fetchTrends(controller.signal),
+          fetchTrends(timeRange.value, controller.signal),
           api<K8sEvent[]>("/v1/resources/events?limit=10", {
             method: "GET",
             signal: controller.signal,
@@ -147,17 +171,19 @@ export default function DashboardV2() {
 
     load();
 
-    const interval = setInterval(async () => {
+    const interval = setInterval(() => {
       if (document.hidden) return;
-      try {
-        await Promise.allSettled([fetchSummary(), fetchTrends()]);
-      } catch {
-        // Keep last known data on error
-      }
+      // allSettled never rejects; both fetches share the mount signal so they
+      // cancel on unmount rather than writing to a torn-down island.
+      Promise.allSettled([
+        fetchSummary(controller.signal),
+        fetchTrends(timeRange.value, controller.signal),
+      ]);
     }, REFRESH_INTERVAL);
 
     return () => {
       controller.abort();
+      tabAbort.current?.abort();
       clearInterval(interval);
     };
   }, []);
@@ -241,9 +267,14 @@ export default function DashboardV2() {
   const criticalAlerts = s?.alerts.critical ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
 
-  // Metric tiles: CPU%, Memory%, Pods, (Net I/O omitted — not in API)
+  // Metric tiles: CPU%, Memory%, Pods, Network I/O
   const cpuPct = Math.round(s?.cpu?.percentage ?? 0);
   const memPct = Math.round(s?.memory?.percentage ?? 0);
+
+  // p95 over the selected window, computed from the trend series (which is
+  // already scoped to the active time-range tab).
+  const netRxP95 = percentile(t?.networkRx, 95);
+  const netTxP95 = percentile(t?.networkTx, 95);
 
   // Delta: compare last vs second-to-last in trend series (null when unavailable)
   function lastDelta(series: number[] | null | undefined): number | null {
@@ -346,7 +377,9 @@ export default function DashboardV2() {
               key={r}
               type="button"
               onClick={() => {
+                if (timeRange.value === r) return;
                 timeRange.value = r;
+                fetchTrendsForTab(r);
               }}
               style={{
                 padding: "5px 12px",
@@ -464,14 +497,13 @@ export default function DashboardV2() {
             sparkColor="var(--success)"
             href="/workloads/pods"
           />
-          <MetricTile
-            label="Alerts"
-            value={String(s?.alerts.active ?? 0)}
-            unit={criticalAlerts > 0 ? `${criticalAlerts} critical` : "active"}
-            delta={lastDelta(t?.alerts)}
-            sparkData={t?.alerts}
-            sparkColor="var(--warning)"
-            href="/alerting"
+          <NetworkTile
+            rxP95={netRxP95}
+            txP95={netTxP95}
+            rxData={t?.networkRx}
+            txData={t?.networkTx}
+            period={trendsPeriod.value}
+            href="/cluster/nodes"
           />
         </div>
       </div>

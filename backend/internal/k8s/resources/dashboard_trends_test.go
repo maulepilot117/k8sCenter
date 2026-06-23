@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -15,7 +16,7 @@ type stubTrendProvider struct {
 	err    error
 }
 
-func (s stubTrendProvider) DashboardTrends(_ context.Context) (DashboardTrends, error) {
+func (s stubTrendProvider) DashboardTrends(_ context.Context, _, _ time.Duration) (DashboardTrends, error) {
 	return s.result, s.err
 }
 
@@ -43,7 +44,8 @@ func TestHandleDashboardTrends_NilProvider(t *testing.T) {
 		t.Fatalf("nil provider: want 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
 	got := decodeTrends(t, rr)
-	if got.Nodes != nil || got.CPU != nil {
+	if got.Nodes != nil || got.CPU != nil || got.NetworkRx != nil ||
+		got.NetworkTx != nil {
 		t.Fatalf("nil provider: want empty series, got %+v", got)
 	}
 }
@@ -61,7 +63,7 @@ func TestHandleDashboardTrends_ProviderError(t *testing.T) {
 		t.Fatalf("provider error: want 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
 	got := decodeTrends(t, rr)
-	if got.Nodes != nil {
+	if got.Nodes != nil || got.NetworkRx != nil || got.NetworkTx != nil {
 		t.Fatalf("provider error: want empty series, got %+v", got)
 	}
 }
@@ -69,10 +71,12 @@ func TestHandleDashboardTrends_ProviderError(t *testing.T) {
 func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 	h, _ := testHandler(t)
 	h.Trends = stubTrendProvider{result: DashboardTrends{
-		Nodes:  []float64{3, 3, 4},
-		CPU:    []float64{12.5, 18.0},
-		Window: "1h0m0s",
-		Step:   "2m0s",
+		Nodes:     []float64{3, 3, 4},
+		CPU:       []float64{12.5, 18.0},
+		NetworkRx: []float64{120, 340, 210},
+		NetworkTx: []float64{80, 95, 110},
+		Window:    "1h0m0s",
+		Step:      "2m0s",
 	}}
 	req := requestWithUser("GET", "/api/v1/cluster/dashboard-trends", "")
 	rr := httptest.NewRecorder()
@@ -88,6 +92,47 @@ func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 	}
 	if len(got.CPU) != 2 || got.Window != "1h0m0s" {
 		t.Fatalf("happy path: want cpu len 2 + window, got %+v", got)
+	}
+	if len(got.NetworkRx) != 3 || got.NetworkRx[1] != 340 {
+		t.Fatalf("happy path: want networkRx [120 340 210], got %v", got.NetworkRx)
+	}
+	if len(got.NetworkTx) != 3 || got.NetworkTx[2] != 110 {
+		t.Fatalf("happy path: want networkTx [80 95 110], got %v", got.NetworkTx)
+	}
+}
+
+func TestDashboardTrendRange(t *testing.T) {
+	// Known tabs map to their exact (window, step); unknown/empty falls back to
+	// the 1h pair. Asserting step exactly (not just a bound) catches an
+	// accidental window/step swap, which a `step < window` check would miss.
+	cases := map[string]struct{ window, step time.Duration }{
+		"15m": {15 * time.Minute, 30 * time.Second},
+		"1h":  {time.Hour, 2 * time.Minute},
+		"6h":  {6 * time.Hour, 12 * time.Minute},
+		"24h": {24 * time.Hour, 48 * time.Minute},
+		"":    {time.Hour, 2 * time.Minute},
+		"99d": {time.Hour, 2 * time.Minute},
+	}
+	for in, want := range cases {
+		window, step := dashboardTrendRange(in)
+		if window != want.window || step != want.step {
+			t.Errorf("range %q: want (%s, %s), got (%s, %s)",
+				in, want.window, want.step, window, step)
+		}
+	}
+}
+
+// TestDashboardTrendRange_FrontendTabsResolve guards the implicit contract that
+// every time-range tab the frontend renders (frontend/islands/DashboardV2.tsx
+// TIME_RANGES) resolves to a non-default window. If a tab is added there without
+// a matching dashboardTrendWindows entry, it silently falls back to 1h — this
+// test makes that regression visible on the backend side.
+func TestDashboardTrendRange_FrontendTabsResolve(t *testing.T) {
+	frontendTabs := []string{"15m", "1h", "6h", "24h"}
+	for _, tab := range frontendTabs {
+		if _, ok := dashboardTrendWindows[tab]; !ok {
+			t.Errorf("frontend tab %q has no dashboardTrendWindows entry; it would silently fall back to 1h", tab)
+		}
 	}
 }
 
