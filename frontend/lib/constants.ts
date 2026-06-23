@@ -522,6 +522,7 @@ const _ALL_SECTIONS = [...DOMAIN_SECTIONS, SETTINGS_SECTION];
 export function getActiveDomain(path: string): string | null {
   // Explicit overrides for routes that don't share a domain's prefix.
   if (path.startsWith("/cluster")) return "overview";
+  if (path.startsWith("/rbac")) return "security";
   if (path.startsWith("/admin")) return "security";
   if (path.startsWith("/settings")) return "settings";
   if (path.startsWith("/scaling")) return "workloads";
