@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
@@ -15,7 +16,7 @@ type stubTrendProvider struct {
 	err    error
 }
 
-func (s stubTrendProvider) DashboardTrends(_ context.Context) (DashboardTrends, error) {
+func (s stubTrendProvider) DashboardTrends(_ context.Context, _, _ time.Duration) (DashboardTrends, error) {
 	return s.result, s.err
 }
 
@@ -69,10 +70,12 @@ func TestHandleDashboardTrends_ProviderError(t *testing.T) {
 func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 	h, _ := testHandler(t)
 	h.Trends = stubTrendProvider{result: DashboardTrends{
-		Nodes:  []float64{3, 3, 4},
-		CPU:    []float64{12.5, 18.0},
-		Window: "1h0m0s",
-		Step:   "2m0s",
+		Nodes:     []float64{3, 3, 4},
+		CPU:       []float64{12.5, 18.0},
+		NetworkRx: []float64{120, 340, 210},
+		NetworkTx: []float64{80, 95, 110},
+		Window:    "1h0m0s",
+		Step:      "2m0s",
 	}}
 	req := requestWithUser("GET", "/api/v1/cluster/dashboard-trends", "")
 	rr := httptest.NewRecorder()
@@ -88,6 +91,33 @@ func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 	}
 	if len(got.CPU) != 2 || got.Window != "1h0m0s" {
 		t.Fatalf("happy path: want cpu len 2 + window, got %+v", got)
+	}
+	if len(got.NetworkRx) != 3 || got.NetworkRx[1] != 340 {
+		t.Fatalf("happy path: want networkRx [120 340 210], got %v", got.NetworkRx)
+	}
+	if len(got.NetworkTx) != 3 || got.NetworkTx[2] != 110 {
+		t.Fatalf("happy path: want networkTx [80 95 110], got %v", got.NetworkTx)
+	}
+}
+
+func TestDashboardTrendRange(t *testing.T) {
+	// Known tabs map to their window; unknown/empty falls back to 1h.
+	cases := map[string]time.Duration{
+		"15m": 15 * time.Minute,
+		"1h":  time.Hour,
+		"6h":  6 * time.Hour,
+		"24h": 24 * time.Hour,
+		"":    time.Hour,
+		"99d": time.Hour,
+	}
+	for in, wantWindow := range cases {
+		window, step := dashboardTrendRange(in)
+		if window != wantWindow {
+			t.Errorf("range %q: want window %s, got %s", in, wantWindow, window)
+		}
+		if step <= 0 || step >= window {
+			t.Errorf("range %q: step %s out of bounds for window %s", in, step, window)
+		}
 	}
 }
 

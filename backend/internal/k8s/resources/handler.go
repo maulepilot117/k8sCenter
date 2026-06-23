@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/kubecenter/kubecenter/internal/audit"
@@ -42,7 +43,10 @@ type AlertCounter interface {
 // cards (node/pod/service/alert counts). Used by the dashboard trends endpoint.
 // Can be nil if monitoring is unavailable.
 type TrendProvider interface {
-	DashboardTrends(ctx context.Context) (DashboardTrends, error)
+	// DashboardTrends range-queries the metric-card series over the given window
+	// at the given step resolution. The handler maps the ?range= tab to these
+	// durations so the dashboard's time-range selector drives every sparkline.
+	DashboardTrends(ctx context.Context, window, step time.Duration) (DashboardTrends, error)
 }
 
 // ErrCertManagerNotInstalled is returned by CertExpiryCounter implementations

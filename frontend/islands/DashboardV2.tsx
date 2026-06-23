@@ -15,6 +15,7 @@ import { healthStatusColor } from "@/lib/score-color.ts";
 import type { ClusterHealth } from "@/lib/score-color.ts";
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
 import { MetricTile } from "@/components/ui/MetricTile.tsx";
+import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { CheckItem } from "@/components/ui/CheckItem.tsx";
 
 // ─── Wire types (unchanged from original) ────────────────────────────────────
@@ -64,6 +65,11 @@ interface DashboardTrends {
   alerts: number[] | null;
   cpu: number[] | null;
   memory: number[] | null;
+  // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
+  // tile derives its displayed RX/TX p95 from these series, so the value tracks
+  // whichever time-range tab is active.
+  networkRx: number[] | null;
+  networkTx: number[] | null;
   window: string;
   step: string;
 }
@@ -97,9 +103,9 @@ export default function DashboardV2() {
     }
   }
 
-  async function fetchTrends(signal?: AbortSignal) {
+  async function fetchTrends(range: TimeRange, signal?: AbortSignal) {
     const trendsRes = await api<DashboardTrends>(
-      "/v1/cluster/dashboard-trends",
+      `/v1/cluster/dashboard-trends?range=${range}`,
       { method: "GET", signal },
     );
     if (trendsRes.data) {
@@ -122,7 +128,7 @@ export default function DashboardV2() {
             signal: controller.signal,
           }),
           fetchSummary(controller.signal),
-          fetchTrends(controller.signal),
+          fetchTrends(timeRange.value, controller.signal),
           api<K8sEvent[]>("/v1/resources/events?limit=10", {
             method: "GET",
             signal: controller.signal,
@@ -150,7 +156,10 @@ export default function DashboardV2() {
     const interval = setInterval(async () => {
       if (document.hidden) return;
       try {
-        await Promise.allSettled([fetchSummary(), fetchTrends()]);
+        await Promise.allSettled([
+          fetchSummary(),
+          fetchTrends(timeRange.value),
+        ]);
       } catch {
         // Keep last known data on error
       }
@@ -241,9 +250,30 @@ export default function DashboardV2() {
   const criticalAlerts = s?.alerts.critical ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
 
-  // Metric tiles: CPU%, Memory%, Pods, (Net I/O omitted — not in API)
+  // Metric tiles: CPU%, Memory%, Pods, Network I/O
   const cpuPct = Math.round(s?.cpu?.percentage ?? 0);
   const memPct = Math.round(s?.memory?.percentage ?? 0);
+
+  // p95 over the selected window, computed from the trend series (which is
+  // already scoped to the active time-range tab). Linear interpolation between
+  // the two bracketing samples; 0 when the series is empty/unavailable.
+  function percentile(
+    series: number[] | null | undefined,
+    p: number,
+  ): number {
+    const clean = (series ?? []).filter((v) => Number.isFinite(v));
+    if (clean.length === 0) return 0;
+    if (clean.length === 1) return clean[0];
+    const sorted = [...clean].sort((a, b) => a - b);
+    const rank = (p / 100) * (sorted.length - 1);
+    const lo = Math.floor(rank);
+    const hi = Math.ceil(rank);
+    if (lo === hi) return sorted[lo];
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo);
+  }
+
+  const netRxP95 = percentile(t?.networkRx, 95);
+  const netTxP95 = percentile(t?.networkTx, 95);
 
   // Delta: compare last vs second-to-last in trend series (null when unavailable)
   function lastDelta(series: number[] | null | undefined): number | null {
@@ -346,7 +376,9 @@ export default function DashboardV2() {
               key={r}
               type="button"
               onClick={() => {
+                if (timeRange.value === r) return;
                 timeRange.value = r;
+                fetchTrends(r);
               }}
               style={{
                 padding: "5px 12px",
@@ -464,14 +496,13 @@ export default function DashboardV2() {
             sparkColor="var(--success)"
             href="/workloads/pods"
           />
-          <MetricTile
-            label="Alerts"
-            value={String(s?.alerts.active ?? 0)}
-            unit={criticalAlerts > 0 ? `${criticalAlerts} critical` : "active"}
-            delta={lastDelta(t?.alerts)}
-            sparkData={t?.alerts}
-            sparkColor="var(--warning)"
-            href="/alerting"
+          <NetworkTile
+            rxP95={netRxP95}
+            txP95={netTxP95}
+            rxData={t?.networkRx}
+            txData={t?.networkTx}
+            period={timeRange.value}
+            href="/cluster/nodes"
           />
         </div>
       </div>

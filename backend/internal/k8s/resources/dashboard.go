@@ -80,8 +80,14 @@ type DashboardTrends struct {
 	// in DashboardSummary.CPU/Memory.
 	CPU    []float64 `json:"cpu"`
 	Memory []float64 `json:"memory"`
-	Window string    `json:"window"`
-	Step   string    `json:"step"`
+	// NetworkRx and NetworkTx are cluster-wide network throughput in Mbps
+	// (megabits/sec), one value per step. They back the Network I/O metric
+	// tile's RX/TX sparklines; the frontend derives the displayed p95 from
+	// these series so it tracks the selected time window automatically.
+	NetworkRx []float64 `json:"networkRx"`
+	NetworkTx []float64 `json:"networkTx"`
+	Window    string    `json:"window"`
+	Step      string    `json:"step"`
 }
 
 // Waiting reason predicates copied from diagnostics/rules.go — exact string
@@ -767,6 +773,26 @@ func (h *Handler) HandleDashboardSummary(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, api.Response{Data: summary})
 }
 
+// dashboardTrendWindows maps the frontend's time-range tab (?range=) to a
+// (window, step) pair. Each pair yields ~30 points so every range reads as an
+// equally dense sparkline. Unknown or empty values fall back to the 1h default.
+var dashboardTrendWindows = map[string]struct{ window, step time.Duration }{
+	"15m": {15 * time.Minute, 30 * time.Second},
+	"1h":  {time.Hour, 2 * time.Minute},
+	"6h":  {6 * time.Hour, 12 * time.Minute},
+	"24h": {24 * time.Hour, 48 * time.Minute},
+}
+
+// dashboardTrendRange resolves a ?range= tab value to its window and step,
+// defaulting to 1h when the value is empty or unrecognized.
+func dashboardTrendRange(rangeKey string) (window, step time.Duration) {
+	if r, ok := dashboardTrendWindows[rangeKey]; ok {
+		return r.window, r.step
+	}
+	def := dashboardTrendWindows["1h"]
+	return def.window, def.step
+}
+
 // HandleDashboardTrends returns short historical series for the dashboard metric
 // cards (node/pod/service/alert counts) sourced from Prometheus range queries.
 // Kept separate from HandleDashboardSummary so its multi-second range queries do
@@ -791,7 +817,8 @@ func (h *Handler) HandleDashboardTrends(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	trends, err := h.Trends.DashboardTrends(r.Context())
+	window, step := dashboardTrendRange(r.URL.Query().Get("range"))
+	trends, err := h.Trends.DashboardTrends(r.Context(), window, step)
 	if err != nil {
 		// Prometheus hiccups should not surface as a dashboard error — log and
 		// return empty series so the cards still render their current counts.

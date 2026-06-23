@@ -12,13 +12,10 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
 
-// Dashboard trend window and resolution. A 1h window at a 2m step yields ~31
-// points — dense enough to read as a trend, cheap enough to range-query every
-// dashboard refresh.
-const (
-	trendWindow = time.Hour
-	trendStep   = 2 * time.Minute
-)
+// Dashboard trend window and resolution are chosen by the caller (the handler
+// maps the frontend's time-range tab to a window/step pair). Each tab targets
+// ~30 points — dense enough to read as a trend, cheap enough to range-query
+// every dashboard refresh.
 
 // trendQueries are the PromQL expressions backing each metric card's sparkline.
 //
@@ -45,16 +42,22 @@ var trendQueries = []struct {
 	{`count(ALERTS{alertstate="firing"}) or vector(0)`, func(t *resources.DashboardTrends, v []float64) { t.Alerts = v }},
 	{`100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, func(t *resources.DashboardTrends, v []float64) { t.CPU = v }},
 	{`(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, func(t *resources.DashboardTrends, v []float64) { t.Memory = v }},
+	// Cluster-wide network throughput in Mbps (bytes/s * 8 / 1e6). Virtual
+	// interfaces (veth/cali/lxc/cilium) are excluded so pod-to-pod traffic
+	// isn't double-counted against physical NIC throughput — same device
+	// filter the per-node network queries in query_registry.go use.
+	{`sum(rate(node_network_receive_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v []float64) { t.NetworkRx = v }},
+	{`sum(rate(node_network_transmit_bytes_total{device!~"veth.*|cali.*|lxc.*|cilium.*"}[5m])) * 8 / 1e6`, func(t *resources.DashboardTrends, v []float64) { t.NetworkTx = v }},
 }
 
 // DashboardTrends implements resources.TrendProvider. It range-queries
 // Prometheus for the six metric-card series concurrently and returns whatever
 // resolved; individual query failures yield an empty series for that metric
 // rather than failing the whole request.
-func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.DashboardTrends, error) {
+func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step time.Duration) (resources.DashboardTrends, error) {
 	out := resources.DashboardTrends{
-		Window: trendWindow.String(),
-		Step:   trendStep.String(),
+		Window: window.String(),
+		Step:   step.String(),
 	}
 
 	pc := a.Discoverer.PrometheusClient()
@@ -67,7 +70,7 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.Das
 	defer cancel()
 
 	end := time.Now()
-	start := end.Add(-trendWindow)
+	start := end.Add(-window)
 
 	series := make([][]float64, len(trendQueries))
 	var wg sync.WaitGroup
@@ -75,7 +78,7 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context) (resources.Das
 	for i, q := range trendQueries {
 		go func(i int, query string) {
 			defer wg.Done()
-			val, _, err := pc.QueryRange(ctx, query, start, end, trendStep)
+			val, _, err := pc.QueryRange(ctx, query, start, end, step)
 			if err != nil {
 				return // leave series[i] nil → empty slice in JSON
 			}
