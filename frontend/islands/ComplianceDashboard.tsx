@@ -2,6 +2,7 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
+import { selectedNamespace } from "@/lib/namespace.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
 import { GaugeRing } from "@/components/ui/GaugeRing.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
@@ -55,12 +56,23 @@ export default function ComplianceDashboard() {
   const error = useSignal<string | null>(null);
   const refreshing = useSignal(false);
 
+  // Read the global namespace picker in the synchronous render path so the
+  // island re-renders (and the effect below re-runs) when the picker changes.
+  // "all" = cluster-wide; a specific namespace scopes the score server-side.
+  const ns = selectedNamespace.value;
+
   async function fetchData() {
     try {
+      // Peek the live value (not the render-time closure) so WS-triggered
+      // refetches also pick up the currently selected namespace.
+      const current = selectedNamespace.peek();
+      const qs = current && current !== "all"
+        ? `?namespace=${encodeURIComponent(current)}`
+        : "";
       const res = await apiGet<ComplianceScore | ComplianceScore[]>(
-        "/v1/policies/compliance",
+        `/v1/policies/compliance${qs}`,
       );
-      // Backend returns a single object (cluster-wide) or an array
+      // Backend returns a single scoped object (cluster-wide or namespace).
       scores.value = Array.isArray(res.data)
         ? res.data
         : res.data
@@ -72,12 +84,13 @@ export default function ComplianceDashboard() {
     }
   }
 
+  // Refetch on mount and whenever the namespace picker changes.
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
       loading.value = false;
     });
-  }, []);
+  }, [ns]);
 
   useWsRefetch(fetchData, [
     ["compliance-policyreports", "policyreports", ""],
@@ -92,12 +105,14 @@ export default function ComplianceDashboard() {
 
   if (!IS_BROWSER) return null;
 
-  const clusterScore = scores.value.find((s) =>
-    s.scope === "" || s.scope === "cluster"
-  );
-  const nsScores = scores.value
-    .filter((s) => s.scope !== "" && s.scope !== "cluster")
-    .sort((a, b) => a.score - b.score);
+  // Backend echoes the requested scope ("" for cluster-wide, else the
+  // namespace). Match it back, falling back to the first row for robustness.
+  const activeScope = ns === "all" ? "" : ns;
+  const primaryScore =
+    scores.value.find((s) =>
+      s.scope === activeScope || (activeScope === "" && s.scope === "cluster")
+    ) ?? scores.value[0];
+  const scoped = ns !== "all";
 
   return (
     <div
@@ -137,7 +152,9 @@ export default function ComplianceDashboard() {
               color: "var(--text-muted)",
             }}
           >
-            Weighted compliance scores based on policy pass/fail rates.
+            {scoped
+              ? `Weighted compliance for namespace "${ns}".`
+              : "Weighted cluster-wide compliance based on policy pass/fail rates."}
           </p>
         </div>
         {!loading.value && (
@@ -164,7 +181,7 @@ export default function ComplianceDashboard() {
         </p>
       )}
 
-      {!loading.value && !error.value && !clusterScore && (
+      {!loading.value && !error.value && !primaryScore && (
         <WidgetShell>
           <div style={{ textAlign: "center", padding: "32px 0" }}>
             <p style={{ color: "var(--text-muted)" }}>
@@ -175,27 +192,29 @@ export default function ComplianceDashboard() {
         </WidgetShell>
       )}
 
-      {!loading.value && !error.value && clusterScore && (
+      {!loading.value && !error.value && primaryScore && (
         <>
           {/* Cluster overview */}
           <div style={{ display: "flex", flexWrap: "wrap", gap: "20px" }}>
             {/* Score ring */}
             <div style={{ flex: "1 1 280px", minWidth: "260px" }}>
-              <WidgetShell title="Cluster Score">
+              <WidgetShell
+                title={scoped ? `Namespace: ${ns}` : "Cluster Score"}
+              >
                 <div class="flex flex-col items-center justify-center">
                   <GaugeRing
-                    value={clusterScore.score}
+                    value={primaryScore.score}
                     size={140}
                     strokeWidth={10}
-                    color={scoreColor(clusterScore.score)}
-                    label="Cluster Score"
+                    color={scoreColor(primaryScore.score)}
+                    label={scoped ? "Namespace" : "Cluster"}
                     valueSize="28px"
                   />
                   <p class="mt-3 text-sm text-text-secondary">
-                    {clusterScore.pass}/{clusterScore.total} passing
-                    {clusterScore.warn > 0 && (
+                    {primaryScore.pass}/{primaryScore.total} passing
+                    {primaryScore.warn > 0 && (
                       <span class="text-warning ml-2">
-                        ({clusterScore.warn} warnings)
+                        ({primaryScore.warn} warnings)
                       </span>
                     )}
                   </p>
@@ -208,7 +227,7 @@ export default function ComplianceDashboard() {
               <WidgetShell title="Severity Breakdown">
                 <div class="space-y-3">
                   {SEVERITY_ORDER.map((sev) => {
-                    const counts = clusterScore.bySeverity?.[sev] ?? {
+                    const counts = primaryScore.bySeverity?.[sev] ?? {
                       pass: 0,
                       fail: 0,
                       total: 0,
@@ -218,7 +237,7 @@ export default function ComplianceDashboard() {
                       <SeverityBar key={sev} label={sev} counts={counts} />
                     );
                   })}
-                  {!clusterScore.bySeverity && (
+                  {!primaryScore.bySeverity && (
                     <p class="text-xs text-text-muted">
                       No severity breakdown available.
                     </p>
@@ -230,96 +249,6 @@ export default function ComplianceDashboard() {
 
           {/* Compliance trend chart */}
           <ComplianceTrendChart />
-
-          {/* Per-namespace table */}
-          {nsScores.length > 0 && (
-            <>
-              <h2
-                style={{
-                  margin: 0,
-                  fontSize: "17px",
-                  fontWeight: 650,
-                  color: "var(--text-primary)",
-                }}
-              >
-                Per-Namespace Compliance
-              </h2>
-              <div class="overflow-x-auto rounded-lg border border-border-primary">
-                <table class="w-full text-sm">
-                  <thead>
-                    <tr class="border-b border-border-primary bg-surface">
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Namespace
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Score
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Pass
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Fail
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Warn
-                      </th>
-                      <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
-                        Total
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-border-subtle">
-                    {nsScores.map((ns) => (
-                      <tr key={ns.scope} class="hover:bg-hover/30">
-                        <td class="px-3 py-2">
-                          <a
-                            href={`/security/violations?namespace=${
-                              encodeURIComponent(ns.scope)
-                            }`}
-                            style={{ color: "var(--accent)" }}
-                            class="hover:underline font-medium"
-                          >
-                            {ns.scope}
-                          </a>
-                        </td>
-                        <td class="px-3 py-2">
-                          <span
-                            class="font-mono font-medium"
-                            style={{ color: scoreColor(ns.score) }}
-                          >
-                            {Math.round(ns.score)}%
-                          </span>
-                        </td>
-                        <td class="px-3 py-2 text-text-secondary">
-                          {ns.pass}
-                        </td>
-                        <td class="px-3 py-2">
-                          {ns.fail > 0
-                            ? (
-                              <span
-                                style={{ color: "var(--error)" }}
-                                class="font-medium"
-                              >
-                                {ns.fail}
-                              </span>
-                            )
-                            : <span class="text-text-muted">0</span>}
-                        </td>
-                        <td class="px-3 py-2">
-                          {ns.warn > 0
-                            ? <span class="text-warning">{ns.warn}</span>
-                            : <span class="text-text-muted">0</span>}
-                        </td>
-                        <td class="px-3 py-2 text-text-secondary">
-                          {ns.total}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
         </>
       )}
     </div>
