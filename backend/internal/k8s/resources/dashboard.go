@@ -74,7 +74,6 @@ type DashboardTrends struct {
 	Nodes    []float64 `json:"nodes"`
 	Pods     []float64 `json:"pods"`
 	Services []float64 `json:"services"`
-	Alerts   []float64 `json:"alerts"`
 	// CPU and Memory are cluster-wide utilization percentages (0–100), one
 	// value per step — the historical companions to the instant percentages
 	// in DashboardSummary.CPU/Memory.

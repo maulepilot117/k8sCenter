@@ -1,5 +1,6 @@
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
+import { formatMbps } from "@/lib/format.ts";
 
 export interface NetworkTileProps {
   /** 95th-percentile receive throughput over the period, in Mbps. */
@@ -11,15 +12,6 @@ export interface NetworkTileProps {
   /** Time-range label (e.g. "1h") shown next to the "p95" qualifier. */
   period: string;
   href?: string;
-}
-
-// Mbps formatter: integers above 100 read cleanly without noise decimals;
-// below that, one decimal preserves resolution on quiet clusters. A non-finite
-// or absent value renders as an em-dash rather than "NaN".
-function formatMbps(v: number): string {
-  if (!Number.isFinite(v)) return "—";
-  if (v >= 100) return Math.round(v).toString();
-  return (Math.round(v * 10) / 10).toString();
 }
 
 function Row(

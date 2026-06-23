@@ -162,7 +162,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Service mesh: `GET /mesh/{status,routing,routing/:id,policies,mtls,golden-signals}` (Istio + Linkerd; mtls/golden-signals require ?namespace=, golden-signals also needs ?service= and optional ?mesh=istio|linkerd)
 - GitOps: `GET /gitops/{status,applications,applications/:id,applicationsets,applicationsets/:id}` (Argo CD + Flux CD)
 - External Secrets: `GET /externalsecrets/{status,externalsecrets,externalsecrets/:ns/:name,clusterexternalsecrets,clusterexternalsecrets/:name,stores,stores/:ns/:name,clusterstores,clusterstores/:name,pushsecrets,pushsecrets/:ns/:name}`
-- Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization)
+- Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization), `GET /cluster/dashboard-trends[?range=15m|1h|6h|24h]` (metric-card sparkline series incl. cluster network RX/TX Mbps; unknown/omitted range defaults to 1h; local cluster only)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache)
 - Multi-cluster: `GET/POST/DELETE /clusters`
 - WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows,logs-search}`

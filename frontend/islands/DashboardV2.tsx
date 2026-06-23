@@ -1,9 +1,9 @@
 import { useSignal } from "@preact/signals";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { api } from "@/lib/api.ts";
 
-import { age } from "@/lib/format.ts";
+import { age, percentile } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
@@ -62,7 +62,6 @@ interface DashboardTrends {
   nodes: number[] | null;
   pods: number[] | null;
   services: number[] | null;
-  alerts: number[] | null;
   cpu: number[] | null;
   memory: number[] | null;
   // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
@@ -89,8 +88,16 @@ export default function DashboardV2() {
   const trends = useSignal<DashboardTrends | null>(null);
   const events = useSignal<K8sEvent[]>([]);
   const loading = useSignal(true);
+  // timeRange is the selected tab; trendsPeriod is the range the currently
+  // displayed series actually belongs to. They differ only while a tab-switch
+  // fetch is in flight — the NetworkTile label reads trendsPeriod so it never
+  // shows a window the data hasn't caught up to yet.
   const timeRange = useSignal<TimeRange>("1h");
+  const trendsPeriod = useSignal<TimeRange>("1h");
   const syncedAgo = useSignal<string>("");
+  // Cancels the prior in-flight tab-switch trends fetch so a slower earlier
+  // response can't land after a newer one and clobber trends.value out of order.
+  const tabAbort = useRef<AbortController | null>(null);
 
   async function fetchSummary(signal?: AbortSignal) {
     const summaryRes = await api<DashboardSummary>(
@@ -110,7 +117,18 @@ export default function DashboardV2() {
     );
     if (trendsRes.data) {
       trends.value = trendsRes.data;
+      trendsPeriod.value = range;
     }
+  }
+
+  // Tab-switch fetch: abort any prior tab fetch first, then issue the new one
+  // under a fresh signal. Errors (including AbortError) are swallowed — the 60s
+  // interval refresh self-heals, and an aborted request is expected, not a fault.
+  function fetchTrendsForTab(range: TimeRange) {
+    tabAbort.current?.abort();
+    const controller = new AbortController();
+    tabAbort.current = controller;
+    fetchTrends(range, controller.signal).catch(() => {});
   }
 
   useEffect(() => {
@@ -153,20 +171,19 @@ export default function DashboardV2() {
 
     load();
 
-    const interval = setInterval(async () => {
+    const interval = setInterval(() => {
       if (document.hidden) return;
-      try {
-        await Promise.allSettled([
-          fetchSummary(),
-          fetchTrends(timeRange.value),
-        ]);
-      } catch {
-        // Keep last known data on error
-      }
+      // allSettled never rejects; both fetches share the mount signal so they
+      // cancel on unmount rather than writing to a torn-down island.
+      Promise.allSettled([
+        fetchSummary(controller.signal),
+        fetchTrends(timeRange.value, controller.signal),
+      ]);
     }, REFRESH_INTERVAL);
 
     return () => {
       controller.abort();
+      tabAbort.current?.abort();
       clearInterval(interval);
     };
   }, []);
@@ -255,23 +272,7 @@ export default function DashboardV2() {
   const memPct = Math.round(s?.memory?.percentage ?? 0);
 
   // p95 over the selected window, computed from the trend series (which is
-  // already scoped to the active time-range tab). Linear interpolation between
-  // the two bracketing samples; 0 when the series is empty/unavailable.
-  function percentile(
-    series: number[] | null | undefined,
-    p: number,
-  ): number {
-    const clean = (series ?? []).filter((v) => Number.isFinite(v));
-    if (clean.length === 0) return 0;
-    if (clean.length === 1) return clean[0];
-    const sorted = [...clean].sort((a, b) => a - b);
-    const rank = (p / 100) * (sorted.length - 1);
-    const lo = Math.floor(rank);
-    const hi = Math.ceil(rank);
-    if (lo === hi) return sorted[lo];
-    return sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo);
-  }
-
+  // already scoped to the active time-range tab).
   const netRxP95 = percentile(t?.networkRx, 95);
   const netTxP95 = percentile(t?.networkTx, 95);
 
@@ -378,7 +379,7 @@ export default function DashboardV2() {
               onClick={() => {
                 if (timeRange.value === r) return;
                 timeRange.value = r;
-                fetchTrends(r);
+                fetchTrendsForTab(r);
               }}
               style={{
                 padding: "5px 12px",
@@ -501,7 +502,7 @@ export default function DashboardV2() {
             txP95={netTxP95}
             rxData={t?.networkRx}
             txData={t?.networkTx}
-            period={timeRange.value}
+            period={trendsPeriod.value}
             href="/cluster/nodes"
           />
         </div>

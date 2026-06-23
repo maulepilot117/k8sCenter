@@ -22,12 +22,10 @@ import (
 //   - nodes/pods/services come from kube-state-metrics; if it is absent the
 //     range query returns an empty matrix and the series stays empty (the
 //     frontend then renders no sparkline rather than a misleading flat line).
-//   - alerts uses `or vector(0)` so a cluster with zero firing alerts over the
-//     window still produces a flat zero baseline — that reads as "all clear",
-//     which is meaningful, unlike the missing-data case above.
 //   - cpu/memory are the range-query companions of UtilizationAdapter's instant
 //     CPUPercent/MemoryPercent queries (same PromQL); they come from
 //     node-exporter, which is independent of kube-state-metrics.
+//   - networkRx/networkTx are cluster-wide throughput in Mbps from node-exporter.
 //
 // Each entry carries its own assign func so a new metric self-registers its
 // destination field — there is no separate key→field switch to keep in sync,
@@ -39,7 +37,6 @@ var trendQueries = []struct {
 	{`count(kube_node_info)`, func(t *resources.DashboardTrends, v []float64) { t.Nodes = v }},
 	{`count(kube_pod_info)`, func(t *resources.DashboardTrends, v []float64) { t.Pods = v }},
 	{`count(kube_service_info)`, func(t *resources.DashboardTrends, v []float64) { t.Services = v }},
-	{`count(ALERTS{alertstate="firing"}) or vector(0)`, func(t *resources.DashboardTrends, v []float64) { t.Alerts = v }},
 	{`100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)`, func(t *resources.DashboardTrends, v []float64) { t.CPU = v }},
 	{`(1 - (avg(node_memory_MemAvailable_bytes) / avg(node_memory_MemTotal_bytes))) * 100`, func(t *resources.DashboardTrends, v []float64) { t.Memory = v }},
 	// Cluster-wide network throughput in Mbps (bytes/s * 8 / 1e6). Virtual
@@ -51,7 +48,7 @@ var trendQueries = []struct {
 }
 
 // DashboardTrends implements resources.TrendProvider. It range-queries
-// Prometheus for the six metric-card series concurrently and returns whatever
+// Prometheus for the metric-card series concurrently and returns whatever
 // resolved; individual query failures yield an empty series for that metric
 // rather than failing the whole request.
 func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step time.Duration) (resources.DashboardTrends, error) {

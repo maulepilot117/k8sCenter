@@ -44,7 +44,8 @@ func TestHandleDashboardTrends_NilProvider(t *testing.T) {
 		t.Fatalf("nil provider: want 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
 	got := decodeTrends(t, rr)
-	if got.Nodes != nil || got.CPU != nil {
+	if got.Nodes != nil || got.CPU != nil || got.NetworkRx != nil ||
+		got.NetworkTx != nil {
 		t.Fatalf("nil provider: want empty series, got %+v", got)
 	}
 }
@@ -62,7 +63,7 @@ func TestHandleDashboardTrends_ProviderError(t *testing.T) {
 		t.Fatalf("provider error: want 200, got %d (%s)", rr.Code, rr.Body.String())
 	}
 	got := decodeTrends(t, rr)
-	if got.Nodes != nil {
+	if got.Nodes != nil || got.NetworkRx != nil || got.NetworkTx != nil {
 		t.Fatalf("provider error: want empty series, got %+v", got)
 	}
 }
@@ -101,22 +102,36 @@ func TestHandleDashboardTrends_HappyPath(t *testing.T) {
 }
 
 func TestDashboardTrendRange(t *testing.T) {
-	// Known tabs map to their window; unknown/empty falls back to 1h.
-	cases := map[string]time.Duration{
-		"15m": 15 * time.Minute,
-		"1h":  time.Hour,
-		"6h":  6 * time.Hour,
-		"24h": 24 * time.Hour,
-		"":    time.Hour,
-		"99d": time.Hour,
+	// Known tabs map to their exact (window, step); unknown/empty falls back to
+	// the 1h pair. Asserting step exactly (not just a bound) catches an
+	// accidental window/step swap, which a `step < window` check would miss.
+	cases := map[string]struct{ window, step time.Duration }{
+		"15m": {15 * time.Minute, 30 * time.Second},
+		"1h":  {time.Hour, 2 * time.Minute},
+		"6h":  {6 * time.Hour, 12 * time.Minute},
+		"24h": {24 * time.Hour, 48 * time.Minute},
+		"":    {time.Hour, 2 * time.Minute},
+		"99d": {time.Hour, 2 * time.Minute},
 	}
-	for in, wantWindow := range cases {
+	for in, want := range cases {
 		window, step := dashboardTrendRange(in)
-		if window != wantWindow {
-			t.Errorf("range %q: want window %s, got %s", in, wantWindow, window)
+		if window != want.window || step != want.step {
+			t.Errorf("range %q: want (%s, %s), got (%s, %s)",
+				in, want.window, want.step, window, step)
 		}
-		if step <= 0 || step >= window {
-			t.Errorf("range %q: step %s out of bounds for window %s", in, step, window)
+	}
+}
+
+// TestDashboardTrendRange_FrontendTabsResolve guards the implicit contract that
+// every time-range tab the frontend renders (frontend/islands/DashboardV2.tsx
+// TIME_RANGES) resolves to a non-default window. If a tab is added there without
+// a matching dashboardTrendWindows entry, it silently falls back to 1h — this
+// test makes that regression visible on the backend side.
+func TestDashboardTrendRange_FrontendTabsResolve(t *testing.T) {
+	frontendTabs := []string{"15m", "1h", "6h", "24h"}
+	for _, tab := range frontendTabs {
+		if _, ok := dashboardTrendWindows[tab]; !ok {
+			t.Errorf("frontend tab %q has no dashboardTrendWindows entry; it would silently fall back to 1h", tab)
 		}
 	}
 }
