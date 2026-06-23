@@ -9,12 +9,27 @@ import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import {
+  EngineBadge,
   SEVERITY_COLORS,
   SEVERITY_ORDER,
+  SeverityBadge,
 } from "@/components/ui/PolicyBadges.tsx";
-import type { ComplianceScore, SeverityCounts } from "@/lib/policy-types.ts";
+import type {
+  ComplianceScore,
+  NormalizedViolation,
+  SeverityCounts,
+} from "@/lib/policy-types.ts";
 import { scoreColor } from "@/lib/score-color.ts";
+import { resourceHref } from "@/lib/k8s-links.ts";
+import {
+  failingPolicies,
+  scopeViolations,
+  worstResources,
+} from "@/lib/compliance-violations.ts";
 import ComplianceTrendChart from "@/islands/ComplianceTrendChart.tsx";
+
+const TOP_POLICIES = 5;
+const TOP_RESOURCES = 8;
 
 function SeverityBar({
   label,
@@ -52,6 +67,7 @@ function SeverityBar({
 
 export default function ComplianceDashboard() {
   const scores = useSignal<ComplianceScore[]>([]);
+  const violations = useSignal<NormalizedViolation[]>([]);
   const loading = useSignal(true);
   const error = useSignal<string | null>(null);
   const refreshing = useSignal(false);
@@ -84,7 +100,22 @@ export default function ComplianceDashboard() {
     }
   }
 
-  // Refetch on mount and whenever the namespace picker changes.
+  // Violations power the "what's in violation" preview. Fetched once (the
+  // full RBAC-filtered list) and filtered client-side by the picker, so a
+  // namespace change needs no refetch. Failures here are non-fatal — the
+  // score is the primary content; the preview just stays empty.
+  async function fetchViolations() {
+    try {
+      const res = await apiGet<NormalizedViolation[]>(
+        "/v1/policies/violations",
+      );
+      violations.value = Array.isArray(res.data) ? res.data : [];
+    } catch {
+      // keep the page usable even if the violations list is unavailable
+    }
+  }
+
+  // Refetch the score on mount and whenever the namespace picker changes.
   useEffect(() => {
     if (!IS_BROWSER) return;
     fetchData().then(() => {
@@ -92,14 +123,24 @@ export default function ComplianceDashboard() {
     });
   }, [ns]);
 
-  useWsRefetch(fetchData, [
-    ["compliance-policyreports", "policyreports", ""],
-    ["compliance-clusterpolicyreports", "clusterpolicyreports", ""],
-  ], 5000);
+  // Load the violations list once on mount (filtered client-side by scope).
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+    fetchViolations();
+  }, []);
+
+  useWsRefetch(
+    () => Promise.all([fetchData(), fetchViolations()]).then(() => {}),
+    [
+      ["compliance-policyreports", "policyreports", ""],
+      ["compliance-clusterpolicyreports", "clusterpolicyreports", ""],
+    ],
+    5000,
+  );
 
   async function handleRefresh() {
     refreshing.value = true;
-    await fetchData();
+    await Promise.all([fetchData(), fetchViolations()]);
     refreshing.value = false;
   }
 
@@ -113,6 +154,15 @@ export default function ComplianceDashboard() {
       s.scope === activeScope || (activeScope === "" && s.scope === "cluster")
     ) ?? scores.value[0];
   const scoped = ns !== "all";
+
+  // Derive the "what's in violation" preview from the full list, scoped the
+  // same way the score is (namespace-strict), so the two always agree.
+  const scopedViolations = scopeViolations(violations.value, ns);
+  const topPolicies = failingPolicies(scopedViolations, TOP_POLICIES);
+  const topResources = worstResources(scopedViolations, TOP_RESOURCES);
+  const violationsHref = scoped
+    ? `/security/violations?namespace=${encodeURIComponent(ns)}`
+    : "/security/violations";
 
   return (
     <div
@@ -246,6 +296,131 @@ export default function ComplianceDashboard() {
               </WidgetShell>
             </div>
           </div>
+
+          {/* What's in violation */}
+          {scopedViolations.length === 0
+            ? (
+              <WidgetShell title="Violations">
+                <p class="text-sm text-text-muted py-2">
+                  No active violations in{" "}
+                  {scoped ? `namespace "${ns}"` : "the cluster"}.
+                </p>
+              </WidgetShell>
+            )
+            : (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                }}
+              >
+                <div
+                  style={{ display: "flex", flexWrap: "wrap", gap: "20px" }}
+                >
+                  {/* Failing policies — grouped by impact */}
+                  <div style={{ flex: "1 1 320px", minWidth: "300px" }}>
+                    <WidgetShell title="Failing Policies">
+                      <div class="space-y-2">
+                        {topPolicies.map((g) => (
+                          <div key={g.policy} class="flex items-center gap-3">
+                            <span
+                              style={{
+                                width: "6px",
+                                height: "6px",
+                                borderRadius: "50%",
+                                flexShrink: 0,
+                                background: SEVERITY_COLORS[g.severity] ??
+                                  "var(--text-muted)",
+                              }}
+                            />
+                            <span
+                              class="text-sm font-medium flex-1 truncate"
+                              style={{ color: "var(--text-primary)" }}
+                              title={g.policy}
+                            >
+                              {g.policy}
+                            </span>
+                            <SeverityBadge severity={g.severity} />
+                            <EngineBadge engine={g.engine} />
+                            <span class="text-xs text-text-muted w-24 text-right tabular-nums">
+                              {g.count}{" "}
+                              {g.count === 1 ? "resource" : "resources"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </WidgetShell>
+                  </div>
+
+                  {/* Worst individual violating resources */}
+                  <div style={{ flex: "2 1 360px", minWidth: "320px" }}>
+                    <WidgetShell title="Worst Resources">
+                      <div class="space-y-2">
+                        {topResources.map((vio, i) => {
+                          const href = resourceHref(
+                            vio.kind,
+                            vio.namespace,
+                            vio.name,
+                          );
+                          const label = (
+                            <span
+                              class="font-mono text-xs font-medium"
+                              style={{
+                                color: href
+                                  ? "var(--accent)"
+                                  : "var(--text-primary)",
+                              }}
+                            >
+                              {vio.kind}/{vio.name}
+                            </span>
+                          );
+                          return (
+                            <div
+                              key={`${vio.kind}-${vio.namespace}-${vio.name}-${vio.policy}-${i}`}
+                              class="flex items-start gap-3"
+                            >
+                              <div class="flex-1 min-w-0">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                  {href
+                                    ? (
+                                      <a href={href} class="hover:underline">
+                                        {label}
+                                      </a>
+                                    )
+                                    : label}
+                                  {vio.namespace && (
+                                    <span class="text-xs text-text-muted">
+                                      {vio.namespace}
+                                    </span>
+                                  )}
+                                  <SeverityBadge severity={vio.severity} />
+                                </div>
+                                <p
+                                  class="text-xs text-text-muted truncate"
+                                  title={vio.message}
+                                >
+                                  {vio.policy}
+                                  {vio.message ? ` — ${vio.message}` : ""}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </WidgetShell>
+                  </div>
+                </div>
+
+                <a
+                  href={violationsHref}
+                  class="text-sm hover:underline self-start"
+                  style={{ color: "var(--accent)" }}
+                >
+                  View all violations →
+                </a>
+              </div>
+            )}
 
           {/* Compliance trend chart */}
           <ComplianceTrendChart />
