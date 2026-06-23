@@ -63,6 +63,16 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 	}
 
 	// Bound the whole fan-out; QueryRange also applies its own per-call timeout.
+	//
+	// TODO(perf): this single 5s deadline is shared across all concurrent
+	// trendQueries (currently 7, including the two cluster-wide network
+	// range queries). On a loaded Prometheus the 24h window at a 48m step can
+	// push several queries past 5s together, blanking every sparkline at once.
+	// Failure is benign (empty series, HTTP 200 — the cards just hide), so this
+	// is a tuning question, not a correctness bug: measure 24h/48m latency
+	// against a representative-retention Prometheus, then either raise this to
+	// ~10s or give each query its own ~4s deadline so slow ones fail in
+	// isolation. Flagged by the 2026-06-23 code review of the Network I/O tile.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
