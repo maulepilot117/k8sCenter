@@ -41,6 +41,45 @@ func (s *Server) setRefreshCookie(w http.ResponseWriter, value string, maxAge in
 	})
 }
 
+// grafanaProxyCookieName is the access-token cookie the Grafana reverse-proxy
+// authenticates with. It is scoped to the proxy path so it is sent ONLY on
+// proxy requests (not every API call), and read by middleware.AuthCookieOrBearer.
+const grafanaProxyCookieName = "grafana_proxy_token"
+
+// grafanaProxyPathPrefix is the proxy route path relative to the /api/v1 group.
+// Single source of truth shared by the cookie scope and the route registration
+// (registerGrafanaProxyRoute) so the two cannot drift — a mismatch would scope
+// the cookie to the wrong path and silently break browser-loaded dashboards.
+const grafanaProxyPathPrefix = "/monitoring/grafana/proxy"
+
+// grafanaProxyCookiePath scopes the cookie to the Grafana proxy subtree.
+const grafanaProxyCookiePath = "/api/v1" + grafanaProxyPathPrefix
+
+// setGrafanaProxyCookie sets (or clears, when value is empty) the path-scoped
+// httpOnly access-token cookie that lets same-origin browser navigations /
+// iframes load the proxied Grafana dashboard and its sub-resources — which
+// cannot carry the Authorization: Bearer header. The value is the same access
+// token used as a Bearer elsewhere, scoped to the proxy path and bounded to the
+// access-token lifetime; it is set on every cookie-mode token issue (login,
+// refresh, OIDC web callback) and cleared on logout.
+//
+// SameSite=Strict (matching the refresh cookie): the dashboards page opens the
+// proxy as a SAME-ORIGIN top-level navigation (and any embed is same-origin),
+// both of which send Strict cookies — so the legitimate flow is unaffected,
+// while cross-site-initiated requests get no cookie, closing the CSRF surface
+// on this admin-gated, privileged-token-injecting proxy.
+func (s *Server) setGrafanaProxyCookie(w http.ResponseWriter, value string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     grafanaProxyCookieName,
+		Value:    value,
+		Path:     grafanaProxyCookiePath,
+		HttpOnly: true,
+		Secure:   !s.Config.Dev,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+	})
+}
+
 // newAuditEntry creates an audit entry pre-filled with common fields.
 //
 // SourceIP is set from r.RemoteAddr (which chi's RealIP may have rewritten
@@ -126,6 +165,10 @@ func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookie
 
 	if cookieMode {
 		s.setRefreshCookie(w, refreshToken, int(refreshLifetime.Seconds()))
+		// Path-scoped access-token cookie so browser-loaded Grafana proxy
+		// requests (which can't send the Bearer header) authenticate. Bounded
+		// to the access-token lifetime; refreshed on every /auth/refresh.
+		s.setGrafanaProxyCookie(w, accessToken, int(auth.AccessTokenLifetime.Seconds()))
 	}
 
 	return accessToken, refreshToken, nil

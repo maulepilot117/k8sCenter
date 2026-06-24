@@ -415,6 +415,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.setRefreshCookie(w, "", -1)
+	s.setGrafanaProxyCookie(w, "", -1)
 
 	user, ok := auth.UserFromContext(r.Context())
 	if ok {

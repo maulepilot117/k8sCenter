@@ -97,6 +97,14 @@ func (s *Server) registerRoutes() {
 			r.With(middleware.RateLimit(webhookRL)).Post("/alerts/webhook", s.AlertingHandler.HandleWebhook)
 		}
 
+		// Grafana reverse-proxy — admin only, mounted OUTSIDE the Bearer-only
+		// authenticated group below. Authenticated via cookie OR bearer so
+		// browser navigations / iframes (which can't send the Authorization
+		// header) can load embedded dashboards and their sub-resources.
+		if s.MonitoringHandler != nil {
+			s.registerGrafanaProxyRoute(r)
+		}
+
 		// Authenticated routes — auth + CSRF enforced at the group level
 		r.Group(func(ar chi.Router) {
 			ar.Use(middleware.Auth(s.TokenManager))
@@ -341,6 +349,32 @@ func (s *Server) registerWizardRoutes(ar chi.Router) {
 	})
 }
 
+// registerGrafanaProxyRoute mounts the Grafana reverse-proxy with cookie-or-bearer
+// auth + admin gate, separate from the Bearer-only authenticated group. The
+// proxy is reached by browser navigations / iframes (the dashboards page opens
+// /monitoring/grafana/proxy/<d.url> in a new tab), which cannot carry the
+// Authorization header; the path-scoped grafana_proxy_token cookie authenticates
+// them and every sub-resource Grafana subsequently loads through the proxy.
+//
+// Method narrowing (Phase 2, F#25): only GET and HEAD are registered. Write
+// methods return 405 — write operations against Grafana must go through a typed,
+// audited handler, not the opaque proxy. Do not add PATCH/POST without a
+// security review.
+func (s *Server) registerGrafanaProxyRoute(r chi.Router) {
+	r.Group(func(gr chi.Router) {
+		gr.Use(middleware.AuthCookieOrBearer(s.TokenManager, grafanaProxyCookieName))
+		gr.Use(middleware.ClusterContext)
+		gr.Use(middleware.RequireAdmin)
+		// CSRF is inert for the GET/HEAD-only registration below, but kept for
+		// middleware-stack parity with the authenticated group: if a write verb
+		// is ever added here it is CSRF-protected by default rather than silently
+		// exposed (the method narrowing already 405s writes — defense in depth).
+		gr.Use(middleware.CSRF)
+		gr.Get(grafanaProxyPathPrefix+"/*", s.MonitoringHandler.GrafanaProxy)
+		gr.Head(grafanaProxyPathPrefix+"/*", s.MonitoringHandler.GrafanaProxy)
+	})
+}
+
 func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 	h := s.MonitoringHandler
 	ar.Route("/monitoring", func(mr chi.Router) {
@@ -357,20 +391,11 @@ func (s *Server) registerMonitoringRoutes(ar chi.Router) {
 		// Slug-based queries — authenticated non-admin users, RBAC-enforced per slug (P2-4).
 		mr.Get("/queries/*", h.HandleSlugQuery)
 
-		// Grafana reverse-proxy — admin only (viewer token injected server-side).
-		//
-		// Method narrowing (Phase 2, F#25): Only GET and HEAD are registered.
-		// POST / PUT / PATCH / DELETE now return 405 via chi's MethodNotAllowed
-		// handler. This is intentional — write operations against Grafana must
-		// go through a typed handler (HandleDashboards, etc.) where input is
-		// validated and audited, not through the opaque reverse-proxy.
-		// Removing a method here is a deliberate API contract change; do not
-		// re-add PATCH/POST without a security review.
-		mr.Route("/grafana/proxy", func(gr chi.Router) {
-			gr.Use(middleware.RequireAdmin)
-			gr.Get("/*", h.GrafanaProxy)
-			gr.Head("/*", h.GrafanaProxy)
-		})
+		// NOTE: the Grafana reverse-proxy (/monitoring/grafana/proxy/*) is
+		// deliberately NOT registered here. It is mounted in its own group
+		// (registerGrafanaProxyRoute) with cookie-or-bearer auth, because it is
+		// loaded by browser navigations / iframes that cannot send the
+		// Authorization header this group's Bearer-only Auth middleware requires.
 	})
 }
 
