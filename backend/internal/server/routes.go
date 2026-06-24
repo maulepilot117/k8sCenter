@@ -365,8 +365,13 @@ func (s *Server) registerGrafanaProxyRoute(r chi.Router) {
 		gr.Use(middleware.AuthCookieOrBearer(s.TokenManager, grafanaProxyCookieName))
 		gr.Use(middleware.ClusterContext)
 		gr.Use(middleware.RequireAdmin)
-		gr.Get("/monitoring/grafana/proxy/*", s.MonitoringHandler.GrafanaProxy)
-		gr.Head("/monitoring/grafana/proxy/*", s.MonitoringHandler.GrafanaProxy)
+		// CSRF is inert for the GET/HEAD-only registration below, but kept for
+		// middleware-stack parity with the authenticated group: if a write verb
+		// is ever added here it is CSRF-protected by default rather than silently
+		// exposed (the method narrowing already 405s writes — defense in depth).
+		gr.Use(middleware.CSRF)
+		gr.Get(grafanaProxyPathPrefix+"/*", s.MonitoringHandler.GrafanaProxy)
+		gr.Head(grafanaProxyPathPrefix+"/*", s.MonitoringHandler.GrafanaProxy)
 	})
 }
 

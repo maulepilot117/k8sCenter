@@ -148,6 +148,34 @@ func TestAuthCookieOrBearer_AcceptsBearer(t *testing.T) {
 	}
 }
 
+func TestAuthCookieOrBearer_HeaderWinsOverInvalidCookie(t *testing.T) {
+	tm := auth.NewTokenManager([]byte("test-secret-key-32-bytes-long!!"))
+	user := &auth.User{ID: "u1", Username: "admin", Roles: []string{"admin"}}
+	token, _ := tm.IssueAccessToken(user)
+
+	var gotUser *auth.User
+	handler := AuthCookieOrBearer(tm, "grafana_proxy_token")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, ok := auth.UserFromContext(r.Context()); ok {
+			gotUser = u
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Valid Bearer header AND a junk cookie: header wins, request succeeds.
+	req := httptest.NewRequest("GET", "/api/v1/monitoring/grafana/proxy/d/abc/x", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.AddCookie(&http.Cookie{Name: "grafana_proxy_token", Value: "not-a-jwt"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (header wins over invalid cookie), got %d", rec.Code)
+	}
+	if gotUser == nil || gotUser.Username != "admin" {
+		t.Fatalf("expected admin from bearer token, got %v", gotUser)
+	}
+}
+
 func TestAuthCookieOrBearer_RejectsNeither(t *testing.T) {
 	tm := auth.NewTokenManager([]byte("test-secret-key-32-bytes-long!!"))
 	handler := AuthCookieOrBearer(tm, "grafana_proxy_token")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

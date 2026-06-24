@@ -27,17 +27,24 @@ func Auth(tm *auth.TokenManager) func(http.Handler) http.Handler {
 				return
 			}
 
-			claims, err := tm.ValidateAccessToken(token)
-			if err != nil {
-				writeAuthError(w, http.StatusUnauthorized, "invalid or expired token")
-				return
-			}
-
-			user := auth.UserFromClaims(claims)
-			ctx := auth.ContextWithUser(r.Context(), user)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			validateAndInjectUser(tm, token, w, r, next)
 		})
 	}
+}
+
+// validateAndInjectUser validates an access token, places the resolved user in
+// the request context, and calls next — the shared tail of Auth and
+// AuthCookieOrBearer. On an invalid/expired token it writes a 401 and does not
+// call next.
+func validateAndInjectUser(tm *auth.TokenManager, token string, w http.ResponseWriter, r *http.Request, next http.Handler) {
+	claims, err := tm.ValidateAccessToken(token)
+	if err != nil {
+		writeAuthError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	user := auth.UserFromClaims(claims)
+	ctx := auth.ContextWithUser(r.Context(), user)
+	next.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // AuthCookieOrBearer returns middleware that validates a JWT access token taken
@@ -72,15 +79,7 @@ func AuthCookieOrBearer(tm *auth.TokenManager, cookieName string) func(http.Hand
 				return
 			}
 
-			claims, err := tm.ValidateAccessToken(token)
-			if err != nil {
-				writeAuthError(w, http.StatusUnauthorized, "invalid or expired token")
-				return
-			}
-
-			user := auth.UserFromClaims(claims)
-			ctx := auth.ContextWithUser(r.Context(), user)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			validateAndInjectUser(tm, token, w, r, next)
 		})
 	}
 }
