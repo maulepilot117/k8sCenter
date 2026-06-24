@@ -1,5 +1,11 @@
 {{- include "kubecenter.validatePlaceholders" . }}
-{{- if .Values.monitoring.deploy }}
+{{- /*
+  Dashboard provisioning is decoupled from monitoring.deploy: KubeCenter's own
+  dashboards are loaded by whatever Grafana sidecar is watching (the bundled
+  subchart's, or an external kube-prometheus-stack's when deploy=false). Gated
+  by its own opt-out flag so external-Grafana installs still get the dashboards.
+*/ -}}
+{{- if .Values.monitoring.grafana.provisionDashboards }}
 {{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
 ---
 apiVersion: v1

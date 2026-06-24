@@ -232,6 +232,12 @@ monitoring:
     url: ""              # Override auto-discovery
   grafana:
     url: ""              # Override auto-discovery
+    # Provision KubeCenter's own dashboards as sidecar ConfigMaps (labeled
+    # grafana_dashboard=1). Independent of monitoring.deploy: when you run an
+    # external kube-prometheus-stack (deploy=false), its Grafana sidecar still
+    # loads these so the KubeCenter dashboards appear. Set false to opt out
+    # (e.g. you manage dashboards yourself or have no Grafana sidecar).
+    provisionDashboards: true
     # WARNING: monitoring.grafana.apiToken is DEPRECATED and will be removed in
     # v2.0. The single-token form silently degrades to viewer-only mode —
     # dashboard provisioning is DISABLED when this field is set without the
