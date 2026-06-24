@@ -97,3 +97,32 @@ postgresql:
       enabled: false
     containerSecurityContext:
       enabled: false
+
+# Monitoring — homelab runs an EXTERNAL kube-prometheus-stack in the
+# `monitoring` namespace, so k8sCenter discovers it rather than deploying its
+# own. With deploy=false, set provisionDashboards=true (default) so k8sCenter's
+# dashboard ConfigMaps are still created — the external Grafana sidecar
+# (NAMESPACE=ALL, label grafana_dashboard=1) loads them. The viewer token lets
+# the backend list + proxy those dashboards (Grafana anonymous auth is off).
+#
+# Create the viewer token (one-time), keeping it out of shell history + git:
+#   1. Grafana → Administration → Service accounts → add `k8scenter-viewer`
+#      with the Viewer role → add a service account token.
+#   2. Put it straight into a Secret (do NOT paste it into values.yaml):
+#        $sec = Read-Host -AsSecureString "Paste glsa_ token"
+#        $TOK = [System.Net.NetworkCredential]::new('', $sec).Password
+#        kubectl -n <release-ns> create secret generic kubecenter-grafana-viewer `
+#          --from-literal=KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN="$TOK" `
+#          --dry-run=client -o yaml | kubectl apply -f -
+#        Remove-Variable TOK, sec
+#   3. Reference it below so the wiring survives `helm upgrade`.
+monitoring:
+  deploy: false              # discover the external kube-prometheus-stack
+  grafana:
+    provisionDashboards: true # create dashboard ConfigMaps for the external sidecar
+    viewerTokenSecret:
+      name: kubecenter-grafana-viewer
+      key: KUBECENTER_MONITORING_GRAFANAVIEWERTOKEN
+    # provisioningTokenSecret left unset — dashboards come via the sidecar,
+    # not k8sCenter's API provisioning. The "provisioning disabled" startup
+    # WARN is expected and harmless in this topology.
