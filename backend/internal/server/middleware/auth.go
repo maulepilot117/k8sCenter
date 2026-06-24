@@ -40,6 +40,51 @@ func Auth(tm *auth.TokenManager) func(http.Handler) http.Handler {
 	}
 }
 
+// AuthCookieOrBearer returns middleware that validates a JWT access token taken
+// from EITHER the Authorization: Bearer header OR a named cookie (header wins
+// when both are present).
+//
+// This exists for browser-navigable, embeddable endpoints — specifically the
+// Grafana reverse-proxy. A Grafana dashboard is opened as a top-level
+// navigation / iframe and then pulls dozens of sub-resources (JS, CSS, API)
+// back through the same proxy path. None of those requests carry the
+// Authorization header the JS fetch client injects, so plain Bearer auth
+// (see Auth) makes the proxy unreachable from the browser. A path-scoped,
+// httpOnly cookie is sent automatically on every same-origin request to the
+// proxy path, authenticating the whole set. The cookie carries the same access
+// token used as a Bearer elsewhere — no additional privilege — and is set by
+// the auth handlers (see setGrafanaProxyCookie) scoped to the proxy path only.
+func AuthCookieOrBearer(tm *auth.TokenManager, cookieName string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var token string
+			if header := r.Header.Get("Authorization"); header != "" {
+				t, found := strings.CutPrefix(header, "Bearer ")
+				if !found || t == "" {
+					writeAuthError(w, http.StatusUnauthorized, "invalid authorization header format")
+					return
+				}
+				token = t
+			} else if c, err := r.Cookie(cookieName); err == nil && c.Value != "" {
+				token = c.Value
+			} else {
+				writeAuthError(w, http.StatusUnauthorized, "missing authorization")
+				return
+			}
+
+			claims, err := tm.ValidateAccessToken(token)
+			if err != nil {
+				writeAuthError(w, http.StatusUnauthorized, "invalid or expired token")
+				return
+			}
+
+			user := auth.UserFromClaims(claims)
+			ctx := auth.ContextWithUser(r.Context(), user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
 // CSRF returns middleware that requires the X-Requested-With header on
 // state-changing requests (POST, PUT, PATCH, DELETE).
 // This prevents CSRF attacks since browsers won't add custom headers in cross-origin requests.

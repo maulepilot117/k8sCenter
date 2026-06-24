@@ -41,6 +41,32 @@ func (s *Server) setRefreshCookie(w http.ResponseWriter, value string, maxAge in
 	})
 }
 
+// grafanaProxyCookieName is the access-token cookie the Grafana reverse-proxy
+// authenticates with. It is scoped to the proxy path so it is sent ONLY on
+// proxy requests (not every API call), and read by middleware.AuthCookieOrBearer.
+const grafanaProxyCookieName = "grafana_proxy_token"
+
+// grafanaProxyCookiePath scopes the cookie to the Grafana proxy subtree.
+const grafanaProxyCookiePath = "/api/v1/monitoring/grafana/proxy"
+
+// setGrafanaProxyCookie sets (or clears, when value is empty) the path-scoped
+// httpOnly access-token cookie that lets browser navigations / iframes load the
+// proxied Grafana dashboard and its sub-resources — which cannot carry the
+// Authorization: Bearer header. SameSite=Lax so it is sent on top-level
+// navigations; the value is the same access token used as a Bearer elsewhere,
+// scoped to the proxy path and bounded to the access-token lifetime.
+func (s *Server) setGrafanaProxyCookie(w http.ResponseWriter, value string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     grafanaProxyCookieName,
+		Value:    value,
+		Path:     grafanaProxyCookiePath,
+		HttpOnly: true,
+		Secure:   !s.Config.Dev,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   maxAge,
+	})
+}
+
 // newAuditEntry creates an audit entry pre-filled with common fields.
 //
 // SourceIP is set from r.RemoteAddr (which chi's RealIP may have rewritten
@@ -126,6 +152,10 @@ func (s *Server) issueTokenPairAt(w http.ResponseWriter, user *auth.User, cookie
 
 	if cookieMode {
 		s.setRefreshCookie(w, refreshToken, int(refreshLifetime.Seconds()))
+		// Path-scoped access-token cookie so browser-loaded Grafana proxy
+		// requests (which can't send the Bearer header) authenticate. Bounded
+		// to the access-token lifetime; refreshed on every /auth/refresh.
+		s.setGrafanaProxyCookie(w, accessToken, int(auth.AccessTokenLifetime.Seconds()))
 	}
 
 	return accessToken, refreshToken, nil

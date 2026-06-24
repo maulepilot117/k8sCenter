@@ -142,6 +142,80 @@ func TestGrafanaProxy_AdminGets200(t *testing.T) {
 	}
 }
 
+// loginCapture logs in and returns the grafana_proxy_token cookie set by the
+// login response (or nil if absent).
+func loginCapture(t *testing.T, srv *Server, username string, roles []string) *http.Cookie {
+	t.Helper()
+	if _, err := srv.LocalAuth.CreateUser(context.Background(), username, "password1234", roles, nil); err != nil {
+		t.Fatalf("CreateUser %s: %v", username, err)
+	}
+	body := `{"username":"` + username + `","password":"password1234"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login %s failed: %d %s", username, w.Code, w.Body.String())
+	}
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "grafana_proxy_token" {
+			return c
+		}
+	}
+	return nil
+}
+
+// TestGrafanaProxy_AdminCookieGets200 verifies the browser-navigation case: an
+// admin reaches the proxy with ONLY the path-scoped cookie (no Authorization
+// header), and that login sets the cookie scoped + hardened correctly.
+func TestGrafanaProxy_AdminCookieGets200(t *testing.T) {
+	srv := grafanaProxyTestServer(t)
+	cookie := loginCapture(t, srv, "admin-cookie", []string{"admin"})
+	if cookie == nil || cookie.Value == "" {
+		t.Fatal("login did not set grafana_proxy_token cookie")
+	}
+	if cookie.Path != "/api/v1/monitoring/grafana/proxy" {
+		t.Errorf("cookie path = %q, want /api/v1/monitoring/grafana/proxy", cookie.Path)
+	}
+	if !cookie.HttpOnly {
+		t.Error("grafana_proxy_token cookie must be HttpOnly")
+	}
+
+	// No Authorization header — cookie only, as a browser navigation sends.
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/monitoring/grafana/proxy/d/kubecenter-pods/overview", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("admin cookie GET grafana proxy: expected 200, got %d (body: %s)",
+			w.Code, w.Body.String())
+	}
+}
+
+// TestGrafanaProxy_NonAdminCookieGets403 verifies the admin gate still applies
+// on the cookie auth path.
+func TestGrafanaProxy_NonAdminCookieGets403(t *testing.T) {
+	srv := grafanaProxyTestServer(t)
+	cookie := loginCapture(t, srv, "viewer-cookie", []string{"viewer"})
+	if cookie == nil || cookie.Value == "" {
+		t.Fatal("login did not set grafana_proxy_token cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/monitoring/grafana/proxy/d/kubecenter-pods/overview", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	srv.Router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("non-admin cookie GET grafana proxy: expected 403, got %d (body: %s)",
+			w.Code, w.Body.String())
+	}
+}
+
 // TestGrafanaProxy_PostReturns405 verifies that POST (not in Get/Head-only
 // registration) returns 405 Method Not Allowed from chi, regardless of user role.
 func TestGrafanaProxy_PostReturns405(t *testing.T) {
