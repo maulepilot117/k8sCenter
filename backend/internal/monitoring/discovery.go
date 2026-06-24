@@ -57,7 +57,7 @@ type Discoverer struct {
 	status                *MonitoringStatus
 	promClient            *PrometheusClient
 	grafProxy             http.Handler
-	grafClient            *GrafanaClient
+	grafClient            *GrafanaClient // read client (viewer token) — backs dashboard listing
 	dashboardsProvisioned bool
 	dashboardsProvCount   int
 }
@@ -115,7 +115,9 @@ func NewTestDiscoverer(status *MonitoringStatus, proxy http.Handler) *Discoverer
 	}
 }
 
-// GrafanaClient returns the cached Grafana API client, or nil.
+// GrafanaAPIClient returns the cached read-capable Grafana API client (carrying
+// the viewer token), or nil if Grafana is not discovered. Used for dashboard
+// listing — a read operation independent of the provisioning token.
 func (d *Discoverer) GrafanaAPIClient() *GrafanaClient {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -199,7 +201,6 @@ func (d *Discoverer) Discover(ctx context.Context) {
 	}
 
 	var grafProxy http.Handler
-	var grafClient *GrafanaClient
 	if grafURL != "" {
 		// Proxy is always created when Grafana is discovered — viewerToken is optional
 		// (it adds an Authorization header for Grafana instances that require auth)
@@ -209,12 +210,16 @@ func (d *Discoverer) Discover(ctx context.Context) {
 		} else {
 			grafProxy = proxy
 		}
-		// API client for dashboard provisioning requires the provisioning token
-		if provisioningToken != "" {
-			grafClient = NewGrafanaClient(grafURL, provisioningToken)
-		} else {
-			d.logger.Warn("grafana provisioning token not set — dashboard provisioning disabled")
-		}
+	}
+
+	// Read client backs dashboard listing (viewer token); provisioning client
+	// backs dashboard writes (provisioning token). Listing is a read operation
+	// and must not depend on the provisioning token — otherwise the dashboards
+	// page is empty in the common sidecar-provisioned deployment where only a
+	// viewer token is set.
+	grafReadClient, grafProvClient := buildGrafanaClients(grafURL, viewerToken, provisioningToken)
+	if grafURL != "" && grafProvClient == nil {
+		d.logger.Warn("grafana provisioning token not set — dashboard provisioning disabled")
 	}
 
 	// Provision dashboards once when Grafana is first discovered (or rediscovered)
@@ -223,12 +228,12 @@ func (d *Discoverer) Discover(ctx context.Context) {
 	lastCount := d.dashboardsProvCount
 	d.mu.RUnlock()
 
-	if grafClient == nil {
+	if grafProvClient == nil {
 		// Reset flag so we re-provision when Grafana comes back
 		alreadyProvisioned = false
 		lastCount = 0
 	} else if !alreadyProvisioned {
-		count, err := grafClient.ProvisionDashboards(ctx, d.logger)
+		count, err := grafProvClient.ProvisionDashboards(ctx, d.logger)
 		if err != nil {
 			d.logger.Error("dashboard provisioning failed", "error", err)
 			status.Dashboards = DashboardStatus{Error: err.Error()}
@@ -247,7 +252,7 @@ func (d *Discoverer) Discover(ctx context.Context) {
 	d.status = status
 	d.promClient = promClient
 	d.grafProxy = grafProxy
-	d.grafClient = grafClient
+	d.grafClient = grafReadClient
 	d.dashboardsProvisioned = alreadyProvisioned
 	d.dashboardsProvCount = lastCount
 	d.mu.Unlock()
@@ -257,6 +262,28 @@ func (d *Discoverer) Discover(ctx context.Context) {
 		"grafana", grafURL != "",
 		"operator", status.HasOperator,
 	)
+}
+
+// buildGrafanaClients constructs the Grafana API clients for a discovered
+// Grafana instance, separating read from write privileges:
+//
+//   - read: built whenever Grafana is discovered, carrying the viewer token
+//     (which may be empty for anonymous Grafana). Backs dashboard listing
+//     (GrafanaAPIClient → HandleDashboards), a read operation that must work
+//     regardless of whether dashboard provisioning is configured.
+//   - prov: built only when a provisioning token is set, carrying that token.
+//     Backs dashboard/folder writes (ProvisionDashboards).
+//
+// Returns (nil, nil) when Grafana is not discovered.
+func buildGrafanaClients(grafURL, viewerToken, provisioningToken string) (read, prov *GrafanaClient) {
+	if grafURL == "" {
+		return nil, nil
+	}
+	read = NewGrafanaClient(grafURL, viewerToken)
+	if provisioningToken != "" {
+		prov = NewGrafanaClient(grafURL, provisioningToken)
+	}
+	return read, prov
 }
 
 // checkOperatorCRDs checks whether Prometheus Operator CRDs are installed.

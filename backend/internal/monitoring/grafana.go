@@ -109,7 +109,11 @@ func (g *GrafanaClient) SearchDashboards(ctx context.Context, tag string) ([]Das
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+g.token)
+	// Token is optional — anonymous Grafana serves search without auth, and an
+	// empty "Bearer " header is rejected by some Grafana configurations.
+	if g.token != "" {
+		req.Header.Set("Authorization", "Bearer "+g.token)
+	}
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
