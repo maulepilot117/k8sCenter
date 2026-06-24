@@ -290,6 +290,38 @@ func TestHandleDashboards_NoGrafana(t *testing.T) {
 	}
 }
 
+// buildGrafanaClients must produce a read client (for dashboard listing)
+// independent of the provisioning token. Listing dashboards is a read
+// operation; gating it behind the provisioning token left the dashboards page
+// empty in the common sidecar-provisioned deployment where only a viewer token
+// is configured.
+func TestBuildGrafanaClients_ReadClientIndependentOfProvisioningToken(t *testing.T) {
+	read, prov := buildGrafanaClients("http://grafana.monitoring:80", "viewer-tok", "")
+	if read == nil {
+		t.Fatal("read client must be built for dashboard listing even without a provisioning token")
+	}
+	if prov != nil {
+		t.Error("provisioning client must be nil when no provisioning token is set")
+	}
+}
+
+func TestBuildGrafanaClients_BothTokens(t *testing.T) {
+	read, prov := buildGrafanaClients("http://grafana.monitoring:80", "viewer-tok", "prov-tok")
+	if read == nil {
+		t.Error("read client must be built when Grafana is discovered")
+	}
+	if prov == nil {
+		t.Error("provisioning client must be built when a provisioning token is set")
+	}
+}
+
+func TestBuildGrafanaClients_NoGrafana(t *testing.T) {
+	read, prov := buildGrafanaClients("", "viewer-tok", "prov-tok")
+	if read != nil || prov != nil {
+		t.Error("no clients should be built when Grafana is not discovered")
+	}
+}
+
 func TestHandleResourceDashboard_KnownKind(t *testing.T) {
 	d := &Discoverer{
 		status: &MonitoringStatus{Grafana: ComponentStatus{Available: true}},
