@@ -16,6 +16,9 @@ const sentinelValue = "super-sentinel-secret"
 //  3. The sentinel value never survives masking (regression guard).
 //  4. No panic on nil/empty maps, binary data, huge values, many keys.
 //  5. Key sets are preserved (no keys dropped or added).
+//  6. The last-applied-configuration annotation is stripped from ObjectMeta.
+//  7. The original Secret is not mutated (maskedSecret must operate on a
+//     DeepCopy; the caller's Data/StringData maps are unchanged after the call).
 func FuzzMaskedSecret(f *testing.F) {
 	// Seed corpus: cover normal, empty, sentinel, binary, and long values.
 	// Seeds: normal key/value, empty, binary, long, sentinel attempt (via fuzz key).
@@ -145,6 +148,15 @@ func FuzzMaskedSecret(f *testing.F) {
 			if v, ok := s.Data[sentinelKey]; ok && string(v) != sentinelValue {
 				t.Errorf("maskedSecret mutated the original Data[%q]: got %q", sentinelKey, v)
 			}
+		}
+
+		// Nil-map nil-guard: exercise the branch in maskedSecret where both
+		// Data and StringData are nil (no map allocation).  Verifies no panic
+		// and that a non-nil *corev1.Secret is returned.
+		nilSecret := &corev1.Secret{}
+		maskedNil := maskedSecret(nilSecret)
+		if maskedNil == nil {
+			t.Error("maskedSecret returned nil for a Secret with nil Data and nil StringData")
 		}
 	})
 }

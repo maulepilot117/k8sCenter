@@ -17,6 +17,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 )
 
@@ -52,6 +53,18 @@ var readMethods = []string{
 	http.MethodHead,
 }
 
+// allMethods is the combined slice used by the fuzz loop to map methodIdx to an
+// HTTP method.  Declared once at package level to avoid a per-iteration alloc.
+var allMethods = append(stateChangingMethods, readMethods...)
+
+// sharedSrv, validToken, and initOnce are package-level so the single server
+// instance is reused across all fuzz iterations.
+var (
+	sharedSrv  *Server
+	validToken string
+	initOnce   sync.Once
+)
+
 // FuzzAuthzEnforcement is the fuzz entry point. The corpus encodes:
 //   - pathIdx:       index into fuzzProtectedPaths (clamped)
 //   - methodIdx:     index into a combined state-changing + read methods slice (clamped)
@@ -66,12 +79,10 @@ func FuzzAuthzEnforcement(f *testing.F) {
 	// Seed: authed GET with CSRF header → legitimate (2xx ok)
 	f.Add(0, 4, uint8(1), true, "")
 	// Seed (ORACLE-2 PRIMARY): authed PUT to /settings/ WITHOUT X-Requested-With
-	// → MUST be 403 CSRF. methodIdx 1 = PUT, which the settings route accepts,
-	// so the request reaches the CSRF middleware (not a 405).
+	// → MUST be 403 CSRF. methodIdx=1 (PUT), csrfPresent=false match what the
+	// mode-1 override enforces; the settings route accepts PUT so the request
+	// reaches the CSRF middleware (not a 405).
 	f.Add(0, 1, uint8(1), false, `{}`)
-	// Seed: mode-1 valid-token PUT — pinned to the CSRF-rejection envelope
-	// (csrf forced absent), so this asserts the exact 403, never reaches a handler.
-	f.Add(0, 1, uint8(1), true, `{}`)
 	// Seed: authed POST without CSRF → state-changing, routed to /settings/.
 	f.Add(0, 0, uint8(1), false, `{}`)
 	// Seed: authed DELETE without CSRF → state-changing, routed to /settings/.
@@ -86,16 +97,13 @@ func FuzzAuthzEnforcement(f *testing.F) {
 	f.Add(0, 3, uint8(3), false, "")
 	// Seed: mode-1 valid-token on the second path — also pinned to the
 	// CSRF-rejection envelope (method forced to PUT, csrf absent) → 403.
-	f.Add(1, 4, uint8(1), true, "")
+	// methodIdx=1 (PUT) and csrfPresent=false match what the override enforces.
+	f.Add(1, 1, uint8(1), false, "")
 
 	// Build server and mint a valid token ONCE outside the fuzz loop.
 	// testServer accepts *testing.T; use f.Fuzz's inner t for that.
 	// We build here with a throwaway *testing.T via a sub-test so we can
 	// reuse the server across iterations (the server is stateless for auth).
-	var (
-		sharedSrv  *Server
-		validToken string
-	)
 
 	// Use a sub-test to initialise so testServer's t.Helper cleanup runs correctly.
 	f.Fuzz(func(t *testing.T,
@@ -106,20 +114,18 @@ func FuzzAuthzEnforcement(f *testing.F) {
 		body string,
 	) {
 		// Lazy-init the shared server the first time we enter f.Fuzz.
-		// testServer uses t.Helper() but does not register any t.Cleanup
-		// that would break on t being replaced — the server is safe to share.
-		if sharedSrv == nil {
+		// sync.Once makes this safe for parallel fuzz workers.
+		initOnce.Do(func() {
 			sharedSrv = testServer(t)
 			// loginAdmin creates the admin user and returns its access token —
 			// the valid token oracle 2 needs for the CSRF-rejection path.
 			tok, _ := loginAdmin(t, sharedSrv)
 			validToken = tok
-		}
+		})
 
 		mode := authMode % 4
 
 		// --- Build method ---
-		allMethods := append(stateChangingMethods, readMethods...)
 		method := allMethods[clamp(methodIdx, 0, len(allMethods)-1)]
 		isStateChanging := isStateChangingMethod(method)
 
@@ -189,18 +195,38 @@ func FuzzAuthzEnforcement(f *testing.F) {
 		status := w.Code
 
 		// ---------------------------------------------------------------
-		// Oracle 1: Unauthenticated requests must never be 2xx.
+		// Oracle 1: No-token requests must be rejected by the Auth middleware
+		// before any handler runs.  A 5xx means a handler was reached (auth
+		// bypassed → nil-deref recover), which is a real authz bug.
+		// Acceptable statuses: 401, 403, 405 (legitimate method-not-allowed on
+		// a real route).  2xx or 5xx both indicate auth bypass.
 		// mode 0 = no token, mode 3 = impersonation-only (no real token).
-		// Both are rejected at the Auth middleware (expect 401).
 		// ---------------------------------------------------------------
 		if mode == 0 || mode == 3 {
-			if status >= 200 && status < 300 {
+			if (status >= 200 && status < 300) || (status >= 500) {
 				t.Errorf(
-					"ORACLE-1 VIOLATED: unauthenticated request returned 2xx\n"+
+					"ORACLE-1 VIOLATED: no-token request returned %d (want 401/403/405)\n"+
 						"  path=%s method=%s mode=%d csrf=%v body=%q\n"+
-						"  status=%d body=%s",
-					path, method, mode, csrf, body,
-					status, w.Body.String(),
+						"  response=%s",
+					status, path, method, mode, csrf, body,
+					w.Body.String(),
+				)
+			}
+		}
+
+		// ---------------------------------------------------------------
+		// Oracle 1b: Garbage/expired token must also be rejected by Auth before
+		// any handler runs.  Same rule: 2xx or 5xx indicate bypass.
+		// Acceptable: 401, 403, 405.
+		// ---------------------------------------------------------------
+		if mode == 2 {
+			if (status >= 200 && status < 300) || (status >= 500) {
+				t.Errorf(
+					"ORACLE-1b VIOLATED: garbage-token request returned %d (want 401/403/405)\n"+
+						"  path=%s method=%s body=%q\n"+
+						"  response=%s",
+					status, path, method, body,
+					w.Body.String(),
 				)
 			}
 		}
@@ -234,22 +260,19 @@ func FuzzAuthzEnforcement(f *testing.F) {
 		}
 
 		// ---------------------------------------------------------------
-		// Oracle 3 (explicit): Impersonation headers without a real token
-		// must be rejected — the server must return 401, never 2xx. This is
-		// the teeth: it fails if Impersonate-* headers were ever trusted by
-		// the Auth middleware to satisfy authentication.
+		// Oracle 3 (explicit): An unauthenticated request carrying only
+		// Impersonate-User/Impersonate-Group headers (no real token) must be
+		// rejected by the Auth middleware.  A 2xx or 5xx proves the headers
+		// bypassed authentication — that is the authz bug this oracle catches.
+		// Acceptable: 401, 403, 405.
 		// ---------------------------------------------------------------
 		if mode == 3 {
-			if status != http.StatusUnauthorized {
-				if status >= 200 && status < 300 {
-					t.Errorf(
-						"ORACLE-3 VIOLATED: impersonation without auth returned 2xx\n"+
-							"  path=%s method=%s status=%d body=%s",
-						path, method, status, w.Body.String(),
-					)
-				}
-				// Non-2xx non-401 (e.g. 405) is acceptable; log for tracing.
-				t.Logf("oracle-3: impersonation-without-auth returned %d (path=%s method=%s)", status, path, method)
+			if (status >= 200 && status < 300) || (status >= 500) {
+				t.Errorf(
+					"ORACLE-3 VIOLATED: impersonation-without-token returned %d (want 401/403/405)\n"+
+						"  path=%s method=%s status=%d response=%s",
+					status, path, method, status, w.Body.String(),
+				)
 			}
 		}
 

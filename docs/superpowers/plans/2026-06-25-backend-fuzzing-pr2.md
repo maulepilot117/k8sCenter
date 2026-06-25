@@ -10,6 +10,8 @@
 
 **Origin:** `docs/superpowers/specs/2026-06-25-backend-fuzzing-design.md` (Layer B = Approach 1; oracles C = auth/authz, D = secret-leak). PR #1 (Layer A) merged as `461209af`.
 
+> **Status note (post-pivot, 2026-06-25):** During U1, Secrets were found to use the typed `*kubernetes.Clientset` (not the dynamic-client seam), so the planned `fuzztest` HTTP-handler harness was dropped (commit `984ed139`). As built: oracle C → `FuzzAuthzEnforcement` in `package server` (`backend/internal/server/authz_fuzz_test.go`, reusing `testServer`); oracle D → `FuzzMaskedSecret` in `package resources` (`backend/internal/k8s/resources/secret_mask_fuzz_test.go`, fuzzing the pure `maskedSecret` function). CI matrix rows point at `./internal/server/` and `./internal/k8s/resources/`. The Output Structure / Files sections below describe the original (superseded) `fuzztest` design.
+
 ---
 
 ## Global Constraints
