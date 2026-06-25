@@ -18,13 +18,17 @@ func FuzzEnforceNamespaces(f *testing.F) {
 	f.Add(`{namespace="team-a"}`)
 	f.Add(`{namespace="team-evil"} |= "secret"`) // teeth: disallowed ns must be stripped
 	f.Add(`{namespace=~"team-.*"}`)
+	f.Add(`{namespace=~"team-evil|team-a"}`) // teeth: regex-injection path must drop team-evil
 	f.Add(`{app="web", namespace!="team-a"}`)
 	f.Add(`{`)
 	f.Add(``)
 	f.Add(strings.Repeat("{", 5000)) // exceeds maxQueryLen
 
 	allowed := []string{"team-a", "team-b"}
-	allowedSet := map[string]bool{"team-a": true, "team-b": true}
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, ns := range allowed {
+		allowedSet[ns] = true
+	}
 
 	f.Fuzz(func(t *testing.T, query string) {
 		out, err := EnforceNamespaces(query, allowed)
@@ -80,6 +84,10 @@ func splitRegexAlternatives(value, op string) []string {
 	if op == "=" || op == "!=" {
 		return []string{value}
 	}
+	// '|' is intentionally absent from this set: in EnforceNamespaces output it
+	// is always the alternation separator, never an escaped literal inside a
+	// name (escapeRegexValue would have produced \| — caught by the backslash
+	// check here).
 	if strings.ContainsAny(value, ".*+?()[]{}\\^$") {
 		return []string{value}
 	}
