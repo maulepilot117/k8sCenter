@@ -15,7 +15,6 @@ package server
 // Exempt methods: GET, HEAD, OPTIONS, (CONNECT, TRACE).
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"testing"
@@ -70,7 +69,8 @@ func FuzzAuthzEnforcement(f *testing.F) {
 	// → MUST be 403 CSRF. methodIdx 1 = PUT, which the settings route accepts,
 	// so the request reaches the CSRF middleware (not a 405).
 	f.Add(0, 1, uint8(1), false, `{}`)
-	// Seed: authed PUT to /settings/ WITH CSRF → reaches handler (not 403).
+	// Seed: mode-1 valid-token PUT — pinned to the CSRF-rejection envelope
+	// (csrf forced absent), so this asserts the exact 403, never reaches a handler.
 	f.Add(0, 1, uint8(1), true, `{}`)
 	// Seed: authed POST without CSRF → state-changing, routed to /settings/.
 	f.Add(0, 0, uint8(1), false, `{}`)
@@ -84,7 +84,8 @@ func FuzzAuthzEnforcement(f *testing.F) {
 	f.Add(0, 1, uint8(0), true, `{"x":"y"}`)
 	// Seed: impersonation on unauth DELETE without CSRF → 401 (auth first, not 403)
 	f.Add(0, 3, uint8(3), false, "")
-	// Seed: second GET path, valid authed GET
+	// Seed: mode-1 valid-token on the second path — also pinned to the
+	// CSRF-rejection envelope (method forced to PUT, csrf absent) → 403.
 	f.Add(1, 4, uint8(1), true, "")
 
 	// Build server and mint a valid token ONCE outside the fuzz loop.
@@ -109,14 +110,8 @@ func FuzzAuthzEnforcement(f *testing.F) {
 		// that would break on t being replaced — the server is safe to share.
 		if sharedSrv == nil {
 			sharedSrv = testServer(t)
-			// Create admin user and mint a valid token for oracle 2.
-			_, err := sharedSrv.LocalAuth.CreateUser(
-				context.Background(), "fuzz-admin", "FuzzPass1234!", []string{"admin"}, nil,
-			)
-			if err != nil {
-				// User might already exist from a previous iteration; ignore.
-				_ = err
-			}
+			// loginAdmin creates the admin user and returns its access token —
+			// the valid token oracle 2 needs for the CSRF-rejection path.
 			tok, _ := loginAdmin(t, sharedSrv)
 			validToken = tok
 		}
