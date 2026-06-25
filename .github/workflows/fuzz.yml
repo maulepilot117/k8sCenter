@@ -37,8 +37,14 @@ jobs:
         run: go test ${{ matrix.pkg }} -list '^${{ matrix.target }}$' | grep -qx '${{ matrix.target }}'
       - name: Fuzz ${{ matrix.target }}
         run: go test ${{ matrix.pkg }} -run=^$ -fuzz=^${{ matrix.target }}$ -fuzztime=5m
-      - name: Show crash reproducer on failure
+      - name: Upload crash reproducers on failure
         if: failure()
-        run: |
-          echo "Fuzz target ${{ matrix.target }} failed. Crash reproducers (if any):"
-          find . -path '*/testdata/fuzz/${{ matrix.target }}/*' -type f -print -exec cat {} \; || true
+        # Persist the failing corpus as a downloadable artifact so the input can
+        # be committed as a regression seed. SHA pinned to the same version e2e.yml
+        # already uses (supply-chain cooldown: already vetted in-repo).
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: backend/internal/**/testdata/fuzz/${{ matrix.target }}/**
+          if-no-files-found: ignore
+          retention-days: 90

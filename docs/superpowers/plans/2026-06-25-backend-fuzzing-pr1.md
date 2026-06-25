@@ -441,23 +441,26 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version-file: backend/go.mod
+          go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
+      - name: Verify ${{ matrix.target }} exists
+        run: go test ${{ matrix.pkg }} -list '^${{ matrix.target }}$' | grep -qx '${{ matrix.target }}'
       - name: Fuzz ${{ matrix.target }}
         run: go test ${{ matrix.pkg }} -run=^$ -fuzz=^${{ matrix.target }}$ -fuzztime=5m
-      - name: Upload crash corpus on failure
+      - name: Upload crash reproducers on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-crash-${{ matrix.target }}
-          path: backend/internal/**/testdata/fuzz/**
+          path: backend/internal/**/testdata/fuzz/${{ matrix.target }}/**
           if-no-files-found: ignore
+          retention-days: 90
 ```
 
-> Action-pin note (CLAUDE.md 7-day cooldown): `actions/checkout@v4`, `actions/setup-go@v5`, and `actions/upload-artifact@v4` are all long-published majors well past the 7-day window. Confirm the resolved tags are ≥7 days old at implementation time; pinning to commit SHAs is acceptable and preferred if the repo's other workflows already do so — match the existing convention in `.github/workflows/ci.yml`.
+> Action-pin note (CLAUDE.md 7-day cooldown): all actions are SHA-pinned with a version comment, matching the convention in `.github/workflows/ci.yml` / `e2e.yml` (reuse their already-vetted SHAs rather than resolving fresh ones). `go-version` is hard-pinned to match ci.yml rather than `go-version-file`, so the fuzz toolchain tracks the gate. The `Verify … exists` step fails fast if a target is renamed without updating the matrix (`go test -fuzz` exits 0 on a no-match regex).
 
 - [ ] **Step 2: Validate the workflow YAML locally**
 
