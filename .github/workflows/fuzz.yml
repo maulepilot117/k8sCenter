@@ -20,6 +20,8 @@ jobs:
           - { pkg: ./internal/k8s/, target: FuzzValidateRemoteURLContext }
           - { pkg: ./internal/gitops/, target: FuzzParseCompositeID }
           - { pkg: ./internal/servicemesh/, target: FuzzParseMeshCompositeID }
+          - { pkg: ./internal/server/, target: FuzzAuthzEnforcement }
+          - { pkg: ./internal/k8s/resources/, target: FuzzMaskedSecret }
     name: ${{ matrix.target }}
     defaults:
       run:
