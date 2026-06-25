@@ -34,7 +34,6 @@ jobs:
         run: go test ${{ matrix.pkg }} -run=^$ -fuzz=^${{ matrix.target }}$ -fuzztime=5m
       - name: Show crash reproducer on failure
         if: failure()
-        working-directory: backend
         run: |
           echo "Fuzz target ${{ matrix.target }} failed. Crash reproducers (if any):"
           find . -path '*/testdata/fuzz/${{ matrix.target }}/*' -type f -print -exec cat {} \; || true
