@@ -1,0 +1,50 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "0 4 * * *" # nightly 04:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { pkg: ./internal/loki/, target: FuzzEnforceNamespaces }
+          - { pkg: ./internal/k8s/, target: FuzzCheckIPNotPrivate }
+          - { pkg: ./internal/k8s/, target: FuzzValidateRemoteURLContext }
+          - { pkg: ./internal/gitops/, target: FuzzParseCompositeID }
+          - { pkg: ./internal/servicemesh/, target: FuzzParseMeshCompositeID }
+    name: ${{ matrix.target }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: backend/go.sum
+      - name: Verify ${{ matrix.target }} exists
+        # Fail fast if a target is renamed/removed without updating the matrix —
+        # `go test -fuzz` exits 0 on a no-match regex, which would silently drop
+        # coverage. `-list` prints matching fuzz/test names; require an exact hit.
+        run: go test ${{ matrix.pkg }} -list '^${{ matrix.target }}$' | grep -qx '${{ matrix.target }}'
+      - name: Fuzz ${{ matrix.target }}
+        run: go test ${{ matrix.pkg }} -run=^$ -fuzz=^${{ matrix.target }}$ -fuzztime=5m
+      - name: Upload crash reproducers on failure
+        if: failure()
+        # Persist the failing corpus as a downloadable artifact so the input can
+        # be committed as a regression seed. SHA pinned to the same version e2e.yml
+        # already uses (supply-chain cooldown: already vetted in-repo).
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: backend/internal/**/testdata/fuzz/${{ matrix.target }}/**
+          if-no-files-found: ignore
+          retention-days: 90
