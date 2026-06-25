@@ -198,9 +198,19 @@ Drive fuzzed bodies/headers through the real middleware chain:
 - Frontend (Deno) and mobile (Dart) fuzzing.
 - Differential fuzzing against upstream parsers.
 
-## Open questions for the plan
+## Resolved planning decisions
 
-1. Scheduled-job cadence (nightly vs. weekly) and per-target `-fuzztime` budget.
-2. Whether the Layer B harness lives in a new `internal/server/fuzztest` package or
-   extends an existing test helper.
-3. First-batch size — how many targets to ship in PR #1 before iterating.
+1. **Cadence + budget:** Nightly `schedule` + `workflow_dispatch`. Each target runs
+   `-fuzztime=5m` via a matrix so the job is parallel and time-boxed; nightly (not
+   weekly) so a regression surfaces within a day.
+2. **Layer B harness location:** New `internal/server/fuzztest` package holding the fake
+   `ClientFactory`, token-minting helper, and request builders — keeps the harness out
+   of production packages and reusable across handler targets.
+3. **PR sequencing:**
+   - **PR #1 (Layer A, security):** `loki.EnforceNamespaces`, the SSRF validators, and
+     the two composite-ID parsers + the nightly `fuzz.yml` workflow. Smallest harness,
+     highest security value. Includes the "oracle has teeth" mutation seeds.
+   - **PR #2 (Layer B harness + first handlers):** `fuzztest` package + auth/login,
+     settings (SSRF), and one Secret-returning GET (oracle D).
+   - **PR #3 (Layer A breadth):** remaining parsers, `ParseMultiDoc`, `parsePHC`, and the
+     `unstructured` normalizers.
