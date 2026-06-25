@@ -30,6 +30,11 @@ jobs:
         with:
           go-version: "1.26.3"
           cache-dependency-path: backend/go.sum
+      - name: Verify ${{ matrix.target }} exists
+        # Fail fast if a target is renamed/removed without updating the matrix —
+        # `go test -fuzz` exits 0 on a no-match regex, which would silently drop
+        # coverage. `-list` prints matching fuzz/test names; require an exact hit.
+        run: go test ${{ matrix.pkg }} -list '^${{ matrix.target }}$' | grep -qx '${{ matrix.target }}'
       - name: Fuzz ${{ matrix.target }}
         run: go test ${{ matrix.pkg }} -run=^$ -fuzz=^${{ matrix.target }}$ -fuzztime=5m
       - name: Show crash reproducer on failure

@@ -7,18 +7,20 @@ import (
 )
 
 // FuzzCheckIPNotPrivate fuzzes the pure SSRF IP-classification core.
-// Oracle: every address Go's stdlib classifies as loopback, private
-// (RFC1918), link-local (incl. 169.254.169.254 cloud metadata), or
-// unspecified MUST be rejected. A regression that lets any of these
-// through is an SSRF hole. (CGNAT 100.64.0.0/10 is also rejected by
-// the implementation but uses a package-internal net; the stdlib
-// predicates below are the load-bearing security classes.)
+// Oracle: every address classified as loopback, private (RFC1918),
+// link-local (incl. 169.254.169.254 cloud metadata), unspecified, or
+// CGNAT (RFC6598 100.64.0.0/10) MUST be rejected. A regression that
+// lets any of these through is an SSRF hole. CGNAT is not covered by
+// any net.IP stdlib predicate, so the oracle reuses the same
+// package-internal cgnatNet as production — without this, removing the
+// cgnatNet guard from checkIPNotPrivate would be invisible to the fuzzer.
 func FuzzCheckIPNotPrivate(f *testing.F) {
 	// 4-byte (IPv4) and 16-byte (IPv6) seeds spanning each blocked class.
 	f.Add([]byte{127, 0, 0, 1})       // loopback
 	f.Add([]byte{10, 0, 0, 1})        // private
 	f.Add([]byte{192, 168, 1, 1})     // private
 	f.Add([]byte{169, 254, 169, 254}) // link-local / metadata (teeth)
+	f.Add([]byte{100, 64, 0, 1})      // CGNAT (teeth — no stdlib predicate covers this)
 	f.Add([]byte{0, 0, 0, 0})         // unspecified
 	f.Add([]byte{8, 8, 8, 8})         // public (should pass)
 	f.Add(make([]byte, 16))           // IPv6 unspecified
@@ -37,7 +39,8 @@ func FuzzCheckIPNotPrivate(f *testing.F) {
 			ip.IsPrivate() ||
 			ip.IsLinkLocalUnicast() ||
 			ip.IsLinkLocalMulticast() ||
-			ip.IsUnspecified()
+			ip.IsUnspecified() ||
+			cgnatNet.Contains(ip)
 
 		if mustReject && err == nil {
 			t.Fatalf("SSRF hole: checkIPNotPrivate accepted blocked address %s", ip)
