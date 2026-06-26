@@ -5,8 +5,10 @@ import (
 	"testing"
 )
 
-// cgnatWizardNet is the CGNAT block (RFC 6598, 100.64.0.0/10) mirrored from the
-// inline guard in isPublicIP so the oracle detects removal of that guard.
+// cgnatWizardNet is the CGNAT block (RFC 6598, 100.64.0.0/10) re-derived
+// independently of the bit-arithmetic guard in isPublicIP. An independent
+// re-derivation (rather than calling isPublicIP's own logic) lets the oracle
+// detect removal or drift of that guard instead of silently agreeing with it.
 var cgnatWizardNet = func() *net.IPNet {
 	_, n, _ := net.ParseCIDR("100.64.0.0/10")
 	return n
@@ -14,10 +16,10 @@ var cgnatWizardNet = func() *net.IPNet {
 
 // FuzzIsPublicIP fuzzes the pure SSRF IP-classification core of validateHTTPSPublicURL.
 // Oracle (inverted from FuzzCheckIPNotPrivate): for any address the Go stdlib classifies
-// as loopback, private (RFC1918), link-local (unicast or multicast), multicast, unspecified,
-// or CGNAT (100.64.0.0/10), isPublicIP MUST return false. A regression that lets any of
-// these through is an SSRF hole. The must-reject set is a strict subset of what isPublicIP
-// actually claims to block — no false positives.
+// as loopback, private (RFC1918), link-local unicast, multicast, or unspecified, or that
+// falls in CGNAT (100.64.0.0/10), isPublicIP MUST return false. A regression that lets any
+// of these through is an SSRF hole. The must-reject set mirrors isPublicIP's guards exactly
+// (cert_helpers.go) — no false positives.
 func FuzzIsPublicIP(f *testing.F) {
 	// 4-byte (IPv4) and 16-byte (IPv6) seeds spanning each blocked class.
 	f.Add([]byte{127, 0, 0, 1})       // loopback
@@ -39,12 +41,13 @@ func FuzzIsPublicIP(f *testing.F) {
 		}
 		ip := net.IP(raw)
 
-		// mustBeNonPublic mirrors the exact set of classes isPublicIP blocks.
-		// Every predicate here corresponds to a guard in isPublicIP's body.
+		// mustBeNonPublic mirrors the exact set of classes isPublicIP blocks
+		// (cert_helpers.go): loopback, RFC1918 private, link-local unicast,
+		// unspecified, multicast, and CGNAT. (Link-local multicast is a strict
+		// subset of IsMulticast, so it needs no separate term.)
 		mustBeNonPublic := ip.IsLoopback() ||
 			ip.IsPrivate() ||
 			ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() ||
 			ip.IsUnspecified() ||
 			ip.IsMulticast() ||
 			cgnatWizardNet.Contains(ip)
