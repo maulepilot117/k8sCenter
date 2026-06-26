@@ -14,7 +14,7 @@ var cgnatWizardNet = func() *net.IPNet {
 
 // FuzzIsPublicIP fuzzes the pure SSRF IP-classification core of validateHTTPSPublicURL.
 // Oracle (inverted from FuzzCheckIPNotPrivate): for any address the Go stdlib classifies
-// as loopback, private (RFC1918), link-local unicast or multicast, unspecified, multicast,
+// as loopback, private (RFC1918), link-local (unicast or multicast), multicast, unspecified,
 // or CGNAT (100.64.0.0/10), isPublicIP MUST return false. A regression that lets any of
 // these through is an SSRF hole. The must-reject set is a strict subset of what isPublicIP
 // actually claims to block — no false positives.
