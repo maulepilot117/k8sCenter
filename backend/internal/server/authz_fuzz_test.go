@@ -76,7 +76,17 @@ func FuzzAuthzEnforcement(f *testing.F) {
 	//
 	// Seed: unauth GET → expect 401 (oracle 1)
 	f.Add(0, 4, uint8(0), true, "")
-	// Seed: authed GET with CSRF header → legitimate (2xx ok)
+	// Seed (ORACLE-1 AUTH-ISOLATION): unauth GET to /cluster/info (pathIdx 1).
+	// handleClusterInfo has NO handler-level auth guard (unlike handleAuthMe) — it
+	// derefs s.K8sClient immediately, so removing the Auth middleware would let
+	// this no-token request reach the handler and 5xx (nil-deref in the auth-only
+	// server); the 2xx-or-5xx rejection oracle catches that. This isolates the
+	// Auth middleware instead of relying on a redundant handler guard.
+	f.Add(1, 4, uint8(0), true, "")
+	// Seed: mode-1 GET — exercises the pinning branch that rewrites a valid-token
+	// non-state-changing request into the CSRF-rejection envelope (forced PUT,
+	// csrf absent) → 403. No request in this fuzzer returns 2xx by design: every
+	// path is engineered to be rejected in middleware (handlers nil-deref).
 	f.Add(0, 4, uint8(1), true, "")
 	// Seed (ORACLE-2 PRIMARY): authed PUT to /settings/ WITHOUT X-Requested-With
 	// → MUST be 403 CSRF. methodIdx=1 (PUT), csrfPresent=false match what the
