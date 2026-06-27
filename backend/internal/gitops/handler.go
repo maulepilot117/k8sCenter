@@ -25,6 +25,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -139,7 +140,9 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		go func() {
 			defer wg.Done()
 			var r fetchResult
-			r.apps, r.err = ListArgoApplications(ctx, dynClient)
+			recoverutil.Safe(h.Logger, "gitops argo-fetch", func() {
+				r.apps, r.err = ListArgoApplications(ctx, dynClient)
+			})
 			argoCh <- r
 		}()
 	} else {
@@ -151,27 +154,32 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedApps, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var ks, hr []NormalizedApp
-			var ksErr, hrErr error
-			var inner sync.WaitGroup
-			inner.Add(2)
-			go func() {
-				defer inner.Done()
-				ks, ksErr = ListFluxKustomizations(ctx, dynClient)
-			}()
-			go func() {
-				defer inner.Done()
-				hr, hrErr = ListFluxHelmReleases(ctx, dynClient)
-			}()
-			inner.Wait()
-
 			var r fetchResult
-			if ksErr != nil {
-				r.err = ksErr
-			} else if hrErr != nil {
-				r.err = hrErr
-			}
-			r.apps = append(ks, hr...)
+			recoverutil.Safe(h.Logger, "gitops flux-fetch", func() {
+				var ks, hr []NormalizedApp
+				var ksErr, hrErr error
+				var inner sync.WaitGroup
+				inner.Add(2)
+				go func() {
+					defer inner.Done()
+					recoverutil.Safe(h.Logger, "gitops flux-ks-fetch", func() {
+						ks, ksErr = ListFluxKustomizations(ctx, dynClient)
+					})
+				}()
+				go func() {
+					defer inner.Done()
+					recoverutil.Safe(h.Logger, "gitops flux-hr-fetch", func() {
+						hr, hrErr = ListFluxHelmReleases(ctx, dynClient)
+					})
+				}()
+				inner.Wait()
+				if ksErr != nil {
+					r.err = ksErr
+				} else if hrErr != nil {
+					r.err = hrErr
+				}
+				r.apps = append(ks, hr...)
+			})
 			fluxCh <- r
 		}()
 	} else {
@@ -455,11 +463,13 @@ func (h *Handler) invalidateCache() {
 	h.cacheGen++
 	h.cacheMu.Unlock()
 	if h.NotifService != nil {
-		go h.NotifService.Emit(context.Background(), notifications.Notification{
-			Source:   notifications.SourceGitOps,
-			Severity: notifications.SeverityInfo,
-			Title:    "GitOps sync status changed",
-			Message:  "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
+		go recoverutil.Safe(h.Logger, "gitops notify", func() {
+			h.NotifService.Emit(context.Background(), notifications.Notification{
+				Source:   notifications.SourceGitOps,
+				Severity: notifications.SeverityInfo,
+				Title:    "GitOps sync status changed",
+				Message:  "A GitOps application sync status has changed. Check the GitOps dashboard for details.",
+			})
 		})
 	}
 }

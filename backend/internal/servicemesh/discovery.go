@@ -106,6 +106,7 @@ func (d *Discoverer) SetOnChange(cb DiscoveryChangeCallback) {
 // Discoverer is purely lazy (probe-on-stale-read), which means a
 // post-startup mesh install isn't noticed until the next user request.
 func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
+	// lambda required: Probe returns MeshStatus; Tick wants func(context.Context)
 	recoverutil.Tick(ctx, d.logger, "servicemesh discovery", func(ctx context.Context) { d.Probe(ctx) })
 	ticker := time.NewTicker(recheckInterval)
 	defer ticker.Stop()
@@ -115,6 +116,7 @@ func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// lambda required: Probe returns MeshStatus; Tick wants func(context.Context)
 			recoverutil.Tick(ctx, d.logger, "servicemesh discovery", func(ctx context.Context) { d.Probe(ctx) })
 		}
 	}

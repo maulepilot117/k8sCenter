@@ -91,12 +91,24 @@ func TestSafe_SwallowsPanicAndLogs(t *testing.T) {
 		panic("safe boom")
 	})
 	got := buf.String()
-	if !strings.Contains(got, "panic recovered") || !strings.Contains(got, "unit goroutine") {
-		t.Fatalf("expected recovery to log the task label and 'panic recovered'; got: %q", got)
+	if !strings.Contains(got, "panic recovered") || !strings.Contains(got, "unit goroutine") || !strings.Contains(got, "stack") {
+		t.Fatalf("expected recovery to log the task label, 'panic recovered', and a stack; got: %q", got)
 	}
 }
 
-// TestSafe_NilLoggerNoPanic verifies a nil logger is tolerated.
+// TestSafe_NonStringPanicLogs verifies a non-string panic value is formatted
+// into the log via %v (guards against a future switch to %s).
+func TestSafe_NonStringPanicLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	Safe(logger, "int goroutine", func() { panic(42) })
+	if got := buf.String(); !strings.Contains(got, "42") {
+		t.Fatalf("expected non-string panic value in the log; got: %q", got)
+	}
+}
+
+// TestSafe_NilLoggerNoPanic verifies a nil logger is tolerated (falls back to
+// slog.Default() — the panic is still recovered, never silently dropped).
 func TestSafe_NilLoggerNoPanic(t *testing.T) {
 	Safe(nil, "nil-logger goroutine", func() { panic("boom") })
 }
@@ -120,12 +132,24 @@ func TestTick_SwallowsPanicAndLogs(t *testing.T) {
 		panic("tick boom")
 	})
 	got := buf.String()
-	if !strings.Contains(got, "panic recovered") || !strings.Contains(got, "unit task") {
-		t.Fatalf("expected recovery to log the task label and 'panic recovered'; got: %q", got)
+	if !strings.Contains(got, "panic recovered") || !strings.Contains(got, "unit task") || !strings.Contains(got, "stack") {
+		t.Fatalf("expected recovery to log the task label, 'panic recovered', and a stack; got: %q", got)
 	}
 }
 
-// TestTick_NilLoggerNoPanic verifies a nil logger is tolerated.
+// TestTick_NonStringPanicLogs verifies a non-string panic value is formatted
+// into the log via %v.
+func TestTick_NonStringPanicLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	Tick(context.Background(), logger, "int task", func(context.Context) { panic(42) })
+	if got := buf.String(); !strings.Contains(got, "42") {
+		t.Fatalf("expected non-string panic value in the log; got: %q", got)
+	}
+}
+
+// TestTick_NilLoggerNoPanic verifies a nil logger is tolerated (falls back to
+// slog.Default()).
 func TestTick_NilLoggerNoPanic(t *testing.T) {
 	// Must not crash despite the nil logger.
 	Tick(context.Background(), nil, "nil-logger task", func(context.Context) {

@@ -243,7 +243,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	recoverutil.Go(g, h.Logger, "list certificates", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list certificates", func() error {
 		list, err := dynClient.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list certificates: %w", err)
@@ -259,7 +259,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list issuers", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list issuers", func() error {
 		list, err := dynClient.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list issuers: %w", err)
@@ -271,7 +271,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list clusterissuers", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list clusterissuers", func() error {
 		list, err := dynClient.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list clusterissuers: %w", err)
@@ -405,7 +405,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	recoverutil.Go(g, h.Logger, "list certificates", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager remote list certificates", func() error {
 		list, err := dyn.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list certificates: %w", err)
@@ -421,7 +421,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list issuers", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager remote list issuers", func() error {
 		list, err := dyn.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list issuers: %w", err)
@@ -433,7 +433,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list clusterissuers", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager remote list clusterissuers", func() error {
 		list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list clusterissuers: %w", err)
@@ -611,7 +611,7 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	var crList *unstructured.UnstructuredList
-	recoverutil.Go(g, h.Logger, "list certificaterequests", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list certificaterequests", func() error {
 		var fetchErr error
 		crList, fetchErr = dynClient.Resource(CertificateRequestGVR).Namespace(ns).List(gCtx, metav1.ListOptions{
 			LabelSelector: crSel,
@@ -620,14 +620,14 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var orderList *unstructured.UnstructuredList
-	recoverutil.Go(g, h.Logger, "list orders", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list orders", func() error {
 		var fetchErr error
 		orderList, fetchErr = dynClient.Resource(OrderGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr
 	})
 
 	var challengeList *unstructured.UnstructuredList
-	recoverutil.Go(g, h.Logger, "list challenges", func() error {
+	recoverutil.Go(g, h.Logger, "certmanager list challenges", func() error {
 		var fetchErr error
 		challengeList, fetchErr = dynClient.Resource(ChallengeGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr

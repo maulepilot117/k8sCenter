@@ -13,6 +13,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
@@ -131,12 +132,12 @@ func (c *CiliumAgentCollector) collect(ctx context.Context) (*agentCollectionRes
 	g.SetLimit(c.maxConcurrent)
 
 	for i, pod := range pods {
-		g.Go(func() error {
+		recoverutil.Go(g, c.logger, "networking agent-exec", func() error {
 			results[i] = c.execPod(gCtx, cs, pod)
 			return nil // errors captured per-node
 		})
 	}
-	_ = g.Wait() // always nil — per-node errors in results
+	_ = g.Wait() // nil unless a worker panics (panic logged by recoverutil); per-node errors in results
 
 	// Build result
 	partial := false

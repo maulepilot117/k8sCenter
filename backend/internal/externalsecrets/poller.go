@@ -10,6 +10,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -446,19 +447,13 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
-// runTickWithRecover wraps tick() with a defer recover() so a panic in
+// runTickWithRecover wraps tick() with panic recovery so a panic in
 // dispatch (e.g., pgx pool exhaustion edge case, slog handler defect)
 // doesn't unwind the poller goroutine. The next ticker fire restarts the
-// tick from a clean slate.
+// tick from a clean slate. Delegates to recoverutil.Tick so the stack
+// trace is captured alongside the panic value.
 func (p *Poller) runTickWithRecover(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil {
-			p.logger.Error("externalsecrets poller: tick panic recovered",
-				"panic", r,
-			)
-		}
-	}()
-	p.tick(ctx)
+	recoverutil.Tick(ctx, p.logger, "externalsecrets poller tick", p.tick)
 }
 
 // tick performs one polling cycle. Lists ExternalSecrets via the handler

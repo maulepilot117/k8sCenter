@@ -1,14 +1,20 @@
 // Package recoverutil provides panic-recovery wrappers for code that runs
-// OUTSIDE chi's HTTP panic-recovery middleware — background ticker loops and
-// errgroup worker goroutines. A panic on such a goroutine is not caught by the
-// request middleware (it runs on a separate stack) and would terminate the
-// whole process. These helpers turn that crash into a logged, recoverable
-// failure so adversarial cluster data degrades the affected feature instead of
-// taking down the server.
+// OUTSIDE chi's HTTP panic-recovery middleware — background ticker loops,
+// errgroup worker goroutines, and plain/fire-and-forget goroutines. A panic on
+// such a goroutine is not caught by the request middleware (it runs on a
+// separate stack) and would terminate the whole process. These helpers turn
+// that crash into a logged, recoverable failure so adversarial cluster data
+// degrades the affected feature instead of taking down the server.
 //
-// Reference consumers: certmanager.Poller (Tick) + certmanager.Handler fetch
-// fan-outs (Go). Mirrors the convention first established by
-// externalsecrets.Poller.
+// Pick the wrapper by goroutine shape:
+//   - Go   — errgroup worker (recover -> log -> return error for g.Wait).
+//   - Tick — background ticker-loop body (recover -> log -> loop continues).
+//   - Safe — plain `go func(){...}` / fire-and-forget (recover -> log).
+//
+// All three log the recovered panic with its stack under a stable "task" key,
+// so a single structured-log filter (task=<label>) catches every recoverutil
+// panic; the message string distinguishes the goroutine kind. A nil logger
+// falls back to slog.Default() — a recovered panic is never silently dropped.
 package recoverutil
 
 import (
@@ -20,21 +26,28 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// loggerOrDefault returns logger, or slog.Default() when logger is nil, so a
+// recovered panic is always recorded somewhere rather than silently discarded.
+func loggerOrDefault(logger *slog.Logger) *slog.Logger {
+	if logger == nil {
+		return slog.Default()
+	}
+	return logger
+}
+
 // Go launches fn on the errgroup with panic recovery. A panic in an errgroup
 // worker goroutine is NOT caught by chi's recovery middleware (it runs on a
 // separate goroutine stack) and would terminate the process; errgroup itself
 // only propagates *returned* errors, never panics. A recovered panic is logged
 // with its stack and converted to an error so g.Wait() surfaces it as an
 // ordinary failure (a graceful 500 on a request path, a skipped fill on a
-// poller path) rather than a crash. A nil logger is tolerated.
+// poller path) rather than a crash.
 func Go(g *errgroup.Group, logger *slog.Logger, label string, fn func() error) {
 	g.Go(func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				if logger != nil {
-					logger.Error("errgroup worker panic recovered",
-						"worker", label, "panic", r, "stack", string(debug.Stack()))
-				}
+				loggerOrDefault(logger).Error("errgroup worker panic recovered",
+					"task", label, "panic", r, "stack", string(debug.Stack()))
 				err = fmt.Errorf("%s: recovered panic: %v", label, r)
 			}
 		}()
@@ -47,14 +60,14 @@ func Go(g *errgroup.Group, logger *slog.Logger, label string, fn func() error) {
 // fire-and-forget `go method()` calls that run outside chi's recovery
 // middleware. A recovered panic is logged with its stack; fn's own cleanup
 // (e.g. a deferred wg.Done() registered by the caller before invoking Safe)
-// still runs. A nil logger is tolerated. Typical use:
+// still runs. Typical use:
 //
 //	go func(i int) { defer wg.Done(); recoverutil.Safe(logger, "label", func() { ... }) }(i)
 //	go recoverutil.Safe(logger, "notify", func() { svc.Emit(ctx, n) })
 func Safe(logger *slog.Logger, label string, fn func()) {
 	defer func() {
-		if r := recover(); r != nil && logger != nil {
-			logger.Error("goroutine panic recovered",
+		if r := recover(); r != nil {
+			loggerOrDefault(logger).Error("goroutine panic recovered",
 				"task", label, "panic", r, "stack", string(debug.Stack()))
 		}
 	}()
@@ -64,12 +77,11 @@ func Safe(logger *slog.Logger, label string, fn func()) {
 // Tick runs fn(ctx) with panic recovery, for background ticker loops whose
 // goroutine has no surrounding recovery. A recovered panic is logged with its
 // stack so the offending input can be traced; the caller's loop continues to
-// its next iteration rather than crashing the process. A nil logger is
-// tolerated (the panic is still swallowed).
+// its next iteration rather than crashing the process.
 func Tick(ctx context.Context, logger *slog.Logger, label string, fn func(context.Context)) {
 	defer func() {
-		if r := recover(); r != nil && logger != nil {
-			logger.Error("background tick panic recovered",
+		if r := recover(); r != nil {
+			loggerOrDefault(logger).Error("background tick panic recovered",
 				"task", label, "panic", r, "stack", string(debug.Stack()))
 		}
 	}()

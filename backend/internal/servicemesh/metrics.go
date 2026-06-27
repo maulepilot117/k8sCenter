@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/common/model"
 
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // promQueryTimeout bounds every PromQL query originating from this
@@ -230,13 +231,22 @@ func goldenSignalsForService(ctx context.Context, pc *monitoring.PrometheusClien
 
 	for name, q := range rendered {
 		go func(name, q string) {
-			val, _, qerr := pc.Query(queryCtx, q, now)
-			if qerr != nil {
-				outcomes <- outcome{name: name, err: qerr}
-				return
-			}
-			scalar, ok := firstScalarValue(val)
-			outcomes <- outcome{name: name, value: scalar, ok: ok}
+			// Defer the channel send OUTSIDE Safe so a panic in the query/parse
+			// path still delivers one item to outcomes, preserving the invariant
+			// that the consumer receives exactly len(rendered) items. Without
+			// this, a panic would swallow the send and deadlock the consumer.
+			o := outcome{name: name}
+			defer func() { outcomes <- o }()
+			recoverutil.Safe(nil, "servicemesh golden signals query", func() {
+				val, _, qerr := pc.Query(queryCtx, q, now)
+				if qerr != nil {
+					o.err = qerr
+					return
+				}
+				scalar, ok := firstScalarValue(val)
+				o.value = scalar
+				o.ok = ok
+			})
 		}(name, q)
 	}
 

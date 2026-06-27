@@ -378,7 +378,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	recoverutil.Go(g, h.Logger, "list externalsecrets", func() error {
+	recoverutil.Go(g, h.Logger, "externalsecrets list externalsecrets", func() error {
 		list, err := dynClient.Resource(ExternalSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list externalsecrets failed", "error", err)
@@ -392,7 +392,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list clusterexternalsecrets", func() error {
+	recoverutil.Go(g, h.Logger, "externalsecrets list clusterexternalsecrets", func() error {
 		list, err := dynClient.Resource(ClusterExternalSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list clusterexternalsecrets failed", "error", err)
@@ -406,7 +406,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list secretstores", func() error {
+	recoverutil.Go(g, h.Logger, "externalsecrets list secretstores", func() error {
 		list, err := dynClient.Resource(SecretStoreGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list secretstores failed", "error", err)
@@ -420,7 +420,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list clustersecretstores", func() error {
+	recoverutil.Go(g, h.Logger, "externalsecrets list clustersecretstores", func() error {
 		list, err := dynClient.Resource(ClusterSecretStoreGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list clustersecretstores failed", "error", err)
@@ -434,7 +434,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list pushsecrets", func() error {
+	recoverutil.Go(g, h.Logger, "externalsecrets list pushsecrets", func() error {
 		list, err := dynClient.Resource(PushSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list pushsecrets failed", "error", err)
@@ -448,11 +448,31 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	// Per-CRD goroutines never return errors, so g.Wait() returns nil even
-	// when the parent ctx has been cancelled / timed out. Re-check the parent
-	// ctx explicitly: a cancelled fetch must NOT poison the cache with an
-	// empty snapshot for the next 30s.
-	_ = g.Wait()
+	// Per-CRD goroutines return nil on API errors (they call recordErr instead);
+	// they only return non-nil when recoverutil.Go recovers a panic. On panic,
+	// errgroup cancels gctx so the surviving workers call recordErr for their
+	// context-cancelled errors — but the panicking worker never calls recordErr,
+	// leaving its CRD slice nil without an errMap entry. Treat nil slices as
+	// fetch failures so the stale-cache preservation block below can restore
+	// last-known-good for the panicking CRD instead of caching an empty slice.
+	if werr := g.Wait(); werr != nil {
+		h.Logger.Warn("externalsecrets fetchAll worker error", "error", werr)
+		if externalSecrets == nil {
+			recordErr("externalsecrets", werr)
+		}
+		if clusterExternalSecrets == nil {
+			recordErr("clusterexternalsecrets", werr)
+		}
+		if stores == nil {
+			recordErr("secretstores", werr)
+		}
+		if clusterStores == nil {
+			recordErr("clustersecretstores", werr)
+		}
+		if pushSecrets == nil {
+			recordErr("pushsecrets", werr)
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

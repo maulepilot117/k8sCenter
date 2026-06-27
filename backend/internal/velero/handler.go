@@ -1018,7 +1018,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	recoverutil.Go(g, h.Logger, "list backups", func() error {
+	recoverutil.Go(g, h.Logger, "velero list backups", func() error {
 		list, err := dynClient.Resource(BackupGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1030,7 +1030,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list restores", func() error {
+	recoverutil.Go(g, h.Logger, "velero list restores", func() error {
 		list, err := dynClient.Resource(RestoreGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1042,7 +1042,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list schedules", func() error {
+	recoverutil.Go(g, h.Logger, "velero list schedules", func() error {
 		list, err := dynClient.Resource(ScheduleGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1054,7 +1054,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list backup storage locations", func() error {
+	recoverutil.Go(g, h.Logger, "velero list backup storage locations", func() error {
 		list, err := dynClient.Resource(BackupStorageLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1066,7 +1066,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	recoverutil.Go(g, h.Logger, "list volume snapshot locations", func() error {
+	recoverutil.Go(g, h.Logger, "velero list volume snapshot locations", func() error {
 		list, err := dynClient.Resource(VolumeSnapshotLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
