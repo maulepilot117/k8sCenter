@@ -22,6 +22,7 @@ jobs:
           - { pkg: ./internal/servicemesh/, target: FuzzParseMeshCompositeID }
           - { pkg: ./internal/server/, target: FuzzAuthzEnforcement }
           - { pkg: ./internal/k8s/resources/, target: FuzzMaskedSecret }
+          - { pkg: ./internal/k8s/resources/, target: FuzzSecretPipeline }
           - { pkg: ./internal/auth/, target: FuzzParsePHC }
           - { pkg: ./internal/yaml/, target: FuzzParseMultiDoc }
           - { pkg: ./internal/wizard/, target: FuzzIsPublicIP }

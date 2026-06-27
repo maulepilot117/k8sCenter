@@ -140,7 +140,7 @@ func requireUser(w http.ResponseWriter, r *http.Request) (*auth.User, bool) {
 
 // impersonatingClient returns a k8s clientset impersonating the authenticated user,
 // routed to the correct cluster based on the X-Cluster-ID request context.
-func (h *Handler) impersonatingClient(r *http.Request, user *auth.User) (*kubernetes.Clientset, error) {
+func (h *Handler) impersonatingClient(r *http.Request, user *auth.User) (kubernetes.Interface, error) {
 	clusterID := middleware.ClusterIDFromContext(r.Context())
 	return h.ClusterRouter.ClientForCluster(r.Context(), clusterID, user.KubernetesUsername, user.KubernetesGroups)
 }

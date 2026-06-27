@@ -194,7 +194,7 @@ type fakeClientFactory struct {
 	callCount int
 }
 
-func (f *fakeClientFactory) ClientForUser(username string, groups []string) (*kubernetes.Clientset, error) {
+func (f *fakeClientFactory) ClientForUser(username string, groups []string) (kubernetes.Interface, error) {
 	f.mu.Lock()
 	f.callCount++
 	f.mu.Unlock()
