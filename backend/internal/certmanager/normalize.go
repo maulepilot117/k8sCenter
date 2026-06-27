@@ -272,8 +272,10 @@ func normalizeCertRequest(u *unstructured.Unstructured) CertificateRequest {
 	readyStatus, reason, message := readReadyCondition(status)
 
 	var createdAt time.Time
-	if t := parseTimeField(u.Object["metadata"].(map[string]any), "creationTimestamp"); t != nil {
-		createdAt = *t
+	if meta, ok := u.Object["metadata"].(map[string]any); ok {
+		if t := parseTimeField(meta, "creationTimestamp"); t != nil {
+			createdAt = *t
+		}
 	}
 
 	finishedAt := parseTimeField(status, "completionTime")
@@ -302,7 +304,8 @@ func normalizeOrder(u *unstructured.Unstructured) Order {
 
 	// Owning Certificate name from ownerReferences.
 	crName := ""
-	if owners, ok := obj["metadata"].(map[string]any)["ownerReferences"].([]any); ok {
+	meta, _ := obj["metadata"].(map[string]any)
+	if owners, ok := meta["ownerReferences"].([]any); ok {
 		for _, o := range owners {
 			if om, ok := o.(map[string]any); ok {
 				if kind, _ := om["kind"].(string); kind == "CertificateRequest" {

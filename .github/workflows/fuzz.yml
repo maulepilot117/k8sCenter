@@ -25,6 +25,13 @@ jobs:
           - { pkg: ./internal/auth/, target: FuzzParsePHC }
           - { pkg: ./internal/yaml/, target: FuzzParseMultiDoc }
           - { pkg: ./internal/wizard/, target: FuzzIsPublicIP }
+          - { pkg: ./internal/certmanager/, target: FuzzCertManagerNormalizers }
+          - { pkg: ./internal/servicemesh/, target: FuzzServiceMeshNormalizers }
+          - { pkg: ./internal/gitops/, target: FuzzGitOpsNormalizers }
+          - { pkg: ./internal/policy/, target: FuzzPolicyNormalizers }
+          - { pkg: ./internal/externalsecrets/, target: FuzzExternalSecretsNormalizers }
+          - { pkg: ./internal/gateway/, target: FuzzGatewayNormalizers }
+          - { pkg: ./internal/velero/, target: FuzzVeleroParsers }
     name: ${{ matrix.target }}
     defaults:
       run:
