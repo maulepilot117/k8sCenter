@@ -126,6 +126,8 @@ k8scenter/
 - **WebSocket hub pattern.** Central goroutine fans out informer events to subscribed clients.
 - **Structured logging with slog.** JSON output, request ID, user identity, resource kind.
 - **Never expose internal errors.** Wrap k8s API errors into user-friendly messages.
+- **Goroutine panic safety.** Any goroutine running OUTSIDE chi's recovery middleware (background loops, `errgroup` workers, `go func`, `wg.Go`) MUST wrap its work with `internal/recoverutil` (`Go`/`Tick`/`Safe`) — an unrecovered panic on a non-request stack crashes the whole process. Keep `wg.Done()` / counted channel sends OUTSIDE the wrapped closure. See `docs/solutions/backend-resilience-conventions.md`.
+- **Fuzz the parse seams.** Pure functions that turn attacker-influenceable input (CRD `unstructured`, bytes, untrusted strings) into typed values get an in-package `*_fuzz_test.go` + a nightly `fuzz.yml` matrix row. Conventions (oracle taxonomy, teeth-via-mutation seeds, `-list` drift guard, hermetic): `docs/solutions/backend-resilience-conventions.md`.
 - **CRD-discovered features** (policy, gitops, certmanager, servicemesh, externalsecrets) follow a common pattern: 5min discovery cache → singleflight + 30s read cache → per-user RBAC filtering via `CanAccessGroupResource`.
 
 ### Frontend (Deno/Fresh)
