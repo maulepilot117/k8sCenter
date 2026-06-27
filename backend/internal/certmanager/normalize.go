@@ -302,9 +302,13 @@ func normalizeOrder(u *unstructured.Unstructured) Order {
 		status = map[string]any{}
 	}
 
+	// metadata may be absent or the wrong type on adversarial input; a nil map
+	// reads safely below. Extract once and reuse for both ownerReferences and
+	// the creation timestamp.
+	meta, _ := obj["metadata"].(map[string]any)
+
 	// Owning Certificate name from ownerReferences.
 	crName := ""
-	meta, _ := obj["metadata"].(map[string]any)
 	if owners, ok := meta["ownerReferences"].([]any); ok {
 		for _, o := range owners {
 			if om, ok := o.(map[string]any); ok {
@@ -317,10 +321,8 @@ func normalizeOrder(u *unstructured.Unstructured) Order {
 	}
 
 	var createdAt time.Time
-	if meta, ok := obj["metadata"].(map[string]any); ok {
-		if t := parseTimeField(meta, "creationTimestamp"); t != nil {
-			createdAt = *t
-		}
+	if t := parseTimeField(meta, "creationTimestamp"); t != nil {
+		createdAt = *t
 	}
 
 	return Order{

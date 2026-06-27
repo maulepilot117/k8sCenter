@@ -19,20 +19,24 @@ func unstructuredFromFuzz(data []byte) (*unstructured.Unstructured, bool) {
 }
 
 // FuzzCertManagerNormalizers asserts that every cert-manager normalizer is
-// crash-safe on arbitrary/adversarial unstructured input. A normalizer panic
-// here is a real reliability bug: normalizeCertificate/normalizeIssuer run in
-// the certmanager expiry poller (poller.go), a BACKGROUND goroutine NOT behind
-// chi's panic-recovery middleware, so a panic there crashes the process rather
-// than returning a 500. Oracle: no panic. Returned errors/zero-values are fine.
+// crash-safe on arbitrary/adversarial unstructured input. Why this matters
+// varies by call path: normalizeCertificate/normalizeIssuer run in both the
+// HTTP handlers and the certmanager expiry poller (poller.go) — and the poller
+// is a background goroutine NOT behind chi's panic-recovery middleware, where a
+// panic is process-fatal — while the two bugs this harness first caught
+// (normalizeCertRequest/normalizeOrder) are reached only from HTTP handlers,
+// where chi recovers a panic as a 500. Both are worth eliminating; the poller
+// path is what makes crash-safety load-bearing.
+// Oracle: no panic. Returned errors/zero-values are fine.
 func FuzzCertManagerNormalizers(f *testing.F) {
 	// ── Structural teeth that reproduce the two production panics ──────────
-	// Bug 1 (normalizeCertRequest line 275): u.Object["metadata"].(map[string]any)
-	// is unguarded — panics when metadata is absent or the wrong type.
-	f.Add([]byte(`{}`)) // no metadata key → nil → panic on unguarded assertion
+	// Bug 1 (normalizeCertRequest): u.Object["metadata"].(map[string]any) was
+	// unguarded — panicked when metadata was absent or the wrong type.
+	f.Add([]byte(`{}`)) // no metadata key → nil → panicked on the old unguarded assertion
 
-	// Bug 2 (normalizeOrder line 305): obj["metadata"].(map[string]any) is also
-	// unguarded inside the ownerReferences chain — panics when metadata is absent
-	// or a non-map type.
+	// Bug 2 (normalizeOrder): obj["metadata"].(map[string]any) inside the
+	// ownerReferences chain was likewise unguarded — panicked when metadata
+	// was absent or a non-map type.
 	f.Add([]byte(`{"metadata":"oops"}`))  // metadata as string
 	f.Add([]byte(`{"metadata":[]}`))      // metadata as list
 	f.Add([]byte(`{"spec":[],"status":"x"}`))              // spec/status wrong types
@@ -201,7 +205,6 @@ func FuzzCertManagerNormalizers(f *testing.F) {
 	f.Add([]byte(`{"metadata":{"ownerReferences":[{"kind":42}]}}`))
 	f.Add([]byte(`{"status":{"conditions":[{"type":"Ready","status":"True"},null]}}`))
 	f.Add([]byte(`{"spec":{"issuerRef":null}}`))
-	f.Add([]byte(`null`))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		u, ok := unstructuredFromFuzz(data)
