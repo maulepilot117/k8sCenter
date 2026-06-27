@@ -20,6 +20,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/audit"
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	k8smetav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -313,7 +314,7 @@ func (h *Handler) HandleUpdateCNIConfig(w http.ResponseWriter, r *http.Request) 
 	httputil.WriteData(w, config)
 
 	// Refresh cached CNI features asynchronously (non-blocking)
-	go h.Detector.Detect(context.Background())
+	go recoverutil.Safe(h.Logger, "networking detect", func() { h.Detector.Detect(context.Background()) })
 
 	// Invalidate all caches so next poll gets fresh data
 	h.InvalidateCaches()
@@ -654,19 +655,19 @@ func (h *Handler) fetchSubsystems(ctx context.Context) (*CiliumSubsystemsRespons
 	var agentErr error
 
 	g, gCtx := errgroup.WithContext(ctx)
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "networking fetch-cilium-nodes", func() error {
 		var err error
 		nodes, err = readCiliumNodes(gCtx, dynClient)
 		return err
 	})
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "networking fetch-endpoints", func() error {
 		var err error
 		endpoints, err = aggregateEndpoints(gCtx, dynClient)
 		return err
 	})
 	// Agent collection runs in parallel with CRD reads (opt-in, never fails the group)
 	if h.AgentCollector != nil {
-		g.Go(func() error {
+		recoverutil.Go(g, h.Logger, "networking fetch-agent", func() error {
 			agentResult, agentErr = h.AgentCollector.Collect(gCtx)
 			return nil // agent errors captured separately
 		})

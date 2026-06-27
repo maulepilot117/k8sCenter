@@ -7,6 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // linkerdCRD bundles a GVR with the Kind name used for composite IDs and
@@ -58,17 +60,19 @@ func ListLinkerd(ctx context.Context, dynClient dynamic.Interface, namespace str
 		wg.Add(1)
 		go func(c linkerdCRD) {
 			defer wg.Done()
-			items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
+			recoverutil.Safe(nil, "servicemesh linkerd list routes", func() {
+				items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
 
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				result.Errors[c.Kind] = err.Error()
-				return
-			}
-			for i := range items {
-				result.Routes = append(result.Routes, normalizeLinkerdRoute(&items[i], c.Kind))
-			}
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.Errors[c.Kind] = err.Error()
+					return
+				}
+				for i := range items {
+					result.Routes = append(result.Routes, normalizeLinkerdRoute(&items[i], c.Kind))
+				}
+			})
 		}(c)
 	}
 
@@ -76,17 +80,19 @@ func ListLinkerd(ctx context.Context, dynClient dynamic.Interface, namespace str
 		wg.Add(1)
 		go func(c linkerdCRD) {
 			defer wg.Done()
-			items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
+			recoverutil.Safe(nil, "servicemesh linkerd list policies", func() {
+				items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
 
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				result.Errors[c.Kind] = err.Error()
-				return
-			}
-			for i := range items {
-				result.Policies = append(result.Policies, normalizeLinkerdPolicy(&items[i], c.Kind))
-			}
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.Errors[c.Kind] = err.Error()
+					return
+				}
+				for i := range items {
+					result.Policies = append(result.Policies, normalizeLinkerdPolicy(&items[i], c.Kind))
+				}
+			})
 		}(c)
 	}
 

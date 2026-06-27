@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // AlertEvent represents a single alert occurrence in the store.
@@ -265,15 +267,17 @@ func (s *MemoryStore) RunPruner(ctx context.Context, retentionDays int, logger *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
-			pruned, err := s.Prune(ctx, cutoff)
-			if err != nil {
-				logger.Error("alert store prune failed", "error", err)
-				continue
-			}
-			if pruned > 0 {
-				logger.Info("alert store pruned", "removed", pruned, "retentionDays", retentionDays)
-			}
+			recoverutil.Tick(ctx, logger, "alerting store prune", func(ctx context.Context) {
+				cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+				pruned, err := s.Prune(ctx, cutoff)
+				if err != nil {
+					logger.Error("alert store prune failed", "error", err)
+					return
+				}
+				if pruned > 0 {
+					logger.Info("alert store pruned", "removed", pruned, "retentionDays", retentionDays)
+				}
+			})
 		}
 	}
 }

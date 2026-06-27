@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/common/model"
 
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // Dashboard trend window and resolution are chosen by the caller (the handler
@@ -85,11 +86,13 @@ func (a *UtilizationAdapter) DashboardTrends(ctx context.Context, window, step t
 	for i, q := range trendQueries {
 		go func(i int, query string) {
 			defer wg.Done()
-			val, _, err := pc.QueryRange(ctx, query, start, end, step)
-			if err != nil {
-				return // leave series[i] nil → empty slice in JSON
-			}
-			series[i] = parseMatrixSeries(val)
+			recoverutil.Safe(a.Discoverer.logger, "monitoring trends-query", func() {
+				val, _, err := pc.QueryRange(ctx, query, start, end, step)
+				if err != nil {
+					return // leave series[i] nil → empty slice in JSON
+				}
+				series[i] = parseMatrixSeries(val)
+			})
 		}(i, q.query)
 	}
 	wg.Wait()

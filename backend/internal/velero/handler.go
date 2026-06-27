@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -84,11 +85,13 @@ func (h *Handler) InvalidateCache() {
 	h.cacheMu.Unlock()
 
 	if h.NotifService != nil {
-		go h.NotifService.Emit(context.Background(), notifications.Notification{
-			Source:   notifications.SourceVelero,
-			Severity: notifications.SeverityInfo,
-			Title:    "Velero data updated",
-			Message:  "Backup or restore data has changed",
+		go recoverutil.Safe(h.Logger, "velero notify", func() {
+			h.NotifService.Emit(context.Background(), notifications.Notification{
+				Source:   notifications.SourceVelero,
+				Severity: notifications.SeverityInfo,
+				Title:    "Velero data updated",
+				Message:  "Backup or restore data has changed",
+			})
 		})
 	}
 }
@@ -1015,7 +1018,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "velero list backups", func() error {
 		list, err := dynClient.Resource(BackupGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1027,7 +1030,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "velero list restores", func() error {
 		list, err := dynClient.Resource(RestoreGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1039,7 +1042,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "velero list schedules", func() error {
 		list, err := dynClient.Resource(ScheduleGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1051,7 +1054,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "velero list backup storage locations", func() error {
 		list, err := dynClient.Resource(BackupStorageLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err
@@ -1063,7 +1066,7 @@ func (h *Handler) doFetchAll(ctx context.Context, gen uint64) (*cachedVeleroData
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "velero list volume snapshot locations", func() error {
 		list, err := dynClient.Resource(VolumeSnapshotLocationGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return err

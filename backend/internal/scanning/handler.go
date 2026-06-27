@@ -16,6 +16,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -73,11 +74,13 @@ func (h *Handler) InvalidateCache() {
 	h.detailCache = make(map[string]*cachedDetailData)
 	h.cacheMu.Unlock()
 	if h.NotifService != nil {
-		go h.NotifService.Emit(context.Background(), notifications.Notification{
-			Source:   notifications.SourceScan,
-			Severity: notifications.SeverityInfo,
-			Title:    "Security scan results updated",
-			Message:  "New vulnerability scan results available. Check the security dashboard for details.",
+		go recoverutil.Safe(h.Logger, "scanning notify", func() {
+			h.NotifService.Emit(context.Background(), notifications.Notification{
+				Source:   notifications.SourceScan,
+				Severity: notifications.SeverityInfo,
+				Title:    "Security scan results updated",
+				Message:  "New vulnerability scan results available. Check the security dashboard for details.",
+			})
 		})
 	}
 }
@@ -124,7 +127,9 @@ func (h *Handler) doFetchNS(ctx context.Context, namespace string) (*cachedNSDat
 		go func() {
 			defer wg.Done()
 			var r fetchResult
-			r.vulns, r.err = ListTrivyVulnSummaries(ctx, dynClient, namespace)
+			recoverutil.Safe(h.Logger, "scanning trivy-fetch", func() {
+				r.vulns, r.err = ListTrivyVulnSummaries(ctx, dynClient, namespace)
+			})
 			trivyCh <- r
 		}()
 	} else {
@@ -136,7 +141,9 @@ func (h *Handler) doFetchNS(ctx context.Context, namespace string) (*cachedNSDat
 		go func() {
 			defer wg.Done()
 			var r fetchResult
-			r.vulns, r.err = ListKubescapeVulnSummaries(ctx, dynClient, namespace)
+			recoverutil.Safe(h.Logger, "scanning kubescape-fetch", func() {
+				r.vulns, r.err = ListKubescapeVulnSummaries(ctx, dynClient, namespace)
+			})
 			kubescapeCh <- r
 		}()
 	} else {

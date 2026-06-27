@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"sync"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 // threshold represents the expiry bucket for a certificate.
@@ -219,24 +219,17 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
-// runTickWithRecover wraps tick() with a defer recover() so a panic in a
+// runTickWithRecover wraps tick() with panic recovery so a panic in a
 // normalizer or downstream dispatch doesn't unwind the poller goroutine.
 // The poller runs as a background goroutine OUTSIDE chi's panic-recovery
 // middleware, so an unrecovered panic here crashes the whole process and
 // silently halts certificate expiry monitoring. Recovering lets the next
 // ticker fire restart the cycle from a clean slate — a panic mid-cycle may
 // leave a few stale dedupe entries, but the next successful tick's prune
-// pass re-converges. The recovered panic is logged with its stack so the
-// offending object can still be traced. Mirrors
-// externalsecrets.Poller.runTickWithRecover.
+// pass re-converges. recoverutil.Tick logs the recovered panic with its
+// stack so the offending object can still be traced.
 func (p *Poller) runTickWithRecover(ctx context.Context) {
-	defer func() {
-		if r := recover(); r != nil && p.logger != nil {
-			p.logger.Error("certmanager poller: tick panic recovered",
-				"panic", r, "stack", string(debug.Stack()))
-		}
-	}()
-	p.tick(ctx)
+	recoverutil.Tick(ctx, p.logger, "certmanager poller tick", p.tick)
 }
 
 // tick performs one polling cycle: lists all Certificates and processes each one.

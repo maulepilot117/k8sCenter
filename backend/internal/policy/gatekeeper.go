@@ -3,11 +3,14 @@ package policy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -45,35 +48,40 @@ func listGatekeeperPoliciesAndViolations(ctx context.Context, dynClient dynamic.
 		wg.Add(1)
 		go func(c *k8s.CRDInfo) {
 			defer wg.Done()
+			// results is buffered at len(crds) and closed by the goroutine below after
+			// wg.Wait(); the range-reader terminates on close, so a missed send on
+			// panic does not deadlock. wg.Done() is kept outside Safe so the closer
+			// goroutine always sees the count reach zero.
+			recoverutil.Safe(slog.Default(), "policy normalize-gatekeeper", func() {
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				}
 
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
+				timeoutCtx, cancel := context.WithTimeout(ctx, constraintTimeout)
+				defer cancel()
 
-			timeoutCtx, cancel := context.WithTimeout(ctx, constraintTimeout)
-			defer cancel()
+				gvr := schema.GroupVersionResource{
+					Group:    "constraints.gatekeeper.sh",
+					Version:  c.Version,
+					Resource: c.Resource,
+				}
 
-			gvr := schema.GroupVersionResource{
-				Group:    "constraints.gatekeeper.sh",
-				Version:  c.Version,
-				Resource: c.Resource,
-			}
+				list, err := dynClient.Resource(gvr).List(timeoutCtx, metav1.ListOptions{})
+				if err != nil {
+					results <- constraintCRDResult{err: fmt.Errorf("listing %s: %w", c.Resource, err)}
+					return
+				}
 
-			list, err := dynClient.Resource(gvr).List(timeoutCtx, metav1.ListOptions{})
-			if err != nil {
-				results <- constraintCRDResult{err: fmt.Errorf("listing %s: %w", c.Resource, err)}
-				return
-			}
-
-			var r constraintCRDResult
-			for i := range list.Items {
-				r.policies = append(r.policies, NormalizeGatekeeperConstraint(&list.Items[i], c.Kind))
-				r.violations = append(r.violations, extractGatekeeperViolations(&list.Items[i], c.Kind)...)
-			}
-			results <- r
+				var r constraintCRDResult
+				for i := range list.Items {
+					r.policies = append(r.policies, NormalizeGatekeeperConstraint(&list.Items[i], c.Kind))
+					r.violations = append(r.violations, extractGatekeeperViolations(&list.Items[i], c.Kind)...)
+				}
+				results <- r
+			})
 		}(crd)
 	}
 
