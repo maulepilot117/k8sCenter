@@ -1,6 +1,7 @@
 package certmanager
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -10,15 +11,24 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// TestPollerRunTickWithRecover_SwallowsPanic verifies that a panic inside a
-// poll cycle does not unwind the poller goroutine. newPollerForTest has a nil
-// Discoverer, so tick() panics on the first p.disc.IsAvailable() call. If
-// runTickWithRecover did not recover, this test binary would crash instead of
-// passing — that is the regression guard.
-func TestPollerRunTickWithRecover_SwallowsPanic(t *testing.T) {
-	p := newPollerForTest()
-	// Must return normally rather than crash the process.
-	p.runTickWithRecover(context.Background())
+// TestPollerRunTickWithRecover_SwallowsPanicAndLogs verifies that a panic
+// inside a poll cycle does not unwind the poller goroutine AND that the
+// recovery actually fired. A nil Discoverer makes tick() panic on the first
+// p.disc.IsAvailable() call; runTickWithRecover must recover and emit its
+// error log. Asserting on the log line (not merely "did not crash") makes the
+// test fail loudly if the panic source ever disappears (e.g. a future nil-guard
+// on the disc chain) instead of passing vacuously.
+func TestPollerRunTickWithRecover_SwallowsPanicAndLogs(t *testing.T) {
+	var buf bytes.Buffer
+	p := &Poller{
+		logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})),
+		dedupe: make(map[string]threshold),
+		// disc is nil → tick() panics on p.disc.IsAvailable, exercising recover.
+	}
+	p.runTickWithRecover(context.Background()) // must return, not crash
+	if got := buf.String(); !strings.Contains(got, "tick panic recovered") {
+		t.Fatalf("expected recovery to log 'tick panic recovered' (proving the recover path fired); got: %q", got)
+	}
 }
 
 // TestSafeGo_PanicBecomesError verifies that a panic in an errgroup worker is
@@ -35,6 +45,20 @@ func TestSafeGo_PanicBecomesError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom worker") || !strings.Contains(err.Error(), "kaboom") {
 		t.Fatalf("error should name the worker and the panic value, got: %v", err)
+	}
+}
+
+// TestSafeGo_NonStringPanicBecomesError verifies a non-string panic value
+// (panic(42)) is still formatted into the returned error via %v. Guards against
+// a future switch to %s, which would render non-string values uselessly.
+func TestSafeGo_NonStringPanicBecomesError(t *testing.T) {
+	g, _ := errgroup.WithContext(context.Background())
+	safeGo(g, slog.Default(), "int worker", func() error {
+		panic(42)
+	})
+	err := g.Wait()
+	if err == nil || !strings.Contains(err.Error(), "42") || !strings.Contains(err.Error(), "int worker") {
+		t.Fatalf("expected non-string panic value and label in the error, got: %v", err)
 	}
 }
 

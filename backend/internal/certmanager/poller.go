@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -223,12 +224,16 @@ func (p *Poller) Start(ctx context.Context) {
 // The poller runs as a background goroutine OUTSIDE chi's panic-recovery
 // middleware, so an unrecovered panic here crashes the whole process and
 // silently halts certificate expiry monitoring. Recovering lets the next
-// ticker fire restart the cycle from a clean slate. Mirrors
+// ticker fire restart the cycle from a clean slate — a panic mid-cycle may
+// leave a few stale dedupe entries, but the next successful tick's prune
+// pass re-converges. The recovered panic is logged with its stack so the
+// offending object can still be traced. Mirrors
 // externalsecrets.Poller.runTickWithRecover.
 func (p *Poller) runTickWithRecover(ctx context.Context) {
 	defer func() {
-		if r := recover(); r != nil {
-			p.logger.Error("certmanager poller: tick panic recovered", "panic", r)
+		if r := recover(); r != nil && p.logger != nil {
+			p.logger.Error("certmanager poller: tick panic recovered",
+				"panic", r, "stack", string(debug.Stack()))
 		}
 	}()
 	p.tick(ctx)

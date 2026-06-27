@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -241,8 +242,8 @@ func safeGo(g *errgroup.Group, logger *slog.Logger, label string, fn func() erro
 		defer func() {
 			if r := recover(); r != nil {
 				if logger != nil {
-					logger.Error("certmanager: panic recovered in errgroup worker",
-						"worker", label, "panic", r)
+					logger.Error("certmanager handler: errgroup worker panic recovered",
+						"worker", label, "panic", r, "stack", string(debug.Stack()))
 				}
 				err = fmt.Errorf("%s: recovered panic: %v", label, r)
 			}
@@ -633,7 +634,7 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	var crList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list certificaterequests", func() error {
 		var fetchErr error
 		crList, fetchErr = dynClient.Resource(CertificateRequestGVR).Namespace(ns).List(gCtx, metav1.ListOptions{
 			LabelSelector: crSel,
@@ -642,14 +643,14 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var orderList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list orders", func() error {
 		var fetchErr error
 		orderList, fetchErr = dynClient.Resource(OrderGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr
 	})
 
 	var challengeList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list challenges", func() error {
 		var fetchErr error
 		challengeList, fetchErr = dynClient.Resource(ChallengeGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr
