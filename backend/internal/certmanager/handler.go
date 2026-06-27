@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -228,6 +229,29 @@ func (h *Handler) getCached(ctx context.Context) (*cachedData, error) {
 	return result.(*cachedData), nil
 }
 
+// safeGo launches fn on the errgroup with panic recovery. A panic in an
+// errgroup worker goroutine is NOT caught by chi's recovery middleware — it
+// runs on a separate goroutine stack — and would terminate the whole process;
+// errgroup itself only propagates *returned* errors, never panics. Converting
+// a panic into an error lets g.Wait() surface it as an ordinary failure (a
+// graceful 500 on the request path, a skipped fill on the poller path) rather
+// than a crash. Mirrors the poller's runTickWithRecover defense for the
+// request-path fan-out that normalizes adversarial CRD data.
+func safeGo(g *errgroup.Group, logger *slog.Logger, label string, fn func() error) {
+	g.Go(func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				if logger != nil {
+					logger.Error("certmanager handler: errgroup worker panic recovered",
+						"worker", label, "panic", r, "stack", string(debug.Stack()))
+				}
+				err = fmt.Errorf("%s: recovered panic: %v", label, r)
+			}
+		}()
+		return fn()
+	})
+}
+
 func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -242,7 +266,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list certificates", func() error {
 		list, err := dynClient.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list certificates: %w", err)
@@ -258,7 +282,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list issuers", func() error {
 		list, err := dynClient.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list issuers: %w", err)
@@ -270,7 +294,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list clusterissuers", func() error {
 		list, err := dynClient.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list clusterissuers: %w", err)
@@ -404,7 +428,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list certificates", func() error {
 		list, err := dyn.Resource(CertificateGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list certificates: %w", err)
@@ -420,7 +444,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 		return nil
 	})
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list issuers", func() error {
 		list, err := dyn.Resource(IssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list issuers: %w", err)
@@ -432,7 +456,7 @@ func (h *Handler) fetchAllRemoteDirect(ctx context.Context, clusterID string, us
 		return nil
 	})
 
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list clusterissuers", func() error {
 		list, err := dyn.Resource(ClusterIssuerGVR).Namespace("").List(gctx, metav1.ListOptions{})
 		if err != nil {
 			return fmt.Errorf("list clusterissuers: %w", err)
@@ -610,7 +634,7 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	g, gCtx := errgroup.WithContext(ctx)
 
 	var crList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list certificaterequests", func() error {
 		var fetchErr error
 		crList, fetchErr = dynClient.Resource(CertificateRequestGVR).Namespace(ns).List(gCtx, metav1.ListOptions{
 			LabelSelector: crSel,
@@ -619,14 +643,14 @@ func (h *Handler) HandleGetCertificate(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var orderList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list orders", func() error {
 		var fetchErr error
 		orderList, fetchErr = dynClient.Resource(OrderGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr
 	})
 
 	var challengeList *unstructured.UnstructuredList
-	g.Go(func() error {
+	safeGo(g, h.Logger, "list challenges", func() error {
 		var fetchErr error
 		challengeList, fetchErr = dynClient.Resource(ChallengeGVR).Namespace(ns).List(gCtx, metav1.ListOptions{})
 		return fetchErr
