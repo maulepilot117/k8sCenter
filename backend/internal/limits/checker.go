@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 const (
@@ -68,7 +69,7 @@ func (c *Checker) run(ctx context.Context) {
 	defer c.wg.Done()
 
 	// Run initial check immediately
-	c.check(ctx)
+	recoverutil.Tick(ctx, c.logger, "limits quota check", c.check)
 
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -80,7 +81,7 @@ func (c *Checker) run(ctx context.Context) {
 		case <-c.stopCh:
 			return
 		case <-ticker.C:
-			c.check(ctx)
+			recoverutil.Tick(ctx, c.logger, "limits quota check", c.check)
 		}
 	}
 }

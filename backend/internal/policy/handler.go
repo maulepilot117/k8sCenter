@@ -16,6 +16,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
@@ -93,11 +94,13 @@ func (h *Handler) InvalidateCache() {
 	h.cacheGen++
 	h.cacheMu.Unlock()
 	if h.NotifService != nil {
-		go h.NotifService.Emit(context.Background(), notifications.Notification{
-			Source:   notifications.SourcePolicy,
-			Severity: notifications.SeverityInfo,
-			Title:    "Policy engine change detected",
-			Message:  "Policy engine reported changes. Check the policy dashboard for details.",
+		go recoverutil.Safe(h.Logger, "policy notify", func() {
+			h.NotifService.Emit(context.Background(), notifications.Notification{
+				Source:   notifications.SourcePolicy,
+				Severity: notifications.SeverityInfo,
+				Title:    "Policy engine change detected",
+				Message:  "Policy engine reported changes. Check the policy dashboard for details.",
+			})
 		})
 	}
 }
@@ -133,10 +136,12 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 		go func() {
 			defer wg.Done()
 			var r fetchResult
-			r.policies, r.err = listKyvernoPolicies(ctx, dynClient)
-			if r.err == nil {
-				r.violations, r.err = listKyvernoViolations(ctx, dynClient)
-			}
+			recoverutil.Safe(h.Logger, "policy kyverno-fetch", func() {
+				r.policies, r.err = listKyvernoPolicies(ctx, dynClient)
+				if r.err == nil {
+					r.violations, r.err = listKyvernoViolations(ctx, dynClient)
+				}
+			})
 			kyvernoCh <- r
 		}()
 	} else {
@@ -148,9 +153,11 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedPolicyData, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			constraintCRDs := h.Discoverer.GatekeeperConstraintCRDs()
 			var r fetchResult
-			r.policies, r.violations, r.err = listGatekeeperPoliciesAndViolations(ctx, dynClient, constraintCRDs)
+			recoverutil.Safe(h.Logger, "policy gatekeeper-fetch", func() {
+				constraintCRDs := h.Discoverer.GatekeeperConstraintCRDs()
+				r.policies, r.violations, r.err = listGatekeeperPoliciesAndViolations(ctx, dynClient, constraintCRDs)
+			})
 			gatekeeperCh <- r
 		}()
 	} else {

@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 const (
@@ -63,17 +65,19 @@ func ListIstio(ctx context.Context, dynClient dynamic.Interface, namespace strin
 		wg.Add(1)
 		go func(c istioCRD) {
 			defer wg.Done()
-			items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
+			recoverutil.Safe(nil, "servicemesh istio list routes", func() {
+				items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
 
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				result.Errors[c.Kind] = err.Error()
-				return
-			}
-			for i := range items {
-				result.Routes = append(result.Routes, normalizeIstioRoute(&items[i], c.Kind))
-			}
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.Errors[c.Kind] = err.Error()
+					return
+				}
+				for i := range items {
+					result.Routes = append(result.Routes, normalizeIstioRoute(&items[i], c.Kind))
+				}
+			})
 		}(c)
 	}
 
@@ -81,17 +85,19 @@ func ListIstio(ctx context.Context, dynClient dynamic.Interface, namespace strin
 		wg.Add(1)
 		go func(c istioCRD) {
 			defer wg.Done()
-			items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
+			recoverutil.Safe(nil, "servicemesh istio list policies", func() {
+				items, err := listCRD(ctx, dynClient, c.GVR, namespace, listOpts)
 
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				result.Errors[c.Kind] = err.Error()
-				return
-			}
-			for i := range items {
-				result.Policies = append(result.Policies, normalizeIstioPolicy(&items[i], c.Kind))
-			}
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					result.Errors[c.Kind] = err.Error()
+					return
+				}
+				for i := range items {
+					result.Policies = append(result.Policies, normalizeIstioPolicy(&items[i], c.Kind))
+				}
+			})
 		}(c)
 	}
 

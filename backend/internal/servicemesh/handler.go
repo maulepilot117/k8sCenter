@@ -28,6 +28,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -195,12 +196,16 @@ func (h *Handler) doFetch(ctx context.Context) (*cachedMeshData, error) {
 
 	if status.Istio != nil && status.Istio.Installed {
 		wg.Go(func() {
-			istio = ListIstio(ctx, dynClient, "")
+			recoverutil.Safe(h.Logger, "servicemesh istio fetch", func() {
+				istio = ListIstio(ctx, dynClient, "")
+			})
 		})
 	}
 	if status.Linkerd != nil && status.Linkerd.Installed {
 		wg.Go(func() {
-			linkerd = ListLinkerd(ctx, dynClient, "")
+			recoverutil.Safe(h.Logger, "servicemesh linkerd fetch", func() {
+				linkerd = ListLinkerd(ctx, dynClient, "")
+			})
 		})
 	}
 	wg.Wait()
