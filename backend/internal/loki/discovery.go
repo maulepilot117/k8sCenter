@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubecenter/kubecenter/internal/config"
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -61,7 +62,7 @@ func (d *Discoverer) TenantID() string {
 // RunDiscoveryLoop runs the discovery sequence immediately and then every
 // recheckInterval until ctx is cancelled.
 func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
-	d.Discover(ctx)
+	recoverutil.Tick(ctx, d.logger, "loki discovery", d.Discover)
 
 	ticker := time.NewTicker(recheckInterval)
 	defer ticker.Stop()
@@ -71,7 +72,7 @@ func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.Discover(ctx)
+			recoverutil.Tick(ctx, d.logger, "loki discovery", d.Discover)
 		}
 	}
 }

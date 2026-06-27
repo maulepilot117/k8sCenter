@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -56,7 +57,7 @@ func (d *GitOpsDiscoverer) Status() GitOpsStatus {
 
 // RunDiscoveryLoop runs discovery immediately, then every recheckInterval.
 func (d *GitOpsDiscoverer) RunDiscoveryLoop(ctx context.Context) {
-	d.Discover(ctx)
+	recoverutil.Tick(ctx, d.logger, "gitops discovery", d.Discover)
 
 	ticker := time.NewTicker(recheckInterval)
 	defer ticker.Stop()
@@ -66,7 +67,7 @@ func (d *GitOpsDiscoverer) RunDiscoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.Discover(ctx)
+			recoverutil.Tick(ctx, d.logger, "gitops discovery", d.Discover)
 		}
 	}
 }

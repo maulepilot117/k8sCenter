@@ -23,6 +23,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 	"github.com/kubecenter/kubecenter/internal/monitoring"
 	"github.com/kubecenter/kubecenter/internal/notifications"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -377,7 +378,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "list externalsecrets", func() error {
 		list, err := dynClient.Resource(ExternalSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list externalsecrets failed", "error", err)
@@ -391,7 +392,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "list clusterexternalsecrets", func() error {
 		list, err := dynClient.Resource(ClusterExternalSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list clusterexternalsecrets failed", "error", err)
@@ -405,7 +406,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "list secretstores", func() error {
 		list, err := dynClient.Resource(SecretStoreGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list secretstores failed", "error", err)
@@ -419,7 +420,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "list clustersecretstores", func() error {
 		list, err := dynClient.Resource(ClusterSecretStoreGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list clustersecretstores failed", "error", err)
@@ -433,7 +434,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "list pushsecrets", func() error {
 		list, err := dynClient.Resource(PushSecretGVR).Namespace("").List(gctx, listOpts)
 		if err != nil {
 			h.Logger.Warn("list pushsecrets failed", "error", err)

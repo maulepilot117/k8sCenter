@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/websocket"
 )
 
@@ -639,12 +640,14 @@ func (s *NotificationService) runRetention(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			count, err := s.store.PruneOlderThan(ctx, 90*24*time.Hour)
-			if err != nil {
-				s.logger.Error("prune notifications", "error", err)
-			} else if count > 0 {
-				s.logger.Info("pruned old notifications", "count", count)
-			}
+			recoverutil.Tick(ctx, s.logger, "notifications retention prune", func(ctx context.Context) {
+				count, err := s.store.PruneOlderThan(ctx, 90*24*time.Hour)
+				if err != nil {
+					s.logger.Error("prune notifications", "error", err)
+				} else if count > 0 {
+					s.logger.Info("pruned old notifications", "count", count)
+				}
+			})
 		}
 	}
 }

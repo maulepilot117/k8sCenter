@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kubecenter/kubecenter/internal/config"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 //go:embed templates/*.html
@@ -200,12 +201,16 @@ func (n *Notifier) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-n.queue:
-			if err := n.sendWithRetry(ctx, msg, 3); err != nil {
-				n.logger.Error("failed to send email after retries",
-					"error", err, "subject", msg.Subject)
-			}
+			recoverutil.Tick(ctx, n.logger, "alerting send email", func(ctx context.Context) {
+				if err := n.sendWithRetry(ctx, msg, 3); err != nil {
+					n.logger.Error("failed to send email after retries",
+						"error", err, "subject", msg.Subject)
+				}
+			})
 		case <-cleanupTicker.C:
-			n.cleanupCooldowns()
+			recoverutil.Tick(ctx, n.logger, "alerting cleanup cooldowns", func(_ context.Context) {
+				n.cleanupCooldowns()
+			})
 		}
 	}
 }

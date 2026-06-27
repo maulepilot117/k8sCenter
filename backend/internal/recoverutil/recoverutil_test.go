@@ -82,6 +82,34 @@ func TestGo_NilLoggerNoPanic(t *testing.T) {
 	}
 }
 
+// TestSafe_SwallowsPanicAndLogs verifies a panic inside a plain-goroutine fn
+// is recovered and logged (and does not crash the process).
+func TestSafe_SwallowsPanicAndLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError}))
+	Safe(logger, "unit goroutine", func() {
+		panic("safe boom")
+	})
+	got := buf.String()
+	if !strings.Contains(got, "panic recovered") || !strings.Contains(got, "unit goroutine") {
+		t.Fatalf("expected recovery to log the task label and 'panic recovered'; got: %q", got)
+	}
+}
+
+// TestSafe_NilLoggerNoPanic verifies a nil logger is tolerated.
+func TestSafe_NilLoggerNoPanic(t *testing.T) {
+	Safe(nil, "nil-logger goroutine", func() { panic("boom") })
+}
+
+// TestSafe_SuccessRunsFn verifies the happy path executes fn.
+func TestSafe_SuccessRunsFn(t *testing.T) {
+	ran := false
+	Safe(slog.Default(), "ok goroutine", func() { ran = true })
+	if !ran {
+		t.Fatal("fn was not executed")
+	}
+}
+
 // TestTick_SwallowsPanicAndLogs verifies a panic inside the tick fn is
 // recovered and logged (the log line proves the recover path actually fired,
 // not merely that the process did not crash).

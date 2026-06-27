@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubecenter/kubecenter/internal/k8s"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 )
 
 const (
@@ -105,7 +106,7 @@ func (d *Discoverer) SetOnChange(cb DiscoveryChangeCallback) {
 // Discoverer is purely lazy (probe-on-stale-read), which means a
 // post-startup mesh install isn't noticed until the next user request.
 func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
-	d.Probe(ctx)
+	recoverutil.Tick(ctx, d.logger, "servicemesh discovery", func(ctx context.Context) { d.Probe(ctx) })
 	ticker := time.NewTicker(recheckInterval)
 	defer ticker.Stop()
 
@@ -114,7 +115,7 @@ func (d *Discoverer) RunDiscoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			d.Probe(ctx)
+			recoverutil.Tick(ctx, d.logger, "servicemesh discovery", func(ctx context.Context) { d.Probe(ctx) })
 		}
 	}
 }

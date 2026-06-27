@@ -42,6 +42,25 @@ func Go(g *errgroup.Group, logger *slog.Logger, label string, fn func() error) {
 	})
 }
 
+// Safe runs fn with panic recovery, for plain goroutines that are neither
+// errgroup workers nor ticker loops — bare `go func(){...}` fan-outs and
+// fire-and-forget `go method()` calls that run outside chi's recovery
+// middleware. A recovered panic is logged with its stack; fn's own cleanup
+// (e.g. a deferred wg.Done() registered by the caller before invoking Safe)
+// still runs. A nil logger is tolerated. Typical use:
+//
+//	go func(i int) { defer wg.Done(); recoverutil.Safe(logger, "label", func() { ... }) }(i)
+//	go recoverutil.Safe(logger, "notify", func() { svc.Emit(ctx, n) })
+func Safe(logger *slog.Logger, label string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil && logger != nil {
+			logger.Error("goroutine panic recovered",
+				"task", label, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	fn()
+}
+
 // Tick runs fn(ctx) with panic recovery, for background ticker loops whose
 // goroutine has no surrounding recovery. A recovered panic is logged with its
 // stack so the offending input can be traced; the caller's loop continues to

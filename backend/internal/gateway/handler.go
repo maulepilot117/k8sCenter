@@ -19,6 +19,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/httputil"
 	"github.com/kubecenter/kubecenter/internal/k8s"
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
 )
 
@@ -47,8 +48,8 @@ type cachedData struct {
 	gatewayClasses []GatewayClassSummary
 	gateways       []GatewaySummary
 	httpRoutes     []HTTPRouteSummary
-	routes         []RouteSummary        // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
-	summary        GatewayAPISummary     // pre-computed unfiltered summary
+	routes         []RouteSummary    // ALL non-HTTP routes (GRPC, TCP, TLS, UDP), differentiated by Kind
+	summary        GatewayAPISummary // pre-computed unfiltered summary
 	fetchedAt      time.Time
 }
 
@@ -154,7 +155,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "gateway fetch-gateway-classes", func() error {
 		list, err := dynClient.Resource(GatewayClassGVR).List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list gatewayclasses: %w", err)
@@ -166,7 +167,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "gateway fetch-gateways", func() error {
 		list, err := dynClient.Resource(GatewayGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list gateways: %w", err)
@@ -178,7 +179,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		return nil
 	})
 
-	g.Go(func() error {
+	recoverutil.Go(g, h.Logger, "gateway fetch-httproutes", func() error {
 		list, err := dynClient.Resource(HTTPRouteGVR).Namespace("").List(gctx, metav1.ListOptions{ResourceVersion: "0"})
 		if err != nil {
 			return fmt.Errorf("list httproutes: %w", err)
@@ -213,7 +214,7 @@ func (h *Handler) fetchAll(ctx context.Context, gen uint64) (*cachedData, error)
 		kindName := routeKindToKind[string(rk)]
 		capturedGVR := gvr
 		capturedKind := kindName
-		g2.Go(func() error {
+		recoverutil.Go(g2, h.Logger, "gateway fetch-route-"+capturedKind, func() error {
 			list, err := dynClient.Resource(capturedGVR).Namespace("").List(gctx2, metav1.ListOptions{})
 			if err != nil {
 				h.Logger.Debug("failed to list routes", "kind", capturedKind, "error", err)
@@ -691,14 +692,16 @@ func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			ref := &parentRefs[idx]
-			gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-			if err != nil {
-				return
-			}
-			ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
+			recoverutil.Safe(h.Logger, "gateway resolve-parent-ref", func() {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ref := &parentRefs[idx]
+				gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+				if err != nil {
+					return
+				}
+				ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
+			})
 		}(i)
 	}
 
@@ -709,22 +712,24 @@ func (h *Handler) resolveRouteRelationships(ctx context.Context, user *auth.User
 				wg.Add(1)
 				go func(ruleIdx, backendIdx int) {
 					defer wg.Done()
-					sem <- struct{}{}
-					defer func() { <-sem }()
-					ref := &rules[ruleIdx].BackendRefs[backendIdx]
-					if ref.Kind != "Service" && ref.Kind != "" {
-						return
-					}
-					svcNs := ref.Namespace
-					if svcNs == "" {
-						if len(parentRefs) > 0 {
-							svcNs = parentRefs[0].Namespace
+					recoverutil.Safe(h.Logger, "gateway resolve-backend-ref", func() {
+						sem <- struct{}{}
+						defer func() { <-sem }()
+						ref := &rules[ruleIdx].BackendRefs[backendIdx]
+						if ref.Kind != "Service" && ref.Kind != "" {
+							return
 						}
-					}
-					_, err := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-					if err == nil {
-						ref.Resolved = true
-					}
+						svcNs := ref.Namespace
+						if svcNs == "" {
+							if len(parentRefs) > 0 {
+								svcNs = parentRefs[0].Namespace
+							}
+						}
+						_, err := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
+						if err == nil {
+							ref.Resolved = true
+						}
+					})
 				}(ri, bi)
 			}
 		}
@@ -744,14 +749,16 @@ func (h *Handler) resolveParentGateways(ctx context.Context, dynClient dynamic.I
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			ref := &parentRefs[idx]
-			gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-			if err != nil {
-				return
-			}
-			ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
+			recoverutil.Safe(h.Logger, "gateway resolve-parent-gateway", func() {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ref := &parentRefs[idx]
+				gwObj, err := dynClient.Resource(GatewayGVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+				if err != nil {
+					return
+				}
+				ref.GatewayConditions = extractConditions(gwObj.Object, "status", "conditions")
+			})
 		}(i)
 	}
 	wg.Wait()
@@ -774,20 +781,22 @@ func (h *Handler) resolveBackendServices(ctx context.Context, user *auth.User, r
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			ref := &refs[idx]
-			if ref.Kind != "Service" && ref.Kind != "" {
-				return
-			}
-			svcNs := ref.Namespace
-			if svcNs == "" {
-				svcNs = routeNs
-			}
-			_, svcErr := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
-			if svcErr == nil {
-				ref.Resolved = true
-			}
+			recoverutil.Safe(h.Logger, "gateway resolve-backend-service", func() {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ref := &refs[idx]
+				if ref.Kind != "Service" && ref.Kind != "" {
+					return
+				}
+				svcNs := ref.Namespace
+				if svcNs == "" {
+					svcNs = routeNs
+				}
+				_, svcErr := cs.CoreV1().Services(svcNs).Get(ctx, ref.Name, metav1.GetOptions{})
+				if svcErr == nil {
+					ref.Resolved = true
+				}
+			})
 		}(i)
 	}
 	wg.Wait()

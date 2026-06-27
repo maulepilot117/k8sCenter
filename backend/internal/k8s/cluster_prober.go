@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/kubecenter/kubecenter/internal/recoverutil"
 	"github.com/kubecenter/kubecenter/internal/store"
 )
 
@@ -81,7 +82,7 @@ func NewClusterProber(cs *store.ClusterStore, encKey string, onStatusChange Stat
 // Run starts the probing loop. Probes immediately on startup, then every 60s.
 // Blocks until ctx is cancelled.
 func (p *ClusterProber) Run(ctx context.Context) {
-	p.probeAll(ctx)
+	recoverutil.Tick(ctx, p.logger, "k8s cluster probe", p.probeAll)
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -89,7 +90,7 @@ func (p *ClusterProber) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			p.probeAll(ctx)
+			recoverutil.Tick(ctx, p.logger, "k8s cluster probe", p.probeAll)
 		}
 	}
 }
