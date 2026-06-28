@@ -47,7 +47,7 @@ type AccessPredicate func(verb, apiGroup, resource, namespace string) bool
 
 type AccessChecker struct {
 	clientFactory interface {
-		ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
+		ClientForUser(username string, groups []string) (kubernetes.Interface, error)
 	}
 	// clusterRouter routes SAR clients to remote clusters when a non-local
 	// clusterID is supplied. nil is fine — callers always passing local
@@ -67,7 +67,7 @@ type AccessChecker struct {
 // non-local SARs once ClusterRouter is constructed (it depends on the cluster
 // store, which is built after the AccessChecker in main.go).
 func NewAccessChecker(clientFactory interface {
-	ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
+	ClientForUser(username string, groups []string) (kubernetes.Interface, error)
 }, logger *slog.Logger) *AccessChecker {
 	return &AccessChecker{
 		clientFactory: clientFactory,
@@ -255,7 +255,7 @@ func (ac *AccessChecker) CanAccessGroupResource(ctx context.Context, clusterID, 
 // clientForCluster picks the SAR-issuing clientset for the given cluster.
 // Local cluster ("", "local") routes through the local clientFactory;
 // non-local routes through clusterRouter. F#9 security audit 2026-05-22.
-func (ac *AccessChecker) clientForCluster(ctx context.Context, clusterID, username string, groups []string) (*kubernetes.Clientset, error) {
+func (ac *AccessChecker) clientForCluster(ctx context.Context, clusterID, username string, groups []string) (kubernetes.Interface, error) {
 	if k8s.IsLocalClusterID(clusterID) {
 		return ac.clientFactory.ClientForUser(username, groups)
 	}

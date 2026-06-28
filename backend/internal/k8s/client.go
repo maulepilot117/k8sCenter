@@ -38,18 +38,18 @@ type cachedDynClient struct {
 // ClientFactory creates Kubernetes clientsets, with impersonation support
 // and a cache to avoid repeated TLS handshakes.
 type ClientFactory struct {
-	baseConfig    *rest.Config
-	baseClientset *kubernetes.Clientset
-	cache         sync.Map // map[string]cachedClient — typed clientsets
-	dynCache      sync.Map // map[string]cachedDynClient — dynamic clients
-	baseDynClient dynamic.Interface
-	baseDynOnce   sync.Once
-	mapper        meta.RESTMapper
-	mapperOnce    sync.Once
+	baseConfig      *rest.Config
+	baseClientset   *kubernetes.Clientset
+	cache           sync.Map // map[string]cachedClient — typed clientsets
+	dynCache        sync.Map // map[string]cachedDynClient — dynamic clients
+	baseDynClient   dynamic.Interface
+	baseDynOnce     sync.Once
+	mapper          meta.RESTMapper
+	mapperOnce      sync.Once
 	clusterID       string
 	logger          *slog.Logger
-	testOverride    *kubernetes.Clientset // if set, ClientForUser returns this directly
-	testDynOverride dynamic.Interface     // if set, DynamicClientForUser returns this directly
+	testOverride    kubernetes.Interface // if set, ClientForUser returns this directly
+	testDynOverride dynamic.Interface    // if set, DynamicClientForUser returns this directly
 }
 
 // NewClientFactory creates a ClientFactory using in-cluster config with
@@ -127,7 +127,12 @@ func (f *ClientFactory) BaseDynamicClient() dynamic.Interface {
 
 // ClientForUser returns an impersonating clientset for the given user.
 // Results are cached for 5 minutes keyed by hash(username+groups).
-func (f *ClientFactory) ClientForUser(username string, groups []string) (*kubernetes.Clientset, error) {
+//
+// The return type is kubernetes.Interface (not the concrete *kubernetes.Clientset)
+// so callers and the whole typed-client spine can be driven by a fake clientset
+// in tests (e.g. the full-pipeline Secret-handler fuzz). Production always returns
+// a real *kubernetes.Clientset.
+func (f *ClientFactory) ClientForUser(username string, groups []string) (kubernetes.Interface, error) {
 	if f.testOverride != nil {
 		return f.testOverride, nil
 	}
@@ -245,14 +250,18 @@ func (f *ClientFactory) StartCacheSweeper(ctx context.Context) {
 	}()
 }
 
-// NewTestClientFactory returns a ClientFactory whose ClientForUser always
-// returns the given clientset, bypassing impersonation. For use in tests only.
-func NewTestClientFactory(cs *kubernetes.Clientset) *ClientFactory {
+// NewFakeClientFactory returns a ClientFactory whose ClientForUser always
+// returns the given kubernetes.Interface, bypassing impersonation. It accepts
+// any kubernetes.Interface (e.g. a *fake.Clientset), so the typed-client path
+// can be driven with seeded, adversarial objects. baseClientset is intentionally
+// left nil — callers that only exercise the impersonated ClientForUser path (the
+// Secret handlers) never touch it; a caller needing BaseClientset() / RESTMapper()
+// must use NewTestClientFactoryWithDynamic instead. For use in tests only.
+func NewFakeClientFactory(cs kubernetes.Interface) *ClientFactory {
 	return &ClientFactory{
-		baseClientset: cs,
-		clusterID:     "test",
-		logger:        slog.Default(),
-		testOverride:  cs,
+		clusterID:    "test",
+		logger:       slog.Default(),
+		testOverride: cs,
 	}
 }
 

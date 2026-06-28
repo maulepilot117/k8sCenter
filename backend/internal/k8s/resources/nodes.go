@@ -201,7 +201,7 @@ func isDaemonSetPod(pod *corev1.Pod) bool {
 	return false
 }
 
-func evictPod(ctx context.Context, cs *kubernetes.Clientset, pod *corev1.Pod) error {
+func evictPod(ctx context.Context, cs kubernetes.Interface, pod *corev1.Pod) error {
 	eviction := &policyv1.Eviction{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pod.Name,

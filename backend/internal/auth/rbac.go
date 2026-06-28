@@ -63,7 +63,7 @@ var trackedResources = map[string]bool{
 // RBACChecker queries Kubernetes RBAC permissions for users.
 type RBACChecker struct {
 	clientFactory interface {
-		ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
+		ClientForUser(username string, groups []string) (kubernetes.Interface, error)
 	}
 	mu     sync.Mutex
 	cache  map[string]rbacCacheEntry // keyed by username
@@ -72,7 +72,7 @@ type RBACChecker struct {
 
 // NewRBACChecker creates a new RBACChecker.
 func NewRBACChecker(clientFactory interface {
-	ClientForUser(username string, groups []string) (*kubernetes.Clientset, error)
+	ClientForUser(username string, groups []string) (kubernetes.Interface, error)
 }, logger *slog.Logger) *RBACChecker {
 	return &RBACChecker{
 		clientFactory: clientFactory,
@@ -174,7 +174,7 @@ func (rc *RBACChecker) GetSummary(ctx context.Context, user *User, namespaces []
 
 // getRulesForNamespace uses SelfSubjectRulesReview to get all permissions
 // in a single API call per namespace.
-func (rc *RBACChecker) getRulesForNamespace(ctx context.Context, cs *kubernetes.Clientset, namespace string) (map[string][]string, error) {
+func (rc *RBACChecker) getRulesForNamespace(ctx context.Context, cs kubernetes.Interface, namespace string) (map[string][]string, error) {
 	review := &authorizationv1.SelfSubjectRulesReview{
 		Spec: authorizationv1.SelfSubjectRulesReviewSpec{
 			Namespace: namespace,

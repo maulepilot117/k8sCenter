@@ -137,7 +137,7 @@ type countingFactory struct {
 	callCount int
 }
 
-func (f *countingFactory) ClientForUser(username string, groups []string) (*kubernetes.Clientset, error) {
+func (f *countingFactory) ClientForUser(username string, groups []string) (kubernetes.Interface, error) {
 	f.callCount++
 	return nil, nil
 }

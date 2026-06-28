@@ -44,8 +44,8 @@ type ClusterRouter struct {
 	// data through the cert-manager endpoints. Using a callback instead of
 	// a direct import keeps the k8s package free of upward dependencies on
 	// certmanager / eso / future cache-holding subsystems.
-	evictCBMu    sync.RWMutex
-	evictCBs     []func(clusterID string)
+	evictCBMu sync.RWMutex
+	evictCBs  []func(clusterID string)
 }
 
 // NewClusterRouter creates a ClusterRouter. clusterStore may be nil for
@@ -68,7 +68,7 @@ func NewClusterRouter(local *ClientFactory, cs *store.ClusterStore, encKey strin
 // cluster registry was configured, which mismatched AccessChecker's behavior
 // (it already hard-errored in the same scenario). Both layers now fail
 // closed in the safer direction.
-func (cr *ClusterRouter) ClientForCluster(ctx context.Context, clusterID, username string, groups []string) (*kubernetes.Clientset, error) {
+func (cr *ClusterRouter) ClientForCluster(ctx context.Context, clusterID, username string, groups []string) (kubernetes.Interface, error) {
 	if clusterID == "" || clusterID == "local" {
 		return cr.localFactory.ClientForUser(username, groups)
 	}
@@ -100,7 +100,7 @@ func (cr *ClusterRouter) DynamicClientForCluster(ctx context.Context, clusterID,
 type ClientPair struct {
 	ClusterID string
 	IsLocal   bool
-	Typed     *kubernetes.Clientset
+	Typed     kubernetes.Interface
 	Dynamic   dynamic.Interface
 }
 
@@ -258,7 +258,7 @@ func (cr *ClusterRouter) StartCacheSweeper(ctx context.Context) {
 	}()
 }
 
-func (cr *ClusterRouter) remoteTypedClient(ctx context.Context, clusterID, username string, groups []string) (*kubernetes.Clientset, error) {
+func (cr *ClusterRouter) remoteTypedClient(ctx context.Context, clusterID, username string, groups []string) (kubernetes.Interface, error) {
 	key := clusterID + "\x00" + cacheKey(username, groups)
 
 	// Check cache

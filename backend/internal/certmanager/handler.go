@@ -138,7 +138,7 @@ func (h *Handler) getImpersonatingClient(ctx context.Context, w http.ResponseWri
 
 // getTypedClient creates a typed Kubernetes clientset impersonating the user, routing to the
 // correct cluster via ClusterRouter. Returns (nil, false) and writes an error response on failure.
-func (h *Handler) getTypedClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (*kubernetes.Clientset, bool) {
+func (h *Handler) getTypedClient(ctx context.Context, w http.ResponseWriter, clusterID string, user *auth.User) (kubernetes.Interface, bool) {
 	cs, err := h.ClusterRouter.ClientForCluster(ctx, clusterID, user.KubernetesUsername, user.KubernetesGroups)
 	if err != nil {
 		h.Logger.Error("failed to create typed client", "clusterID", clusterID, "error", err)
