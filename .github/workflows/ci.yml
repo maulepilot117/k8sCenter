@@ -40,6 +40,25 @@ jobs:
     defaults:
       run:
         working-directory: backend
+
+    # Throwaway PostgreSQL for the env-gated store tests (see
+    # backend/internal/store/testdb_test.go). Mirrors the e2e.yml service so
+    # both workflows exercise the same image + credential shape.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: k8scenter
+          POSTGRES_PASSWORD: k8scenter
+          POSTGRES_DB: k8scenter
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U k8scenter"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -66,6 +85,11 @@ jobs:
         run: go vet ./...
 
       - name: Test
+        env:
+          # Enables the PostgreSQL-backed store tests, which t.Skip when
+          # this is unset. Deliberately NOT KUBECENTER_DATABASE_URL — the
+          # harness refuses to fall back to the runtime variable.
+          KUBECENTER_TEST_DATABASE_URL: "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable"
         run: go test ./... -race -cover -count=1
 
       - name: Build
