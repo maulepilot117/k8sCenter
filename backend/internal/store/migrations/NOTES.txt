@@ -82,3 +82,34 @@ The down migration is an intentional no-op — there is no way to know
 which rows the backfill originally flagged versus which the operator
 later set explicitly. The destructive operation lives in 000016.down.sql;
 see the binary-rollback constraint above before running it.
+
+------------------------------------------------------------------------
+app_settings is a singleton — test suites must serialize on it
+------------------------------------------------------------------------
+
+000002 defines app_settings as a true singleton:
+
+  id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1)
+
+plus a seeded row, so exactly one row can ever exist.
+
+This matters for the PostgreSQL test harness in ../testdb_test.go. That
+harness deliberately never drops the schema and never truncates, and
+isolates suites by a unique-per-test identifier instead. That works for
+every other table in this schema, because each one's uniqueness includes
+a column the test controls — an owner id, a cluster id, or a natural key
+the test picks.
+
+app_settings is the sole exception. There is no scoping key, so two
+suites that write settings collide unconditionally, and whatever one
+leaves behind is visible to every later test.
+
+No suite writes settings today. If you add one, serialize it against
+other settings suites with a session-scoped advisory lock
+(SELECT pg_advisory_lock(hashtext('app_settings'))) released via
+t.Cleanup, and restore the row you changed. Do not reach for TRUNCATE —
+it races every other suite sharing the database.
+
+If you add a new table, prefer giving it an owner or cluster column so
+it falls under the normal unique-id isolation rule rather than becoming
+a second exception.
