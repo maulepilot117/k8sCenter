@@ -59,6 +59,29 @@ const testDatabaseURLEnv = "KUBECENTER_TEST_DATABASE_URL"
 // turns a typo in the URL into a fast failure instead of a long hang.
 const testDBConnectTimeout = 30 * time.Second
 
+// testDatabaseRequiredEnv turns a skip into a hard failure. CI sets it so a
+// dropped or renamed KUBECENTER_TEST_DATABASE_URL fails the job loudly
+// instead of skipping every PostgreSQL-backed test behind a green check —
+// `go test` prints "ok <pkg>" for a skipped package exactly as it does for a
+// passing one, so without this the gate cannot observe its own disablement.
+// Developers leave it unset and keep the skip.
+const testDatabaseRequiredEnv = "KUBECENTER_TEST_REQUIRE_DATABASE"
+
+// testDatabaseRequired reports whether the caller demanded a real database.
+// Kept pure (lookup injected) for the same reason as testDatabaseURL.
+func testDatabaseRequired(lookup func(string) (string, bool)) bool {
+	v, ok := lookup(testDatabaseRequiredEnv)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 var (
 	// migrateOnce guards the once-per-process migration pass. The pool
 	// opened for migrating is closed immediately afterwards; tests get
@@ -92,6 +115,10 @@ func testDB(t *testing.T) *pgxpool.Pool {
 
 	connString := testDatabaseURL(os.LookupEnv)
 	if connString == "" {
+		if testDatabaseRequired(os.LookupEnv) {
+			t.Fatalf("%s is set but %s is empty; the PostgreSQL harness was required to run and would otherwise have skipped silently",
+				testDatabaseRequiredEnv, testDatabaseURLEnv)
+		}
 		t.Skipf("%s is not set; skipping PostgreSQL-backed test", testDatabaseURLEnv)
 	}
 
@@ -105,7 +132,9 @@ func testDB(t *testing.T) *pgxpool.Pool {
 		// produced by exactly the code path the binary uses at boot.
 		db, err := New(ctx, connString, 0, 0, testLogger())
 		if err != nil {
-			migrateErr = fmt.Errorf("connecting to %s and applying migrations: %w", testDatabaseURLEnv, err)
+			migrateErr = fmt.Errorf("connecting to %s and applying migrations: %w "+
+				"(if you last ran this suite on a branch with later migrations, the test database is ahead "+
+				"of this branch's embedded set — drop and recreate it)", testDatabaseURLEnv, err)
 			return
 		}
 		db.Close()
@@ -285,6 +314,41 @@ func TestTestDatabaseURL_Gating(t *testing.T) {
 	}
 }
 
+func TestTestDatabaseRequired_Gating(t *testing.T) {
+	lookupOf := func(value string, present bool) func(string) (string, bool) {
+		return func(k string) (string, bool) {
+			if k == testDatabaseRequiredEnv {
+				return value, present
+			}
+			return "", false
+		}
+	}
+	tests := []struct {
+		name   string
+		lookup func(string) (string, bool)
+		want   bool
+	}{
+		{"unset → not required", lookupOf("", false), false},
+		{"set but empty → not required", lookupOf("", true), false},
+		{"explicit 0 → not required", lookupOf("0", true), false},
+		{"explicit false → not required", lookupOf("false", true), false},
+		{"explicit no → not required", lookupOf("no", true), false},
+		{"uppercase FALSE → not required", lookupOf("FALSE", true), false},
+		{"whitespace only → not required", lookupOf("  \n", true), false},
+		{"1 → required", lookupOf("1", true), true},
+		{"true → required", lookupOf("true", true), true},
+		{"padded true → required", lookupOf(" true ", true), true},
+		{"any other value → required", lookupOf("yes", true), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := testDatabaseRequired(tc.lookup); got != tc.want {
+				t.Fatalf("testDatabaseRequired() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOwnerIDFor_Sanitizes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -415,19 +479,22 @@ func TestDBHarness_MigrationsApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("latestEmbeddedMigrationVersion() error: %v", err)
 	}
-	if uint(version) != want {
+	switch {
+	case uint(version) > want:
+		t.Fatalf("schema_migrations.version = %d is ahead of this branch's latest embedded migration %d; "+
+			"the test database was migrated by a branch with later migrations — drop and recreate it", version, want)
+	case uint(version) != want:
 		t.Fatalf("schema_migrations.version = %d; want latest embedded migration %d", version, want)
 	}
 
 	// Spot-check that a table from the first migration is queryable, which
 	// proves the pool is pointed at the schema the runner just built and
-	// not at a different database on the same server.
+	// not at a different database on the same server. A successful Scan is
+	// the assertion — COUNT(*) cannot come back negative, so comparing the
+	// result against anything would prove nothing.
 	var n int64
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&n); err != nil {
 		t.Fatalf("querying audit_logs: %v", err)
-	}
-	if n < 0 {
-		t.Fatalf("audit_logs count = %d; want >= 0", n)
 	}
 }
 

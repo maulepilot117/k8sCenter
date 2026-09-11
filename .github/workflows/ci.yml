@@ -25,10 +25,13 @@ jobs:
           filters: |
             backend:
               - 'backend/**'
+              - '.github/workflows/ci.yml'
             frontend:
               - 'frontend/**'
+              - '.github/workflows/ci.yml'
             helm:
               - 'helm/**'
+              - '.github/workflows/ci.yml'
 
   backend:
     name: Backend
@@ -90,6 +93,11 @@ jobs:
           # this is unset. Deliberately NOT KUBECENTER_DATABASE_URL — the
           # harness refuses to fall back to the runtime variable.
           KUBECENTER_TEST_DATABASE_URL: "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable"
+          # Turns a skip into a hard failure. Without this, dropping or
+          # renaming the URL above would make every PostgreSQL-backed test
+          # skip silently while CI stayed green — the exact failure this
+          # harness exists to prevent.
+          KUBECENTER_TEST_REQUIRE_DATABASE: "1"
         run: go test ./... -race -cover -count=1
 
       - name: Build
