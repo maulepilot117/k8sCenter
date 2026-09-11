@@ -30,8 +30,35 @@ package store
 // same database, and teardown-based isolation would race. Instead, every
 // suite MUST scope the rows it writes and reads by a unique-per-test
 // identifier from testOwnerID(t) (or an equivalently unique key for tables
-// that are not owner-scoped). Rows left behind by a failed run are harmless
-// because no other test will ever look them up by the same identifier.
+// that are not owner-scoped).
+//
+// Residue is harmless ONLY for a table whose every uniqueness constraint
+// includes a column the test controls. That covers every table in the schema
+// today, by one of three keys:
+//
+//   - an owner column — audit_logs."user", nc_reads.user_id,
+//     mobile_push_devices.user_id, and (Release A) user_preferences.owner_id
+//     all take testOwnerID(t) directly;
+//   - a cluster id — clusters, cluster_monitoring, compliance_snapshots
+//     (cluster_id, snapshot_date), eso_bulk_refresh_jobs (the 000014 partial
+//     unique index on cluster_id, action, scope_target) and (Release F)
+//     backup_assurance_collector_lease are isolated by a unique test cluster;
+//   - a natural key the test picks — eso_sync_history (uid, attempt_at),
+//     git_commit_cache (canonical_url, sha), and the TEXT/UUID primary keys
+//     on local_users, auth_providers, nc_channels, nc_notifications, nc_rules.
+//
+// The ONE exception is app_settings. Migration 000002 defines it as a true
+// singleton — `id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1)`, with the row
+// seeded at migrate time — so exactly one row can ever exist and no scoping
+// key is available. Two suites that write settings collide unconditionally,
+// and residue there is NOT harmless: it is visible to every later test.
+//
+// A suite that touches app_settings therefore MUST serialize against other
+// such suites and restore what it changed. Nothing in this harness enforces
+// that today because no suite writes settings; if one ever does, add a
+// helper that takes a session-scoped advisory lock
+// (SELECT pg_advisory_lock(hashtext('app_settings'))) released via t.Cleanup,
+// rather than widening this comment again.
 
 import (
 	"context"
