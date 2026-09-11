@@ -1647,7 +1647,13 @@
   },
   "remote": {
     "https://esm.sh/monaco-editor@0.52.2/denonext/esm/vs/editor/editor.api.mjs": "f4edc5cf5ca863c027399b6fa8218dea5cad1ee10840ea958a41c3d352766f1b",
-    "https://esm.sh/monaco-editor@0.52.2/esm/vs/editor/editor.api.js": "854b86e2b552dee71aaf2e641cadefabafa52723580861861fabad24f5580c0c"
+    "https://esm.sh/monaco-editor@0.52.2/es2022/esm/vs/editor/editor.api.mjs": "451984f895fa600f4388851257eb084fbee67ca1c3eba790f45b239e88e69590",
+    "https://esm.sh/monaco-editor@0.52.2/esm/vs/editor/editor.api.js": "ee110690d300347a9b1105ebb3f989908f38027a3e62366f9132256f9a4f3d0c",
+    "https://esm.sh/node/async_hooks.mjs": "b7862dbfba8bbbca956f19e4e08280b529e4b27468779775a9093aef8c92dc1d",
+    "https://esm.sh/node/buffer.mjs": "64fb61aa5f48644d685f9ceabedba60ea6b5d6ce03dac1943e863d00d9e574f3",
+    "https://esm.sh/node/events.mjs": "4c6150b88c1444aa1fe9331013e3f37eda9836206f629f7f3ae8f3743dd90fa8",
+    "https://esm.sh/node/process.mjs": "79e7646e87709989f575ea4ce02e0877bc9303081567b1c0d412527917ae9e91",
+    "https://esm.sh/node/tty.mjs": "c66ff4b406bad449bfb2ced355f15badf16f4d9e035d2d300e33b5aeee64e3be"
   },
   "workspace": {
     "dependencies": [
