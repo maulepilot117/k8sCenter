@@ -33,6 +33,7 @@ jobs:
           - { pkg: ./internal/externalsecrets/, target: FuzzExternalSecretsNormalizers }
           - { pkg: ./internal/gateway/, target: FuzzGatewayNormalizers }
           - { pkg: ./internal/velero/, target: FuzzVeleroParsers }
+          - { pkg: ./internal/preferences/, target: FuzzPreferencesValidators }
     name: ${{ matrix.target }}
     defaults:
       run:

@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -464,6 +465,27 @@ const (
 	testDatabaseRequireEnv = "KUBECENTER_TEST_REQUIRE_DATABASE"
 )
 
+// testDatabaseRequired reports whether the caller demanded a real database.
+//
+// This mirrors the canonical predicate in the store package's harness
+// (backend/internal/store/testdb_test.go) exactly — lowercased and trimmed,
+// with "", "0", "false" and "no" all meaning not-required. Two gates that
+// claim the same semantics must not disagree: a divergence here would make
+// one package skip where the other hard-fails, which is precisely the silent
+// gate the harness conventions exist to prevent.
+func testDatabaseRequired(lookup func(string) (string, bool)) bool {
+	v, ok := lookup(testDatabaseRequireEnv)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "0", "false", "no":
+		return false
+	default:
+		return true
+	}
+}
+
 // testStore returns a PreferenceStore over the migrated test database, or
 // skips the calling test when none is configured. Migrations run through the
 // production entry point, so the schema is the one the binary builds.
@@ -472,7 +494,7 @@ func testStore(t *testing.T) *store.PreferenceStore {
 
 	connString := strings.TrimSpace(os.Getenv(testDatabaseURLEnv))
 	if connString == "" {
-		if v := strings.TrimSpace(os.Getenv(testDatabaseRequireEnv)); v != "" && v != "0" && v != "false" {
+		if testDatabaseRequired(os.LookupEnv) {
 			t.Fatalf("%s is set but %s is empty; a database was required", testDatabaseRequireEnv, testDatabaseURLEnv)
 		}
 		t.Skipf("%s is not set; skipping PostgreSQL-backed handler test", testDatabaseURLEnv)
@@ -910,5 +932,226 @@ func TestPreferencesRoutes_RequireCSRF(t *testing.T) {
 				t.Fatalf("status = %d without X-Requested-With; want 403", out.Code)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regressions from the U2 code review
+// ---------------------------------------------------------------------------
+
+// TestTestDatabaseRequired_MatchesCanonicalGate pins this package's gate to the
+// store package's semantics. The two are separate functions in separate
+// packages, so only a test keeps them honest.
+func TestTestDatabaseRequired_MatchesCanonicalGate(t *testing.T) {
+	lookupOf := func(value string, present bool) func(string) (string, bool) {
+		return func(k string) (string, bool) {
+			if k == testDatabaseRequireEnv {
+				return value, present
+			}
+			return "", false
+		}
+	}
+	tests := []struct {
+		name   string
+		lookup func(string) (string, bool)
+		want   bool
+	}{
+		{"unset", lookupOf("", false), false},
+		{"empty", lookupOf("", true), false},
+		{"zero", lookupOf("0", true), false},
+		{"false", lookupOf("false", true), false},
+		{"uppercase FALSE", lookupOf("FALSE", true), false},
+		{"mixed-case False", lookupOf("False", true), false},
+		{"no", lookupOf("no", true), false},
+		{"uppercase NO", lookupOf("NO", true), false},
+		{"whitespace", lookupOf("  \n", true), false},
+		{"one", lookupOf("1", true), true},
+		{"true", lookupOf("true", true), true},
+		{"padded true", lookupOf(" true ", true), true},
+		{"anything else", lookupOf("yes", true), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := testDatabaseRequired(tc.lookup); got != tc.want {
+				t.Fatalf("testDatabaseRequired() = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateRecordName_CountsCharactersNotBytes guards the bound against
+// regressing to a byte count. The database constrains name with char_length,
+// so a byte count would refuse a name in any non-Latin script at a fraction of
+// the limit the error message quotes.
+func TestValidateRecordName_CountsCharactersNotBytes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		char string
+	}{
+		{"two-byte (Latin-1 supplement)", "é"},
+		{"three-byte (CJK)", "日"},
+		{"four-byte (emoji)", "🚀"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			atLimit := strings.Repeat(tc.char, maxRecordNameLen)
+			if err := ValidateRecordName(atLimit); err != nil {
+				t.Fatalf("a %d-character name was rejected (%d bytes): %v",
+					maxRecordNameLen, len(atLimit), err)
+			}
+			over := strings.Repeat(tc.char, maxRecordNameLen+1)
+			if got := reasonOf(ValidateRecordName(over)); got != "invalid_name" {
+				t.Fatalf("a %d-character name gave reason %q; want invalid_name",
+					maxRecordNameLen+1, got)
+			}
+		})
+	}
+
+	// The identity bound and the search bound share the rule.
+	if err := ValidateOwnerID(strings.Repeat("é", maxOwnerIDLen)); err != nil {
+		t.Errorf("owner id of %d characters was rejected: %v", maxOwnerIDLen, err)
+	}
+	if _, _, err := ValidateSavedView(savedViewJSON(t, map[string]any{
+		"search": strings.Repeat("日", maxSearchLen),
+	})); err != nil {
+		t.Errorf("search of %d characters was rejected: %v", maxSearchLen, err)
+	}
+}
+
+// TestHandler_CrossKindID_Returns404 proves a record id addressed through the
+// wrong kind's route is refused, and — the part that matters — that the record
+// it names is left exactly as it was.
+//
+// Saved views and pins share one id space and the store scopes its mutations
+// by owner and id alone, so without a kind check a pin's id sent to the view
+// update route would overwrite that pin's config while the row still said pin,
+// and sent to the view delete route would destroy it.
+func TestHandler_CrossKindID_Returns404(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	user := testUser(t)
+
+	pinBody := `{"name":"api","config":{"schemaVersion":1,"resourceKind":"deployments","group":"","version":"","namespace":"prod","name":"api","uid":"uid-1","displayKind":"Deployment"}}`
+	created := do(t, h, user, "local", endpoint{http.MethodPost, "/preferences/pins", pinBody})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create pin: status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var out struct {
+		Data store.PreferenceRecord `json:"data"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decoding created pin: %v", err)
+	}
+	pin := out.Data
+
+	view := createView(t, h, user, "local", "a real view")
+
+	t.Run("pin id on the view update route", func(t *testing.T) {
+		body := `{"name":"hijacked","revision":1,"config":` + viewConfigJSON + `}`
+		got := do(t, h, user, "local", endpoint{http.MethodPut, "/preferences/views/" + pin.ID.String(), body})
+		if got.Code != http.StatusNotFound {
+			t.Fatalf("status = %d; want 404", got.Code)
+		}
+	})
+
+	t.Run("pin id on the view delete route", func(t *testing.T) {
+		got := do(t, h, user, "local", endpoint{http.MethodDelete, "/preferences/views/" + pin.ID.String(), ""})
+		if got.Code != http.StatusNotFound {
+			t.Fatalf("status = %d; want 404", got.Code)
+		}
+	})
+
+	t.Run("view id on the pin delete route", func(t *testing.T) {
+		got := do(t, h, user, "local", endpoint{http.MethodDelete, "/preferences/pins/" + view.ID.String(), ""})
+		if got.Code != http.StatusNotFound {
+			t.Fatalf("status = %d; want 404", got.Code)
+		}
+	})
+
+	// Both records survived, unmodified: the pin still has its own config and
+	// its original revision, and the view is still there.
+	pins := do(t, h, user, "local", endpoint{http.MethodGet, "/preferences/pins", ""})
+	if !strings.Contains(pins.Body.String(), `"uid-1"`) {
+		t.Errorf("the pin lost its config or was deleted: %s", pins.Body.String())
+	}
+	if strings.Contains(pins.Body.String(), "hijacked") {
+		t.Errorf("the pin was overwritten through the view route: %s", pins.Body.String())
+	}
+	views := do(t, h, user, "local", endpoint{http.MethodGet, "/preferences/views", ""})
+	if !strings.Contains(views.Body.String(), "a real view") {
+		t.Errorf("the saved view was deleted through the pin route: %s", views.Body.String())
+	}
+}
+
+// TestHandler_LimitReached_Returns409WithLimit covers the quota branch. The
+// ceiling is lowered for the test so this does not have to create a hundred
+// records to reach it.
+func TestHandler_LimitReached_Returns409WithLimit(t *testing.T) {
+	const ceiling = 3
+	h := &Handler{Store: testStore(t), maxSavedViews: ceiling}
+	user := testUser(t)
+
+	for i := range ceiling {
+		createView(t, h, user, "local", fmt.Sprintf("view-%d", i))
+	}
+
+	body := `{"name":"one too many","config":` + viewConfigJSON + `}`
+	got := do(t, h, user, "local", endpoint{http.MethodPost, "/preferences/views", body})
+	if got.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s; want 409", got.Code, got.Body.String())
+	}
+
+	resp := decodeEnvelope(t, got)
+	if resp.Error == nil || resp.Error.Reason != "limit_reached" {
+		t.Fatalf("reason = %+v; want limit_reached", resp.Error)
+	}
+	limit, ok := resp.Error.Extra["limit"]
+	if !ok {
+		t.Fatalf("409 carries no limit in extras: %+v", resp.Error.Extra)
+	}
+	// JSON numbers decode as float64.
+	if got, want := fmt.Sprintf("%v", limit), fmt.Sprintf("%v", float64(ceiling)); got != want {
+		t.Errorf("extras limit = %v; want %v", got, want)
+	}
+
+	// Pins are a separate bucket and are unaffected by a saturated view quota.
+	pinBody := `{"name":"api","config":{"schemaVersion":1,"resourceKind":"deployments","group":"","version":"","namespace":"prod","name":"api","uid":"","displayKind":"Deployment"}}`
+	if pinned := do(t, h, user, "local", endpoint{http.MethodPost, "/preferences/pins", pinBody}); pinned.Code != http.StatusCreated {
+		t.Errorf("pin create under a saturated view quota: status = %d", pinned.Code)
+	}
+}
+
+// TestHandler_CrossUser_ListDoesNotLeak strengthens the owner-scoping check:
+// the second user now owns a record of their own, so a handler that ignored
+// the owner filter entirely would return two records here and fail. The
+// original sub-test could not catch that, because the second user had nothing
+// for the leaked record to appear alongside.
+func TestHandler_CrossUser_ListDoesNotLeak(t *testing.T) {
+	h := &Handler{Store: testStore(t)}
+	alice, bob := testUser(t), testUser(t)
+
+	createView(t, h, alice, "local", "alice view")
+	createView(t, h, bob, "local", "bob view")
+
+	got := do(t, h, bob, "local", endpoint{http.MethodGet, "/preferences/views", ""})
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", got.Code)
+	}
+
+	var out struct {
+		Data     []store.PreferenceRecord `json:"data"`
+		Metadata *struct {
+			Total int `json:"total"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(got.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decoding list: %v", err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("bob sees %d records; want exactly his own", len(out.Data))
+	}
+	if out.Data[0].Name != "bob view" {
+		t.Errorf("bob sees %q; want his own record", out.Data[0].Name)
+	}
+	if out.Metadata == nil || out.Metadata.Total != 1 {
+		t.Errorf("metadata.total = %+v; want 1", out.Metadata)
 	}
 }

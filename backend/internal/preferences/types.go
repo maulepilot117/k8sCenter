@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/kubecenter/kubecenter/internal/k8s/resources"
 )
@@ -36,6 +37,11 @@ const (
 	// Length bounds. Each mirrors a CHECK constraint in migration 000018;
 	// validating here turns what would be an opaque constraint violation
 	// (a 500) into a deliberate 4xx with a reason code.
+	//
+	// These count CHARACTERS, not bytes, because the constraints they mirror
+	// use char_length. Counting Go's len() here would reject a name in any
+	// non-Latin script at a fraction of its stated limit — 128 two-byte
+	// characters would fail a "maximum is 128" check at 64 of them.
 	maxRecordNameLen = 128 // user_preferences_name_len
 	maxOwnerIDLen    = 512 // user_preferences_owner_len
 	maxDedupKeyLen   = 512 // user_preferences_dedup_len
@@ -155,9 +161,9 @@ func ValidateSavedView(raw json.RawMessage) (SavedViewConfig, json.RawMessage, e
 		return cfg, nil, invalidf("invalid_config", "unsupported sortDir %q", cfg.SortDir)
 	}
 
-	if len(cfg.Search) > maxSearchLen {
+	if n := utf8.RuneCountInString(cfg.Search); n > maxSearchLen {
 		return cfg, nil, invalidf("invalid_config",
-			"search is %d characters; the maximum is %d", len(cfg.Search), maxSearchLen)
+			"search is %d characters; the maximum is %d", n, maxSearchLen)
 	}
 	if hasControlChars(cfg.Search) {
 		return cfg, nil, invalidf("invalid_config", "search contains control characters")
@@ -195,13 +201,13 @@ func ValidatePin(raw json.RawMessage) (PinConfig, json.RawMessage, error) {
 			"group and version are reserved and must be empty in this release")
 	}
 
-	if cfg.Name == "" || len(cfg.Name) > maxResourceName || !isDNS1123Subdomain(cfg.Name) {
+	if cfg.Name == "" || utf8.RuneCountInString(cfg.Name) > maxResourceName || !isDNS1123Subdomain(cfg.Name) {
 		return cfg, nil, invalidf("invalid_config", "name %q is not a valid Kubernetes object name", cfg.Name)
 	}
-	if len(cfg.UID) > maxUIDLen || !isUIDSafe(cfg.UID) {
+	if utf8.RuneCountInString(cfg.UID) > maxUIDLen || !isUIDSafe(cfg.UID) {
 		return cfg, nil, invalidf("invalid_config", "uid is not a valid Kubernetes UID")
 	}
-	if len(cfg.DisplayKind) > maxRecordNameLen || hasControlChars(cfg.DisplayKind) {
+	if utf8.RuneCountInString(cfg.DisplayKind) > maxRecordNameLen || hasControlChars(cfg.DisplayKind) {
 		return cfg, nil, invalidf("invalid_config", "displayKind is not a valid kind label")
 	}
 
@@ -230,7 +236,7 @@ func validateScope(clusterScoped bool, kind, namespace string, namespaceRequired
 		}
 		return nil
 	}
-	if len(namespace) > maxNamespaceLen || !isDNS1123Label(namespace) {
+	if utf8.RuneCountInString(namespace) > maxNamespaceLen || !isDNS1123Label(namespace) {
 		return invalidf("invalid_config", "namespace %q is not a valid DNS-1123 label", namespace)
 	}
 	return nil
@@ -242,9 +248,9 @@ func ValidateRecordName(name string) error {
 	if trimmed == "" {
 		return invalidf("invalid_name", "name is required")
 	}
-	if len(name) > maxRecordNameLen {
+	if n := utf8.RuneCountInString(name); n > maxRecordNameLen {
 		return invalidf("invalid_name",
-			"name is %d characters; the maximum is %d", len(name), maxRecordNameLen)
+			"name is %d characters; the maximum is %d", n, maxRecordNameLen)
 	}
 	if hasControlChars(name) {
 		return invalidf("invalid_name", "name contains control characters")
@@ -263,10 +269,10 @@ func ValidateRecordName(name string) error {
 // naming the real cause, which an operator can act on by shortening the
 // mapped identity attribute.
 func ValidateOwnerID(ownerID string) error {
-	if ownerID == "" || len(ownerID) > maxOwnerIDLen {
+	if n := utf8.RuneCountInString(ownerID); ownerID == "" || n > maxOwnerIDLen {
 		return invalidf("identity_too_long",
 			"the authenticated identity is %d characters; preferences support at most %d",
-			len(ownerID), maxOwnerIDLen)
+			n, maxOwnerIDLen)
 	}
 	return nil
 }
@@ -276,7 +282,7 @@ func ValidateOwnerID(ownerID string) error {
 // is kind/namespace/name — so this is a backstop against a future derivation
 // that grows, not a limit a client can reach directly.
 func ValidateDedupKey(key string) error {
-	if key == "" || len(key) > maxDedupKeyLen {
+	if key == "" || utf8.RuneCountInString(key) > maxDedupKeyLen {
 		return invalidf("invalid_config", "record identity is not addressable")
 	}
 	return nil

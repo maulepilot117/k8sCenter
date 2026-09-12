@@ -295,16 +295,29 @@ Error contract (all use `httputil.WriteError` / `WriteErrorWithReason`):
 |---|---|---|
 | No database configured | 503 | `database_unavailable` |
 | Not authenticated | 401 | – |
-| Body not JSON / oversize | 400 | – |
+| Body not JSON | 400 | `invalid_config` |
+| Body oversize | 413 | – |
 | Field outside allowlist | 400 | `invalid_config` |
 | Unknown `resourceKind` | 400 | `unknown_resource_kind` |
 | Unsupported `schemaVersion` | 400 | `unsupported_schema_version` |
+| Record name empty, oversize, or carrying control characters | 400 | `invalid_name` |
+| Authenticated identity longer than the `owner_id` column | 422 | `identity_too_long` |
 | Duplicate name (views) / already pinned (pins) | 409 | `duplicate_name` / `already_pinned` |
 | Per-user limit reached | 409 | `limit_reached` |
 | Revision mismatch | 409 | `revision_conflict` |
 | Unknown or other-owner id | 404 | – |
 
-Request bodies are capped with `http.MaxBytesReader(w, r.Body, 16<<10)` before decode.
+Request bodies are capped with `http.MaxBytesReader(w, r.Body, 16<<10)` before decode, and the decoder sets
+`DisallowUnknownFields`.
+
+**Two implementation decisions that refine this table (U2, confirmed by code review):**
+
+- An oversize body answers **413**, not 400. It is the accurate status and matches the in-repo precedent at
+  `externalsecrets/bulk.go`.
+- A `clusterId` (or `ownerId`) in a request body is **rejected with 400**, not ignored. The request types carry
+  neither field and the decoder refuses unknown ones, so a client that sends one is told which field is wrong
+  rather than silently having its intent dropped. The stored `clusterId` still always comes from
+  `middleware.ClusterIDFromContext`.
 
 ### D9. Audit
 
@@ -958,7 +971,8 @@ export const preferencesApi = {
 export type PreferenceReason =
   | "database_unavailable" | "invalid_config" | "unknown_resource_kind"
   | "unsupported_schema_version" | "duplicate_name" | "already_pinned"
-  | "limit_reached" | "revision_conflict";
+  | "limit_reached" | "revision_conflict"
+  | "invalid_name" | "identity_too_long";
 export function preferenceReason(e: unknown): PreferenceReason | undefined;
 ```
 

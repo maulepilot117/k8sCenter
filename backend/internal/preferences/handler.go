@@ -44,6 +44,28 @@ type Handler struct {
 	Store       *store.PreferenceStore
 	AuditLogger audit.Logger
 	Logger      *slog.Logger
+
+	// maxSavedViews and maxPins override the package ceilings. Zero means the
+	// package default. They are unexported so no caller can widen a user's
+	// quota; the package's own tests set them so the limit path can be
+	// exercised without creating a hundred records first.
+	maxSavedViews int
+	maxPins       int
+}
+
+// savedViewCeiling and pinCeiling resolve the effective per-user limits.
+func (h *Handler) savedViewCeiling() int {
+	if h.maxSavedViews > 0 {
+		return h.maxSavedViews
+	}
+	return MaxSavedViewsPerUser
+}
+
+func (h *Handler) pinCeiling() int {
+	if h.maxPins > 0 {
+		return h.maxPins
+	}
+	return MaxPinsPerUser
 }
 
 // ---------------------------------------------------------------------------
@@ -99,10 +121,10 @@ func (h *Handler) HandleCreateView(w http.ResponseWriter, r *http.Request) {
 		SchemaVersion: SavedViewSchemaVersion,
 		Config:        normalized,
 	}
-	created, err := h.Store.Create(r.Context(), rec, MaxSavedViewsPerUser)
+	created, err := h.Store.Create(r.Context(), rec, h.savedViewCeiling())
 	if err != nil {
 		h.audit(r, user, audit.ActionCreate, "savedView", req.Name, audit.ResultFailure, "")
-		h.mapStoreError(w, err, "duplicate_name", MaxSavedViewsPerUser)
+		h.mapStoreError(w, err, "duplicate_name", h.savedViewCeiling())
 		return
 	}
 
@@ -119,6 +141,9 @@ func (h *Handler) HandleUpdateView(w http.ResponseWriter, r *http.Request) {
 	}
 	id, ok := h.recordID(w, r)
 	if !ok {
+		return
+	}
+	if !h.requireKind(w, r, user.ID, id, store.PreferenceKindSavedView) {
 		return
 	}
 
@@ -150,7 +175,7 @@ func (h *Handler) HandleUpdateView(w http.ResponseWriter, r *http.Request) {
 		req.Name, dedup, SavedViewSchemaVersion, normalized)
 	if err != nil {
 		h.audit(r, user, audit.ActionUpdate, "savedView", req.Name, audit.ResultFailure, id.String())
-		h.mapStoreError(w, err, "duplicate_name", MaxSavedViewsPerUser)
+		h.mapStoreError(w, err, "duplicate_name", h.savedViewCeiling())
 		return
 	}
 
@@ -160,7 +185,7 @@ func (h *Handler) HandleUpdateView(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeleteView removes a saved view the caller owns.
 func (h *Handler) HandleDeleteView(w http.ResponseWriter, r *http.Request) {
-	h.delete(w, r, "savedView")
+	h.delete(w, r, store.PreferenceKindSavedView, "savedView")
 }
 
 // ---------------------------------------------------------------------------
@@ -211,10 +236,10 @@ func (h *Handler) HandleCreatePin(w http.ResponseWriter, r *http.Request) {
 		SchemaVersion: PinSchemaVersion,
 		Config:        normalized,
 	}
-	created, err := h.Store.Create(r.Context(), rec, MaxPinsPerUser)
+	created, err := h.Store.Create(r.Context(), rec, h.pinCeiling())
 	if err != nil {
 		h.audit(r, user, audit.ActionCreate, "pin", req.Name, audit.ResultFailure, "")
-		h.mapStoreError(w, err, "already_pinned", MaxPinsPerUser)
+		h.mapStoreError(w, err, "already_pinned", h.pinCeiling())
 		return
 	}
 
@@ -224,7 +249,7 @@ func (h *Handler) HandleCreatePin(w http.ResponseWriter, r *http.Request) {
 
 // HandleDeletePin unpins a resource for the caller.
 func (h *Handler) HandleDeletePin(w http.ResponseWriter, r *http.Request) {
-	h.delete(w, r, "pin")
+	h.delete(w, r, store.PreferenceKindPin, "pin")
 }
 
 // ---------------------------------------------------------------------------
@@ -289,13 +314,18 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request, kind store.Prefer
 }
 
 // delete is the shared body of the two DELETE endpoints.
-func (h *Handler) delete(w http.ResponseWriter, r *http.Request, kindLabel string) {
+func (h *Handler) delete(w http.ResponseWriter, r *http.Request,
+	kind store.PreferenceKind, kindLabel string,
+) {
 	user, ok := h.begin(w, r)
 	if !ok {
 		return
 	}
 	id, ok := h.recordID(w, r)
 	if !ok {
+		return
+	}
+	if !h.requireKind(w, r, user.ID, id, kind) {
 		return
 	}
 
@@ -321,6 +351,29 @@ func (h *Handler) recordID(w http.ResponseWriter, r *http.Request) (uuid.UUID, b
 		return uuid.Nil, false
 	}
 	return id, true
+}
+
+// requireKind confirms the record is the kind the route serves.
+//
+// Saved views and pins share one id space, and the store scopes its update and
+// delete by owner and id only. Without this check a caller could send a pin's
+// id to a saved-view route and overwrite that pin's config while the row still
+// said it was a pin, or delete it through the wrong endpoint and have the
+// audit record name the wrong kind. A wrong-kind id answers exactly as a
+// missing one does: the caller learns only that they have no such record.
+func (h *Handler) requireKind(w http.ResponseWriter, r *http.Request,
+	ownerID string, id uuid.UUID, want store.PreferenceKind,
+) bool {
+	rec, err := h.Store.Get(r.Context(), ownerID, id)
+	if err != nil {
+		h.mapStoreError(w, err, "", 0)
+		return false
+	}
+	if rec.Kind != want {
+		httputil.WriteError(w, http.StatusNotFound, "preference not found", "")
+		return false
+	}
+	return true
 }
 
 // decodeBody caps the request body and rejects unknown fields.
