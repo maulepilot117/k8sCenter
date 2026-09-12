@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// The e2e suite drives all 14 yamlRateLimiter-guarded route groups from a
+// The e2e suite drives all 16 yamlRateLimiter-guarded route groups from a
 // single runner IP, serially, inside a few minutes. A production-sized budget
 // applied to that traffic returns 429 on a wizard preview, which makes
 // WizardReviewStep render its error branch — a branch with no Apply button —
@@ -18,7 +18,7 @@ import (
 func TestYAMLRateLimit_DevIsRelaxedForE2E(t *testing.T) {
 	const (
 		prodBudget = 30
-		// Measured shape of the suite: ~14 guarded route groups, the
+		// Measured shape of the suite: 16 guarded route groups, the
 		// parameterized wizard test (4 wizards x preview per step
 		// transition), eso-templates, yaml-apply, and up to 2 Playwright
 		// retries that replay all of it. 30/min is inside that range;

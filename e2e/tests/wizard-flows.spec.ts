@@ -121,7 +121,7 @@ for (const w of WIZARDS) {
         //
         // That is what made this test look like a hydration race for weeks.
         // It was not. The preview was getting a 429 from the YAML/wizard rate
-        // limiter, which this suite shares across ~14 route groups from a
+        // limiter, which this suite shares across 16 route groups from a
         // single runner IP. Fixed backend-side by relaxing that limiter under
         // KUBECENTER_DEV (see yamlRateLimit in cmd/kubecenter). Raising the
         // timeout here never could have helped, so do not raise it again —
