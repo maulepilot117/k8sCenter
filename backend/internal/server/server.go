@@ -26,6 +26,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
+	"github.com/kubecenter/kubecenter/internal/preferences"
 	"github.com/kubecenter/kubecenter/internal/certmanager"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server/middleware" // used by Deps type
@@ -82,6 +83,7 @@ type Server struct {
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
+	PreferencesHandler *preferences.Handler
 	Hub                *websocket.Hub
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
@@ -129,6 +131,7 @@ type Deps struct {
 	CRDHandler         *resources.GenericCRDHandler
 	NotifCenterHandler *notifications.Handler
 	NotifCenterService *notifications.NotificationService
+	PreferencesHandler *preferences.Handler
 	LogQueryLimiter    *middleware.RateLimiter
 	WebhookRateLimiter *middleware.RateLimiter
 	AccessChecker      *resources.AccessChecker
@@ -319,6 +322,11 @@ func New(deps Deps) *Server {
 	if deps.NotifCenterHandler != nil {
 		s.NotifCenterHandler = deps.NotifCenterHandler
 		s.NotifCenterService = deps.NotifCenterService
+	}
+
+	// Personal preferences (saved views + resource pins)
+	if deps.PreferencesHandler != nil {
+		s.PreferencesHandler = deps.PreferencesHandler
 	}
 
 	// CRD handler
