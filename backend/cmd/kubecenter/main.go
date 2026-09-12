@@ -296,7 +296,7 @@ func main() {
 	}
 	rateLimiter.StartCleanup(ctx)
 	rateLimiter.SetAuditLogger(auditLogger) // issue #276: surface 429s in audit
-	yamlRateLimiter := middleware.NewRateLimiterWithRate(30, time.Minute)
+	yamlRateLimiter := middleware.NewRateLimiterWithRate(yamlRateLimit(cfg.Dev))
 	yamlRateLimiter.StartCleanup(ctx)
 	yamlRateLimiter.SetAuditLogger(auditLogger)
 
