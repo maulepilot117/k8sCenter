@@ -164,13 +164,34 @@ func (s *PreferenceStore) Get(ctx context.Context, ownerID string, id uuid.UUID)
 
 // Create inserts a new record for rec.OwnerID and returns the stored row.
 //
-// The per-user ceiling is enforced inside the INSERT itself: the row is
-// selected for insertion only while the owner holds fewer than maxPerKind
-// records of that kind, so two concurrent creates cannot both slip past a
-// read-then-write check. A filtered-out row surfaces as ErrPreferenceLimit;
-// a dedup-key collision as ErrPreferenceDuplicate.
+// The per-user ceiling is enforced by counting the owner's existing records
+// inside the INSERT, under an advisory lock held for the transaction. The lock
+// is what makes the ceiling hold: PostgreSQL's default READ COMMITTED
+// isolation gives each statement its own snapshot, so without it concurrent
+// creates each count a pre-insert state, all pass the "< maxPerKind" test, and
+// the owner ends up over the ceiling. UserStore.CreateFirstUser closes the
+// same INSERT-guarded-by-a-subquery hole the same way.
+//
+// The lock is keyed on owner and kind, so it only ever serializes one owner's
+// own creates of one kind; a hash collision between two unrelated keys costs a
+// brief wait and nothing else. It is released when the transaction ends.
+//
+// A row filtered out by the count surfaces as ErrPreferenceLimit; a dedup-key
+// collision as ErrPreferenceDuplicate.
 func (s *PreferenceStore) Create(ctx context.Context, rec PreferenceRecord, maxPerKind int) (*PreferenceRecord, error) {
-	created, err := scanPreference(s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin create user_preference: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		rec.OwnerID+":"+string(rec.Kind)); err != nil {
+		return nil, fmt.Errorf("lock user_preference quota: %w", err)
+	}
+
+	created, err := scanPreference(tx.QueryRow(ctx, `
 		INSERT INTO user_preferences (owner_id, kind, name, cluster_id, dedup_key, schema_version, config)
 		SELECT $1, $2, $3, $4, $5, $6, $7
 		WHERE (SELECT count(*) FROM user_preferences WHERE owner_id = $1 AND kind = $2) < $8
@@ -188,6 +209,10 @@ func (s *PreferenceStore) Create(ctx context.Context, rec PreferenceRecord, maxP
 		default:
 			return nil, fmt.Errorf("create user_preference: %w", err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create user_preference: %w", err)
 	}
 	return &created, nil
 }

@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -545,6 +546,69 @@ func TestPreferenceStore_LimitReached(t *testing.T) {
 	}
 	if _, err := s.Create(ctx, savedView(owner, "now it fits"), limit); err != nil {
 		t.Fatalf("Create after freeing a slot: %v", err)
+	}
+}
+
+// TestPreferenceStore_ConcurrentCreateRespectsLimit proves the ceiling holds
+// when several creates race, which is the property the sequential limit test
+// cannot see.
+//
+// Every racer uses a distinct name, so each one has its own dedup key and the
+// unique index cannot mask the result: without serialization each racer's count
+// subquery reads a snapshot taken before any sibling committed, they all pass
+// the "< limit" test, and the owner ends up over the ceiling.
+func TestPreferenceStore_ConcurrentCreateRespectsLimit(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	const (
+		limit  = 1
+		racers = 8
+		rounds = 25 // the unserialized window is short; one round rarely catches it
+	)
+
+	for round := range rounds {
+		owner := fmt.Sprintf("%s-round-%d", owner, round)
+
+		var (
+			wg      sync.WaitGroup
+			start   = make(chan struct{})
+			results = make([]error, racers)
+		)
+		for i := range racers {
+			wg.Go(func() {
+				<-start // release all racers together
+				_, results[i] = s.Create(ctx, savedView(owner, fmt.Sprintf("racer-%d", i)), limit)
+			})
+		}
+		close(start)
+		wg.Wait()
+
+		var created int
+		for i, err := range results {
+			switch {
+			case err == nil:
+				created++
+			case errors.Is(err, ErrPreferenceLimit):
+				// Expected for every racer that lost.
+			default:
+				t.Fatalf("round %d, racer %d: unexpected error: %v", round, i, err)
+			}
+		}
+		if created != limit {
+			t.Fatalf("round %d: %d racers were told their Create succeeded; want %d",
+				round, created, limit)
+		}
+
+		n, err := s.CountByKind(ctx, owner, PreferenceKindSavedView)
+		if err != nil {
+			t.Fatalf("CountByKind: %v", err)
+		}
+		if n != limit {
+			t.Fatalf("round %d: owner holds %d saved views after the race; the ceiling was %d",
+				round, n, limit)
+		}
 	}
 }
 
