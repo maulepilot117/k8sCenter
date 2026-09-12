@@ -1,6 +1,24 @@
+---
+title: Backend resilience conventions — fuzzing and goroutine panic safety
+date: 2026-06-27
+last_updated: 2026-09-12
+category: docs/solutions
+module: backend/internal
+problem_type: convention
+component: service_layer
+severity: high
+related_components: [testing_framework, infrastructure]
+tags: [fuzzing, goroutine-safety, panic-recovery, recoverutil, crd-normalizers, ci-drift-guard, backend-resilience]
+applies_when:
+  - "Adding a background goroutine, errgroup worker, or ticker loop to the Go backend"
+  - "Adding a fuzz target for a parser at a security or reliability seam"
+  - "Adding or renaming a row in the nightly fuzz.yml matrix"
+  - "Reviewing whether a panic on a non-request stack can crash the process"
+---
+
 # Backend Resilience Conventions — Fuzzing & Goroutine Panic Safety
 
-**Status:** active convention. Consolidates patterns established across PRs #370–#375
+**Status:** active convention. Consolidates patterns established across PRs #370–#377
 (see *History* at the bottom). Read this before adding a new background goroutine,
 errgroup fan-out, or fuzz target to the Go backend.
 
@@ -193,5 +211,22 @@ doesn't apply.
 | #373 | fuzz | CRD-normalizer crash-safety across 7 packages; **found + fixed 2 real certmanager panics** |
 | #374 | recovery | certmanager poller + errgroup panic recovery (ESO parity) |
 | #375 | recovery | extracted `internal/recoverutil` (Go/Tick/Safe) + swept the gap across the backend |
+| #377 | fuzz | closed the arc: `ClientFactory` → `kubernetes.Interface` seam + `FuzzSecretPipeline` (`backend/internal/k8s/resources/secret_pipeline_fuzz_test.go`) — full HTTP-handler Secret fuzzing under oracles A and D |
+
+(#376 is this document itself, so it is not listed as a source.)
 
 Design rationale: `docs/superpowers/specs/2026-06-25-backend-fuzzing-design.md`.
+
+## See Also
+
+- `docs/solutions/postgres-test-harness-conventions.md` — the env-gated PostgreSQL
+  integration-test harness. **Scope note for the Hermetic rule above:** that rule governs
+  *fuzz targets* only, which is why it names them as its subject. PostgreSQL-backed
+  `Test*` functions gated on `KUBECENTER_TEST_DATABASE_URL` are a separate and sanctioned
+  category that deliberately touches a real database; they do not violate it. Fuzzing
+  needs pure functions because it runs millions of iterations, not because touching
+  Postgres is unsafe in general.
+- `docs/solutions/yaml-rate-limiter-e2e-flake.md` — same family as the `-list` drift
+  guard above: a CI signal that reports success while proving nothing. There the guard
+  was a no-match fuzz regex exiting 0; there it was a green e2e run whose assertion could
+  never have been satisfied.
