@@ -13,7 +13,7 @@ import "time"
 // Dev is relaxed for the same reason the auth limiter is (see the cfg.Dev
 // branch that builds rateLimiter in main). The difference is that the auth
 // limiter already had its dev relaxation and this one did not, which is what
-// made the e2e suite flaky: every one of the ~14 guarded route groups is
+// made the e2e suite flaky: every one of the 16 guarded route groups is
 // driven from a single runner IP inside a few minutes, so the suite's own
 // traffic exhausted a production-sized bucket. The resulting 429 on a wizard
 // preview made WizardReviewStep render its error branch — which has no Apply

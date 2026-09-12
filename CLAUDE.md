@@ -112,6 +112,9 @@ k8scenter/
 ├── helm/kubecenter/          # Helm chart (templates, monitoring ConfigMaps, dashboards)
 ├── e2e/                      # Playwright E2E tests
 ├── plans/                    # Implementation plans (per-step markdown)
+├── docs/solutions/           # documented solutions to past problems (bugs, conventions,
+│                             #   workflow patterns) w/ YAML frontmatter: module, tags, problem_type
+├── CONCEPTS.md               # shared domain vocabulary (entities, named processes, status concepts)
 └── .github/workflows/        # ci.yml, e2e.yml
 ```
 
