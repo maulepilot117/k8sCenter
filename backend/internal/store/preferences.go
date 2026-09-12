@@ -33,8 +33,17 @@ var (
 // pgUniqueViolation is PostgreSQL's SQLSTATE for a unique-constraint breach.
 const pgUniqueViolation = "23505"
 
-// PreferenceRecord is one row of user_preferences. OwnerID and DedupKey are
-// server-derived and never serialized to a client.
+// PreferenceRecord is one row of user_preferences.
+//
+// Three fields are server-derived and must never be taken from a request
+// body: OwnerID (the authenticated identity), DedupKey (derived from the
+// record's own contents), and ClusterID (the value the cluster-context
+// middleware resolved from the X-Cluster-ID header). The first two carry
+// `json:"-"` and cannot be set by a client at all. ClusterID cannot: it is
+// part of the response shape a client reads back. So the handler layer MUST
+// decode request bodies into its own request type that has no clusterId
+// field, rather than decoding directly into this struct — decoding into this
+// struct would let a caller file a record against any cluster label it liked.
 type PreferenceRecord struct {
 	ID            uuid.UUID       `json:"id"`
 	OwnerID       string          `json:"-"`

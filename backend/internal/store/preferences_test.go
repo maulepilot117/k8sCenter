@@ -656,6 +656,112 @@ func TestPreferenceStore_OversizedConfigRejected(t *testing.T) {
 	}
 }
 
+// TestPreferenceStore_UpdateOversizedConfigRejected covers Update's own
+// configOrEmpty call site and error switch. Create's path is exercised by
+// TestPreferenceStore_OversizedConfigRejected; Update reaches the same DDL
+// ceiling through different code, where an oversized payload lands in the
+// default branch rather than a sentinel.
+func TestPreferenceStore_UpdateOversizedConfigRejected(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	rec := mustCreate(t, s, savedView(owner, "view"), testMaxPerKind)
+	huge := json.RawMessage(`{"schemaVersion":1,"resourceKind":"pods","search":"` +
+		strings.Repeat("x", 16<<10) + `"}`)
+
+	if _, err := s.Update(ctx, owner, rec.ID, rec.Revision,
+		rec.Name, rec.DedupKey, 1, huge); err == nil {
+		t.Fatal("Update with an oversized config succeeded; want the DDL size check to reject it")
+	}
+
+	// The rejected write must leave the record exactly as it was — in
+	// particular it must not consume the revision the caller still holds.
+	got, err := s.Get(ctx, owner, rec.ID)
+	if err != nil {
+		t.Fatalf("Get after rejected Update: %v", err)
+	}
+	if got.Revision != rec.Revision {
+		t.Errorf("Revision = %d after a rejected Update; want %d", got.Revision, rec.Revision)
+	}
+	if string(got.Config) != string(rec.Config) {
+		t.Error("config changed despite the Update being rejected")
+	}
+}
+
+// TestPreferenceStore_EmptyConfigNormalizedToEmptyObject covers configOrEmpty
+// on both call sites: the column is NOT NULL, so a caller that supplies no
+// config must still produce valid JSONB rather than a constraint violation.
+func TestPreferenceStore_EmptyConfigNormalizedToEmptyObject(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	unmarshals := func(t *testing.T, label string, raw json.RawMessage) {
+		t.Helper()
+		var cfg map[string]any
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			t.Fatalf("%s: stored config %q is not valid JSON: %v", label, raw, err)
+		}
+		if len(cfg) != 0 {
+			t.Errorf("%s: stored config = %v; want an empty object", label, cfg)
+		}
+	}
+
+	nilConfig := savedView(owner, "nil config")
+	nilConfig.Config = nil
+	created := mustCreate(t, s, nilConfig, testMaxPerKind)
+	unmarshals(t, "Create with nil config", created.Config)
+
+	updated, err := s.Update(ctx, owner, created.ID, created.Revision,
+		created.Name, created.DedupKey, 1, json.RawMessage{})
+	if err != nil {
+		t.Fatalf("Update with an empty config: %v", err)
+	}
+	unmarshals(t, "Update with empty config", updated.Config)
+}
+
+// TestPreferenceStore_UpdateCannotChangeOwnerOrKind pins the contract that
+// Update rewrites only mutable fields. Neither owner_id nor kind is in the
+// signature or the SET list today; this test fails if a future edit adds
+// either. A record whose kind could change would let its owner move it
+// between quota buckets, and one whose owner could change would be a
+// cross-tenant write.
+func TestPreferenceStore_UpdateCannotChangeOwnerOrKind(t *testing.T) {
+	s := newPreferenceStore(t)
+	owner := testOwnerID(t)
+	ctx := t.Context()
+
+	view := mustCreate(t, s, savedView(owner, "view"), testMaxPerKind)
+	mustCreate(t, s, pinRecord(owner, "deployments", "prod", "api", "uid-1"), testMaxPerKind)
+
+	updated, err := s.Update(ctx, owner, view.ID, view.Revision,
+		"renamed", "renamed", 1, view.Config)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Kind != PreferenceKindSavedView {
+		t.Errorf("Kind = %q after Update; want %q", updated.Kind, PreferenceKindSavedView)
+	}
+	if updated.OwnerID != owner {
+		t.Errorf("OwnerID = %q after Update; want %q", updated.OwnerID, owner)
+	}
+
+	// Neither quota bucket moved.
+	for kind, want := range map[PreferenceKind]int{
+		PreferenceKindSavedView: 1,
+		PreferenceKindPin:       1,
+	} {
+		n, err := s.CountByKind(ctx, owner, kind)
+		if err != nil {
+			t.Fatalf("CountByKind(%s): %v", kind, err)
+		}
+		if n != want {
+			t.Errorf("CountByKind(%s) = %d after Update; want %d", kind, n, want)
+		}
+	}
+}
+
 func TestPreferenceStore_UnknownKindRejected(t *testing.T) {
 	s := newPreferenceStore(t)
 	owner := testOwnerID(t)

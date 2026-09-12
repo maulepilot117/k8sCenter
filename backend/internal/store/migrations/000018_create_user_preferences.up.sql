@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     CONSTRAINT user_preferences_dedup_len   CHECK (char_length(dedup_key) BETWEEN 1 AND 512),
     CONSTRAINT user_preferences_schema_ver  CHECK (schema_version >= 1),
     CONSTRAINT user_preferences_revision    CHECK (revision >= 1),
-    CONSTRAINT user_preferences_config_size CHECK (pg_column_size(config) <= 8192)
+    -- octet_length over the serialized JSON, deliberately not
+    -- pg_column_size(config): pg_column_size reports the size of the stored
+    -- datum, which for a TOAST-able column depends on compression, so the
+    -- effective ceiling would vary with how compressible the payload happens
+    -- to be. This measures the content the limit is actually about.
+    CONSTRAINT user_preferences_config_size CHECK (octet_length(config::text) <= 8192)
 );
 
 -- Identity/dedup. For saved views dedup_key is lower(name); for pins it is
