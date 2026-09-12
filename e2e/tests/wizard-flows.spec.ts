@@ -111,9 +111,36 @@ for (const w of WIZARDS) {
           }
         }
 
-        // Submit. Bumped to 10s — slow CI runners occasionally need more
-        // than 5s to hydrate the review step's island.
-        await expect(submitButton).toBeVisible({ timeout: 10_000 });
+        // Wait for the review step to produce an Apply button.
+        //
+        // WizardReviewStep renders Apply only once the preview request has
+        // both finished AND succeeded — its loading and error branches each
+        // return early and neither contains an Apply button. A failed preview
+        // is therefore invisible to a plain visibility wait: it reports
+        // "element(s) not found" no matter how long the timeout is.
+        //
+        // That is what made this test look like a hydration race for weeks.
+        // It was not. The preview was getting a 429 from the YAML/wizard rate
+        // limiter, which this suite shares across ~14 route groups from a
+        // single runner IP. Fixed backend-side by relaxing that limiter under
+        // KUBECENTER_DEV (see yamlRateLimit in cmd/kubecenter). Raising the
+        // timeout here never could have helped, so do not raise it again —
+        // if this fails, read the error text it now reports.
+        const previewFailed = page.getByText(/Failed to generate preview/i);
+        await expect(submitButton.or(previewFailed).first()).toBeVisible({
+          timeout: 15_000,
+        });
+        if (await previewFailed.isVisible().catch(() => false)) {
+          const detail = (await previewFailed
+            .locator("xpath=..")
+            .innerText()
+            .catch(() => ""))
+            .replace(/\s+/g, " ")
+            .trim();
+          throw new Error(
+            `${w.kind} wizard: YAML preview failed, so the review step rendered no Apply button — ${detail}`,
+          );
+        }
         await submitButton.click();
 
         // Assert success — the review step renders "Applied successfully" with a
