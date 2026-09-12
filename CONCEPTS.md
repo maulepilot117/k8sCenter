@@ -31,3 +31,23 @@ edited text is what gets applied — the form state does not overwrite it afterw
 makes the Preview the escape hatch for anything the form cannot express. Generation is a
 request that can fail or still be in flight, and the Review step offers no apply action in
 either case: a Preview that has not both completed and succeeded cannot be applied.
+
+## Backend Resilience
+
+### Fuzz Oracle
+The property a fuzz target asserts about every input it is handed — what makes a generated
+input a pass or a failure, as distinct from the generator that produces those inputs.
+
+Rather than inventing an oracle per target, the project reuses a small lettered set and
+describes each target by which ones it asserts: **A**, crash-safety, the function never
+panics on any input; **B**, parser invariants, parse and format round-trip and output is
+always well-formed; **C**, enforcement, no input slips past a guard; **D**, leak-masking, a
+secret value never survives into output. One target may assert more than one, and some
+shapes admit only one — a normalizer is crash-safety only, because it is not invertible.
+
+The oracle determines what a seed corpus must contain. A seed set that passes even against
+deliberately broken code proves nothing, so seeds are validated by mutation: remove the
+guard the oracle checks and confirm the seeds then fail. Where an oracle checks a constant
+that could itself drift, the oracle re-derives that constant independently instead of
+reading the production value, so it detects the guard being removed rather than silently
+agreeing with it.
