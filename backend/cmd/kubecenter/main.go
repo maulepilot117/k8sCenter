@@ -39,6 +39,7 @@ import (
 	"github.com/kubecenter/kubecenter/internal/notification"
 	"github.com/kubecenter/kubecenter/internal/notifications"
 	"github.com/kubecenter/kubecenter/internal/policy"
+	"github.com/kubecenter/kubecenter/internal/preferences"
 	"github.com/kubecenter/kubecenter/internal/scanning"
 	"github.com/kubecenter/kubecenter/internal/server"
 	"github.com/kubecenter/kubecenter/internal/server/middleware"
@@ -870,6 +871,23 @@ func main() {
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
 
+	// Personal preferences (saved views + resource pins). prefStore is nil
+	// when no database is configured; the handler then answers 503 on every
+	// endpoint rather than pretending to persist. Mirrors the esoHistoryStore
+	// pattern above. The handler itself is built unconditionally so the route
+	// is always registered and a DB-less deployment gets a truthful 503
+	// instead of chi's bare 404, which a client cannot tell apart from
+	// "no such record".
+	var prefStore *appstore.PreferenceStore
+	if dbPool != nil {
+		prefStore = appstore.NewPreferenceStore(dbPool)
+	}
+	preferencesHandler := &preferences.Handler{
+		Store:       prefStore,
+		AuditLogger: auditLogger,
+		Logger:      logger,
+	}
+
 	// Ready state: true after informer sync, false during shutdown
 	var ready atomic.Bool
 	ready.Store(true)
@@ -906,6 +924,7 @@ func main() {
 		FluxNotifHandler:       fluxNotifHandler,
 		NotifCenterHandler:     notifCenterHandler,
 		NotifCenterService:     notifService,
+		PreferencesHandler:     preferencesHandler,
 		ScanningHandler:        scanHandler,
 		LimitsHandler:          limitsHandler,
 		VeleroHandler:          veleroHandler,
