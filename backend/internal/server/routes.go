@@ -225,6 +225,16 @@ func (s *Server) registerRoutes() {
 				s.registerNotifCenterRoutes(ar)
 			}
 
+			// Personal preferences — per-user saved views and resource pins.
+			// No RequireAdmin: every read and write is scoped to the calling
+			// user inside the handler. Registered even when no database is
+			// configured, because the handler answers 503 there and an
+			// unregistered path would answer chi's bare 404 instead — which a
+			// client cannot tell apart from "no such record".
+			if s.PreferencesHandler != nil {
+				s.registerPreferencesRoutes(ar)
+			}
+
 			// User management — admin only
 			ar.Route("/users", func(ur chi.Router) {
 				ur.Use(middleware.RequireAdmin)
@@ -897,6 +907,33 @@ func (s *Server) registerNotifCenterRoutes(ar chi.Router) {
 			rr.Post("/", h.HandleCreateRule)
 			rr.Put("/{id}", h.HandleUpdateRule)
 			rr.Delete("/{id}", h.HandleDeleteRule)
+		})
+	})
+}
+
+// registerPreferencesRoutes wires the personal saved-view and pin endpoints.
+// Modelled on registerNotifCenterRoutes' /devices sub-route: authenticated and
+// CSRF-protected by the parent group, owner-scoped inside the handler.
+//
+// Deliberately not applied here: resources.ValidateURLParams (these routes
+// carry no {namespace}/{name} parameters) and middleware.RateLimit, which is
+// the 5 req/min authentication bucket — pinning a few resources in a row would
+// exhaust it and lock the user out of logging in.
+func (s *Server) registerPreferencesRoutes(ar chi.Router) {
+	h := s.PreferencesHandler
+	ar.Route("/preferences", func(pr chi.Router) {
+		pr.Route("/views", func(vr chi.Router) {
+			vr.Get("/", h.HandleListViews)
+			vr.Post("/", h.HandleCreateView)
+			vr.Put("/{id}", h.HandleUpdateView)
+			vr.Delete("/{id}", h.HandleDeleteView)
+		})
+		// Pins have no PUT: a pin addresses one object, so it is created or
+		// removed, never edited.
+		pr.Route("/pins", func(pnr chi.Router) {
+			pnr.Get("/", h.HandleListPins)
+			pnr.Post("/", h.HandleCreatePin)
+			pnr.Delete("/{id}", h.HandleDeletePin)
 		})
 	})
 }
