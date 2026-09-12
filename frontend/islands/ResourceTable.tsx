@@ -11,6 +11,7 @@ import {
   subscribe,
 } from "@/lib/ws.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
+import { SAVED_VIEW_SORT_KEYS } from "@/lib/preference-types.ts";
 import {
   CLUSTER_SCOPED_KINDS,
   RESOURCE_DETAIL_PATHS,
@@ -476,9 +477,12 @@ export default function ResourceTableIsland({
         col.key === "active" || col.key === "upToDate")
       ? "right"
       : "left",
-    // The displayed-sort comparator only handles these keys.
-    sortable: col.key === "name" || col.key === "namespace" ||
-      col.key === "age",
+    // The displayed-sort comparator only handles these keys, and a saved view
+    // may only store one of them. Deriving the gate from that same constant
+    // keeps the two from drifting apart: a column made sortable here without
+    // widening SAVED_VIEW_SORT_KEYS (and the Go allowlist behind it) would
+    // produce a sort the user could not save.
+    sortable: (SAVED_VIEW_SORT_KEYS as readonly string[]).includes(col.key),
   }));
 
   // Toggle/flip sort when a sortable header is clicked.

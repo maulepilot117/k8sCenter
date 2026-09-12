@@ -25,8 +25,6 @@ export type PinRecord = PreferenceRecord<PinConfig>;
 const VIEWS = "/v1/preferences/views";
 const PINS = "/v1/preferences/pins";
 
-const jsonBody = (body: unknown) => JSON.stringify(body);
-
 export const preferencesApi = {
   listViews: async (signal?: AbortSignal): Promise<SavedViewRecord[]> =>
     (await api<SavedViewRecord[]>(VIEWS, { method: "GET", signal })).data ?? [],
@@ -38,7 +36,7 @@ export const preferencesApi = {
   ): Promise<SavedViewRecord> =>
     (await api<SavedViewRecord>(VIEWS, {
       method: "POST",
-      body: jsonBody({ name, config }),
+      body: JSON.stringify({ name, config }),
       signal,
     })).data,
 
@@ -51,7 +49,7 @@ export const preferencesApi = {
   ): Promise<SavedViewRecord> =>
     (await api<SavedViewRecord>(`${VIEWS}/${encodeURIComponent(id)}`, {
       method: "PUT",
-      body: jsonBody({ name, revision, config }),
+      body: JSON.stringify({ name, revision, config }),
       signal,
     })).data,
 
@@ -73,7 +71,7 @@ export const preferencesApi = {
   ): Promise<PinRecord> =>
     (await api<PinRecord>(PINS, {
       method: "POST",
-      body: jsonBody({ name, config }),
+      body: JSON.stringify({ name, config }),
       signal,
     })).data,
 
@@ -85,20 +83,17 @@ export const preferencesApi = {
   },
 };
 
-/** The machine-readable reason codes the preferences endpoints emit. */
-export type PreferenceReason =
-  | "database_unavailable"
-  | "invalid_config"
-  | "unknown_resource_kind"
-  | "unsupported_schema_version"
-  | "duplicate_name"
-  | "already_pinned"
-  | "limit_reached"
-  | "revision_conflict"
-  | "invalid_name"
-  | "identity_too_long";
-
-const PREFERENCE_REASONS: readonly string[] = [
+/**
+ * The machine-readable reason codes the preferences endpoints emit, mirrored
+ * from the WriteErrorWithReason call sites in
+ * backend/internal/preferences/handler.go and types.go.
+ *
+ * The list is declared once and the union is derived from it. Declaring both
+ * by hand would let a code be added to one and not the other: the type would
+ * accept a reason the runtime check rejects, and the UI would silently stop
+ * classifying that error.
+ */
+export const PREFERENCE_REASONS = [
   "database_unavailable",
   "invalid_config",
   "unknown_resource_kind",
@@ -109,7 +104,9 @@ const PREFERENCE_REASONS: readonly string[] = [
   "revision_conflict",
   "invalid_name",
   "identity_too_long",
-];
+] as const;
+
+export type PreferenceReason = typeof PREFERENCE_REASONS[number];
 
 /**
  * Narrows an unknown error to a preference reason code.
@@ -121,7 +118,10 @@ const PREFERENCE_REASONS: readonly string[] = [
  */
 export function preferenceReason(e: unknown): PreferenceReason | undefined {
   const reason = (e as ApiError | undefined)?.reason;
-  return reason && PREFERENCE_REASONS.includes(reason)
+  if (!reason) {
+    return undefined;
+  }
+  return (PREFERENCE_REASONS as readonly string[]).includes(reason)
     ? reason as PreferenceReason
     : undefined;
 }

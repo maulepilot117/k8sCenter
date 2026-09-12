@@ -871,13 +871,17 @@ func main() {
 	gwDisc := gateway.NewDiscoverer(k8sClient, logger)
 	gwHandler := gateway.NewHandler(k8sClient, gwDisc, accessChecker, logger)
 
-	// Personal preferences (saved views + resource pins). prefStore is nil
-	// when no database is configured; the handler then answers 503 on every
-	// endpoint rather than pretending to persist. Mirrors the esoHistoryStore
-	// pattern above. The handler itself is built unconditionally so the route
-	// is always registered and a DB-less deployment gets a truthful 503
-	// instead of chi's bare 404, which a client cannot tell apart from
-	// "no such record".
+	// Personal preferences (saved views + resource pins).
+	//
+	// dbPool is non-nil by construction here: this binary exits above when no
+	// database is configured, because local accounts require one. The nil
+	// check mirrors the esoHistoryStore pattern and keeps the wiring honest
+	// if that ever changes — it is a backstop, not a supported runtime mode.
+	//
+	// The handler is built unconditionally so the routes register either way.
+	// With a nil store it answers 503 "database_unavailable" on every endpoint
+	// rather than chi's bare 404, which a client cannot tell apart from "no
+	// such record"; that contract is exercised by the handler's own tests.
 	var prefStore *appstore.PreferenceStore
 	if dbPool != nil {
 		prefStore = appstore.NewPreferenceStore(dbPool)

@@ -14,6 +14,15 @@ export const PIN_SCHEMA_VERSION = 1;
 export const MAX_SAVED_VIEWS = 100;
 export const MAX_PINS = 200;
 
+/**
+ * Length bounds the server enforces, so a save affordance can refuse before a
+ * round trip instead of surfacing a 400. Both count CHARACTERS, matching Go's
+ * utf8.RuneCountInString — measure with `[...s].length`, never `s.length`,
+ * which counts UTF-16 units and would accept a name the server rejects.
+ */
+export const MAX_RECORD_NAME_LEN = 128;
+export const MAX_SEARCH_LEN = 256;
+
 export const SAVED_VIEW_STATUS_FILTERS = [
   "all",
   "running",
@@ -214,6 +223,14 @@ export type PinLiveState =
  * fetched object's metadata.uid, or null when the fetch failed.
  * A stored pin with an empty uid resolves "unknown", never "ok" — an
  * un-evidenced pin must not be presented as verified (R3).
+ *
+ * A pin stored under a schema this build does not understand is also
+ * "unknown", for the same reason: this build cannot know that a future
+ * schema still means by `uid` what v1 means by it, so a matching string is
+ * not evidence the pin points at the object the user pinned. The lookup
+ * outcomes that do not depend on reading the stored envelope — the target is
+ * gone, or the user may no longer read it — are still reported as themselves,
+ * because those facts hold whatever the schema says.
  */
 export function classifyPin(
   stored: PinConfig,
@@ -233,6 +250,9 @@ export function classifyPin(
     case "error":
       return "unknown";
     case "ok":
+      if (!isSupportedPinSchema(stored.schemaVersion)) {
+        return "unknown";
+      }
       if (!stored.uid || !outcome.liveUid) {
         return "unknown";
       }
