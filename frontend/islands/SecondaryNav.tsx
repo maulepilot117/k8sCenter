@@ -9,6 +9,7 @@ import {
 } from "@/lib/constants.ts";
 import { navCollapsed, toggleNav } from "@/lib/nav.ts";
 import { getCount, resourceCounts } from "@/lib/resource-counts.ts";
+import PinnedResources from "@/islands/PinnedResources.tsx";
 
 function dotColor(h?: Health): string {
   return h === "ok"
@@ -79,7 +80,10 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
     );
   }, [navCollapsed.value]);
 
-  // Overview has no children — collapse the panel for it.
+  // Overview has no children — the panel is otherwise empty for it. Pins are
+  // still rendered here: they are the user's own shortcuts, not part of the
+  // domain taxonomy, so scoping them to domains that happen to have groups
+  // would make them disappear on exactly the page people start from.
   if (!domain?.groups?.length) {
     return (
       <nav
@@ -87,8 +91,12 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
         style={{
           width: "100%",
           borderRight: "1px solid var(--glass-border)",
+          overflowY: "auto",
+          padding: "2px 10px 16px",
         }}
-      />
+      >
+        <PinnedResources currentPath={currentPath} />
+      </nav>
     );
   }
 
@@ -242,6 +250,7 @@ export default function SecondaryNav({ currentPath }: SecondaryNavProps) {
 
       {/* grouped items */}
       <div style={{ flex: 1, overflowY: "auto", padding: "2px 10px 16px" }}>
+        <PinnedResources currentPath={currentPath} />
         {groups.map((g) => (
           <div key={g.header} style={{ marginTop: "14px" }}>
             <div

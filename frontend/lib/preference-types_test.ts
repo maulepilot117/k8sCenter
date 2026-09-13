@@ -144,6 +144,33 @@ Deno.test("pinDedupKey: identical for two UIDs of the same kind/ns/name", () => 
   assertEquals(pinDedupKey(original), "deployments/default/api");
 });
 
+Deno.test("pinDedupKey: a cluster-scoped pin keeps an empty namespace segment", () => {
+  // The server derives the same key from kind/namespace/name, and a
+  // cluster-scoped kind carries no namespace. The empty segment has to stay:
+  // collapsing "nodes//node-1" to "nodes/node-1" would put a cluster-scoped
+  // pin in the same key space as a namespaced one called "node-1" in
+  // namespace "nodes".
+  const clusterScoped = pin({
+    resourceKind: "nodes",
+    namespace: "",
+    name: "node-1",
+  });
+  assertEquals(pinDedupKey(clusterScoped), "nodes//node-1");
+});
+
+Deno.test("classifyPin: an error outcome is unknown, never ok or missing", () => {
+  // The lookup failed, so nothing is known about the target. Reporting
+  // "missing" would claim the object was deleted; reporting "ok" would claim
+  // it was verified. Both are assertions the client cannot support when the
+  // backend is unreachable (R3).
+  const stored = pin();
+  assertEquals(classifyPin(stored, { status: "error" }), "unknown");
+  assertEquals(
+    classifyPin(stored, { status: "error", liveUid: stored.uid }),
+    "unknown",
+  );
+});
+
 Deno.test("classifyPin: same uid returns ok", () => {
   const stored = pin();
   assertEquals(
