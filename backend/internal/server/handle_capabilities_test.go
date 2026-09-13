@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -385,8 +388,21 @@ func TestCapabilities_NoStoreHeader(t *testing.T) {
 	}
 }
 
+// TestCapabilities_ForbiddenIsNotUnsupported pins the D3 separation an RBAC
+// denial must keep from unsupported_platform, on BOTH scopes.
+//
+// This test used to assert yaml.apply (a NAMESPACED op) came back
+// forbidden/false under an always-deny checker. That assertion encoded the
+// pre-fix behavior review finding #2 identified: the SAR is issued
+// cluster-wide, so a negative on a namespaced resource is not proof of
+// denial and is now reported authz_unknown/null. The test's actual subject —
+// "a denial is not 'unsupported'" — is unchanged and is now carried by
+// dashboard.summary, whose nodes probe is genuinely cluster-scoped, with
+// yaml.apply kept as the namespaced counterpart.
 func TestCapabilities_ForbiddenIsNotUnsupported(t *testing.T) {
-	srv := newCapabilitiesTestServer(t, discoveryFixture{}, resources.NewAlwaysDenyAccessChecker())
+	// hasNodes so dashboard.summary's GVR probe succeeds — discovery_missing
+	// outranks the authz dimension and would mask the verdict under test.
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysDenyAccessChecker())
 	token := capabilitiesIssueToken(t, srv, "viewer-1", false)
 
 	w := capabilitiesRequest(t, srv, token, "local", "")
@@ -394,16 +410,27 @@ func TestCapabilities_ForbiddenIsNotUnsupported(t *testing.T) {
 		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
 	}
 	body := decodeCapabilities(t, w)
-	cap := findCapability(t, body, "yaml.apply")
 
-	if !cap.PlatformSupported {
-		t.Error("PlatformSupported = false; want true (RBAC denial is not the same as unsupported)")
+	clusterScoped := findCapability(t, body, "dashboard.summary")
+	if !clusterScoped.PlatformSupported {
+		t.Error("dashboard.summary PlatformSupported = false; want true (RBAC denial is not the same as unsupported)")
 	}
-	if cap.Authorized == nil || *cap.Authorized {
-		t.Fatalf("Authorized = %v; want false", cap.Authorized)
+	if clusterScoped.Authorized == nil || *clusterScoped.Authorized {
+		t.Fatalf("dashboard.summary Authorized = %v; want false — nodes is cluster-scoped, so the cluster-wide SAR asked an exact question", clusterScoped.Authorized)
 	}
-	if cap.ReasonCode != ReasonForbidden {
-		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonForbidden)
+	if clusterScoped.ReasonCode != ReasonForbidden {
+		t.Errorf("dashboard.summary ReasonCode = %q; want %q", clusterScoped.ReasonCode, ReasonForbidden)
+	}
+
+	namespaced := findCapability(t, body, "yaml.apply")
+	if !namespaced.PlatformSupported {
+		t.Error("yaml.apply PlatformSupported = false; want true")
+	}
+	if namespaced.Authorized != nil {
+		t.Fatalf("yaml.apply Authorized = %v; want null — configmaps is namespaced and the probe was cluster-wide", *namespaced.Authorized)
+	}
+	if namespaced.ReasonCode != ReasonAuthzUnknown {
+		t.Errorf("yaml.apply ReasonCode = %q; want %q", namespaced.ReasonCode, ReasonAuthzUnknown)
 	}
 }
 
@@ -445,7 +472,9 @@ func TestCapabilities_TwoIdentitiesGetOwnPermissionView(t *testing.T) {
 	factory := &perIdentityClientFactory{allow: map[string]bool{"alice": true, "bob": false}}
 	ac := resources.NewAccessChecker(factory, logger)
 
-	srv := newCapabilitiesTestServer(t, discoveryFixture{}, ac)
+	// hasNodes so dashboard.summary reaches its authz dimension (see
+	// TestCapabilities_ForbiddenIsNotUnsupported).
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, ac)
 
 	aliceToken := capabilitiesIssueToken(t, srv, "alice", false)
 	bobToken := capabilitiesIssueToken(t, srv, "bob", false)
@@ -459,14 +488,31 @@ func TestCapabilities_TwoIdentitiesGetOwnPermissionView(t *testing.T) {
 	if aliceCap.Authorized == nil || !*aliceCap.Authorized {
 		t.Fatalf("alice authorized = %v; want true", aliceCap.Authorized)
 	}
-	if bobCap.Authorized == nil || *bobCap.Authorized {
-		t.Fatalf("bob authorized = %v; want false", bobCap.Authorized)
-	}
 	if aliceCap.ReasonCode != ReasonOK {
 		t.Errorf("alice reasonCode = %q; want %q", aliceCap.ReasonCode, ReasonOK)
 	}
-	if bobCap.ReasonCode != ReasonForbidden {
-		t.Errorf("bob reasonCode = %q; want %q", bobCap.ReasonCode, ReasonForbidden)
+	// bob's denial on a NAMESPACED op is reported unknown, not forbidden —
+	// the SAR was cluster-wide. This assertion previously read
+	// forbidden/false; see TestCapabilities_ForbiddenIsNotUnsupported's
+	// comment for why it changed. The test's subject (two identities get
+	// genuinely different views) is unaffected: alice's row is ok/true.
+	if bobCap.Authorized != nil {
+		t.Fatalf("bob authorized = %v; want null for a cluster-wide denial on a namespaced op", *bobCap.Authorized)
+	}
+	if bobCap.ReasonCode != ReasonAuthzUnknown {
+		t.Errorf("bob reasonCode = %q; want %q", bobCap.ReasonCode, ReasonAuthzUnknown)
+	}
+
+	// The cluster-scoped row still carries a definite per-identity verdict,
+	// which is what keeps this test a real "own permission view" check
+	// rather than one where the denied identity says only "unknown".
+	aliceNodes := findCapability(t, aliceBody, "dashboard.summary")
+	bobNodes := findCapability(t, bobBody, "dashboard.summary")
+	if aliceNodes.Authorized == nil || !*aliceNodes.Authorized || aliceNodes.ReasonCode != ReasonOK {
+		t.Errorf("alice dashboard.summary = (authorized %v, reason %q); want (true, %q)", aliceNodes.Authorized, aliceNodes.ReasonCode, ReasonOK)
+	}
+	if bobNodes.Authorized == nil || *bobNodes.Authorized || bobNodes.ReasonCode != ReasonForbidden {
+		t.Errorf("bob dashboard.summary = (authorized %v, reason %q); want (false, %q)", bobNodes.Authorized, bobNodes.ReasonCode, ReasonForbidden)
 	}
 }
 
@@ -491,7 +537,9 @@ func TestCapabilities_PredicateDenialPinsCanAccessGroupResource(t *testing.T) {
 	ac := resources.NewPredicateAccessChecker(func(verb, apiGroup, resource, namespace string) bool {
 		return false // deny every verb/group/resource/namespace combination
 	})
-	srv := newCapabilitiesTestServer(t, discoveryFixture{}, ac)
+	// hasNodes so dashboard.summary — the cluster-scoped row that still
+	// produces a definite forbidden verdict — reaches its authz dimension.
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, ac)
 	token := capabilitiesIssueToken(t, srv, "viewer-1", false)
 
 	w := capabilitiesRequest(t, srv, token, "local", "")
@@ -499,14 +547,26 @@ func TestCapabilities_PredicateDenialPinsCanAccessGroupResource(t *testing.T) {
 		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
 	}
 	body := decodeCapabilities(t, w)
-	cap := findCapability(t, body, "yaml.apply")
 
-	if cap.Authorized == nil || *cap.Authorized {
-		t.Fatalf("Authorized = %v; want false — CanAccess would short-circuit this predicate-fake AccessChecker to an unconditional allow (access.go), "+
-			"silently ignoring the predicate's denial; only CanAccessGroupResource actually consults it", cap.Authorized)
+	clusterScoped := findCapability(t, body, "dashboard.summary")
+	if clusterScoped.Authorized == nil || *clusterScoped.Authorized {
+		t.Fatalf("dashboard.summary Authorized = %v; want false — CanAccess would short-circuit this predicate-fake AccessChecker to an unconditional allow (access.go), "+
+			"silently ignoring the predicate's denial; only CanAccessGroupResource actually consults it", clusterScoped.Authorized)
 	}
-	if cap.ReasonCode != ReasonForbidden {
-		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonForbidden)
+	if clusterScoped.ReasonCode != ReasonForbidden {
+		t.Errorf("dashboard.summary ReasonCode = %q; want %q", clusterScoped.ReasonCode, ReasonForbidden)
+	}
+
+	// yaml.apply is namespaced, so the same predicate denial is reported as
+	// unknown rather than forbidden. It still falsifies the CanAccess
+	// regression — that path would report ok/true here — which is why the
+	// assertion was updated rather than dropped when finding #2 was fixed.
+	namespaced := findCapability(t, body, "yaml.apply")
+	if namespaced.Authorized != nil {
+		t.Fatalf("yaml.apply Authorized = %v; want null (a regression to CanAccess would report true/ok here)", *namespaced.Authorized)
+	}
+	if namespaced.ReasonCode != ReasonAuthzUnknown {
+		t.Errorf("yaml.apply ReasonCode = %q; want %q", namespaced.ReasonCode, ReasonAuthzUnknown)
 	}
 }
 
@@ -605,6 +665,46 @@ func TestCapabilities_DiscoveryPartialErrorIsNotMissing(t *testing.T) {
 	if dash.ReasonCode == ReasonDiscoveryMissing || dash.ReasonCode == ReasonDiscoveryUnavailable {
 		t.Errorf("dashboard.summary ReasonCode = %q; a resource that DID load must not be reported missing/unavailable just because a DIFFERENT group's discovery failed", dash.ReasonCode)
 	}
+
+	// The other half of the same partial result, and the half review finding
+	// #12 was about: eso.write probes external-secrets.io — precisely the
+	// group that failed. Tolerating the partial list is right for nodes and
+	// wrong here, because "not in the list" and "we never got the list" are
+	// indistinguishable for the failed group. The row must report
+	// discovery_unavailable (unknown) with a null discoveryPresent, never
+	// discovery_missing (a definite claim the CRD is not installed) — the
+	// exact collapse discovery_unavailable exists to prevent.
+	eso := findCapability(t, body, "eso.write")
+	if eso.DiscoveryPresent != nil {
+		t.Fatalf("eso.write DiscoveryPresent = %v; want null — external-secrets.io is the group whose discovery failed, so its absence from the partial list is no evidence", *eso.DiscoveryPresent)
+	}
+	if eso.ReasonCode != ReasonDiscoveryUnavailable {
+		t.Errorf("eso.write ReasonCode = %q; want %q", eso.ReasonCode, ReasonDiscoveryUnavailable)
+	}
+}
+
+// TestCapabilities_DiscoveryMissingStillReportsMissing is the negative
+// control for the test above: when discovery loads cleanly and the CRD
+// genuinely is not installed, eso.write must still report the DEFINITE
+// discovery_missing. Without this, finding #12's fix could have been
+// "report unavailable whenever the probe finds nothing", which would have
+// destroyed the distinction from the other side.
+func TestCapabilities_DiscoveryMissingStillReportsMissing(t *testing.T) {
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true, hasESO: false}, resources.NewAlwaysAllowAccessChecker())
+	token := capabilitiesIssueToken(t, srv, "viewer-1", false)
+
+	w := capabilitiesRequest(t, srv, token, "local", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	eso := findCapability(t, decodeCapabilities(t, w), "eso.write")
+
+	if eso.DiscoveryPresent == nil || *eso.DiscoveryPresent {
+		t.Fatalf("eso.write DiscoveryPresent = %v; want false — discovery answered fully and the CRD is absent", eso.DiscoveryPresent)
+	}
+	if eso.ReasonCode != ReasonDiscoveryMissing {
+		t.Errorf("eso.write ReasonCode = %q; want %q", eso.ReasonCode, ReasonDiscoveryMissing)
+	}
 }
 
 // TestClassifyTargetSchemaErr pins the three-way classification
@@ -639,6 +739,45 @@ func TestClassifyTargetSchemaErr(t *testing.T) {
 			err:  fmt.Errorf("cluster %s URL blocked: %w", "remote-1", errors.New("URL resolves to private address")),
 			want: ReasonCredentialsInvalid,
 		},
+		// Review finding #7 — three shapes that used to hit the
+		// credentials_invalid catch-all and tell the operator their stored
+		// credentials were bad when nothing was wrong with them.
+		{
+			// ValidateRemoteURLContext fails closed on a lookup failure and
+			// wraps the resolver's *net.DNSError verbatim.
+			name: "DNS failure is unreachable, not credentials_invalid",
+			err: fmt.Errorf("cluster %s URL blocked: %w", "remote-1",
+				fmt.Errorf("DNS resolution failed for %s: %w", "api.example.invalid",
+					&net.DNSError{Err: "no such host", Name: "api.example.invalid", IsNotFound: true})),
+			want: ReasonUnreachable,
+		},
+		{
+			// The 30s ceiling TargetSchemaFor puts on its cold-miss path
+			// (and remoteConfig's own) expires while dialing the API server.
+			name: "deadline exceeded is unreachable, not credentials_invalid",
+			err:  fmt.Errorf("creating discovery client for cluster %s: %w", "remote-1", context.DeadlineExceeded),
+			want: ReasonUnreachable,
+		},
+		{
+			name: "cancelled context is unreachable, not credentials_invalid",
+			err:  fmt.Errorf("creating discovery client for cluster %s: %w", "remote-1", context.Canceled),
+			want: ReasonUnreachable,
+		},
+		{
+			name: "transport failure is unreachable, not credentials_invalid",
+			err: fmt.Errorf("probing cluster %s: %w", "remote-1",
+				&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}),
+			want: ReasonUnreachable,
+		},
+		{
+			// The cold-miss path's cluster-record read hits a live database
+			// error that is NOT pgx.ErrNoRows. The row may well exist; the
+			// registry is what's broken.
+			name: "postgres server error is db_unavailable, not credentials_invalid",
+			err: fmt.Errorf("cluster %s not found: %w", "remote-1",
+				fmt.Errorf("getting cluster %s: %w", "remote-1", &pgconn.PgError{Code: "57P03", Message: "the database system is starting up"})),
+			want: ReasonDBUnavailable,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -647,6 +786,32 @@ func TestClassifyTargetSchemaErr(t *testing.T) {
 			}
 		})
 	}
+
+	// A Postgres CONNECT failure is the case that pins the ORDER of the
+	// checks, not just their existence: *pgconn.ConnectError wraps a
+	// net.OpError, so a classifier that asked "is this a network error?"
+	// before "is this a database error?" would report the CLUSTER
+	// unreachable when it is the registry that is unreachable.
+	//
+	// It cannot be constructed by hand — ConnectError's wrapped error is
+	// unexported and its Error() method dereferences it — so this drives a
+	// real refused connection against a loopback port nothing listens on.
+	t.Run("postgres connect failure is db_unavailable, not unreachable", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, connErr := pgconn.Connect(ctx, "postgres://kubecenter:kubecenter@127.0.0.1:1/kubecenter?sslmode=disable")
+		var typed *pgconn.ConnectError
+		if connErr == nil || !errors.As(connErr, &typed) {
+			t.Skipf("environment did not produce a *pgconn.ConnectError for a refused loopback connection (got %v); "+
+				"the ordering claim is unverified here", connErr)
+		}
+
+		wrapped := fmt.Errorf("cluster %s not found: %w", "remote-1", connErr)
+		if got := classifyTargetSchemaErr(wrapped); got != ReasonDBUnavailable {
+			t.Errorf("classifyTargetSchemaErr(%v) = %q; want %q — the database is what failed, not the cluster", wrapped, got, ReasonDBUnavailable)
+		}
+	})
 }
 
 // TestCapabilities_ReasonCodesAreClosed table-drives every operation against
@@ -841,4 +1006,462 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestCapabilities_RegistryReadFailureIsDBUnavailable pins review finding
+// #1: resolveReachability used to discard the error from the cluster-record
+// read, returning a bare reachabilityResult that buildCapability rendered as
+// stale_observation. A Postgres outage therefore looked like a lagging
+// prober — the operator waits for a probe cycle that will never come instead
+// of investigating the database. db_unavailable exists for exactly this.
+func TestCapabilities_RegistryReadFailureIsDBUnavailable(t *testing.T) {
+	now := time.Now()
+
+	t.Run("read error", func(t *testing.T) {
+		getter := &fakeClusterRecordGetter{err: errors.New("dial tcp 10.0.0.5:5432: connect: connection refused")}
+
+		reach := resolveReachability(context.Background(), getter, false, "remote-1", now)
+		if reach.reachable != nil {
+			t.Fatalf("reachable = %v; want nil — a failed registry read is not a reachability verdict", *reach.reachable)
+		}
+		if reach.reason != ReasonDBUnavailable {
+			t.Fatalf("reason = %q; want %q", reach.reason, ReasonDBUnavailable)
+		}
+
+		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+		if cap.ReasonCode != ReasonDBUnavailable {
+			t.Errorf("ReasonCode = %q; want %q — stale_observation would send the operator to wait out an outage", cap.ReasonCode, ReasonDBUnavailable)
+		}
+	})
+
+	t.Run("nil getter", func(t *testing.T) {
+		reach := resolveReachability(context.Background(), nil, false, "remote-1", now)
+		if reach.reachable != nil || reach.reason != ReasonDBUnavailable {
+			t.Fatalf("reach = (reachable %v, reason %q); want (nil, %q)", reach.reachable, reach.reason, ReasonDBUnavailable)
+		}
+	})
+
+	// The genuine stale case must keep reporting stale_observation — the
+	// fix must not turn every null reachable into db_unavailable.
+	t.Run("stale probe still reports stale_observation", func(t *testing.T) {
+		staleProbe := now.Add(-5 * time.Minute)
+		getter := &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+			ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &staleProbe,
+		}}
+
+		reach := resolveReachability(context.Background(), getter, false, "remote-1", now)
+		if reach.reason != "" {
+			t.Fatalf("reason = %q; want empty for an ordinary stale probe", reach.reason)
+		}
+		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+		if cap.ReasonCode != ReasonStaleObservation {
+			t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonStaleObservation)
+		}
+	})
+}
+
+// namespaceAwareClientFactory models the identity review findings #2/#6/#10
+// are about: one that holds an ordinary namespaced Role (edit in
+// allowNamespace) and nothing cluster-wide. Unlike perIdentityClientFactory
+// it INSPECTS the created SelfSubjectAccessReview's ResourceAttributes, so
+// the namespace dimension of the probe is actually exercised — the flat
+// per-username verdict of the older fixture is precisely why a cluster-wide
+// probe against namespaced resources was invisible to this suite.
+type namespaceAwareClientFactory struct {
+	allowNamespace string
+
+	mu       sync.Mutex
+	observed []authorizationv1.ResourceAttributes
+}
+
+func (f *namespaceAwareClientFactory) ClientForUser(string, []string) (kubernetes.Interface, error) {
+	cs := fakekube.NewSimpleClientset()
+	cs.PrependReactor("create", "selfsubjectaccessreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		create, ok := action.(clienttesting.CreateAction)
+		if !ok {
+			return false, nil, fmt.Errorf("unexpected action %T for selfsubjectaccessreviews", action)
+		}
+		sar, ok := create.GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		if !ok {
+			return false, nil, fmt.Errorf("unexpected object %T in SAR create", create.GetObject())
+		}
+		attrs := sar.Spec.ResourceAttributes
+		if attrs == nil {
+			return false, nil, errors.New("SAR carried no ResourceAttributes")
+		}
+		f.mu.Lock()
+		f.observed = append(f.observed, *attrs)
+		f.mu.Unlock()
+
+		// The whole point: this identity is allowed in exactly one
+		// namespace, so an empty (cluster-wide) namespace is denied.
+		return true, &authorizationv1.SelfSubjectAccessReview{
+			Status: authorizationv1.SubjectAccessReviewStatus{Allowed: attrs.Namespace == f.allowNamespace},
+		}, nil
+	})
+	return cs, nil
+}
+
+func (f *namespaceAwareClientFactory) namespacesProbed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.observed))
+	for _, a := range f.observed {
+		out = append(out, a.Namespace)
+	}
+	return out
+}
+
+// TestCapabilities_NamespacedDenialIsUnknownNotForbidden is the regression
+// test for review findings #2, #6 and #10. An identity whose RBAC is an
+// ordinary namespaced Role is denied by the CLUSTER-WIDE SAR this endpoint
+// issues (empty namespace on a namespaced resource means "in all
+// namespaces"), yet can perform the operation perfectly well in its own
+// namespace. Reporting that denial as authorized: false / forbidden told
+// every namespace-scoped user — including the app-admin of finding #6, who
+// can run log search — that they could not do things they could.
+//
+// The cluster-scoped row is the negative control: nodes is not namespaced,
+// so the same denial there IS real and must stay forbidden. Without that
+// half, "report everything as unknown" would pass.
+func TestCapabilities_NamespacedDenialIsUnknownNotForbidden(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	factory := &namespaceAwareClientFactory{allowNamespace: "team-a"}
+	ac := resources.NewAccessChecker(factory, logger)
+
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true, hasESO: true}, ac)
+	token := capabilitiesIssueToken(t, srv, "app-admin", false)
+
+	w := capabilitiesRequest(t, srv, token, "local", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := decodeCapabilities(t, w)
+
+	// Every namespaced row — the yaml.* configmaps rows, the pods rows, the
+	// pods/exec + pods/log subresource rows (finding #10's wildcard shape)
+	// and externalsecrets — reports unknown, not a denial.
+	for _, op := range []string{
+		"yaml.validate", "yaml.diff", "yaml.export", "yaml.apply",
+		"resources.counts", "pod.exec", "logs.stream", "logs.search",
+		"flows.stream", "eso.write",
+	} {
+		cap := findCapability(t, body, op)
+		if cap.Authorized != nil {
+			t.Errorf("%s Authorized = %v; want null — a cluster-wide denial on a namespaced resource is not proof this identity cannot act", op, *cap.Authorized)
+		}
+		if cap.ReasonCode != ReasonAuthzUnknown {
+			t.Errorf("%s ReasonCode = %q; want %q", op, cap.ReasonCode, ReasonAuthzUnknown)
+		}
+	}
+
+	nodes := findCapability(t, body, "dashboard.summary")
+	if nodes.Authorized == nil || *nodes.Authorized {
+		t.Fatalf("dashboard.summary Authorized = %v; want false — nodes is cluster-scoped, so this denial is real", nodes.Authorized)
+	}
+	if nodes.ReasonCode != ReasonForbidden {
+		t.Errorf("dashboard.summary ReasonCode = %q; want %q", nodes.ReasonCode, ReasonForbidden)
+	}
+
+	// Pin what was actually asked: every probe carried the empty
+	// (cluster-wide) namespace. If a future change starts passing a real
+	// namespace, this fixture's verdicts flip and the assertions above
+	// become meaningless without anyone noticing.
+	probed := factory.namespacesProbed()
+	if len(probed) == 0 {
+		t.Fatal("no SelfSubjectAccessReview reached the fixture; the namespace dimension was never exercised")
+	}
+	for _, ns := range probed {
+		if ns != "" {
+			t.Errorf("SAR namespace = %q; want the empty cluster-wide namespace — update this test alongside any ?namespace= support", ns)
+		}
+	}
+}
+
+// TestAuthorizedFromClusterWideSAR pins the scope-dependent reading of a
+// cluster-wide SAR verdict in isolation from the handler.
+func TestAuthorizedFromClusterWideSAR(t *testing.T) {
+	namespaced := capabilityOp{ID: "ns", AuthResource: "configmaps"}
+	clusterScoped := capabilityOp{ID: "cs", AuthResource: "nodes", ClusterScoped: true}
+
+	tests := []struct {
+		name    string
+		op      capabilityOp
+		allowed bool
+		want    *bool
+	}{
+		{"namespaced allow implies every namespace", namespaced, true, boolPtr(true)},
+		{"namespaced denial is unknown", namespaced, false, nil},
+		{"cluster-scoped allow", clusterScoped, true, boolPtr(true)},
+		{"cluster-scoped denial is real", clusterScoped, false, boolPtr(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := authorizedFromClusterWideSAR(tt.op, tt.allowed)
+			switch {
+			case tt.want == nil && got != nil:
+				t.Fatalf("authorized = %v; want nil", *got)
+			case tt.want != nil && got == nil:
+				t.Fatalf("authorized = nil; want %v", *tt.want)
+			case tt.want != nil && *got != *tt.want:
+				t.Fatalf("authorized = %v; want %v", *got, *tt.want)
+			}
+		})
+	}
+}
+
+// TestCapabilityOperations_ScopePinned forces every operation row to have
+// made a conscious namespaced-vs-cluster-scoped choice. capabilityOp's zero
+// value means namespaced (the safe direction), so a new row that forgets the
+// field compiles and behaves plausibly; this test is what makes the omission
+// visible. Three later units (U9a, U9b, U10) are scheduled to edit this
+// table.
+func TestCapabilityOperations_ScopePinned(t *testing.T) {
+	// nodes is the only cluster-scoped resource probed today. configmaps,
+	// pods, pods/exec, pods/log and externalsecrets are all namespaced.
+	wantClusterScoped := map[string]bool{
+		"dashboard.summary": true,
+	}
+
+	seen := map[string]bool{}
+	for _, op := range capabilityOperations {
+		seen[op.ID] = true
+		if got := op.ClusterScoped; got != wantClusterScoped[op.ID] {
+			t.Errorf("operation %q (AuthResource %q): ClusterScoped = %v; want %v",
+				op.ID, op.AuthResource, got, wantClusterScoped[op.ID])
+		}
+	}
+	for id := range wantClusterScoped {
+		if !seen[id] {
+			t.Errorf("expected cluster-scoped operation %q is no longer in capabilityOperations; update this test", id)
+		}
+	}
+}
+
+// withRemoteSupported flips RemoteSupported to true on the named PRODUCTION
+// operation rows for the duration of one test, restoring the table via
+// t.Cleanup so no mutated global leaks into a sibling
+// (TestCapabilityContractParity and TestCapabilities_ReasonCodesAreClosed
+// both read this table).
+//
+// It replaces the slice with a copy rather than mutating rows in place, so
+// even a failed restore cannot leave a half-edited row behind.
+func withRemoteSupported(t *testing.T, ids ...string) {
+	t.Helper()
+
+	original := capabilityOperations
+	swapped := make([]capabilityOp, len(original))
+	copy(swapped, original)
+
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	flipped := 0
+	for i := range swapped {
+		if wanted[swapped[i].ID] {
+			swapped[i].RemoteSupported = true
+			flipped++
+		}
+	}
+	if flipped != len(ids) {
+		t.Fatalf("withRemoteSupported: flipped %d of %d requested operations %v; a row was renamed or removed", flipped, len(ids), ids)
+	}
+
+	capabilityOperations = swapped
+	t.Cleanup(func() { capabilityOperations = original })
+}
+
+// withCapabilityClusterGetter substitutes the reachability getter for the
+// duration of one test. See capabilityClusterGetter's doc comment for why
+// the seam exists.
+func withCapabilityClusterGetter(t *testing.T, getter clusterRecordGetter) {
+	t.Helper()
+	original := capabilityClusterGetter
+	capabilityClusterGetter = func(*Server) clusterRecordGetter { return getter }
+	t.Cleanup(func() { capabilityClusterGetter = original })
+}
+
+// TestCapabilities_RemoteChainEndToEnd closes review finding #3: because
+// every production row is RemoteSupported: false today, anySupported is
+// false for any remote target and the entire remote chain — target
+// resolution, reachability, discovery, the impersonated SAR — had never
+// executed end to end. cluster_unknown, credentials_invalid, db_unavailable,
+// unreachable and stale_observation were pinned only by direct calls to
+// buildCapability against test-only synthetic rows, which cannot catch a
+// handler that wires those inputs together wrongly.
+//
+// This drives REAL production rows (one plain, one GVR-probing) through the
+// real HTTP handler with RemoteSupported temporarily flipped, exactly as
+// U9a/U9b/U10 will flip them for good.
+func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
+	now := time.Now()
+	fresh := now.Add(-30 * time.Second) // inside the 180s freshness window
+	stale := now.Add(-10 * time.Minute) // outside it
+
+	tests := []struct {
+		name           string
+		getter         clusterRecordGetter
+		checker        *resources.AccessChecker
+		wantPlain      ReasonCode // yaml.validate — no GVR probe
+		wantProbe      ReasonCode // dashboard.summary — probes core/v1 nodes
+		wantAuthorized bool       // whether yaml.validate's authorized must be non-null
+	}{
+		{
+			name:    "registry read failure",
+			getter:  &fakeClusterRecordGetter{err: errors.New("connect: connection refused")},
+			checker: resources.NewAlwaysAllowAccessChecker(),
+			// Finding #1 end to end: a broken registry must not masquerade
+			// as a lagging prober in the HTTP response either.
+			wantPlain: ReasonDBUnavailable, wantProbe: ReasonDBUnavailable,
+		},
+		{
+			name: "stale probe",
+			getter: &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+				ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &stale,
+			}},
+			checker:   resources.NewAlwaysAllowAccessChecker(),
+			wantPlain: ReasonStaleObservation, wantProbe: ReasonStaleObservation,
+		},
+		{
+			name: "disconnected cluster",
+			getter: &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+				ID: "remote-1", Status: k8s.StatusDisconnected.String(), LastProbedAt: &fresh,
+			}},
+			checker:   resources.NewAlwaysAllowAccessChecker(),
+			wantPlain: ReasonUnreachable, wantProbe: ReasonUnreachable,
+		},
+		{
+			name: "reachable, authorized",
+			getter: &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+				ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &fresh,
+			}},
+			checker:   resources.NewAlwaysAllowAccessChecker(),
+			wantPlain: ReasonOK,
+			// No ClusterRouter is wired (A4's narrow case), so there is no
+			// target schema to run discovery against: unknown, not missing.
+			wantProbe:      ReasonDiscoveryUnavailable,
+			wantAuthorized: true,
+		},
+		{
+			name: "reachable, denied cluster-wide on a namespaced op",
+			getter: &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+				ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &fresh,
+			}},
+			checker: resources.NewAlwaysDenyAccessChecker(),
+			// yaml.validate probes configmaps (namespaced) — finding #2's
+			// semantics apply on the remote class too.
+			wantPlain: ReasonAuthzUnknown,
+			wantProbe: ReasonDiscoveryUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withRemoteSupported(t, "yaml.validate", "dashboard.summary")
+			withCapabilityClusterGetter(t, tt.getter)
+
+			srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, tt.checker)
+			// A non-nil ClusterStore keeps the A4 "no registry wired at all"
+			// branch from firing; reachability reads through the substituted
+			// getter, so the nil pool is never touched. ClusterRouter is
+			// cleared to exercise A4's other, narrower branch.
+			srv.ClusterStore = store.NewClusterStore(nil, "test-encryption-key")
+			srv.ClusterRouter = nil
+
+			token := capabilitiesIssueToken(t, srv, "admin-1", true)
+			w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+			}
+			body := decodeCapabilities(t, w)
+
+			plain := findCapability(t, body, "yaml.validate")
+			if !plain.PlatformSupported {
+				t.Fatal("yaml.validate PlatformSupported = false; withRemoteSupported did not take effect")
+			}
+			if plain.ReasonCode != tt.wantPlain {
+				t.Errorf("yaml.validate ReasonCode = %q; want %q", plain.ReasonCode, tt.wantPlain)
+			}
+			if tt.wantAuthorized && (plain.Authorized == nil || !*plain.Authorized) {
+				t.Errorf("yaml.validate Authorized = %v; want true — the impersonated SAR must actually run on the remote branch", plain.Authorized)
+			}
+
+			probe := findCapability(t, body, "dashboard.summary")
+			if probe.ReasonCode != tt.wantProbe {
+				t.Errorf("dashboard.summary ReasonCode = %q; want %q", probe.ReasonCode, tt.wantProbe)
+			}
+
+			// Rows that were NOT flipped must still report the honest
+			// unsupported_platform — the flip is per-row, not a global
+			// "remote works now" switch.
+			untouched := findCapability(t, body, "pod.exec")
+			if untouched.PlatformSupported || untouched.ReasonCode != ReasonUnsupportedPlatform {
+				t.Errorf("pod.exec = (platformSupported %v, reason %q); want (false, %q)",
+					untouched.PlatformSupported, untouched.ReasonCode, ReasonUnsupportedPlatform)
+			}
+
+			for _, c := range body.Capabilities {
+				if !validReasonCodes[c.ReasonCode] {
+					t.Errorf("operation %q emitted reasonCode %q, which is not in the valid set", c.Operation, c.ReasonCode)
+				}
+			}
+		})
+	}
+}
+
+// TestCapabilities_RemoteNoClusterStoreIsDBUnavailable drives the other A4
+// branch — no cluster registry wired at all — through the real handler with
+// a production row flipped to RemoteSupported, rather than by handing
+// buildCapability a globalReason directly.
+func TestCapabilities_RemoteNoClusterStoreIsDBUnavailable(t *testing.T) {
+	withRemoteSupported(t, "yaml.validate")
+
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysAllowAccessChecker())
+	srv.ClusterStore = nil
+
+	token := capabilitiesIssueToken(t, srv, "admin-1", true)
+	w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	cap := findCapability(t, decodeCapabilities(t, w), "yaml.validate")
+	if !cap.PlatformSupported {
+		t.Fatal("PlatformSupported = false; withRemoteSupported did not take effect")
+	}
+	if cap.ReasonCode != ReasonDBUnavailable {
+		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonDBUnavailable)
+	}
+}
+
+// TestCapabilities_RemoteTargetResolutionFailureClassified drives the real
+// ClusterRouter.TargetSchemaFor error path through the handler: the router
+// has no cluster store, so resolving a remote target fails with
+// requireClusterStore's load-bearing message and classifyTargetSchemaErr
+// must map it to db_unavailable. Before this, classifyTargetSchemaErr was
+// only ever called from a unit test with a hand-built error.
+func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
+	withRemoteSupported(t, "yaml.validate")
+
+	srv := newCapabilitiesTestServer(t, discoveryFixture{hasNodes: true}, resources.NewAlwaysAllowAccessChecker())
+	// Non-nil so the A4 "no registry" branch does not pre-empt the router
+	// call; the router itself was built with a nil store, so TargetSchemaFor
+	// fails closed. Reachability is never reached (globalReason wins), so
+	// the nil pool is never touched.
+	srv.ClusterStore = store.NewClusterStore(nil, "test-encryption-key")
+
+	token := capabilitiesIssueToken(t, srv, "admin-1", true)
+	w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	cap := findCapability(t, decodeCapabilities(t, w), "yaml.validate")
+	if cap.ReasonCode != ReasonDBUnavailable {
+		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonDBUnavailable)
+	}
+	if cap.Reachable != nil {
+		t.Errorf("Reachable = %v; want null — nothing is knowable once the target cannot be resolved", *cap.Reachable)
+	}
 }

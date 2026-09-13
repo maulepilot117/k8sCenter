@@ -50,6 +50,32 @@ func ProbeImpersonateRights(ctx context.Context, client kubernetes.Interface) er
 	return nil
 }
 
+// ClusterStatus is the health-status vocabulary for a registered cluster, as
+// written to store.ClusterRecord.Status by ClusterProber and compared by
+// consumers elsewhere (e.g. server.handle_clusters.go,
+// server.handle_capabilities.go) that report cluster reachability.
+// store.ClusterRecord.Status is a plain string column — store cannot import
+// this package (it would create an import cycle, since this package already
+// imports store), so these constants are the sole typed source of truth for
+// the four valid values. A rename here that isn't mirrored at every
+// comparison site would silently mark clusters unreachable with no compiler
+// error — hence TestClusterStatusValues pinning the literal contract below.
+type ClusterStatus string
+
+// String returns the plain string form, for passing to
+// store.ClusterStore.UpdateStatus or comparing against
+// store.ClusterRecord.Status.
+func (s ClusterStatus) String() string {
+	return string(s)
+}
+
+const (
+	StatusConnected    ClusterStatus = "connected"
+	StatusDisconnected ClusterStatus = "disconnected"
+	StatusBlocked      ClusterStatus = "blocked"
+	StatusError        ClusterStatus = "error"
+)
+
 // StatusChangeFunc is called when a cluster's probe status transitions.
 // Parameters: ctx, clusterID, oldStatus, newStatus.
 type StatusChangeFunc func(ctx context.Context, clusterID, oldStatus, newStatus string)
@@ -125,16 +151,16 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 
 	// SSRF check — re-resolve DNS at probe time (DNS rebinding defense)
 	if err := ValidateRemoteURL(cluster.APIServerURL); err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "blocked", "URL resolves to private address", "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "blocked")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusBlocked.String(), "URL resolves to private address", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusBlocked.String())
 		return nil, fmt.Errorf("SSRF blocked: %w", err)
 	}
 
 	// Decrypt credentials
 	token, err := store.Decrypt(cluster.AuthData, p.encKey)
 	if err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusError.String(), "credential error", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusError.String())
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 
@@ -143,8 +169,8 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		caData, err = store.Decrypt(cluster.CAData, p.encKey)
 		if err != nil {
 			// CA was stored but can't be decrypted — don't auto-downgrade to insecure
-			_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "credential error", "", 0)
-			p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+			_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusError.String(), "credential error", "", 0)
+			p.emitStatusChange(ctx, clusterID, oldStatus, StatusError.String())
 			return nil, fmt.Errorf("CA decryption failed: %w", err)
 		}
 	}
@@ -167,22 +193,22 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 		},
 	}
 	if err := applyClusterTLS(cfg, clusterID, caData, cluster.AllowInsecureTLS, p.logger); err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", "TLS verification required (no CA, AllowInsecureTLS=false)", "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusError.String(), "TLS verification required (no CA, AllowInsecureTLS=false)", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusError.String())
 		return nil, err
 	}
 
 	cs, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "error", sanitizeProbeError(err), "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "error")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusError.String(), sanitizeProbeError(err), "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusError.String())
 		return nil, err
 	}
 
 	version, err := cs.Discovery().ServerVersion()
 	if err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", sanitizeProbeError(err), "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "disconnected")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusDisconnected.String(), sanitizeProbeError(err), "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusDisconnected.String())
 		return nil, err
 	}
 
@@ -191,8 +217,8 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	// trimmed), surface the gap as a "disconnected" probe rather than letting
 	// the cluster stay "connected" while every actual request 403s.
 	if err := ProbeImpersonateRights(ctx, cs); err != nil {
-		_ = p.clusterStore.UpdateStatus(ctx, clusterID, "disconnected", "credentials cannot impersonate users", "", 0)
-		p.emitStatusChange(ctx, clusterID, oldStatus, "disconnected")
+		_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusDisconnected.String(), "credentials cannot impersonate users", "", 0)
+		p.emitStatusChange(ctx, clusterID, oldStatus, StatusDisconnected.String())
 		return nil, fmt.Errorf("impersonate probe failed: %w", err)
 	}
 
@@ -204,8 +230,8 @@ func (p *ClusterProber) ProbeOne(ctx context.Context, clusterID string) (*store.
 	}
 
 	// Update status
-	_ = p.clusterStore.UpdateStatus(ctx, clusterID, "connected", "", version.GitVersion, nodeCount)
-	p.emitStatusChange(ctx, clusterID, oldStatus, "connected")
+	_ = p.clusterStore.UpdateStatus(ctx, clusterID, StatusConnected.String(), "", version.GitVersion, nodeCount)
+	p.emitStatusChange(ctx, clusterID, oldStatus, StatusConnected.String())
 	p.logger.Debug("cluster probe succeeded", "clusterID", clusterID, "version", version.GitVersion, "nodes", nodeCount)
 
 	updated, _ := p.clusterStore.Get(ctx, clusterID)

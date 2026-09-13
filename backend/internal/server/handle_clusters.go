@@ -264,7 +264,7 @@ func (s *Server) handleCreateCluster(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set initial status from connection test
-	_ = s.ClusterStore.UpdateStatus(r.Context(), id, "connected", "", testVersion.GitVersion, 0)
+	_ = s.ClusterStore.UpdateStatus(r.Context(), id, k8s.StatusConnected.String(), "", testVersion.GitVersion, 0)
 
 	// Audit log
 	user, _ := auth.UserFromContext(r.Context())

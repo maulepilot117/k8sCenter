@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -35,6 +36,14 @@ type cachedDynClient struct {
 	expiresAt time.Time
 }
 
+// cachedDiscovery is one memoized discovery client plus the time at which it
+// must be discarded and rebuilt. See DiscoveryClient for why this is
+// time-bounded rather than memoized forever like RESTMapper's mapper.
+type cachedDiscovery struct {
+	client    discovery.CachedDiscoveryInterface
+	expiresAt time.Time
+}
+
 // ClientFactory creates Kubernetes clientsets, with impersonation support
 // and a cache to avoid repeated TLS handshakes.
 type ClientFactory struct {
@@ -46,6 +55,8 @@ type ClientFactory struct {
 	baseDynOnce     sync.Once
 	mapper          meta.RESTMapper
 	mapperOnce      sync.Once
+	discoveryCache  atomic.Pointer[cachedDiscovery] // DiscoveryClient's TTL-bounded cache
+	discoverySource discovery.DiscoveryInterface    // test seam: overrides the source DiscoveryClient wraps; nil in production
 	clusterID       string
 	logger          *slog.Logger
 	testOverride    kubernetes.Interface // if set, ClientForUser returns this directly
@@ -214,8 +225,52 @@ func (f *ClientFactory) RESTMapper() meta.RESTMapper {
 	return f.mapper
 }
 
-// DiscoveryClient returns the base clientset's discovery interface.
+// DiscoveryClient returns a discovery client whose contents are cached and
+// refreshed at most every clientCacheTTL (5 minutes) after they were
+// populated — the same staleness bound the remote branch enforces in
+// cluster_router.go's TargetSchemaFor, which discards and rebuilds its
+// whole discovery+mapper pair once the TTL elapses rather than caching
+// either half indefinitely.
+//
+// This deliberately does NOT copy RESTMapper's mapperOnce pattern above.
+// RESTMapper gets away with memoizing its memcache client forever only
+// because restmapper.NewDeferredDiscoveryRESTMapper calls Reset() on every
+// lookup miss, giving it an escape hatch back to live discovery. A bare
+// discovery.CachedDiscoveryInterface has no such hatch: once memoized with
+// nothing to ever call Invalidate(), a CRD installed after the memoization
+// would stay invisible forever to callers like yaml.resolveGVR — a
+// correctness regression on the YAML-apply path, not just a latency
+// tradeoff. So instead of caching forever, the whole cached client is
+// discarded and rebuilt once clientCacheTTL has elapsed, bounding
+// staleness to match /api/v1/capabilities/{clusterID}'s poll cadence and
+// the remote path's behavior.
+//
+// Safe for concurrent use: the cache slot is an atomic.Pointer, so
+// concurrent callers either share the same still-fresh client or each
+// build and publish their own replacement on expiry — never a torn read.
 func (f *ClientFactory) DiscoveryClient() discovery.DiscoveryInterface {
+	now := time.Now()
+	if cd := f.discoveryCache.Load(); cd != nil && now.Before(cd.expiresAt) {
+		return cd.client
+	}
+
+	fresh := &cachedDiscovery{
+		client:    memory.NewMemCacheClient(f.discoverySourceOrDefault()),
+		expiresAt: now.Add(clientCacheTTL),
+	}
+	f.discoveryCache.Store(fresh)
+	return fresh.client
+}
+
+// discoverySourceOrDefault returns the underlying, non-cached discovery
+// client that DiscoveryClient wraps on each rebuild. Production always uses
+// the base clientset's own discovery client; discoverySource lets tests
+// substitute a counting fake so cache-hit/refresh behavior can be verified
+// without a real API server, mirroring testOverride/testDynOverride above.
+func (f *ClientFactory) discoverySourceOrDefault() discovery.DiscoveryInterface {
+	if f.discoverySource != nil {
+		return f.discoverySource
+	}
 	return f.baseClientset.Discovery()
 }
 
@@ -276,6 +331,20 @@ func NewTestClientFactoryWithDynamic(cs *kubernetes.Clientset, dyn dynamic.Inter
 		logger:          slog.Default(),
 		testOverride:    cs,
 		testDynOverride: dyn,
+	}
+}
+
+// NewTestClientFactoryWithDiscoverySource returns a ClientFactory whose
+// DiscoveryClient() wraps the given discovery.DiscoveryInterface instead of
+// the base clientset's own discovery client. For use in tests outside this
+// package (e.g. yaml.resolveGVR's CRD-just-installed self-heal test) that
+// need to exercise DiscoveryClient()'s TTL-cached/invalidate behavior without
+// a real API server. For use in tests only.
+func NewTestClientFactoryWithDiscoverySource(source discovery.DiscoveryInterface) *ClientFactory {
+	return &ClientFactory{
+		clusterID:       "test",
+		logger:          slog.Default(),
+		discoverySource: source,
 	}
 }
 

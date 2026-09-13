@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -97,14 +99,51 @@ var validReasonCodes = map[ReasonCode]bool{
 // platformSupported/discoveryPresent/reachable/authorized are deliberately
 // never collapsed into a single boolean — see the package doc comment above.
 type Capability struct {
-	Operation         string     `json:"operation"`
-	Label             string     `json:"label"`
-	PlatformSupported bool       `json:"platformSupported"`
-	DiscoveryPresent  *bool      `json:"discoveryPresent"`
-	Reachable         *bool      `json:"reachable"`
-	Authorized        *bool      `json:"authorized"`
-	ObservedAt        string     `json:"observedAt"`
-	ReasonCode        ReasonCode `json:"reasonCode"`
+	Operation         string `json:"operation"`
+	Label             string `json:"label"`
+	PlatformSupported bool   `json:"platformSupported"`
+	DiscoveryPresent  *bool  `json:"discoveryPresent"`
+	Reachable         *bool  `json:"reachable"`
+	// Authorized is this identity's SelfSubjectAccessReview verdict for the
+	// operation's representative verb/group/resource, or nil when it could
+	// not be determined.
+	//
+	// The probe is issued CLUSTER-WIDE (empty SAR namespace). For a
+	// cluster-scoped operation that is the whole truth: allowed true means
+	// authorized, allowed false means forbidden. For a NAMESPACED operation
+	// it is only half the truth — an empty namespace on a namespaced
+	// resource asks "in every namespace?", so a true answer genuinely
+	// implies every namespace, while a false answer proves nothing: an
+	// identity holding an ordinary namespaced Role (edit/admin in one
+	// namespace) is denied cluster-wide yet can perform the operation where
+	// it actually works. Reporting that as authorized: false / forbidden
+	// told every namespace-scoped user they could not do things they could
+	// (review findings #2, #6, #10 — the last being the
+	// `resources: ["*/exec"]` wildcard grant form, which only matches a SAR
+	// carrying a non-empty subresource). A negative cluster-wide probe on a
+	// namespaced operation is therefore reported as authorized: nil /
+	// authz_unknown: unknown, not denied.
+	//
+	// Accepting an optional ?namespace= parameter and probing that namespace
+	// would turn the unknown into a definite per-namespace yes/no. That is
+	// the deliberate follow-up option, not an oversight — it changes the
+	// endpoint's request contract (and the TypeScript client's), which this
+	// unit's brief fixes, so it belongs in the unit that also updates the
+	// consumers rather than being smuggled in here.
+	Authorized *bool `json:"authorized"`
+	// ObservedAt is the RFC3339 timestamp of the REACHABILITY observation
+	// this row is based on — "now" for local (no probe cycle is involved)
+	// and the cluster record's LastProbedAt for remote.
+	//
+	// It is NOT the weakest-freshness input contributing to the row, and
+	// must not be described as one (review finding #14): `authorized` can
+	// come from a SelfSubjectAccessReview verdict cached for up to 60s
+	// (accessCacheTTL, internal/k8s/resources/access.go), so on the local
+	// path ObservedAt reads "now" while the authorization dimension beside
+	// it may be a minute old. frontend/lib/capability-types.ts documents the
+	// same thing on the same field; keep the two in step.
+	ObservedAt string     `json:"observedAt"`
+	ReasonCode ReasonCode `json:"reasonCode"`
 }
 
 // CapabilitiesResponse is the body of GET /api/v1/capabilities/{clusterID}.
@@ -140,6 +179,19 @@ type capabilityOp struct {
 	AuthVerb     string
 	AuthGroup    string
 	AuthResource string
+	// ClusterScoped marks AuthResource as a cluster-scoped resource (nodes),
+	// as opposed to a namespaced one (configmaps, pods, pods/exec, pods/log,
+	// externalsecrets). It exists solely to decide how a NEGATIVE
+	// cluster-wide SAR verdict is reported — see Capability.Authorized and
+	// authorizedFromClusterWideSAR.
+	//
+	// The zero value means namespaced deliberately: most Kubernetes
+	// resources are, and a forgotten field then errs toward
+	// authz_unknown ("we could not determine") rather than toward a
+	// definite-but-wrong forbidden. TestCapabilityOperations_ScopePinned
+	// pins the scope of every row by ID so a new row still has to make the
+	// choice consciously.
+	ClusterScoped bool
 }
 
 // capabilityOperations is the package-level operation table (implementation
@@ -170,6 +222,12 @@ var capabilityOperations = []capabilityOp{
 		// group/resource only matches an RBAC rule that itself literally
 		// contains "*", so "*"/"*" made ordinary namespace-scoped editors
 		// come back forbidden — task review round 1, finding #2).
+		//
+		// Choosing a resource ordinary namespaced roles carry only pays off
+		// if the probe also asks a namespaced question. It does not: the SAR
+		// namespace is empty (cluster-wide), which is why a negative here is
+		// reported authz_unknown rather than forbidden — see
+		// Capability.Authorized and capabilityOp.ClusterScoped.
 		ID: "yaml.validate", Label: "Validate YAML",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
@@ -234,10 +292,16 @@ var capabilityOperations = []capabilityOp{
 		// meaningful on the LOCAL branch today (a stripped-down local
 		// install could lack node-list visibility too) and will carry over
 		// unchanged once U10 flips RemoteSupported.
+		//
+		// The ONLY cluster-scoped row in the table: nodes are not namespaced,
+		// so the cluster-wide SAR below is an exact question and a denial is
+		// a real denial (forbidden), not the ambiguous namespaced negative
+		// every other row has to report as authz_unknown.
 		ID: "dashboard.summary", Label: "Dashboard summary",
 		LocalSupported: true, RemoteSupported: false,
 		Probe:    &gvrProbe{Group: "", Resource: "nodes"},
 		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
+		ClusterScoped: true,
 	},
 	{
 		// Resource counts rely on the local informer cache; remote clusters
@@ -260,9 +324,12 @@ var capabilityOperations = []capabilityOp{
 		// concatenation — EXCEPT for the `resources: ["*/exec"]` wildcard
 		// grant form, which ResourceMatches only honors when the requested
 		// subresource is non-empty. An identity granted exec only that way
-		// is reported forbidden here: a false negative, but one that fails
-		// in the safe direction, and A1 leaves no alternative without
-		// extending AccessChecker's API.
+		// comes back Allowed: false from the SAR. That used to be reported
+		// as a definite forbidden (review finding #10); because pods/exec is
+		// namespaced, it is now reported as authz_unknown — the honest
+		// answer for a negative that the probe shape itself may have
+		// manufactured. A1 leaves no alternative without extending
+		// AccessChecker's API.
 		ID: "pod.exec", Label: "Pod exec",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
@@ -273,9 +340,9 @@ var capabilityOperations = []capabilityOp{
 		// servers. handle_ws_logs.go:104.
 		//
 		// Same "pods/log" subresource caveat as pod.exec above: an identity
-		// granted access only via a `resources: ["*/log"]` wildcard rule is
-		// reported forbidden here rather than authorized (safe-direction
-		// false negative) — see pod.exec's comment for why.
+		// granted access only via a `resources: ["*/log"]` wildcard rule
+		// comes back Allowed: false and is reported authz_unknown (pods/log
+		// is namespaced) rather than forbidden — see pod.exec's comment.
 		ID: "logs.stream", Label: "Live log stream",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods/log",
@@ -340,9 +407,18 @@ type reachabilityResult struct {
 	// reachable is nil when unknown/stale, non-nil true/false otherwise.
 	reachable *bool
 	// observedAt is when this observation was made — "now" for local (no
-	// probe cycle involved) and the record's LastProbedAt for remote (the
-	// weakest-freshness input contributing to the row, D3).
+	// probe cycle involved) and the record's LastProbedAt for remote. It
+	// describes the reachability observation only; see Capability.ObservedAt
+	// for why that is NOT the row's weakest-freshness input.
 	observedAt time.Time
+	// reason, when non-empty, says WHY reachable is nil. Empty means the
+	// ordinary staleness case (buildCapability then reports
+	// stale_observation). A registry read that failed sets db_unavailable
+	// here instead: "the database is down" and "the prober is lagging" are
+	// different operator actions — investigate vs wait — and collapsing the
+	// first into the second (review finding #1) sends the operator to wait
+	// out an outage that will never clear on its own.
+	reason ReasonCode
 }
 
 // resolveReachability computes the `reachable` dimension (step 2e). Local is
@@ -354,17 +430,27 @@ func resolveReachability(ctx context.Context, cs clusterRecordGetter, isLocal bo
 	if isLocal {
 		return reachabilityResult{reachable: boolPtr(true), observedAt: now}
 	}
+	if cs == nil {
+		// No cluster registry to read the observation from at all. Distinct
+		// from a stale probe for the same reason the failed read below is.
+		return reachabilityResult{observedAt: now, reason: ReasonDBUnavailable}
+	}
 	rec, err := cs.Get(ctx, clusterID)
 	if err != nil || rec == nil {
-		// Reachability itself could not be determined (e.g. the store read
-		// failed after target resolution had already succeeded, or a
-		// clusterRecordGetter — real or a test fake — returns (nil, nil))
-		// — treated the same as staleness: reachable stays nil, not a
-		// guessed false. The real *store.ClusterStore always returns
-		// (nil, err) on failure, so rec == nil here can't fire in
-		// production; the check exists for a future fake that returns
-		// (nil, nil) instead of dereferencing a nil rec below.
-		return reachabilityResult{observedAt: now}
+		// Reachability itself could not be determined: the registry read
+		// failed (a Postgres outage after target resolution had already
+		// succeeded from cache), or a clusterRecordGetter — real or a test
+		// fake — returned (nil, nil). reachable stays nil, never a guessed
+		// false, and the reason is db_unavailable rather than
+		// stale_observation (review finding #1): a lagging prober resolves
+		// itself, a registry outage does not, and the operator must be able
+		// to tell which one they are looking at.
+		//
+		// The real *store.ClusterStore always returns (nil, err) on failure,
+		// so rec == nil with a nil error can't fire in production; the check
+		// exists so a fake returning (nil, nil) can't dereference a nil rec
+		// below.
+		return reachabilityResult{observedAt: now, reason: ReasonDBUnavailable}
 	}
 	if rec.LastProbedAt == nil || now.Sub(*rec.LastProbedAt) > staleAfter {
 		at := now
@@ -373,23 +459,53 @@ func resolveReachability(ctx context.Context, cs clusterRecordGetter, isLocal bo
 		}
 		return reachabilityResult{observedAt: at}
 	}
-	// "connected" is part of the connected|disconnected|blocked|error status
-	// vocabulary owned by internal/k8s/cluster_prober.go (~7 call sites) —
-	// a rename there would silently make every remote cluster read
-	// unreachable here, with no test to catch it.
-	connected := rec.Status == "connected"
+	// k8s.StatusConnected, not a bare "connected" literal: the
+	// connected|disconnected|blocked|error vocabulary is owned by
+	// internal/k8s/cluster_prober.go, which now exports it as typed
+	// constants (review finding #11). store.ClusterRecord.Status is a plain
+	// string column, so .String() is the comparison form — the same one
+	// handle_clusters.go uses. Comparing against a literal here meant a
+	// rename in the prober would silently mark every remote cluster
+	// unreachable with no compile error.
+	connected := rec.Status == k8s.StatusConnected.String()
 	return reachabilityResult{reachable: &connected, observedAt: *rec.LastProbedAt}
 }
 
-// classifyTargetSchemaErr maps a TargetSchemaFor error to one of the three
-// target-resolution reason codes (step 2d / brief A3). db_unavailable is
-// matched by the exact substring requireClusterStore uses
-// (cluster_router.go) so the mapping tracks that message rather than
-// duplicating its wording; a genuine "cluster not found" (pgx.ErrNoRows,
-// propagated unwrapped through ClusterStore.Get's %w chain) is
-// cluster_unknown; everything else (decrypt, SSRF block, TLS policy
-// failure, or any other resolution error) is credentials_invalid as the
-// catch-all "something is wrong with how we'd connect to this cluster".
+// classifyTargetSchemaErr maps a TargetSchemaFor error to a target-resolution
+// reason code (step 2d / brief A3).
+//
+// Order matters, and every branch before the last one exists because it
+// names a condition credentials_invalid would otherwise lie about (review
+// finding #7 — three distinct error shapes reached the catch-all and told
+// the operator their stored credentials were bad):
+//
+//  1. pgx.ErrNoRows (propagated unwrapped through ClusterStore.Get's %w
+//     chain) — the row genuinely isn't there: cluster_unknown.
+//  2. requireClusterStore's "no cluster store" message — no registry wired:
+//     db_unavailable. Matched by substring deliberately: cluster_router.go's
+//     requireClusterStore doc comment declares that wording load-bearing and
+//     maintains a census of the six assertions on it (three in internal/k8s,
+//     three in internal/certmanager) plus this one. Replacing it with a
+//     typed sentinel would mean editing that contract and its census, which
+//     is out of this change's scope, so the match stays and the census stays
+//     accurate.
+//  3. A PostgreSQL-level failure — a server error (pgconn.PgError) or a
+//     failed connection attempt (pgconn.ConnectError) on the miss path's
+//     cluster-record read: db_unavailable. This MUST precede the network
+//     checks below, because a Postgres connect failure wraps a net.OpError
+//     and would otherwise be reported as "the cluster is unreachable" when
+//     it is the registry that is down.
+//  4. DNS / timeout / transport failures — a wrapped *net.DNSError from
+//     ValidateRemoteURLContext's fail-closed lookup, context.DeadlineExceeded
+//     or context.Canceled from the 30s bound TargetSchemaFor puts on its
+//     miss path (and remoteConfig's own), or any other net.Error: the
+//     credentials are unproven, not invalid — we never got far enough to
+//     use them. unreachable.
+//
+// Everything left is what credentials_invalid actually names: decrypt
+// failure, SSRF/TLS policy refusal, impersonation probe failure — "something
+// is wrong with how we'd connect to this cluster", not with whether we can
+// reach it or read its registry row.
 func classifyTargetSchemaErr(err error) ReasonCode {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ReasonClusterUnknown
@@ -397,6 +513,25 @@ func classifyTargetSchemaErr(err error) ReasonCode {
 	if strings.Contains(err.Error(), "no cluster store") {
 		return ReasonDBUnavailable
 	}
+
+	var pgErr *pgconn.PgError
+	var pgConnErr *pgconn.ConnectError
+	if errors.As(err, &pgErr) || errors.As(err, &pgConnErr) {
+		return ReasonDBUnavailable
+	}
+
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return ReasonUnreachable
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return ReasonUnreachable
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return ReasonUnreachable
+	}
+
 	return ReasonCredentialsInvalid
 }
 
@@ -405,12 +540,41 @@ func classifyTargetSchemaErr(err error) ReasonCode {
 // (yaml/handler.go:354-361, cited in brief A6): only a nil list counts as
 // "discovery unavailable" — a non-nil list alongside a non-nil error (some
 // group/version failed to load) is still usable for the groups that did.
-func fetchDiscoveryLists(disc discovery.DiscoveryInterface) (lists []*metav1.APIResourceList, unavailable bool) {
+//
+// failedGroups is the set of API groups that did NOT load, extracted from
+// client-go's *discovery.ErrGroupDiscoveryFailed. Tolerating a partial
+// result is right for every group that loaded, but for the group actually
+// being probed it is the difference between two answers this endpoint exists
+// to keep apart: gvrPresentIn finds nothing in a list the group never made
+// it into, and reporting that as a definite discovery_missing claims the CRD
+// is absent when all we know is that we failed to look (review finding #12).
+// The caller turns membership in this set into discovery_unavailable.
+func fetchDiscoveryLists(disc discovery.DiscoveryInterface) (lists []*metav1.APIResourceList, unavailable bool, failedGroups map[string]bool) {
 	_, apiResourceLists, err := disc.ServerGroupsAndResources()
 	if err != nil && apiResourceLists == nil {
-		return nil, true
+		return nil, true, nil
 	}
-	return apiResourceLists, false
+	return apiResourceLists, false, failedDiscoveryGroups(err)
+}
+
+// failedDiscoveryGroups reduces a discovery error to the set of API group
+// names that failed to load. Returns nil for a nil error or any error shape
+// that isn't client-go's per-group-version failure aggregate — in which case
+// the caller has no evidence any specific group is unknown and keeps today's
+// definite verdict.
+func failedDiscoveryGroups(err error) map[string]bool {
+	if err == nil {
+		return nil
+	}
+	var groupErr *discovery.ErrGroupDiscoveryFailed
+	if !errors.As(err, &groupErr) || len(groupErr.Groups) == 0 {
+		return nil
+	}
+	groups := make(map[string]bool, len(groupErr.Groups))
+	for gv := range groupErr.Groups {
+		groups[gv.Group] = true
+	}
+	return groups
 }
 
 // gvrPresentIn reports whether group/resource appears in lists. Mirrors the
@@ -492,7 +656,15 @@ func buildCapability(
 
 	row.Reachable = reach.reachable
 	if reach.reachable == nil {
+		// stale_observation is the DEFAULT explanation for a null reachable,
+		// not the only one: resolveReachability sets reach.reason when it
+		// knows something more specific (db_unavailable for a registry it
+		// could not read). Preferring it keeps "the prober is behind" and
+		// "the database is down" distinct — finding #1.
 		row.ReasonCode = ReasonStaleObservation
+		if reach.reason != "" {
+			row.ReasonCode = reach.reason
+		}
 		row.ObservedAt = reach.observedAt.UTC().Format(time.RFC3339)
 		return row
 	}
@@ -535,6 +707,58 @@ func buildCapability(
 	}
 	row.ReasonCode = reason
 	return row
+}
+
+// authorizedFromClusterWideSAR turns a successful cluster-wide (empty
+// namespace) SelfSubjectAccessReview verdict into the reported `authorized`
+// dimension.
+//
+// buildCapability's contract is unchanged and deliberately dumb: a non-nil
+// false means forbidden. Deciding whether a given false IS a denial is this
+// function's job, because that depends on the shape of the question asked,
+// which is a property of the probe, not of the reason-code priority chain.
+//
+//   - allowed == true → true, on any scope. A cluster-wide allow genuinely
+//     implies every namespace.
+//   - allowed == false on a CLUSTER-SCOPED resource → false. The question
+//     had no namespace dimension; the denial is the whole answer.
+//   - allowed == false on a NAMESPACED resource → nil (authz_unknown). The
+//     probe asked "in ALL namespaces?"; an identity with an ordinary
+//     namespaced Role answers no to that and yes where it matters. See
+//     Capability.Authorized for the full rationale and the ?namespace=
+//     follow-up.
+//
+// A SAR that ERRORS never reaches here — the caller keeps authorized nil and
+// passes the error through, which buildCapability maps to authz_unknown by
+// its own branch.
+func authorizedFromClusterWideSAR(op capabilityOp, allowed bool) *bool {
+	if allowed || op.ClusterScoped {
+		return boolPtr(allowed)
+	}
+	return nil
+}
+
+// capabilityClusterGetter resolves the clusterRecordGetter the reachability
+// dimension reads from. It is a package-level func var rather than a direct
+// s.ClusterStore reference at the call site for exactly the reason
+// clusterRecordGetter is an interface at all: *store.ClusterStore is a
+// concrete type wrapping an unexported pgx pool, and internal/k8s exposes no
+// seam for faking the router's copy of it either, so substituting a fake
+// here is the only way a package-internal test can drive the handler's
+// REMOTE chain (reachability → discovery → impersonated SAR) end to end
+// through real HTTP instead of by calling resolveReachability and
+// buildCapability directly (review finding #3 — every remote reason code was
+// pinned only by direct calls against test-only synthetic rows).
+//
+// Production never reassigns it. It also normalizes the nil case: returning
+// a nil *store.ClusterStore as a non-nil interface (the classic Go
+// nil-interface trap) would hand resolveReachability something that panics
+// on Get rather than a nil it can report db_unavailable for.
+var capabilityClusterGetter = func(s *Server) clusterRecordGetter {
+	if s.ClusterStore == nil {
+		return nil
+	}
+	return s.ClusterStore
 }
 
 // handleClusterCapabilities answers GET /api/v1/capabilities/{clusterID}.
@@ -627,7 +851,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 		// switch above already routed the "non-local + nil ClusterStore" case
 		// to globalReason=db_unavailable, and resolveReachability's local
 		// branch returns before ever touching cs.
-		reach = resolveReachability(ctx, s.ClusterStore, isLocal, normID, now)
+		reach = resolveReachability(ctx, capabilityClusterGetter(s), isLocal, normID, now)
 	}
 
 	// Discovery lists are fetched at most once per response (both GVR-probed
@@ -638,6 +862,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 	var discoveryLists []*metav1.APIResourceList
 	discoveryChecked := false
 	discoveryListsUnavailable := false
+	var discoveryFailedGroups map[string]bool
 	fetchDiscoveryOnce := func() {
 		if discoveryChecked {
 			return
@@ -647,7 +872,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 			discoveryListsUnavailable = true
 			return
 		}
-		discoveryLists, discoveryListsUnavailable = fetchDiscoveryLists(targetSchema.Discovery)
+		discoveryLists, discoveryListsUnavailable, discoveryFailedGroups = fetchDiscoveryLists(targetSchema.Discovery)
 	}
 
 	reachableNow := globalReason == "" && reach.reachable != nil && *reach.reachable
@@ -664,21 +889,31 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 		if platformSupported && globalReason == "" && reachableNow {
 			if op.Probe != nil {
 				fetchDiscoveryOnce()
-				if discoveryListsUnavailable {
+				present := !discoveryListsUnavailable && gvrPresentIn(discoveryLists, op.Probe.Group, op.Probe.Resource)
+				switch {
+				case discoveryListsUnavailable:
 					discoveryUnavailable = true
-				} else {
-					present := gvrPresentIn(discoveryLists, op.Probe.Group, op.Probe.Resource)
+				case !present && discoveryFailedGroups[op.Probe.Group]:
+					// The one group we needed is precisely the one that
+					// failed to load, so its absence from the partial list
+					// is no evidence at all. Unknown, not missing (#12).
+					discoveryUnavailable = true
+				default:
 					discoveryPresent = &present
 				}
 			}
 			if s.ResourceHandler != nil && s.ResourceHandler.AccessChecker != nil {
+				// The trailing "" is the SAR namespace: this is a
+				// CLUSTER-WIDE probe, which is an exact question only for a
+				// cluster-scoped resource. authorizedFromClusterWideSAR
+				// decides what a negative verdict is worth on each scope.
 				var allowed bool
 				allowed, authErr = s.ResourceHandler.AccessChecker.CanAccessGroupResource(
 					ctx, normID, user.KubernetesUsername, user.KubernetesGroups,
 					op.AuthVerb, op.AuthGroup, op.AuthResource, "",
 				)
 				if authErr == nil {
-					authorized = &allowed
+					authorized = authorizedFromClusterWideSAR(op, allowed)
 				}
 			} else {
 				authErr = errNoAccessChecker

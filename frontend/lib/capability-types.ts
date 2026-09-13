@@ -18,33 +18,50 @@
  * is the point: a UI must render `unreachable` and `forbidden` differently
  * from `unsupported_platform` (see U11b), so a silently-ignored new code
  * would be a real regression, not a cosmetic one.
+ *
+ * This array MUST stay in lockstep with validReasonCodes in
+ * backend/internal/server/handle_capabilities.go — capability-types_test.ts
+ * and backend/internal/server/capability_parity_test.go pin both sides to the
+ * same literals so drift fails a test instead of shipping silently.
  */
-export type ReasonCode =
-  | "ok"
-  | "unsupported_platform"
-  | "discovery_missing"
-  | "discovery_unavailable"
-  | "unreachable"
-  | "stale_observation"
-  | "forbidden"
-  | "authz_unknown"
-  | "cluster_unknown"
-  | "credentials_invalid"
-  | "db_unavailable";
+export const REASON_CODES = [
+  "ok",
+  "unsupported_platform",
+  "discovery_missing",
+  "discovery_unavailable",
+  "unreachable",
+  "stale_observation",
+  "forbidden",
+  "authz_unknown",
+  "cluster_unknown",
+  "credentials_invalid",
+  "db_unavailable",
+] as const;
 
-/** Operation ids currently published by the capabilities endpoint. */
-export type CapabilityOperationId =
-  | "yaml.validate"
-  | "yaml.diff"
-  | "yaml.export"
-  | "yaml.apply"
-  | "dashboard.summary"
-  | "resources.counts"
-  | "pod.exec"
-  | "logs.stream"
-  | "logs.search"
-  | "flows.stream"
-  | "eso.write";
+export type ReasonCode = typeof REASON_CODES[number];
+
+/**
+ * Operation ids currently published by the capabilities endpoint.
+ *
+ * This array MUST stay in lockstep with capabilityOperations in
+ * backend/internal/server/handle_capabilities.go — same parity-test pairing
+ * as REASON_CODES above.
+ */
+export const CAPABILITY_OPERATION_IDS = [
+  "yaml.validate",
+  "yaml.diff",
+  "yaml.export",
+  "yaml.apply",
+  "dashboard.summary",
+  "resources.counts",
+  "pod.exec",
+  "logs.stream",
+  "logs.search",
+  "flows.stream",
+  "eso.write",
+] as const;
+
+export type CapabilityOperationId = typeof CAPABILITY_OPERATION_IDS[number];
 
 /**
  * One operation's six-dimension capability row.
@@ -83,7 +100,15 @@ export interface Capability {
    * verb/resource. `null` when the SAR could not be evaluated.
    */
   authorized: boolean | null;
-  /** RFC3339 timestamp of the weakest-freshness input contributing to this row. */
+  /**
+   * RFC3339 timestamp of the reachability observation this row is based on
+   * ("now" for local — no probe cycle involved — or the cluster record's
+   * last-probed time for remote). This is NOT the weakest-freshness input
+   * overall: `authorized` can come from a SelfSubjectAccessReview verdict
+   * cached for up to 60s (accessCacheTTL, internal/k8s/resources/access.go),
+   * so on the local path `observedAt` can read "now" while the authorization
+   * input it sits next to is up to a minute old.
+   */
   observedAt: string;
   /** Why this row is not plain "ok". Always a member of {@link ReasonCode}. */
   reasonCode: ReasonCode;

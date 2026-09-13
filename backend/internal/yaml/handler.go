@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 )
 
 // Handler provides HTTP handlers for YAML operations.
@@ -347,17 +348,55 @@ func readYAMLBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 
 // resolveGVR resolves a plural resource kind name to a GroupVersionResource
 // using the API server's discovery API.
+//
+// clientFactory.DiscoveryClient() is TTL-cached (see ClientFactory.DiscoveryClient),
+// so a CRD installed moments ago can be absent from the cached snapshot. If a
+// full scan does not find the requested kind, we invalidate the cache (when the
+// underlying client supports it) and retry exactly once against freshly fetched
+// discovery data before giving up — mirroring the self-healing
+// restmapper.NewDeferredDiscoveryRESTMapper already does for RESTMapper() on a
+// mapper-lookup miss.
 func resolveGVR(clientFactory *k8s.ClientFactory, kind string) (schema.GroupVersionResource, error) {
 	kind = strings.ToLower(kind)
 
 	disc := clientFactory.DiscoveryClient()
-	_, apiResourceLists, err := disc.ServerGroupsAndResources()
-	if err != nil {
-		// ServerGroupsAndResources may return partial results with an error
-		// for unavailable API groups. Only fail if no results were returned.
-		if apiResourceLists == nil {
-			return schema.GroupVersionResource{}, fmt.Errorf("discovering API resources: %w", err)
+
+	gvr, found, hardErr := scanForKind(disc, kind)
+	if hardErr != nil {
+		return schema.GroupVersionResource{}, fmt.Errorf("discovering API resources: %w", hardErr)
+	}
+	if found {
+		return gvr, nil
+	}
+
+	// Miss on the first scan. Invalidate the cached discovery data (if the
+	// client supports it — the factory may hand back a non-cached
+	// implementation in tests) and retry exactly once against freshly
+	// fetched discovery before concluding the kind genuinely doesn't exist.
+	if cached, ok := disc.(discovery.CachedDiscoveryInterface); ok {
+		cached.Invalidate()
+
+		gvr, found, hardErr = scanForKind(disc, kind)
+		if hardErr != nil {
+			return schema.GroupVersionResource{}, fmt.Errorf("discovering API resources: %w", hardErr)
 		}
+		if found {
+			return gvr, nil
+		}
+	}
+
+	return schema.GroupVersionResource{}, fmt.Errorf("resource %q not found in API server", kind)
+}
+
+// scanForKind performs a single discovery scan, returning the matched GVR and
+// whether the kind was found. The returned error is non-nil only when
+// ServerGroupsAndResources failed outright with no usable results (partial
+// results alongside an error, e.g. one unavailable API group, are tolerated
+// and scanned as today).
+func scanForKind(disc discovery.DiscoveryInterface, kind string) (schema.GroupVersionResource, bool, error) {
+	_, apiResourceLists, err := disc.ServerGroupsAndResources()
+	if err != nil && apiResourceLists == nil {
+		return schema.GroupVersionResource{}, false, err
 	}
 
 	for _, list := range apiResourceLists {
@@ -371,10 +410,10 @@ func resolveGVR(clientFactory *k8s.ClientFactory, kind string) (schema.GroupVers
 					Group:    gv.Group,
 					Version:  gv.Version,
 					Resource: r.Name,
-				}, nil
+				}, true, nil
 			}
 		}
 	}
 
-	return schema.GroupVersionResource{}, fmt.Errorf("resource %q not found in API server", kind)
+	return schema.GroupVersionResource{}, false, nil
 }
