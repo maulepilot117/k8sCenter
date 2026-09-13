@@ -121,6 +121,70 @@ export async function deleteAllSavedViews(page: Page): Promise<void> {
 }
 
 /**
+ * Shape of a pin config, mirroring PinConfig in
+ * frontend/lib/preference-types.ts. Loose for the same reason the saved-view
+ * seed is: specs seed uids the UI would never write, to reach the replaced
+ * and unverified classifications.
+ */
+export type PinConfigSeed = {
+  schemaVersion: number;
+  resourceKind: string;
+  group: string;
+  version: string;
+  namespace: string;
+  name: string;
+  uid: string;
+  displayKind: string;
+};
+
+/**
+ * Create a pin directly through the API and return its record id.
+ *
+ * Goes through page.request so the call carries the page's own cluster and
+ * identity, which is what makes a seeded pin belong to the same user the
+ * browser is logged in as.
+ */
+export async function createPin(
+  page: Page,
+  name: string,
+  config: PinConfigSeed,
+  clusterId?: string,
+): Promise<string> {
+  const headers = await getAuthHeaders(page);
+  const res = await page.request.post("/api/v1/preferences/pins", {
+    headers: clusterId ? { ...headers, "X-Cluster-ID": clusterId } : headers,
+    data: { name, config },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `createPin(${name}) failed: ${res.status()} ${await res.text()}`,
+    );
+  }
+  const body = await res.json();
+  return body.data.id as string;
+}
+
+/**
+ * Remove every pin the current user owns, on every cluster.
+ *
+ * Exhaustive rather than scoped to the active cluster, for the same reason as
+ * deleteAllSavedViews: an other-cluster pin left behind is invisible in the
+ * UI but still counts against the 200-pin ceiling.
+ */
+export async function deleteAllPins(page: Page): Promise<void> {
+  const headers = await getAuthHeaders(page);
+  const res = await page.request.get("/api/v1/preferences/pins", { headers });
+  if (!res.ok()) return;
+  const body = await res.json();
+  for (const record of body.data ?? []) {
+    await page.request.delete(`/api/v1/preferences/pins/${record.id}`, {
+      headers,
+      failOnStatusCode: false,
+    });
+  }
+}
+
+/**
  * Apply the Bearer-token fetch injection that fixtures/base.ts applies.
  *
  * A context created with browser.newContext() does NOT get the base fixture,

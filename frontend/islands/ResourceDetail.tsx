@@ -43,6 +43,7 @@ import RoleBindingsList from "@/islands/RoleBindingsList.tsx";
 import MetricsRail from "@/islands/MetricsRail.tsx";
 import { CodeMirrorEditor } from "@/components/ui/CodeMirrorEditor.tsx";
 import DetailShell, { type DetailTab } from "@/components/k8s/DetailShell.tsx";
+import { PinToggle } from "@/components/k8s/PinToggle.tsx";
 import type { Tone } from "@/components/ui/glass/StatusBadge.tsx";
 
 interface ResourceDetailProps {
@@ -970,8 +971,15 @@ export default function ResourceDetail({
     ? `${title} · namespace ${namespace}`
     : title;
 
-  // Action buttons for DetailShell
-  const actionButtons = resource.value && actions.value.length > 0
+  // Action buttons for DetailShell.
+  //
+  // Gated on the resource alone. Gating the whole block on
+  // actions.value.length > 0 as well would hide the pin control and the
+  // Investigate link from anyone whose RBAC grants no write actions — the
+  // read-only users for whom a pin is most of the value. The RBAC gate stays
+  // where it belongs, on the action list itself, which renders nothing when
+  // empty.
+  const actionButtons = resource.value
     ? (
       <>
         {actions.value.map((actionId) => {
@@ -1053,6 +1061,13 @@ export default function ResourceDetail({
             Investigate
           </a>
         )}
+        <PinToggle
+          resourceKind={kind}
+          displayKind={RESOURCE_API_KINDS[kind] ?? title}
+          namespace={namespace ?? ""}
+          name={name}
+          uid={resource.value?.metadata.uid}
+        />
       </>
     )
     : undefined;
