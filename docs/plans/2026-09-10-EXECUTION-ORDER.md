@@ -23,8 +23,14 @@ Per-unit detail lives in the release plans; this file never duplicates it.
 | D — Persistent incident investigations | `2026-09-10-release-d-incidents-impl.md` | 12 |
 | E — GitOps-aware tracked changes | `2026-09-10-release-e-tracked-changes-impl.md` | 8 |
 | F — Backup assurance and readiness | `2026-09-10-release-f-backup-assurance-impl.md` | 10 |
+| G — Personal dashboard builder | `2026-09-13-dashboard-builder-design.md` | 26 |
 
-**Total: 55 PRs + U0 = 56.**
+**Total: 55 + 26 (G) + 1 (DX) PRs + U0 = 83.**
+
+Release G was added 2026-09-13 when Q5 resolved into a full dashboard builder.
+It supersedes Release A's deferred appendix (U38 + U6), which are no longer
+units. DX is a standalone single-PR discoverability fix for Release A's shipped
+surfaces.
 
 ---
 
@@ -79,19 +85,32 @@ running in CI while local developers without a database skip cleanly.
 
 Pure/hermetic unit tests are always-on and unaffected by the gate.
 
-### G4. Migration sequences — pre-assigned, do not improvise
+### G4. Migration sequences — reserved intent, assigned at merge time
 
-| Sequence | Release | Migration |
-|---|---|---|
-| `000018` | A | `create_user_preferences` |
-| `000019` | B | `scope_eso_history` (index-only; no column change, no backfill) |
-| `000020` | D | `create_incidents` |
-| `000021` | E | `create_change_receipts` |
-| `000022` | F | `create_backup_assurance` |
-| — | C | none |
+**Amended 2026-09-13.** The table below is *intent*, not assignment.
 
-Last existing migration is `000017`. Any unit needing an unlisted sequence stops
-and escalates rather than picking a number.
+| Release | Migration |
+|---|---|
+| A | `create_user_preferences` — **applied as `000018`** |
+| G | `add_dashboard_layout_kind` |
+| B | `scope_eso_history` (index-only; no column change, no backfill) |
+| D | `create_incidents` |
+| E | `create_change_receipts` |
+| F | `create_backup_assurance` |
+| C | none |
+
+**The merging unit takes the next free sequence number at merge time.**
+
+Why the original pre-assignment was unsafe: `backend/internal/store/migrate.go:25`
+runs plain `m.Up()`, which applies only migrations numbered **above** the
+database's current version. The original table fixed `000019` to Release B. Once
+the order changed and Release G landed first, G taking its pre-assigned slot
+further up the range would mean B's `000019` never ran on any database that had
+already passed it — silently, with no error. Fixing numbers at plan time is only
+safe while the plan order never changes, and it changed.
+
+Last applied migration is `000018`. A unit that cannot determine the next free
+number stops and escalates rather than guessing.
 
 `migrations/NOTES.txt` must be updated for every operator-visible migration —
 repo convention, and omitted from four of the master plan's file lists.
@@ -151,15 +170,40 @@ so it executes **before Release E** rather than reordering whole releases.
 ### Sequence
 
 ```
-U0                      prep — DB test harness + CI Postgres service
-Release A               U1 → U2 → U3 → U4 → U5a → U5b
+U0                      prep — DB test harness + CI Postgres service      [done]
+Release A               U1 → U2 → U3 → U4 → U5a → U5b                     [done]
+DX                      discoverability fix for shipped Release A surfaces
+C (partial)             U7 → U8 → U11a          pulled forward — see below
+Release G               D0 → P1 → P2 → P3 → P4  personal dashboard builder
 Release B               U13 → U14a → U14b → U15 → U16 → U17 → U18 → U19a → U19b
-Release C               U7 → U8 → U9a → U9b → U10 → U11a → U11b → U11c → U12*
+Release C (remainder)   U9a → U9b → U10 → U11b → U11c → U12*
 Release F               U32 → U32b → U33 → U34a → U34b → U34c → U35 → U36 → U36b → U37**
 U20                     pulled forward from Release D
 Release E               U26 → U27 → U28 → U29a → U29b → U30a → U30b → U31
 Release D (remainder)   U21a → U21b → U22a → U22b → U23a → U23b → U24a → U24b → U24c → U25a → U25b
+
+Release G / P5          29 catalog widgets, ~7 units — interleaved as waves
+                        between the releases above; no ordering dependency
 ```
+
+### Correction (2026-09-13): C/U7-U8-U11a pulled forward, Release G inserted
+
+Q5 resolved into a full dashboard builder rather than the constrained
+arrange-only feature the Release A appendix scoped. See
+`docs/plans/2026-09-13-dashboard-builder-design.md`; that document supersedes
+R7 and the U6 exit criterion, and absorbs U38 + U6 into its P3 and P4.
+
+Release G scopes layouts per `(user, cluster)`, but pre-existing defect #3 means
+the web UI has no cluster switcher — `selectedCluster` is read in three places
+and never assigned — so the per-cluster dimension would be inert on arrival.
+The switcher is **C/U11a**, which depends on U8, which depends on U7. Those
+three units are therefore pulled ahead of Release G; the rest of Release C stays
+in its original slot.
+
+**DX** is a single-PR discoverability fix for what Release A already shipped:
+the `Nothing pinned yet.` empty state gives no path to creating a pin, `Views
+(0)` does not read as savable, and neither feature appears in the command
+palette or shortcuts sheet.
 
 \* U12's live two-cluster run is gated on Q2 (unanswered). The fixture, script
 and docs land; the live run is a documented human runbook.
@@ -194,7 +238,7 @@ on the execution order above.
 | `backend/internal/server/server.go` | A/U2, C/U8, D/U23a, E/U30b, F/U35 (**not** F/U35 per its own correction — already wired) |
 | `backend/cmd/kubecenter/main.go` | A/U3, B/U14a, D/U23a, D/U25b, E/U29a, F/U34c |
 | `backend/internal/yaml/handler.go` | C/U9a, C/U9b, E/U30a — **C must land before E** |
-| `frontend/islands/DashboardV2.tsx` | A/U6 (deferred), C/U11b |
+| `frontend/islands/DashboardV2.tsx` | G/D0, G/D4-D5, C/U11b — **G restructures this file; C/U11b must rebase onto it** |
 | `frontend/islands/YamlApplyPage.tsx` | C/U11b, E/U31 |
 | `frontend/lib/api.ts` | C/U11a, D/U24a |
 | `backend/internal/notifications/service.go` | F/U34b — shared by all notification sources; regression coverage required |
@@ -233,4 +277,4 @@ not remote". This is **stale** — `access.go:258-265` routes remote SARs, wired
 | Q2 | C/U12 live validation only | Open — source work proceeds against fixtures |
 | Q3 | All rehearsal execution | Open — U37 stays docs-only |
 | Q4 | Git patch/PR extension | Open — U26 delivers read-only ownership |
-| Q5 | A/U38 + A/U6 dashboard layouts | Open — deferred appendix |
+| Q5 | A/U38 + A/U6 dashboard layouts | **Resolved 2026-09-13** — widget catalog settled at 36 widgets; scope raised to a full builder. See `docs/plans/2026-09-13-dashboard-builder-design.md`. U38 + U6 dissolved into Release G. |
