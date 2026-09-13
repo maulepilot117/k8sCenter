@@ -1,8 +1,8 @@
 import {
-  type Page,
-  type BrowserContext,
   type APIRequestContext,
+  type BrowserContext,
   expect,
+  type Page,
 } from "@playwright/test";
 
 /** Get the stored E2E access token from the browser context's localStorage */
@@ -10,7 +10,7 @@ export async function getAuthHeaders(
   page: Page,
 ): Promise<Record<string, string>> {
   const token = await page.evaluate(() =>
-    localStorage.getItem("e2e_access_token"),
+    localStorage.getItem("e2e_access_token")
   );
   return {
     "X-Requested-With": "XMLHttpRequest",
@@ -272,4 +272,93 @@ export function bearerHeaders(token: string): Record<string, string> {
  */
 export function e2eSecureName(kind: string): string {
   return `e2e${kind}${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+/**
+ * The credentials fixtures/auth.setup.ts provisions. Kept beside the helpers
+ * that need them so a spec never has to restate them.
+ */
+export const E2E_USERNAME = "admin";
+export const E2E_PASSWORD = "admin123";
+
+/**
+ * Sign in through the real login form, in a context that has NOT had the
+ * fixture's token injection applied.
+ *
+ * Websocket specs need this; ordinary specs do not. The access token lives in
+ * a module-level closure in frontend/lib/api.ts, and frontend/lib/ws.ts reads
+ * that same closure to authenticate the socket. The fixture's injection puts
+ * an Authorization header on outgoing fetches but never populates that
+ * closure, so the socket opens, finds no token, closes, and backs off -- live
+ * updates then appear to be broken when only the harness is.
+ *
+ * The obvious alternative, dropping the injection globally so the app
+ * refreshes its own token, does not work: refresh tokens rotate
+ * (auth/session.go Rotate), storageState carries exactly one refresh cookie,
+ * and the first spec to spend it logs out every spec that follows. A real
+ * login mints a fresh session instead of consuming the shared one, so it
+ * costs nothing the other specs depend on.
+ *
+ * Use it with a context of your own:
+ *
+ *     const context = await browser.newContext();
+ *     const page = await context.newPage();
+ *     await loginThroughUI(page);
+ */
+export async function loginThroughUI(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.getByLabel("Username").fill(E2E_USERNAME);
+  await page.getByLabel("Password").fill(E2E_PASSWORD);
+  await page.getByRole("button", { name: /sign in/i }).click();
+  // Landing on the dashboard is what proves the token is in memory.
+  await page.waitForURL((url) => url.pathname === "/");
+
+  // Mint a second token and stash it under the key getAuthHeaders reads, so
+  // the API helpers in this file work in this context as they do everywhere
+  // else. This does NOT reinstate the fixture's injection -- that is an init
+  // script and nothing here installs one -- so the app keeps authenticating
+  // its socket with the in-memory token the login above minted, which is the
+  // entire reason for logging in.
+  const token = await page.evaluate(async (creds) => {
+    const res = await fetch("/api/v1/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      body: JSON.stringify(creds),
+    });
+    return (await res.json()).data.accessToken as string;
+  }, { username: E2E_USERNAME, password: E2E_PASSWORD });
+  await page.evaluate(
+    (t: string) => localStorage.setItem("e2e_access_token", t),
+    token,
+  );
+}
+
+/**
+ * Start watching for the resource socket's subscribe acknowledgement.
+ *
+ * Call BEFORE navigating, then await the returned check before publishing the
+ * event under test. The page's socket connects a beat after hydration, and an
+ * event published before the subscription exists is delivered to nobody -- a
+ * spec that skips this is asserting against an event the server never sent to
+ * it, which is the actual reason these tests were called "timing-sensitive".
+ *
+ *     const subscribed = watchForSubscription(page, "configmaps");
+ *     await page.goto(...);
+ *     await expect.poll(subscribed, { timeout: 20_000 }).toBe(true);
+ */
+export function watchForSubscription(page: Page, kind: string): () => boolean {
+  let seen = false;
+  page.on("websocket", (ws) => {
+    if (!ws.url().includes("/ws/")) return;
+    ws.on("framereceived", (frame) => {
+      const payload = String(frame.payload);
+      if (payload.includes('"subscribed"') && payload.includes(kind)) {
+        seen = true;
+      }
+    });
+  });
+  return () => seen;
 }
