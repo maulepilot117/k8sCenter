@@ -73,51 +73,123 @@ export type SavedViewConfigSeed = {
   sortDir: string;
 };
 
+/** The two preference collections, as they appear in the API path. */
+type PreferenceKind = "views" | "pins";
+
 /**
- * Create a saved view directly through the API and return its record id.
+ * Create a preference record directly through the API and return its id.
  *
  * Goes through page.request so the call carries the page's own cluster and
- * identity, which is what makes a seeded view belong to the same user the
+ * identity, which is what makes a seeded record belong to the same user the
  * browser is logged in as.
  */
+async function createPreferenceRecord(
+  page: Page,
+  kind: PreferenceKind,
+  name: string,
+  config: SavedViewConfigSeed | PinConfigSeed,
+  clusterId?: string,
+): Promise<string> {
+  const headers = await getAuthHeaders(page);
+  const res = await page.request.post(`/api/v1/preferences/${kind}`, {
+    headers: clusterId ? { ...headers, "X-Cluster-ID": clusterId } : headers,
+    data: { name, config },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `create ${kind} record "${name}" failed: ${res.status()} ${await res
+        .text()}`,
+    );
+  }
+  return (await res.json()).data.id as string;
+}
+
+/**
+ * Remove every preference record of one kind the current user owns, on every
+ * cluster.
+ *
+ * Exhaustive rather than scoped to the active cluster: a spec that seeds an
+ * other-cluster record would otherwise leave it behind, and the per-user
+ * ceilings would eventually start failing unrelated specs.
+ *
+ * Teardown failures throw rather than passing quietly. A cleanup that returns
+ * on a failed list, or ignores a failed delete, lets the suite report success
+ * while records survive into the next run -- and the symptom then appears in
+ * some unrelated spec that trips a ceiling. A 404 on the delete is the one
+ * tolerated outcome: the record is already gone, which is what was wanted.
+ */
+async function deleteAllPreferenceRecords(
+  page: Page,
+  kind: PreferenceKind,
+): Promise<void> {
+  const headers = await getAuthHeaders(page);
+  const res = await page.request.get(`/api/v1/preferences/${kind}`, {
+    headers,
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `cleanup could not list ${kind}: ${res.status()} ${await res.text()}`,
+    );
+  }
+  const body = await res.json();
+  for (const record of body.data ?? []) {
+    const del = await page.request.delete(
+      `/api/v1/preferences/${kind}/${record.id}`,
+      { headers, failOnStatusCode: false },
+    );
+    if (!del.ok() && del.status() !== 404) {
+      throw new Error(
+        `cleanup could not delete ${kind} ${record.id}: ${del.status()}`,
+      );
+    }
+  }
+}
+
+/** Create a saved view directly through the API and return its record id. */
 export async function createSavedView(
   page: Page,
   name: string,
   config: SavedViewConfigSeed,
   clusterId?: string,
 ): Promise<string> {
-  const headers = await getAuthHeaders(page);
-  const res = await page.request.post("/api/v1/preferences/views", {
-    headers: clusterId ? { ...headers, "X-Cluster-ID": clusterId } : headers,
-    data: { name, config },
-  });
-  if (!res.ok()) {
-    throw new Error(
-      `createSavedView(${name}) failed: ${res.status()} ${await res.text()}`,
-    );
-  }
-  const body = await res.json();
-  return body.data.id as string;
+  return await createPreferenceRecord(page, "views", name, config, clusterId);
+}
+
+/** Remove every saved view the current user owns, on every cluster. */
+export async function deleteAllSavedViews(page: Page): Promise<void> {
+  await deleteAllPreferenceRecords(page, "views");
 }
 
 /**
- * Remove every saved view the current user owns, on every cluster.
- *
- * Cleanup must be exhaustive rather than scoped to the active cluster: a spec
- * that seeds an other-cluster view would otherwise leave it behind, and the
- * 100-view ceiling would eventually start failing unrelated specs.
+ * Shape of a pin config, mirroring PinConfig in
+ * frontend/lib/preference-types.ts. Loose for the same reason the saved-view
+ * seed is: specs seed uids the UI would never write, to reach the replaced
+ * and unverified classifications.
  */
-export async function deleteAllSavedViews(page: Page): Promise<void> {
-  const headers = await getAuthHeaders(page);
-  const res = await page.request.get("/api/v1/preferences/views", { headers });
-  if (!res.ok()) return;
-  const body = await res.json();
-  for (const record of body.data ?? []) {
-    await page.request.delete(`/api/v1/preferences/views/${record.id}`, {
-      headers,
-      failOnStatusCode: false,
-    });
-  }
+export type PinConfigSeed = {
+  schemaVersion: number;
+  resourceKind: string;
+  group: string;
+  version: string;
+  namespace: string;
+  name: string;
+  uid: string;
+  displayKind: string;
+};
+
+/** Create a pin directly through the API and return its record id. */
+export async function createPin(
+  page: Page,
+  name: string,
+  config: PinConfigSeed,
+  clusterId?: string,
+): Promise<string> {
+  return await createPreferenceRecord(page, "pins", name, config, clusterId);
+}
+
+/** Remove every pin the current user owns, on every cluster. */
+export async function deleteAllPins(page: Page): Promise<void> {
+  await deleteAllPreferenceRecords(page, "pins");
 }
 
 /**

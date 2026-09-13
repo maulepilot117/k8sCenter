@@ -11,6 +11,7 @@ import {
   removePin,
 } from "@/lib/pin-store.ts";
 import type { PinRecord } from "@/lib/preferences.ts";
+import type { ApiError } from "@/lib/api.ts";
 
 interface PinnedResourcesProps {
   /** Active route, used to mark the current pin. Mirrors SecondaryNavProps. */
@@ -55,8 +56,15 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
     removeError.value = null;
     try {
       await removePin(record.id);
-    } catch {
-      removeError.value = `Could not unpin ${record.config.name}.`;
+    } catch (err) {
+      // Matches PinToggle's handling: a 404 means another tab (or the detail
+      // page's own control) already removed this pin, which is the outcome
+      // this click wanted. Reporting it as a failure would tell the user the
+      // unpin broke while the row correctly disappears.
+      await loadPins();
+      if ((err as ApiError | undefined)?.status !== 404) {
+        removeError.value = `Could not unpin ${record.config.name}.`;
+      }
     } finally {
       busyId.value = null;
     }
