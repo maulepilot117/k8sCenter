@@ -435,6 +435,19 @@ func gvrPresentIn(lists []*metav1.APIResourceList, group, resource string) bool 
 
 func boolPtr(b bool) *bool { return &b }
 
+// truncateForEcho bounds s to n bytes before it is echoed back in an error
+// response, marking that truncation happened rather than silently clipping
+// — a truncated value with no marker would misrepresent what the caller
+// actually sent. Used for the {clusterID} path parameter (handler.go's
+// mismatch response), which has no upstream length cap the way the
+// X-Cluster-ID header does (middleware.ClusterContext caps that at 64).
+func truncateForEcho(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
+}
+
 // buildCapability composes one operation's full six-dimension row from
 // already-resolved inputs. It is the single place reasonCode priority is
 // decided and holds no I/O of its own, so the priority rules — the exact
@@ -534,17 +547,18 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 
 	pathID := chi.URLParam(r, "clusterID")
 	hdrID := middleware.ClusterIDFromContext(r.Context())
-	// middleware.ClusterContext already caps the HEADER at 64 bytes
-	// (middleware/cluster.go) before this handler ever runs; nothing caps
-	// the path parameter, so len(pathID) > 64 is folded into the same
-	// mismatch response for symmetry — an over-limit pathID can never
-	// legitimately equal an always-<=64-byte hdrID anyway, so reporting it
-	// as cluster_target_mismatch (rather than echoing an unbounded string
-	// back in extra.pathClusterId with its own distinct 4xx) is consistent
-	// with what a mismatch already means here.
-	if len(pathID) > 64 || k8s.NormalizedClusterID(pathID) != k8s.NormalizedClusterID(hdrID) {
+	// No length branch is needed here: middleware.ClusterContext already
+	// caps the HEADER at 64 bytes (middleware/cluster.go) before this
+	// handler ever runs, and k8s.NormalizedClusterID is an identity function
+	// for non-local ids, so an over-64-byte pathID can never equal the
+	// always-<=64-byte hdrID — the equality check below already catches it.
+	// What IS unbounded is what gets echoed back: pathID has no such cap, so
+	// it is truncated before going into extra.pathClusterId purely so this
+	// 409 response body can't itself carry an arbitrarily long attacker-
+	// supplied string.
+	if k8s.NormalizedClusterID(pathID) != k8s.NormalizedClusterID(hdrID) {
 		httputil.WriteErrorWithReason(w, http.StatusConflict, "cluster target mismatch",
-			"cluster_target_mismatch", map[string]any{"pathClusterId": pathID, "headerClusterId": hdrID})
+			"cluster_target_mismatch", map[string]any{"pathClusterId": truncateForEcho(pathID, 64), "headerClusterId": hdrID})
 		return
 	}
 
