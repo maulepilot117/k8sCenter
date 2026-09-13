@@ -201,9 +201,24 @@ type TargetSchema struct {
 	IsLocal    bool
 	Discovery  discovery.DiscoveryInterface
 	Mapper     meta.RESTMapper
-	// Invalidate forces the next RESTMapping to re-discover. Safe to call on
-	// the local branch (no-op there; the shared ClientFactory mapper has its
-	// own independent lifecycle).
+	// Invalidate forces the next RESTMapping to re-discover.
+	//
+	// On the remote branch this is mapper.Reset — the ONLY thing that clears
+	// DeferredDiscoveryRESTMapper.delegate. cachedDiscovery.Invalidate alone
+	// is not enough: getDelegate short-circuits on a non-nil delegate, so a
+	// CRD removed or version-dropped remotely would keep resolving from the
+	// stale delegate until it happened to self-reset via the unrelated
+	// !Fresh() path. Do not swap this back to discovery.Invalidate.
+	//
+	// On the local branch this is deliberately a no-op instead of
+	// LocalFactory().RESTMapper()'s own Reset — a documented deviation from
+	// D1. The local mapper is process-shared across every identity and every
+	// concurrent request; letting any single caller force a full
+	// re-discovery there is a real denial-of-service shape (one request
+	// invalidating a cache every other request depends on) that D1 did not
+	// account for. So local and remote deliberately behave differently for
+	// the same call: remote Invalidate is load-bearing, local Invalidate is
+	// inert.
 	Invalidate func()
 }
 
@@ -231,6 +246,8 @@ func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, usernam
 			IsLocal:    true,
 			Discovery:  cr.localFactory.DiscoveryClient(),
 			Mapper:     cr.localFactory.RESTMapper(),
+			// Deliberate no-op, not LocalFactory().RESTMapper()'s own Reset —
+			// see the deviation-from-D1 rationale on TargetSchema.Invalidate.
 			Invalidate: func() {},
 		}, nil
 	}
@@ -259,7 +276,7 @@ func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, usernam
 			IsLocal:    false,
 			Discovery:  entry.discovery,
 			Mapper:     entry.mapper,
-			Invalidate: entry.discovery.Invalidate,
+			Invalidate: invalidateFunc(entry.mapper),
 		}, nil
 	}
 
@@ -289,8 +306,22 @@ func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, usernam
 		IsLocal:    false,
 		Discovery:  cached,
 		Mapper:     mapper,
-		Invalidate: cached.Invalidate,
+		Invalidate: invalidateFunc(mapper),
 	}, nil
+}
+
+// invalidateFunc adapts m's Reset() into a func() for TargetSchema.Invalidate.
+// Reset is the ONLY thing that clears DeferredDiscoveryRESTMapper.delegate —
+// cachedDiscovery.Invalidate alone leaves getDelegate short-circuiting on the
+// stale, still-non-nil delegate (see the doc comment on TargetSchema.Invalidate).
+// Falls back to a no-op if m isn't the concrete deferred mapper TargetSchemaFor
+// always constructs, so a future change to the mapper type here fails safe
+// (a missed invalidation) rather than panicking.
+func invalidateFunc(m meta.RESTMapper) func() {
+	if r, ok := m.(*restmapper.DeferredDiscoveryRESTMapper); ok {
+		return r.Reset
+	}
+	return func() {}
 }
 
 // TargetFor resolves clients AND schema for one cluster in a single call, so

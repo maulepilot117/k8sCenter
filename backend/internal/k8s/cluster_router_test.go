@@ -145,6 +145,46 @@ func TestRouterFor_RemoteFailsClosedWhenStoreNil(t *testing.T) {
 	}
 }
 
+// TestNewClusterRouter_NilStoreIsNilInterface pins the nil-to-interface
+// guard inside NewClusterRouter itself (`if cs != nil { cr.clusterStore = cs }`),
+// as opposed to every other fail-closed test in this file, which builds the
+// router via a struct literal and therefore never exercises that guard. cs
+// here is a genuinely nil *store.ClusterStore — the exact value production
+// passes for a local-only deployment (main.go's
+// `var clusterStore *appstore.ClusterStore`, left nil when no database is
+// configured) — routed through the real constructor. If the guard were
+// removed and cs were assigned to the clusterGetter field directly, cr.clusterStore
+// would become a non-nil interface wrapping a nil pointer (the Go
+// nil-interface trap): the `cr.clusterStore == nil` fail-closed check in
+// TargetSchemaFor would then be false, and the call would instead panic
+// inside (*store.ClusterStore).Get on a nil receiver — either way this test
+// fails, which is exactly the point.
+func TestNewClusterRouter_NilStoreIsNilInterface(t *testing.T) {
+	stubDyn := fake.NewSimpleDynamicClient(scheme.Scheme)
+	factory := NewTestClientFactoryWithDynamic(&kubernetes.Clientset{}, stubDyn)
+
+	var nilStore *store.ClusterStore // deliberately nil, concrete type
+	router := NewClusterRouter(factory, nilStore, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	schema, err := router.TargetSchemaFor(context.Background(), "some-remote-id", "alice", nil)
+	if err == nil {
+		t.Fatal("TargetSchemaFor returned nil error for a nil *store.ClusterStore passed through NewClusterRouter; want fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "no cluster store") {
+		t.Errorf("error = %q; want substring 'no cluster store'", err.Error())
+	}
+	if schema != nil {
+		t.Errorf("schema = %+v; want nil on error", schema)
+	}
+
+	// Same assertion through RouterFor, since NewClusterRouter's guard
+	// protects both ClientForCluster/DynamicClientForCluster and
+	// TargetSchemaFor from the same nil-interface trap.
+	if _, err := router.RouterFor(context.Background(), "some-remote-id", "alice", nil); err == nil {
+		t.Fatal("RouterFor returned nil error for a nil *store.ClusterStore passed through NewClusterRouter; want fail-closed error")
+	}
+}
+
 // TestApplyClusterTLS_FailsClosedWithoutCAData is the F#5 regression test:
 // when no CA data is stored and AllowInsecureTLS is false, building the
 // remote config must error rather than silently disable TLS verification.
@@ -274,21 +314,34 @@ func testClusterRecord(t *testing.T, createdAt time.Time) *store.ClusterRecord {
 // TestRouterFor_LocalPath), an initialized schema cache (NewClusterRouter's
 // own initialization, replicated here because injecting a fake clusterGetter
 // isn't possible through NewClusterRouter's concrete *store.ClusterStore
-// parameter), and the given clusterGetter. Passing a literal nil for getter
-// yields a true nil clusterGetter interface (safe: the argument is nil at
-// the call site, never a nil *fakeClusterGetter boxed into the interface),
-// matching the "no cluster store configured" fail-closed scenario.
-func newRemoteTestRouter(getter clusterGetter) *ClusterRouter {
+// parameter), and the given fake store.
+//
+// getter is deliberately typed as the CONCRETE *fakeClusterGetter, not the
+// clusterGetter interface, and the nil check below happens on that concrete
+// type before it is ever converted to the interface field — mirroring
+// NewClusterRouter's own `if cs != nil` guard mechanism, not just its
+// syntax. Typing this parameter as clusterGetter instead would defeat the
+// very trap this helper exists to guard against: a future
+// `var g *fakeClusterGetter; newRemoteTestRouter(g)` would box the typed nil
+// into a non-nil interface AT THE CALL SITE (Go's classic nil-interface
+// gotcha), by which point a `getter == nil` check inside this function can
+// no longer see it — the boxing already happened. Keeping the parameter
+// concrete means the nil check runs before any boxing occurs, exactly like
+// NewClusterRouter's cs *store.ClusterStore parameter.
+func newRemoteTestRouter(getter *fakeClusterGetter) *ClusterRouter {
 	stubClient := &kubernetes.Clientset{}
 	stubDyn := fake.NewSimpleDynamicClient(scheme.Scheme)
 	factory := NewTestClientFactoryWithDynamic(stubClient, stubDyn)
-	return &ClusterRouter{
+	cr := &ClusterRouter{
 		localFactory:  factory,
-		clusterStore:  getter,
 		encryptionKey: testClusterEncryptionKey,
 		schemaCache:   newTargetSchemaCache(),
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	if getter != nil {
+		cr.clusterStore = getter
+	}
+	return cr
 }
 
 // TestTargetSchemaFor_LocalUsesLocalFactory verifies the local branch: it
