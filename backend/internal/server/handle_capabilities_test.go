@@ -313,6 +313,62 @@ func TestCapabilities_LocalRequiresNoAdmin(t *testing.T) {
 	if len(body.Capabilities) != len(capabilityOperations) {
 		t.Errorf("len(capabilities) = %d; want %d", len(body.Capabilities), len(capabilityOperations))
 	}
+	// Every operation's LocalSupported is true (task review, whole-branch
+	// pass, Minor #10) — this is the production branch that would break if
+	// a future edit accidentally flipped one, since nothing else in this
+	// file asserts platformSupported across the whole table for local.
+	for _, c := range body.Capabilities {
+		if !c.PlatformSupported {
+			t.Errorf("operation %q: PlatformSupported = false; want true for the local cluster", c.Operation)
+		}
+	}
+}
+
+// TestCapabilities_RemoteRequiresAdmin pins the ONE thing standing between a
+// non-admin user and a remote cluster's capability disclosure: routes.go
+// mounts this endpoint outside the admin-only /clusters group specifically
+// because middleware.ClusterContext already admin-gates any non-local
+// X-Cluster-ID (middleware/cluster.go) before the handler ever runs. That
+// claim was previously prose only — every other test in this file uses
+// either "local" or an admin token. Without this test, a future refactor
+// that moved this route out of the ClusterContext-wrapped group would leave
+// every other test green while silently opening remote capability
+// disclosure to any authenticated viewer (task review, whole-branch pass,
+// Important #1).
+func TestCapabilities_RemoteRequiresAdmin(t *testing.T) {
+	srv := testServer(t)
+	token := capabilitiesIssueToken(t, srv, "viewer-1", false) // non-admin
+
+	w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d; want 403 for a non-admin user asking about a remote cluster, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestCapabilities_NoAccessCheckerYieldsAuthzUnknown exercises the
+// errNoAccessChecker branch through the real router (task review,
+// whole-branch pass, Minor #10): a bare testServer(t) never sets
+// ResourceHandler, so a local request must still succeed (200) with every
+// operation's authorized dimension null and reasonCode: authz_unknown,
+// rather than panicking on a nil AccessChecker.
+func TestCapabilities_NoAccessCheckerYieldsAuthzUnknown(t *testing.T) {
+	srv := testServer(t) // bare: no ResourceHandler, no ClusterRouter, no ClusterStore
+	token := capabilitiesIssueToken(t, srv, "viewer-1", false)
+
+	w := capabilitiesRequest(t, srv, token, "local", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+	}
+	body := decodeCapabilities(t, w)
+	cap := findCapability(t, body, "yaml.validate")
+
+	if cap.Authorized != nil {
+		t.Fatalf("Authorized = %v; want nil — no ResourceHandler/AccessChecker is wired", cap.Authorized)
+	}
+	if cap.ReasonCode != ReasonAuthzUnknown {
+		t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonAuthzUnknown)
+	}
 }
 
 func TestCapabilities_NoStoreHeader(t *testing.T) {

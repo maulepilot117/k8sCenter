@@ -72,8 +72,13 @@ const (
 )
 
 // validReasonCodes is the closed set every emitted ReasonCode must belong
-// to. Built from the constants above rather than re-typed, so a new
-// constant automatically joins the valid set instead of silently drifting.
+// to. This is a hand-maintained map literal, deliberately: a new ReasonXyz
+// constant does NOT join it automatically, and that manual step is exactly
+// what gives TestCapabilities_ReasonCodesAreClosed its teeth — a forgotten
+// entry here is a real gap the test can catch, not busywork to eliminate.
+// Do not "simplify" this into something reflection- or iota-derived from the
+// const block; that would make the closed-set check vacuously pass no
+// matter what buildCapability actually emits.
 var validReasonCodes = map[ReasonCode]bool{
 	ReasonOK:                   true,
 	ReasonUnsupportedPlatform:  true,
@@ -246,6 +251,18 @@ var capabilityOperations = []capabilityOp{
 		// Pod exec requires an SPDY stream upgrade against the target
 		// cluster's own API server, not yet supported for remote clusters.
 		// pods.go:164.
+		//
+		// Subresource shape: CanAccess splits "pods/exec" into
+		// Resource:"pods", Subresource:"exec" (access.go:137-143);
+		// CanAccessGroupResource (A1) sends "pods/exec" verbatim with an
+		// empty Subresource. These agree under the RBAC authorizer's
+		// RuleAllows, which reconstructs the combined resource by
+		// concatenation — EXCEPT for the `resources: ["*/exec"]` wildcard
+		// grant form, which ResourceMatches only honors when the requested
+		// subresource is non-empty. An identity granted exec only that way
+		// is reported forbidden here: a false negative, but one that fails
+		// in the safe direction, and A1 leaves no alternative without
+		// extending AccessChecker's API.
 		ID: "pod.exec", Label: "Pod exec",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "create", AuthGroup: "", AuthResource: "pods/exec",
@@ -254,6 +271,11 @@ var capabilityOperations = []capabilityOp{
 		// WebSocket log streams against remote clusters are not yet
 		// supported — the watch connection lifecycle differs for remote API
 		// servers. handle_ws_logs.go:104.
+		//
+		// Same "pods/log" subresource caveat as pod.exec above: an identity
+		// granted access only via a `resources: ["*/log"]` wildcard rule is
+		// reported forbidden here rather than authorized (safe-direction
+		// false negative) — see pod.exec's comment for why.
 		ID: "logs.stream", Label: "Live log stream",
 		LocalSupported: true, RemoteSupported: false,
 		AuthVerb: "get", AuthGroup: "", AuthResource: "pods/log",
@@ -333,10 +355,15 @@ func resolveReachability(ctx context.Context, cs clusterRecordGetter, isLocal bo
 		return reachabilityResult{reachable: boolPtr(true), observedAt: now}
 	}
 	rec, err := cs.Get(ctx, clusterID)
-	if err != nil {
+	if err != nil || rec == nil {
 		// Reachability itself could not be determined (e.g. the store read
-		// failed after target resolution had already succeeded) — treated
-		// the same as staleness: reachable stays nil, not a guessed false.
+		// failed after target resolution had already succeeded, or a
+		// clusterRecordGetter — real or a test fake — returns (nil, nil))
+		// — treated the same as staleness: reachable stays nil, not a
+		// guessed false. The real *store.ClusterStore always returns
+		// (nil, err) on failure, so rec == nil here can't fire in
+		// production; the check exists for a future fake that returns
+		// (nil, nil) instead of dereferencing a nil rec below.
 		return reachabilityResult{observedAt: now}
 	}
 	if rec.LastProbedAt == nil || now.Sub(*rec.LastProbedAt) > staleAfter {
@@ -346,6 +373,10 @@ func resolveReachability(ctx context.Context, cs clusterRecordGetter, isLocal bo
 		}
 		return reachabilityResult{observedAt: at}
 	}
+	// "connected" is part of the connected|disconnected|blocked|error status
+	// vocabulary owned by internal/k8s/cluster_prober.go (~7 call sites) —
+	// a rename there would silently make every remote cluster read
+	// unreachable here, with no test to catch it.
 	connected := rec.Status == "connected"
 	return reachabilityResult{reachable: &connected, observedAt: *rec.LastProbedAt}
 }
@@ -503,7 +534,15 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 
 	pathID := chi.URLParam(r, "clusterID")
 	hdrID := middleware.ClusterIDFromContext(r.Context())
-	if k8s.NormalizedClusterID(pathID) != k8s.NormalizedClusterID(hdrID) {
+	// middleware.ClusterContext already caps the HEADER at 64 bytes
+	// (middleware/cluster.go) before this handler ever runs; nothing caps
+	// the path parameter, so len(pathID) > 64 is folded into the same
+	// mismatch response for symmetry — an over-limit pathID can never
+	// legitimately equal an always-<=64-byte hdrID anyway, so reporting it
+	// as cluster_target_mismatch (rather than echoing an unbounded string
+	// back in extra.pathClusterId with its own distinct 4xx) is consistent
+	// with what a mismatch already means here.
+	if len(pathID) > 64 || k8s.NormalizedClusterID(pathID) != k8s.NormalizedClusterID(hdrID) {
 		httputil.WriteErrorWithReason(w, http.StatusConflict, "cluster target mismatch",
 			"cluster_target_mismatch", map[string]any{"pathClusterId": pathID, "headerClusterId": hdrID})
 		return
@@ -514,32 +553,62 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 	isLocal := k8s.IsLocalClusterID(normID)
 	now := time.Now()
 
+	// anySupported is whether ANY operation in the table is
+	// supportedFor(isLocal). buildCapability checks !row.PlatformSupported
+	// first and returns before globalReason/reach are ever consulted, so
+	// when anySupported is false, every row is going to end up
+	// unsupported_platform regardless of what target resolution or
+	// reachability would have said — resolving them is provably wasted
+	// work. Today that is true of EVERY remote request (every real row is
+	// RemoteSupported: false as of task review round 1's finding #3), which
+	// means the target-schema switch below was, until this fix, still
+	// doing a clusterStore.Get + a live DNS re-resolution + a credential
+	// decrypt (TargetSchemaFor's remote miss path, under a 30s ceiling) and
+	// resolveReachability's own second clusterStore.Get, for a result that
+	// was then discarded — the response to any non-local id was byte-
+	// identical whether the cluster existed, had valid credentials, was
+	// reachable, or was a typo (task review, whole-branch pass, Important
+	// #2). Gating on anySupported removes exactly that dead work and
+	// nothing else: isLocal always makes it true (every row is
+	// LocalSupported: true), so the local response is unchanged, and this
+	// guard removes ITSELF automatically the moment any unit (U9a/U9b/U10)
+	// flips a single row's RemoteSupported to true.
+	anySupported := false
+	for _, op := range capabilityOperations {
+		if op.supportedFor(isLocal) {
+			anySupported = true
+			break
+		}
+	}
+
 	var globalReason ReasonCode
 	var targetSchema *k8s.TargetSchema
 
-	switch {
-	case !isLocal && s.ClusterStore == nil:
-		// A4: no cluster registry wired at all — every row db_unavailable.
-		globalReason = ReasonDBUnavailable
-	case s.ClusterRouter == nil:
-		// A4: ClusterRouter itself is nil (distinct from "no store" above).
-		// Calling TargetSchemaFor on a nil receiver would panic on the local
-		// branch (cr.localFactory) just as much as the remote one, so it is
-		// never called here. This is deliberately narrow, NOT a global
-		// failure: reachable still resolves from Server.ClusterStore and
-		// authorized still resolves from ResourceHandler.AccessChecker,
-		// which are independently wired. Only the discovery dimension is
-		// affected, for the two operations that probe a GVR.
-	default:
-		var err error
-		targetSchema, err = s.ClusterRouter.TargetSchemaFor(ctx, normID, user.KubernetesUsername, user.KubernetesGroups)
-		if err != nil {
-			globalReason = classifyTargetSchemaErr(err)
+	if anySupported {
+		switch {
+		case !isLocal && s.ClusterStore == nil:
+			// A4: no cluster registry wired at all — every row db_unavailable.
+			globalReason = ReasonDBUnavailable
+		case s.ClusterRouter == nil:
+			// A4: ClusterRouter itself is nil (distinct from "no store" above).
+			// Calling TargetSchemaFor on a nil receiver would panic on the local
+			// branch (cr.localFactory) just as much as the remote one, so it is
+			// never called here. This is deliberately narrow, NOT a global
+			// failure: reachable still resolves from Server.ClusterStore and
+			// authorized still resolves from ResourceHandler.AccessChecker,
+			// which are independently wired. Only the discovery dimension is
+			// affected, for the two operations that probe a GVR.
+		default:
+			var err error
+			targetSchema, err = s.ClusterRouter.TargetSchemaFor(ctx, normID, user.KubernetesUsername, user.KubernetesGroups)
+			if err != nil {
+				globalReason = classifyTargetSchemaErr(err)
+			}
 		}
 	}
 
 	var reach reachabilityResult
-	if globalReason == "" {
+	if anySupported && globalReason == "" {
 		// s.ClusterStore may be nil here, but only when isLocal is true — the
 		// switch above already routed the "non-local + nil ClusterStore" case
 		// to globalReason=db_unavailable, and resolveReachability's local

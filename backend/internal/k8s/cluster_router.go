@@ -111,9 +111,12 @@ func NewClusterRouter(local *ClientFactory, cs *store.ClusterStore, encKey strin
 // hard-error instead of silently downgrading to the local cluster.
 //
 // The error text is load-bearing — three tests in this package and three in
-// internal/certmanager assert on the "no cluster store" substring. Do not
-// reword it without updating them. Callers must have already ruled out the
-// local cluster (IsLocalClusterID) before calling this.
+// internal/certmanager assert on the "no cluster store" substring, and
+// internal/server's classifyTargetSchemaErr (handle_capabilities.go, U8)
+// matches it too, to map a TargetSchemaFor failure to the db_unavailable
+// capability reason code. Do not reword it without updating all of them.
+// Callers must have already ruled out the local cluster (IsLocalClusterID)
+// before calling this.
 func (cr *ClusterRouter) requireClusterStore(clusterID string) error {
 	if cr.clusterStore == nil {
 		return fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
