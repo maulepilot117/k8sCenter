@@ -143,46 +143,80 @@ type capabilityOp struct {
 // can diff the claim against the guard instead of trusting prose.
 var capabilityOperations = []capabilityOp{
 	{
-		// U9a. Dry-run apply; not yet gated on remote today
-		// (yaml/handler.go:62 currently 501s remote — this row anticipates
-		// U9a landing and removing that gate, per the master plan's
-		// "Remote (after Release C)" column).
+		// RemoteSupported is false TODAY, not "true per the master plan's
+		// 'Remote (after Release C)' column" — that column names the
+		// destination, not the interim, and yaml/handler.go:62 still 501s
+		// every remote request right now. Flip to true when U9a ships and
+		// removes that gate (task review round 1, finding #3): until then,
+		// GET /capabilities/remote-x must not claim platformSupported: true
+		// for an operation that 501s the moment it's actually called — the
+		// exact inversion D3 exists to prevent, pointed the other way.
+		//
+		// AuthResource: dry-run apply's SAR check is identical to a real
+		// apply — Kubernetes' dryRun flag only skips persistence, it does
+		// NOT relax RBAC — so the representative verb matches yaml.apply's
+		// below rather than a weaker read-only probe. configmaps (core) is
+		// the representative resource for all four yaml.* rows: it is a
+		// near-universal namespaced resource present in ordinary
+		// edit/admin-shaped roles without requiring the elevated access
+		// Secrets carry (which this operation refuses outright — see the
+		// diff/export rows below) or the all-resources wildcard's
+		// pathologically strict match semantics (a wildcard REQUESTED
+		// group/resource only matches an RBAC rule that itself literally
+		// contains "*", so "*"/"*" made ordinary namespace-scoped editors
+		// come back forbidden — task review round 1, finding #2).
 		ID: "yaml.validate", Label: "Validate YAML",
-		LocalSupported: true, RemoteSupported: true,
-		AuthVerb: "patch", AuthGroup: "*", AuthResource: "*",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// U9a. Reads the live object to diff against; Secrets refused on
-		// both classes (enforced inside the yaml handler, not here).
-		// yaml/handler.go:220 currently 501s remote.
+		// RemoteSupported false until U9a — see yaml.validate's comment
+		// above (finding #3); yaml/handler.go:220 still 501s remote today.
+		// Secrets refused on both classes (enforced inside the yaml
+		// handler, not here). AuthVerb "get": diff reads ONE live object to
+		// compare against the submitted document. AuthResource: configmaps
+		// — see yaml.validate's comment for why (finding #2).
 		ID: "yaml.diff", Label: "Diff YAML against live state",
-		LocalSupported: true, RemoteSupported: true,
-		AuthVerb: "get", AuthGroup: "*", AuthResource: "*",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// U9a. Reads live objects to export; Secrets refused on both
-		// classes. yaml/handler.go:282 currently 501s remote.
+		// RemoteSupported false until U9a — see yaml.validate's comment
+		// above (finding #3); yaml/handler.go:282 still 501s remote today.
+		// Secrets refused on both classes. AuthVerb "list": export reads
+		// (potentially many) live objects to export, unlike diff's single-
+		// object "get". AuthResource: configmaps (finding #2).
 		ID: "yaml.export", Label: "Export YAML",
-		LocalSupported: true, RemoteSupported: true,
-		AuthVerb: "get", AuthGroup: "*", AuthResource: "*",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "list", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// U9b. Server-side apply. yaml/handler.go:147 currently 501s remote.
+		// RemoteSupported false until U9b — see yaml.validate's comment
+		// above (finding #3); yaml/handler.go:147 still 501s remote today.
+		// AuthVerb "patch": server-side apply for all YAML operations is a
+		// PATCH (application/apply-patch+yaml — see CLAUDE.md's backend
+		// architecture principles). AuthResource: configmaps (finding #2).
 		ID: "yaml.apply", Label: "Apply YAML",
-		LocalSupported: true, RemoteSupported: true,
-		AuthVerb: "patch", AuthGroup: "*", AuthResource: "*",
+		LocalSupported: true, RemoteSupported: false,
+		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
-		// U10. Remote is "partial" per the master plan (no health score),
-		// which this table represents as platformSupported: true — the
-		// basic aggregated-counts operation is the thing platformSupported
-		// gates, not the health-score sub-feature. Probed against core/v1
-		// nodes (A2) since the summary's node/health section is what a
-		// hardened remote cluster is most likely to have hidden from
-		// discovery. dashboard.go:544 currently rejects all non-local
-		// requests outright — this row anticipates U10.
+		// RemoteSupported false TODAY (task review round 1, finding #3):
+		// dashboard.go:544 rejects every non-local request outright right
+		// now (400, not even a partial response), so reporting
+		// platformSupported: true would be the exact D3 inversion this unit
+		// exists to prevent. Flip to true when U10 ships remote dashboard
+		// summary — the master plan's "partial" (no health score) note
+		// describes THAT future state, not this one; the plan's "Remote
+		// (after Release C)" column header names the destination, never the
+		// interim. Probed against core/v1 nodes (A2) since the summary's
+		// node/health section is what a hardened remote cluster is most
+		// likely to have hidden from discovery — this GVR probe is already
+		// meaningful on the LOCAL branch today (a stripped-down local
+		// install could lack node-list visibility too) and will carry over
+		// unchanged once U10 flips RemoteSupported.
 		ID: "dashboard.summary", Label: "Dashboard summary",
-		LocalSupported: true, RemoteSupported: true,
+		LocalSupported: true, RemoteSupported: false,
 		Probe:    &gvrProbe{Group: "", Resource: "nodes"},
 		AuthVerb: "list", AuthGroup: "", AuthResource: "nodes",
 	},
