@@ -76,8 +76,10 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
   const loading = !pinsLoaded.value && !unavailable;
 
   if (!unavailable && pinsLoaded.value && mine.length === 0) {
-    // Nothing pinned on this cluster: show the header alone so the section
-    // exists and reads as empty, rather than vanishing as if unsupported.
+    // The header renders even when empty so the section reads as empty rather
+    // than vanishing as if unsupported -- and the hint exists because saying
+    // "nothing is pinned" to someone who has never seen a pin control is a
+    // dead end. Name the button.
     return (
       <div style={{ marginTop: "14px" }} data-testid="pinned-resources">
         <div style={HEADER_STYLE}>Pinned</div>
@@ -90,6 +92,20 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
           }}
         >
           Nothing pinned yet.
+        </div>
+        <div
+          data-testid="pinned-empty-hint"
+          style={{
+            fontSize: "11px",
+            lineHeight: 1.45,
+            // --text-secondary, not --text-muted: muted computes 3.76:1 on this
+            // surface and 3.14:1 in the light theme, below the 4.5:1 WCAG 2.2 AA
+            // minimum. An instruction nobody can read is not an instruction.
+            color: "var(--text-secondary)",
+            padding: "0 9px 4px",
+          }}
+        >
+          Open any resource and choose <strong>Pin</strong> to keep it here.
         </div>
       </div>
     );

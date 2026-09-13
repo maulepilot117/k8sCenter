@@ -1,0 +1,84 @@
+import { expect, test } from "../fixtures/base.ts";
+import { deleteAllPins, deleteAllSavedViews } from "../helpers.ts";
+
+/**
+ * Discoverability of the Release A surfaces (DX).
+ *
+ * Release A shipped saved views and pins, and then advertised them on two
+ * surfaces that contained no path to using them: a "Pinned" header above the
+ * words "Nothing pinned yet.", and a "Views (0)" button with no accessible
+ * name. Both told the user a feature existed and neither told them how to
+ * reach it.
+ *
+ * These specs pin the hints, not the phrasing: each asserts a testid exists
+ * and is non-empty, plus the one substring that carries the instruction. Copy
+ * can be reworded without breaking them; deleting the hint cannot.
+ *
+ * NOT covered here, and deliberately: the command palette. Its search index is
+ * built once into a useRef (CommandPalette.tsx:205) and cannot react to
+ * signals, so a user's pins can never appear in it without a different
+ * mechanism. Nothing to assert.
+ */
+
+test.describe("discoverability", () => {
+  test("the empty pinned section tells the user how to create a pin", async ({ page }) => {
+    await page.goto("/");
+    await deleteAllPins(page);
+    await page.reload();
+
+    const empty = page.getByTestId("pinned-empty");
+    await expect(empty).toBeVisible();
+
+    const hint = page.getByTestId("pinned-empty-hint");
+    await expect(hint).toBeVisible();
+    // The instruction must name the control by the word on the button.
+    await expect(hint).toContainText("Pin");
+  });
+
+  test("the saved-views trigger has an accessible name that says it saves", async ({ page }) => {
+    await page.goto("/workloads/pods");
+
+    const toggle = page.getByTestId("saved-views-toggle");
+    await expect(toggle).toBeVisible();
+
+    // The visible label stays short; the computed accessible name carries the
+    // meaning. Asserting the accessible name (not the raw aria-label
+    // attribute) also guards against a later aria-labelledby silently
+    // overriding it.
+    //
+    // Two separate assertions, because they protect two different things and a
+    // single loose regex protected neither. /save/i matched the noun in "saved
+    // views", so the imperative clause could have been deleted with the spec
+    // still green.
+
+    // 1. WCAG 2.5.3 Label in Name: the accessible name must CONTAIN the
+    //    rendered label. This is what makes the ${mineLabel} interpolation
+    //    load-bearing -- without this assertion it can be dropped and nothing
+    //    turns red, which is exactly how it regressed once already.
+    const visibleLabel = (await toggle.innerText()).trim();
+    expect(visibleLabel).toMatch(/^Views/);
+    await expect(toggle).toHaveAccessibleName(
+      new RegExp(visibleLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+
+    // 2. The imperative clause. Word-bounded so "saved views" alone cannot
+    //    satisfy it -- the verb is the part that tells the user the control
+    //    does something.
+    await expect(toggle).toHaveAccessibleName(/\bsave\b\s+the\s+current/i);
+  });
+
+  test("the empty saved-views menu names the create action", async ({ page }) => {
+    await page.goto("/workloads/pods");
+    await deleteAllSavedViews(page);
+    await page.reload();
+    await page.getByTestId("saved-views-toggle").click();
+
+    const menu = page.getByTestId("saved-views-menu");
+    await expect(menu).toBeVisible();
+    await expect(page.getByTestId("saved-views-empty")).toBeVisible();
+
+    const hint = page.getByTestId("saved-views-empty-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("Save current view");
+  });
+});
