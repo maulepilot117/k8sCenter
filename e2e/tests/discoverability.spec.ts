@@ -34,4 +34,35 @@ test.describe("discoverability", () => {
     // The instruction must name the control by the word on the button.
     await expect(hint).toContainText("Pin");
   });
+
+  test("the saved-views trigger has an accessible name that says it saves", async ({ page }) => {
+    await page.goto("/workloads/pods");
+
+    const toggle = page.getByTestId("saved-views-toggle");
+    await expect(toggle).toBeVisible();
+
+    // The visible label stays short; the accessible name carries the meaning.
+    const label = await toggle.getAttribute("aria-label");
+    expect(label, "saved-views-toggle must have an aria-label").not.toBeNull();
+    expect(label!.toLowerCase()).toContain("save");
+  });
+
+  test("the empty saved-views menu names the create action", async ({ page }) => {
+    await page.goto("/workloads/pods");
+    await page.getByTestId("saved-views-toggle").click();
+
+    const menu = page.getByTestId("saved-views-menu");
+    await expect(menu).toBeVisible();
+
+    // Only meaningful when this table has no saved views; skip otherwise
+    // rather than deleting another spec's fixtures.
+    const empty = page.getByTestId("saved-views-empty");
+    if (await empty.count() === 0) {
+      test.skip(true, "table already has saved views");
+    }
+
+    const hint = page.getByTestId("saved-views-empty-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("Save current view");
+  });
 });

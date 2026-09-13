@@ -308,6 +308,12 @@ export default function SavedViews(
         data-testid="saved-views-toggle"
         aria-expanded={open.value}
         aria-haspopup="menu"
+        // "Views (0)" is short enough to fit the toolbar and says nothing about
+        // what the control is for. The accessible name and the tooltip carry
+        // the verb, so the affordance is discoverable without widening the
+        // button.
+        aria-label="Saved views — save the current filters as a view"
+        title="Saved views — save the current filters as a view"
         onClick={() => {
           open.value = !open.value;
           if (open.value) {
@@ -403,6 +409,13 @@ export default function SavedViews(
               }}
             >
               No saved views for this table yet.
+              <div
+                data-testid="saved-views-empty-hint"
+                style={{ marginTop: "4px", opacity: 0.8 }}
+              >
+                Set the filters you want, then choose{" "}
+                <strong>Save current view</strong> below.
+              </div>
             </div>
           )}
 
