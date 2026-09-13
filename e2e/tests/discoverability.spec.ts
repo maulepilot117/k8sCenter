@@ -1,5 +1,5 @@
 import { expect, test } from "../fixtures/base.ts";
-import { deleteAllPins } from "../helpers.ts";
+import { deleteAllPins, deleteAllSavedViews } from "../helpers.ts";
 
 /**
  * Discoverability of the Release A surfaces (DX).
@@ -49,17 +49,13 @@ test.describe("discoverability", () => {
 
   test("the empty saved-views menu names the create action", async ({ page }) => {
     await page.goto("/workloads/pods");
+    await deleteAllSavedViews(page);
+    await page.reload();
     await page.getByTestId("saved-views-toggle").click();
 
     const menu = page.getByTestId("saved-views-menu");
     await expect(menu).toBeVisible();
-
-    // Only meaningful when this table has no saved views; skip otherwise
-    // rather than deleting another spec's fixtures.
-    const empty = page.getByTestId("saved-views-empty");
-    if (await empty.count() === 0) {
-      test.skip(true, "table already has saved views");
-    }
+    await expect(page.getByTestId("saved-views-empty")).toBeVisible();
 
     const hint = page.getByTestId("saved-views-empty-hint");
     await expect(hint).toBeVisible();
