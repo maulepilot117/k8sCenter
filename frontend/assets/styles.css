@@ -209,8 +209,8 @@ body {
 }
 
 /* Fallback: no backdrop-filter support → solid elevated surfaces. */
-@supports 
-  not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter:
+  blur(1px))) {
   .glass,
   .glass-elevated {
     background: var(--bg-elevated);
