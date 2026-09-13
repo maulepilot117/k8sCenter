@@ -25,25 +25,40 @@ type targetSchemaCache struct {
 	order   []schemaCacheKey // insertion order for the bounded-size eviction
 }
 
-// schemaCacheKey identifies one cached discovery+mapper pair. All three
-// components matter:
-//   - clusterID and generation together detect stale credentials (cluster
-//     deleted and re-registered under the same id gets a new generation);
+// schemaCacheKey identifies one cached discovery+mapper pair. The key is
+// exactly (cluster, identity) — nothing else:
+//   - clusterID scopes the entry to one registered cluster;
 //   - identity isolates results by impersonated user, because a hardened
 //     remote cluster may grant different identities different discoverable
 //     API resources (see D1 "Identity-isolation rule"). No entry is ever
 //     served to an identity other than the one that populated it.
+//
+// Staleness is NOT a key component. A cluster record that is deleted,
+// re-registered, or has its credentials rotated is handled by
+// ClusterRouter.EvictCluster, exactly as the sibling remoteCache /
+// remoteDynCache client caches handle it. Folding the record's generation
+// into the key would force a cluster-store read on every lookup — including
+// every cache HIT — which defeats the point of the cache (PR #436 review
+// finding #1). The record's vintage is carried on the ENTRY instead, purely
+// as informational metadata.
 type schemaCacheKey struct {
-	clusterID  string // normalized via NormalizedClusterID
-	generation string // "local" for the local cluster; ClusterRecord.CreatedAt (RFC3339Nano) otherwise
-	identity   string // cacheKey(username, groups) — sha256, already collision-resistant
+	clusterID string // normalized via NormalizedClusterID
+	identity  string // cacheKey(username, groups) — sha256, already collision-resistant
 }
 
-// schemaCacheEntry is one cached discovery/mapper pair plus its expiry.
+// schemaCacheEntry is one cached discovery/mapper pair, the cluster-record
+// vintage it was built from, and its expiry.
+//
+// generation is informational only: it records which ClusterRecord.CreatedAt
+// this pair was built from and is surfaced as TargetSchema.Generation. Since
+// it is not part of the key, a row replaced under the same cluster id without
+// an EvictCluster call can leave generation lagging reality by up to one TTL
+// (clientCacheTTL). Do not treat it as a freshness guarantee.
 type schemaCacheEntry struct {
-	discovery discovery.CachedDiscoveryInterface // memory.NewMemCacheClient(...)
-	mapper    meta.RESTMapper                    // restmapper.NewDeferredDiscoveryRESTMapper(discovery)
-	expiresAt time.Time
+	discovery  discovery.CachedDiscoveryInterface // memory.NewMemCacheClient(...)
+	mapper     meta.RESTMapper                    // restmapper.NewDeferredDiscoveryRESTMapper(discovery)
+	generation string                             // ClusterRecord.CreatedAt (RFC3339Nano) at build time
+	expiresAt  time.Time
 }
 
 // newTargetSchemaCache returns an empty, ready-to-use cache.
@@ -91,9 +106,11 @@ func (c *targetSchemaCache) put(k schemaCacheKey, e *schemaCacheEntry) {
 	}
 }
 
-// evictCluster drops every entry for clusterID, across all generations and
-// identities. Called from ClusterRouter.EvictCluster so cluster deletion or
-// credential rotation drops schema alongside the client caches.
+// evictCluster drops every entry for clusterID, across all identities.
+// Called from ClusterRouter.EvictCluster so cluster deletion or credential
+// rotation drops schema alongside the client caches. This is the ONLY
+// staleness mechanism for the schema cache besides the TTL — the key
+// deliberately carries no generation component (see schemaCacheKey).
 func (c *targetSchemaCache) evictCluster(clusterID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

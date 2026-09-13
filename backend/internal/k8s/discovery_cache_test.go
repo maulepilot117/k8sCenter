@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// NOTE — a TestSchemaCache_GenerationChangeIsACacheMiss used to live here.
+// It was deleted in the PR #436 review pass: finding #1 removed `generation`
+// from schemaCacheKey (the key is now exactly (cluster, identity), and
+// staleness is handled by EvictCluster), so the test's premise — that two
+// generations of the same cluster+identity are two distinct cache entries —
+// no longer describes the design. The behavior it was really guarding,
+// "a replaced cluster record must not keep serving a stale schema", is
+// covered by TestEvictCluster_DropsSchemaCache in cluster_router_test.go.
+
 // fakeSchemaEntry builds a minimal, distinguishable *schemaCacheEntry for
 // cache-only tests. The discovery/mapper fields are left nil — these tests
 // exercise cache bookkeeping only, never touch the actual clients.
@@ -16,7 +25,7 @@ func fakeSchemaEntry(expiresAt time.Time) *schemaCacheEntry {
 func TestSchemaCache_TTLExpiry(t *testing.T) {
 	c := newTargetSchemaCache()
 	now := time.Now()
-	key := schemaCacheKey{clusterID: "remote-1", generation: "gen-1", identity: "alice"}
+	key := schemaCacheKey{clusterID: "remote-1", identity: "alice"}
 
 	c.put(key, fakeSchemaEntry(now.Add(-1*time.Minute))) // already expired relative to "now" below
 
@@ -30,9 +39,9 @@ func TestSchemaCache_BoundedSize(t *testing.T) {
 	now := time.Now()
 	future := now.Add(clientCacheTTL)
 
-	firstKey := schemaCacheKey{clusterID: "remote-0", generation: "gen", identity: "id"}
+	firstKey := schemaCacheKey{clusterID: "remote-0", identity: "id"}
 	for i := 0; i < maxSchemaCacheEntries+1; i++ {
-		key := schemaCacheKey{clusterID: keyForIndex(i), generation: "gen", identity: "id"}
+		key := schemaCacheKey{clusterID: keyForIndex(i), identity: "id"}
 		c.put(key, fakeSchemaEntry(future))
 	}
 
@@ -63,8 +72,8 @@ func TestSchemaCache_EvictClusterDropsOnlyThatCluster(t *testing.T) {
 	c := newTargetSchemaCache()
 	future := time.Now().Add(clientCacheTTL)
 
-	keyA := schemaCacheKey{clusterID: "cluster-a", generation: "gen", identity: "id"}
-	keyB := schemaCacheKey{clusterID: "cluster-b", generation: "gen", identity: "id"}
+	keyA := schemaCacheKey{clusterID: "cluster-a", identity: "id"}
+	keyB := schemaCacheKey{clusterID: "cluster-b", identity: "id"}
 	c.put(keyA, fakeSchemaEntry(future))
 	c.put(keyB, fakeSchemaEntry(future))
 
@@ -81,37 +90,12 @@ func TestSchemaCache_EvictClusterDropsOnlyThatCluster(t *testing.T) {
 	}
 }
 
-func TestSchemaCache_GenerationChangeIsACacheMiss(t *testing.T) {
-	c := newTargetSchemaCache()
-	future := time.Now().Add(clientCacheTTL)
-
-	oldKey := schemaCacheKey{clusterID: "remote-1", generation: "gen-1", identity: "id"}
-	newKey := schemaCacheKey{clusterID: "remote-1", generation: "gen-2", identity: "id"}
-
-	c.put(oldKey, fakeSchemaEntry(future))
-
-	if _, ok := c.get(newKey, time.Now()); ok {
-		t.Fatal("get() with a different generation hit the old entry; want a miss")
-	}
-	if got := c.len(); got != 1 {
-		t.Fatalf("len() = %d; want 1 (generation change must not have inserted anything via get)", got)
-	}
-
-	c.put(newKey, fakeSchemaEntry(future))
-	if got := c.len(); got != 2 {
-		t.Fatalf("len() = %d after inserting the new generation; want 2 (old + new coexist as separate entries)", got)
-	}
-	if _, ok := c.get(oldKey, time.Now()); !ok {
-		t.Error("old generation's entry disappeared after inserting the new generation; want it to survive independently")
-	}
-}
-
 func TestSchemaCache_IdentityIsolation(t *testing.T) {
 	c := newTargetSchemaCache()
 	future := time.Now().Add(clientCacheTTL)
 
-	keyAlice := schemaCacheKey{clusterID: "remote-1", generation: "gen-1", identity: "alice-hash"}
-	keyBob := schemaCacheKey{clusterID: "remote-1", generation: "gen-1", identity: "bob-hash"}
+	keyAlice := schemaCacheKey{clusterID: "remote-1", identity: "alice-hash"}
+	keyBob := schemaCacheKey{clusterID: "remote-1", identity: "bob-hash"}
 
 	entryAlice := fakeSchemaEntry(future)
 	c.put(keyAlice, entryAlice)
@@ -125,7 +109,7 @@ func TestSchemaCache_IdentityIsolation(t *testing.T) {
 
 	c.put(keyBob, fakeSchemaEntry(future))
 	if got := c.len(); got != 2 {
-		t.Fatalf("len() = %d after two identities on the same cluster/generation; want 2", got)
+		t.Fatalf("len() = %d after two identities on the same cluster; want 2", got)
 	}
 	got, ok := c.get(keyAlice, time.Now())
 	if !ok || got != entryAlice {
@@ -137,8 +121,8 @@ func TestSchemaCache_SweepExpiredIsIdempotent(t *testing.T) {
 	c := newTargetSchemaCache()
 	now := time.Now()
 
-	liveKey := schemaCacheKey{clusterID: "remote-live", generation: "gen", identity: "id"}
-	deadKey := schemaCacheKey{clusterID: "remote-dead", generation: "gen", identity: "id"}
+	liveKey := schemaCacheKey{clusterID: "remote-live", identity: "id"}
+	deadKey := schemaCacheKey{clusterID: "remote-dead", identity: "id"}
 	c.put(liveKey, fakeSchemaEntry(now.Add(clientCacheTTL)))
 	c.put(deadKey, fakeSchemaEntry(now.Add(-time.Second)))
 
@@ -173,7 +157,7 @@ func TestSchemaCache_SweepExpiredIsIdempotent(t *testing.T) {
 func TestSchemaCache_ConcurrentAccessIsRaceFree(t *testing.T) {
 	c := newTargetSchemaCache()
 	future := time.Now().Add(clientCacheTTL)
-	key := schemaCacheKey{clusterID: "remote-1", generation: "gen", identity: "id"}
+	key := schemaCacheKey{clusterID: "remote-1", identity: "id"}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {

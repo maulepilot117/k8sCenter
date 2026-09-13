@@ -46,16 +46,24 @@ type ClusterRouter struct {
 	encryptionKey  string
 	remoteCache    sync.Map // map[string]cachedClient
 	remoteDynCache sync.Map // map[string]cachedDynClient
-	// schemaCache holds per-(cluster, generation, identity) discovery +
-	// RESTMapper pairs for TargetSchemaFor. Bounded, TTL'd, evicted by both
-	// EvictCluster and StartCacheSweeper. See discovery_cache.go (D1). The
-	// local branch of TargetSchemaFor never touches this cache.
+	// schemaCache holds per-(cluster, identity) discovery + RESTMapper pairs
+	// for TargetSchemaFor. Bounded, TTL'd, evicted by both EvictCluster and
+	// StartCacheSweeper. See discovery_cache.go (D1). The local branch of
+	// TargetSchemaFor never touches this cache.
 	schemaCache *targetSchemaCache
 	// configSF gates calls to remoteConfig so that RouterFor's two halves
 	// (typed + dynamic) — and any concurrent first-request burst — collapse
 	// onto a single DB read + decrypt + SSRF re-validate instead of doing
 	// the work twice. F#18.
 	configSF singleflight.Group
+	// schemaSF coalesces TargetSchemaFor's whole cold-miss path (cluster
+	// record read, rest.Config build, discovery client, memcache wrapper,
+	// deferred mapper, cache put) on the (cluster, identity) key. configSF
+	// alone only collapses the rest.Config half, so N concurrent
+	// first-requests for the same key would otherwise build N distinct
+	// discovery/mapper pairs and race to overwrite one another in the
+	// cache. PR #436 review finding #5.
+	schemaSF singleflight.Group
 	logger   *slog.Logger
 
 	// F#8 (round-3) — eviction callbacks. Subsystems that maintain their
@@ -97,6 +105,22 @@ func NewClusterRouter(local *ClientFactory, cs *store.ClusterStore, encKey strin
 	return cr
 }
 
+// requireClusterStore is the single definition of the F#18 fail-closed guard
+// shared by ClientForCluster, DynamicClientForCluster and TargetSchemaFor:
+// when a non-local clusterID is requested but no cluster registry is wired,
+// hard-error instead of silently downgrading to the local cluster.
+//
+// The error text is load-bearing — three tests in this package and three in
+// internal/certmanager assert on the "no cluster store" substring. Do not
+// reword it without updating them. Callers must have already ruled out the
+// local cluster (IsLocalClusterID) before calling this.
+func (cr *ClusterRouter) requireClusterStore(clusterID string) error {
+	if cr.clusterStore == nil {
+		return fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
+	}
+	return nil
+}
+
 // ClientForCluster returns an impersonating clientset for the given cluster.
 //
 // F#18 (security audit 2026-05-22, round 2) — when a non-local clusterID is
@@ -110,8 +134,8 @@ func (cr *ClusterRouter) ClientForCluster(ctx context.Context, clusterID, userna
 	if clusterID == "" || clusterID == "local" {
 		return cr.localFactory.ClientForUser(username, groups)
 	}
-	if cr.clusterStore == nil {
-		return nil, fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
+	if err := cr.requireClusterStore(clusterID); err != nil {
+		return nil, err
 	}
 	return cr.remoteTypedClient(ctx, clusterID, username, groups)
 }
@@ -122,8 +146,8 @@ func (cr *ClusterRouter) DynamicClientForCluster(ctx context.Context, clusterID,
 	if clusterID == "" || clusterID == "local" {
 		return cr.localFactory.DynamicClientForUser(username, groups)
 	}
-	if cr.clusterStore == nil {
-		return nil, fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
+	if err := cr.requireClusterStore(clusterID); err != nil {
+		return nil, err
 	}
 	return cr.remoteDynamicClient(ctx, clusterID, username, groups)
 }
@@ -196,8 +220,19 @@ func (cr *ClusterRouter) LocalFactory() *ClientFactory {
 //     branch: they are cached per-identity and never served across
 //     identities.
 type TargetSchema struct {
-	ClusterID  string // normalized
-	Generation string // "local" for the local cluster; ClusterRecord.CreatedAt (RFC3339Nano) otherwise
+	ClusterID string // normalized
+	// Generation records which cluster-record vintage this schema was built
+	// from: "local" for the local cluster, ClusterRecord.CreatedAt
+	// (RFC3339Nano) otherwise.
+	//
+	// It is INFORMATIONAL, not a freshness guarantee. Generation is not part
+	// of the schema cache key (see schemaCacheKey in discovery_cache.go), so
+	// a cached entry reports the vintage that was current when the pair was
+	// BUILT. If a cluster row is replaced under the same id without an
+	// EvictCluster call, Generation can lag reality by up to one cache TTL
+	// (clientCacheTTL). Staleness is handled by EvictCluster, which
+	// ClusterRouter callers invoke on cluster deletion and credential update.
+	Generation string
 	IsLocal    bool
 	Discovery  discovery.DiscoveryInterface
 	Mapper     meta.RESTMapper
@@ -233,11 +268,23 @@ type TargetSchema struct {
 //
 // The remote branch fails closed (mirrors ClientForCluster's F#18 policy)
 // when no cluster store is configured, and otherwise resolves against a
-// bounded, TTL'd, identity- and generation-keyed cache: a cache hit reuses
-// the existing discovery/mapper pair; a miss builds a fresh pair via the
-// same singleflight-protected remoteConfig used by RouterFor (no second
-// remote rest.Config builder is introduced) and populates the cache before
-// returning.
+// bounded, TTL'd cache keyed on exactly (cluster, identity).
+//
+// The cache is consulted FIRST, before the cluster store is touched — a hit
+// costs no database round trip at all, matching how remoteTypedClient /
+// remoteDynamicClient already behave. Staleness is handled by EvictCluster,
+// not by the key: an earlier revision folded the record's CreatedAt into the
+// key, which forced a store read on every lookup (including every hit) while
+// only catching the one case — a row replaced under the same id — that
+// EvictCluster already covers. PR #436 review finding #1.
+//
+// A miss reads the cluster record (for the CreatedAt-derived generation
+// stored on the entry), then builds a fresh pair via the same
+// singleflight-protected remoteConfig used by RouterFor (no second remote
+// rest.Config builder is introduced) and populates the cache. The entire
+// miss path is coalesced on the same (cluster, identity) key via schemaSF,
+// so a concurrent first-request burst builds exactly one discovery/mapper
+// pair and every waiter receives it. PR #436 review finding #5.
 func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, username string, groups []string) (*TargetSchema, error) {
 	if IsLocalClusterID(clusterID) {
 		return &TargetSchema{
@@ -252,62 +299,104 @@ func (cr *ClusterRouter) TargetSchemaFor(ctx context.Context, clusterID, usernam
 		}, nil
 	}
 
-	if cr.clusterStore == nil {
-		return nil, fmt.Errorf("non-local clusterID %q requested but ClusterRouter has no cluster store — remote routing unavailable", clusterID)
-	}
-
-	rec, err := cr.clusterStore.Get(ctx, clusterID)
-	if err != nil {
-		return nil, fmt.Errorf("cluster %s not found: %w", clusterID, err)
-	}
-
-	normID := NormalizedClusterID(clusterID)
-	generation := rec.CreatedAt.UTC().Format(time.RFC3339Nano)
-	key := schemaCacheKey{
-		clusterID:  normID,
-		generation: generation,
-		identity:   cacheKey(username, groups),
-	}
-
-	if entry, ok := cr.schemaCache.get(key, time.Now()); ok {
-		return &TargetSchema{
-			ClusterID:  normID,
-			Generation: generation,
-			IsLocal:    false,
-			Discovery:  entry.discovery,
-			Mapper:     entry.mapper,
-			Invalidate: invalidateFunc(entry.mapper),
-		}, nil
-	}
-
-	// Reuse the existing singleflight-protected builder verbatim — do not
-	// add a second remote rest.Config path.
-	cfg, err := cr.remoteConfig(ctx, clusterID, username, groups)
-	if err != nil {
+	if err := cr.requireClusterStore(clusterID); err != nil {
 		return nil, err
 	}
 
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating discovery client for cluster %s: %w", clusterID, err)
+	normID := NormalizedClusterID(clusterID)
+	key := schemaCacheKey{
+		clusterID: normID,
+		identity:  cacheKey(username, groups),
 	}
-	cached := memory.NewMemCacheClient(dc)
-	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cached)
 
-	cr.schemaCache.put(key, &schemaCacheEntry{
-		discovery: cached,
-		mapper:    mapper,
-		expiresAt: time.Now().Add(clientCacheTTL),
+	// Cache first — no cluster-store read on the hit path (finding #1).
+	if entry, ok := cr.schemaCache.get(key, time.Now()); ok {
+		return remoteTargetSchema(normID, entry.generation, entry), nil
+	}
+
+	// Coalesce the whole cold-miss path, not just the rest.Config half, so
+	// a burst of first-requests builds one discovery/mapper pair (finding #5).
+	sfKey := key.clusterID + "\x00" + key.identity
+	val, err, _ := cr.schemaSF.Do(sfKey, func() (any, error) {
+		// Re-check under the singleflight slot: a waiter that queued behind
+		// a just-finished build should take that build's entry rather than
+		// start a second one.
+		if entry, ok := cr.schemaCache.get(key, time.Now()); ok {
+			return entry, nil
+		}
+
+		// Same F#17/F#6 treatment remoteConfig applies to its own shared
+		// closure: keep the caller's context VALUES (request_id, trace span)
+		// but drop the cancel signal, so the first caller disconnecting
+		// doesn't poison every coalesced waiter. Preserve an explicit
+		// deadline when the caller set one; otherwise bound the body at 30s.
+		bgCtx := context.WithoutCancel(ctx)
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			bgCtx, cancel = context.WithDeadline(bgCtx, deadline)
+			defer cancel()
+		} else {
+			var cancel context.CancelFunc
+			bgCtx, cancel = context.WithTimeout(bgCtx, 30*time.Second)
+			defer cancel()
+		}
+
+		// Read the record ONLY on the miss path, and only for its
+		// CreatedAt-derived generation. Deliberately NOT UpdatedAt:
+		// ClusterProber rewrites that every 60s, so keying or stamping off
+		// it would churn the cache into uselessness.
+		rec, err := cr.clusterStore.Get(bgCtx, clusterID)
+		if err != nil {
+			return nil, fmt.Errorf("cluster %s not found: %w", clusterID, err)
+		}
+		generation := rec.CreatedAt.UTC().Format(time.RFC3339Nano)
+
+		// Reuse the existing singleflight-protected builder verbatim — do
+		// not add a second remote rest.Config path.
+		cfg, err := cr.remoteConfig(bgCtx, clusterID, username, groups)
+		if err != nil {
+			return nil, err
+		}
+
+		dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating discovery client for cluster %s: %w", clusterID, err)
+		}
+		cached := memory.NewMemCacheClient(dc)
+		mapper := restmapper.NewDeferredDiscoveryRESTMapper(cached)
+
+		entry := &schemaCacheEntry{
+			discovery:  cached,
+			mapper:     mapper,
+			generation: generation,
+			expiresAt:  time.Now().Add(clientCacheTTL),
+		}
+		cr.schemaCache.put(key, entry)
+		return entry, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	entry, ok := val.(*schemaCacheEntry)
+	if !ok {
+		return nil, fmt.Errorf("schema singleflight returned unexpected type for cluster %s", clusterID)
+	}
+	return remoteTargetSchema(normID, entry.generation, entry), nil
+}
 
+// remoteTargetSchema builds the remote-branch TargetSchema from a cache
+// entry. Both the hit and the miss path in TargetSchemaFor go through here
+// so the five-field literal — in particular the Invalidate wiring, which a
+// previous revision got wrong on one branch — exists exactly once.
+func remoteTargetSchema(normID, generation string, e *schemaCacheEntry) *TargetSchema {
 	return &TargetSchema{
 		ClusterID:  normID,
 		Generation: generation,
 		IsLocal:    false,
-		Discovery:  cached,
-		Mapper:     mapper,
-		Invalidate: invalidateFunc(mapper),
-	}, nil
+		Discovery:  e.discovery,
+		Mapper:     e.mapper,
+		Invalidate: invalidateFunc(e.mapper),
+	}
 }
 
 // invalidateFunc adapts m's Reset() into a func() for TargetSchema.Invalidate.
