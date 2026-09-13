@@ -63,61 +63,75 @@ FROM debian:trixie AS security-patch
 COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
 COPY --from=runtime-base /var/lib/dpkg/status.d/libc6 /tmp/libc6-orig
 
-# Consolidated RUN — install + cooldown gate + assertion + patch + sed
-# substitution. Single RUN so shell variables (LIBC6_VER, BASE_LIBC6_VER,
-# upload-date math) reach every step. The /tmp/*-orig files were COPYed
-# from runtime-base just above. Step-by-step rationale:
-#   1. apt-get install — libssl3t64 stays pinned (target known); libc6
-#      is unpinned so Debian patch rolls don't break the build.
-#   2. 7-day cooldown — abort if apt grabbed a libc6 release uploaded
-#      <7 days ago. Source: changelog.Debian.gz upload-date line, which
-#      Debian Policy mandates on every binary .deb (--no-install-
-#      recommends does not skip it).
-#   3. libssl3t64 base-version assertion — fires only when the
-#      distroless image catches up to the pinned patch (= update or
-#      drop the patch).
-#   4. libc6 dynamic-version extraction — no static assertion; if base
-#      already matches the patch target, log a NOTE and continue.
-#   5. Copy patched binaries into /patch/.
-#   6. sed the dpkg status.d entries (libssl3t64 = static substitution;
-#      libc6 = dynamic substitution from extracted versions).
+# Consolidated RUN — install + cooldown gate + conditional patch, applied
+# uniformly to every package in the overlay.
+#
+# Nothing is version-pinned here, deliberately. A static pin plus a static
+# sed of the recorded version is what broke this stage before: the pin named
+# libssl3t64 3.5.6-1~deb13u2, the distroless base moved on to 3.5.7-1~deb13u2,
+# and the guard that noticed correctly refused to build rather than let the
+# sed record a downgrade. A pin only holds until the base catches up, and the
+# base catching up is the normal case, not an exception.
+#
+# So each package is handled the way libc6 always was: install whatever
+# Debian currently ships, compare it against what the base already has, and
+# patch only when Debian is genuinely ahead. When the base is level or ahead
+# the overlay is a no-op and the base's own status entry is passed through
+# unchanged, so the final image never records a version it does not have.
+#
+# Per package:
+#   1. Install unpinned, so a Debian patch roll cannot break the build.
+#   2. 7-day cooldown gate — abort if the installed version was uploaded less
+#      than 7 days ago, matching the global application-layer cooldown.
+#      Debian's signed security pocket is technically exempt, but 7 days of
+#      community catch-time is cheap defense in depth. Source: the upload
+#      date in changelog.Debian.gz, which Debian Policy mandates on every
+#      binary .deb (--no-install-recommends does not skip it).
+#   3. Compare installed against the base's recorded version with
+#      dpkg --compare-versions, which understands epochs and ~-suffixes that
+#      a string comparison would get wrong.
+#   4. Ahead  -> copy the shared objects into /patch and rewrite the status
+#      entry to the installed version.
+#      Level or behind -> pass the base's status entry through untouched and
+#      log a NOTE, so an operator reading the build log can see the stage is
+#      currently doing nothing for that package.
 RUN set -e && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-      libssl3t64=3.5.6-1~deb13u2 \
+      libssl3t64 \
       libc6 && \
     rm -rf /var/lib/apt/lists/* && \
-    LIBC6_VER=$(dpkg-query -W -f='${Version}' libc6) && \
-    [ -n "$LIBC6_VER" ] || { echo "ERROR: dpkg-query returned empty libc6 version" >&2; exit 1; } && \
-    [ -f /usr/share/doc/libc6/changelog.Debian.gz ] || \
-        { echo "ERROR: /usr/share/doc/libc6/changelog.Debian.gz missing — the patch stage's base image is stripping docs (slim variant?). The 7-day cooldown gate needs the changelog to read the upload date." >&2; exit 1; } && \
-    LIBC6_DATE=$(zcat /usr/share/doc/libc6/changelog.Debian.gz | grep -m1 '^ -- ' | sed -E 's/.*>  //') && \
-    [ -n "$LIBC6_DATE" ] || { echo "ERROR: failed to extract libc6 upload date from changelog" >&2; exit 1; } && \
-    LIBC6_TS=$(date -d "$LIBC6_DATE" +%s) && \
-    [ -n "$LIBC6_TS" ] || { echo "ERROR: 'date -d' failed on '$LIBC6_DATE'" >&2; exit 1; } && \
-    AGE_DAYS=$(( ($(date +%s) - LIBC6_TS) / 86400 )) && \
-    if [ "$AGE_DAYS" -lt 7 ]; then \
-        echo "ERROR: libc6 $LIBC6_VER uploaded $AGE_DAYS days ago (< 7-day supply-chain cooldown)." >&2; \
-        echo "  Wait until $(date -d "@$((LIBC6_TS + 7*86400))" -Iseconds) before rebuilding," >&2; \
-        echo "  or temporarily re-introduce a libc6 pin to the previous release." >&2; \
-        exit 1; \
-    fi && \
-    echo "libc6 $LIBC6_VER uploaded $AGE_DAYS days ago — passes 7-day cooldown" && \
-    grep -q '3\.5\.6-1~deb13u1' /tmp/libssl3t64-orig || \
-        { echo "ERROR: distroless base no longer contains libssl3t64 3.5.6-1~deb13u1 — update the pin/sed to the base's new version, or drop libssl3t64 from the security-patch stage if the base now ships >= 3.5.6-1~deb13u2" >&2; exit 1; } && \
-    BASE_LIBC6_VER=$(grep '^Version:' /tmp/libc6-orig | awk '{print $2}') && \
-    [ -n "$BASE_LIBC6_VER" ] || { echo "ERROR: failed to extract libc6 Version from /tmp/libc6-orig" >&2; exit 1; } && \
-    if [ "$BASE_LIBC6_VER" = "$LIBC6_VER" ]; then \
-        echo "NOTE: distroless base already ships libc6 $LIBC6_VER — the security-patch stage is a no-op for libc6 and can be dropped"; \
-    fi && \
     mkdir -p /patch/usr/lib && \
     for pkg in libssl3t64 libc6; do \
-      dpkg -L "$pkg" | grep '/usr/lib' | while read f; do \
-        [ -f "$f" ] && mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; \
-      done; \
-    done && \
-    sed 's/3\.5\.6-1~deb13u1/3.5.6-1~deb13u2/g' /tmp/libssl3t64-orig > /patch/libssl3t64-status && \
-    sed "s|${BASE_LIBC6_VER}|${LIBC6_VER}|g" /tmp/libc6-orig > /patch/libc6-status
+      INSTALLED_VER=$(dpkg-query -W -f='${Version}' "$pkg") && \
+      [ -n "$INSTALLED_VER" ] || { echo "ERROR: dpkg-query returned empty version for $pkg" >&2; exit 1; } && \
+      [ -f "/usr/share/doc/$pkg/changelog.Debian.gz" ] || \
+          { echo "ERROR: /usr/share/doc/$pkg/changelog.Debian.gz missing — the patch stage's base image is stripping docs (slim variant?). The 7-day cooldown gate needs the changelog to read the upload date." >&2; exit 1; } && \
+      UPLOAD_DATE=$(zcat "/usr/share/doc/$pkg/changelog.Debian.gz" | grep -m1 '^ -- ' | sed -E 's/.*>  //') && \
+      [ -n "$UPLOAD_DATE" ] || { echo "ERROR: failed to extract $pkg upload date from changelog" >&2; exit 1; } && \
+      UPLOAD_TS=$(date -d "$UPLOAD_DATE" +%s) && \
+      [ -n "$UPLOAD_TS" ] || { echo "ERROR: 'date -d' failed on '$UPLOAD_DATE'" >&2; exit 1; } && \
+      AGE_DAYS=$(( ($(date +%s) - UPLOAD_TS) / 86400 )) && \
+      if [ "$AGE_DAYS" -lt 7 ]; then \
+          echo "ERROR: $pkg $INSTALLED_VER uploaded $AGE_DAYS days ago (< 7-day supply-chain cooldown)." >&2; \
+          echo "  Wait until $(date -d "@$((UPLOAD_TS + 7*86400))" -Iseconds) before rebuilding," >&2; \
+          echo "  or temporarily pin $pkg to the previous release." >&2; \
+          exit 1; \
+      fi && \
+      echo "$pkg $INSTALLED_VER uploaded $AGE_DAYS days ago — passes 7-day cooldown" && \
+      BASE_VER=$(grep '^Version:' "/tmp/$pkg-orig" | awk '{print $2}') && \
+      [ -n "$BASE_VER" ] || { echo "ERROR: failed to extract $pkg Version from /tmp/$pkg-orig" >&2; exit 1; } && \
+      if dpkg --compare-versions "$INSTALLED_VER" gt "$BASE_VER"; then \
+        echo "PATCH: $pkg $BASE_VER (base) -> $INSTALLED_VER (Debian)"; \
+        for f in $(dpkg -L "$pkg" | grep '/usr/lib'); do \
+          if [ -f "$f" ]; then mkdir -p "/patch$(dirname "$f")" && cp -a "$f" "/patch$f"; fi; \
+        done; \
+        sed "s|${BASE_VER}|${INSTALLED_VER}|g" "/tmp/$pkg-orig" > "/patch/$pkg-status"; \
+      else \
+        echo "NOTE: distroless base ships $pkg $BASE_VER, Debian offers $INSTALLED_VER — overlay is a no-op for $pkg"; \
+        cp "/tmp/$pkg-orig" "/patch/$pkg-status"; \
+      fi; \
+    done
 
 # Stage 2: Production runtime (uses target platform — arm64 or amd64)
 # Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
