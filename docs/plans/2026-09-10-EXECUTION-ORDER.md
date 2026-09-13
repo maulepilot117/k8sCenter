@@ -277,4 +277,4 @@ not remote". This is **stale** — `access.go:258-265` routes remote SARs, wired
 | Q2 | C/U12 live validation only | Open — source work proceeds against fixtures |
 | Q3 | All rehearsal execution | Open — U37 stays docs-only |
 | Q4 | Git patch/PR extension | Open — U26 delivers read-only ownership |
-| Q5 | A/U38 + A/U6 dashboard layouts | **Resolved 2026-09-13** — widget catalog settled at 36 widgets; scope raised to a full builder. See `docs/plans/2026-09-13-dashboard-builder-design.md`. U38 + U6 dissolved into Release G. |
+| Q5 | A/U38 + A/U6 dashboard layouts | **Resolved 2026-09-13** — widget catalog settled at 39 widgets; scope raised to a full builder. See `docs/plans/2026-09-13-dashboard-builder-design.md`. U38 + U6 dissolved into Release G. |

@@ -85,7 +85,7 @@ and no `aria-label`, `select`, widget id, registry or ordering array.
 
 | # | Decision | Rationale |
 |---|---|---|
-| **D-1** | Catalog is the full 36 widgets of section 6 (7 existing + 29 new). | Chosen over a 7- or 13-widget v1. Mitigation: P1's render contract is validated against four structurally different widgets before P5 mass-produces the rest, because a late contract change otherwise costs 36 edits. |
+| **D-1** | Catalog is the full 39 widgets of section 6 (10 existing + 29 new; see D-9). | Chosen over a 7- or 13-widget v1. Mitigation: P1's render contract is validated against four structurally different widgets before P5 mass-produces the rest, because a late contract change otherwise costs 39 edits. |
 | **D-2** | Grid engine is hand-rolled on CSS Grid. | A React grid library would require introducing `react`/`react-dom` aliases into a Preact app on a non-standard JSX transform. A vanilla library (Gridstack) was the runner-up; hand-rolling keeps full control of the display-mode contract and of keyboard operation, which grid libraries handle poorly, and adds no supply-chain surface. |
 | **D-3** | Layouts are scoped per `(user, cluster)`, plus a "copy layout from another cluster" action. | Inherits the existing preference scoping with zero new mechanism, lets a prod cluster differ from a sandbox, and keeps reuse to one click. Mirrors the "Saved on another cluster" affordance in `SavedViews.tsx:537`. |
 | **D-4** | Widgets own their data through a shared keyed cache. | Central fetching is correct for six fixed widgets and wrong for thirty optional ones — the page would issue every request regardless of layout. |
@@ -93,6 +93,9 @@ and no `aria-label`, `select`, widget id, registry or ordering array.
 | **D-6** | "Reset" restores the **shipped default**, behind one confirm. | "Restore my previous layout" is undo — different state, different feature. Conflating them yields a button whose behavior nobody can predict. |
 | **D-7** | Unknown widget ids are **dropped-with-notice on read, rejected on write**. | A widget retired in a later release must never brick a saved layout, so reads drop it and surface a notice (matching Release A's `applyViewState` warnings). A write carrying an unknown id is a client bug and gets a 400 naming the field (matching how `CreateRequest` already rejects unknown fields). |
 | **D-8** | No user-authored PromQL and no URL fields, ever. | KTD4 survives section 1. Parameterized widgets take closed validated enums only. |
+| **D-9** | The four metric tiles are **four independent widgets**, not one `key-metrics` block. | Evidence, added 2026-09-13 after reading the code: `MetricTile` and `NetworkTile` **each already wrap themselves in a `WidgetShell`**, which is exactly why the tile grid is a bare `div`. Bundling them would nest a shell inside a shell; splitting them needs no new wrapper and is strictly less work. Closes the §10 open item. Catalog becomes **39**. |
+| **D-10** | Anything needing a unit test lives in `frontend/lib/` as a pure module. | This repo has **zero component tests** — all nine unit tests are `lib/*_test.ts`, and there is no testing-library or `preact-render-to-string`. Component behavior is covered by Playwright only. So mode selection, grid geometry and layout validation are pure `lib/` functions; `.tsx` files stay thin and are asserted in E2E. |
+| **D-11** | One layout per `(owner, cluster, scope)` is enforced by the **existing** unique index. | Migration 000018 already has `UNIQUE (owner_id, kind, cluster_id, dedup_key)`. Setting `dedup_key = scope` gives the constraint for free — no new index, no new uniqueness logic. Copy-from-cluster is then just a create under a different `cluster_id`. |
 
 ---
 
@@ -158,7 +161,7 @@ duplicate rather than a second view.
 
 `WidgetHost` measures with `ResizeObserver` and selects the largest mode whose
 minimum fits. A widget declaring only `normal` renders `normal` at every size.
-This is the contract all 36 widgets are built against.
+This is the contract all 39 widgets are built against.
 
 ### 4.5 Rendering and geometry
 
@@ -184,7 +187,7 @@ separate commit before any restructuring.
 
 | Unit | Scope |
 |---|---|
-| **D0** | Step-0 cleanup of `DashboardV2.tsx` — dead props, unused imports, debug logs. No behavior change. |
+| **D0** | Step-0 cleanup of `DashboardV2.tsx`. **Rescoped 2026-09-13 against the real file** — the originally scoped items are all empty sets: the island takes no props (`routes/index.tsx:5` renders it bare), all 19 imports are referenced, and there are zero `console.*`/`TODO`/commented-out lines. The actual items are: (a) the unreachable `donutSegments` fallback at L299/L317 — `podTotal = podCount \|\| 1` at L298 makes the guard always true, so an empty cluster draws three zero-value segments instead of the intended placeholder, which is a **bug, not just dead code**; (b) `syncedAgo` (L97), only ever assigned `"just now"`, so the header permanently reads "synced just now"; (c) six wire-type fields fetched and never read — `kubernetesVersion`, the `kubecenter{}` block, `summary.services`, `trends.services`, `window`, `step`. |
 | | **P1 — registry and render contract** |
 | D1 | `lib/dashboard/types.ts`, `registry.ts` + tests |
 | D2 | `lib/dashboard/data.ts` + tests — keyed cache, in-flight dedupe, time-range key |
@@ -222,14 +225,14 @@ Every entry is backed by a route already registered in
 `backend/internal/server/routes.go`. Nothing requires new backend except where
 marked.
 
-### Existing — become the default layout
+### Existing — become the default layout (10 ids)
 
-`cluster-health` · `key-metrics` (CPU/Memory/Pods/Network) ·
+`cluster-health` · `cpu-tile` · `memory-tile` · `pods-tile` · `network-tile` ·
 `resource-utilization` · `pod-status` · `nodes` · `recent-events` ·
 `active-alerts`
 
-`key-metrics` requires wrapping today's bare tile grid in a shell so it has an
-identity and a title.
+Per D-9 the four tiles are separate widgets. No new wrapper is needed:
+`MetricTile` and `NetworkTile` each already render their own `WidgetShell`.
 
 ### Workloads and scaling
 
@@ -373,7 +376,21 @@ here and propagated to `docs/plans/2026-09-10-EXECUTION-ORDER.md`.
 - P6's per-category widget assignment (which widgets appear on the workloads
   dashboard versus networking) is not specified here; `scopes` makes it an
   additive edit per widget.
-- Whether the metric tiles should later become four independently placeable
-  widgets rather than one `key-metrics` block. Deferred: they share a 2x2 grid
-  and uniform height today, and splitting them is additive once the contract is
-  proven.
+- **Resolved 2026-09-13 as D-9**: the metric tiles become four independent
+  widgets. Each already self-shells, so bundling was the more expensive option.
+
+### Gaps P1 must design rather than copy
+
+Found while mapping `DashboardV2.tsx`; none of these exist in the file today.
+
+- **No error state and no per-widget loading state.** The skeleton at L197-245
+  is an all-or-nothing page gate, and fetch failures are swallowed outright
+  (`.catch(() => {})` at L131; `allSettled` results discarded at L142). Per-widget
+  data sources force both to be designed from scratch.
+- **`events` and `clusterInfo` are fetched once at mount and never refreshed** —
+  the 60s interval covers only `summary` and `trends`. Moving them to per-widget
+  sources silently changes their refresh behavior unless the unit states the
+  intended semantics.
+- **`summary` feeds five of the seven blocks**, so it stays a genuinely shared
+  cache entry; `trends` has two consumers; `events` and `clusterInfo` are
+  single-consumer and become fully per-widget.
