@@ -173,8 +173,18 @@ export default function SavedViews(
         // Never silently overwrite: the user named a view that already
         // exists, and replacing their stored scope without asking is a
         // destructive act they did not request.
-        const existing = mine.find(
-          (v) => v.name.trim().toLowerCase() === name.toLowerCase(),
+        //
+        // Re-list before looking the record up. The server found a collision,
+        // so one exists; if the cached list does not have it — the colliding
+        // view was saved in another tab, or after this menu loaded — then
+        // searching the cache would miss it and the user would get a generic
+        // failure instead of the choice they are owed.
+        await load();
+        const existing = views.value.find(
+          (v) =>
+            v.clusterId === cluster &&
+            v.config.resourceKind === resourceKind &&
+            v.name.trim().toLowerCase() === name.toLowerCase(),
         );
         if (existing) {
           mode.value = { kind: "overwrite", name, existing };
@@ -300,7 +310,16 @@ export default function SavedViews(
         aria-haspopup="menu"
         onClick={() => {
           open.value = !open.value;
-          if (!open.value) resetMode();
+          if (open.value) {
+            // Refresh on open, not just on mount. These records are shared
+            // across every tab and session the user has open, so a list
+            // fetched when the page loaded can be arbitrarily old by the time
+            // someone opens the menu -- showing a view they deleted elsewhere,
+            // or missing one they just saved.
+            load();
+          } else {
+            resetMode();
+          }
         }}
         style={{
           ...buttonStyle,
