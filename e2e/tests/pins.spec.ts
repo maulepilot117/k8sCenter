@@ -8,7 +8,9 @@ import {
   e2eName,
   e2eSecureName,
   getAuthHeaders,
+  loginThroughUI,
   type PinConfigSeed,
+  watchForSubscription,
 } from "../helpers.ts";
 
 /**
@@ -640,13 +642,49 @@ test.describe.serial("Resource pins", () => {
     await navUnpin.focus();
     await expect(navUnpin).toBeFocused();
   });
-  // NOT COVERED HERE: the live-delete path, where a DELETED event arrives
-  // over the WebSocket while the detail page is open and the pin control must
-  // stop reporting "Pinned". PinToggle takes a `deleted` prop and classifies
-  // that case as missing, but the browser cannot reach it today: the detail
-  // page's own deleted banner never appears either, in CI or locally, so no
-  // DELETED event is reaching this page's subscription. That is a pre-existing
-  // gap in the detail page's live updates, not in the pin control. Restore a
-  // spec here once the event actually arrives -- assert data-pin-state
-  // "missing" and that unpin still works from that state.
+  test("a delete that arrives while the page is open stops the pin reading as healthy", async ({ browser }) => {
+    // Own context with a real login: the shared fixture's token injection
+    // stops the app from ever populating the in-memory token that lib/ws.ts
+    // needs, so a socket opened under it never authenticates and no live
+    // event can arrive. See loginThroughUI.
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      const subscribed = watchForSubscription(page, CM_KIND);
+      await loginThroughUI(page);
+
+      const name = e2eName("cm");
+      const uid = await createConfigMap(page, name);
+      await createPin(page, `ConfigMap ${NS}/${name}`, pinConfig(name, uid));
+
+      await page.goto(detailPath(name));
+      const toggle = page.getByTestId("pin-toggle");
+      await expect(toggle).toHaveAttribute("data-pin-state", "pinned");
+
+      // A deletion published before this page subscribes is delivered to
+      // nobody, and the spec would then assert against an event that was
+      // never sent to it.
+      await expect.poll(subscribed, { timeout: 20_000 }).toBe(true);
+
+      // Delete it out from under the open page. ResourceDetail keeps
+      // rendering the object it already has, so the control must learn the
+      // target is gone from the deletion event rather than from the (still
+      // matching) uid.
+      await deleteConfigMap(page, name);
+
+      await expect(toggle).toHaveAttribute("data-pin-state", "missing");
+      await expect(page.getByTestId("pin-button")).toHaveAttribute(
+        "aria-label",
+        `Unpin ConfigMap ${name}`,
+      );
+
+      // Unpinning still works from here -- this is the one screen where the
+      // user knows the pin is stale, so it must not be a dead end.
+      await page.getByTestId("pin-button").click();
+      await expect(toggle).toHaveAttribute("data-pin-state", "unpinned");
+      expect(await listPins(page)).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  });
 });
