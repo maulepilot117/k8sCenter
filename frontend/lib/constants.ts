@@ -85,6 +85,70 @@ export const RESOURCE_DETAIL_PATHS: Record<string, string> = {
   namespaces: "/cluster/namespaces",
 };
 
+/**
+ * Kinds the preferences API will accept in a pin.
+ *
+ * Mirrors the adapter registry in backend/internal/k8s/resources: ValidatePin
+ * resolves `resourceKind` through resources.GetAdapter, so a kind absent here
+ * is rejected with `unknown_resource_kind` no matter what the UI does. Offering
+ * a pin control for such a kind produces a button that can only ever fail --
+ * ciliumnetworkpolicies is the one detail page in that position today, because
+ * it is served by its own handler rather than by a registered adapter.
+ *
+ * Keep this in lockstep with the adapters' Kind() returns. A new detail page
+ * for an unregistered kind must NOT be added here.
+ */
+export const PINNABLE_KINDS = new Set([
+  "clusterrolebindings",
+  "clusterroles",
+  "configmaps",
+  "cronjobs",
+  "daemonsets",
+  "deployments",
+  "endpoints",
+  "endpointslices",
+  "events",
+  "hpas",
+  "ingresses",
+  "jobs",
+  "limitranges",
+  "mutatingwebhookconfigurations",
+  "namespaces",
+  "networkpolicies",
+  "nodes",
+  "pdbs",
+  "pods",
+  "pvcs",
+  "pvs",
+  "replicasets",
+  "resourcequotas",
+  "rolebindings",
+  "roles",
+  "secrets",
+  "serviceaccounts",
+  "services",
+  "statefulsets",
+  "storageclasses",
+  "validatingwebhookconfigurations",
+]);
+
+/**
+ * PascalCase Kubernetes kinds the diagnostics backend can investigate.
+ *
+ * Mirrors kindToResource in backend/internal/diagnostics/handler.go, which
+ * answers 400 "unsupported resource kind" for anything else. The Investigate
+ * link interpolates RESOURCE_API_KINDS[kind], so this set is keyed the same
+ * way. Widening it requires widening kindToResource first.
+ */
+export const INVESTIGATE_KINDS = new Set([
+  "Deployment",
+  "StatefulSet",
+  "DaemonSet",
+  "Pod",
+  "Service",
+  "PersistentVolumeClaim",
+]);
+
 /** Cluster-scoped resource kinds (no namespace in URL). */
 export const CLUSTER_SCOPED_KINDS = new Set([
   "nodes",

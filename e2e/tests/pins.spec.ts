@@ -8,7 +8,6 @@ import {
   e2eName,
   e2eSecureName,
   getAuthHeaders,
-  loginViaApi,
   type PinConfigSeed,
 } from "../helpers.ts";
 
@@ -86,10 +85,90 @@ async function createConfigMap(page: Page, name: string): Promise<string> {
 
 async function deleteConfigMap(page: Page, name: string): Promise<void> {
   const headers = await getAuthHeaders(page);
-  await page.request.delete(`/api/v1/resources/${CM_KIND}/${NS}/${name}`, {
+  const res = await page.request.delete(
+    `/api/v1/resources/${CM_KIND}/${NS}/${name}`,
+    { headers, failOnStatusCode: false },
+  );
+  // 404 is success for teardown -- the object is gone, which is the point.
+  // Any other failure is reported rather than swallowed: a suite that leaves
+  // ConfigMaps behind should say so instead of going green.
+  if (!res.ok() && res.status() !== 404) {
+    throw new Error(`could not delete ConfigMap ${name}: ${res.status()}`);
+  }
+}
+
+/**
+ * Provision a second identity, run `body` with it, and always remove it.
+ *
+ * Two rules this encodes, both learned the hard way:
+ *
+ * 1. Only a 429 skips. The auth endpoints share one 5-per-minute bucket per
+ *    IP, so a rate-limited run is a genuine environment limit. Every other
+ *    failure -- a policy rejection, a broken users endpoint, a login that
+ *    stops working -- is a regression, and skipping on it would let the
+ *    cross-user assertions silently stop running while CI stayed green.
+ * 2. Cleanup is in `finally`. The account (and anything it owns) must not
+ *    survive a failed assertion: the admin teardown cannot delete another
+ *    user's records, so a leak here is permanent.
+ */
+async function withSecondUser(
+  page: Page,
+  body: (token: string, username: string) => Promise<void>,
+): Promise<void> {
+  const username = e2eSecureName("user");
+  const password = `e2e-${crypto.randomUUID()}`;
+  const headers = await getAuthHeaders(page);
+
+  const createdUser = await page.request.post("/api/v1/users", {
     headers,
+    data: {
+      username,
+      password,
+      k8sUsername: username,
+      k8sGroups: [],
+      roles: ["viewer"],
+    },
     failOnStatusCode: false,
   });
+  if (createdUser.status() === 429) {
+    test.skip(true, "auth rate limiter is saturated; second identity refused");
+    return;
+  }
+  if (!createdUser.ok()) {
+    throw new Error(
+      `creating the second user failed: ${createdUser.status()} ${await createdUser
+        .text()}`,
+    );
+  }
+  const createdId = (await createdUser.json())?.data?.id;
+
+  try {
+    const login = await page.request.post("/api/v1/auth/login", {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+      data: { username, password },
+      failOnStatusCode: false,
+    });
+    if (login.status() === 429) {
+      test.skip(true, "auth rate limiter is saturated; second login refused");
+      return;
+    }
+    if (!login.ok()) {
+      throw new Error(
+        `second login failed: ${login.status()} ${await login.text()}`,
+      );
+    }
+    await body((await login.json()).data.accessToken as string, username);
+  } finally {
+    if (createdId) {
+      await page.request.delete(`/api/v1/users/${createdId}`, {
+        headers,
+        failOnStatusCode: false,
+      });
+    }
+  }
 }
 
 /** The pin records the current user owns, straight from the API. */
@@ -104,6 +183,12 @@ async function listPins(page: Page): Promise<
 test.describe.serial("Resource pins", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/config/configmaps");
+    // Belt and braces with the cluster spec's own finally: these specs are
+    // serial, so a cluster left selected by a failed spec would silently
+    // re-point every later one at a cluster that does not exist.
+    await page.evaluate(() =>
+      localStorage.setItem("k8scenter.selectedCluster", "local")
+    );
     await deleteAllPins(page);
   });
 
@@ -194,13 +279,48 @@ test.describe.serial("Resource pins", () => {
     await expect(page).toHaveURL(new RegExp(`${name}$`));
     await expect(page.getByText(/not found/i).first()).toBeVisible();
 
-    // The detail page owns the missing state, so the toggle is not rendered
-    // at all rather than claiming the resource is pinned and fine.
-    await expect(page.getByTestId("pin-toggle")).toHaveCount(0);
+    // Deliberately NOT asserting that the pin toggle is absent here: on a
+    // cold load ResourceDetail renders no action area at all when the fetch
+    // fails, so that assertion holds even with the pin control deleted from
+    // the build. It would look like coverage and prove nothing. The live
+    // deletion path, where the control IS mounted and must stop claiming the
+    // resource is pinned, is covered by its own spec below.
 
     // And the record survives, still naming the object the user pinned.
     const stored = (await listPins(page)).find((p) => p.config.name === name);
     expect(stored?.config.uid).toBe(uid);
+  });
+
+  test("a pin list that cannot be loaded renders unavailable, never unpinned", async ({
+    page,
+  }) => {
+    const name = e2eName("cm");
+    await createConfigMap(page, name);
+
+    // The R3 invariant in its sharpest form: when the preference service
+    // cannot answer, the control must not fall back to offering "Pin" as
+    // though it knew this resource was unpinned.
+    await page.route("**/api/v1/preferences/pins", (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: 503,
+            message: "preferences unavailable",
+            reason: "database_unavailable",
+          },
+        }),
+      }));
+
+    await page.goto(detailPath(name));
+    await expect(page.getByRole("heading", { name })).toBeVisible();
+
+    const toggle = page.getByTestId("pin-toggle");
+    await expect(toggle).toHaveAttribute("data-pin-state", "unavailable");
+    await expect(page.getByTestId("pin-button")).toBeDisabled();
+    // The navigation says the same thing rather than rendering an empty list.
+    await expect(page.getByTestId("pinned-unavailable")).toBeVisible();
   });
 
   test("a recreated same-name resource is reported as replaced, not silently inherited", async ({
@@ -284,70 +404,53 @@ test.describe.serial("Resource pins", () => {
     const name = e2eName("cm");
     const uid = await createConfigMap(page, name);
 
-    const otherUser = e2eSecureName("user");
-    const password = `e2e-${crypto.randomUUID()}`;
-    const headers = await getAuthHeaders(page);
-    const createdUser = await page.request.post("/api/v1/users", {
-      headers,
-      data: {
-        username: otherUser,
-        password,
-        k8sUsername: otherUser,
-        k8sGroups: [],
-        roles: ["viewer"],
-      },
-      failOnStatusCode: false,
+    await withSecondUser(page, async (theirToken) => {
+      const context = await browser.newContext();
+      try {
+        const theirPage = await context.newPage();
+        await attachAuthInjection(theirPage, theirToken);
+        await theirPage.goto("/config/configmaps");
+
+        // Their own pin, pointing at an object their Kubernetes identity
+        // cannot read. The pin is theirs; the permission is not.
+        await createPin(
+          theirPage,
+          `ConfigMap ${NS}/${name}`,
+          pinConfig(name, uid),
+        );
+        try {
+          await theirPage.goto(detailPath(name));
+
+          // Forbidden and missing are different facts. Telling this user the
+          // resource is gone would be a lie -- it exists, they just cannot
+          // see it. Scoped to the detail error region so unrelated page
+          // chrome can never satisfy the match.
+          const banner = theirPage.getByTestId("detail-error");
+          await expect(banner).toBeVisible();
+          await expect(banner).toHaveText(
+            /permission|forbidden|not authorized/i,
+          );
+          await expect(banner).not.toHaveText(/not found/i);
+
+          // The pin itself survives the failed lookup: the record is not
+          // evidence about the object, and losing it would punish the user
+          // for an RBAC change they did not make.
+          const theirPins = await listPins(theirPage);
+          expect(theirPins.some((p) => p.config.name === name)).toBe(true);
+        } finally {
+          // Their records must go even if an assertion above failed -- the
+          // admin teardown cannot reach another user's pins.
+          for (const record of await listPins(theirPage)) {
+            await theirPage.request.delete(
+              `/api/v1/preferences/pins/${record.id}`,
+              { headers: bearerHeaders(theirToken), failOnStatusCode: false },
+            );
+          }
+        }
+      } finally {
+        await context.close();
+      }
     });
-    test.skip(
-      !createdUser.ok(),
-      `could not create a second user (${createdUser.status()}); rate limiter or policy`,
-    );
-    const createdId = (await createdUser.json())?.data?.id;
-
-    let theirToken: string;
-    try {
-      theirToken = await loginViaApi(page, otherUser, password);
-    } catch (e) {
-      test.skip(true, `second login refused (${e}); auth rate limiter`);
-      return;
-    }
-
-    const context = await browser.newContext();
-    const theirPage = await context.newPage();
-    await attachAuthInjection(theirPage, theirToken);
-    await theirPage.goto("/config/configmaps");
-
-    // Their own pin, pointing at an object their Kubernetes identity cannot
-    // read. The pin is theirs; the permission is not.
-    await createPin(theirPage, `ConfigMap ${NS}/${name}`, pinConfig(name, uid));
-    await theirPage.goto(detailPath(name));
-
-    // Forbidden and missing are different facts. Telling this user the
-    // resource is gone would be a lie -- it exists, they just cannot see it.
-    await expect(
-      theirPage.getByText(/permission|forbidden|not authorized/i).first(),
-    ).toBeVisible();
-    await expect(theirPage.getByText(/not found/i)).toHaveCount(0);
-
-    // The pin itself survives the failed lookup: the record is not evidence
-    // about the object, and losing it would punish the user for an RBAC
-    // change they did not make.
-    const theirPins = await listPins(theirPage);
-    expect(theirPins.some((p) => p.config.name === name)).toBe(true);
-
-    for (const record of theirPins) {
-      await theirPage.request.delete(
-        `/api/v1/preferences/pins/${record.id}`,
-        { headers: bearerHeaders(theirToken), failOnStatusCode: false },
-      );
-    }
-    await context.close();
-    if (createdId) {
-      await page.request.delete(`/api/v1/users/${createdId}`, {
-        headers,
-        failOnStatusCode: false,
-      });
-    }
   });
 
   test("another user's pins are not listed and their ids 404", async ({
@@ -361,57 +464,31 @@ test.describe.serial("Resource pins", () => {
       pinConfig(name, uid),
     );
 
-    const otherUser = e2eSecureName("user");
-    const password = `e2e-${crypto.randomUUID()}`;
-    const headers = await getAuthHeaders(page);
-    const createdUser = await page.request.post("/api/v1/users", {
-      headers,
-      data: {
-        username: otherUser,
-        password,
-        k8sUsername: otherUser,
-        k8sGroups: [],
-        roles: ["viewer"],
-      },
-      failOnStatusCode: false,
-    });
-    test.skip(
-      !createdUser.ok(),
-      `could not create a second user (${createdUser.status()}); rate limiter or policy`,
-    );
-    const createdId = (await createdUser.json())?.data?.id;
+    await withSecondUser(page, async (theirToken) => {
+      // Asserted at the API with the other user's own token: the guarantee is
+      // that the server scopes every record to its owner, and an anonymous
+      // request answers 401 long before that check is reached.
+      const theirHeaders = bearerHeaders(theirToken);
 
-    // Asserted at the API with the other user's own token: the guarantee is
-    // that the server scopes every record to its owner, and an anonymous
-    // request answers 401 long before that check is reached.
-    const theirToken = await loginViaApi(page, otherUser, password);
-    const theirHeaders = bearerHeaders(theirToken);
-
-    const theirList = await page.request.get("/api/v1/preferences/pins", {
-      headers: theirHeaders,
-    });
-    expect(theirList.status()).toBe(200);
-    const theirBody = await theirList.json();
-    expect((theirBody.data ?? []).some((r: { id: string }) => r.id === id))
-      .toBe(false);
-
-    // 404, not 403: a 403 would confirm the record exists, which is itself a
-    // disclosure.
-    const deleteAttempt = await page.request.delete(
-      `/api/v1/preferences/pins/${id}`,
-      { headers: theirHeaders, failOnStatusCode: false },
-    );
-    expect(deleteAttempt.status()).toBe(404);
-
-    const mine = await listPins(page);
-    expect(mine.some((p) => p.id === id)).toBe(true);
-
-    if (createdId) {
-      await page.request.delete(`/api/v1/users/${createdId}`, {
-        headers,
-        failOnStatusCode: false,
+      const theirList = await page.request.get("/api/v1/preferences/pins", {
+        headers: theirHeaders,
       });
-    }
+      expect(theirList.status()).toBe(200);
+      const theirBody = await theirList.json();
+      expect((theirBody.data ?? []).some((r: { id: string }) => r.id === id))
+        .toBe(false);
+
+      // 404, not 403: a 403 would confirm the record exists, which is itself
+      // a disclosure.
+      const deleteAttempt = await page.request.delete(
+        `/api/v1/preferences/pins/${id}`,
+        { headers: theirHeaders, failOnStatusCode: false },
+      );
+      expect(deleteAttempt.status()).toBe(404);
+
+      const mine = await listPins(page);
+      expect(mine.some((p) => p.id === id)).toBe(true);
+    });
   });
 
   test("the pin toggle is visible on a resource with no available actions", async ({
@@ -486,21 +563,29 @@ test.describe.serial("Resource pins", () => {
     });
 
     await page.goto(detailPath(name));
-    await page.evaluate(() => {
-      localStorage.setItem("k8scenter.selectedCluster", "some-remote-cluster");
-    });
-    await page.reload();
-    release?.();
+    try {
+      await page.evaluate(() => {
+        localStorage.setItem(
+          "k8scenter.selectedCluster",
+          "some-remote-cluster",
+        );
+      });
+      await page.reload();
+      release?.();
 
-    // A pin names one object in one cluster. The held response belongs to the
-    // previous cluster and must never paint this one's navigation.
-    await expect(
-      page.locator(`[data-pin-name="${name}"]`),
-    ).toHaveCount(0);
-
-    await page.evaluate(() => {
-      localStorage.setItem("k8scenter.selectedCluster", "local");
-    });
+      // A pin names one object in one cluster. The held response belongs to
+      // the previous cluster and must never paint this one's navigation.
+      await expect(
+        page.locator(`[data-pin-name="${name}"]`),
+      ).toHaveCount(0);
+    } finally {
+      // Restore on the failure path too: the file is serial, so leaving a
+      // nonexistent cluster selected would make every later spec fail for a
+      // reason that has nothing to do with what it tests.
+      await page.evaluate(() => {
+        localStorage.setItem("k8scenter.selectedCluster", "local");
+      });
+    }
   });
 
   test("long resource names stay readable in the nav row", async ({ page }) => {
@@ -565,5 +650,42 @@ test.describe.serial("Resource pins", () => {
     );
     await navUnpin.focus();
     await expect(navUnpin).toBeFocused();
+  });
+  test("a delete that arrives while the page is open stops the pin reading as healthy", async ({
+    page,
+  }) => {
+    const name = e2eName("cm");
+    const uid = await createConfigMap(page, name);
+    await createPin(page, `ConfigMap ${NS}/${name}`, pinConfig(name, uid));
+
+    await page.goto(detailPath(name));
+    const toggle = page.getByTestId("pin-toggle");
+    await expect(toggle).toHaveAttribute("data-pin-state", "pinned");
+
+    // Delete it out from under the open page. ResourceDetail keeps rendering
+    // the object it already has, so the control must learn the target is gone
+    // from the deletion event rather than from the (still matching) uid.
+    await deleteConfigMap(page, name);
+
+    // Precondition, asserted separately so a transport problem does not read
+    // as a pin-state bug: this spec needs the resource WebSocket to deliver
+    // the DELETED event. If this banner never appears, no event arrived and
+    // the pin assertion below is untestable in this environment.
+    await expect(
+      page.getByText(/was deleted/i),
+      "the page never registered the deletion -- the resource WebSocket delivered no event",
+    ).toBeVisible();
+
+    await expect(toggle).toHaveAttribute("data-pin-state", "missing");
+    await expect(page.getByTestId("pin-button")).toHaveAttribute(
+      "aria-label",
+      `Unpin ConfigMap ${name}`,
+    );
+
+    // Unpinning still works from here -- this is the one screen where the user
+    // knows the pin is stale, so it must not be a dead end.
+    await page.getByTestId("pin-button").click();
+    await expect(toggle).toHaveAttribute("data-pin-state", "unpinned");
+    expect(await listPins(page)).toHaveLength(0);
   });
 });

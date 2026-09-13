@@ -1,9 +1,14 @@
 import { useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect, useMemo, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
-import { apiGet, apiPostRaw } from "@/lib/api.ts";
+import { ApiError, apiGet, apiPostRaw } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
-import { RESOURCE_API_KINDS, RESOURCE_DETAIL_PATHS } from "@/lib/constants.ts";
+import {
+  INVESTIGATE_KINDS,
+  PINNABLE_KINDS,
+  RESOURCE_API_KINDS,
+  RESOURCE_DETAIL_PATHS,
+} from "@/lib/constants.ts";
 import {
   type ActionId,
   executeAction,
@@ -355,9 +360,14 @@ export default function ResourceDetail({
       updated.value = false;
       eventsFetched.current = false;
     } catch (err) {
-      if (err instanceof Error && err.message.includes("404")) {
+      // Branch on the typed status, not the message text. A substring match
+      // for "404" also fires on a 403 whose message happens to contain it,
+      // and "gone" versus "not allowed to see" are different facts to tell a
+      // user — the pin control's states depend on that distinction too.
+      const status = err instanceof ApiError ? err.status : undefined;
+      if (status === 404) {
         error.value = `${title} "${name}" not found`;
-      } else if (err instanceof Error && err.message.includes("403")) {
+      } else if (status === 403) {
         error.value =
           `You don't have permission to view this ${title.toLowerCase()}`;
       } else {
@@ -1026,48 +1036,62 @@ export default function ResourceDetail({
             </button>
           );
         })}
-        {/* Investigate link */}
-        {namespace && (
-          <a
-            href={`/observability/investigate?namespace=${namespace}&kind=${
-              RESOURCE_API_KINDS[kind] ?? kind
-            }&name=${name}`}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "9px",
-              fontSize: "12px",
-              fontWeight: 600,
-              fontFamily: "inherit",
-              border: "1px solid var(--border-primary)",
-              background: "transparent",
-              color: "var(--text-muted)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "5px",
-              textDecoration: "none",
-              transition: "background 0.15s, color 0.15s",
-            }}
-            onMouseOver={(e) => {
-              (e.currentTarget as HTMLElement).style.background =
-                "var(--bg-elevated)";
-              (e.currentTarget as HTMLElement).style.color = "var(--accent)";
-            }}
-            onMouseOut={(e) => {
-              (e.currentTarget as HTMLElement).style.background = "transparent";
-              (e.currentTarget as HTMLElement).style.color =
-                "var(--text-muted)";
-            }}
-          >
-            Investigate
-          </a>
+        {
+          /* Investigate link — only for kinds the diagnostics backend
+            supports. It answers 400 for anything outside INVESTIGATE_KINDS,
+            so offering the link elsewhere just routes the user to an error. */
+        }
+        {namespace && INVESTIGATE_KINDS.has(RESOURCE_API_KINDS[kind] ?? kind) &&
+          (
+            <a
+              href={`/observability/investigate?namespace=${namespace}&kind=${
+                RESOURCE_API_KINDS[kind] ?? kind
+              }&name=${name}`}
+              style={{
+                padding: "6px 12px",
+                borderRadius: "9px",
+                fontSize: "12px",
+                fontWeight: 600,
+                fontFamily: "inherit",
+                border: "1px solid var(--border-primary)",
+                background: "transparent",
+                color: "var(--text-muted)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "5px",
+                textDecoration: "none",
+                transition: "background 0.15s, color 0.15s",
+              }}
+              onMouseOver={(e) => {
+                (e.currentTarget as HTMLElement).style.background =
+                  "var(--bg-elevated)";
+                (e.currentTarget as HTMLElement).style.color = "var(--accent)";
+              }}
+              onMouseOut={(e) => {
+                (e.currentTarget as HTMLElement).style.background =
+                  "transparent";
+                (e.currentTarget as HTMLElement).style.color =
+                  "var(--text-muted)";
+              }}
+            >
+              Investigate
+            </a>
+          )}
+        {
+          /* Pin control — only for kinds the preferences API can store. It
+            rejects anything without a registered adapter, so elsewhere this
+            would be a button that can only ever fail. */
+        }
+        {PINNABLE_KINDS.has(kind) && (
+          <PinToggle
+            resourceKind={kind}
+            displayKind={RESOURCE_API_KINDS[kind] ?? title}
+            namespace={namespace ?? ""}
+            name={name}
+            uid={resource.value?.metadata.uid}
+            deleted={deleted.value}
+          />
         )}
-        <PinToggle
-          resourceKind={kind}
-          displayKind={RESOURCE_API_KINDS[kind] ?? title}
-          namespace={namespace ?? ""}
-          name={name}
-          uid={resource.value?.metadata.uid}
-        />
       </>
     )
     : undefined;
@@ -1124,7 +1148,7 @@ export default function ResourceDetail({
         {/* Error state */}
         {error.value && !resource.value
           ? (
-            <div style={{ padding: "20px" }}>
+            <div style={{ padding: "20px" }} data-testid="detail-error">
               <ErrorBanner message={error.value} />
             </div>
           )

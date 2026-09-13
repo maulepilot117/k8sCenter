@@ -29,6 +29,17 @@ interface PinToggleProps {
   name: string;
   /** The live object's uid; undefined until the detail fetch resolves. */
   uid: string | undefined;
+  /**
+   * True once the page knows this object is gone -- today, when a DELETED
+   * event arrives over the WebSocket while the page is open.
+   *
+   * Required, not optional: ResourceDetail keeps `resource.value` populated
+   * after a delete so the page can still render the object it was showing,
+   * which means the uid alone cannot distinguish a live object from a deleted
+   * one. Without this the control would keep reporting "Pinned" for an object
+   * that no longer exists.
+   */
+  deleted: boolean;
 }
 
 /**
@@ -47,17 +58,19 @@ interface PinToggleProps {
  * answer: it does not yet know whether this resource is pinned, and offering
  * "Pin" would let a user create a duplicate of a pin they already have.
  *
- * This control renders only once the detail fetch produced an object, so the
- * live-lookup outcome it can observe is always "ok" — which is why it shows
- * three of classifyPin's five states (ok, replaced, unknown). The other two
- * belong to the page, not to this button: when the target is gone or the user
- * may no longer read it, ResourceDetail renders its own not-found or
- * forbidden banner instead of the object. Do not synthesize a "missing" pin
- * state here from a failed fetch — the page has already said it, and said it
- * more precisely.
+ * The control renders only once the detail fetch produced an object, so a
+ * cold-load "forbidden" or "not found" never reaches it — ResourceDetail
+ * renders its own banner and no action area at all, and that page-level
+ * report is more precise than anything this button could say. Do not
+ * synthesize those two states here from a failed fetch.
+ *
+ * A delete that arrives AFTER the object loaded is the exception, and the
+ * `deleted` prop carries it: the page deliberately keeps showing the object
+ * it had, so without that signal this control would keep reporting "Pinned"
+ * for a resource that no longer exists.
  */
 export function PinToggle(
-  { resourceKind, displayKind, namespace, name, uid }: PinToggleProps,
+  { resourceKind, displayKind, namespace, name, uid, deleted }: PinToggleProps,
 ) {
   const busy = useSignal(false);
   const failure = useSignal<string | null>(null);
@@ -74,16 +87,25 @@ export function PinToggle(
   };
 
   const key = pinDedupKey(config);
-  // Active cluster only: the same kind/namespace/name can be pinned on two
-  // clusters, and the other cluster's pin says nothing about this object.
+  // Every read of the shared pin-store is gated on IS_BROWSER together, not
+  // one of three: those signals are a process-global singleton on the Deno
+  // server, so a partial guard would let one request's state colour another
+  // request's server-rendered output.
   const record = IS_BROWSER
     ? pinsForActiveCluster().find((p) => pinDedupKey(p.config) === key)
     : undefined;
+  const unavailable = IS_BROWSER ? pinsUnavailable.value : undefined;
+  const loaded = IS_BROWSER ? pinsLoaded.value : false;
 
-  const unavailable = pinsUnavailable.value;
-  const loading = uid === undefined || (!pinsLoaded.value && !unavailable);
+  const loading = uid === undefined || (!loaded && !unavailable);
+  // A deleted target is a "notFound" lookup even though the page still holds
+  // the object it was showing, so the record classifies as missing rather than
+  // matching its own stale uid.
   const live = record
-    ? classifyPin(record.config, { status: "ok", liveUid: uid })
+    ? classifyPin(record.config, {
+      status: deleted ? "notFound" : "ok",
+      liveUid: uid,
+    })
     : undefined;
 
   const label = namespace
@@ -102,6 +124,11 @@ export function PinToggle(
       case "unknown_resource_kind":
       case "unsupported_schema_version":
         return "This build cannot pin this resource.";
+      case "invalid_name":
+      case "identity_too_long":
+        // The server rejected what we sent. Saying "could not reach" here
+        // would send the user looking for an outage that is not happening.
+        return "This resource's name cannot be stored as a pin.";
       default:
         return "Could not reach the preference service.";
     }
@@ -145,20 +172,38 @@ export function PinToggle(
 
   // Re-pinning a replaced object is a delete plus a create, not an update: a
   // pin has no PUT, and this is a different object than the one pinned.
+  //
+  // The two steps are caught separately on purpose. Sharing one try would make
+  // a failed delete skip the create, so a user who asked to re-pin would end
+  // up with no pin at all -- and the delete's most likely failure is a 404
+  // from another tab having removed the same record, which is not a failure of
+  // this operation at all.
   const repin = async () => {
     if (!record) return;
     busy.value = true;
     failure.value = null;
     try {
-      await removePin(record.id);
+      try {
+        await removePin(record.id);
+      } catch (err) {
+        // Already gone is the state this step wanted. Anything else leaves the
+        // old record in place, so stop rather than creating a second one.
+        if ((err as ApiError | undefined)?.status !== 404) throw err;
+      }
       await addPin(recordName, config);
     } catch (err) {
-      // The delete may already have landed, so say so rather than leaving the
-      // user to discover the pin is gone from the navigation.
-      failure.value = `Could not re-pin, and the old pin may already be gone. ${
-        describe(err)
-      }`;
-      await loadPins();
+      if (preferenceReason(err) === "already_pinned") {
+        // Another tab re-pinned the same object first. The end state is the
+        // one the user asked for, so reconcile instead of reporting a failure
+        // next to a control that correctly reads "Pinned".
+        await loadPins();
+      } else {
+        failure.value =
+          `Could not re-pin, and the old pin may already be gone. ${
+            describe(err)
+          }`;
+        await loadPins();
+      }
     } finally {
       busy.value = false;
     }
@@ -202,8 +247,20 @@ export function PinToggle(
   } else if (!record) {
     state = "unpinned";
     text = "Pin";
-    action = pin;
-    ariaLabel = `Pin ${displayKind} ${name}`;
+    // Pinning an object the page already knows is gone would store a record
+    // that is stale the moment it is written.
+    action = deleted ? undefined : pin;
+    ariaLabel = deleted
+      ? `${displayKind} ${name} was deleted and cannot be pinned`
+      : `Pin ${displayKind} ${name}`;
+    hint = deleted ? "This resource was deleted." : undefined;
+  } else if (live === "missing") {
+    state = "missing";
+    text = "Pinned (target deleted)";
+    action = unpin;
+    ariaLabel = `Unpin ${displayKind} ${name}`;
+    hint =
+      "This resource was deleted while you were viewing it. The pin still points at it.";
   } else if (live === "replaced") {
     state = "replaced";
     text = "Pinned (replaced)";
