@@ -1,9 +1,13 @@
 import { expect, test } from "../fixtures/base.ts";
 import {
+  attachAuthInjection,
+  bearerHeaders,
   createSavedView,
   deleteAllSavedViews,
   e2eName,
+  e2eSecureName,
   getAuthHeaders,
+  loginViaApi,
   type SavedViewConfigSeed,
 } from "../helpers.ts";
 
@@ -53,6 +57,7 @@ test.describe.serial("Saved views", () => {
       storageState: "playwright/.auth/admin.json",
     });
     const page = await context.newPage();
+    await attachAuthInjection(page);
     await page.goto(PODS);
     await deleteAllSavedViews(page);
     await context.close();
@@ -105,6 +110,10 @@ test.describe.serial("Saved views", () => {
       storageState: "playwright/.auth/admin.json",
     });
     const fresh = await context.newPage();
+    // A hand-made context does not get fixtures/base.ts, so without this the
+    // page is anonymous and lands on /login -- the control under test would
+    // never render, and the failure would look like a missing feature.
+    await attachAuthInjection(fresh);
     await fresh.goto(PODS);
     await fresh.getByTestId("saved-views-toggle").click();
     await fresh
@@ -116,13 +125,14 @@ test.describe.serial("Saved views", () => {
     await context.close();
   });
 
-  test("does not leak another user's views", async ({ page, browser }) => {
+  test("does not leak another user's views", async ({ page }) => {
     await page.goto(PODS);
     const name = e2eName("view");
     const id = await createSavedView(page, name, podConfig());
 
-    const otherUser = e2eName("user").replace(/-/g, "");
-    const password = "e2e-Other-User-1234";
+    // crypto-backed, not Math.random: this value becomes an account identity.
+    const otherUser = e2eSecureName("user");
+    const password = `e2e-${crypto.randomUUID()}`;
     const headers = await getAuthHeaders(page);
     const created = await page.request.post("/api/v1/users", {
       headers,
@@ -139,42 +149,55 @@ test.describe.serial("Saved views", () => {
       !created.ok(),
       `could not create a second user (${created.status()}); rate limiter or policy`,
     );
+    const createdId = (await created.json())?.data?.id;
 
-    const context = await browser.newContext();
-    const otherPage = await context.newPage();
-    await otherPage.goto("/login");
-    await otherPage.getByLabel("Username").fill(otherUser);
-    await otherPage.getByLabel("Password").fill(password);
-    await otherPage.getByRole("button", { name: /sign in/i }).click();
-    await otherPage.waitForURL("/");
+    // Asserted at the API with the other user's own token. Going through a
+    // browser context would only add flake: the guarantee under test is that
+    // the server scopes every record to its owner, and an unauthenticated
+    // request answers 401 long before that check is reached -- which would
+    // pass a naive "not 200" assertion while proving nothing.
+    const theirToken = await loginViaApi(page, otherUser, password);
+    const theirHeaders = bearerHeaders(theirToken);
 
-    // The other user's list must not contain the admin's record, and
-    // addressing it by id must be indistinguishable from a record that never
-    // existed -- a 403 would confirm it exists.
-    const theirList = await otherPage.request.get("/api/v1/preferences/views", {
-      headers: { "X-Requested-With": "XMLHttpRequest" },
+    const theirList = await page.request.get("/api/v1/preferences/views", {
+      headers: theirHeaders,
     });
+    expect(theirList.status()).toBe(200);
     const theirBody = await theirList.json();
-    const leaked = (theirBody.data ?? []).some(
-      (r: { id: string }) => r.id === id,
-    );
-    expect(leaked).toBe(false);
+    expect((theirBody.data ?? []).some((r: { id: string }) => r.id === id))
+      .toBe(false);
 
-    const direct = await otherPage.request.put(
-      `/api/v1/preferences/views/${id}`,
-      {
-        headers: { "X-Requested-With": "XMLHttpRequest" },
-        data: { name: "stolen", revision: 1, config: podConfig() },
-        failOnStatusCode: false,
-      },
-    );
-    expect(direct.status()).toBe(404);
-
-    await context.close();
-    await page.request.delete(`/api/v1/users/${otherUser}`, {
-      headers,
+    // 404, not 403: a 403 would confirm the record exists, which is itself a
+    // disclosure. Another user's id must be indistinguishable from a
+    // nonexistent one.
+    const direct = await page.request.put(`/api/v1/preferences/views/${id}`, {
+      headers: theirHeaders,
+      data: { name: "stolen", revision: 1, config: podConfig() },
       failOnStatusCode: false,
     });
+    expect(direct.status()).toBe(404);
+
+    const deleteAttempt = await page.request.delete(
+      `/api/v1/preferences/views/${id}`,
+      { headers: theirHeaders, failOnStatusCode: false },
+    );
+    expect(deleteAttempt.status()).toBe(404);
+
+    // The record is still the owner's, untouched by either attempt.
+    const mine = await page.request.get("/api/v1/preferences/views", {
+      headers,
+    });
+    const stillThere = (await mine.json()).data.find(
+      (r: { id: string }) => r.id === id,
+    );
+    expect(stillThere?.name).toBe(name);
+
+    if (createdId) {
+      await page.request.delete(`/api/v1/users/${createdId}`, {
+        headers,
+        failOnStatusCode: false,
+      });
+    }
   });
 
   test("renaming with a stale revision surfaces a conflict", async ({
