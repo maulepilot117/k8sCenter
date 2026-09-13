@@ -173,22 +173,36 @@ var capabilityOperations = []capabilityOp{
 		// RemoteSupported false until U9a — see yaml.validate's comment
 		// above (finding #3); yaml/handler.go:220 still 501s remote today.
 		// Secrets refused on both classes (enforced inside the yaml
-		// handler, not here). AuthVerb "get": diff reads ONE live object to
-		// compare against the submitted document. AuthResource: configmaps
-		// — see yaml.validate's comment for why (finding #2).
+		// handler, not here). AuthVerb "patch", not "get" (task review round
+		// 2, finding #2a): differ.go:101 does call dr.Get(...) first, but
+		// differ.go:118 then does dr.Patch(..., types.ApplyPatchType, data,
+		// DryRun: []string{metav1.DryRunAll}) to compute the proposed state
+		// — and Kubernetes authorizes a dry-run patch exactly as it
+		// authorizes a real one (dryRun skips persistence, not
+		// authorization), same reasoning as yaml.validate above. Diff needs
+		// BOTH get and patch; probing "patch" is the representative choice
+		// because it is the verb more likely to be denied, so it is the one
+		// that actually carries information — probing "get" would report
+		// authorized: true for a viewer who lacks patch and then hits
+		// Forbidden inside the real call. AuthResource: configmaps — see
+		// yaml.validate's comment for why (finding #2).
 		ID: "yaml.diff", Label: "Diff YAML against live state",
 		LocalSupported: true, RemoteSupported: false,
-		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
+		AuthVerb: "patch", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
 		// RemoteSupported false until U9a — see yaml.validate's comment
 		// above (finding #3); yaml/handler.go:282 still 501s remote today.
-		// Secrets refused on both classes. AuthVerb "list": export reads
-		// (potentially many) live objects to export, unlike diff's single-
-		// object "get". AuthResource: configmaps (finding #2).
+		// Secrets refused on both classes. AuthVerb "get", not "list" (task
+		// review round 2, finding #2b): handler.go:245 requires kind AND
+		// name to be non-empty (400 otherwise) — export always fetches ONE
+		// named object, never a list — and the only client calls in the
+		// export path are the two dynClient...Get(...) calls at
+		// handler.go:298/300. There is no .List anywhere in it.
+		// AuthResource: configmaps (finding #2).
 		ID: "yaml.export", Label: "Export YAML",
 		LocalSupported: true, RemoteSupported: false,
-		AuthVerb: "list", AuthGroup: "", AuthResource: "configmaps",
+		AuthVerb: "get", AuthGroup: "", AuthResource: "configmaps",
 	},
 	{
 		// RemoteSupported false until U9b — see yaml.validate's comment

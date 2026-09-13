@@ -221,17 +221,6 @@ func findCapability(t *testing.T, resp CapabilitiesResponse, op string) Capabili
 	return Capability{}
 }
 
-func findOp(t *testing.T, id string) capabilityOp {
-	t.Helper()
-	for _, op := range capabilityOperations {
-		if op.ID == id {
-			return op
-		}
-	}
-	t.Fatalf("operation %q not present in capabilityOperations", id)
-	return capabilityOp{}
-}
-
 // syntheticRemoteOp / syntheticRemoteProbeOp exist purely to drive
 // buildCapability's remote-branch dimension-priority logic (reachable ->
 // discovery -> authz -> ok) directly, with a real, falsifiable verdict.
