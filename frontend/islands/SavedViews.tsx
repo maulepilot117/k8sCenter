@@ -312,8 +312,8 @@ export default function SavedViews(
         // what the control is for. The accessible name and the tooltip carry
         // the verb, so the affordance is discoverable without widening the
         // button.
-        aria-label="Saved views — save the current filters as a view"
-        title="Saved views — save the current filters as a view"
+        aria-label={`${mineLabel} — saved views; save the current filters as a view`}
+        title="Save the current filters as a view"
         onClick={() => {
           open.value = !open.value;
           if (open.value) {
@@ -411,7 +411,7 @@ export default function SavedViews(
               No saved views for this table yet.
               <div
                 data-testid="saved-views-empty-hint"
-                style={{ marginTop: "4px", opacity: 0.8 }}
+                style={{ marginTop: "4px" }}
               >
                 Set the filters you want, then choose{" "}
                 <strong>Save current view</strong> below.

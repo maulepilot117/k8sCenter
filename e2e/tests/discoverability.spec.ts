@@ -41,10 +41,11 @@ test.describe("discoverability", () => {
     const toggle = page.getByTestId("saved-views-toggle");
     await expect(toggle).toBeVisible();
 
-    // The visible label stays short; the accessible name carries the meaning.
-    const label = await toggle.getAttribute("aria-label");
-    expect(label, "saved-views-toggle must have an aria-label").not.toBeNull();
-    expect(label!.toLowerCase()).toContain("save");
+    // The visible label stays short; the computed accessible name carries the
+    // meaning. Asserting the accessible name (not the raw aria-label
+    // attribute) also guards against a later aria-labelledby silently
+    // overriding it.
+    await expect(toggle).toHaveAccessibleName(/save/i);
   });
 
   test("the empty saved-views menu names the create action", async ({ page }) => {

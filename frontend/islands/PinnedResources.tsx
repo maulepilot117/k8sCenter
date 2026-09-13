@@ -79,7 +79,7 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
     // The header renders even when empty so the section reads as empty rather
     // than vanishing as if unsupported -- and the hint exists because saying
     // "nothing is pinned" to someone who has never seen a pin control is a
-    // dead end. Name the button, and name the page it is on.
+    // dead end. Name the button.
     return (
       <div style={{ marginTop: "14px" }} data-testid="pinned-resources">
         <div style={HEADER_STYLE}>Pinned</div>
@@ -99,7 +99,6 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
             fontSize: "11px",
             lineHeight: 1.45,
             color: "var(--text-muted)",
-            opacity: 0.8,
             padding: "0 9px 4px",
           }}
         >
