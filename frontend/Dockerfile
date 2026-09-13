@@ -15,13 +15,28 @@ RUN deno task build
 # Cache all runtime dependencies (ensures no network fetches at startup)
 RUN deno cache _fresh/server.js || true
 
-# Remove esbuild native binaries — build-only tool, not needed at runtime.
-# These contain an embedded Go binary that triggers Go stdlib CVEs in Trivy.
-RUN find /app/node_modules -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
-    find /app/node_modules -path '*/@esbuild/*/bin/esbuild' -delete 2>/dev/null; \
-    find /deno-dir -path '*/esbuild/bin/esbuild' -delete 2>/dev/null; \
-    find /deno-dir -path '*/@esbuild/*/bin/esbuild' -delete 2>/dev/null; \
-    true
+# Drop the build toolchain before it can reach the runtime image.
+#
+# The build needs vite, postcss, tailwind and their dependency trees; the
+# server it produces does not. `deno task build` bundles every npm import into
+# _fresh/, leaving jsr:@fresh/core and node: builtins as the only bare
+# specifiers in the output. Shipping the toolchain anyway handed Trivy a set of
+# packages the running container cannot even load — five HIGH CVEs across
+# browserslist, nanoid and postcss, none reachable at runtime, all of them
+# release-blocking. Deleting the toolchain removes that entire class instead of
+# chasing each new advisory with a version bump.
+#
+# Two directories hold it, and both have to go or the scanner still finds it:
+#   /app/node_modules  — the npm tree `deno install` materialises
+#   /deno-dir/npm      — Deno's own npm cache, a second copy of the same thing
+#
+# The esbuild binaries were already deleted here for exactly this reason (an
+# embedded Go binary that tripped Go stdlib CVEs). This generalises that
+# one-package fix to the toolchain it was part of.
+#
+# What must survive is the rest of /deno-dir — the jsr modules `deno serve`
+# resolves at startup. Only the npm subtree is removed.
+RUN rm -rf /app/node_modules /deno-dir/npm
 
 # Security patch stage: overlay patched OS libraries onto distroless so Trivy
 # clears the open CVEs. Uses target platform so library arch paths match.
@@ -150,7 +165,6 @@ COPY --from=builder /app/deno.json ./
 COPY --from=builder /app/deno.lock* ./
 COPY --from=builder /app/package.json* ./
 COPY --from=builder /app/static ./static
-COPY --from=builder /app/node_modules ./node_modules
 
 # Copy Deno cache from builder (includes ESM modules like Monaco)
 COPY --from=builder /deno-dir /deno-dir
