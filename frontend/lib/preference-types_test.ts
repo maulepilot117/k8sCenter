@@ -66,6 +66,26 @@ Deno.test("captureViewState: round-trips the four supported table signals", () =
   assertEquals(warnings, []);
 });
 
+Deno.test('captureViewState: namespace "all" is stored as empty string', () => {
+  // ResourceTable's `ns` computed already collapses the "all" sentinel to ""
+  // before it reaches here, and "" is what the server stores for the
+  // all-namespaces scope. This pins that the capture side does not reintroduce
+  // the sentinel, which the server would reject as an invalid namespace.
+  const captured = captureViewState(viewState({ namespace: "" }));
+  assertEquals(captured.namespace, "");
+  assertEquals(applyViewState(captured).state.namespace, "");
+});
+
+Deno.test("applyViewState: a cluster-scoped view restores an empty namespace", () => {
+  // Mirrors the server's validateScope rule: a cluster-scoped kind must carry
+  // no namespace. Restoring one would make the table request a namespaced URL
+  // for a kind that has no namespaces.
+  const stored = savedView({ resourceKind: "nodes", namespace: "" });
+  const { state, warnings } = applyViewState(stored);
+  assertEquals(state.namespace, "");
+  assertEquals(warnings, []);
+});
+
 Deno.test("captureViewState: stamps the current schema version", () => {
   assertEquals(
     captureViewState(viewState()).schemaVersion,

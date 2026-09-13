@@ -1,4 +1,4 @@
-import { type Signal, useComputed, useSignal } from "@preact/signals";
+import { batch, type Signal, useComputed, useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
@@ -11,7 +11,10 @@ import {
   subscribe,
 } from "@/lib/ws.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
-import { SAVED_VIEW_SORT_KEYS } from "@/lib/preference-types.ts";
+import {
+  SAVED_VIEW_SORT_KEYS,
+  type TableViewState,
+} from "@/lib/preference-types.ts";
 import {
   CLUSTER_SCOPED_KINDS,
   RESOURCE_DETAIL_PATHS,
@@ -22,6 +25,7 @@ import ResourceTable, {
   type Row as UIRow,
 } from "@/components/ui/ResourceTable.tsx";
 import { ScaleDialog } from "@/components/ui/ScaleDialog.tsx";
+import SavedViews from "@/islands/SavedViews.tsx";
 import { SearchBar } from "@/components/ui/SearchBar.tsx";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import type { Deployment, K8sResource, Pod } from "@/lib/k8s-types.ts";
@@ -128,6 +132,11 @@ export default function ResourceTableIsland({
   const statusFilter = useSignal("all");
   const sortKey = useSignal("name");
   const sortDir = useSignal<"asc" | "desc">("asc");
+  // Degradations reported by applyViewState when a saved view is restored.
+  // Surfaced above the table and dismissible; never swallowed, because a view
+  // that quietly restored something other than what was saved is worse than
+  // one that says what it could not honour.
+  const restoreWarnings = useSignal<string[]>([]);
   const continueToken = useSignal<string | null>(null);
   const totalCount = useSignal<number | null>(null);
   const loadingMore = useSignal(false);
@@ -153,6 +162,58 @@ export default function ResourceTableIsland({
     clusterScoped
       ? ""
       : (selectedNamespace.value === "all" ? "" : selectedNamespace.value)
+  );
+
+  // What a saved view would capture right now. Read live, so "Save" stores
+  // what is on screen rather than what was on screen when the menu opened.
+  const viewState = useComputed<TableViewState>(() => ({
+    resourceKind: kind,
+    namespace: ns.value,
+    search: search.value,
+    statusFilter: statusFilter.value,
+    sortKey: sortKey.value,
+    sortDir: sortDir.value,
+  }));
+
+  /**
+   * Applies a restored view to this table.
+   *
+   * Restoring a namespace writes selectedNamespace, which is app-global: every
+   * other page follows it. That is a bigger effect than "this table changed",
+   * so the notice says so, and it is only written when the stored namespace
+   * actually differs from the current one.
+   *
+   * All writes go in one batch so the effect keyed on [kind, ns.value,
+   * enableWS] runs once rather than once per signal. The existing fetchAbort
+   * controller cancels the superseded load; no second cancellation path.
+   */
+  const applyView = useCallback(
+    (state: TableViewState, warnings: string[]) => {
+      const restoredNs = state.namespace === "" ? "all" : state.namespace;
+      const namespaceChanges = !clusterScoped &&
+        restoredNs !== selectedNamespace.value;
+
+      const notices = [...warnings];
+      if (namespaceChanges) {
+        notices.push(
+          `Namespace switched to ${
+            restoredNs === "all" ? "all namespaces" : restoredNs
+          } for every page, not just this table.`,
+        );
+      }
+
+      batch(() => {
+        search.value = state.search;
+        statusFilter.value = state.statusFilter;
+        sortKey.value = state.sortKey;
+        sortDir.value = state.sortDir === "desc" ? "desc" : "asc";
+        restoreWarnings.value = notices;
+        if (namespaceChanges) {
+          selectedNamespace.value = restoredNs;
+        }
+      });
+    },
+    [kind, clusterScoped],
   );
 
   // Fetch resources via REST with pagination
@@ -677,6 +738,53 @@ export default function ResourceTableIsland({
       {/* Error state */}
       {error.value && <ErrorBanner message={error.value} />}
 
+      {
+        /* What a restored view could not honour, and what it changed beyond
+          this table. Dismissible, but never auto-cleared: the user decides
+          when they have read it. */
+      }
+      {restoreWarnings.value.length > 0 && (
+        <div
+          data-testid="saved-view-restore-notice"
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: "10px",
+            padding: "8px 10px",
+            marginBottom: "8px",
+            borderRadius: "9px",
+            fontSize: "12px",
+            color: "var(--warning)",
+            background: "color-mix(in srgb, var(--warning) 10%, transparent)",
+            border:
+              "1px solid color-mix(in srgb, var(--warning) 40%, transparent)",
+          }}
+        >
+          <ul style={{ margin: 0, paddingLeft: "16px", flex: "1 1 auto" }}>
+            {restoreWarnings.value.map((w) => <li key={w}>{w}</li>)}
+          </ul>
+          <button
+            type="button"
+            data-testid="saved-view-restore-notice-dismiss"
+            aria-label="Dismiss"
+            onClick={() => {
+              restoreWarnings.value = [];
+            }}
+            style={{
+              background: "transparent",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: "14px",
+              lineHeight: 1,
+              padding: "0 2px",
+            }}
+          >
+            x
+          </button>
+        </div>
+      )}
+
       {/* Toolbar */}
       <div
         style={{
@@ -695,6 +803,11 @@ export default function ResourceTableIsland({
             placeholder={`Search ${title.toLowerCase()}...`}
           />
         </div>
+        <SavedViews
+          resourceKind={kind}
+          current={viewState.value}
+          onApply={applyView}
+        />
         {showFilterChips && (
           <div
             style={{ display: "flex", gap: "6px", alignItems: "center" }}
