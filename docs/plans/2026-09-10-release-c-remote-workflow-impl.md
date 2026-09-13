@@ -227,9 +227,34 @@ type schemaCacheEntry struct {
 }
 ```
 
-**Key.** `(normalized cluster id, credential generation, identity hash)`. The identity component
-is `cacheKey(username, groups)` — the exact function the client caches already use
+**Key.** `(normalized cluster id, identity hash)`. The identity component is
+`cacheKey(username, groups)` — the exact function the client caches already use
 (`client.go:285`), so key semantics cannot drift between the client cache and the schema cache.
+
+> **Amended 2026-09-13, after U7's multi-agent review (PR #436, applied in `cfa90907`).**
+> This key originally carried a third component, a credential `generation` derived from the
+> cluster record's `CreatedAt`. Five reviewers across two model families — reliability,
+> performance, correctness, security, and an independent cross-model adversarial pass —
+> converged on removing it.
+>
+> It cost more than it bought. Because `generation` came from the stored record, the record had
+> to be read *before* the cache could be consulted, so a cache **hit** still paid a Postgres
+> round trip and `TargetFor` paid two. The neighbouring `remoteCache` and `remoteDynCache`
+> (`cluster_router.go:474-499`) do the opposite: consult the cache first and let `EvictCluster`
+> handle staleness.
+>
+> And what it bought was narrower than it looked. `CreatedAt` changes only when a cluster row is
+> *replaced* under the same id — which `EvictCluster` already covers on the delete path — and
+> does **not** change on an in-place credential rotation, which was the case the component
+> appeared to defend.
+>
+> The key is now two-part. The record is read only on a miss, and its generation is stored in the
+> cache entry so `TargetSchema.Generation` still reports the vintage a schema was built from;
+> that value can therefore lag a row replacement by up to one TTL, which the field's doc comment
+> states.
+>
+> **Do not "fix" this by switching to `rec.UpdatedAt`.** `ClusterProber.UpdateStatus` bumps
+> `updated_at` every 60 seconds, which would make every key a miss and defeat the cache entirely.
 
 **Bounded size and TTL.** `maxSchemaCacheEntries = 128`; TTL = the existing `clientCacheTTL`
 (5 minutes, `client.go:24`). Insertion beyond 128 evicts the oldest key from `order` (FIFO, not
@@ -246,6 +271,21 @@ from `k8s` into `certmanager` etc.; the schema cache has no such problem):
    the existing `evictCBs` fan-out, so cluster deletion drops schema alongside clients.
 2. `StartCacheSweeper` (`cluster_router.go:232`) — add `cr.schemaCache.sweepExpired(now)` inside
    the existing `case <-ticker.C:` body, so no new goroutine is created.
+
+**Eviction is now the sole staleness mechanism** (see the key amendment above), so the audit that
+was implicit is written down here. As of `0fcc0ce2` every cluster-record mutation path is covered:
+
+| Path | Covered by |
+|---|---|
+| `handleCreateCluster` (`handle_clusters.go:258`) | Safe by construction — a new cluster gets a freshly generated random id, so no cache entry can pre-exist for it. |
+| `handleDeleteCluster` (`handle_clusters.go:295`) | `EvictCluster(id)` at `handle_clusters.go:305`. |
+| `ClusterStore.UpdateStatus` (ClusterProber) | Writes only status, message, version and latency. Cannot invalidate a cached schema. |
+| `ClusterStore.UpdateCredentials` | **No handler and no route today.** |
+
+**Any future endpoint that wires `UpdateCredentials` MUST call `ClusterRouter.EvictCluster`
+afterwards.** Without it a rotated credential keeps serving from a cached discovery client for up
+to one `clientCacheTTL`. This is the one place where dropping `generation` from the key moved risk
+rather than removing it.
 
 **Identity-isolation rule.** Discovery on a remote cluster is *unavoidably* per-identity: every
 remote `rest.Config` `ClusterRouter` builds sets `Impersonate` (`cluster_router.go:407–410`), and
@@ -583,7 +623,7 @@ cleanup commit.** The directive requires the scan; it does not require inventing
 | `TestSchemaCache_TTLExpiry` | An entry past `clientCacheTTL` is not returned by `get` |
 | `TestSchemaCache_BoundedSize` | Inserting 129 keys leaves `len() == 128` and the first key is gone |
 | `TestSchemaCache_EvictClusterDropsOnlyThatCluster` | Entries for other cluster ids survive |
-| `TestSchemaCache_GenerationChangeIsACacheMiss` | Same cluster id, different `generation` → separate entry |
+| ~~`TestSchemaCache_GenerationChangeIsACacheMiss`~~ | **Deleted 2026-09-13** with the key amendment above. With `generation` out of the key its two key literals are the same key, so its premise no longer describes the design. `TestEvictCluster_DropsSchemaCache` is the surviving guard for that staleness path. |
 | `TestSchemaCache_IdentityIsolation` | Two identity hashes → two entries; `get` with identity B never returns A's entry |
 | `TestSchemaCache_SweepExpiredIsIdempotent` | Repeated sweeps do not panic and do not drop live entries |
 
@@ -598,7 +638,18 @@ cleanup commit.** The directive requires the scan; it does not require inventing
 | `TestTargetSchema_RemoteMapperIsNotLocalMapper` | "A CRD present only remotely resolves against that cluster" | pointer inequality for both `Mapper` and `Discovery` |
 | `TestTargetFor_ClientAndSchemaShareClusterID` | "target and discovery remain paired" | `pair.ClusterID == schema.ClusterID` for local and remote |
 | `TestEvictCluster_DropsSchemaCache` | "cluster deletion/re-registration" | schema entry gone after `EvictCluster` |
-| `TestTargetSchema_ConcurrentColdCache` | "concurrent cold-cache requests" | 32 goroutines, same key: `-race` clean, at most one entry created |
+| `TestTargetSchema_ConcurrentColdCache` | "concurrent cold-cache requests" | 32 goroutines, same key: `-race` clean, at most one entry created. **Strengthened 2026-09-13** with a bounded store-read assertion — the original `len() == 1` check passed before the singleflight existed too, so it guarded nothing. |
+
+**Added 2026-09-13 by the PR #436 review** (applied in `cfa90907`), covering behaviors the
+original 13 left untested:
+
+| Test | Asserts |
+|---|---|
+| `TestTargetSchemaFor_WarmCacheHitReusesPairWithoutStoreRead` | A second call with the same key returns a pointer-identical `Mapper` and `Discovery` **and** does not re-read the cluster store. This is what makes the key amendment's benefit observable. |
+| `TestInvalidateFunc` | Both branches: a `*DeferredDiscoveryRESTMapper` gets its `Reset` wired through, and a non-deferred mapper gets a safe no-op. Guards the `discovery.Invalidate` → `mapper.Reset` correction from U7's own review round, which was otherwise unprotected. |
+| `TestTargetFor_SchemaFailureReturnsNoPairOrMapper` | The half-failure ordering — `RouterFor` succeeds, `TargetSchemaFor` then fails — returns `(nil, nil, err)` and never substitutes the local mapper. This is the no-fallback invariant's only negative-path test. |
+
+Net U7 test count: 13 − 1 + 3 = **15**.
 
 ### Verification (Agent Directive 4, repo-wide)
 
