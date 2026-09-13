@@ -48,3 +48,47 @@ func TestYAMLRateLimit_DevIsRelaxedForE2E(t *testing.T) {
 		t.Fatalf("dev budget %d must exceed prod budget %d", devBudget, prodBudgetGot)
 	}
 }
+
+// The auth bucket guards login, refresh and setup. Refresh is the one that
+// makes this an e2e concern: the browser keeps its access token in memory
+// only, so every full page load spends one /auth/refresh re-establishing it
+// from the httpOnly cookie. A spec file that walks 25 resource tables spends
+// 25 of the budget on page loads before any test performs a login, and an
+// exhausted bucket fails the refresh -- which api.ts reads as a dead session
+// and answers by redirecting to /login, so the spec fails somewhere unrelated
+// to what it was testing.
+//
+// Production's 5/min is what makes credential stuffing expensive and must not
+// move; this guards the dev relaxation without weakening that.
+func TestAuthRateLimit_DevIsRelaxedForE2E(t *testing.T) {
+	const (
+		prodBudget = 5
+		// The suite's observed shape: ~113 chromium tests from one runner
+		// IP, most of them a page load and therefore a refresh, with the
+		// densest file doing ~25 in well under a minute. 60/min -- the
+		// previous dev value -- sits inside that range.
+		minimumDevBudget = 120
+	)
+
+	devBudget, devWindow := authRateLimit(true)
+	if devWindow != time.Minute {
+		t.Fatalf("dev window = %v; want %v", devWindow, time.Minute)
+	}
+	if devBudget < minimumDevBudget {
+		t.Fatalf("dev budget = %d req/%v; want at least %d so page-load refreshes cannot exhaust it",
+			devBudget, devWindow, minimumDevBudget)
+	}
+
+	prodBudgetGot, prodWindow := authRateLimit(false)
+	if prodWindow != time.Minute {
+		t.Fatalf("prod window = %v; want %v", prodWindow, time.Minute)
+	}
+	if prodBudgetGot != prodBudget {
+		t.Fatalf("prod budget = %d; want %d — brute-force protection must not change",
+			prodBudgetGot, prodBudget)
+	}
+
+	if devBudget <= prodBudgetGot {
+		t.Fatalf("dev budget %d must exceed prod budget %d", devBudget, prodBudgetGot)
+	}
+}

@@ -28,3 +28,30 @@ func yamlRateLimit(dev bool) (int, time.Duration) {
 	}
 	return 30, time.Minute
 }
+
+// authRateLimit returns the per-IP budget for the shared auth limiter that
+// guards login, refresh and setup.
+//
+// Production keeps 5/min. That number is a security control — it is what makes
+// credential stuffing expensive — and nothing here relaxes it.
+//
+// Dev was already relaxed to 60/min, which was sized for a human clicking
+// through a login or two. It is too tight for the e2e suite, because refresh
+// shares this bucket: the browser holds its access token only in memory, so
+// every full page load starts with no token and spends one /auth/refresh
+// re-establishing it from the httpOnly cookie. A spec file that walks 25
+// resource tables therefore spends 25 of the 60 on page loads alone, before
+// any test does an actual login — and when the bucket empties, the refresh
+// fails, api.ts treats that as a dead session and redirects to /login, so the
+// spec fails somewhere unrelated to what it was testing.
+//
+// 300/min matches the shape the YAML/wizard and webhook limiters already use
+// in dev, and for the same reason: one runner IP drives the entire suite
+// within a few minutes, which is nothing like the traffic the production
+// budget is defending against.
+func authRateLimit(dev bool) (int, time.Duration) {
+	if dev {
+		return 300, time.Minute
+	}
+	return 5, time.Minute
+}

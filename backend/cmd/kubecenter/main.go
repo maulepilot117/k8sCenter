@@ -289,12 +289,10 @@ func main() {
 		logger.Info("registered LDAP provider", "id", ldapCfg.ID, "url", ldapCfg.URL)
 	}
 
-	var rateLimiter *middleware.RateLimiter
-	if cfg.Dev {
-		rateLimiter = middleware.NewRateLimiterWithRate(60, time.Minute) // relaxed for dev
-	} else {
-		rateLimiter = middleware.NewRateLimiter() // 5 req/min for production
-	}
+	// Auth bucket: login, refresh and setup. See authRateLimit for why dev and
+	// production differ by so much -- production's 5/min is a security control
+	// and is unchanged.
+	rateLimiter := middleware.NewRateLimiterWithRate(authRateLimit(cfg.Dev))
 	rateLimiter.StartCleanup(ctx)
 	rateLimiter.SetAuditLogger(auditLogger) // issue #276: surface 429s in audit
 	yamlRateLimiter := middleware.NewRateLimiterWithRate(yamlRateLimit(cfg.Dev))
