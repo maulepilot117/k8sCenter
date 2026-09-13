@@ -411,7 +411,14 @@ export default function SavedViews(
               No saved views for this table yet.
               <div
                 data-testid="saved-views-empty-hint"
-                style={{ marginTop: "4px" }}
+                style={{
+                  marginTop: "4px",
+                  // Set explicitly rather than inheriting the muted parent:
+                  // --text-muted computes 3.48:1 on this menu surface and
+                  // 3.14:1 in the light theme, below the 4.5:1 WCAG 2.2 AA
+                  // minimum. The instruction has to be the readable part.
+                  color: "var(--text-secondary)",
+                }}
               >
                 Set the filters you want, then choose{" "}
                 <strong>Save current view</strong> below.

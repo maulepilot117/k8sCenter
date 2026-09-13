@@ -69,7 +69,11 @@ export default defineConfig({
       // api-routes.spec.ts runs as its own project so its ~100 tests don't
       // share the runtime budget with the main smoke suite (wizard-flows is
       // timing-sensitive and occasionally flakes under added load).
-      testIgnore: /api-routes\.spec\.ts/,
+      //
+      // discoverability.spec.ts is excluded for a different reason: it deletes
+      // every pin and saved view the shared admin user owns, and pins.spec.ts
+      // and saved-views.spec.ts (both in this project) own those same records.
+      testIgnore: [/api-routes\.spec\.ts/, /discoverability\.spec\.ts/],
     },
     {
       name: "route-contract",
@@ -80,6 +84,25 @@ export default defineConfig({
       },
       // Run strictly after the main suite finishes so its tests can't
       // compete for backend rate-limit buckets or browser resources.
+      dependencies: ["chromium"],
+    },
+    {
+      name: "discoverability",
+      testMatch: /discoverability\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "playwright/.auth/admin.json",
+      },
+      // Runs strictly after the main suite because its specs call
+      // deleteAllPins / deleteAllSavedViews, which wipe every preference record
+      // the shared admin user owns -- the same records pins.spec.ts and
+      // saved-views.spec.ts create and assert on.
+      //
+      // fullyParallel:false is not enough on its own: it orders tests WITHIN a
+      // file, not across files, and workers is only pinned to 1 in CI. Locally
+      // these three files could land in different workers, and the delete would
+      // race a sibling mid-test. Safe beside route-contract, which touches no
+      // preference routes.
       dependencies: ["chromium"],
     },
   ],

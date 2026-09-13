@@ -98,7 +98,10 @@ export default function PinnedResources({ currentPath }: PinnedResourcesProps) {
           style={{
             fontSize: "11px",
             lineHeight: 1.45,
-            color: "var(--text-muted)",
+            // --text-secondary, not --text-muted: muted computes 3.76:1 on this
+            // surface and 3.14:1 in the light theme, below the 4.5:1 WCAG 2.2 AA
+            // minimum. An instruction nobody can read is not an instruction.
+            color: "var(--text-secondary)",
             padding: "0 9px 4px",
           }}
         >

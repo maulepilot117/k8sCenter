@@ -45,7 +45,26 @@ test.describe("discoverability", () => {
     // meaning. Asserting the accessible name (not the raw aria-label
     // attribute) also guards against a later aria-labelledby silently
     // overriding it.
-    await expect(toggle).toHaveAccessibleName(/save/i);
+    //
+    // Two separate assertions, because they protect two different things and a
+    // single loose regex protected neither. /save/i matched the noun in "saved
+    // views", so the imperative clause could have been deleted with the spec
+    // still green.
+
+    // 1. WCAG 2.5.3 Label in Name: the accessible name must CONTAIN the
+    //    rendered label. This is what makes the ${mineLabel} interpolation
+    //    load-bearing -- without this assertion it can be dropped and nothing
+    //    turns red, which is exactly how it regressed once already.
+    const visibleLabel = (await toggle.innerText()).trim();
+    expect(visibleLabel).toMatch(/^Views/);
+    await expect(toggle).toHaveAccessibleName(
+      new RegExp(visibleLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+
+    // 2. The imperative clause. Word-bounded so "saved views" alone cannot
+    //    satisfy it -- the verb is the part that tells the user the control
+    //    does something.
+    await expect(toggle).toHaveAccessibleName(/\bsave\b\s+the\s+current/i);
   });
 
   test("the empty saved-views menu names the create action", async ({ page }) => {
