@@ -101,7 +101,7 @@ export default function PodTerminal(
     fitAddon.fit();
 
     // ResizeObserver for auto-fit — declare timer before closure
-    let resizeTimer = 0;
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
     const resizeObserver = new ResizeObserver(() => {
       clearTimeout(resizeTimer);
       resizeTimer = globalThis.setTimeout(() => fitAddon.fit(), 100);

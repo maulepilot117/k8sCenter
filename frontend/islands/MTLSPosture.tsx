@@ -472,7 +472,7 @@ export default function MTLSPosture() {
   // earlier responses from overwriting state from later, faster ones.
   const fetchSeq = useRef(0);
   // Debounce handle for namespace-input → fetch.
-  const debounceHandle = useRef<number | null>(null);
+  const debounceHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function fetchData() {
     const seq = ++fetchSeq.current;
