@@ -39,7 +39,7 @@ export default function ESOStoresList() {
   const wizardOpen = useSignal(false);
 
   const fetchSeq = useRef(0);
-  const debounceHandle = useRef<number | null>(null);
+  const debounceHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function fetchData() {
     const seq = ++fetchSeq.current;
