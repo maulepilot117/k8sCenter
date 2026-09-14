@@ -168,8 +168,38 @@ export function attachWsProxy(
   );
 }
 
+/**
+ * U13 fix: the exec route's credential can arrive two ways.
+ *
+ * `req.headers.authorization` covers a non-browser client (this file's own
+ * tests, a future CLI) that can set arbitrary request headers on the
+ * handshake. It cannot cover the actual product: the WHATWG `WebSocket`
+ * constructor browsers implement has no parameter for custom request
+ * headers at all -- `PodTerminal.tsx` cannot attach `Authorization` to its
+ * own handshake no matter how the bridge below forwards it. Verified
+ * empirically against this proxy and the live backend (U13): a handshake
+ * with the header opens and streams; the identical handshake without one
+ * opens on the client side (bridgeConnection decouples that from the
+ * backend outcome) and is torn down moments later once the backend's
+ * middleware.Auth 401s the backend leg -- exactly PodTerminal's situation
+ * before this fix.
+ *
+ * The fallback is a `access_token` query parameter, which page JS *can* put
+ * on the URL passed to `new WebSocket(...)`. `checkWsPath` already strips
+ * the query string before `check.path` is used to build the outbound
+ * backend URL (see bridgeConnection), so the token travels no further than
+ * this process. The header wins when both are present so the existing
+ * header-based tests keep exercising that path unchanged.
+ */
 function defaultGetAuthHeader(req: IncomingMessage): string | undefined {
-  return req.headers.authorization;
+  if (req.headers.authorization) return req.headers.authorization;
+
+  const rawUrl = req.url ?? "";
+  const queryStart = rawUrl.indexOf("?");
+  if (queryStart === -1) return undefined;
+  const params = new URLSearchParams(rawUrl.slice(queryStart + 1));
+  const token = params.get("access_token");
+  return token ? `Bearer ${token}` : undefined;
 }
 
 /**

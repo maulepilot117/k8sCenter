@@ -11,7 +11,7 @@
     "lint": "biome lint ../",
     "fmt": "biome format --write ../",
     "fmt:check": "biome format ../",
-    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts"
+    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts && bun run server/check-no-signal-store-in-ssr.ts"
   },
   "dependencies": {
     "astro": "7.3.2",

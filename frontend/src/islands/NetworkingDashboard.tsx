@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import FlowViewer from "@/islands/FlowViewer.tsx";
 import NetworkPolicyWizard from "@/islands/NetworkPolicyWizard.tsx";
+import FlowViewer from "@/src/islands/FlowViewer.tsx";
 import IngressWizard from "@/src/islands/IngressWizard.tsx";
 import NetworkOverview from "@/src/islands/NetworkOverview.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";

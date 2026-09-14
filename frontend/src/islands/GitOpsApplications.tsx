@@ -20,9 +20,9 @@ import type {
   NormalizedApp,
 } from "@/lib/gitops-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { wsStatus } from "@/lib/ws.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { filterByNamespace, selectedNamespace } from "@/src/lib/namespace.ts";
+import { wsStatus } from "@/src/lib/ws.ts";
 
 const PAGE_SIZE = 100;
 

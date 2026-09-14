@@ -9,8 +9,8 @@ import { useAuth } from "@/lib/auth.ts";
 import { notifActionUrl } from "@/lib/notif-action.ts";
 import type { AppNotification } from "@/lib/notif-center-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
-import { subscribe, wsStatus } from "@/lib/ws.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { subscribe, wsStatus } from "@/src/lib/ws.ts";
 
 export default function NotificationBell() {
   const unreadCount = useSignal(0);

@@ -1,10 +1,10 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
-import LogLiveTail from "@/islands/LogLiveTail.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { LogLine, VolumeEntry } from "@/lib/types/logs.ts";
 import LogFilterBar from "@/src/islands/LogFilterBar.tsx";
+import LogLiveTail from "@/src/islands/LogLiveTail.tsx";
 import LogResults from "@/src/islands/LogResults.tsx";
 import LogVolumeHistogram from "@/src/islands/LogVolumeHistogram.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";

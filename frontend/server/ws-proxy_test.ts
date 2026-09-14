@@ -476,6 +476,63 @@ test("a no-header control on the exec route is refused by the backend with 401, 
   expect(backend.receivedAuth).toHaveLength(0);
 });
 
+// --- exec auth via ?access_token= (U13) ---
+//
+// The browser WebSocket constructor has no parameter for custom request
+// headers -- PodTerminal.tsx cannot attach Authorization the way the tests
+// above do with a raw socket. This is the fallback it actually uses: the
+// token travels as a query parameter that defaultGetAuthHeader converts
+// into a real Authorization header on the outbound backend leg.
+
+test("the exec route forwards an access_token query parameter as a Bearer header to the backend upgrade", async () => {
+  const backend = await startStubBackend({ requireAuth: true });
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const client = new WebSocket(
+    `ws://127.0.0.1:${port}/ws/v1/ws/exec/default/mypod/main?access_token=query-token-456`,
+  );
+  cleanups.push(() => client.close());
+
+  await new Promise<void>((res) =>
+    client.addEventListener("open", () => res()),
+  );
+  await new Promise((res) => setTimeout(res, 50));
+  expect(backend.receivedAuth).toContain("Bearer query-token-456");
+});
+
+test("an explicit Authorization header wins over an access_token query parameter when both are present", async () => {
+  const backend = await startStubBackend({ requireAuth: true });
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const { statusLine } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/exec/default/mypod/main?access_token=should-lose",
+    { Authorization: "Bearer header-wins" },
+  );
+  expect(statusLine).toContain("101");
+  await new Promise((res) => setTimeout(res, 50));
+  expect(backend.receivedAuth).toContain("Bearer header-wins");
+  expect(backend.receivedAuth).not.toContain("Bearer should-lose");
+});
+
+test("the access_token query parameter is not forwarded on non-exec routes", async () => {
+  const backend = await startStubBackend();
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/resources?access_token=should-not-forward",
+  );
+  await new Promise((res) => setTimeout(res, 50));
+  expect(backend.receivedAuth).toEqual([undefined]);
+});
+
 test("non-exec routes carry no Authorization header even when the client's request has one", async () => {
   const backend = await startStubBackend();
   cleanups.push(backend.close);

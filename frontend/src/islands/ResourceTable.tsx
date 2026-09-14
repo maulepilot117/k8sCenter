@@ -27,18 +27,18 @@ import {
   type TableViewState,
 } from "@/lib/preference-types.ts";
 import { RESOURCE_COLUMNS } from "@/lib/resource-columns.ts";
+import SavedViews from "@/src/islands/SavedViews.tsx";
+import { showToast } from "@/src/islands/ToastProvider.tsx";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
+import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { selectedNamespace } from "@/src/lib/namespace.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,
   EVENT_MODIFIED,
   EVENT_RESYNC,
   subscribe,
-} from "@/lib/ws.ts";
-import SavedViews from "@/src/islands/SavedViews.tsx";
-import { showToast } from "@/src/islands/ToastProvider.tsx";
-import { LOCAL_CLUSTER_ID, selectedCluster } from "@/src/lib/cluster.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-import { selectedNamespace } from "@/src/lib/namespace.ts";
+} from "@/src/lib/ws.ts";
 
 interface ResourceTableIslandProps {
   /** API kind string matching backend route, e.g."pods","deployments" */

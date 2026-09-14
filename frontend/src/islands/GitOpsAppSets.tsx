@@ -10,8 +10,8 @@ import { apiGet } from "@/lib/api.ts";
 import type { AppListMetadata, NormalizedAppSet } from "@/lib/gitops-types.ts";
 import { timeAgo } from "@/lib/timeAgo.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { wsStatus } from "@/lib/ws.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { wsStatus } from "@/src/lib/ws.ts";
 
 interface AppSetListResponse {
   applicationSets: NormalizedAppSet[];

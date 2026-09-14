@@ -12,8 +12,8 @@ import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { apiGet } from "@/lib/api.ts";
 import type { EngineStatus, NormalizedPolicy } from "@/lib/policy-types.ts";
 import { useWsRefetch } from "@/lib/useWsRefetch.ts";
-import { wsStatus } from "@/lib/ws.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import { wsStatus } from "@/src/lib/ws.ts";
 
 const PAGE_SIZE = 100;
 

@@ -11,6 +11,15 @@ import ClusterSwitcher from "../islands/ClusterSwitcher.tsx";
 // A large-but-uniform island (per the unit brief: size alone doesn't move
 // DashboardV2/ResourceTable/CRDResourceList/IngressWizard out of U9).
 import DashboardV2 from "../islands/DashboardV2.tsx";
+// U13: the four islands that construct a WebSocket directly, plus
+// LogExplorer -- LogLiveTail is never mounted standalone (its `active` /
+// `query` / `namespace` / `lines` props are Signal<T> instances owned by
+// its parent island, not serializable Astro props), so LogExplorer is
+// mounted here instead, exercising LogLiveTail exactly as production does.
+import FlowViewer from "../islands/FlowViewer.tsx";
+import LogExplorer from "../islands/LogExplorer.tsx";
+import LogViewer from "../islands/LogViewer.tsx";
+import PodTerminal from "../islands/PodTerminal.tsx";
 // Effect-guard IS_BROWSER islands (guard is inside a useEffect; SSR output
 // is real markup either way).
 import ThemeToggle from "../islands/ThemeToggle.tsx";
@@ -76,6 +85,32 @@ const dangerousName = "<script>alert('xss')</script>";
       createdAt={new Date("2026-09-14T08:50:00Z")}
       labels={new Map([["app", "k8scenter"], ["tier", "backend"]])}
       dangerousName={dangerousName}
+    />
+
+    <h2>U13: WebSocket-owning islands</h2>
+    <p>
+      LogViewer and PodTerminal below point at a placeholder pod so SSR never
+      attempts a real call. To manually verify streaming against the live
+      cluster, edit the namespace/name/containers props to a real running
+      pod (e.g. via `kubectl get pods -A`) and reload.
+    </p>
+    <h3>FlowViewer (owns the Hubble flows socket)</h3>
+    <FlowViewer client:load />
+    <h3>LogExplorer (mounts LogLiveTail, which owns the logs-search socket)</h3>
+    <LogExplorer client:load />
+    <h3>LogViewer (owns a per-container logs socket)</h3>
+    <LogViewer
+      client:load
+      namespace="kube-system"
+      pod="placeholder-pod"
+      containers={["main"]}
+    />
+    <h3>PodTerminal (owns the exec socket; the only Bearer-at-upgrade route)</h3>
+    <PodTerminal
+      client:load
+      namespace="kube-system"
+      name="placeholder-pod"
+      containers={["main"]}
     />
   </main>
 </BaseLayout>

@@ -173,6 +173,16 @@ All deferred; none blocks implementation. The four U1 answered are resolved at t
 - Whether the port needs an access-control matrix. A migrated route can resolve, diff clean, and still have lost an authorization check, because nothing compares enforcement before and after per actor. The cost is enumerating unauthenticated, non-admin and admin outcomes for every protected surface; the benefit is that authorization parity stops being assumed.
 - Whether a stop-and-reassess checkpoint belongs before U14. U1 never exercises a third-party widget under Astro hydration, which is where KD2's own rough-edges warning is most likely to land — and by then the migration is deep enough that KD7 is expensive.
 
+### Exec authentication: the browser constraint U13 found
+
+U1's fix was right about the backend and wrong about the client. Forwarding a Bearer header on the outbound upgrade is what the backend requires, and it is what the proxy now does — but **a browser cannot set custom headers on a WebSocket handshake**, so page JavaScript could never supply that header in the first place. The header path worked in every test that used a non-browser client, which is why it looked settled. U13 proved the gap with a real Chromium session against the live cluster, and proved the fix the same way: a real shell in `kube-system/cilium-52pzx`.
+
+The exec terminal therefore could not authenticate from a browser before this migration either. This is a pre-existing defect the port surfaced, not one it introduced.
+
+The fix is an `access_token` query parameter the page can set, which `frontend/server/ws-proxy.ts` converts to a real `Authorization` header on the outbound leg. The header still wins when both are present, so the existing header tests keep exercising that path. The query string is stripped before the backend URL is built, so the token never travels past the proxy process, and nothing on the WebSocket path logs a request URL.
+
+**The residual exposure, stated rather than assumed:** the token is in a URL for the browser-to-proxy hop, and an ingress in front of the frontend pod logs request URLs by default. The safer alternative is `Sec-WebSocket-Protocol`, which browsers *can* set via `new WebSocket(url, protocols)` and which keeps the credential out of the URL entirely; it costs a handshake echo on the server side. The query-parameter form is what is verified working end to end today. Switching to the subprotocol form is a contained change to the proxy and `PodTerminal.tsx`, and it should be weighed before this reaches a production ingress.
+
 ### Pre-existing defect found by U1
 
 The exec terminal's outbound upgrade carries no credentials today, and this is not a migration risk — it is a defect the port must fix on arrival.

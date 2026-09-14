@@ -2,13 +2,13 @@ import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 import type { AlertEvent } from "@/lib/k8s-types.ts";
+import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,
   EVENT_RESYNC,
   subscribe,
-} from "@/lib/ws.ts";
-import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+} from "@/src/lib/ws.ts";
 
 export default function AlertBanner() {
   const alerts = useSignal<AlertEvent[]>([]);
