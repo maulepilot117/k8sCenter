@@ -3,6 +3,10 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { Button } from "@/components/ui/Button.tsx";
 import { getAccessToken } from "@/lib/api.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+import {
+  encodeBearerSubprotocol,
+  WS_AUTH_SENTINEL_PROTOCOL,
+} from "@/src/lib/ws-exec-auth.ts";
 
 interface PodTerminalProps {
   namespace: string;
@@ -120,14 +124,19 @@ export default function PodTerminal({
       // Exec is the one WS route the backend gates with middleware.Auth at
       // upgrade time rather than in-band (see frontend/server/ws-proxy.ts).
       // The browser WebSocket constructor has no headers parameter, so the
-      // token travels as a query parameter instead of the first in-band
-      // message every other route uses — ws-proxy.ts's defaultGetAuthHeader
-      // reads it there and forwards it as a real Authorization header on the
-      // outbound leg to the backend; it never reaches the backend URL itself.
-      const wsUrl = `${proto}//${globalThis.location.host}/ws/v1/ws/exec/${namespace}/${name}/${session.container}?access_token=${encodeURIComponent(
-        token,
-      )}`;
-      const ws = new WebSocket(wsUrl);
+      // token travels as a `Sec-WebSocket-Protocol` value instead of the
+      // first in-band message every other route uses — browsers can set
+      // that via the constructor's second argument, and it never touches
+      // the URL (an ingress in front of this pod logs request URLs by
+      // default). ws-proxy.ts's defaultGetAuthHeader recovers the token
+      // from it server-side and forwards it as a real Authorization header
+      // on the outbound leg to the backend, and echoes back only the plain
+      // sentinel, never the credential-bearing value.
+      const wsUrl = `${proto}//${globalThis.location.host}/ws/v1/ws/exec/${namespace}/${name}/${session.container}`;
+      const ws = new WebSocket(wsUrl, [
+        encodeBearerSubprotocol(token),
+        WS_AUTH_SENTINEL_PROTOCOL,
+      ]);
 
       ws.binaryType = "arraybuffer";
 

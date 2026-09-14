@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { type WebSocket as ServerClientSocket, WebSocketServer } from "ws";
+import {
+  findBearerInSubprotocols,
+  selectWsSubprotocol,
+} from "@/src/lib/ws-exec-auth.ts";
 import { rawHeaderLines } from "./headers.ts";
 import { checkWsPath, isExecPath, remapCloseCode } from "./ws-allowlist.ts";
 
@@ -128,7 +132,14 @@ export function attachWsProxy(
   httpServer: UpgradeCapableServer,
   options: AttachWsProxyOptions = {},
 ): void {
-  const wss = new WebSocketServer({ noServer: true });
+  // handleProtocols is what makes the echo safe: `ws` defaults to echoing
+  // back whichever subprotocol the client listed first, which for the exec
+  // route would be the credential-bearing one exactly as often as not. This
+  // pins the choice to the sentinel, never the token (see ws-exec-auth.ts).
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: selectWsSubprotocol,
+  });
 
   httpServer.on(
     "upgrade",
@@ -169,7 +180,7 @@ export function attachWsProxy(
 }
 
 /**
- * U13 fix: the exec route's credential can arrive two ways.
+ * U13/U-subproto: the exec route's credential can arrive two ways.
  *
  * `req.headers.authorization` covers a non-browser client (this file's own
  * tests, a future CLI) that can set arbitrary request headers on the
@@ -184,21 +195,19 @@ export function attachWsProxy(
  * middleware.Auth 401s the backend leg -- exactly PodTerminal's situation
  * before this fix.
  *
- * The fallback is a `access_token` query parameter, which page JS *can* put
- * on the URL passed to `new WebSocket(...)`. `checkWsPath` already strips
- * the query string before `check.path` is used to build the outbound
- * backend URL (see bridgeConnection), so the token travels no further than
- * this process. The header wins when both are present so the existing
- * header-based tests keep exercising that path unchanged.
+ * What the browser *can* set is `Sec-WebSocket-Protocol`, via the second
+ * argument to `new WebSocket(url, protocols)`. U-subproto replaces the
+ * `access_token` query-parameter fallback (which put the credential in a
+ * URL an ingress logs by default) with that: PodTerminal offers a
+ * credential-bearing subprotocol alongside a plain sentinel, and
+ * `findBearerInSubprotocols` (ws-exec-auth.ts) recovers the token from it.
+ * The header wins when both are present so the existing header-based tests
+ * keep exercising that path unchanged.
  */
 function defaultGetAuthHeader(req: IncomingMessage): string | undefined {
   if (req.headers.authorization) return req.headers.authorization;
 
-  const rawUrl = req.url ?? "";
-  const queryStart = rawUrl.indexOf("?");
-  if (queryStart === -1) return undefined;
-  const params = new URLSearchParams(rawUrl.slice(queryStart + 1));
-  const token = params.get("access_token");
+  const token = findBearerInSubprotocols(req.headers["sec-websocket-protocol"]);
   return token ? `Bearer ${token}` : undefined;
 }
 

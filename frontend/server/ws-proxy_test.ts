@@ -2,6 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
 import { connect, type Socket } from "node:net";
 import { WebSocketServer } from "ws";
+import {
+  encodeBearerSubprotocol,
+  WS_AUTH_SENTINEL_PROTOCOL,
+} from "@/src/lib/ws-exec-auth.ts";
 import { applySecurityHeaders } from "./headers.ts";
 import {
   attachWsProxy,
@@ -476,33 +480,32 @@ test("a no-header control on the exec route is refused by the backend with 401, 
   expect(backend.receivedAuth).toHaveLength(0);
 });
 
-// --- exec auth via ?access_token= (U13) ---
+// --- exec auth via Sec-WebSocket-Protocol (U-subproto) ---
 //
 // The browser WebSocket constructor has no parameter for custom request
 // headers -- PodTerminal.tsx cannot attach Authorization the way the tests
-// above do with a raw socket. This is the fallback it actually uses: the
-// token travels as a query parameter that defaultGetAuthHeader converts
-// into a real Authorization header on the outbound backend leg.
+// above do with a raw socket. This is what it actually uses instead: the
+// pattern the Kubernetes apiserver uses for the identical problem. The
+// client offers two Sec-WebSocket-Protocol values -- a credential-bearing
+// one and a plain sentinel -- and defaultGetAuthHeader recovers the token
+// from the former and forwards it as a real Authorization header on the
+// outbound backend leg. This replaces the earlier `?access_token=` query
+// parameter fallback (U13), which put the credential in a URL an ingress
+// in front of the frontend pod logs by default.
 
-test("the exec route forwards an access_token query parameter as a Bearer header to the backend upgrade", async () => {
-  const backend = await startStubBackend({ requireAuth: true });
-  cleanups.push(backend.close);
-  const { server, port } = await startProxy(backend.port);
-  cleanups.push(() => server.close());
-
-  const client = new WebSocket(
-    `ws://127.0.0.1:${port}/ws/v1/ws/exec/default/mypod/main?access_token=query-token-456`,
-  );
-  cleanups.push(() => client.close());
-
-  await new Promise<void>((res) =>
-    client.addEventListener("open", () => res()),
-  );
-  await new Promise((res) => setTimeout(res, 50));
-  expect(backend.receivedAuth).toContain("Bearer query-token-456");
-});
-
-test("an explicit Authorization header wins over an access_token query parameter when both are present", async () => {
+// These two use rawUpgradeRequest rather than a native `new WebSocket(url,
+// protocols)` client -- deliberately, not just for consistency with the
+// header-based tests above. A native Bun WebSocket client that negotiates a
+// subprotocol against this same in-process server corrupts state inside
+// Bun's own built-in `ws` fast path (github.com/oven-sh/bun; reproduced
+// standalone outside bun:test too): a *later* raw-socket upgrade that also
+// offers a Sec-WebSocket-Protocol header then throws inside `ws`'s
+// `completeUpgrade` ("TypeError: undefined is not an object (evaluating
+// 'socket')"), even on a completely unrelated server/socket pair. Sending
+// the exact same bytes over a raw socket for both requests avoids ever
+// exercising that native fast path, and lets the second test assert on the
+// literal response header besides.
+test("the exec route forwards a Sec-WebSocket-Protocol bearer credential as a Bearer header to the backend upgrade", async () => {
   const backend = await startStubBackend({ requireAuth: true });
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
@@ -510,8 +513,60 @@ test("an explicit Authorization header wins over an access_token query parameter
 
   const { statusLine } = await rawUpgradeRequest(
     port,
-    "/ws/v1/ws/exec/default/mypod/main?access_token=should-lose",
-    { Authorization: "Bearer header-wins" },
+    "/ws/v1/ws/exec/default/mypod/main",
+    {
+      "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
+        "subproto-token-456",
+      )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
+    },
+  );
+  expect(statusLine).toContain("101");
+  await new Promise((res) => setTimeout(res, 50));
+  expect(backend.receivedAuth).toContain("Bearer subproto-token-456");
+});
+
+test("the proxy echoes only the sentinel subprotocol back to the client, never the credential", async () => {
+  const backend = await startStubBackend({ requireAuth: true });
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const bearer = encodeBearerSubprotocol("should-never-be-echoed");
+  const { statusLine, raw } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/exec/default/mypod/main",
+    { "Sec-WebSocket-Protocol": `${bearer}, ${WS_AUTH_SENTINEL_PROTOCOL}` },
+  );
+  expect(statusLine).toContain("101");
+  expect(raw).toContain(
+    `Sec-WebSocket-Protocol: ${WS_AUTH_SENTINEL_PROTOCOL}\r\n`,
+  );
+  expect(raw).not.toContain(bearer);
+
+  // Let the outbound backend leg (still CONNECTING at this point -- the
+  // client-facing upgrade completes independently of it) settle before
+  // afterEach tears the servers down. Without this, closing the backend's
+  // http.Server out from under an in-flight upgrade corrupts Bun's own
+  // built-in `ws` module for the rest of the process -- see the comment
+  // above the next two tests.
+  await new Promise((res) => setTimeout(res, 50));
+});
+
+test("an explicit Authorization header wins over an offered Sec-WebSocket-Protocol credential when both are present", async () => {
+  const backend = await startStubBackend({ requireAuth: true });
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const { statusLine } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/exec/default/mypod/main",
+    {
+      Authorization: "Bearer header-wins",
+      "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
+        "should-lose",
+      )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
+    },
   );
   expect(statusLine).toContain("101");
   await new Promise((res) => setTimeout(res, 50));
@@ -519,16 +574,40 @@ test("an explicit Authorization header wins over an access_token query parameter
   expect(backend.receivedAuth).not.toContain("Bearer should-lose");
 });
 
-test("the access_token query parameter is not forwarded on non-exec routes", async () => {
+test("a no-credential control offering only the sentinel is refused by the backend with 401", async () => {
+  const backend = await startStubBackend({ requireAuth: true });
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const { statusLine, socket } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/exec/default/mypod/main",
+    { "Sec-WebSocket-Protocol": WS_AUTH_SENTINEL_PROTOCOL },
+  );
+  cleanups.push(() => socket.destroy());
+  // The client-facing upgrade always completes immediately -- decoupled
+  // from the backend outcome, same as the header-based no-header-control
+  // test above -- so this is 101 even though no credential was offered.
+  expect(statusLine).toContain("101");
+
+  // ...but the backend never receives a request (nothing to send), and the
+  // proxy tears the client leg back down once the backend rejects.
+  await new Promise<void>((res) => socket.once("close", () => res()));
+  expect(backend.receivedAuth).toHaveLength(0);
+});
+
+test("a Sec-WebSocket-Protocol credential is not forwarded on non-exec routes", async () => {
   const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port);
   cleanups.push(() => server.close());
 
-  await rawUpgradeRequest(
-    port,
-    "/ws/v1/ws/resources?access_token=should-not-forward",
-  );
+  await rawUpgradeRequest(port, "/ws/v1/ws/resources", {
+    "Sec-WebSocket-Protocol": `${encodeBearerSubprotocol(
+      "should-not-forward",
+    )}, ${WS_AUTH_SENTINEL_PROTOCOL}`,
+  });
   await new Promise((res) => setTimeout(res, 50));
   expect(backend.receivedAuth).toEqual([undefined]);
 });
