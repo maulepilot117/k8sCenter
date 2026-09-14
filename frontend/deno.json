@@ -19,7 +19,8 @@
     "**/.impeccable/*",
     "**/.astro/*",
     "**/dist/*",
-    "astro.config.mjs"
+    "astro.config.mjs",
+    "server/*"
   ],
   "imports": {
     "@/": "./",

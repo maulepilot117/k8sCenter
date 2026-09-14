@@ -2,6 +2,7 @@ import node from "@astrojs/node";
 import preact from "@astrojs/preact";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "astro/config";
+import { bunServerDevPlugin } from "./server/dev-plugin.ts";
 
 // U3 stands up the toolchain only -- the outer Bun server that actually
 // mounts this adapter's middleware-mode handler is U5's job (KTD2), and the
@@ -18,7 +19,12 @@ export default defineConfig({
   adapter: node({ mode: "middleware" }),
   integrations: [preact()],
   vite: {
-    plugins: [tailwindcss()],
+    // U5: wires the same headers/malformed-guard/ws-proxy dispatch used by
+    // the built server (frontend/server/prod.ts) into `astro dev`'s own
+    // Vite dev server, so dev and prod never diverge on /ws again (R18).
+    // See frontend/server/dev-plugin.ts for why this is a Vite plugin
+    // rather than a second outer server.
+    plugins: [tailwindcss(), bunServerDevPlugin()],
     resolve: {
       // KTD5: the failure mode this guards against is not Astro but two
       // resolved copies of these packages -- after which a computed()

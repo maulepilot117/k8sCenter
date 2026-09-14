@@ -6,11 +6,12 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "start": "bun run server/prod.ts",
     "test": "bun test",
     "lint": "biome lint ../",
     "fmt": "biome format --write ../",
     "fmt:check": "biome format ../",
-    "check": "biome check ../ && astro check"
+    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts"
   },
   "dependencies": {
     "astro": "7.3.2",
@@ -23,6 +24,7 @@
     "@tailwindcss/vite": "^4.1.10",
     "tailwindcss": "^4.1.10",
     "postcss": "^8.5.7",
+    "ws": "^8.21.3",
     "yaml": "^2.8.3",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.40.0",
@@ -41,6 +43,8 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
     "@biomejs/biome": "2.5.12",
+    "@types/bun": "1.4.1",
+    "@types/ws": "^8.18.1",
     "typescript": "^6.0.3"
   },
   "overrides": {

@@ -12,7 +12,8 @@
       "frontend/astro.config.mjs",
       "frontend/tsconfig.json",
       "frontend/package.json",
-      "frontend/src/**"
+      "frontend/src/**",
+      "frontend/server/**"
     ]
   },
   "formatter": {
