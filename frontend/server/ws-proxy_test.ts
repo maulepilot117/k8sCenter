@@ -97,6 +97,7 @@ function startProxy(
     maxQueueBytes: number;
     handshakeTimeoutMs: number;
     idleTimeoutMs: number;
+    ownUnmatchedPaths: boolean;
   }> = {},
 ): Promise<{ server: Server; port: number }> {
   return new Promise((resolvePromise) => {
@@ -623,4 +624,87 @@ test("non-exec routes carry no Authorization header even when the client's reque
   });
   await new Promise((res) => setTimeout(res, 50));
   expect(backend.receivedAuth).toEqual([undefined]);
+});
+
+// --- shared-server coexistence (the dev HMR collision) ---
+//
+// Under `astro dev` this listener is attached to the same node:http server
+// Vite uses for HMR. Vite upgrades its own socket at `/`; 'upgrade'
+// listeners are not consumed, so this one runs afterwards on a socket that
+// is already a live WebSocket. Writing a rejection there destroys it —
+// the browser reports "Invalid frame header" and Vite degrades to
+// full-page reloads. `ownUnmatchedPaths: false` is how dev opts out.
+
+/** Stands in for Vite's HMR server: owns `/`, echoes, attached first. */
+function attachForeignHmrListener(server: Server): void {
+  const hmr = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (req, socket, head) => {
+    if ((req.url ?? "").split("?")[0] !== "/") return;
+    hmr.handleUpgrade(req, socket, head, (ws) => {
+      ws.on("message", (data, isBinary) => ws.send(data, { binary: isBinary }));
+    });
+  });
+}
+
+test("with ownUnmatchedPaths off, a foreign upgrade on a shared server survives", async () => {
+  const backend = await startStubBackend();
+  cleanups.push(backend.close);
+
+  const server = createServer();
+  attachForeignHmrListener(server);
+  attachWsProxy(server, {
+    backendUrl: `http://127.0.0.1:${backend.port}`,
+    ownUnmatchedPaths: false,
+  });
+  const port = await new Promise<number>((res) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      res(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  cleanups.push(() => server.close());
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}/`);
+  cleanups.push(() => client.close());
+  let closed = false;
+  client.addEventListener("close", () => {
+    closed = true;
+  });
+  await new Promise<void>((res) =>
+    client.addEventListener("open", () => res()),
+  );
+
+  const echoed = new Promise<string>((res) => {
+    client.addEventListener("message", (ev) => res(ev.data as string));
+  });
+  client.send("hmr-ping");
+  expect(await echoed).toBe("hmr-ping");
+  expect(closed).toBe(false);
+});
+
+test("ownUnmatchedPaths off still rejects an unknown endpoint under /ws/", async () => {
+  const backend = await startStubBackend();
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port, {
+    ownUnmatchedPaths: false,
+  });
+  cleanups.push(() => server.close());
+
+  const { statusLine } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/unknown-endpoint",
+  );
+  expect(statusLine).toContain("404");
+  expect(backend.upgradeAttempts).toBe(0);
+});
+
+test("ownUnmatchedPaths defaults on, so production still rejects a non-/ws/ upgrade", async () => {
+  const backend = await startStubBackend();
+  cleanups.push(backend.close);
+  const { server, port } = await startProxy(backend.port);
+  cleanups.push(() => server.close());
+
+  const { statusLine } = await rawUpgradeRequest(port, "/anything-else");
+  expect(statusLine).toContain("404");
+  expect(backend.upgradeAttempts).toBe(0);
 });

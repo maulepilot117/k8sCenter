@@ -120,6 +120,19 @@ export interface AttachWsProxyOptions {
   maxQueueBytes?: number;
   handshakeTimeoutMs?: number;
   idleTimeoutMs?: number;
+  /**
+   * Whether this listener may reject upgrades for paths outside `/ws/`.
+   *
+   * True in production, where prod.ts owns the server outright and an
+   * unknown upgrade path should get a rejection rather than hang. False
+   * under `astro dev`, where Vite owns the same httpServer for its HMR
+   * socket at `/`: Vite completes that upgrade first, and this listener
+   * still runs afterward. Rejecting there writes a raw HTTP response onto
+   * an already-upgraded socket and destroys it, which kills HMR and makes
+   * Vite full-page-reload in a loop. The bridge owns `/ws/*` and nothing
+   * else, so off this path it must leave the socket alone.
+   */
+  ownUnmatchedPaths?: boolean;
 }
 
 /**
@@ -132,6 +145,7 @@ export function attachWsProxy(
   httpServer: UpgradeCapableServer,
   options: AttachWsProxyOptions = {},
 ): void {
+  const ownUnmatchedPaths = options.ownUnmatchedPaths ?? true;
   // handleProtocols is what makes the echo safe: `ws` defaults to echoing
   // back whichever subprotocol the client listed first, which for the exec
   // route would be the credential-bearing one exactly as often as not. This
@@ -147,6 +161,11 @@ export function attachWsProxy(
       const rawUrl = req.url ?? "";
       const check = checkWsPath(rawUrl);
       if (!check.ok) {
+        // A path outside `/ws/` belongs to whoever else is listening on this
+        // server — under `astro dev` that is Vite's HMR socket, which has
+        // already completed its own upgrade by the time this listener runs.
+        // Writing a rejection onto that socket destroys a live connection.
+        if (check.reason === "outside" && !ownUnmatchedPaths) return;
         writeRawRejection(
           socket,
           check.status,

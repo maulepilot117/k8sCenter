@@ -46,7 +46,13 @@ export function bunServerDevPlugin(): Plugin {
       );
 
       if (server.httpServer) {
-        attachWsProxy(server.httpServer);
+        // `ownUnmatchedPaths: false` because this httpServer is not ours
+        // alone: Vite upgrades its HMR socket at `/` on the same server, and
+        // 'upgrade' listeners all fire regardless of who handled it. Left to
+        // its production default, this listener would write an HTTP 404 onto
+        // Vite's already-upgraded socket and destroy it -- the browser sees
+        // "Invalid frame header" and Vite falls back to full-page reloads.
+        attachWsProxy(server.httpServer, { ownUnmatchedPaths: false });
       }
     },
   };

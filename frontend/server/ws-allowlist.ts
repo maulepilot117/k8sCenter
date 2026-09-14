@@ -9,7 +9,16 @@
 
 export type WsPathCheck =
   | { ok: true; path: string }
-  | { ok: false; status: 400 | 404 };
+  | { ok: false; status: 400 | 404; reason: WsPathRejection };
+
+/**
+ * Why a path was rejected. `outside` means the URL is not under `/ws/` at
+ * all, so the bridge does not own it — distinct from an unknown endpoint
+ * that IS under `/ws/`. The dev server shares one httpServer with Vite's
+ * HMR socket, and only `outside` may be left alone there; see
+ * `ownUnmatchedPaths` in ws-proxy.ts.
+ */
+export type WsPathRejection = "outside" | "invalid" | "unknown";
 
 /** The six backend WS endpoints the frontend is allowed to relay to. */
 const ALLOWED_WS_PATTERNS: RegExp[] = [
@@ -34,16 +43,16 @@ export function checkWsPath(rawUrl: string): WsPathCheck {
   const pathname = (rawUrl ?? "").split("?")[0] ?? "";
   const match = /^\/ws\/(.+)$/.exec(pathname);
   if (!match) {
-    return { ok: false, status: 404 };
+    return { ok: false, status: 404, reason: "outside" };
   }
   const path = match[1];
 
   if (!path.startsWith("v1/") || /\.\.|\/\/|%2e/i.test(path)) {
-    return { ok: false, status: 400 };
+    return { ok: false, status: 400, reason: "invalid" };
   }
 
   if (!ALLOWED_WS_PATTERNS.some((pattern) => pattern.test(path))) {
-    return { ok: false, status: 404 };
+    return { ok: false, status: 404, reason: "unknown" };
   }
 
   return { ok: true, path };
