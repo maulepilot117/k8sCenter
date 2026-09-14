@@ -82,3 +82,27 @@ export function statusStyle(
   };
   return map[v];
 }
+
+/**
+ * Cluster connection states, as reported by `ClusterRecord.status` and the
+ * background prober. A separate vocabulary from the Kubernetes resource
+ * statuses above -- these describe reachability of a whole cluster, not the
+ * phase of a workload -- but the colour semantics are centralized here so a
+ * second mapping does not drift from the first.
+ *
+ * Returns a theme custom property rather than a utility class because the
+ * consumer paints a status dot through an inline style.
+ */
+export function connectionStatusColor(status: string | undefined): string {
+  switch ((status ?? "").toLowerCase()) {
+    case "connected":
+      return "var(--success)";
+    case "degraded":
+      return "var(--warning)";
+    case "disconnected":
+    case "error":
+      return "var(--danger)";
+    default:
+      return "var(--text-muted)";
+  }
+}

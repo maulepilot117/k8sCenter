@@ -408,8 +408,21 @@ test.describe.serial("Saved views", () => {
     await page.reload();
     await page.getByTestId("saved-views-toggle").click();
 
+    // The app restores its target from the (clusterId, generation) pair that
+    // frontend/lib/cluster.ts persists as one JSON value under
+    // "k8scenter.clusterTarget". The legacy "k8scenter.selectedCluster" key is
+    // consulted only when that key is absent, which it is not by now, so
+    // writing it here would leave the page on the local cluster and make this
+    // spec pass without ever switching. Update this line if that storage
+    // contract changes again.
     await page.evaluate(() => {
-      localStorage.setItem("k8scenter.selectedCluster", "some-remote-cluster");
+      localStorage.setItem(
+        "k8scenter.clusterTarget",
+        JSON.stringify({
+          clusterId: "some-remote-cluster",
+          generation: "unknown",
+        }),
+      );
     });
     await page.reload();
     release?.();
@@ -423,7 +436,10 @@ test.describe.serial("Saved views", () => {
 
     await page.unroute("**/api/v1/preferences/views");
     await page.evaluate(() => {
-      localStorage.setItem("k8scenter.selectedCluster", "local");
+      localStorage.setItem(
+        "k8scenter.clusterTarget",
+        JSON.stringify({ clusterId: "local", generation: "local" }),
+      );
     });
   });
 });

@@ -7,6 +7,11 @@ import { computed, signal } from "@preact/signals";
 import { api, getAccessToken, onForbidden, setAccessToken } from "@/lib/api.ts";
 import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import {
+  LOCAL_CLUSTER_ID,
+  LOCAL_GENERATION,
+  switchCluster,
+} from "@/lib/cluster.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);
@@ -89,6 +94,10 @@ export async function logout(): Promise<void> {
   setAccessToken(null);
   userSignal.value = null;
   rbacSignal.value = null;
+  // The selected cluster is persisted per browser profile, not per session,
+  // so without this the next identity on this machine inherits the previous
+  // operator's target -- and if they are not an admin, every request 403s.
+  switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
 }
 
 /**
@@ -126,8 +135,21 @@ export async function fetchCurrentUser(
  * Re-fetch RBAC permissions for a specific namespace.
  * Called when the namespace selector changes.
  */
+/**
+ * Guards against re-entry while a permission refresh is in flight.
+ *
+ * `onForbidden` fires on every 403, and this function's own request can 403,
+ * so without the guard a single failing identity fans out one request per
+ * round-trip. api.ts additionally refuses to invoke the callback for
+ * /v1/auth/* at all; this is the second line of defence, and it also collapses
+ * the burst when many islands 403 at the same moment.
+ */
+let refreshingPermissions = false;
+
 export async function refreshPermissions(namespace: string): Promise<void> {
   if (!getAccessToken()) return;
+  if (refreshingPermissions) return;
+  refreshingPermissions = true;
   try {
     const res = await api<{ user: UserInfo; rbac: RBACSummary }>(
       `/v1/auth/me?namespace=${encodeURIComponent(namespace)}`,
@@ -138,6 +160,8 @@ export async function refreshPermissions(namespace: string): Promise<void> {
     console.info("refreshPermissions failed:", e);
     // null = optimistic (allow all actions until permissions load)
     rbacSignal.value = null;
+  } finally {
+    refreshingPermissions = false;
   }
 }
 

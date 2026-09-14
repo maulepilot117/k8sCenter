@@ -189,7 +189,10 @@ test.describe.serial("Resource pins", () => {
     // serial, so a cluster left selected by a failed spec would silently
     // re-point every later one at a cluster that does not exist.
     await page.evaluate(() =>
-      localStorage.setItem("k8scenter.selectedCluster", "local")
+      localStorage.setItem(
+        "k8scenter.clusterTarget",
+        JSON.stringify({ clusterId: "local", generation: "local" }),
+      )
     );
     await deleteAllPins(page);
   });
@@ -553,10 +556,16 @@ test.describe.serial("Resource pins", () => {
 
     await page.goto(detailPath(name));
     try {
+      // See the note in saved-views.spec.ts: the restored target is the JSON
+      // pair under "k8scenter.clusterTarget", and writing the legacy key here
+      // would leave this spec on the local cluster and passing vacuously.
       await page.evaluate(() => {
         localStorage.setItem(
-          "k8scenter.selectedCluster",
-          "some-remote-cluster",
+          "k8scenter.clusterTarget",
+          JSON.stringify({
+            clusterId: "some-remote-cluster",
+            generation: "unknown",
+          }),
         );
       });
       await page.reload();
@@ -572,7 +581,10 @@ test.describe.serial("Resource pins", () => {
       // nonexistent cluster selected would make every later spec fail for a
       // reason that has nothing to do with what it tests.
       await page.evaluate(() => {
-        localStorage.setItem("k8scenter.selectedCluster", "local");
+        localStorage.setItem(
+          "k8scenter.clusterTarget",
+          JSON.stringify({ clusterId: "local", generation: "local" }),
+        );
       });
     }
   });

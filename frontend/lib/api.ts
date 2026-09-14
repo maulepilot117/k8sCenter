@@ -122,6 +122,40 @@ async function refreshAccessToken(): Promise<boolean> {
 }
 
 /**
+ * Per-request transport controls shared by `api()` and every convenience
+ * wrapper below.
+ */
+export interface RequestTargeting {
+  /**
+   * Cooperative cancellation. Pass `AbortController.signal` to cancel an
+   * in-flight request — for example when the cluster or route changes while a
+   * response is still outstanding.
+   */
+  signal?: AbortSignal;
+  /**
+   * Cluster this request is addressed to, overriding the ambient
+   * `selectedCluster` signal for this call only.
+   *
+   * Pass it whenever the target must not be whatever the operator happens to
+   * be looking at when the request is issued: a YAML apply pinned to the
+   * cluster whose preview was reviewed (D4), or a capability read whose URL
+   * path already names a cluster and whose header must agree with it or the
+   * handler 409s.
+   */
+  clusterId?: string;
+}
+
+/**
+ * Normalizes the optional last argument of the convenience wrappers, which
+ * accept either a bare AbortSignal (the original signature, still used by
+ * existing call sites) or the fuller targeting object.
+ */
+function targeting(opts?: AbortSignal | RequestTargeting): RequestTargeting {
+  if (!opts) return {};
+  return opts instanceof AbortSignal ? { signal: opts } : opts;
+}
+
+/**
  * Typed fetch wrapper for the k8sCenter API.
  *
  * - Injects Bearer token and X-Cluster-ID header
@@ -129,30 +163,41 @@ async function refreshAccessToken(): Promise<boolean> {
  * - Parses error responses into ApiError
  * - Accepts an optional `signal` for cooperative cancellation; pass
  *   `AbortController.signal` from the caller to cancel in-flight requests.
+ *
+ * The target cluster is decided **once, here**, and every attempt this call
+ * makes carries that same decision. It used to be read from
+ * `selectedCluster.value` inside `doFetch`, which is invoked a second time on
+ * the 401-refresh path below: a cluster switch landing during a token refresh
+ * silently retargeted the retry, so a request the operator issued against one
+ * cluster completed against another (AE2). Capturing it outside the closure is
+ * the whole fix — do not move this read back in.
  */
 export async function api<T>(
   path: string,
-  options: RequestInit & { signal?: AbortSignal } = {},
+  options: RequestInit & RequestTargeting = {},
 ): Promise<APIResponse<T>> {
+  const { clusterId, ...init } = options;
+  const targetCluster = clusterId ?? selectedCluster.value;
+
   const doFetch = (): Promise<Response> => {
-    const headers = new Headers(options.headers);
+    const headers = new Headers(init.headers);
     if (accessToken) {
       headers.set("Authorization", `Bearer ${accessToken}`);
     }
-    headers.set("X-Cluster-ID", selectedCluster.value);
-    if (!headers.has("Content-Type") && options.body) {
+    headers.set("X-Cluster-ID", targetCluster);
+    if (!headers.has("Content-Type") && init.body) {
       headers.set("Content-Type", "application/json");
     }
     // CSRF protection for state-changing requests
-    if (options.method && options.method !== "GET") {
+    if (init.method && init.method !== "GET") {
       headers.set("X-Requested-With", "XMLHttpRequest");
     }
 
     return fetch(`/api${path}`, {
-      ...options,
+      ...init,
       headers,
       credentials: "include",
-      signal: options.signal,
+      signal: init.signal,
     });
   };
 
@@ -187,8 +232,17 @@ export async function api<T>(
     } catch {
       // Response wasn't JSON
     }
-    // On 403, notify auth layer to refresh permissions (self-correcting mechanism)
-    if (res.status === 403 && on403Callback) {
+    // On 403, notify auth layer to refresh permissions (self-correcting mechanism).
+    //
+    // Never for /v1/auth/* — the callback's own endpoint cannot be repaired by
+    // re-calling it. `refreshPermissions` re-issues GET /v1/auth/me, which is
+    // inside the backend's ClusterContext group and therefore 403s for a
+    // non-admin carrying a non-local X-Cluster-ID. Without this guard that is
+    // a self-feeding loop: one unthrottled request per round-trip, forever,
+    // against an endpoint with no rate limit.
+    if (
+      res.status === 403 && on403Callback && !path.startsWith("/v1/auth/")
+    ) {
       on403Callback();
     }
     throw new ApiError(
@@ -207,36 +261,67 @@ export async function api<T>(
   return await res.json();
 }
 
-/** Convenience methods. */
-export const apiGet = <T>(path: string, signal?: AbortSignal) =>
-  api<T>(path, { method: "GET", signal });
+/**
+ * Convenience methods.
+ *
+ * The trailing options argument accepts either a bare AbortSignal or a
+ * `RequestTargeting` object. The bare form is the pre-existing signature and
+ * stays supported so the two call sites that use it keep working unchanged;
+ * new call sites should pass the object, which can also pin `clusterId`.
+ */
+export const apiGet = <T>(
+  path: string,
+  opts?: AbortSignal | RequestTargeting,
+) => api<T>(path, { method: "GET", ...targeting(opts) });
 
-export const apiPost = <T>(path: string, body?: unknown) =>
+export const apiPost = <T>(
+  path: string,
+  body?: unknown,
+  opts?: AbortSignal | RequestTargeting,
+) =>
   api<T>(path, {
     method: "POST",
     body: body ? JSON.stringify(body) : undefined,
+    ...targeting(opts),
   });
 
-export const apiPut = <T>(path: string, body: unknown) =>
+export const apiPut = <T>(
+  path: string,
+  body: unknown,
+  opts?: AbortSignal | RequestTargeting,
+) =>
   api<T>(path, {
     method: "PUT",
     body: JSON.stringify(body),
+    ...targeting(opts),
   });
 
-export async function apiDelete(path: string): Promise<void> {
-  await api<unknown>(path, { method: "DELETE" });
+export async function apiDelete(
+  path: string,
+  opts?: AbortSignal | RequestTargeting,
+): Promise<void> {
+  await api<unknown>(path, { method: "DELETE", ...targeting(opts) });
 }
 
-/** POST with a raw string body (e.g., YAML content). */
+/**
+ * POST with a raw string body (e.g., YAML content).
+ *
+ * Cancellable and pinnable: the YAML flow issues a preview and an apply
+ * against a target the operator reviewed, and must be able to both abandon an
+ * in-flight preview when the operator switches clusters and address the apply
+ * to the reviewed cluster rather than the current one.
+ */
 export const apiPostRaw = <T>(
   path: string,
   body: string,
   contentType = "text/yaml",
+  opts?: AbortSignal | RequestTargeting,
 ) =>
   api<T>(path, {
     method: "POST",
     body,
     headers: { "Content-Type": contentType },
+    ...targeting(opts),
   });
 
 // --- Notification Center API ---
