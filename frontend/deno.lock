@@ -1697,6 +1697,8 @@
         "npm:@codemirror/view@^6.40.0",
         "npm:@preact/signals@^2.7.1",
         "npm:@tailwindcss/vite@^4.1.10",
+        "npm:@types/bun@1.4.1",
+        "npm:@types/ws@^8.18.1",
         "npm:@xterm/addon-fit@0.10",
         "npm:@xterm/addon-web-links@0.11",
         "npm:@xterm/xterm@^5.5.0",
@@ -1709,6 +1711,7 @@
         "npm:tailwindcss@^4.1.10",
         "npm:typescript@^6.0.3",
         "npm:vite@^7.3.5",
+        "npm:ws@^8.21.3",
         "npm:yaml@^2.8.3"
       ],
       "overrides": {
