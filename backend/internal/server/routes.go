@@ -114,6 +114,18 @@ func (s *Server) registerRoutes() {
 			ar.Get("/auth/me", s.handleAuthMe)
 			ar.Get("/cluster/info", s.handleClusterInfo)
 
+			// Per-cluster, per-identity capability disclosure (U8). Deliberately
+			// NOT under the admin-only /clusters group below: middleware.ClusterContext
+			// (registered on this whole group, above) already admin-gates any
+			// non-local X-Cluster-ID, and the handler's own path==header mismatch
+			// check means a request for a remote cluster necessarily carries that
+			// header — so local stays available to any authenticated user while
+			// remote is still admin-only, with zero new middleware. Registered
+			// unconditionally (like /cluster/info above): the handler tolerates a
+			// nil ResourceHandler/ClusterStore/ClusterRouter without panicking
+			// (brief A4) rather than needing a guard here.
+			ar.Get("/capabilities/{clusterID}", s.handleClusterCapabilities)
+
 			// Dashboard summary — aggregated cluster health data
 			if s.ResourceHandler != nil {
 				ar.Get("/cluster/dashboard-summary", s.ResourceHandler.HandleDashboardSummary)
