@@ -1,7 +1,35 @@
-/** Backend API base URL. In dev, the Fresh BFF proxy forwards to this. */
-export const BACKEND_URL = typeof Deno !== "undefined"
-  ? Deno.env.get("BACKEND_URL") ?? "http://localhost:8080"
-  : "http://localhost:8080";
+/**
+ * Reads BACKEND_URL from whichever runtime's env API is actually present.
+ *
+ * `typeof Deno !== "undefined"` used to be the sole check here, which is
+ * correct under Fresh/Deno but silently false under Bun/Node — `Deno` is
+ * simply never defined there, so the ternary fell through to the
+ * hardcoded localhost default and ignored the `BACKEND_URL` env var the
+ * Helm chart sets on the frontend Deployment (R13). Bun's server needs the
+ * `process.env` branch too.
+ *
+ * Both runtime globals are read through `globalThis` with a local cast,
+ * rather than the bare `Deno`/`process` identifiers, so this file
+ * type-checks under `deno check` (no Node lib/types loaded) and under
+ * `astro check` (no Deno ambient types loaded) alike — neither program has
+ * to know about the other runtime's globals.
+ */
+export function readBackendUrlFromEnv(): string | undefined {
+  const g = globalThis as unknown as {
+    Deno?: { env: { get(key: string): string | undefined } };
+    process?: { env?: Record<string, string | undefined> };
+  };
+  if (g.Deno) {
+    return g.Deno.env.get("BACKEND_URL");
+  }
+  if (g.process?.env) {
+    return g.process.env.BACKEND_URL;
+  }
+  return undefined;
+}
+
+/** Backend API base URL. In dev, the BFF proxy forwards to this. */
+export const BACKEND_URL = readBackendUrlFromEnv() ?? "http://localhost:8080";
 
 /**
  * Maps lowercase plural API kind to PascalCase Kubernetes API kind.
