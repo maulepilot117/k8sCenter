@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -59,10 +60,26 @@ const (
 	// ReasonStaleObservation — the last probe is older than 3x the 60s
 	// probe interval (or there has never been one); reachable is null.
 	ReasonStaleObservation ReasonCode = "stale_observation"
-	// ReasonForbidden — the SAR returned Allowed: false for this identity.
+	// ReasonForbidden — the SAR returned Allowed: false for this identity,
+	// on a CLUSTER-SCOPED operation, where a cluster-wide probe asks an exact
+	// question and a denial is therefore the whole answer.
 	ReasonForbidden ReasonCode = "forbidden"
-	// ReasonAuthzUnknown — the SAR could not be issued or errored.
+	// ReasonAuthzUnknown — the SAR could not be issued or errored. This code
+	// means "we failed to ask", nothing more; a SAR that was asked and
+	// answered "no" never lands here (see ReasonAuthzNamespaceScoped).
 	ReasonAuthzUnknown ReasonCode = "authz_unknown"
+	// ReasonAuthzNamespaceScoped — the SAR was issued successfully and
+	// returned Allowed: false, but the operation is NAMESPACED and the probe
+	// was cluster-wide, so the denial does not prove this identity lacks
+	// access; it only proves the identity does not hold the permission in
+	// EVERY namespace. authorized is nil here exactly as it is for
+	// authz_unknown — the verdict genuinely is indeterminate — and only the
+	// reason code distinguishes "the probe's shape makes this unknowable"
+	// from "we never got an answer at all". Collapsing the two (as this
+	// endpoint did before) hides from the operator that a definite answer
+	// exists and is simply not being asked for; see Capability.Authorized for
+	// the ?namespace= follow-up that would turn it into a yes/no.
+	ReasonAuthzNamespaceScoped ReasonCode = "authz_namespace_scoped"
 	// ReasonClusterUnknown — no such cluster id in the registry.
 	ReasonClusterUnknown ReasonCode = "cluster_unknown"
 	// ReasonCredentialsInvalid — decrypt / TLS-policy / impersonation-probe
@@ -90,6 +107,7 @@ var validReasonCodes = map[ReasonCode]bool{
 	ReasonStaleObservation:     true,
 	ReasonForbidden:            true,
 	ReasonAuthzUnknown:         true,
+	ReasonAuthzNamespaceScoped: true,
 	ReasonClusterUnknown:       true,
 	ReasonCredentialsInvalid:   true,
 	ReasonDBUnavailable:        true,
@@ -121,8 +139,12 @@ type Capability struct {
 	// (review findings #2, #6, #10 — the last being the
 	// `resources: ["*/exec"]` wildcard grant form, which only matches a SAR
 	// carrying a non-empty subresource). A negative cluster-wide probe on a
-	// namespaced operation is therefore reported as authorized: nil /
-	// authz_unknown: unknown, not denied.
+	// namespaced operation is therefore reported as authorized: nil —
+	// unknown, not denied — with reasonCode authz_namespace_scoped, which is
+	// deliberately NOT authz_unknown: the latter means the SAR could not be
+	// evaluated at all, and a client that cannot tell the two apart cannot
+	// tell "ask me again with a namespace" from "the cluster would not
+	// answer".
 	//
 	// Accepting an optional ?namespace= parameter and probing that namespace
 	// would turn the unknown into a definite per-namespace yes/no. That is
@@ -187,8 +209,9 @@ type capabilityOp struct {
 	//
 	// The zero value means namespaced deliberately: most Kubernetes
 	// resources are, and a forgotten field then errs toward
-	// authz_unknown ("we could not determine") rather than toward a
-	// definite-but-wrong forbidden. TestCapabilityOperations_ScopePinned
+	// authz_namespace_scoped ("the probe's shape makes this unknowable")
+	// rather than toward a definite-but-wrong forbidden.
+	// TestCapabilityOperations_ScopePinned
 	// pins the scope of every row by ID so a new row still has to make the
 	// choice consciously.
 	ClusterScoped bool
@@ -226,7 +249,7 @@ var capabilityOperations = []capabilityOp{
 		// Choosing a resource ordinary namespaced roles carry only pays off
 		// if the probe also asks a namespaced question. It does not: the SAR
 		// namespace is empty (cluster-wide), which is why a negative here is
-		// reported authz_unknown rather than forbidden — see
+		// reported authz_namespace_scoped rather than forbidden — see
 		// Capability.Authorized and capabilityOp.ClusterScoped.
 		ID: "yaml.validate", Label: "Validate YAML",
 		LocalSupported: true, RemoteSupported: false,
@@ -296,7 +319,7 @@ var capabilityOperations = []capabilityOp{
 		// The ONLY cluster-scoped row in the table: nodes are not namespaced,
 		// so the cluster-wide SAR below is an exact question and a denial is
 		// a real denial (forbidden), not the ambiguous namespaced negative
-		// every other row has to report as authz_unknown.
+		// every other row has to report as authz_namespace_scoped.
 		ID: "dashboard.summary", Label: "Dashboard summary",
 		LocalSupported: true, RemoteSupported: false,
 		Probe:    &gvrProbe{Group: "", Resource: "nodes"},
@@ -326,7 +349,7 @@ var capabilityOperations = []capabilityOp{
 		// subresource is non-empty. An identity granted exec only that way
 		// comes back Allowed: false from the SAR. That used to be reported
 		// as a definite forbidden (review finding #10); because pods/exec is
-		// namespaced, it is now reported as authz_unknown — the honest
+		// namespaced, it is now reported as authz_namespace_scoped — the honest
 		// answer for a negative that the probe shape itself may have
 		// manufactured. A1 leaves no alternative without extending
 		// AccessChecker's API.
@@ -341,7 +364,7 @@ var capabilityOperations = []capabilityOp{
 		//
 		// Same "pods/log" subresource caveat as pod.exec above: an identity
 		// granted access only via a `resources: ["*/log"]` wildcard rule
-		// comes back Allowed: false and is reported authz_unknown (pods/log
+		// comes back Allowed: false and is reported authz_namespace_scoped (pods/log
 		// is namespaced) rather than forbidden — see pod.exec's comment.
 		ID: "logs.stream", Label: "Live log stream",
 		LocalSupported: true, RemoteSupported: false,
@@ -605,11 +628,31 @@ func boolPtr(b bool) *bool { return &b }
 // actually sent. Used for the {clusterID} path parameter (handler.go's
 // mismatch response), which has no upstream length cap the way the
 // X-Cluster-ID header does (middleware.ClusterContext caps that at 64).
+//
+// n bounds BYTES, not runes — it exists to cap the response body — but the
+// cut is pulled back to a rune boundary first. A plain s[:n] can land in the
+// middle of a multi-byte UTF-8 sequence; encoding/json then rewrites those
+// orphaned bytes as U+FFFD, so the echoed id silently differs from what the
+// caller actually sent in a way "...(truncated)" does not explain, which is
+// the one thing this helper exists to prevent. Trimming instead drops the
+// partial rune, so every byte that IS echoed is a byte the caller sent.
 func truncateForEcho(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "...(truncated)"
+	cut := s[:n]
+	// DecodeLastRuneInString returns (RuneError, 1) for a byte that cannot
+	// start or complete a rune — i.e. exactly the partial sequence the cut
+	// created. A genuine U+FFFD in the input decodes with size 3 and is left
+	// alone, so this trims the split only, never the caller's own content.
+	for len(cut) > 0 {
+		r, size := utf8.DecodeLastRuneInString(cut)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "...(truncated)"
 }
 
 // buildCapability composes one operation's full six-dimension row from
@@ -624,7 +667,14 @@ func truncateForEcho(s string, n int) string {
 // resolution failure (cluster_unknown/credentials_invalid/db_unavailable —
 // nothing else is knowable about ANY operation when the target itself
 // can't be resolved) > unreachable/stale_observation > discovery_missing/
-// discovery_unavailable > forbidden/authz_unknown > ok.
+// discovery_unavailable > forbidden/authz_namespace_scoped/authz_unknown > ok.
+//
+// authReason is the caller's explanation for a nil `authorized` that is NOT
+// an error: today the single value authorizedFromClusterWideSAR can produce,
+// authz_namespace_scoped. It is a separate parameter rather than something
+// inferred from (authorized == nil && authErr == nil) because that condition
+// is also what "the caller never computed authz at all" looks like, and
+// those two are exactly the pair this endpoint must not conflate.
 func buildCapability(
 	op capabilityOp,
 	isLocal bool,
@@ -634,6 +684,7 @@ func buildCapability(
 	discoveryUnavailable bool,
 	authorized *bool,
 	authErr error,
+	authReason ReasonCode,
 	now time.Time,
 ) Capability {
 	row := Capability{
@@ -650,6 +701,20 @@ func buildCapability(
 
 	if globalReason != "" {
 		row.ReasonCode = globalReason
+		// A global reason means the TARGET could not be resolved, so nothing
+		// downstream of it is knowable and reachable stays null — with one
+		// exception. classifyTargetSchemaErr returns unreachable only for
+		// errors that ARE a reachability verdict (DNS failure, dial refusal,
+		// the 30s ceiling expiring), so leaving reachable null there shipped
+		// a row that said reasonCode: unreachable, reachable: null: two
+		// statements contradicting each other, and a different code path
+		// below emits that same reason with reachable: false. cluster_unknown,
+		// credentials_invalid and db_unavailable are NOT reachability
+		// verdicts — we never got far enough to learn whether the target
+		// answers — so they keep the honest null.
+		if globalReason == ReasonUnreachable {
+			row.Reachable = boolPtr(false)
+		}
 		row.ObservedAt = now.UTC().Format(time.RFC3339)
 		return row
 	}
@@ -694,11 +759,16 @@ func buildCapability(
 	if reason == "" {
 		switch {
 		case authErr != nil:
+			// The SAR could not be issued or errored — we failed to ask.
 			reason = ReasonAuthzUnknown
 		case authorized != nil && !*authorized:
 			reason = ReasonForbidden
 		case authorized != nil && *authorized:
 			reason = ReasonOK
+		case authReason != "":
+			// The SAR was asked and answered, but the answer does not settle
+			// the question — today only authz_namespace_scoped.
+			reason = authReason
 		default:
 			// authorized was never computed (caller skipped it) — treat as
 			// unknown rather than guessing ok.
@@ -711,31 +781,36 @@ func buildCapability(
 
 // authorizedFromClusterWideSAR turns a successful cluster-wide (empty
 // namespace) SelfSubjectAccessReview verdict into the reported `authorized`
-// dimension.
+// dimension, plus the reason code that explains a nil one.
 //
 // buildCapability's contract is unchanged and deliberately dumb: a non-nil
 // false means forbidden. Deciding whether a given false IS a denial is this
 // function's job, because that depends on the shape of the question asked,
 // which is a property of the probe, not of the reason-code priority chain.
 //
-//   - allowed == true → true, on any scope. A cluster-wide allow genuinely
-//     implies every namespace.
-//   - allowed == false on a CLUSTER-SCOPED resource → false. The question
-//     had no namespace dimension; the denial is the whole answer.
-//   - allowed == false on a NAMESPACED resource → nil (authz_unknown). The
-//     probe asked "in ALL namespaces?"; an identity with an ordinary
-//     namespaced Role answers no to that and yes where it matters. See
+// The three outcomes:
+//
+//   - allowed == true → (true, ""), on any scope. A cluster-wide allow
+//     genuinely implies every namespace; buildCapability reports ok.
+//   - allowed == false on a CLUSTER-SCOPED resource → (false, ""). The
+//     question had no namespace dimension; the denial is the whole answer,
+//     and buildCapability reports forbidden.
+//   - allowed == false on a NAMESPACED resource → (nil,
+//     authz_namespace_scoped). The probe asked "in ALL namespaces?"; an
+//     identity with an ordinary namespaced Role answers no to that and yes
+//     where it matters. authorized is nil because the verdict really is
+//     indeterminate, and the reason code — NOT authz_unknown — says why. See
 //     Capability.Authorized for the full rationale and the ?namespace=
 //     follow-up.
 //
 // A SAR that ERRORS never reaches here — the caller keeps authorized nil and
 // passes the error through, which buildCapability maps to authz_unknown by
-// its own branch.
-func authorizedFromClusterWideSAR(op capabilityOp, allowed bool) *bool {
+// its own branch. That is the only thing authz_unknown means.
+func authorizedFromClusterWideSAR(op capabilityOp, allowed bool) (*bool, ReasonCode) {
 	if allowed || op.ClusterScoped {
-		return boolPtr(allowed)
+		return boolPtr(allowed), ""
 	}
-	return nil
+	return nil, ReasonAuthzNamespaceScoped
 }
 
 // capabilityClusterGetter resolves the clusterRecordGetter the reachability
@@ -885,6 +960,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 		discoveryUnavailable := false
 		var authorized *bool
 		var authErr error
+		var authReason ReasonCode
 
 		if platformSupported && globalReason == "" && reachableNow {
 			if op.Probe != nil {
@@ -913,7 +989,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 					op.AuthVerb, op.AuthGroup, op.AuthResource, "",
 				)
 				if authErr == nil {
-					authorized = authorizedFromClusterWideSAR(op, allowed)
+					authorized, authReason = authorizedFromClusterWideSAR(op, allowed)
 				}
 			} else {
 				authErr = errNoAccessChecker
@@ -923,7 +999,7 @@ func (s *Server) handleClusterCapabilities(w http.ResponseWriter, r *http.Reques
 		capabilities = append(capabilities, buildCapability(
 			op, isLocal, globalReason, reach,
 			discoveryPresent, discoveryUnavailable,
-			authorized, authErr, now,
+			authorized, authErr, authReason, now,
 		))
 	}
 

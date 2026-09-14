@@ -110,11 +110,14 @@ func NewClusterRouter(local *ClientFactory, cs *store.ClusterStore, encKey strin
 // when a non-local clusterID is requested but no cluster registry is wired,
 // hard-error instead of silently downgrading to the local cluster.
 //
-// The error text is load-bearing — three tests in this package and three in
-// internal/certmanager assert on the "no cluster store" substring, and
-// internal/server's classifyTargetSchemaErr (handle_capabilities.go, U8)
-// matches it too, to map a TargetSchemaFor failure to the db_unavailable
-// capability reason code. Do not reword it without updating all of them.
+// The error text is load-bearing: internal/server's classifyTargetSchemaErr
+// (handle_capabilities.go, U8) matches the "no cluster store" substring to
+// map a TargetSchemaFor failure to the db_unavailable capability reason
+// code, and this package's own tests assert on it too. Do not maintain a
+// hand-counted census of the assertions here — it goes stale silently and a
+// stale count is worse than no count. Instead: before rewording this
+// string, `grep -rn "no cluster store"` across the repo (tests and
+// non-test files separately) and update every hit you find.
 // Callers must have already ruled out the local cluster (IsLocalClusterID)
 // before calling this.
 func (cr *ClusterRouter) requireClusterStore(clusterID string) error {

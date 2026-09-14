@@ -368,8 +368,19 @@ Six independent dimensions, never collapsed into one boolean:
 | `discoveryPresent` | `*bool` | The target's API surface actually contains the group/resource the operation needs. `null` when the operation needs no specific GVR. | `TargetSchema.Discovery` |
 | `reachable` | `*bool` | Last observation says the target answers. `null` when unknown or stale. | `ClusterRecord.Status` + `LastProbedAt` (never a fresh probe) |
 | `authorized` | `*bool` | This identity's SAR verdict for the operation's representative verb/resource. `null` when the SAR could not be evaluated. | `AccessChecker.CanAccess` |
-| `observedAt` | RFC3339 | When the *weakest-freshness* input in this row was observed. | max-staleness of the contributing inputs |
+| `observedAt` | RFC3339 | When the **reachability** observation this row is based on was made — "now" for local (no probe cycle involved), the cluster record's `LastProbedAt` for remote. | `ClusterRecord.Status` + `LastProbedAt` |
 | `reasonCode` | enum | Why the row is not plain `ok`. | below |
+
+> **Amended 2026-09-13, during U8's own review rounds (`handle_capabilities.go`, commits
+> `7e21e262`..`b2c6e20f`).** The row above originally read "When the *weakest-freshness* input in
+> this row was observed" — i.e. the max-staleness of every contributing input. The shipped code
+> does not do that and must not: `authorized` can come from a `SelfSubjectAccessReview` verdict
+> cached for up to 60s (`accessCacheTTL`, `internal/k8s/resources/access.go`), so on the local path
+> `ObservedAt` reads "now" (the reachability check, which is instantaneous for local) while the
+> authorization dimension beside it may be up to a minute old. `observedAt` reflects the
+> reachability observation only, never a blend across dimensions. `Capability.ObservedAt`'s doc
+> comment in `handle_capabilities.go` and `frontend/lib/capability-types.ts` both say this in the
+> same words; keep this row in step with them rather than the other way around.
 
 **Reason codes — the complete list.** Any value outside this set is a bug.
 
@@ -381,11 +392,35 @@ Six independent dimensions, never collapsed into one boolean:
 | `discovery_unavailable` | Discovery call failed — the answer is unknown, not "absent" |
 | `unreachable` | Last probe says `disconnected` / `blocked` / `error` |
 | `stale_observation` | Last probe is older than 3× the 60s probe interval; `reachable` is `null` |
-| `forbidden` | SAR returned `Allowed: false` for this identity |
-| `authz_unknown` | SAR could not be issued or errored |
+| `forbidden` | SAR returned `Allowed: false` for this identity, **and the denial is provable from the shape of the probe issued** — see the amendment below |
+| `authz_unknown` | SAR could not be issued or errored, **or returned a negative verdict that does not prove denial** — see the amendment below |
 | `cluster_unknown` | No such cluster id in the registry |
 | `credentials_invalid` | Decrypt / TLS-policy / impersonation-probe failure |
 | `db_unavailable` | No `ClusterStore` wired (local-only deployment) and a non-local target was asked for |
+
+> **Amended 2026-09-13, during U8's own review rounds (`handle_capabilities.go`, commits
+> `7e21e262`..`b2c6e20f`).** This section originally described `forbidden` as the single outcome of
+> any `Allowed: false` SAR verdict. That predates the cluster-scoped vs namespaced split the review
+> rounds introduced (review findings #2, #6, #10): the endpoint issues its SelfSubjectAccessReview
+> **cluster-wide** (empty namespace), which is only an exact question for a cluster-scoped resource
+> (only `dashboard.summary`'s `nodes` probe qualifies today). For every namespaced resource — which
+> is most of the table — a cluster-wide "no" does not prove the identity lacks access in the
+> namespace(s) where it actually operates; an ordinary namespaced Role would fail that probe and yet
+> work fine in its own namespace.
+>
+> The rule, stated as shape rather than as a pinned code (a concurrent change is giving the
+> namespaced-negative case its own distinct reason code separate from the general "could not
+> evaluate" case, so the exact string below should not be treated as final):
+>
+> - allow, any scope → `ok`
+> - deny on a **cluster-scoped** resource → `forbidden` (the denial is the whole answer)
+> - deny on a **namespaced** resource → an indeterminate verdict, `authorized: null` (not proof of
+>   denial, and never reported as `forbidden`)
+>
+> See `Capability.Authorized` and `authorizedFromClusterWideSAR` in `handle_capabilities.go` for the
+> implementation, and `TestCapabilities_ForbiddenIsNotUnsupported` /
+> `TestCapabilities_NamespacedDenialIsUnknownNotForbidden` in `handle_capabilities_test.go` for the
+> tests that pin both halves of this split.
 
 **Stated plainly, because AE2 and AE3 both depend on it:**
 **`unreachable` is not `unsupported`. `forbidden` is not `unsupported`.** When a cluster is down
@@ -772,7 +807,7 @@ Deviation from the master plan's `/clusters/{id}/capabilities`, with two reasons
 | `TestCapabilities_HeaderPathMismatchRejected` | "Header/path cluster mismatch is rejected" | 409, reason `cluster_target_mismatch`, no body rows |
 | `TestCapabilities_LocalRequiresNoAdmin` | — | A non-admin user gets 200 for `local` |
 | `TestCapabilities_UnreachableIsNotUnsupported` | "unreachable and forbidden are not reported as unsupported" | For a `disconnected` cluster: `platformSupported == true`, `reachable == false`, `reasonCode == "unreachable"` |
-| `TestCapabilities_ForbiddenIsNotUnsupported` | same | SAR denies: `platformSupported == true`, `authorized == false`, `reasonCode == "forbidden"` |
+| `TestCapabilities_ForbiddenIsNotUnsupported` | same | SAR denies on both scopes: for the cluster-scoped `dashboard.summary` (`nodes`) row, `platformSupported == true`, `authorized == false`, `reasonCode == "forbidden"`; for the namespaced `yaml.apply` row, `platformSupported == true`, `authorized == nil`, `reasonCode == "authz_unknown"` — a cluster-wide denial on a namespaced resource is not proof of denial (see the D3 `forbidden` amendment above) |
 | `TestCapabilities_TwoIdentitiesGetOwnPermissionView` | "Two identities get their own permission view" | Identity A allowed / identity B denied for the same cluster in the same test; both correct; no shared map in the handler |
 | `TestCapabilities_RemoteExecUnsupported` | "remote exec remains unsupported" | `pod.exec` on a remote cluster: `platformSupported == false`, `reasonCode == "unsupported_platform"` |
 | `TestCapabilities_StaleProbeYieldsNullReachable` | cross-cutting (R3) | `LastProbedAt` 5 minutes old → `reachable == nil`, `reasonCode == "stale_observation"` |

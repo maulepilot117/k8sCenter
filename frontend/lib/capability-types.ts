@@ -20,9 +20,12 @@
  * would be a real regression, not a cosmetic one.
  *
  * This array MUST stay in lockstep with validReasonCodes in
- * backend/internal/server/handle_capabilities.go — capability-types_test.ts
- * and backend/internal/server/capability_parity_test.go pin both sides to the
- * same literals so drift fails a test instead of shipping silently.
+ * backend/internal/server/handle_capabilities.go. That cross-language check
+ * is made from the Go side only: backend/internal/server/capability_parity_test.go
+ * reads this file's source text and diffs it against the live Go values.
+ * capability-types_test.ts cannot see the Go source, so it instead checks
+ * that this array and the ReasonCode union type derived from it stay
+ * self-consistent — a real but narrower guarantee.
  */
 export const REASON_CODES = [
   "ok",
@@ -33,6 +36,7 @@ export const REASON_CODES = [
   "stale_observation",
   "forbidden",
   "authz_unknown",
+  "authz_namespace_scoped",
   "cluster_unknown",
   "credentials_invalid",
   "db_unavailable",
@@ -45,7 +49,9 @@ export type ReasonCode = typeof REASON_CODES[number];
  *
  * This array MUST stay in lockstep with capabilityOperations in
  * backend/internal/server/handle_capabilities.go — same parity-test pairing
- * as REASON_CODES above.
+ * as REASON_CODES above (Go-side test cross-checks this file's source text;
+ * the TS-side test only checks this array against the CapabilityOperationId
+ * union it derives).
  */
 export const CAPABILITY_OPERATION_IDS = [
   "yaml.validate",
@@ -97,7 +103,28 @@ export interface Capability {
   reachable: boolean | null;
   /**
    * This identity's SAR verdict for the operation's representative
-   * verb/resource. `null` when the SAR could not be evaluated.
+   * verb/resource.
+   *
+   * `null` carries TWO distinct meanings, and `reasonCode` is what tells
+   * them apart:
+   *
+   * - `authz_unknown` — the SAR could not be evaluated (it errored, or no
+   *   AccessChecker is wired). Nothing was learned.
+   * - `authz_namespace_scoped` — the SAR WAS evaluated and returned "no",
+   *   but the probe is issued cluster-wide (empty namespace) while the
+   *   operation is namespaced, so the denial only proves this identity
+   *   lacks the permission in EVERY namespace. An ordinary namespaced Role
+   *   (edit/admin in one namespace) answers exactly that way and can still
+   *   perform the operation where it actually works, so namespace-scoped
+   *   access is NOT ruled out.
+   *
+   * In both cases `null` means "indeterminate" and MUST NOT be rendered as
+   * permitted — no affordance may be enabled, and no "you have access"
+   * copy shown, on the strength of a `null`. Render it as unknown (and, for
+   * `authz_namespace_scoped`, as "may be available in your namespaces"),
+   * never as `true` and never silently as `false` either: a definite
+   * `false` is only ever reported with `forbidden`, on a cluster-scoped
+   * operation where the cluster-wide question was exact.
    */
   authorized: boolean | null;
   /**

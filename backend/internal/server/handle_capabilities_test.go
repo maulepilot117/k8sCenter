@@ -10,9 +10,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -395,7 +397,9 @@ func TestCapabilities_NoStoreHeader(t *testing.T) {
 // forbidden/false under an always-deny checker. That assertion encoded the
 // pre-fix behavior review finding #2 identified: the SAR is issued
 // cluster-wide, so a negative on a namespaced resource is not proof of
-// denial and is now reported authz_unknown/null. The test's actual subject —
+// denial and is now reported authz_namespace_scoped/null (it briefly
+// reported authz_unknown/null, which conflated "the answer does not settle
+// it" with "we never got an answer"). The test's actual subject —
 // "a denial is not 'unsupported'" — is unchanged and is now carried by
 // dashboard.summary, whose nodes probe is genuinely cluster-scoped, with
 // yaml.apply kept as the namespaced counterpart.
@@ -429,8 +433,8 @@ func TestCapabilities_ForbiddenIsNotUnsupported(t *testing.T) {
 	if namespaced.Authorized != nil {
 		t.Fatalf("yaml.apply Authorized = %v; want null — configmaps is namespaced and the probe was cluster-wide", *namespaced.Authorized)
 	}
-	if namespaced.ReasonCode != ReasonAuthzUnknown {
-		t.Errorf("yaml.apply ReasonCode = %q; want %q", namespaced.ReasonCode, ReasonAuthzUnknown)
+	if namespaced.ReasonCode != ReasonAuthzNamespaceScoped {
+		t.Errorf("yaml.apply ReasonCode = %q; want %q — the SAR WAS evaluated, so authz_unknown would be a lie", namespaced.ReasonCode, ReasonAuthzNamespaceScoped)
 	}
 }
 
@@ -499,8 +503,8 @@ func TestCapabilities_TwoIdentitiesGetOwnPermissionView(t *testing.T) {
 	if bobCap.Authorized != nil {
 		t.Fatalf("bob authorized = %v; want null for a cluster-wide denial on a namespaced op", *bobCap.Authorized)
 	}
-	if bobCap.ReasonCode != ReasonAuthzUnknown {
-		t.Errorf("bob reasonCode = %q; want %q", bobCap.ReasonCode, ReasonAuthzUnknown)
+	if bobCap.ReasonCode != ReasonAuthzNamespaceScoped {
+		t.Errorf("bob reasonCode = %q; want %q — bob's SAR was evaluated and said no; authz_unknown means it could not be evaluated at all", bobCap.ReasonCode, ReasonAuthzNamespaceScoped)
 	}
 
 	// The cluster-scoped row still carries a definite per-identity verdict,
@@ -565,8 +569,8 @@ func TestCapabilities_PredicateDenialPinsCanAccessGroupResource(t *testing.T) {
 	if namespaced.Authorized != nil {
 		t.Fatalf("yaml.apply Authorized = %v; want null (a regression to CanAccess would report true/ok here)", *namespaced.Authorized)
 	}
-	if namespaced.ReasonCode != ReasonAuthzUnknown {
-		t.Errorf("yaml.apply ReasonCode = %q; want %q", namespaced.ReasonCode, ReasonAuthzUnknown)
+	if namespaced.ReasonCode != ReasonAuthzNamespaceScoped {
+		t.Errorf("yaml.apply ReasonCode = %q; want %q", namespaced.ReasonCode, ReasonAuthzNamespaceScoped)
 	}
 }
 
@@ -610,7 +614,7 @@ func TestCapabilities_UnreachableIsNotUnsupported(t *testing.T) {
 	// (finding #3) every real row is honestly RemoteSupported: false today,
 	// so no real op could reach this test's assertions without first
 	// short-circuiting to unsupported_platform. See its doc comment.
-	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
 	if !cap.PlatformSupported {
 		t.Error("PlatformSupported = false; want true — a down cluster is still a supported target class")
 	}
@@ -635,7 +639,7 @@ func TestCapabilities_StaleProbeYieldsNullReachable(t *testing.T) {
 	}
 
 	// syntheticRemoteOp, not a real operation — see its doc comment.
-	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+	cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
 	if cap.Reachable != nil {
 		t.Fatalf("Reachable = %v; want nil", *cap.Reachable)
 	}
@@ -850,6 +854,7 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 		discoveryUnavailable bool
 		authorized           *bool
 		authErr              error
+		authReason           ReasonCode
 		wantProbeOp          ReasonCode // expected reasonCode for an op with Probe != nil
 		wantPlainOp          ReasonCode // expected reasonCode for an op with Probe == nil
 	}{
@@ -867,6 +872,19 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 			name: "local authz unknown", isLocal: true,
 			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &trueVal, authErr: errors.New("SAR failed"),
 			wantProbeOp: ReasonAuthzUnknown, wantPlainOp: ReasonAuthzUnknown,
+		},
+		{
+			// The namespaced cluster-wide denial: the SAR was asked and
+			// answered "no", but the question was cluster-wide and the
+			// operation is namespaced, so authorized stays null and the
+			// reason says WHY it is null. Asserting authz_unknown here
+			// instead would restore exactly the conflation this code exists
+			// to prevent — "we could not ask" vs "the answer does not settle
+			// it" are different operator actions.
+			name: "local namespaced cluster-wide denial", isLocal: true,
+			reach: reachabilityResult{reachable: &trueVal, observedAt: now}, discoveryPresent: &trueVal,
+			authReason:  ReasonAuthzNamespaceScoped,
+			wantProbeOp: ReasonAuthzNamespaceScoped, wantPlainOp: ReasonAuthzNamespaceScoped,
 		},
 		{
 			// Probe-carrying ops see discoveryPresent: false and report
@@ -926,17 +944,22 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 		t.Run(sc.name, func(t *testing.T) {
 			for _, op := range capabilityOperations {
 				cap := buildCapability(op, sc.isLocal, sc.globalReason, sc.reach,
-					sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, sc.authErr, now)
+					sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, sc.authErr, sc.authReason, now)
 
 				want := sc.wantPlainOp
 				if op.Probe != nil {
 					want = sc.wantProbeOp
 				}
+				// Exact equality, and deliberately NOT also a
+				// validReasonCodes membership check: every `want` literal
+				// above is itself a member (TestCapabilityContractParity
+				// pins that set), so equality subsumes membership here and a
+				// second assertion could only ever fire alongside the first.
+				// The membership sweep that is NOT subsumed — over codes the
+				// handler emits without this table dictating them — lives in
+				// TestCapabilities_RemoteChainEndToEnd.
 				if cap.ReasonCode != want {
 					t.Errorf("operation %q (Probe!=nil: %v): reasonCode = %q; want %q", op.ID, op.Probe != nil, cap.ReasonCode, want)
-				}
-				if !validReasonCodes[cap.ReasonCode] {
-					t.Errorf("operation %q scenario %q produced reasonCode %q, which is not in the valid set", op.ID, sc.name, cap.ReasonCode)
 				}
 			}
 		})
@@ -949,7 +972,8 @@ func TestCapabilities_ReasonCodesAreClosed(t *testing.T) {
 // syntheticRemoteProbeOp (see their doc comment): as of finding #3, no real
 // operation is RemoteSupported: true today, so none of unreachable,
 // stale_observation, cluster_unknown, credentials_invalid, db_unavailable,
-// forbidden, authz_unknown, discovery_missing, discovery_unavailable, or ok
+// forbidden, authz_unknown, authz_namespace_scoped, discovery_missing,
+// discovery_unavailable, or ok
 // could otherwise be positively verdict-tested on the remote branch any
 // more — every real op would short-circuit to unsupported_platform first.
 func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
@@ -963,6 +987,7 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 			reach        reachabilityResult
 			authorized   *bool
 			authErr      error
+			authReason   ReasonCode
 			want         ReasonCode
 		}{
 			{name: "unreachable", reach: reachabilityResult{reachable: &falseVal, observedAt: now}, want: ReasonUnreachable},
@@ -972,11 +997,21 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 			{name: "db_unavailable", globalReason: ReasonDBUnavailable, want: ReasonDBUnavailable},
 			{name: "forbidden", reach: reachabilityResult{reachable: &trueVal, observedAt: now}, authorized: &falseVal, want: ReasonForbidden},
 			{name: "authz_unknown", reach: reachabilityResult{reachable: &trueVal, observedAt: now}, authErr: errors.New("SAR failed"), want: ReasonAuthzUnknown},
+			// authz_namespace_scoped and authz_unknown produce the SAME
+			// authorized (null) and differ only in reasonCode, so this pair
+			// of adjacent cases is what keeps them from collapsing back into
+			// one code.
+			{name: "authz_namespace_scoped", reach: reachabilityResult{reachable: &trueVal, observedAt: now}, authReason: ReasonAuthzNamespaceScoped, want: ReasonAuthzNamespaceScoped},
+			// No authErr AND no authReason means the caller never computed
+			// authz at all — still authz_unknown, which is why authReason
+			// had to be a separate input rather than inferred from a nil
+			// authorized.
+			{name: "authz never computed", reach: reachabilityResult{reachable: &trueVal, observedAt: now}, want: ReasonAuthzUnknown},
 			{name: "ok", reach: reachabilityResult{reachable: &trueVal, observedAt: now}, authorized: &trueVal, want: ReasonOK},
 		}
 		for _, sc := range scenarios {
 			t.Run(sc.name, func(t *testing.T) {
-				cap := buildCapability(syntheticRemoteOp, false, sc.globalReason, sc.reach, nil, false, sc.authorized, sc.authErr, now)
+				cap := buildCapability(syntheticRemoteOp, false, sc.globalReason, sc.reach, nil, false, sc.authorized, sc.authErr, sc.authReason, now)
 				if cap.ReasonCode != sc.want {
 					t.Errorf("reasonCode = %q; want %q", cap.ReasonCode, sc.want)
 				}
@@ -990,16 +1025,22 @@ func TestCapabilities_ReasonCodesAreClosed_Remote(t *testing.T) {
 			discoveryPresent     *bool
 			discoveryUnavailable bool
 			authorized           *bool
+			authReason           ReasonCode
 			want                 ReasonCode
 		}{
 			{name: "discovery missing", discoveryPresent: &falseVal, authorized: &trueVal, want: ReasonDiscoveryMissing},
+			// Discovery outranks the authz dimension, so a probe op whose
+			// GVR is missing reports discovery_missing even when the authz
+			// dimension has something to say.
+			{name: "discovery missing outranks namespace-scoped authz", discoveryPresent: &falseVal, authReason: ReasonAuthzNamespaceScoped, want: ReasonDiscoveryMissing},
+			{name: "namespace-scoped authz", discoveryPresent: &trueVal, authReason: ReasonAuthzNamespaceScoped, want: ReasonAuthzNamespaceScoped},
 			{name: "discovery unavailable", discoveryUnavailable: true, authorized: &trueVal, want: ReasonDiscoveryUnavailable},
 			{name: "ok", discoveryPresent: &trueVal, authorized: &trueVal, want: ReasonOK},
 		}
 		reach := reachabilityResult{reachable: &trueVal, observedAt: now}
 		for _, sc := range scenarios {
 			t.Run(sc.name, func(t *testing.T) {
-				cap := buildCapability(syntheticRemoteProbeOp, false, "", reach, sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, nil, now)
+				cap := buildCapability(syntheticRemoteProbeOp, false, "", reach, sc.discoveryPresent, sc.discoveryUnavailable, sc.authorized, nil, sc.authReason, now)
 				if cap.ReasonCode != sc.want {
 					t.Errorf("reasonCode = %q; want %q", cap.ReasonCode, sc.want)
 				}
@@ -1028,7 +1069,7 @@ func TestCapabilities_RegistryReadFailureIsDBUnavailable(t *testing.T) {
 			t.Fatalf("reason = %q; want %q", reach.reason, ReasonDBUnavailable)
 		}
 
-		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
 		if cap.ReasonCode != ReasonDBUnavailable {
 			t.Errorf("ReasonCode = %q; want %q — stale_observation would send the operator to wait out an outage", cap.ReasonCode, ReasonDBUnavailable)
 		}
@@ -1053,7 +1094,7 @@ func TestCapabilities_RegistryReadFailureIsDBUnavailable(t *testing.T) {
 		if reach.reason != "" {
 			t.Fatalf("reason = %q; want empty for an ordinary stale probe", reach.reason)
 		}
-		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, now)
+		cap := buildCapability(syntheticRemoteOp, false, "", reach, nil, false, nil, nil, "", now)
 		if cap.ReasonCode != ReasonStaleObservation {
 			t.Errorf("ReasonCode = %q; want %q", cap.ReasonCode, ReasonStaleObservation)
 		}
@@ -1121,6 +1162,14 @@ func (f *namespaceAwareClientFactory) namespacesProbed() []string {
 // every namespace-scoped user — including the app-admin of finding #6, who
 // can run log search — that they could not do things they could.
 //
+// "Unknown" here means authorized: null with reasonCode
+// authz_namespace_scoped, NOT authz_unknown: the SAR was issued and did
+// answer, so the client can be told to re-ask with a namespace. Reusing
+// authz_unknown (which means the SAR could not be evaluated at all) made
+// this row indistinguishable from a cluster whose authorization endpoint is
+// broken — the same two-meanings-one-code collapse D3 exists to prevent,
+// one level down.
+//
 // The cluster-scoped row is the negative control: nodes is not namespaced,
 // so the same denial there IS real and must stay forbidden. Without that
 // half, "report everything as unknown" would pass.
@@ -1150,8 +1199,8 @@ func TestCapabilities_NamespacedDenialIsUnknownNotForbidden(t *testing.T) {
 		if cap.Authorized != nil {
 			t.Errorf("%s Authorized = %v; want null — a cluster-wide denial on a namespaced resource is not proof this identity cannot act", op, *cap.Authorized)
 		}
-		if cap.ReasonCode != ReasonAuthzUnknown {
-			t.Errorf("%s ReasonCode = %q; want %q", op, cap.ReasonCode, ReasonAuthzUnknown)
+		if cap.ReasonCode != ReasonAuthzNamespaceScoped {
+			t.Errorf("%s ReasonCode = %q; want %q — authz_unknown is reserved for a SAR that could not be evaluated, and this one was", op, cap.ReasonCode, ReasonAuthzNamespaceScoped)
 		}
 	}
 
@@ -1185,19 +1234,24 @@ func TestAuthorizedFromClusterWideSAR(t *testing.T) {
 	clusterScoped := capabilityOp{ID: "cs", AuthResource: "nodes", ClusterScoped: true}
 
 	tests := []struct {
-		name    string
-		op      capabilityOp
-		allowed bool
-		want    *bool
+		name       string
+		op         capabilityOp
+		allowed    bool
+		want       *bool
+		wantReason ReasonCode
 	}{
-		{"namespaced allow implies every namespace", namespaced, true, boolPtr(true)},
-		{"namespaced denial is unknown", namespaced, false, nil},
-		{"cluster-scoped allow", clusterScoped, true, boolPtr(true)},
-		{"cluster-scoped denial is real", clusterScoped, false, boolPtr(false)},
+		{"namespaced allow implies every namespace", namespaced, true, boolPtr(true), ""},
+		// The reason is the load-bearing half of this row: authorized is
+		// null for an un-issuable SAR too, so without a distinct code the
+		// caller cannot tell "ask me with a namespace" from "we could not
+		// ask at all".
+		{"namespaced denial is namespace-scoped, not unknown", namespaced, false, nil, ReasonAuthzNamespaceScoped},
+		{"cluster-scoped allow", clusterScoped, true, boolPtr(true), ""},
+		{"cluster-scoped denial is real", clusterScoped, false, boolPtr(false), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := authorizedFromClusterWideSAR(tt.op, tt.allowed)
+			got, gotReason := authorizedFromClusterWideSAR(tt.op, tt.allowed)
 			switch {
 			case tt.want == nil && got != nil:
 				t.Fatalf("authorized = %v; want nil", *got)
@@ -1205,6 +1259,9 @@ func TestAuthorizedFromClusterWideSAR(t *testing.T) {
 				t.Fatalf("authorized = nil; want %v", *tt.want)
 			case tt.want != nil && *got != *tt.want:
 				t.Fatalf("authorized = %v; want %v", *got, *tt.want)
+			}
+			if gotReason != tt.wantReason {
+				t.Errorf("reason = %q; want %q", gotReason, tt.wantReason)
 			}
 		})
 	}
@@ -1284,25 +1341,47 @@ func withCapabilityClusterGetter(t *testing.T, getter clusterRecordGetter) {
 
 // TestCapabilities_RemoteChainEndToEnd closes review finding #3: because
 // every production row is RemoteSupported: false today, anySupported is
-// false for any remote target and the entire remote chain — target
-// resolution, reachability, discovery, the impersonated SAR — had never
-// executed end to end. cluster_unknown, credentials_invalid, db_unavailable,
-// unreachable and stale_observation were pinned only by direct calls to
-// buildCapability against test-only synthetic rows, which cannot catch a
-// handler that wires those inputs together wrongly.
+// false for any remote target and the remote chain had never executed end
+// to end. db_unavailable, unreachable and stale_observation were pinned only
+// by direct calls to buildCapability against test-only synthetic rows, which
+// cannot catch a handler that wires those inputs together wrongly.
 //
-// This drives REAL production rows (one plain, one GVR-probing) through the
+// It drives REAL production rows (one plain, one GVR-probing) through the
 // real HTTP handler with RemoteSupported temporarily flipped, exactly as
 // U9a/U9b/U10 will flip them for good.
+//
+// WHAT IS COVERED: reachability end to end (registry read failure, stale
+// probe, disconnected cluster, reachable), the discovery dimension, the
+// impersonated SAR on both verdict shapes — and, in the "live target
+// resolution" case, ClusterRouter.TargetSchemaFor ->
+// classifyTargetSchemaErr executing inside the handler for real. Every
+// OTHER case deliberately clears srv.ClusterRouter to exercise A4's narrow
+// nil-router branch, and in those cases TargetSchemaFor never runs.
+//
+// WHAT IS NOT COVERED, stated plainly so no one reads more into this test
+// than it delivers: the live case can only reach classifyTargetSchemaErr's
+// db_unavailable branch, because the router newCapabilitiesTestServer
+// builds holds a nil cluster store. Reaching the cluster_unknown,
+// credentials_invalid or unreachable branches through HTTP needs a router
+// holding a live *store.ClusterStore — a concrete type wrapping an
+// unexported pgx pool, which this package cannot fake and which panics on a
+// nil pool — so those three remain pinned only by TestClassifyTargetSchemaErr
+// against hand-built errors. Do not describe this test as exercising
+// "target resolution" without that qualification.
 func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 	now := time.Now()
 	fresh := now.Add(-30 * time.Second) // inside the 180s freshness window
 	stale := now.Add(-10 * time.Minute) // outside it
 
 	tests := []struct {
-		name           string
-		getter         clusterRecordGetter
-		checker        *resources.AccessChecker
+		name    string
+		getter  clusterRecordGetter
+		checker *resources.AccessChecker
+		// liveRouter keeps the real ClusterRouter wired instead of clearing
+		// it, so TargetSchemaFor actually runs and its error is classified
+		// by the handler rather than by a unit test holding a hand-built
+		// error. See this test's doc comment for the one branch that reaches.
+		liveRouter     bool
 		wantPlain      ReasonCode // yaml.validate — no GVR probe
 		wantProbe      ReasonCode // dashboard.summary — probes core/v1 nodes
 		wantAuthorized bool       // whether yaml.validate's authorized must be non-null
@@ -1350,9 +1429,31 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			}},
 			checker: resources.NewAlwaysDenyAccessChecker(),
 			// yaml.validate probes configmaps (namespaced) — finding #2's
-			// semantics apply on the remote class too.
-			wantPlain: ReasonAuthzUnknown,
+			// semantics apply on the remote class too, and the reason is the
+			// one that says the SAR WAS answered (authz_namespace_scoped),
+			// not the one that says it could not be issued.
+			wantPlain: ReasonAuthzNamespaceScoped,
 			wantProbe: ReasonDiscoveryUnavailable,
+		},
+		{
+			// The one case that leaves the real ClusterRouter wired, so the
+			// handler's own TargetSchemaFor call runs and its error goes
+			// through the real classifyTargetSchemaErr. The router was built
+			// with a nil cluster store, so it fails closed with
+			// requireClusterStore's load-bearing message -> db_unavailable.
+			//
+			// The getter below reports a HEALTHY, freshly-probed cluster on
+			// purpose: a global target-resolution failure outranks
+			// reachability, so this also pins that the handler does not let
+			// a good reachability observation paper over a target it could
+			// not resolve.
+			name:       "live target resolution failure outranks healthy reachability",
+			liveRouter: true,
+			getter: &fakeClusterRecordGetter{rec: &store.ClusterRecord{
+				ID: "remote-1", Status: k8s.StatusConnected.String(), LastProbedAt: &fresh,
+			}},
+			checker:   resources.NewAlwaysAllowAccessChecker(),
+			wantPlain: ReasonDBUnavailable, wantProbe: ReasonDBUnavailable,
 		},
 	}
 
@@ -1367,7 +1468,9 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			// getter, so the nil pool is never touched. ClusterRouter is
 			// cleared to exercise A4's other, narrower branch.
 			srv.ClusterStore = store.NewClusterStore(nil, "test-encryption-key")
-			srv.ClusterRouter = nil
+			if !tt.liveRouter {
+				srv.ClusterRouter = nil
+			}
 
 			token := capabilitiesIssueToken(t, srv, "admin-1", true)
 			w := capabilitiesRequest(t, srv, token, "remote-1", "remote-1")
@@ -1385,6 +1488,9 @@ func TestCapabilities_RemoteChainEndToEnd(t *testing.T) {
 			}
 			if tt.wantAuthorized && (plain.Authorized == nil || !*plain.Authorized) {
 				t.Errorf("yaml.validate Authorized = %v; want true — the impersonated SAR must actually run on the remote branch", plain.Authorized)
+			}
+			if tt.liveRouter && plain.Reachable != nil {
+				t.Errorf("yaml.validate Reachable = %v; want null — the target could not be resolved, so the (healthy) registry observation must not be reported as a verdict", *plain.Reachable)
 			}
 
 			probe := findCapability(t, body, "dashboard.summary")
@@ -1464,4 +1570,201 @@ func TestCapabilities_RemoteTargetResolutionFailureClassified(t *testing.T) {
 	if cap.Reachable != nil {
 		t.Errorf("Reachable = %v; want null — nothing is knowable once the target cannot be resolved", *cap.Reachable)
 	}
+}
+
+// TestCapabilities_UnreachableGlobalReasonReportsReachableFalse pins that a
+// capability row never contradicts itself: reasonCode "unreachable" with
+// reachable null claimed the target does not answer while simultaneously
+// saying we do not know whether it answers, and the OTHER code path that
+// emits the same reason (reach.reachable == false) reports reachable: false
+// — so one wire code described two different row shapes depending on which
+// branch produced it.
+//
+// Latent today only because every production row is RemoteSupported: false,
+// which short-circuits to unsupported_platform before the global-reason
+// branch runs at all; it goes live the moment U9a/U9b/U10 flips one.
+func TestCapabilities_UnreachableGlobalReasonReportsReachableFalse(t *testing.T) {
+	now := time.Now()
+
+	// Not an invented input: this is the exact error shape
+	// ValidateRemoteURLContext's fail-closed lookup produces, and the
+	// handler feeds classifyTargetSchemaErr's verdict straight into
+	// buildCapability as globalReason.
+	dnsFailure := fmt.Errorf("cluster %s URL blocked: %w", "remote-1",
+		fmt.Errorf("DNS resolution failed for %s: %w", "api.example.invalid",
+			&net.DNSError{Err: "no such host", Name: "api.example.invalid", IsNotFound: true}))
+	globalReason := classifyTargetSchemaErr(dnsFailure)
+	if globalReason != ReasonUnreachable {
+		t.Fatalf("classifyTargetSchemaErr = %q; want %q — this test's premise depends on it", globalReason, ReasonUnreachable)
+	}
+
+	viaGlobalReason := buildCapability(syntheticRemoteOp, false, globalReason,
+		reachabilityResult{}, nil, false, nil, nil, "", now)
+	if viaGlobalReason.ReasonCode != ReasonUnreachable {
+		t.Fatalf("ReasonCode = %q; want %q", viaGlobalReason.ReasonCode, ReasonUnreachable)
+	}
+	if viaGlobalReason.Reachable == nil || *viaGlobalReason.Reachable {
+		t.Errorf("Reachable = %v; want false — a row reporting unreachable must not also report that reachability is unknown", viaGlobalReason.Reachable)
+	}
+
+	// The other path to the same reason code. Both must produce the same
+	// wire shape, which is the whole point of the assertion above.
+	viaProbe := buildCapability(syntheticRemoteOp, false, "",
+		reachabilityResult{reachable: boolPtr(false), observedAt: now}, nil, false, nil, nil, "", now)
+	if viaProbe.ReasonCode != viaGlobalReason.ReasonCode {
+		t.Fatalf("probe-path reasonCode = %q; global-reason path = %q", viaProbe.ReasonCode, viaGlobalReason.ReasonCode)
+	}
+	if viaProbe.Reachable == nil || *viaProbe.Reachable {
+		t.Fatalf("probe-path Reachable = %v; want false", viaProbe.Reachable)
+	}
+
+	// The negative control, and the reason this fix is narrow: the other
+	// global reasons are NOT reachability verdicts. cluster_unknown,
+	// credentials_invalid and db_unavailable all mean we never got far
+	// enough to learn whether the target answers, so reachable must stay
+	// null — turning every global reason into reachable: false would invent
+	// a verdict.
+	for _, gr := range []ReasonCode{ReasonClusterUnknown, ReasonCredentialsInvalid, ReasonDBUnavailable} {
+		row := buildCapability(syntheticRemoteOp, false, gr, reachabilityResult{}, nil, false, nil, nil, "", now)
+		if row.ReasonCode != gr {
+			t.Errorf("globalReason %q: ReasonCode = %q; want %q", gr, row.ReasonCode, gr)
+		}
+		if row.Reachable != nil {
+			t.Errorf("globalReason %q: Reachable = %v; want null — %q is not a reachability verdict", gr, *row.Reachable, gr)
+		}
+	}
+}
+
+// TestTruncateForEcho pins that the echoed {clusterID} never has a
+// multi-byte rune cut in half. A plain s[:n] can land mid-sequence;
+// encoding/json then rewrites the orphaned bytes as U+FFFD, so the echoed
+// value silently differs from what the caller sent in a way the
+// "...(truncated)" marker does not account for — the exact
+// misrepresentation this helper exists to prevent.
+func TestTruncateForEcho(t *testing.T) {
+	const marker = "...(truncated)"
+
+	t.Run("short input is returned verbatim", func(t *testing.T) {
+		if got := truncateForEcho("remote-1", 64); got != "remote-1" {
+			t.Errorf("truncateForEcho = %q; want %q", got, "remote-1")
+		}
+	})
+
+	t.Run("ASCII truncates at exactly n bytes", func(t *testing.T) {
+		got := truncateForEcho(strings.Repeat("a", 100), 64)
+		if got != strings.Repeat("a", 64)+marker {
+			t.Errorf("truncateForEcho = %q; want 64 a's plus the marker", got)
+		}
+	})
+
+	t.Run("multi-byte rune is not split", func(t *testing.T) {
+		// "世" is 3 bytes, so a 64-byte cut lands inside the 22nd rune.
+		in := strings.Repeat("世", 40)
+		got := truncateForEcho(in, 64)
+
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncateForEcho produced invalid UTF-8: %q", got)
+		}
+		body := strings.TrimSuffix(got, marker)
+		if body == got {
+			t.Fatalf("truncateForEcho = %q; want the %q marker appended", got, marker)
+		}
+		if !strings.HasPrefix(in, body) {
+			t.Errorf("truncated body %q is not a prefix of the input — bytes the caller never sent were echoed", body)
+		}
+		if len(body) != 63 {
+			t.Errorf("len(body) = %d; want 63 (21 whole 3-byte runes) — the cut falls back to a rune boundary and never past n", len(body))
+		}
+	})
+
+	t.Run("a genuine U+FFFD in the input is preserved", func(t *testing.T) {
+		// The trim must remove only bytes the CUT orphaned. A replacement
+		// character the caller actually sent decodes as a whole 3-byte rune
+		// and must survive, or the helper would be silently eating input.
+		in := strings.Repeat("a", 61) + "�" + strings.Repeat("a", 40)
+		got := truncateForEcho(in, 64)
+		body := strings.TrimSuffix(got, marker)
+		if body != strings.Repeat("a", 61)+"�" {
+			t.Errorf("truncateForEcho body = %q; want the 61 a's plus the caller's own U+FFFD", body)
+		}
+	})
+}
+
+// TestCapabilities_NullableDimensionsAreExplicitJSONNull pins the wire
+// contract frontend/lib/capability-types.ts declares as `boolean | null`.
+//
+// Every other test in this file decodes into the Go Capability struct, where
+// an omitted key and an explicit null both land as a nil *bool — so a stray
+// `,omitempty` on discoveryPresent / reachable / authorized would keep the
+// entire suite green while breaking the TypeScript type (the key disappears,
+// `undefined` is not `boolean | null`, and a consumer destructuring the row
+// gets undefined instead of the null it must render as "unknown"). This test
+// therefore reads the RAW JSON and asserts the keys are present with a
+// literal null.
+func TestCapabilities_NullableDimensionsAreExplicitJSONNull(t *testing.T) {
+	nullable := []string{"discoveryPresent", "reachable", "authorized"}
+
+	// Bare server: no ResourceHandler/AccessChecker (authorized null), no
+	// ClusterRouter (no discovery target), no ClusterStore.
+	srv := testServer(t)
+	token := capabilitiesIssueToken(t, srv, "admin-1", true)
+
+	rawRows := func(t *testing.T, w *httptest.ResponseRecorder) []map[string]json.RawMessage {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200, body=%s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Data struct {
+				Capabilities []map[string]json.RawMessage `json:"capabilities"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode raw response: %v (body=%s)", err, w.Body.String())
+		}
+		if len(body.Data.Capabilities) == 0 {
+			t.Fatalf("no capability rows in %s", w.Body.String())
+		}
+		return body.Data.Capabilities
+	}
+
+	t.Run("remote — all three dimensions null", func(t *testing.T) {
+		// Every production row is RemoteSupported: false, so every row is
+		// unsupported_platform with all three nullable dimensions unset.
+		for _, row := range rawRows(t, capabilitiesRequest(t, srv, token, "remote-42", "remote-42")) {
+			op := string(row["operation"])
+			for _, key := range nullable {
+				raw, ok := row[key]
+				if !ok {
+					t.Errorf("operation %s: key %q is OMITTED; the TypeScript contract is `boolean | null`, so it must be present with an explicit null (check for a stray `,omitempty`)", op, key)
+					continue
+				}
+				if string(raw) != "null" {
+					t.Errorf("operation %s: %q = %s; want null", op, key, raw)
+				}
+			}
+		}
+	})
+
+	t.Run("local — keys stay present alongside a non-null sibling", func(t *testing.T) {
+		// Local is trivially reachable, so `reachable` carries a real value
+		// while the other two stay null. This is the shape that catches an
+		// omitempty added to only one of the three.
+		for _, row := range rawRows(t, capabilitiesRequest(t, srv, token, "local", "")) {
+			op := string(row["operation"])
+			for _, key := range nullable {
+				if _, ok := row[key]; !ok {
+					t.Errorf("operation %s: key %q is OMITTED; want present", op, key)
+				}
+			}
+			if got := string(row["reachable"]); got != "true" {
+				t.Errorf("operation %s: reachable = %s; want true for the local cluster", op, got)
+			}
+			for _, key := range []string{"discoveryPresent", "authorized"} {
+				if got := string(row[key]); got != "null" {
+					t.Errorf("operation %s: %q = %s; want null (no discovery target and no AccessChecker are wired)", op, key, got)
+				}
+			}
+		}
+	})
 }
