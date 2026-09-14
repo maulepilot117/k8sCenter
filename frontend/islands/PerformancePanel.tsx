@@ -234,7 +234,9 @@ export default function PerformancePanel(
   const charts = useSignal<ChartData[]>([]);
   const monAvailable = useSignal<boolean | null>(null);
   const refreshInterval = useSignal(30_000);
-  const intervalRef = useSignal<number | undefined>(undefined);
+  const intervalRef = useSignal<ReturnType<typeof setInterval> | undefined>(
+    undefined,
+  );
 
   function startInterval() {
     if (intervalRef.value) clearInterval(intervalRef.value);

@@ -75,7 +75,7 @@ export function ExternalSecretForm({
   // typing.
   const fetchSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  const debounceHandle = useRef<number | null>(null);
+  const debounceHandle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Shared fetch helper used by both the store-change probe and the debounced
   // typeahead. Cancels any in-flight request via abortRef, increments fetchSeq
