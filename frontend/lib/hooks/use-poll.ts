@@ -1,8 +1,13 @@
 import { useSignal } from "@preact/signals";
 import type { Signal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
-import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
+
+// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
+// this file is shared by both the Fresh tree and the Astro/Bun port, and the
+// bare specifier would otherwise resolve to the always-false test shim under
+// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
+const IS_BROWSER = typeof document !== "undefined";
 
 interface UsePollOptions<T> {
   /** Polling interval in milliseconds. */

@@ -1,7 +1,16 @@
 // Shared signal for the collapsible secondary nav panel.
 // Mirrors the pattern used by lib/namespace.ts (selectedNamespace).
 import { signal } from "@preact/signals";
-import { IS_BROWSER } from "fresh/runtime";
+
+// Inlined rather than imported from "fresh/runtime": this file is shared by
+// both the Fresh tree (frontend/islands/) and the Astro/Bun port
+// (frontend/src/islands/) during the migration, and Astro's tsconfig-paths
+// resolution would otherwise redirect the bare "fresh/runtime" specifier to
+// lib/__shims__/fresh-runtime.ts (hardcoded false, test-only), silently
+// disabling nav-collapse persistence for every ported island. This is the
+// exact expression @fresh/core's own IS_BROWSER uses, so it is a value-
+// neutral substitution for the still-live Fresh app, not a behavior change.
+const IS_BROWSER = typeof document !== "undefined";
 
 const STORAGE_KEY = "kc.navCollapsed";
 

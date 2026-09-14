@@ -1,0 +1,547 @@
+import { useSignal } from "@preact/signals";
+import { useCallback, useRef } from "preact/hooks";
+import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
+import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
+import { apiPost } from "@/lib/api.ts";
+import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
+import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
+import {
+  DNS_LABEL_REGEX,
+  RESTART_POLICY_OPTIONS,
+  WIZARD_INPUT_CLASS,
+} from "@/lib/wizard-constants.ts";
+import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
+import { initialNamespace } from "@/src/lib/namespace.ts";
+
+interface ContainerState {
+  image: string;
+  command: string;
+  args: string;
+  ports: Array<{ containerPort: number; protocol: string }>;
+  envVars: Array<{
+    name: string;
+    value: string;
+    configMapRef: string;
+    secretRef: string;
+    key: string;
+  }>;
+  requestCpu: string;
+  requestMemory: string;
+  limitCpu: string;
+  limitMemory: string;
+}
+
+interface CronJobFormState {
+  name: string;
+  namespace: string;
+  schedulePreset: string;
+  schedule: string;
+  concurrencyPolicy: string;
+  restartPolicy: string;
+  successfulJobsHistoryLimit: string;
+  failedJobsHistoryLimit: string;
+  suspend: boolean;
+  container: ContainerState;
+}
+
+const STEPS: WizardStep[] = [
+  { label: "Schedule", sub: "Name & cron expression" },
+  { label: "Container", sub: "Image & resources" },
+  { label: "Review", sub: "Preview & apply" },
+];
+
+const SCHEDULE_PRESETS: { label: string; value: string }[] = [
+  { label: "Every hour", value: "0 * * * *" },
+  { label: "Daily midnight", value: "0 0 * * *" },
+  { label: "Weekly Sunday", value: "0 0 * * 0" },
+  { label: "Custom", value: "" },
+];
+
+const CONCURRENCY_OPTIONS = [
+  { value: "Allow", label: "Allow" },
+  { value: "Forbid", label: "Forbid" },
+  { value: "Replace", label: "Replace" },
+];
+
+function cronToHuman(cron: string): string {
+  const trimmed = cron.trim();
+  if (trimmed === "0 * * * *") return "Every hour, at minute 0";
+  if (trimmed === "0 0 * * *") return "Every day at midnight";
+  if (trimmed === "0 0 * * 0") return "Every Sunday at midnight";
+  if (!trimmed) return "";
+  return `Cron: ${trimmed}`;
+}
+
+function initialState(): CronJobFormState {
+  const ns = initialNamespace();
+  return {
+    name: "",
+    namespace: ns,
+    schedulePreset: "0 0 * * *",
+    schedule: "0 0 * * *",
+    concurrencyPolicy: "Allow",
+    restartPolicy: "Never",
+    successfulJobsHistoryLimit: "3",
+    failedJobsHistoryLimit: "1",
+    suspend: false,
+    container: {
+      image: "",
+      command: "",
+      args: "",
+      ports: [],
+      envVars: [],
+      requestCpu: "",
+      requestMemory: "",
+      limitCpu: "",
+      limitMemory: "",
+    },
+  };
+}
+
+const CRONJOB_ICON = (
+  <svg
+    width="21"
+    height="21"
+    viewBox="0 0 20 20"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect x="2.5" y="4" width="15" height="13.5" rx="2" />
+    <path d="M2.5 8.5h15M6.5 2.5v3M13.5 2.5v3" />
+    <path d="M6 12h2.5l1.5-2 1.5 4 1-2H14" />
+  </svg>
+);
+
+export default function CronJobWizard({ onClose }: { onClose?: () => void }) {
+  const close = onClose ?? (() => globalThis.history.back());
+  const currentStep = useSignal(0);
+  const form = useSignal<CronJobFormState>(initialState());
+  const errors = useSignal<Record<string, string>>({});
+  const dirty = useSignal(false);
+
+  const namespaces = useNamespaces();
+
+  const previewYaml = useSignal("");
+  const previewLoading = useSignal(false);
+  const previewError = useSignal<string | null>(null);
+  const previewGen = useRef(0);
+
+  useDirtyGuard(dirty);
+
+  const updateField = useCallback((field: string, value: unknown) => {
+    dirty.value = true;
+    form.value = { ...form.value, [field]: value };
+  }, []);
+
+  const updateContainerField = useCallback((field: string, value: unknown) => {
+    dirty.value = true;
+    form.value = {
+      ...form.value,
+      container: { ...form.value.container, [field]: value },
+    };
+  }, []);
+
+  const validateStep0 = (): boolean => {
+    const f = form.value;
+    const errs: Record<string, string> = {};
+
+    if (!f.name || !DNS_LABEL_REGEX.test(f.name)) {
+      errs.name =
+        "Must be lowercase alphanumeric with hyphens, 1-63 characters";
+    }
+    if (!f.namespace) errs.namespace = "Required";
+    if (!f.schedule.trim()) errs.schedule = "Required";
+
+    errors.value = errs;
+    return Object.keys(errs).length === 0;
+  };
+
+  const validateStep1 = (): boolean => {
+    const f = form.value;
+    const errs: Record<string, string> = {};
+
+    if (!f.container.image) errs.image = "Required";
+
+    errors.value = errs;
+    return Object.keys(errs).length === 0;
+  };
+
+  const goNext = async () => {
+    if (currentStep.value === 0) {
+      if (!validateStep0()) return;
+      currentStep.value = 1;
+    } else if (currentStep.value === 1) {
+      if (!validateStep1()) return;
+      currentStep.value = 2;
+      await fetchPreview();
+    }
+  };
+
+  const fetchPreview = async () => {
+    const gen = ++previewGen.current;
+    previewLoading.value = true;
+    previewError.value = null;
+
+    const f = form.value;
+
+    // Build container payload matching backend ContainerInput
+    const container: Record<string, unknown> = {
+      image: f.container.image,
+    };
+
+    // Command: split comma-separated string into array
+    if (f.container.command.trim()) {
+      container.command = f.container.command.split(/\s+/).filter(Boolean);
+    }
+    if (f.container.args.trim()) {
+      container.args = f.container.args
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+
+    // Ports
+    const ports = f.container.ports.filter((p) => p.containerPort > 0);
+    if (ports.length > 0) container.ports = ports;
+
+    // Env vars: convert to backend format
+    const envVars = f.container.envVars
+      .filter((e) => e.name)
+      .map((e) => {
+        if (e.configMapRef) {
+          return { name: e.name, configMapRef: e.configMapRef, key: e.key };
+        }
+        if (e.secretRef) {
+          return { name: e.name, secretRef: e.secretRef, key: e.key };
+        }
+        return { name: e.name, value: e.value };
+      });
+    if (envVars.length > 0) container.envVars = envVars;
+
+    // Resources
+    if (
+      f.container.requestCpu ||
+      f.container.requestMemory ||
+      f.container.limitCpu ||
+      f.container.limitMemory
+    ) {
+      container.resources = {
+        requestCpu: f.container.requestCpu || undefined,
+        requestMemory: f.container.requestMemory || undefined,
+        limitCpu: f.container.limitCpu || undefined,
+        limitMemory: f.container.limitMemory || undefined,
+      };
+    }
+
+    const payload: Record<string, unknown> = {
+      name: f.name,
+      namespace: f.namespace,
+      schedule: f.schedule,
+      container,
+      restartPolicy: f.restartPolicy,
+      concurrencyPolicy: f.concurrencyPolicy,
+      suspend: f.suspend,
+    };
+
+    // History limits
+    const successLimit = parseInt(f.successfulJobsHistoryLimit, 10);
+    if (!Number.isNaN(successLimit) && successLimit >= 0) {
+      payload.successfulJobsHistoryLimit = successLimit;
+    }
+    const failLimit = parseInt(f.failedJobsHistoryLimit, 10);
+    if (!Number.isNaN(failLimit) && failLimit >= 0) {
+      payload.failedJobsHistoryLimit = failLimit;
+    }
+
+    try {
+      const resp = await apiPost<{ yaml: string }>(
+        "/v1/wizards/cronjob/preview",
+        payload,
+      );
+      if (gen !== previewGen.current) return;
+      previewYaml.value = resp.data.yaml;
+    } catch (err) {
+      if (gen !== previewGen.current) return;
+      previewError.value =
+        err instanceof Error ? err.message : "Failed to generate preview";
+    } finally {
+      if (gen === previewGen.current) previewLoading.value = false;
+    }
+  };
+
+  const manifest = () => {
+    const f = form.value;
+    const name = f.name || "<name>";
+    const ns = f.namespace || "default";
+    return `apiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: ${name}\n  namespace: ${ns}\nspec:\n  schedule: "${
+      f.schedule || "0 0 * * *"
+    }"\n  concurrencyPolicy: ${f.concurrencyPolicy}\n  suspend: ${f.suspend}\n  jobTemplate:\n    spec:\n      template:\n        spec:\n          restartPolicy: ${f.restartPolicy}\n          containers:\n            - name: ${name}\n              image: ${
+      f.container.image || "<image>"
+    }`;
+  };
+
+  const nextLabel = currentStep.value === 2 ? "Close" : "Continue";
+
+  const handleNext = () => {
+    if (currentStep.value === 2) {
+      close();
+    } else {
+      goNext();
+    }
+  };
+
+  return (
+    <WizardShell
+      title="Create CronJob"
+      icon={CRONJOB_ICON}
+      subtitle="Schedule recurring jobs"
+      steps={STEPS}
+      current={currentStep.value}
+      onStep={(i) => {
+        if (i < currentStep.value) currentStep.value = i;
+      }}
+      onCancel={close}
+      onBack={() => {
+        if (currentStep.value > 0) currentStep.value = currentStep.value - 1;
+      }}
+      onNext={handleNext}
+      nextLabel={nextLabel}
+      yaml={currentStep.value === 2 ? undefined : manifest()}
+    >
+      {/* Step 0: Basics & Schedule */}
+      {currentStep.value === 0 && (
+        <div class="mx-auto max-w-lg space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Name <span class="text-error">*</span>
+            </label>
+            <input
+              type="text"
+              value={form.value.name}
+              onInput={(e) =>
+                updateField("name", (e.target as HTMLInputElement).value)
+              }
+              class={WIZARD_INPUT_CLASS}
+              placeholder="e.g. data-cleanup"
+            />
+            {errors.value.name && (
+              <p class="mt-1 text-xs text-error">{errors.value.name}</p>
+            )}
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Namespace <span class="text-error">*</span>
+            </label>
+            <select
+              value={form.value.namespace}
+              onChange={(e) =>
+                updateField("namespace", (e.target as HTMLSelectElement).value)
+              }
+              class={WIZARD_INPUT_CLASS}
+            >
+              {namespaces.value.map((ns) => (
+                <option key={ns} value={ns}>
+                  {ns}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Schedule with presets */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Schedule <span class="text-error">*</span>
+            </label>
+            <div class="mt-2 flex flex-wrap gap-2">
+              {SCHEDULE_PRESETS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    if (preset.value) {
+                      updateField("schedule", preset.value);
+                      updateField("schedulePreset", preset.value);
+                    } else {
+                      updateField("schedulePreset", "");
+                    }
+                  }}
+                  class={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                    (
+                      preset.value && form.value.schedulePreset === preset.value
+                    ) || (!preset.value && form.value.schedulePreset === "")
+                      ? "border-brand bg-brand/10 text-brand font-medium"
+                      : "border-border-primary text-text-muted hover:border-border-primary"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            {form.value.schedulePreset === "" && (
+              <input
+                type="text"
+                value={form.value.schedule}
+                onInput={(e) =>
+                  updateField("schedule", (e.target as HTMLInputElement).value)
+                }
+                class={`${WIZARD_INPUT_CLASS} mt-2`}
+                placeholder="e.g. */5 * * * *"
+              />
+            )}
+            {form.value.schedule && (
+              <p class="mt-1 text-xs text-text-muted">
+                {cronToHuman(form.value.schedule)}
+              </p>
+            )}
+            {errors.value.schedule && (
+              <p class="mt-1 text-xs text-error">{errors.value.schedule}</p>
+            )}
+          </div>
+
+          {/* Concurrency Policy */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Concurrency Policy
+            </label>
+            <select
+              value={form.value.concurrencyPolicy}
+              onChange={(e) =>
+                updateField(
+                  "concurrencyPolicy",
+                  (e.target as HTMLSelectElement).value,
+                )
+              }
+              class={WIZARD_INPUT_CLASS}
+            >
+              {CONCURRENCY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p class="mt-1 text-xs text-text-muted">
+              {form.value.concurrencyPolicy === "Allow" &&
+                "Multiple jobs can run concurrently."}
+              {form.value.concurrencyPolicy === "Forbid" &&
+                "Skip new run if previous job is still running."}
+              {form.value.concurrencyPolicy === "Replace" &&
+                "Cancel the running job and start a new one."}
+            </p>
+          </div>
+
+          {/* Restart Policy */}
+          <div>
+            <label class="block text-sm font-medium text-text-secondary">
+              Restart Policy
+            </label>
+            <select
+              value={form.value.restartPolicy}
+              onChange={(e) =>
+                updateField(
+                  "restartPolicy",
+                  (e.target as HTMLSelectElement).value,
+                )
+              }
+              class={WIZARD_INPUT_CLASS}
+            >
+              {RESTART_POLICY_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* History limits */}
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-sm font-medium text-text-secondary">
+                Successful History
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={form.value.successfulJobsHistoryLimit}
+                onInput={(e) =>
+                  updateField(
+                    "successfulJobsHistoryLimit",
+                    (e.target as HTMLInputElement).value,
+                  )
+                }
+                class={WIZARD_INPUT_CLASS}
+              />
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-text-secondary">
+                Failed History
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={form.value.failedJobsHistoryLimit}
+                onInput={(e) =>
+                  updateField(
+                    "failedJobsHistoryLimit",
+                    (e.target as HTMLInputElement).value,
+                  )
+                }
+                class={WIZARD_INPUT_CLASS}
+              />
+            </div>
+          </div>
+
+          {/* Suspend toggle */}
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={form.value.suspend}
+              onChange={(e) =>
+                updateField("suspend", (e.target as HTMLInputElement).checked)
+              }
+              class="rounded border-border-primary"
+            />
+            <span class="text-sm text-text-secondary">
+              Create suspended (will not run until resumed)
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Step 1: Container */}
+      {currentStep.value === 1 && (
+        <ContainerForm
+          image={form.value.container.image}
+          command={form.value.container.command}
+          args={form.value.container.args}
+          ports={form.value.container.ports}
+          envVars={form.value.container.envVars}
+          requestCpu={form.value.container.requestCpu}
+          requestMemory={form.value.container.requestMemory}
+          limitCpu={form.value.container.limitCpu}
+          limitMemory={form.value.container.limitMemory}
+          errors={errors.value}
+          onChange={updateContainerField}
+        />
+      )}
+
+      {/* Step 2: Review */}
+      {currentStep.value === 2 && (
+        <WizardReviewStep
+          yaml={previewYaml.value}
+          onYamlChange={(v) => {
+            previewYaml.value = v;
+          }}
+          loading={previewLoading.value}
+          error={previewError.value}
+          detailBasePath="/workloads/cronjobs"
+        />
+      )}
+    </WizardShell>
+  );
+}

@@ -1,0 +1,81 @@
+---
+import PropProbe from "../dev-harness/PropProbe.tsx";
+// Render-branch IS_BROWSER islands (return null during SSR, real content
+// only once IS_BROWSER flips true post-hydration).
+import AuthProviderButtons from "../islands/AuthProviderButtons.tsx";
+// A prop-carrying island, matching the shape of real route call sites
+// (string props only, per the U9 call-site sweep below).
+import CertificateDetail from "../islands/CertificateDetail.tsx";
+import CertificatesList from "../islands/CertificatesList.tsx";
+import ClusterSwitcher from "../islands/ClusterSwitcher.tsx";
+// A large-but-uniform island (per the unit brief: size alone doesn't move
+// DashboardV2/ResourceTable/CRDResourceList/IngressWizard out of U9).
+import DashboardV2 from "../islands/DashboardV2.tsx";
+// Effect-guard IS_BROWSER islands (guard is inside a useEffect; SSR output
+// is real markup either way).
+import ThemeToggle from "../islands/ThemeToggle.tsx";
+// Throwaway harness — mounts a curated set of ported islands, each with
+// client:load, outside the real route tree (no real page imports them yet;
+// U8 authors the production directives two units later). Astro only
+// renders/hydrates a component that some page actually imports, so without
+// this page U9/U13/U14 have no way to observe their own islands' SSR output
+// or hydration behavior.
+//
+// Location: frontend/src/pages/u9-harness.astro (this file), plus its one
+// dev-only helper at frontend/src/dev-harness/PropProbe.tsx. U13 and U14
+// add sections here for their own islands rather than building their own
+// harness. U8 deletes both once real pages mount these islands for real.
+//
+// Deliberately built on BaseLayout, not ChromeLayout — ChromeLayout's own
+// eight chrome islands (IconRail, SecondaryNav, TopBarV2, AlertBanner,
+// ToastProvider, KeyboardShortcuts, CommandPalette, QuickActionsFab) are
+// already exercised on every page through frontend/src/pages/index.astro;
+// this page isolates a sample of the other 133 so a chrome-island bug and a
+// body-island bug are never conflated.
+//
+// NOTE: do not run `biome check --write --unsafe` against this (or any)
+// .astro file — its noUnusedImports/noUnusedVariables fixer does not see
+// template usage below the frontmatter fence and will delete every import
+// here and rename every const, as it did once already during this unit.
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+// Synthetic prop payload for the HTML-metacharacter / XSS test scenario —
+// exercised through CertificateDetail's namespace/name props, the same
+// shape every real route call site uses today (confirmed by grep across
+// frontend/routes: every island prop passed from a route is a string,
+// number, or null — none is a Date, Map, function, class instance, or
+// signal). See this unit's report for the full sweep.
+const dangerousNamespace = '"><img src=x onerror=alert(1)>';
+const dangerousName = "<script>alert('xss')</script>";
+---
+<BaseLayout title="U9 island harness">
+  <main style="padding:24px;color:#e5e7eb;background:#05080f;min-height:100vh">
+    <h1>U9 island harness (dev-only, deleted by U8)</h1>
+
+    <h2>Render-branch IS_BROWSER (returns null during SSR)</h2>
+    <AuthProviderButtons client:load />
+    <CertificatesList client:load />
+
+    <h2>Effect-guard IS_BROWSER (real SSR markup, effect gated)</h2>
+    <ThemeToggle client:load />
+    <ClusterSwitcher client:load />
+
+    <h2>Large uniform island</h2>
+    <DashboardV2 client:load />
+
+    <h2>HTML-metacharacter prop (namespace/name, matches real call sites)</h2>
+    <CertificateDetail
+      client:load
+      namespace={dangerousNamespace}
+      name={dangerousName}
+    />
+
+    <h2>Prop serialization: Date / Map / dangerous string</h2>
+    <PropProbe
+      client:load
+      createdAt={new Date("2026-09-14T08:50:00Z")}
+      labels={new Map([["app", "k8scenter"], ["tier", "backend"]])}
+      dangerousName={dangerousName}
+    />
+  </main>
+</BaseLayout>

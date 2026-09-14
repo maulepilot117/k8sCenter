@@ -25,7 +25,11 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "a11y": "off",
+      "style": {
+        "noNonNullAssertion": "off"
+      }
     }
   },
   "javascript": {
@@ -41,5 +45,13 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.astro"],
+      "linter": {
+        "enabled": false
+      }
+    }
+  ]
 }

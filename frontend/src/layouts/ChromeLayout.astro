@@ -1,4 +1,12 @@
 ---
+import AlertBanner from "../islands/AlertBanner.tsx";
+import CommandPalette from "../islands/CommandPalette.tsx";
+import IconRail from "../islands/IconRail.tsx";
+import KeyboardShortcuts from "../islands/KeyboardShortcuts.tsx";
+import QuickActionsFab from "../islands/QuickActionsFab.tsx";
+import SecondaryNav from "../islands/SecondaryNav.tsx";
+import ToastProvider from "../islands/ToastProvider.tsx";
+import TopBarV2 from "../islands/TopBarV2.tsx";
 import { shouldBypassChrome } from "../lib/chrome-bypass.ts";
 // Three-pane shell, ported from frontend/routes/_layout.tsx: icon rail
 // (domains) | collapsible secondary nav (grouped children) | content. The
@@ -6,16 +14,18 @@ import { shouldBypassChrome } from "../lib/chrome-bypass.ts";
 // island flips to 0px when collapsed (see lib/nav.ts). Collapse is
 // instant — no CSS transition on the grid track (per design spec).
 //
-// Scope note (U7): the eight chrome islands this layout mounts —
-// AlertBanner, CommandPalette, IconRail, KeyboardShortcuts,
-// QuickActionsFab, SecondaryNav, ToastProvider, TopBarV2 — do not exist
-// under frontend/src/ yet (U9 ports them). Each slot below is a
-// `U9-ISLAND-SLOT:` comment marker in the exact position the real island
-// call site belongs; U9 replaces the marker with the real import + JSX,
-// nothing else in this file's structure should need to change. Do NOT
-// import from frontend/islands/ here — those files still import
-// `fresh/runtime`, which tsconfig.json only redirects for `bun test`
-// (IS_BROWSER hardcoded false), not for real rendering.
+// U9: the eight chrome islands now live under frontend/src/islands/ (ported
+// from frontend/islands/ along with the other 133 uniform islands) and are
+// imported directly here, each with client:load — KTD4 requires every
+// island hydrate eagerly, and this layout (not a page) is the one place U9
+// authors the directive itself, since U8 never reaches it.
+//
+// NOTE: biome's `--unsafe` noUnusedImports/noUnusedVariables fixer does not
+// understand Astro's frontmatter-vs-template split — it deleted every
+// import below (and renamed `bypass` to `_bypass`) as "unused" because it
+// only sees the fenced frontmatter, not the template's JSX usage. Do not
+// run `biome check --write --unsafe` against .astro files; every import
+// and binding here IS used, in the template below the second `---`.
 import BaseLayout from "./BaseLayout.astro";
 
 interface Props {
@@ -35,17 +45,17 @@ const bypass = shouldBypassChrome(pathname);
     >
       {/* Icon rail — full height, column 1 */}
       <div style="grid-column:1;grid-row:1 / -1;display:flex">
-        <!-- U9-ISLAND-SLOT: IconRail client:load currentPath={pathname} -->
+        <IconRail client:load currentPath={pathname} />
       </div>
 
       {/* Secondary nav — full height, collapsible, column 2 */}
       <div style="grid-column:2;grid-row:1 / -1;display:flex;overflow:hidden">
-        <!-- U9-ISLAND-SLOT: SecondaryNav client:load currentPath={pathname} -->
+        <SecondaryNav client:load currentPath={pathname} />
       </div>
 
       {/* Top bar — overlays content column (column 3, row 1) */}
       <div style="grid-column:3;grid-row:1;z-index:50;position:relative">
-        <!-- U9-ISLAND-SLOT: TopBarV2 client:load -->
+        <TopBarV2 client:load />
       </div>
 
       {/* Main content — scrolls under the bar (column 3, rows 1/-1) */}
@@ -53,14 +63,14 @@ const bypass = shouldBypassChrome(pathname);
         class="page-enter"
         style="grid-column:3;grid-row:1 / -1;min-width:0;overflow-y:auto;overflow-x:hidden;padding:calc(var(--topbar-height, 56px) + var(--content-padding, 24px)) var(--content-padding, 24px) var(--content-padding, 24px)"
       >
-        <!-- U9-ISLAND-SLOT: AlertBanner client:load -->
+        <AlertBanner client:load />
         <slot />
       </main>
 
-      <!-- U9-ISLAND-SLOT: ToastProvider client:load -->
-      <!-- U9-ISLAND-SLOT: KeyboardShortcuts client:load -->
-      <!-- U9-ISLAND-SLOT: CommandPalette client:load -->
-      <!-- U9-ISLAND-SLOT: QuickActionsFab client:load -->
+      <ToastProvider client:load />
+      <KeyboardShortcuts client:load />
+      <CommandPalette client:load />
+      <QuickActionsFab client:load />
     </div>
   )}
 </BaseLayout>
