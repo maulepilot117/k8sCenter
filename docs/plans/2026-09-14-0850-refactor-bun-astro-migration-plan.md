@@ -824,6 +824,7 @@ The frontend is one component, but three contracts cross its edge and this migra
 1. Delete the Fresh tree and its shell files only after the production soak in Operational Notes closes clean — not merely after CI goes green. Both trees coexisting is the parity mechanism KTD12 depends on, and deleting it the moment CI passes discards that mechanism before production has exercised the surfaces CI does not reach. The tree costs nothing sitting idle for a week.
 1b. Run the visual spot-check across the 49 navigation-reachable pages (KTD14) before deleting. It can only run while both trees exist.
 2. Sweep for `deno`, `jsr:` and `Deno.` across the repo. Prose in historical plans and session logs stays; live references must be gone.
+2b. Re-home the two parity tests that read the Fresh tree. U7 proves the anti-flash script and the error copy byte-identical by opening `frontend/routes/_app.tsx` and `_error.tsx` directly, which is the right check while both trees exist and a broken test the moment this unit deletes them. Freeze the expected strings as fixtures in the same pull request that removes the tree, so the assertion survives as a regression guard rather than disappearing with its source.
 3. Remove the Windows `resolve.alias` workaround, which existed only to stop Vite resolving an unrelated npm package named `fresh`. Confirm no equivalent ancestor-walk problem resurfaces under Bun resolution on Windows.
 4. Update the stale comment in `frontend/lib/constants.ts` that describes the Fresh BFF proxy.
 

@@ -133,3 +133,39 @@ test("createRequestListener falls through to astroHandler when nothing else clai
   // Headers must already be set before Astro ever runs (KTD3).
   expect(res.headers.has("Content-Security-Policy")).toBe(true);
 });
+
+test("createRequestListener rewrites the KTD11 cluster-scoped CRD path before handing off to astroHandler", () => {
+  let seenUrl: string | undefined;
+  const listener = createRequestListener({
+    astroHandler: (req) => {
+      seenUrl = req.url;
+    },
+    serveStatic: () => false,
+  });
+  const { req, res } = makeFakeReqRes({
+    method: "GET",
+    url: "/extensions/cert-manager.io/certificates/_/my-cert?tab=yaml",
+  });
+  // biome-ignore lint/suspicious/noExplicitAny: minimal fakes
+  listener(req as any, res as any);
+  expect(seenUrl).toBe(
+    "/extensions/cert-manager.io/certificates/cluster-scoped/my-cert?tab=yaml",
+  );
+});
+
+test("createRequestListener leaves an ordinary page path untouched by the KTD11 rewrite", () => {
+  let seenUrl: string | undefined;
+  const listener = createRequestListener({
+    astroHandler: (req) => {
+      seenUrl = req.url;
+    },
+    serveStatic: () => false,
+  });
+  const { req, res } = makeFakeReqRes({
+    method: "GET",
+    url: "/workloads/pods?namespace=default",
+  });
+  // biome-ignore lint/suspicious/noExplicitAny: minimal fakes
+  listener(req as any, res as any);
+  expect(seenUrl).toBe("/workloads/pods?namespace=default");
+});

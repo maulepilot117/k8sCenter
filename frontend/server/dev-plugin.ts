@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { dispatchApi, rejectMalformed } from "./dispatch.ts";
 import { applySecurityHeaders } from "./headers.ts";
+import { applyClusterScopedCrdRewrite } from "./rewrites.ts";
 import { attachWsProxy, handleWsHttpRequest } from "./ws-proxy.ts";
 
 /**
@@ -39,6 +40,7 @@ export function bunServerDevPlugin(): Plugin {
           if (rejectMalformed(req, res)) return;
           if (handleWsHttpRequest(req, res)) return;
           if (dispatchApi(req, res)) return;
+          applyClusterScopedCrdRewrite(req);
           next();
         },
       );

@@ -1,0 +1,19 @@
+---
+// Not auto-routed by Astro (only 404 and 500 are). Reached exclusively via
+// `context.rewrite("/403")` from src/middleware.ts, when a page's response
+// carries a 403 status — the "Access denied" branch of
+// frontend/routes/_error.tsx's HttpError check. The address bar still
+// shows the original URL (Astro.rewrite preserves it); Astro.url.pathname
+// below reflects that original URL, not "/403".
+//
+// x-rendered-error-surface is middleware.ts's re-entry guard: this page's
+// own (legitimate) 403 status must not be rewritten again.
+import ChromeLayout from "../layouts/ChromeLayout.astro";
+import ErrorSurface from "../layouts/ErrorSurface.astro";
+
+Astro.response.status = 403;
+Astro.response.headers.set("x-rendered-error-surface", "1");
+---
+<ChromeLayout title="k8sCenter — Access denied">
+  <ErrorSurface status={403} />
+</ChromeLayout>

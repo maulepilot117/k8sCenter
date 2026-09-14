@@ -1,0 +1,55 @@
+---
+// Shared error-surface body, ported from frontend/routes/_error.tsx's
+// return JSX. src/pages/404.astro, 403.astro and 500.astro each render
+// this with their own status; keeping the markup in one place is what
+// guarantees the three surfaces can't drift from each other visually.
+//
+// The Retry / Go Back / Dashboard actions and their href values are
+// unchanged from the original: Retry re-requests the current (failing)
+// URL, Go Back uses history.back(), Dashboard goes to "/".
+import { ERROR_COPY } from "../lib/error-copy.ts";
+
+interface Props {
+  status: 404 | 403 | 500;
+}
+
+const { status } = Astro.props;
+const copy = ERROR_COPY[String(status) as "404" | "403" | "500"];
+const currentPath = Astro.url.pathname;
+---
+<div class="flex min-h-full items-center justify-center p-6">
+  <div class="text-center">
+    <p class="text-6xl font-bold text-text-muted">
+      {copy.status}
+    </p>
+    <h1 class="mt-4 text-xl font-semibold text-text-primary">
+      {copy.heading}
+    </h1>
+    <p class="mt-2 text-sm text-text-secondary">
+      {copy.description}
+    </p>
+    <div class="mt-6 flex items-center justify-center gap-3">
+      {copy.showRetry && (
+        <a
+          href={currentPath}
+          class="inline-flex items-center rounded-md bg-brand px-4 py-2 text-sm font-medium shadow-sm hover:bg-brand/90"
+          style="color: var(--bg-base)"
+        >
+          Retry
+        </a>
+      )}
+      <a
+        href="javascript:history.back()"
+        class="inline-flex items-center rounded-md border border-border-primary bg-surface px-4 py-2 text-sm font-medium text-text-secondary shadow-sm hover:bg-hover"
+      >
+        Go Back
+      </a>
+      <a
+        href="/"
+        class="inline-flex items-center rounded-md border border-border-primary bg-surface px-4 py-2 text-sm font-medium text-text-secondary shadow-sm hover:bg-hover"
+      >
+        Dashboard
+      </a>
+    </div>
+  </div>
+</div>

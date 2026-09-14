@@ -20,7 +20,19 @@
     "**/.astro/*",
     "**/dist/*",
     "astro.config.mjs",
-    "server/*"
+    "server/*",
+    // U7: frontend/src/ is the Astro/Bun side of the migration (routes,
+    // islands, components, lib etc. stay the deno-checked parity tree
+    // until U12). src/middleware.ts imports `astro:middleware`, a virtual
+    // module `deno check` cannot resolve types for (TS7006, implicit
+    // `any` on both handler params) -- the same "no Deno equivalent"
+    // reasoning as the "server/*" entry above. The plain .ts files also
+    // under src/ today (src/lib/*) happen to be Deno-compatible, but
+    // every future file added here through U8/U9/U13/U14 is Astro/Bun-
+    // only by construction, so the whole tree is excluded once rather
+    // than patched file-by-file each unit. astro check (via tsconfig.json's
+    // `"include": ["src", ...]`) is what actually type-checks src/ now.
+    "src/*"
   ],
   "imports": {
     "@/": "./",

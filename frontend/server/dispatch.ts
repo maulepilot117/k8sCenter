@@ -9,6 +9,7 @@ import {
   handleOIDCTokenExchange,
   OIDC_TOKEN_EXCHANGE_PATH,
 } from "./oidc-token-exchange.ts";
+import { applyClusterScopedCrdRewrite } from "./rewrites.ts";
 import { handleWsHttpRequest } from "./ws-proxy.ts";
 
 /**
@@ -97,7 +98,14 @@ export function dispatchApi(
 /**
  * Composes the full non-upgrade dispatch chain used by the built server
  * (prod.ts). Order matters and is the point of this function: headers ->
- * malformed guard -> /ws 426 -> API proxy -> static -> Astro.
+ * malformed guard -> /ws 426 -> API proxy -> static -> KTD11 rewrite ->
+ * Astro.
+ *
+ * The KTD11 rewrite runs after the static/API branches (neither can match
+ * a page path like `/extensions/...`) and right before the Astro
+ * fallthrough, mutating `req.url` in place so Astro's router sees the
+ * routable target instead of the literal `_` segment it would refuse to
+ * match. See rewrites.ts for why this is a rewrite and not a redirect.
  */
 export function createRequestListener(
   options: RequestListenerOptions,
@@ -110,6 +118,7 @@ export function createRequestListener(
     if (dispatchApi(req, res, options.apiProxyOptions)) return;
     if (options.serveStatic(req, res)) return;
 
+    applyClusterScopedCrdRewrite(req);
     void options.astroHandler(req, res);
   };
 }

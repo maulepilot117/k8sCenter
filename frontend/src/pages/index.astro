@@ -1,9 +1,11 @@
 ---
-// Placeholder only. U5 needs *something* at "/" to prove the dispatch chain
-// end to end (GET / returns a success status, and exercises the Astro
-// fallthrough after the headers/ws/static branches). U7 replaces this with
-// the real application shell and layout -- no real page content belongs
-// here.
+// Still a placeholder for the real dashboard page (frontend/routes/index.tsx),
+// which U8 ports. What changed in U7: this now exercises the real shell —
+// BaseLayout's anti-flash script and ChromeLayout's chrome/bypass logic —
+// end to end through a real build, rather than the bare <p> U5 needed only
+// to prove the dispatch chain reached Astro at all.
+import ChromeLayout from "../layouts/ChromeLayout.astro";
 ---
-
-<p>k8sCenter — placeholder page (replaced by U7).</p>
+<ChromeLayout title="k8sCenter">
+  <p>k8sCenter — placeholder page (replaced by U8).</p>
+</ChromeLayout>
