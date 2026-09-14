@@ -298,6 +298,18 @@ Credentials: provided by the operator at setup time. See `helm/kubecenter/values
 - [ ] Audit log captures all writes and secret accesses
 - [ ] CSP headers prevent XSS
 - [ ] Trivy scans images before GHCR push
+- [ ] **The frontend pod has no environment variable, volume, or secret beyond
+      `BACKEND_URL` (R17).** The Bun runtime has no equivalent to Deno's
+      `--allow-env` / `--allow-read`, so what a compromised frontend dependency
+      can read is bounded by what the pod is given, not by the runtime. The
+      compensating control is the frontend NetworkPolicy's egress rule
+      (kube-dns and the backend pod only), which `networkPolicy.enabled`
+      must stay true for. CODEOWNERS gates the Deployment template so this is
+      reviewed rather than assumed; see `docs/solutions/frontend-bun-image.md`.
+- [ ] **`enableServiceLinks: false` on the frontend pod (R20).** Kubernetes
+      otherwise injects a host and port variable for every Service in the
+      namespace, which the lost `--allow-env` allowlist used to make
+      unreadable.
 
 ---
 

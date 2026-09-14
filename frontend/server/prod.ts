@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequestListener } from "./dispatch.ts";
 import { createStaticHandler } from "./static.ts";
 import { attachWsProxy } from "./ws-proxy.ts";
@@ -13,6 +13,26 @@ import { attachWsProxy } from "./ws-proxy.ts";
  * (U5 step 4). Port 8000 by default, matching the Helm contract (R13).
  */
 
+/**
+ * Where `dist/` lives at runtime.
+ *
+ * Under `bun run server/prod.ts` that is one directory up from this file, and
+ * `import.meta.url` finds it. Under the compiled launcher it is not: U10 ships
+ * this entry through `bun build --compile`, whose `import.meta.url` points at
+ * a virtual path inside the binary (`/$bunfs/...`) with no `dist/` beside it.
+ * The same lookup is why KTD6 cannot compile the whole server — `@astrojs/node`
+ * walks `import.meta.url` for its own asset directory and finds nothing.
+ *
+ * So the container passes the real root explicitly and the source tree keeps
+ * working unchanged. Both paths are exercised: `bun run start` locally, the
+ * binary in the image.
+ */
+function getAppRoot(): string {
+  const fromEnv = process.env.K8SCENTER_APP_ROOT;
+  if (fromEnv) return fromEnv;
+  return join(fileURLToPath(new URL(".", import.meta.url)), "..");
+}
+
 function getPort(): number {
   const raw = process.env.PORT;
   const parsed = raw ? Number(raw) : Number.NaN;
@@ -20,12 +40,16 @@ function getPort(): number {
 }
 
 async function main() {
-  const here = fileURLToPath(new URL(".", import.meta.url));
-  const clientDir = join(here, "..", "dist", "client");
+  const appRoot = getAppRoot();
+  const clientDir = join(appRoot, "dist", "client");
   // dist/server/entry.mjs is @astrojs/node's middleware-mode build output --
   // it only exists after `astro build` (astro.config.mjs, KTD2) -- so this
-  // import is dynamic and resolved at startup, not at type-check time.
-  const entryUrl = new URL("../dist/server/entry.mjs", import.meta.url).href;
+  // import is dynamic and resolved at startup, not at type-check time. It
+  // stays on disk rather than being embedded, which is the half of KTD6 the
+  // compiled launcher deliberately does not own.
+  const entryUrl = pathToFileURL(
+    join(appRoot, "dist", "server", "entry.mjs"),
+  ).href;
   const { handler } = (await import(entryUrl)) as {
     handler: (
       req: unknown,
