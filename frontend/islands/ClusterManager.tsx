@@ -2,6 +2,12 @@ import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect } from "preact/hooks";
 import { api, apiGet, apiPost } from "@/lib/api.ts";
+import {
+  LOCAL_CLUSTER_ID,
+  LOCAL_GENERATION,
+  selectedCluster,
+  switchCluster,
+} from "@/lib/cluster.ts";
 import { showToast } from "@/islands/ToastProvider.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
@@ -111,6 +117,13 @@ export default function ClusterManager() {
     if (!confirm("Remove this cluster?")) return;
     try {
       await api(`/v1/clusters/${id}`, { method: "DELETE" });
+      // Deleting the cluster you are currently on must not leave the whole
+      // app addressing a cluster the registry no longer knows. Handling it
+      // here, at the source, is why the switcher's mount-time reconcile does
+      // not need to silently retarget an unknown selection.
+      if (selectedCluster.peek() === id) {
+        switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
+      }
       await loadClusters();
     } catch {
       // ignore

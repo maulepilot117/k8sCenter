@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "fresh/runtime";
 import { apiGet } from "@/lib/api.ts";
 import { selectedNamespace } from "@/lib/namespace.ts";
+import { LOCAL_CLUSTER_ID, selectedCluster } from "@/lib/cluster.ts";
 import {
   EVENT_ADDED,
   EVENT_DELETED,
@@ -331,7 +332,13 @@ export default function ResourceTableIsland({
 
     let unsubscribe: (() => void) | undefined;
 
-    if (enableWS) {
+    // The resource WebSocket carries no cluster dimension: lib/ws.ts opens one
+    // fixed /ws/v1/ws/resources URL and the backend feeds it from the LOCAL
+    // cluster's informers (remote clusters have no informers and emit no
+    // events). Subscribing while a remote cluster is selected would splice
+    // local-cluster events into a remote-cluster table. Live updates are
+    // therefore local-only; a remote cluster shows fetched data without them.
+    if (enableWS && selectedCluster.value === LOCAL_CLUSTER_ID) {
       const subId = `${kind}-${ns.value || "all"}`;
       unsubscribe = subscribe(
         subId,
@@ -358,7 +365,7 @@ export default function ResourceTableIsland({
       }
       eventQueue.current.length = 0;
     };
-  }, [kind, ns.value, enableWS]);
+  }, [kind, ns.value, enableWS, selectedCluster.value]);
 
   // Compute status string for a resource (used by filter chips)
   const getResourceStatus = useCallback((r: K8sResource): string => {

@@ -1,13 +1,16 @@
 import { useSignal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
 import { useEffect, useRef } from "preact/hooks";
-import { apiGet } from "@/lib/api.ts";
+import { ApiError, apiGet } from "@/lib/api.ts";
+import { connectionStatusColor } from "@/lib/status-colors.ts";
 import {
+  clusterEpoch,
   LOCAL_CLUSTER_ID,
   LOCAL_GENERATION,
   selectedCluster,
   selectedClusterGeneration,
   switchCluster,
+  UNKNOWN_GENERATION,
 } from "@/lib/cluster.ts";
 
 /**
@@ -51,37 +54,48 @@ const LOCAL_OPTION: ClusterOption = {
  * for a remote one (D2); mirroring that here keeps the client's cache keys
  * describing the same registration the server thinks it is talking about.
  *
- * A remote row with no createdAt (an older backend) falls back to its id,
- * which is a stable-but-useless generation rather than a wrong one: it never
- * collides with another cluster's, and it degrades the cache to "never
- * invalidated by re-registration" instead of "invalidated constantly".
+ * A remote row with no createdAt (an older backend) falls back to the unknown
+ * sentinel, which forces a cache miss rather than a wrong hit.
  */
 function generationOf(c: ClusterListItem): string {
   if (c.isLocal || c.id === LOCAL_CLUSTER_ID) return LOCAL_GENERATION;
-  return c.createdAt || c.id;
+  return c.createdAt || UNKNOWN_GENERATION;
 }
 
 function toOption(c: ClusterListItem): ClusterOption {
+  // Canonicalize the local row onto the id the backend resolves locally. A
+  // deployment whose local cluster was registered under a different id would
+  // otherwise become a second, separately-selectable "local".
+  const id = c.isLocal ? LOCAL_CLUSTER_ID : c.id;
   return {
-    id: c.id,
-    label: c.displayName || c.name || c.id,
+    id,
+    label: c.displayName || c.name || id,
     generation: generationOf(c),
     status: c.status || "unknown",
   };
 }
 
-function dotColor(status: string): string {
-  switch (status) {
-    case "connected":
-      return "var(--success)";
-    case "degraded":
-      return "var(--warning)";
-    case "disconnected":
-    case "error":
-      return "var(--danger)";
-    default:
-      return "var(--text-muted)";
-  }
+/**
+ * An entry for a selection the registry did not return — a cluster deleted by
+ * another admin, or a target restored from a build that stored only the id.
+ * Rendering it keeps the trigger naming the cluster requests actually go to,
+ * instead of silently claiming "local".
+ */
+function unavailableOption(id: string, generation: string): ClusterOption {
+  return { id, label: id, generation, status: "unknown" };
+}
+
+/**
+ * The options to show before (or instead of) an authoritative list: always
+ * local, plus the current selection when it is something else.
+ */
+function fallbackOptions(): ClusterOption[] {
+  const id = selectedCluster.peek();
+  if (id === LOCAL_CLUSTER_ID) return [LOCAL_OPTION];
+  return [
+    LOCAL_OPTION,
+    unavailableOption(id, selectedClusterGeneration.peek()),
+  ];
 }
 
 /**
@@ -94,78 +108,92 @@ function dotColor(status: string): string {
  * the generation and the epoch move together.
  */
 export default function ClusterSwitcher() {
-  const options = useSignal<ClusterOption[]>([LOCAL_OPTION]);
+  // Seeded from the persisted selection, not unconditionally from local:
+  // `selectedCluster` hydrates to the restored id immediately, and a trigger
+  // that says "local" while other islands already send a remote X-Cluster-ID
+  // is a manufactured reading of state we actually know.
+  const options = useSignal<ClusterOption[]>(fallbackOptions());
   const open = useSignal(false);
   const activeIndex = useSignal(0);
+  const loadFailed = useSignal(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  /**
+   * Loads the cluster registry and reconciles the restored selection.
+   *
+   * Reconciliation is deliberately asymmetric, and each branch is keyed to
+   * what the response actually proves:
+   *
+   * - **403 / 503** — definitive. `/v1/clusters` is admin-only and this call
+   *   is pinned to the local cluster, so these say "this identity has no
+   *   usable remote cluster" (not an admin, or no registry at all). Fail
+   *   closed to local; otherwise a demoted admin keeps a remote target that
+   *   403s every request in the app.
+   * - **any other failure** — uninformative. A dropped connection or a 500 is
+   *   an absence of information, not evidence the cluster is gone. Keep the
+   *   selection; moving the operator on a failed request is exactly the
+   *   silent retargeting this unit exists to prevent.
+   * - **200, selection present** — refresh its generation (a re-registration
+   *   under a recycled id must not keep the old one).
+   * - **200, selection absent** — keep it and render it as unavailable. The
+   *   operator can see something is wrong and choose. The common cause,
+   *   deleting the cluster you are on, is handled at its source in
+   *   ClusterManager rather than by silently retargeting here.
+   */
+  async function loadClusters(signal?: AbortSignal): Promise<void> {
+    try {
+      const res = await apiGet<ClusterListItem[]>("/v1/clusters", {
+        // The list itself is not cluster-scoped, but an unpinned request
+        // would address whatever cluster is selected — including one that
+        // has since been deleted. Ask the local cluster, always.
+        clusterId: LOCAL_CLUSTER_ID,
+        signal,
+      });
+      if (signal?.aborted) return;
+
+      const rows = Array.isArray(res.data) ? res.data : [];
+      const seen = new Set<string>();
+      const mapped: ClusterOption[] = [];
+      for (const row of rows) {
+        const o = toOption(row);
+        // A duplicate id would produce duplicate Preact keys and duplicate
+        // DOM ids, which breaks aria-activedescendant targeting.
+        if (!o.id || seen.has(o.id)) continue;
+        seen.add(o.id);
+        mapped.push(o);
+      }
+      if (!seen.has(LOCAL_CLUSTER_ID)) mapped.unshift(LOCAL_OPTION);
+
+      const current = selectedCluster.peek();
+      const match = mapped.find((o) => o.id === current);
+      const selectionIsKnown = Boolean(match) || current === LOCAL_CLUSTER_ID;
+      options.value = selectionIsKnown ? mapped : [
+        ...mapped,
+        unavailableOption(current, selectedClusterGeneration.peek()),
+      ];
+      if (match) switchCluster(match.id, match.generation);
+      loadFailed.value = false;
+    } catch (err) {
+      if (signal?.aborted) return;
+      const status = err instanceof ApiError ? err.status : 0;
+      if (status === 403 || status === 503) {
+        switchCluster(LOCAL_CLUSTER_ID, LOCAL_GENERATION);
+        options.value = [LOCAL_OPTION];
+        loadFailed.value = false;
+        return;
+      }
+      options.value = fallbackOptions();
+      loadFailed.value = true;
+    }
+  }
+
   useEffect(() => {
     if (!IS_BROWSER) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const res = await apiGet<ClusterListItem[]>("/v1/clusters", {
-          // The list itself is not cluster-scoped, but an unpinned request
-          // would address whatever cluster is selected — including one that
-          // has since been deleted. Ask the local cluster, always.
-          clusterId: LOCAL_CLUSTER_ID,
-        });
-        if (cancelled) return;
-
-        const rows = Array.isArray(res.data) ? res.data : [];
-        const mapped = rows.map(toOption);
-        // Guarantee a local entry even if the registry somehow lacks one.
-        options.value = mapped.some((o) => o.id === LOCAL_CLUSTER_ID)
-          ? mapped
-          : [LOCAL_OPTION, ...mapped];
-
-        // Reconcile the restored selection against the clusters that actually
-        // exist. A cluster deleted while it was the active selection would
-        // otherwise be restored from localStorage forever, and every request
-        // in the app would address a cluster the registry no longer knows.
-        //
-        // This also refreshes the generation, which matters for a cluster
-        // re-registered under a recycled id: that is a different registration,
-        // and the stale generation would let U11b serve the previous one's
-        // cached capabilities.
-        //
-        // Only the success path reconciles. See the catch below.
-        const match = options.value.find((o) => o.id === selectedCluster.value);
-        switchCluster(
-          match?.id ?? LOCAL_OPTION.id,
-          match?.generation ?? LOCAL_OPTION.generation,
-        );
-      } catch {
-        // 403 (not an admin) and 503 (no database) are both ordinary states,
-        // not errors to show an operator: they mean "you get the local
-        // cluster", which is a working product. A transient failure — offline,
-        // a 500 — lands here too.
-        //
-        // Deliberately NOT reconciling here. A failed list is an absence of
-        // information, not evidence that the selected cluster is gone, and
-        // silently moving the operator to a different cluster on a dropped
-        // request is the exact retargeting this unit exists to prevent. The
-        // selection stands; the list degrades to what is certain — the local
-        // cluster, plus an entry for the current selection so the trigger
-        // keeps naming the cluster requests are actually going to.
-        if (cancelled) return;
-        options.value = selectedCluster.value === LOCAL_CLUSTER_ID
-          ? [LOCAL_OPTION]
-          : [LOCAL_OPTION, {
-            id: selectedCluster.value,
-            label: selectedCluster.value,
-            generation: selectedClusterGeneration.value,
-            status: "unknown",
-          }];
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    const controller = new AbortController();
+    loadClusters(controller.signal);
+    return () => controller.abort();
   }, []);
 
   // Move focus to the listbox once it has actually rendered, so arrow keys
@@ -178,16 +206,44 @@ export default function ClusterSwitcher() {
   const current = options.value.find((o) => o.id === selectedCluster.value) ??
     LOCAL_OPTION;
 
+  /**
+   * Commits a switch, then reloads.
+   *
+   * The reload is the whole invalidation strategy, and it is deliberate.
+   * Nothing else in the app reacts to a cluster change: `ResourceTable`'s data
+   * effect keys on `[kind, ns, enableWS]`, the resource WebSocket carries no
+   * cluster dimension, and ~50 islands read nothing from this module. Without
+   * a hard boundary a table keeps showing the previous cluster's rows while
+   * `executeAction` sends those rows' paths to the *new* cluster — deleting
+   * the same-named workload in the wrong place.
+   *
+   * Reloading remounts every island against the new target in one step and
+   * cannot be forgotten by a future island. The reactive alternative — pin
+   * each row's action with `currentTarget()` and add a cluster dep to every
+   * data effect — is the better long-term shape and belongs to the unit that
+   * can touch all of those files. The persisted selection is written
+   * synchronously by the `switchCluster` batch before this runs, so the new
+   * target survives the reload.
+   */
   function choose(o: ClusterOption) {
-    switchCluster(o.id, o.generation);
     open.value = false;
-    buttonRef.current?.focus();
+    const before = clusterEpoch.peek();
+    switchCluster(o.id, o.generation);
+    if (clusterEpoch.peek() === before) {
+      // Re-selected the active cluster: nothing changed, so don't reload.
+      buttonRef.current?.focus();
+      return;
+    }
+    if (IS_BROWSER) globalThis.location.reload();
   }
 
   function openList() {
     const idx = options.value.findIndex((o) => o.id === selectedCluster.value);
     activeIndex.value = idx >= 0 ? idx : 0;
     open.value = true;
+    // The list is fetched once on mount; a transient failure would otherwise
+    // strand the operator with no way to retry short of a full page reload.
+    if (loadFailed.value) loadClusters();
   }
 
   function onButtonKeyDown(e: KeyboardEvent) {
@@ -250,6 +306,14 @@ export default function ClusterSwitcher() {
         aria-haspopup="listbox"
         aria-expanded={open.value}
         aria-controls="cluster-switcher-list"
+        // Keep focus inside the wrapper on pointer-down so the focusout
+        // containment check passes and the click handler sees the real open
+        // state. Without it, a browser that does not focus buttons on
+        // mousedown closes the list and immediately reopens it.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          buttonRef.current?.focus();
+        }}
         onClick={() => (open.value ? (open.value = false) : openList())}
         onKeyDown={onButtonKeyDown}
         style={{
@@ -270,7 +334,7 @@ export default function ClusterSwitcher() {
             width: "8px",
             height: "8px",
             borderRadius: "50%",
-            background: dotColor(current.status),
+            background: connectionStatusColor(current.status),
             flexShrink: 0,
           }}
         />
@@ -285,6 +349,9 @@ export default function ClusterSwitcher() {
           role="listbox"
           tabIndex={0}
           aria-label="Clusters"
+          // Chrome surface — the glass utilities own the background, border
+          // and elevation, so no literal colour is needed here.
+          class="glass-elevated"
           aria-activedescendant={`cluster-option-${
             options.value[activeIndex.value]?.id ?? ""
           }`}
@@ -298,9 +365,6 @@ export default function ClusterSwitcher() {
             padding: "4px",
             listStyle: "none",
             borderRadius: "8px",
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-subtle)",
-            boxShadow: "var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.35))",
             outline: "none",
             zIndex: 50,
           }}
@@ -330,7 +394,7 @@ export default function ClusterSwitcher() {
                 color: "var(--text-primary)",
                 cursor: "pointer",
                 background: i === activeIndex.value
-                  ? "var(--bg-hover, rgba(255,255,255,0.06))"
+                  ? "var(--bg-hover)"
                   : "transparent",
               }}
             >
@@ -339,7 +403,7 @@ export default function ClusterSwitcher() {
                   width: "8px",
                   height: "8px",
                   borderRadius: "50%",
-                  background: dotColor(o.status),
+                  background: connectionStatusColor(o.status),
                   flexShrink: 0,
                 }}
               />
@@ -351,6 +415,20 @@ export default function ClusterSwitcher() {
               )}
             </li>
           ))}
+          {loadFailed.value && (
+            <li
+              role="option"
+              aria-selected={false}
+              aria-disabled="true"
+              style={{
+                padding: "6px 8px",
+                fontSize: "12px",
+                color: "var(--text-muted)",
+              }}
+            >
+              Cluster list unavailable — reopen to retry
+            </li>
+          )}
         </ul>
       )}
     </div>

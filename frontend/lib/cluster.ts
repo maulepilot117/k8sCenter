@@ -13,12 +13,15 @@
  *   - `selectedClusterGeneration` which *registration* of that cluster it is
  *   - `clusterEpoch`              a monotonic counter, one tick per switch
  *
- * The generation exists because a cluster id can outlive the credentials
- * behind it. It is the backend's `TargetSchema.Generation` (D2): the literal
- * "local" for the local cluster, and the remote cluster record's `createdAt`
- * otherwise. Consumers that cache per-cluster answers (U11b's capability
- * cache) key on the pair, so a delete-and-re-register cycle cannot be served a
- * previous registration's answers.
+ * The generation identifies a *registration*, not a credential vintage. It is
+ * the backend's `TargetSchema.Generation` (D2): the literal "local" for the
+ * local cluster, and the cluster record's `createdAt` for a remote one.
+ * Because `created_at` is written once and never updated, it changes only when
+ * a row is replaced — a delete-and-re-register cycle, which also mints a fresh
+ * random 128-bit id. In-place credential rotation does NOT change it; the
+ * backend invalidates that case through `EvictCluster` instead. Consumers that
+ * cache per-cluster answers (U11b's capability cache) key on the pair so a
+ * re-registration cannot be served the previous registration's answers.
  *
  * The epoch exists because id and generation are two signals and a consumer
  * needs one thing to compare against. A request captures the epoch at issue
@@ -28,6 +31,13 @@
  * reliable way to discard a late reply — the id alone cannot do it, because
  * switching A then B then A returns the id to its original value while every
  * in-flight A-response is still stale.
+ *
+ * **`clusterEpoch` and `currentTarget()` have no in-product consumer yet.**
+ * They are the contract U11b's YAML pin/gate UI is built against. Today a
+ * switch is a hard boundary (`ClusterSwitcher` reloads the page), so nothing
+ * needs to discard a late reply; when U11b lands the pinned-apply flow, it
+ * becomes the first reader. Do not describe epoch-based staleness rejection as
+ * something the product currently enforces.
  */
 import { batch, effect, signal } from "@preact/signals";
 import { IS_BROWSER } from "fresh/runtime";
@@ -46,8 +56,33 @@ export const LOCAL_CLUSTER_ID = "local";
  */
 export const LOCAL_GENERATION = "local";
 
-const CLUSTER_KEY = "k8scenter.selectedCluster";
-const GENERATION_KEY = "k8scenter.selectedClusterGeneration";
+/**
+ * Generation for a restored cluster whose real generation is not known yet —
+ * a selection persisted by a build that stored only the id.
+ *
+ * It must never collide with a real generation, and it does not: a real one is
+ * either the literal "local" or an RFC3339 timestamp. A cache keyed on the
+ * pair therefore *misses* on this value instead of wrongly hitting an entry
+ * that belongs to some other registration. The switcher replaces it with the
+ * authoritative generation as soon as the cluster list resolves.
+ */
+export const UNKNOWN_GENERATION = "unknown";
+
+/**
+ * Storage key holding the JSON-encoded (clusterId, generation) pair.
+ *
+ * One key, not two, because the pair must be written atomically: two
+ * `setItem` calls can be interrupted — storage fills up, the accessor throws —
+ * leaving an id beside a stale or absent generation. A half-written pair is
+ * worse than none, so there is nothing to half-write.
+ */
+const TARGET_KEY = "k8scenter.clusterTarget";
+
+/**
+ * Pre-U11a key, holding the bare cluster id. Read-only: it is migrated on the
+ * next successful write and never written again.
+ */
+const LEGACY_CLUSTER_KEY = "k8scenter.selectedCluster";
 
 /**
  * An immutable (id, generation, epoch) triple captured at a single instant.
@@ -72,11 +107,10 @@ export interface ClusterTarget {
  * private browsing, a blocked-cookies profile — yields the local cluster
  * instead of taking the app down at import time.
  *
- * A persisted id with no persisted generation is treated as a *complete* miss,
- * not a half-restored target: that combination is what a build from before
- * this module wrote generations leaves behind, and pairing an old remote id
- * with the "local" generation would hand U11b's capability cache a key that
- * describes no real registration.
+ * A legacy id with no generation is restored under `UNKNOWN_GENERATION`, not
+ * discarded. Discarding it silently moved the operator to a different cluster
+ * on upgrade, which is the retargeting this whole module exists to prevent;
+ * the sentinel keeps the selection while still forcing a cache miss.
  */
 export function readPersistedTarget(
   storage: Pick<Storage, "getItem"> | null | undefined,
@@ -87,13 +121,29 @@ export function readPersistedTarget(
   };
   if (!storage) return fallback;
   try {
-    const clusterId = storage.getItem(CLUSTER_KEY);
-    const generation = storage.getItem(GENERATION_KEY);
-    if (!clusterId) return fallback;
-    if (clusterId === LOCAL_CLUSTER_ID) return fallback;
-    if (!generation) return fallback;
-    return { clusterId, generation };
+    const raw = storage.getItem(TARGET_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === "object") {
+        const { clusterId, generation } = parsed as Record<string, unknown>;
+        if (typeof clusterId === "string" && clusterId) {
+          if (clusterId === LOCAL_CLUSTER_ID) return fallback;
+          return {
+            clusterId,
+            generation: typeof generation === "string" && generation
+              ? generation
+              : UNKNOWN_GENERATION,
+          };
+        }
+      }
+      return fallback;
+    }
+
+    const legacy = storage.getItem(LEGACY_CLUSTER_KEY);
+    if (!legacy || legacy === LOCAL_CLUSTER_ID) return fallback;
+    return { clusterId: legacy, generation: UNKNOWN_GENERATION };
   } catch {
+    // Storage unavailable, or a hand-edited value that is not valid JSON.
     return fallback;
   }
 }
@@ -110,8 +160,7 @@ export function persistTarget(
 ): void {
   if (!storage) return;
   try {
-    storage.setItem(CLUSTER_KEY, clusterId);
-    storage.setItem(GENERATION_KEY, generation);
+    storage.setItem(TARGET_KEY, JSON.stringify({ clusterId, generation }));
   } catch {
     // Storage disabled or over quota — selection still works for this session.
   }
@@ -152,8 +201,7 @@ export const selectedClusterGeneration = signal(restored.generation);
  */
 export const clusterEpoch = signal(0);
 
-// Persist selection changes so a reload restores the same target. Both keys
-// are written together because a half-restored pair is worse than none.
+// Persist selection changes so a reload restores the same target.
 if (IS_BROWSER) {
   effect(() => {
     persistTarget(
@@ -179,8 +227,13 @@ if (IS_BROWSER) {
  * spurious tick would invalidate live caches and mark valid pins stale.
  */
 export function switchCluster(id: string, generation: string): void {
+  // Normalize the pair as a unit. Defaulting the two independently let a
+  // remote id be paired with the "local" generation — a pair describing no
+  // real registration, which then persisted and survived the reload guard.
   const clusterId = id || LOCAL_CLUSTER_ID;
-  const gen = generation || LOCAL_GENERATION;
+  const gen = clusterId === LOCAL_CLUSTER_ID
+    ? LOCAL_GENERATION
+    : (generation || UNKNOWN_GENERATION);
 
   if (
     clusterId === selectedCluster.peek() &&

@@ -2,7 +2,10 @@ import { assert, assertEquals, assertStrictEquals } from "jsr:@std/assert@1";
 import { effect } from "@preact/signals";
 import {
   api,
+  apiGet,
+  apiPost,
   apiPostRaw,
+  onForbidden,
   type RequestTargeting,
   setAccessToken,
 } from "./api.ts";
@@ -17,6 +20,7 @@ import {
   selectedCluster,
   selectedClusterGeneration,
   switchCluster,
+  UNKNOWN_GENERATION,
 } from "./cluster.ts";
 
 // Covers both lib/cluster.ts and lib/api.ts, because the two halves are one
@@ -35,6 +39,7 @@ interface Recorded {
   url: string;
   clusterHeader: string | null;
   signal: AbortSignal | null | undefined;
+  body: string | null;
 }
 
 /**
@@ -60,6 +65,7 @@ function stubFetch(
       url: String(input),
       clusterHeader: headers.get("X-Cluster-ID"),
       signal: init?.signal,
+      body: typeof init?.body === "string" ? init.body : null,
     };
     calls.push(call);
     const index = i++;
@@ -102,23 +108,32 @@ function resetTarget(id: string, generation: string) {
 Deno.test("switchCluster bumps epoch after writing id and generation", () => {
   resetTarget("cluster-a", "gen-a");
 
-  // An epoch subscriber is the consumer this ordering exists for: it wakes on
-  // the counter and immediately reads the other two signals. If the epoch were
-  // visible before they settled, it would read a torn pair.
+  // The subscriber must track ALL THREE signals, not just the epoch. Reading
+  // the other two with .peek() creates no subscription, so the effect would
+  // fire exactly once whether or not the writes were batched -- the test would
+  // pass with batch() deleted. Tracking all three makes the notification COUNT
+  // the thing under test: batched writes wake the subscriber once, unbatched
+  // writes wake it once per signal.
   const seen: Array<{ epoch: number; id: string; generation: string }> = [];
   const dispose = effect(() => {
     seen.push({
       epoch: clusterEpoch.value,
-      id: selectedCluster.peek(),
-      generation: selectedClusterGeneration.peek(),
+      id: selectedCluster.value,
+      generation: selectedClusterGeneration.value,
     });
   });
 
   const before = clusterEpoch.value;
+  const notificationsBefore = seen.length;
   switchCluster("cluster-b", "gen-b");
   dispose();
 
   assertEquals(clusterEpoch.value, before + 1);
+  assertEquals(
+    seen.length - notificationsBefore,
+    1,
+    "a switch must wake a subscriber exactly once; more than one means the three writes were not batched",
+  );
   const last = seen[seen.length - 1];
   assertEquals(last.epoch, before + 1);
   assertEquals(last.id, "cluster-b");
@@ -308,10 +323,12 @@ Deno.test("selectedCluster survives a reload via localStorage", () => {
   });
 });
 
-Deno.test("a persisted cluster with no persisted generation falls back to local", () => {
-  // What a build from before generations were written leaves behind. Pairing
-  // the old id with the "local" generation would produce a cache key that
-  // describes no real registration.
+Deno.test("a legacy id with no generation is restored under the unknown sentinel", () => {
+  // What a build from before generations were written leaves behind. Dropping
+  // the id silently moved the operator to a different cluster on upgrade --
+  // the retargeting this module exists to prevent. The sentinel keeps the
+  // selection while still forcing a cache miss, because it can never equal a
+  // real generation ("local", or an RFC3339 timestamp).
   const store = new Map<string, string>([[
     "k8scenter.selectedCluster",
     "cluster-a",
@@ -319,9 +336,116 @@ Deno.test("a persisted cluster with no persisted generation falls back to local"
   const storage = { getItem: (k: string) => store.get(k) ?? null };
 
   assertEquals(readPersistedTarget(storage), {
+    clusterId: "cluster-a",
+    generation: UNKNOWN_GENERATION,
+  });
+});
+
+Deno.test("the persisted pair is one value, so it cannot be half-written", () => {
+  // Two setItem calls could be interrupted between them -- storage full, the
+  // accessor throwing -- leaving an id beside a stale generation. One key
+  // means there is no intermediate state to observe.
+  const store = new Map<string, string>();
+  const storage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => {
+      store.set(k, v);
+    },
+  };
+
+  persistTarget(storage, "cluster-a", "gen-a");
+  assertEquals(store.size, 1);
+  assertEquals(readPersistedTarget(storage), {
+    clusterId: "cluster-a",
+    generation: "gen-a",
+  });
+});
+
+Deno.test("a hand-edited unparseable target falls back to local", () => {
+  const store = new Map<string, string>([["k8scenter.clusterTarget", "{oops"]]);
+  const storage = { getItem: (k: string) => store.get(k) ?? null };
+
+  assertEquals(readPersistedTarget(storage), {
     clusterId: LOCAL_CLUSTER_ID,
     generation: LOCAL_GENERATION,
   });
+});
+
+Deno.test("switchCluster does not pair a remote id with the local generation", () => {
+  // Defaulting the id and the generation independently produced a pair that
+  // describes no real registration, which then persisted and passed the
+  // reload guard.
+  resetTarget("cluster-a", "gen-a");
+  switchCluster("cluster-remote", "");
+
+  assertEquals(selectedCluster.value, "cluster-remote");
+  assertEquals(selectedClusterGeneration.value, UNKNOWN_GENERATION);
+
+  // The local cluster still normalizes to the local generation, whatever it
+  // was handed.
+  switchCluster(LOCAL_CLUSTER_ID, "not-a-real-generation");
+  assertEquals(selectedClusterGeneration.value, LOCAL_GENERATION);
+});
+
+Deno.test("apiGet accepts a bare signal, a targeting object, and neither", async () => {
+  resetTarget("cluster-a", "gen-a");
+  const controller = new AbortController();
+  const { calls, restore } = stubFetch([ok, ok, ok]);
+
+  try {
+    await apiGet("/v1/one");
+    await apiGet("/v1/two", controller.signal);
+    await apiGet("/v1/three", { clusterId: "cluster-pinned" });
+
+    assertEquals(calls[0].clusterHeader, "cluster-a");
+    assertEquals(calls[1].clusterHeader, "cluster-a");
+    assertStrictEquals(calls[1].signal, controller.signal);
+    assertEquals(calls[2].clusterHeader, "cluster-pinned");
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("apiPost forwards a targeting object and still serializes its body", async () => {
+  resetTarget("cluster-a", "gen-a");
+  const { calls, restore } = stubFetch([ok, ok]);
+
+  try {
+    await apiPost("/v1/one", { a: 1 });
+    await apiPost("/v1/two", { b: 2 }, { clusterId: "cluster-pinned" });
+
+    assertEquals(calls[0].clusterHeader, "cluster-a");
+    assertEquals(calls[0].body, JSON.stringify({ a: 1 }));
+    assertEquals(calls[1].clusterHeader, "cluster-pinned");
+    assertEquals(calls[1].body, JSON.stringify({ b: 2 }));
+  } finally {
+    restore();
+  }
+});
+
+Deno.test("a 403 on an auth endpoint does not re-enter the forbidden hook", async () => {
+  // The hook re-issues GET /v1/auth/me, which is inside the backend's
+  // cluster-gated group and 403s for a non-admin on a remote cluster. Without
+  // the guard that is one unthrottled request per round-trip, forever.
+  resetTarget("cluster-remote", "gen-remote");
+  let hookCalls = 0;
+  onForbidden(() => {
+    hookCalls += 1;
+  });
+  const forbidden = () => new Response("{}", { status: 403 });
+  const { restore } = stubFetch([forbidden, forbidden]);
+
+  try {
+    await api("/v1/auth/me?namespace=default").catch(() => {});
+    assertEquals(hookCalls, 0);
+
+    // A 403 anywhere else still refreshes permissions.
+    await api("/v1/resources/pods").catch(() => {});
+    assertEquals(hookCalls, 1);
+  } finally {
+    restore();
+    onForbidden(() => {});
+  }
 });
 
 Deno.test("unreadable storage yields the local cluster instead of throwing", () => {

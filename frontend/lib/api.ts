@@ -232,8 +232,17 @@ export async function api<T>(
     } catch {
       // Response wasn't JSON
     }
-    // On 403, notify auth layer to refresh permissions (self-correcting mechanism)
-    if (res.status === 403 && on403Callback) {
+    // On 403, notify auth layer to refresh permissions (self-correcting mechanism).
+    //
+    // Never for /v1/auth/* — the callback's own endpoint cannot be repaired by
+    // re-calling it. `refreshPermissions` re-issues GET /v1/auth/me, which is
+    // inside the backend's ClusterContext group and therefore 403s for a
+    // non-admin carrying a non-local X-Cluster-ID. Without this guard that is
+    // a self-feeding loop: one unthrottled request per round-trip, forever,
+    // against an endpoint with no rate limit.
+    if (
+      res.status === 403 && on403Callback && !path.startsWith("/v1/auth/")
+    ) {
       on403Callback();
     }
     throw new ApiError(
@@ -276,14 +285,22 @@ export const apiPost = <T>(
     ...targeting(opts),
   });
 
-export const apiPut = <T>(path: string, body: unknown) =>
+export const apiPut = <T>(
+  path: string,
+  body: unknown,
+  opts?: AbortSignal | RequestTargeting,
+) =>
   api<T>(path, {
     method: "PUT",
     body: JSON.stringify(body),
+    ...targeting(opts),
   });
 
-export async function apiDelete(path: string): Promise<void> {
-  await api<unknown>(path, { method: "DELETE" });
+export async function apiDelete(
+  path: string,
+  opts?: AbortSignal | RequestTargeting,
+): Promise<void> {
+  await api<unknown>(path, { method: "DELETE", ...targeting(opts) });
 }
 
 /**
