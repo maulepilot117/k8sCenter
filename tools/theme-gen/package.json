@@ -1,0 +1,10 @@
+{
+  "name": "@k8scenter/theme-gen",
+  "private": true,
+  "type": "module",
+  "description": "Generates frontend/assets/themes.generated.css and mobile/lib/theme/themes.g.dart from shared/themes/*.json. Dependency-free by design: node:fs and node:path are built in, so this tool installs nothing.",
+  "scripts": {
+    "gen": "bun run main.ts",
+    "check": "bun run main.ts --check"
+  }
+}

@@ -446,7 +446,7 @@ The frontend is one component, but three contracts cross its edge and this migra
 2. Recreate the `@/` path alias in `tsconfig.json` rather than relying on resolver behaviour.
 3. Set `install.minimumReleaseAge = 604800` in `bunfig.toml` (KTD7), with an `astro` exclusion only if the KTD1 pin has not yet aged past the window.
 3b. Pin the Bun version once, in a repository-owned file, and have local tooling, the Dockerfile builder and both CI workflows read it rather than each naming a version. R1 names an exact runtime; without a single source, local, CI and container builds can run different Bun versions and still pass every gate in this plan.
-4. Define `bun run check` to run the linter, the formatter check, and `astro check` in sequence, and point `make lint` at it (KTD9).
+4. Define `bun run check` to run the linter, the formatter check, and `astro check` in sequence, and point `make lint` at it (KTD9). Cover `tools/theme-gen/` as well as `frontend/`: `deno run` type-checked that file on every invocation and `bun run` does not, so U2 left the repo without a type gate on it. The tool is deliberately dependency-free, so the types belong in the repo-wide gate here rather than as a local devDependency there.
 5. Configure `resolve.dedupe` for `preact` and `@preact/signals-core` in the Astro Vite config (KTD5).
 
 **Execution note:** Mostly configuration. Prefer a runtime smoke check — the gate actually catching a planted error — over unit coverage.

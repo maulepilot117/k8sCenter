@@ -69,12 +69,12 @@ test-e2e-ui:
 # mobile/lib/theme/themes.g.dart from shared/themes/*.json. The canonical
 # source for both web and mobile colour tokens.
 theme-gen:
-	deno run --allow-read --allow-write tools/theme-gen/main.ts
+	bun run tools/theme-gen/main.ts
 
 # Fail if the committed generated theme files don't match what the generator
 # would emit from shared/themes/*.json. Run as part of CI lint.
 check-themes:
-	deno run --allow-read tools/theme-gen/main.ts --check
+	bun run tools/theme-gen/main.ts --check
 
 # Linting
 lint: lint-backend lint-frontend mobile-analyze check-themes
