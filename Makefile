@@ -9,7 +9,7 @@ LDFLAGS := -s -w \
 .PHONY: dev dev-backend dev-frontend dev-db dev-db-stop \
        build build-backend build-frontend \
        test test-backend test-frontend test-e2e test-e2e-ui \
-       lint lint-backend lint-frontend \
+       lint lint-backend lint-frontend check-bun-version \
        clean docker-build docker-build-backend docker-build-frontend \
        helm-lint helm-template check-themes theme-gen \
        mobile-analyze mobile-test
@@ -65,25 +65,46 @@ test-e2e:
 test-e2e-ui:
 	cd e2e && npx playwright test --ui
 
+# Single source of truth for the Bun version (U3 step 3b, R1). Local
+# tooling, the frontend Dockerfile builder (once it moves off Deno) and both
+# Bun-using CI workflows are meant to read this file instead of each naming
+# a version, so they can't silently drift apart. Only mobile-ci.yml
+# currently pins a Bun version in CI, and it does so independently
+# (`bun-version: "1.4.2"`) — wiring it to read .bun-version is left for
+# whichever unit next touches that workflow.
+check-bun-version:
+	@bunver=$$(bun --version); pinned=$$(cat .bun-version | tr -d '[:space:]'); \
+	if [ "$$bunver" != "$$pinned" ]; then \
+	  echo "ERROR: installed bun ($$bunver) does not match the repo-pinned .bun-version ($$pinned)"; \
+	  exit 1; \
+	fi
+
 # Theme generator — emits frontend/assets/themes.generated.css and
 # mobile/lib/theme/themes.g.dart from shared/themes/*.json. The canonical
 # source for both web and mobile colour tokens.
-theme-gen:
+theme-gen: check-bun-version
 	bun run tools/theme-gen/main.ts
 
 # Fail if the committed generated theme files don't match what the generator
 # would emit from shared/themes/*.json. Run as part of CI lint.
-check-themes:
+check-themes: check-bun-version
 	bun run tools/theme-gen/main.ts --check
 
 # Linting
-lint: lint-backend lint-frontend mobile-analyze check-themes
+lint: check-bun-version lint-backend lint-frontend mobile-analyze check-themes
 
 lint-backend:
 	cd backend && go vet ./...
 
-lint-frontend:
+# deno lint/fmt/check still gate the Fresh tree (frontend/routes, islands,
+# components, lib, main.ts, ...) until U12 deletes frontend/deno.json.
+# `bun run check` (KTD9: Biome for lint+format, `astro check` for types)
+# gates the surface already ported to Bun/Astro — see the scope note in
+# frontend/astro.config.mjs and frontend/tsconfig.json. It widens as U7
+# through U9 move files into frontend/src.
+lint-frontend: check-bun-version
 	cd frontend && deno lint && deno fmt --check
+	cd frontend && bun run check
 
 # Docker
 docker-build: docker-build-backend docker-build-frontend

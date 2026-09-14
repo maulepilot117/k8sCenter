@@ -14,7 +14,13 @@
       "tags": ["fresh", "recommended"]
     }
   },
-  "exclude": ["**/_fresh/*", "**/.impeccable/*"],
+  "exclude": [
+    "**/_fresh/*",
+    "**/.impeccable/*",
+    "**/.astro/*",
+    "**/dist/*",
+    "astro.config.mjs"
+  ],
   "imports": {
     "@/": "./",
     "fresh": "jsr:@fresh/core@^2.2.0",

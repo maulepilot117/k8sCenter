@@ -1,0 +1,21 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      // Recreates deno.json's `"@/": "./"` import-map entry (U3 approach
+      // step 2) now that Astro/Bun resolve `@/` from real dependency
+      // resolution rather than an import map.
+      "@/*": ["./*"]
+    },
+    "jsx": "preserve",
+    "jsxImportSource": "preact"
+  },
+  // Scoped to what has actually been ported off Fresh/Deno (see the U3
+  // check-gate scope note in astro.config.mjs). frontend/routes, islands,
+  // components, lib, main.ts etc. still import `fresh` / `fresh/runtime`
+  // (jsr: specifiers) and are type-checked by `deno check` until U12
+  // deletes deno.json. This include list widens as U7 through U9 move
+  // files into src/.
+  "include": ["src", "astro.config.mjs", "../tools/theme-gen/main.ts"]
+}

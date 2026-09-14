@@ -43,19 +43,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
 const THEMES_DIR = resolve(ROOT, "shared", "themes");
 const CSS_OUT = resolve(ROOT, "frontend", "assets", "themes.generated.css");
-const DART_OUT = resolve(
-  ROOT,
-  "mobile",
-  "lib",
-  "theme",
-  "themes.g.dart",
-);
+const DART_OUT = resolve(ROOT, "mobile", "lib", "theme", "themes.g.dart");
 
 // Theme load order matches the existing styles.css for diff stability.
-const ORDER = [
-  "liquid-glass",
-  "liquid-glass-light",
-];
+const ORDER = ["liquid-glass", "liquid-glass-light"];
 
 const CSS_VAR_MAP: Record<string, string> = {
   bgBase: "--bg-base",
@@ -136,8 +127,8 @@ function emitCss(themes: Theme[]): string {
     const selector = t.default
       ? ":root"
       : t.id === "liquid-glass-light"
-      ? ".theme-light"
-      : `[data-theme="${t.id}"]`;
+        ? ".theme-light"
+        : `[data-theme="${t.id}"]`;
     lines.push(`/* ── ${t.name} ── */`);
     lines.push(`${selector} {`);
     for (const [key, cssVar] of Object.entries(CSS_VAR_MAP)) {
@@ -228,9 +219,7 @@ async function main() {
     if (errors.length > 0) {
       console.error("theme-gen check failed:");
       for (const e of errors) console.error("  -", e);
-      console.error(
-        "\nRun `make theme-gen` and commit the result.",
-      );
+      console.error("\nRun `make theme-gen` and commit the result.");
       process.exit(1);
     }
     console.log("themes in sync");
