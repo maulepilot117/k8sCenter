@@ -3,7 +3,6 @@ import { useCallback, useRef } from "preact/hooks";
 import { DeploymentBasicsStep } from "@/components/wizard/DeploymentBasicsStep.tsx";
 import { DeploymentNetworkStep } from "@/components/wizard/DeploymentNetworkStep.tsx";
 import { DeploymentResourcesStep } from "@/components/wizard/DeploymentResourcesStep.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -14,6 +13,7 @@ import {
   MAX_REPLICAS,
 } from "@/lib/wizard-constants.ts";
 import type { ProbeState } from "@/lib/wizard-types.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 

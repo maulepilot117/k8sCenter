@@ -3,12 +3,12 @@ import { useEffect, useRef } from "preact/hooks";
 import Field from "@/components/ui/form/Field.tsx";
 import Select from "@/components/ui/form/Select.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { useStorageClasses } from "@/lib/hooks/use-storage-classes.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
 import type { StorageClassItem } from "@/lib/wizard-types.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 

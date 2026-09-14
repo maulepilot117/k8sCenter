@@ -2,7 +2,6 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useRef } from "preact/hooks";
 import { Select } from "@/components/ui/Select.tsx";
 import { ContainerForm } from "@/components/wizard/ContainerForm.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -14,6 +13,7 @@ import {
   WIZARD_INPUT_CLASS,
 } from "@/lib/wizard-constants.ts";
 import type { EnvVarEntry, PortEntry } from "@/lib/wizard-types.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 

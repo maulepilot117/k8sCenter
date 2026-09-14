@@ -1,4 +1,5 @@
 ---
+import { CodeMirrorEditor } from "../components/ui/CodeMirrorEditor.tsx";
 import PropProbe from "../dev-harness/PropProbe.tsx";
 // Render-branch IS_BROWSER islands (return null during SSR, real content
 // only once IS_BROWSER flips true post-hydration).
@@ -8,6 +9,7 @@ import AuthProviderButtons from "../islands/AuthProviderButtons.tsx";
 import CertificateDetail from "../islands/CertificateDetail.tsx";
 import CertificatesList from "../islands/CertificatesList.tsx";
 import ClusterSwitcher from "../islands/ClusterSwitcher.tsx";
+import ClusterTopology from "../islands/ClusterTopology.tsx";
 // A large-but-uniform island (per the unit brief: size alone doesn't move
 // DashboardV2/ResourceTable/CRDResourceList/IngressWizard out of U9).
 import DashboardV2 from "../islands/DashboardV2.tsx";
@@ -19,10 +21,18 @@ import DashboardV2 from "../islands/DashboardV2.tsx";
 import FlowViewer from "../islands/FlowViewer.tsx";
 import LogExplorer from "../islands/LogExplorer.tsx";
 import LogViewer from "../islands/LogViewer.tsx";
+import NamespaceTopology from "../islands/NamespaceTopology.tsx";
+import NetworkPolicyWizard from "../islands/NetworkPolicyWizard.tsx";
 import PodTerminal from "../islands/PodTerminal.tsx";
+import ResourceDetail from "../islands/ResourceDetail.tsx";
+import SchemaForm from "../islands/SchemaForm.tsx";
 // Effect-guard IS_BROWSER islands (guard is inside a useEffect; SSR output
 // is real markup either way).
 import ThemeToggle from "../islands/ThemeToggle.tsx";
+// U14: widget/custom-layout islands -- the third-party-DOM-lifecycle and
+// hand-rolled-SVG-layout risk class (Monaco/CodeMirror editor boundaries,
+// ref-timing-dependent topology canvases, CRD-schema-driven forms).
+import YamlEditor from "../islands/YamlEditor.tsx";
 // Throwaway harness — mounts a curated set of ported islands, each with
 // client:load, outside the real route tree (no real page imports them yet;
 // U8 authors the production directives two units later). Astro only
@@ -111,6 +121,60 @@ const dangerousName = "<script>alert('xss')</script>";
       namespace="kube-system"
       name="placeholder-pod"
       containers={["main"]}
+    />
+
+    <h2>U14: widget and custom-layout islands</h2>
+    <p>
+      Data-fetching sections below (topology, SchemaForm, ResourceDetail,
+      NetworkPolicyWizard's namespace list) call apiGet on mount like every
+      other data island on this page -- unauthenticated, that 401s and
+      lib/api.ts redirects to /login. That redirect is existing, correct
+      behavior unrelated to this unit; it does not gate whether Monaco or
+      CodeMirror mounted, which is this unit's actual risk surface. To watch
+      the data states resolve for real, log in first, then reload this page.
+    </p>
+
+    <h3>YamlEditor (Monaco, thin island wrapper -- CDN dynamic import)</h3>
+    <YamlEditor
+      client:load
+      value={"apiVersion: v1\nkind: Pod\nmetadata:\n  name: example\n"}
+    />
+
+    <h3>
+      CodeMirrorEditor (direct import, no island wrapper -- matches
+      ResourceDetail's own boundary convention)
+    </h3>
+    <CodeMirrorEditor
+      client:load
+      value={"apiVersion: v1\nkind: Pod\nmetadata:\n  name: example\n"}
+    />
+
+    <h3>ClusterTopology (hand-rolled SVG layout, no d3-force)</h3>
+    <div style="height:260px">
+      <ClusterTopology client:load />
+    </div>
+
+    <h3>NamespaceTopology (hand-rolled SVG layout, no d3-force)</h3>
+    <div style="height:260px">
+      <NamespaceTopology client:load />
+    </div>
+
+    <h3>SchemaForm (CRD-schema-driven form tree, mounts SchemaFormField)</h3>
+    <SchemaForm client:load group="cert-manager.io" resource="certificates" mode="create" />
+
+    <h3>NetworkPolicyWizard (wizard shell -&gt; WizardReviewStep -&gt; Monaco)</h3>
+    <NetworkPolicyWizard client:load />
+
+    <h3>ResourceDetail (the CodeMirror call site; placeholder resource so SSR
+    never attempts a real call -- edit kind/name/namespace to a real
+    resource and reload to see the YAML tab's CodeMirrorEditor mount for
+    real)</h3>
+    <ResourceDetail
+      client:load
+      kind="pods"
+      name="placeholder-pod"
+      namespace="kube-system"
+      title="Pod"
     />
   </main>
 </BaseLayout>

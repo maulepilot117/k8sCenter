@@ -12,7 +12,6 @@ import { KubernetesForm } from "@/components/wizard/secretstore/KubernetesForm.t
 import { OnePasswordForm } from "@/components/wizard/secretstore/OnePasswordForm.tsx";
 import { SecretStoreProviderPickerStep } from "@/components/wizard/secretstore/SecretStoreProviderPickerStep.tsx";
 import { VaultForm } from "@/components/wizard/secretstore/VaultForm.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { ApiError, apiPost } from "@/lib/api.ts";
 import {
   type ProviderFormProps,
@@ -22,6 +21,7 @@ import {
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 import { initialNamespace } from "@/src/lib/namespace.ts";

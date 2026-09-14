@@ -31,7 +31,31 @@ export default defineConfig({
       // built from one copy can't see a signal() from the other. Preact
       // islands share state via module-scope @preact/signals (KD nothing
       // fresh-specific here), so both packages must dedupe to one copy.
-      dedupe: ["preact", "@preact/signals-core"],
+      //
+      // U14: the same failure mode, one dependency family over. Vite's dev
+      // optimizer was pre-bundling @codemirror/state into two separate
+      // copies -- one under the named `@codemirror_state.js` dep chunk, a
+      // second inlined into an anonymous `dist-*.js` chunk pulled in
+      // through @codemirror/language's own dependency graph. CodeMirror's
+      // `Facet`/`Extension` values are identity-checked (not duck-typed),
+      // so `EditorState.create()` in CodeMirrorEditor.tsx threw "Unrecognized
+      // extension value in extension set" for every extension built from
+      // the copy `EditorState.create` itself didn't come from -- a real,
+      // browser-only failure invisible to `astro check`/`astro build`/
+      // `bun test`, caught only by loading the U9 harness in an actual
+      // browser. Dedupe the whole @codemirror/* family so every package
+      // shares one resolved copy of @codemirror/state's Facet identities.
+      dedupe: [
+        "preact",
+        "@preact/signals-core",
+        "@codemirror/state",
+        "@codemirror/view",
+        "@codemirror/commands",
+        "@codemirror/language",
+        "@codemirror/lang-yaml",
+        "@codemirror/search",
+        "@codemirror/theme-one-dark",
+      ],
     },
   },
 });

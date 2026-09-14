@@ -2,7 +2,6 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useRef } from "preact/hooks";
 import { ServiceBasicsStep } from "@/components/wizard/ServiceBasicsStep.tsx";
 import { ServicePortsStep } from "@/components/wizard/ServicePortsStep.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
@@ -13,6 +12,7 @@ import {
   MIN_NODE_PORT,
   PORT_NAME_REGEX,
 } from "@/lib/wizard-constants.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 import { initialNamespace } from "@/src/lib/namespace.ts";
 

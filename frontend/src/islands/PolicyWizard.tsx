@@ -2,12 +2,12 @@ import { useSignal } from "@preact/signals";
 import { useCallback, useEffect, useRef } from "preact/hooks";
 import { PolicyConfigStep } from "@/components/wizard/PolicyConfigStep.tsx";
 import { PolicyTemplateStep } from "@/components/wizard/PolicyTemplateStep.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
 import { useDirtyGuard } from "@/lib/hooks/use-dirty-guard.ts";
 import { getTemplate } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
 import { DNS_LABEL_REGEX } from "@/lib/wizard-constants.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 
 export interface PolicyWizardForm {

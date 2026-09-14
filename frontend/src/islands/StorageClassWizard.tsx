@@ -4,8 +4,8 @@ import Field from "@/components/ui/form/Field.tsx";
 import Select from "@/components/ui/form/Select.tsx";
 import TextField from "@/components/ui/form/TextField.tsx";
 import Toggle from "@/components/ui/form/Toggle.tsx";
-import { WizardReviewStep } from "@/components/wizard/WizardReviewStep.tsx";
 import { apiGet, apiPost } from "@/lib/api.ts";
+import { WizardReviewStep } from "@/src/components/wizard/WizardReviewStep.tsx";
 import WizardShell, { type WizardStep } from "@/src/islands/WizardShell.tsx";
 
 interface PresetParam {
