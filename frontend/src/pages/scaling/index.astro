@@ -1,0 +1,11 @@
+---
+import ResourceTable from "../../islands/ResourceTable.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <ResourceTable client:load
+        kind="horizontalpodautoscalers"
+        title="HorizontalPodAutoscalers"
+        createHref="/scaling/hpas/new"
+      />
+</ChromeLayout>

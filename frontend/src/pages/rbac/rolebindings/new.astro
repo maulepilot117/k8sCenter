@@ -1,0 +1,9 @@
+---
+import RoleBindingWizard from "../../../islands/RoleBindingWizard.tsx";
+import ChromeLayout from "../../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <RoleBindingWizard client:load
+        clusterScoped={false}
+      />
+</ChromeLayout>

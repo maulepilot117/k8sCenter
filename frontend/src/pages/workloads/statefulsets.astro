@@ -1,0 +1,7 @@
+---
+import WorkloadsDashboard from "../../islands/WorkloadsDashboard.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <WorkloadsDashboard client:load currentPath={Astro.url.pathname} />
+</ChromeLayout>

@@ -1,0 +1,15 @@
+---
+import MonitoringDashboards from "../../islands/MonitoringDashboards.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="p-6 space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold text-text-primary">Dashboards</h1>
+          <p class="mt-1 text-sm text-text-secondary">
+            Provisioned Grafana dashboards
+          </p>
+        </div>
+        <MonitoringDashboards client:load />
+      </div>
+</ChromeLayout>

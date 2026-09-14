@@ -1,0 +1,7 @@
+---
+import StorageDashboard from "../../islands/StorageDashboard.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <StorageDashboard client:load currentPath={Astro.url.pathname} />
+</ChromeLayout>

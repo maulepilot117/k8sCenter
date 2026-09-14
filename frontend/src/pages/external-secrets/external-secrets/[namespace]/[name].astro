@@ -1,0 +1,9 @@
+---
+import ESOExternalSecretDetail from "../../../../islands/ESOExternalSecretDetail.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+
+const { namespace, name } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <ESOExternalSecretDetail client:load namespace={namespace} name={name} />
+</ChromeLayout>

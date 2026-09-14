@@ -1,0 +1,9 @@
+---
+import GatewayHTTPRouteDetail from "../../../../../islands/GatewayHTTPRouteDetail.tsx";
+import ChromeLayout from "../../../../../layouts/ChromeLayout.astro";
+
+const { ns, name } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <GatewayHTTPRouteDetail client:load namespace={ns} name={name} />
+</ChromeLayout>

@@ -1,0 +1,11 @@
+---
+import OIDCCallbackHandler from "../../islands/OIDCCallbackHandler.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="flex min-h-full items-center justify-center bg-base px-4">
+        <div class="w-full max-w-sm text-center">
+          <OIDCCallbackHandler client:load />
+        </div>
+      </div>
+</ChromeLayout>

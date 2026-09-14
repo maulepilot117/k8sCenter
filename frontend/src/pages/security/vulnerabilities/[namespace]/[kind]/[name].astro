@@ -1,0 +1,9 @@
+---
+import VulnerabilityDetail from "../../../../../islands/VulnerabilityDetail.tsx";
+import ChromeLayout from "../../../../../layouts/ChromeLayout.astro";
+
+const { namespace, kind, name } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <VulnerabilityDetail client:load namespace={namespace} kind={kind} name={name} />
+</ChromeLayout>

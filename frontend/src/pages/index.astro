@@ -1,11 +1,7 @@
 ---
-// Still a placeholder for the real dashboard page (frontend/routes/index.tsx),
-// which U8 ports. What changed in U7: this now exercises the real shell —
-// BaseLayout's anti-flash script and ChromeLayout's chrome/bypass logic —
-// end to end through a real build, rather than the bare <p> U5 needed only
-// to prove the dispatch chain reached Astro at all.
+import DashboardV2 from "../islands/DashboardV2.tsx";
 import ChromeLayout from "../layouts/ChromeLayout.astro";
 ---
-<ChromeLayout title="k8sCenter">
-  <p>k8sCenter — placeholder page (replaced by U8).</p>
+<ChromeLayout>
+  <DashboardV2 client:load />
 </ChromeLayout>

@@ -1,0 +1,9 @@
+---
+import ESOPushSecretDetail from "../../../../islands/ESOPushSecretDetail.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+
+const { namespace, name } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <ESOPushSecretDetail client:load namespace={namespace} name={name} />
+</ChromeLayout>

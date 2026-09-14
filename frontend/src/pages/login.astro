@@ -1,0 +1,32 @@
+---
+import { Logo } from "../components/ui/Logo.tsx";
+import AuthProviderButtons from "../islands/AuthProviderButtons.tsx";
+import LoginForm from "../islands/LoginForm.tsx";
+// Outlier (U8 unit brief): composes two islands with hand-written chrome
+// (the Logo SVG + heading), rather than fitting the generic "one island"
+// sweep pattern the rest of this route tree used. Ported from
+// frontend/routes/login.tsx.
+import ChromeLayout from "../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="flex min-h-full items-center justify-center bg-base px-4">
+    <div class="w-full max-w-sm">
+      {/* Logo */}
+      <div class="mb-8 text-center">
+        <Logo size={48} class="mx-auto text-brand" />
+        <h1 class="mt-4 text-2xl font-bold text-text-primary">
+          k8sCenter
+        </h1>
+        <p class="mt-1 text-sm text-text-secondary">
+          Sign in to manage your cluster
+        </p>
+      </div>
+
+      {/* Login card */}
+      <div class="glass-elevated rounded-2xl p-6">
+        <LoginForm client:load />
+        <AuthProviderButtons client:load />
+      </div>
+    </div>
+  </div>
+</ChromeLayout>
