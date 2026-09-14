@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertStrictEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import { effect } from "@preact/signals";
 import {
   api,
@@ -31,8 +31,9 @@ import {
 //
 // Both modules carry a client-only banner. It is about SSR request handling —
 // lib/api.ts's module-level access token would be shared across requests — and
-// does not apply here: `deno test` serves no requests, and lib/cluster.ts gates
-// its localStorage side effect behind IS_BROWSER, which is false off-DOM.
+// does not apply here: `bun test` serves no requests, and lib/cluster.ts gates
+// its localStorage side effect behind IS_BROWSER (stubbed false under Bun via
+// the frontend/lib/__shims__/fresh-runtime.ts test shim).
 
 /** A recorded outbound request: everything the assertions care about. */
 interface Recorded {
@@ -105,7 +106,7 @@ function resetTarget(id: string, generation: string) {
   setAccessToken(null);
 }
 
-Deno.test("switchCluster bumps epoch after writing id and generation", () => {
+test("switchCluster bumps epoch after writing id and generation", () => {
   resetTarget("cluster-a", "gen-a");
 
   // The subscriber must track ALL THREE signals, not just the epoch. Reading
@@ -128,29 +129,27 @@ Deno.test("switchCluster bumps epoch after writing id and generation", () => {
   switchCluster("cluster-b", "gen-b");
   dispose();
 
-  assertEquals(clusterEpoch.value, before + 1);
-  assertEquals(
+  expect(clusterEpoch.value).toBe(before + 1);
+  expect(
     seen.length - notificationsBefore,
-    1,
-    "a switch must wake a subscriber exactly once; more than one means the three writes were not batched",
-  );
+  ).toBe(1);
   const last = seen[seen.length - 1];
-  assertEquals(last.epoch, before + 1);
-  assertEquals(last.id, "cluster-b");
-  assertEquals(last.generation, "gen-b");
+  expect(last.epoch).toBe(before + 1);
+  expect(last.id).toBe("cluster-b");
+  expect(last.generation).toBe("gen-b");
 });
 
-Deno.test("switchCluster to the already-active target does not bump the epoch", () => {
+test("switchCluster to the already-active target does not bump the epoch", () => {
   resetTarget("cluster-a", "gen-a");
   const before = clusterEpoch.value;
 
   switchCluster("cluster-a", "gen-a");
 
   // A spurious tick would invalidate live caches and mark valid pins stale.
-  assertEquals(clusterEpoch.value, before);
+  expect(clusterEpoch.value).toBe(before);
 });
 
-Deno.test("switchCluster treats a new generation of the same id as a switch", () => {
+test("switchCluster treats a new generation of the same id as a switch", () => {
   resetTarget("cluster-a", "gen-a");
   const before = clusterEpoch.value;
 
@@ -158,24 +157,24 @@ Deno.test("switchCluster treats a new generation of the same id as a switch", ()
   // registration. Anything cached against the old generation must be dropped.
   switchCluster("cluster-a", "gen-a-second-registration");
 
-  assertEquals(clusterEpoch.value, before + 1);
-  assertEquals(selectedClusterGeneration.value, "gen-a-second-registration");
+  expect(clusterEpoch.value).toBe(before + 1);
+  expect(selectedClusterGeneration.value).toBe("gen-a-second-registration");
 });
 
-Deno.test("api pins X-Cluster-ID at call entry", async () => {
+test("api pins X-Cluster-ID at call entry", async () => {
   resetTarget("cluster-a", "gen-a");
   const { calls, restore } = stubFetch([ok]);
 
   try {
     await api("/v1/resources/pods");
-    assertEquals(calls.length, 1);
-    assertEquals(calls[0].clusterHeader, "cluster-a");
+    expect(calls.length).toBe(1);
+    expect(calls[0].clusterHeader).toBe("cluster-a");
   } finally {
     restore();
   }
 });
 
-Deno.test("api retry after 401 reuses the original cluster", async () => {
+test("api retry after 401 reuses the original cluster", async () => {
   resetTarget("cluster-a", "gen-a");
 
   // The concrete defect this unit fixes. The header used to be read from the
@@ -195,22 +194,22 @@ Deno.test("api retry after 401 reuses the original cluster", async () => {
   try {
     await api("/v1/resources/pods");
 
-    assertEquals(calls.length, 3);
-    assertEquals(calls[0].url, "/api/v1/resources/pods");
-    assertEquals(calls[1].url, "/api/v1/auth/refresh");
-    assertEquals(calls[2].url, "/api/v1/resources/pods");
+    expect(calls.length).toBe(3);
+    expect(calls[0].url).toBe("/api/v1/resources/pods");
+    expect(calls[1].url).toBe("/api/v1/auth/refresh");
+    expect(calls[2].url).toBe("/api/v1/resources/pods");
 
     // The switch really did land between the two attempts...
-    assertEquals(selectedCluster.value, "cluster-b");
+    expect(selectedCluster.value).toBe("cluster-b");
     // ...and both attempts still went to the cluster the call was issued for.
-    assertEquals(calls[0].clusterHeader, "cluster-a");
-    assertEquals(calls[2].clusterHeader, "cluster-a");
+    expect(calls[0].clusterHeader).toBe("cluster-a");
+    expect(calls[2].clusterHeader).toBe("cluster-a");
   } finally {
     restore();
   }
 });
 
-Deno.test("api honours an explicit clusterId over the signal", async () => {
+test("api honours an explicit clusterId over the signal", async () => {
   resetTarget("cluster-a", "gen-a");
   const { calls, restore } = stubFetch([ok]);
 
@@ -218,13 +217,13 @@ Deno.test("api honours an explicit clusterId over the signal", async () => {
     await api("/v1/capabilities/cluster-pinned", {
       clusterId: "cluster-pinned",
     });
-    assertEquals(calls[0].clusterHeader, "cluster-pinned");
+    expect(calls[0].clusterHeader).toBe("cluster-pinned");
   } finally {
     restore();
   }
 });
 
-Deno.test("api does not leak clusterId into the fetch init", async () => {
+test("api does not leak clusterId into the fetch init", async () => {
   resetTarget("cluster-a", "gen-a");
   let sawClusterId = false;
   const original = globalThis.fetch;
@@ -238,13 +237,13 @@ Deno.test("api does not leak clusterId into the fetch init", async () => {
     // clusterId is ours, not RequestInit's. Passing it through would be inert
     // today but is exactly the kind of thing a future Request constructor
     // rejects.
-    assert(!sawClusterId);
+    expect(!sawClusterId).toBe(true);
   } finally {
     globalThis.fetch = original;
   }
 });
 
-Deno.test("apiPostRaw forwards signal and clusterId", async () => {
+test("apiPostRaw forwards signal and clusterId", async () => {
   resetTarget("cluster-a", "gen-a");
   const controller = new AbortController();
   const { calls, restore } = stubFetch([ok], (_call, index) => {
@@ -262,15 +261,15 @@ Deno.test("apiPostRaw forwards signal and clusterId", async () => {
       aborted = e instanceof DOMException && e.name === "AbortError";
     }
 
-    assert(aborted, "expected the aborted request to reject with AbortError");
-    assertEquals(calls[0].clusterHeader, "cluster-pinned");
-    assertStrictEquals(calls[0].signal, controller.signal);
+    expect(aborted).toBe(true);
+    expect(calls[0].clusterHeader).toBe("cluster-pinned");
+    expect(calls[0].signal).toBe(controller.signal);
   } finally {
     restore();
   }
 });
 
-Deno.test("apiPostRaw still accepts a bare AbortSignal", async () => {
+test("apiPostRaw still accepts a bare AbortSignal", async () => {
   resetTarget("cluster-a", "gen-a");
   const controller = new AbortController();
   const { calls, restore } = stubFetch([ok]);
@@ -285,26 +284,26 @@ Deno.test("apiPostRaw still accepts a bare AbortSignal", async () => {
     // The convenience wrappers accept either shape so pre-existing positional
     // call sites keep working; the bare signal must not be mistaken for a
     // targeting object with no signal.
-    assertStrictEquals(calls[0].signal, controller.signal);
-    assertEquals(calls[0].clusterHeader, "cluster-a");
+    expect(calls[0].signal).toBe(controller.signal);
+    expect(calls[0].clusterHeader).toBe("cluster-a");
   } finally {
     restore();
   }
 });
 
-Deno.test("currentTarget is a snapshot, not a live view", () => {
+test("currentTarget is a snapshot, not a live view", () => {
   resetTarget("cluster-a", "gen-a");
   const pin: ClusterTarget = currentTarget();
 
   switchCluster("cluster-b", "gen-b");
 
-  assertEquals(pin.clusterId, "cluster-a");
-  assertEquals(pin.generation, "gen-a");
-  assert(pin.epoch < clusterEpoch.value);
-  assertEquals(selectedCluster.value, "cluster-b");
+  expect(pin.clusterId).toBe("cluster-a");
+  expect(pin.generation).toBe("gen-a");
+  expect(pin.epoch < clusterEpoch.value).toBe(true);
+  expect(selectedCluster.value).toBe("cluster-b");
 });
 
-Deno.test("selectedCluster survives a reload via localStorage", () => {
+test("selectedCluster survives a reload via localStorage", () => {
   // The module's own signals are seeded from storage at import time, which has
   // already happened, so the round-trip is exercised through the two helpers
   // that seeding uses. A fake Storage keeps this honest off-DOM.
@@ -317,13 +316,13 @@ Deno.test("selectedCluster survives a reload via localStorage", () => {
   };
 
   persistTarget(storage, "cluster-a", "gen-a");
-  assertEquals(readPersistedTarget(storage), {
+  expect(readPersistedTarget(storage)).toEqual({
     clusterId: "cluster-a",
     generation: "gen-a",
   });
 });
 
-Deno.test("a legacy id with no generation is restored under the unknown sentinel", () => {
+test("a legacy id with no generation is restored under the unknown sentinel", () => {
   // What a build from before generations were written leaves behind. Dropping
   // the id silently moved the operator to a different cluster on upgrade --
   // the retargeting this module exists to prevent. The sentinel keeps the
@@ -335,13 +334,13 @@ Deno.test("a legacy id with no generation is restored under the unknown sentinel
   ]]);
   const storage = { getItem: (k: string) => store.get(k) ?? null };
 
-  assertEquals(readPersistedTarget(storage), {
+  expect(readPersistedTarget(storage)).toEqual({
     clusterId: "cluster-a",
     generation: UNKNOWN_GENERATION,
   });
 });
 
-Deno.test("the persisted pair is one value, so it cannot be half-written", () => {
+test("the persisted pair is one value, so it cannot be half-written", () => {
   // Two setItem calls could be interrupted between them -- storage full, the
   // accessor throwing -- leaving an id beside a stale generation. One key
   // means there is no intermediate state to observe.
@@ -354,40 +353,40 @@ Deno.test("the persisted pair is one value, so it cannot be half-written", () =>
   };
 
   persistTarget(storage, "cluster-a", "gen-a");
-  assertEquals(store.size, 1);
-  assertEquals(readPersistedTarget(storage), {
+  expect(store.size).toBe(1);
+  expect(readPersistedTarget(storage)).toEqual({
     clusterId: "cluster-a",
     generation: "gen-a",
   });
 });
 
-Deno.test("a hand-edited unparseable target falls back to local", () => {
+test("a hand-edited unparseable target falls back to local", () => {
   const store = new Map<string, string>([["k8scenter.clusterTarget", "{oops"]]);
   const storage = { getItem: (k: string) => store.get(k) ?? null };
 
-  assertEquals(readPersistedTarget(storage), {
+  expect(readPersistedTarget(storage)).toEqual({
     clusterId: LOCAL_CLUSTER_ID,
     generation: LOCAL_GENERATION,
   });
 });
 
-Deno.test("switchCluster does not pair a remote id with the local generation", () => {
+test("switchCluster does not pair a remote id with the local generation", () => {
   // Defaulting the id and the generation independently produced a pair that
   // describes no real registration, which then persisted and passed the
   // reload guard.
   resetTarget("cluster-a", "gen-a");
   switchCluster("cluster-remote", "");
 
-  assertEquals(selectedCluster.value, "cluster-remote");
-  assertEquals(selectedClusterGeneration.value, UNKNOWN_GENERATION);
+  expect(selectedCluster.value).toBe("cluster-remote");
+  expect(selectedClusterGeneration.value).toBe(UNKNOWN_GENERATION);
 
   // The local cluster still normalizes to the local generation, whatever it
   // was handed.
   switchCluster(LOCAL_CLUSTER_ID, "not-a-real-generation");
-  assertEquals(selectedClusterGeneration.value, LOCAL_GENERATION);
+  expect(selectedClusterGeneration.value).toBe(LOCAL_GENERATION);
 });
 
-Deno.test("apiGet accepts a bare signal, a targeting object, and neither", async () => {
+test("apiGet accepts a bare signal, a targeting object, and neither", async () => {
   resetTarget("cluster-a", "gen-a");
   const controller = new AbortController();
   const { calls, restore } = stubFetch([ok, ok, ok]);
@@ -397,16 +396,16 @@ Deno.test("apiGet accepts a bare signal, a targeting object, and neither", async
     await apiGet("/v1/resources/nodes", controller.signal);
     await apiGet("/v1/resources/services", { clusterId: "cluster-pinned" });
 
-    assertEquals(calls[0].clusterHeader, "cluster-a");
-    assertEquals(calls[1].clusterHeader, "cluster-a");
-    assertStrictEquals(calls[1].signal, controller.signal);
-    assertEquals(calls[2].clusterHeader, "cluster-pinned");
+    expect(calls[0].clusterHeader).toBe("cluster-a");
+    expect(calls[1].clusterHeader).toBe("cluster-a");
+    expect(calls[1].signal).toBe(controller.signal);
+    expect(calls[2].clusterHeader).toBe("cluster-pinned");
   } finally {
     restore();
   }
 });
 
-Deno.test("apiPost forwards a targeting object and still serializes its body", async () => {
+test("apiPost forwards a targeting object and still serializes its body", async () => {
   resetTarget("cluster-a", "gen-a");
   const { calls, restore } = stubFetch([ok, ok]);
 
@@ -416,16 +415,16 @@ Deno.test("apiPost forwards a targeting object and still serializes its body", a
       clusterId: "cluster-pinned",
     });
 
-    assertEquals(calls[0].clusterHeader, "cluster-a");
-    assertEquals(calls[0].body, JSON.stringify({ a: 1 }));
-    assertEquals(calls[1].clusterHeader, "cluster-pinned");
-    assertEquals(calls[1].body, JSON.stringify({ b: 2 }));
+    expect(calls[0].clusterHeader).toBe("cluster-a");
+    expect(calls[0].body).toBe(JSON.stringify({ a: 1 }));
+    expect(calls[1].clusterHeader).toBe("cluster-pinned");
+    expect(calls[1].body).toBe(JSON.stringify({ b: 2 }));
   } finally {
     restore();
   }
 });
 
-Deno.test("a 403 on an auth endpoint does not re-enter the forbidden hook", async () => {
+test("a 403 on an auth endpoint does not re-enter the forbidden hook", async () => {
   // The hook re-issues GET /v1/auth/me, which is inside the backend's
   // cluster-gated group and 403s for a non-admin on a remote cluster. Without
   // the guard that is one unthrottled request per round-trip, forever.
@@ -439,29 +438,29 @@ Deno.test("a 403 on an auth endpoint does not re-enter the forbidden hook", asyn
 
   try {
     await api("/v1/auth/me?namespace=default").catch(() => {});
-    assertEquals(hookCalls, 0);
+    expect(hookCalls).toBe(0);
 
     // A 403 anywhere else still refreshes permissions.
     await api("/v1/resources/pods").catch(() => {});
-    assertEquals(hookCalls, 1);
+    expect(hookCalls).toBe(1);
   } finally {
     restore();
     onForbidden(() => {});
   }
 });
 
-Deno.test("unreadable storage yields the local cluster instead of throwing", () => {
+test("unreadable storage yields the local cluster instead of throwing", () => {
   const hostile = {
     getItem: () => {
       throw new Error("The operation is insecure.");
     },
   };
 
-  assertEquals(readPersistedTarget(hostile), {
+  expect(readPersistedTarget(hostile)).toEqual({
     clusterId: LOCAL_CLUSTER_ID,
     generation: LOCAL_GENERATION,
   });
-  assertEquals(readPersistedTarget(null), {
+  expect(readPersistedTarget(null)).toEqual({
     clusterId: LOCAL_CLUSTER_ID,
     generation: LOCAL_GENERATION,
   });
@@ -476,9 +475,9 @@ Deno.test("unreadable storage yields the local cluster instead of throwing", () 
   persistTarget(writeHostile, "cluster-a", "gen-a");
 });
 
-Deno.test("RequestTargeting is assignable from a bare object literal", () => {
+test("RequestTargeting is assignable from a bare object literal", () => {
   // Type-level guard: the option bag U11b passes must stay structural, not a
   // branded/class type, or every call site needs an import just to build one.
   const t: RequestTargeting = { clusterId: "cluster-a" };
-  assertEquals(t.clusterId, "cluster-a");
+  expect(t.clusterId).toBe("cluster-a");
 });

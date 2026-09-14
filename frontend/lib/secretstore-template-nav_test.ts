@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import { singleSecretStoreHref } from "./secretstore-template-nav.ts";
 import type { ApplyResponse } from "./yaml-apply.ts";
 
@@ -40,35 +40,35 @@ function singleResultResponse(
   };
 }
 
-Deno.test("singleSecretStoreHref returns href when action=created", () => {
+test("singleSecretStoreHref returns href when action=created", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ action: "created" }),
   );
-  assertEquals(href, "/external-secrets/stores/default/vault-store");
+  expect(href).toBe("/external-secrets/stores/default/vault-store");
 });
 
-Deno.test("singleSecretStoreHref returns href when action=configured", () => {
+test("singleSecretStoreHref returns href when action=configured", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ action: "configured" }),
   );
-  assertEquals(href, "/external-secrets/stores/default/vault-store");
+  expect(href).toBe("/external-secrets/stores/default/vault-store");
 });
 
-Deno.test("singleSecretStoreHref returns href when action=unchanged (re-apply succeeds)", () => {
+test("singleSecretStoreHref returns href when action=unchanged (re-apply succeeds)", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ action: "unchanged" }),
   );
-  assertEquals(href, "/external-secrets/stores/default/vault-store");
+  expect(href).toBe("/external-secrets/stores/default/vault-store");
 });
 
-Deno.test("singleSecretStoreHref returns null when action=failed", () => {
+test("singleSecretStoreHref returns null when action=failed", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ action: "failed", failed: 1 }),
   );
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null when summary.failed > 0 even with create result", () => {
+test("singleSecretStoreHref returns null when summary.failed > 0 even with create result", () => {
   const href = singleSecretStoreHref({
     results: [{
       index: 0,
@@ -85,29 +85,29 @@ Deno.test("singleSecretStoreHref returns null when summary.failed > 0 even with 
       failed: 1,
     },
   });
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null when kind is not SecretStore", () => {
+test("singleSecretStoreHref returns null when kind is not SecretStore", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ kind: "ConfigMap" }),
   );
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null when namespace is missing", () => {
+test("singleSecretStoreHref returns null when namespace is missing", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ namespace: undefined }),
   );
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null when name is empty", () => {
+test("singleSecretStoreHref returns null when name is empty", () => {
   const href = singleSecretStoreHref(singleResultResponse({ name: "" }));
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null for multi-doc applies", () => {
+test("singleSecretStoreHref returns null for multi-doc applies", () => {
   const href = singleSecretStoreHref({
     results: [
       {
@@ -133,10 +133,10 @@ Deno.test("singleSecretStoreHref returns null for multi-doc applies", () => {
       failed: 0,
     },
   });
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref returns null when total=0", () => {
+test("singleSecretStoreHref returns null when total=0", () => {
   const href = singleSecretStoreHref({
     results: [],
     summary: {
@@ -147,12 +147,12 @@ Deno.test("singleSecretStoreHref returns null when total=0", () => {
       failed: 0,
     },
   });
-  assertEquals(href, null);
+  expect(href).toBe(null);
 });
 
-Deno.test("singleSecretStoreHref interpolates namespace and name verbatim", () => {
+test("singleSecretStoreHref interpolates namespace and name verbatim", () => {
   const href = singleSecretStoreHref(
     singleResultResponse({ namespace: "team-prod", name: "shared-vault" }),
   );
-  assertEquals(href, "/external-secrets/stores/team-prod/shared-vault");
+  expect(href).toBe("/external-secrets/stores/team-prod/shared-vault");
 });

@@ -46,7 +46,7 @@ test-backend:
 	cd backend && go test ./... -race -cover -count=1
 
 test-frontend:
-	cd frontend && deno task test
+	cd frontend && bun test
 
 # Mobile (Flutter) — analyze + test. Skipped silently when the Flutter SDK
 # is not on PATH so backend/frontend devs without Flutter can still run

@@ -6,7 +6,15 @@
       // Recreates deno.json's `"@/": "./"` import-map entry (U3 approach
       // step 2) now that Astro/Bun resolve `@/` from real dependency
       // resolution rather than an import map.
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      // U4 test-only shim: `lib/cluster.ts` imports `fresh/runtime`, a jsr:
+      // specifier only Deno's import map (deno.json) can resolve. Bun has
+      // no import map, so `bun test` needs this redirect to load
+      // cluster.ts (and api.ts, which imports it). Real Deno/Fresh builds
+      // are unaffected — deno.json's import map still wins there. Remove
+      // this entry, and lib/__shims__/fresh-runtime.ts, once cluster.ts
+      // stops importing fresh/runtime.
+      "fresh/runtime": ["./lib/__shims__/fresh-runtime.ts"]
     },
     "jsx": "preserve",
     "jsxImportSource": "preact"

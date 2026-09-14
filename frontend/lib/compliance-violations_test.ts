@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import {
   failingPolicies,
   scopeViolations,
@@ -24,48 +24,48 @@ function v(
 
 // --- severityRank ---
 
-Deno.test("severityRank: critical is most severe (lowest)", () => {
-  assertEquals(severityRank("critical") < severityRank("high"), true);
-  assertEquals(severityRank("high") < severityRank("low"), true);
+test("severityRank: critical is most severe (lowest)", () => {
+  expect(severityRank("critical") < severityRank("high")).toBe(true);
+  expect(severityRank("high") < severityRank("low")).toBe(true);
 });
 
-Deno.test("severityRank: unknown sorts last", () => {
-  assertEquals(severityRank("bogus") > severityRank("low"), true);
+test("severityRank: unknown sorts last", () => {
+  expect(severityRank("bogus") > severityRank("low")).toBe(true);
 });
 
 // --- scopeViolations ---
 
-Deno.test("scopeViolations: 'all' returns everything", () => {
+test("scopeViolations: 'all' returns everything", () => {
   const list = [v({ policy: "a", name: "x", namespace: "ns1" })];
-  assertEquals(scopeViolations(list, "all").length, 1);
+  expect(scopeViolations(list, "all").length).toBe(1);
 });
 
-Deno.test("scopeViolations: filters strictly by namespace", () => {
+test("scopeViolations: filters strictly by namespace", () => {
   const list = [
     v({ policy: "a", name: "x", namespace: "ns1" }),
     v({ policy: "a", name: "y", namespace: "ns2" }),
     v({ policy: "a", name: "z", namespace: undefined }),
   ];
   const out = scopeViolations(list, "ns1");
-  assertEquals(out.length, 1);
-  assertEquals(out[0].name, "x");
+  expect(out.length).toBe(1);
+  expect(out[0].name).toBe("x");
 });
 
 // --- failingPolicies ---
 
-Deno.test("failingPolicies: groups by policy and counts resources", () => {
+test("failingPolicies: groups by policy and counts resources", () => {
   const list = [
     v({ policy: "p1", name: "a" }),
     v({ policy: "p1", name: "b" }),
     v({ policy: "p2", name: "c" }),
   ];
   const out = failingPolicies(list, 5);
-  assertEquals(out.length, 2);
-  assertEquals(out[0].policy, "p1");
-  assertEquals(out[0].count, 2);
+  expect(out.length).toBe(2);
+  expect(out[0].policy).toBe("p1");
+  expect(out[0].count).toBe(2);
 });
 
-Deno.test("failingPolicies: blocking sorts before higher count", () => {
+test("failingPolicies: blocking sorts before higher count", () => {
   const list = [
     v({ policy: "audit", name: "a" }),
     v({ policy: "audit", name: "b" }),
@@ -73,56 +73,56 @@ Deno.test("failingPolicies: blocking sorts before higher count", () => {
     v({ policy: "enforce", name: "d", blocking: true }),
   ];
   const out = failingPolicies(list, 5);
-  assertEquals(out[0].policy, "enforce");
-  assertEquals(out[0].blocking, true);
+  expect(out[0].policy).toBe("enforce");
+  expect(out[0].blocking).toBe(true);
 });
 
-Deno.test("failingPolicies: keeps the most severe severity in a group", () => {
+test("failingPolicies: keeps the most severe severity in a group", () => {
   const list = [
     v({ policy: "p1", name: "a", severity: "low" }),
     v({ policy: "p1", name: "b", severity: "critical" }),
   ];
   const out = failingPolicies(list, 5);
-  assertEquals(out[0].severity, "critical");
+  expect(out[0].severity).toBe("critical");
 });
 
-Deno.test("failingPolicies: respects the limit", () => {
+test("failingPolicies: respects the limit", () => {
   const list = [
     v({ policy: "p1", name: "a" }),
     v({ policy: "p2", name: "b" }),
     v({ policy: "p3", name: "c" }),
   ];
-  assertEquals(failingPolicies(list, 2).length, 2);
+  expect(failingPolicies(list, 2).length).toBe(2);
 });
 
 // --- worstResources ---
 
-Deno.test("worstResources: most severe first, does not mutate input", () => {
+test("worstResources: most severe first, does not mutate input", () => {
   const list = [
     v({ policy: "p", name: "low", severity: "low" }),
     v({ policy: "p", name: "crit", severity: "critical" }),
     v({ policy: "p", name: "med", severity: "medium" }),
   ];
   const out = worstResources(list, 10);
-  assertEquals(out.map((x) => x.name), ["crit", "med", "low"]);
+  expect(out.map((x) => x.name)).toEqual(["crit", "med", "low"]);
   // input order preserved (no in-place sort)
-  assertEquals(list.map((x) => x.name), ["low", "crit", "med"]);
+  expect(list.map((x) => x.name)).toEqual(["low", "crit", "med"]);
 });
 
-Deno.test("worstResources: blocking breaks severity ties", () => {
+test("worstResources: blocking breaks severity ties", () => {
   const list = [
     v({ policy: "p", name: "audit", severity: "high", blocking: false }),
     v({ policy: "p", name: "enforce", severity: "high", blocking: true }),
   ];
   const out = worstResources(list, 10);
-  assertEquals(out[0].name, "enforce");
+  expect(out[0].name).toBe("enforce");
 });
 
-Deno.test("worstResources: respects the limit", () => {
+test("worstResources: respects the limit", () => {
   const list = [
     v({ policy: "p", name: "a", severity: "critical" }),
     v({ policy: "p", name: "b", severity: "high" }),
     v({ policy: "p", name: "c", severity: "low" }),
   ];
-  assertEquals(worstResources(list, 2).length, 2);
+  expect(worstResources(list, 2).length).toBe(2);
 });
