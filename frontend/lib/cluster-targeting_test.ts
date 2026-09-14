@@ -393,9 +393,9 @@ Deno.test("apiGet accepts a bare signal, a targeting object, and neither", async
   const { calls, restore } = stubFetch([ok, ok, ok]);
 
   try {
-    await apiGet("/v1/one");
-    await apiGet("/v1/two", controller.signal);
-    await apiGet("/v1/three", { clusterId: "cluster-pinned" });
+    await apiGet("/v1/resources/pods");
+    await apiGet("/v1/resources/nodes", controller.signal);
+    await apiGet("/v1/resources/services", { clusterId: "cluster-pinned" });
 
     assertEquals(calls[0].clusterHeader, "cluster-a");
     assertEquals(calls[1].clusterHeader, "cluster-a");
@@ -411,8 +411,10 @@ Deno.test("apiPost forwards a targeting object and still serializes its body", a
   const { calls, restore } = stubFetch([ok, ok]);
 
   try {
-    await apiPost("/v1/one", { a: 1 });
-    await apiPost("/v1/two", { b: 2 }, { clusterId: "cluster-pinned" });
+    await apiPost("/v1/resources/pods", { a: 1 });
+    await apiPost("/v1/resources/nodes", { b: 2 }, {
+      clusterId: "cluster-pinned",
+    });
 
     assertEquals(calls[0].clusterHeader, "cluster-a");
     assertEquals(calls[0].body, JSON.stringify({ a: 1 }));

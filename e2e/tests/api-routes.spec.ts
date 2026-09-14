@@ -31,6 +31,11 @@ const IGNORE: RegExp[] = [
   // Flux notifications uses this as a concat base; real routes are
   // /v1/gitops/notifications/{status,alerts,providers,receivers}.
   /^\/v1\/gitops\/notifications$/,
+  // lib/api.ts tests this as a PREFIX, not a route: a 403 from any
+  // /v1/auth/* endpoint must not re-enter the permission-refresh hook, since
+  // that hook calls /v1/auth/me and would feed itself forever. The subpaths
+  // are mounted; the prefix itself is not.
+  /^\/v1\/auth\/$/,
 ];
 
 // Directory names to skip during the scan: generated build output, vendored
