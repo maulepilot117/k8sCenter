@@ -6,7 +6,7 @@ import { selectedNamespace } from "@/lib/namespace.ts";
 import { useNamespaces } from "@/lib/hooks/use-namespaces.ts";
 import { initTheme } from "@/lib/themes.ts";
 import { initAnimationPrefs } from "@/lib/animation-prefs.ts";
-import { selectedCluster } from "@/lib/cluster.ts";
+import ClusterSwitcher from "@/islands/ClusterSwitcher.tsx";
 import NotificationBell from "@/islands/NotificationBell.tsx";
 import NavToggle from "@/islands/NavToggle.tsx";
 import ThemeToggle from "@/islands/ThemeToggle.tsx";
@@ -72,31 +72,8 @@ export default function TopBarV2() {
         {/* Collapse/expand the secondary nav panel */}
         <NavToggle />
 
-        {/* Cluster indicator */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            padding: "4px 10px",
-            borderRadius: "6px",
-            background: "var(--bg-elevated)",
-            border: "1px solid var(--border-subtle)",
-            fontSize: "13px",
-            color: "var(--text-primary)",
-          }}
-        >
-          <span
-            style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: "var(--success)",
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ fontWeight: 500 }}>{selectedCluster.value}</span>
-        </div>
+        {/* Cluster switcher */}
+        <ClusterSwitcher />
 
         {/* Namespace selector */}
         <select
