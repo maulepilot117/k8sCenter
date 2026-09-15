@@ -3,6 +3,16 @@ import { useEffect, useRef } from "preact/hooks";
 import { Spinner } from "@/components/ui/Spinner.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
+/**
+ * The editor root's classes, shared by the SSR placeholder and the hydrated
+ * root so the two cannot diverge.
+ *
+ * `relative` is load-bearing, not cosmetic: Monaco positions .view-lines and
+ * .monaco-scrollable-element absolutely, and they resolve against the nearest
+ * positioned ancestor. Without it they escape the editor box entirely.
+ */
+const EDITOR_ROOT_CLASS = "relative rounded-md border border-border-primary";
+
 export interface MonacoEditorProps {
   /** Initial YAML content */
   value: string;
@@ -188,12 +198,15 @@ export function MonacoEditor({
 
   // Fallback textarea for when Monaco fails to load
   if (!IS_BROWSER) {
-    return (
-      <div
-        style={{ height }}
-        class="bg-base rounded-md border border-border-primary"
-      />
-    );
+    // Must carry EDITOR_ROOT_CLASS, identical to the hydrated root below.
+    // Preact hydration keeps the server-rendered root's class and only
+    // recurses into children, so a class that differs here sticks for the
+    // life of the page. This root previously said `bg-base` where the
+    // hydrated root says `relative`; losing `position: relative` left
+    // Monaco's absolutely-positioned .view-lines resolving against <body>,
+    // which drew the code at x=62 behind the secondary nav instead of
+    // inside the editor box.
+    return <div style={{ height }} class={EDITOR_ROOT_CLASS} />;
   }
 
   if (failed.value) {
@@ -211,10 +224,7 @@ export function MonacoEditor({
   }
 
   return (
-    <div
-      class="relative rounded-md border border-border-primary"
-      style={{ height }}
-    >
+    <div class={EDITOR_ROOT_CLASS} style={{ height }}>
       {loading.value && (
         <div class="absolute inset-0 z-10 flex items-center justify-center bg-base text-text-muted">
           <div class="flex items-center gap-2">
