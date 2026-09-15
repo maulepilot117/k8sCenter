@@ -10,6 +10,26 @@ import {
 } from "@/lib/constants.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
+/**
+ * The rail's root <nav> styling, shared by the SSR placeholder and the
+ * hydrated tree so the two cannot diverge.
+ *
+ * Preact hydration does not re-apply the root element's class/style — it
+ * matches the existing server-rendered node and recurses into children. A
+ * property present on one root and not the other therefore sticks for the
+ * life of the page, with nothing in the build or the E2E suite to catch it.
+ */
+const RAIL_NAV_STYLE = {
+  width: "var(--rail-width, 60px)",
+  gridRow: "1 / -1",
+  borderRight: "1px solid var(--glass-border)",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  zIndex: 40,
+  overflow: "hidden",
+} as const;
+
 /** SVG icon path strings keyed by icon name. viewBox is 0 0 20 20. */
 const ICONS: Record<string, string> = {
   grid: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/>',
@@ -84,17 +104,17 @@ export default function IconRail({ currentPath }: IconRailProps) {
   const activeDomain = getActiveDomain(currentPath);
 
   if (!IS_BROWSER) {
-    // SSR placeholder with correct dimensions
-    return (
-      <nav
-        class="glass-bar"
-        style={{
-          width: "var(--rail-width, 60px)",
-          gridRow: "1 / -1",
-          borderRight: "1px solid var(--glass-border)",
-        }}
-      />
-    );
+    // SSR placeholder with correct dimensions.
+    //
+    // It MUST carry the identical style to the hydrated <nav> below. Preact
+    // hydration attaches children to the server-rendered root but does not
+    // re-apply that root's class/style, so any property present here and
+    // missing there (or vice versa) survives permanently in the browser. The
+    // shared RAIL_NAV_STYLE is what makes the two impossible to drift apart:
+    // when this placeholder omitted display/align-items/z-index/overflow, the
+    // rail rendered unstyled and the active-item indicator escaped its
+    // overflow:hidden clip.
+    return <nav class="glass-bar" style={RAIL_NAV_STYLE} />;
   }
 
   function RailIcon({
@@ -186,19 +206,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
   }
 
   return (
-    <nav
-      class="glass-bar"
-      style={{
-        width: "var(--rail-width, 60px)",
-        gridRow: "1 / -1",
-        borderRight: "1px solid var(--glass-border)",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        zIndex: 40,
-        overflow: "hidden",
-      }}
-    >
+    <nav class="glass-bar" style={RAIL_NAV_STYLE}>
       {/* Logo area — height matches topbar */}
       <div
         style={{

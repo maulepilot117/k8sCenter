@@ -25,6 +25,14 @@ interface PolicyWarning {
   message: string;
 }
 
+/**
+ * The page root's classes, shared by the SSR placeholder and the hydrated root
+ * so the two cannot diverge. Preact applies the server-rendered root's class
+ * once at hydration and never re-diffs that node, so a class present on one
+ * root and missing from the other sticks for the life of the page.
+ */
+const EDITOR_PAGE_CLASS = "p-6 max-w-5xl";
+
 const VALID_ENTITIES = [
   "world",
   "cluster",
@@ -100,8 +108,15 @@ export default function CiliumPolicyEditor({
   useDirtyGuard(dirty);
 
   if (!IS_BROWSER) {
+    // Must carry EDITOR_PAGE_CLASS, identical to the hydrated root below.
+    // This island is mounted with client:load from
+    // src/pages/networking/cilium-policies/new.astro, so it is server-rendered
+    // and hydrated in place — and Preact keeps the server-rendered root's
+    // class, only recursing into children. When this root omitted
+    // `max-w-5xl`, the form lost its width constraint for the life of the
+    // page with nothing in the build or the E2E suite to catch it.
     return (
-      <div class="p-6">
+      <div class={EDITOR_PAGE_CLASS}>
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Cilium Network Policy
         </h1>
@@ -220,7 +235,7 @@ export default function CiliumPolicyEditor({
   };
 
   return (
-    <div class="p-6 max-w-5xl">
+    <div class={EDITOR_PAGE_CLASS}>
       <div class="flex items-center justify-between mb-6">
         <h1 class="text-2xl font-semibold text-text-primary">
           Create Cilium Network Policy
