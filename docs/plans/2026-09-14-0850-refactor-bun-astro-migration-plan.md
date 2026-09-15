@@ -378,6 +378,7 @@ The frontend is one component, but three contracts cross its edge and this migra
 | U8 | Port the page routes and author hydration | `frontend/src/pages/` | U9, U13, U14 |
 | U10 | Container on `distroless/cc` | `frontend/Dockerfile`, `CLAUDE.md` | U6, U8 |
 | U11 | CI workflows and E2E harness | `.github/workflows/`, `e2e/` | U2, U10 |
+| U15 | Collapse the duplicated `lib`/`src/lib` module twins | `frontend/lib/{cluster,ws,namespace}.ts`, `frontend/server/check-no-duplicate-lib-state.ts` | U9, U13 |
 | U12 | Cutover verification and Deno removal | repo-wide | U11 |
 
 ### U1. Spike the risky seams
@@ -829,6 +830,71 @@ The frontend is one component, but three contracts cross its edge and this migra
 
 **Verification:** All four workflows green on a pull request. No E2E spec's assertions changed.
 
+### U15. Collapse the duplicated lib/src/lib module twins
+
+Discovered during U12's prep, not planned. Recorded as its own unit because it
+is a functional regression against Fresh with its own fix and its own guard,
+not a tidy-up.
+
+**Goal:** One instance of every stateful module in the client bundle.
+
+**Requirements:** R3 (behavioural parity). Governed by KTD5's principle, one
+layer up: KTD5 deduplicates identity-checked *dependencies*; this is the same
+failure in the project's own modules.
+
+**What was wrong.** U9 forked several `frontend/lib/*` modules into
+`frontend/src/lib/` so the Astro tree could use a real `IS_BROWSER` instead of
+the test-only `fresh/runtime` shim. The forks were byte-equivalent apart from
+that one import, which is exactly what made the consequence invisible:
+module-scope state is per module. The built client bundle contained **two**
+`cluster.ts` modules and therefore two `selectedCluster` signals — the
+islands wrote to one, and `lib/api.ts` (105 src importers, via nine distinct
+`@/lib/*` entry points) read the other. Compounding it, that second copy's
+`IS_BROWSER` was the shim's constant `false`, so its localStorage restore and
+its persist effect were tree-shaken out entirely.
+
+The net effect in a browser: **every API call went to the local cluster
+regardless of which cluster the user had selected.** In a multi-cluster
+product that is a correctness failure with a security flavour — the user
+believes they are looking at cluster B while reading cluster A. `ws.ts` had
+the identical shape: two WebSocket clients, two subscription registries, an
+island subscribed through one unable to see an event delivered to the other.
+`namespace.ts` was duplicated in the source graph too; the bundler happened to
+emit one copy, which is not a property to rely on.
+
+All four gates were green throughout. This is the fifth browser-only defect in
+this migration to pass every gate, and the most consequential.
+
+**Approach:**
+
+1. Make `lib/cluster.ts`, `lib/ws.ts` and `lib/namespace.ts` re-export their
+   `src/lib` twins (`export * from "@/src/lib/<name>.ts"`). One instance,
+   reachable from either import path. This is preferred over repointing 105+
+   import sites: it makes the duplication impossible rather than merely absent
+   today, and it touches three files instead of a hundred.
+2. Add `server/check-no-duplicate-lib-state.ts` to `bun run check`. It walks
+   the source import graph — not the built output, since whether Rollup
+   coincidentally deduplicates two similar modules is not a correctness
+   property — and fails when the src tree reaches a `frontend/lib` module that
+   has a `src/lib` twin and is not a re-export of it. Type-only and frozen-data
+   twins are exempt by explicit name.
+
+**Test scenarios:**
+
+- The built client bundle contains exactly one module carrying the
+  `k8scenter.clusterTarget` key, and exactly one carrying the WS auth
+  protocol. Verified by inspecting `dist/client/_astro/`.
+- That surviving cluster module has a live `localStorage` read *and* write,
+  proving `IS_BROWSER` is the runtime check and not the shim's constant.
+- It is imported by both the API chunk and the island chunks — 99 chunks
+  import it — proving one shared instance rather than one survivor.
+- The guard fails on a tree where a twin is duplicated, and names the import
+  chain that caused it.
+- Both trees still build: `deno task build` and `astro build`.
+
+**Verification:** `bun run check` (with the new guard), `bun test`,
+`deno task check`, `deno task build`, `bun run build`.
+
 ### U12. Cutover verification and Deno removal
 
 **Goal:** Retire the Fresh tree and prove parity.
@@ -857,6 +923,7 @@ The frontend is one component, but three contracts cross its edge and this migra
 - Covers R3 / KTD14. The screenshot comparison across the 49 navigation-reachable pages shows no unexplained visual difference.
 - Covers R3. A manual walk of the pod list, a pod detail, a wizard, and a YAML apply shows no visual or behavioural difference from the pre-migration build.
 - The backend suite is untouched and still green, proving the migration stayed on its side of the boundary.
+- The three `lib/{cluster,ws,namespace}.ts` re-export shims from U15 are still one-line re-exports, and `frontend/lib/__shims__/fresh-runtime.ts` is deleted along with its `tsconfig.json` `paths` entry — its remaining consumers all live in the Fresh tree this unit removes.
 
 **Verification:** No live Deno reference remains. The E2E suite passes, never shrunk. The production soak closed clean. Release G is unblocked.
 

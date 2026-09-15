@@ -1,32 +1,48 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { FRESH_ANTI_FLASH_SCRIPT } from "./__fixtures__/fresh-parity.ts";
 import { ANTI_FLASH_SCRIPT } from "./anti-flash-script.ts";
 
 /**
- * `frontend/routes/_app.tsx` is untouched by this unit (U9/U12 own its
- * removal) and stays the parity reference until then (KD4). Extracting the
- * literal script text out of it, rather than re-typing it by hand into
- * this test, is what makes "byte-identical" a checked fact instead of an
- * assertion.
+ * The parity reference is the frozen fixture, not the Fresh tree (U12 step
+ * 2b). Reading `frontend/routes/_app.tsx` directly was the right check while
+ * both trees existed, and becomes a broken test the moment U12 deletes it —
+ * and a test that vanishes with its source stops guarding these bytes exactly
+ * when it becomes the only thing that does.
+ *
+ * The Fresh source is still consulted, as a drift guard, for as long as it
+ * exists: if someone edits _app.tsx before the tree is removed, the fixture
+ * and the source disagree and this file says so. After deletion that check
+ * self-disables and the fixture assertion carries on alone.
  */
-function readFreshAntiFlashScript(): string {
-  const appTsxPath = fileURLToPath(
-    new URL("../../routes/_app.tsx", import.meta.url),
-  );
-  const source = readFileSync(appTsxPath, "utf-8");
+const FRESH_APP_TSX = fileURLToPath(
+  new URL("../../routes/_app.tsx", import.meta.url),
+);
+
+function readFreshAntiFlashScript(): string | null {
+  if (!existsSync(FRESH_APP_TSX)) return null;
+  const source = readFileSync(FRESH_APP_TSX, "utf-8");
   const match = source.match(/__html:\s*\n?\s*`([^`]*)`/);
   if (!match) {
     throw new Error(
-      "Could not find the dangerouslySetInnerHTML script in routes/_app.tsx — " +
-        "has it moved or changed shape?",
+      "routes/_app.tsx exists but its dangerouslySetInnerHTML script could " +
+        "not be found — has it moved or changed shape? Either fix the match, " +
+        "or, if the Fresh tree is on its way out, delete the file rather than " +
+        "leaving a half-readable reference behind.",
     );
   }
   return match[1];
 }
 
-test("ANTI_FLASH_SCRIPT is byte-identical to the Fresh original in routes/_app.tsx (KTD13)", () => {
-  expect(ANTI_FLASH_SCRIPT).toBe(readFreshAntiFlashScript());
+test("ANTI_FLASH_SCRIPT is byte-identical to the frozen Fresh original (KTD13)", () => {
+  expect(ANTI_FLASH_SCRIPT).toBe(FRESH_ANTI_FLASH_SCRIPT);
+});
+
+test("the frozen fixture still matches routes/_app.tsx, while that file exists", () => {
+  const fromSource = readFreshAntiFlashScript();
+  if (fromSource === null) return; // Fresh tree deleted; the fixture stands alone.
+  expect(FRESH_ANTI_FLASH_SCRIPT).toBe(fromSource);
 });
 
 test("ANTI_FLASH_SCRIPT reads exactly the kc.theme and k8scenter-animations keys", () => {
