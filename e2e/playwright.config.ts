@@ -47,14 +47,43 @@ export default defineConfig({
       },
     },
     {
-      // In CI, use the pre-built production server (more stable than Vite dev server).
-      // Locally, use Vite dev server for HMR convenience.
-      command: process.env.CI ? "deno task start" : "deno task dev",
+      // In CI, use the pre-built production server (more stable than the Vite
+      // dev server). Locally, use `astro dev` for HMR convenience.
+      //
+      // Both sides run frontend/server/*: `bun run start` is server/prod.ts,
+      // and `astro dev` mounts the same dispatch through server/dev-plugin.ts.
+      // That shared entrypoint is what R18 is about -- the two must not
+      // diverge on /ws, security headers, or the /api BFF proxy again.
+      command: process.env.CI ? "bun run start" : "bun run dev",
       cwd: "../frontend",
       url: process.env.CI ? "http://localhost:8000" : "http://localhost:5173",
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
     },
+    // CI only: a second frontend, running `astro dev` beside the built one.
+    //
+    // This exists for websocket-rejection.spec.ts. R18's whole claim is that
+    // dev and prod share one WebSocket implementation and cannot drift apart
+    // on the guards -- and the only way to test that is to have both running
+    // and assert they answer identically. Locally the configured server IS
+    // the dev server, so the comparison would be against itself; the spec
+    // falls back to a source-level assertion there and says so.
+    //
+    // Playwright owns the lifecycle (readiness probe, teardown) rather than a
+    // backgrounded shell step in the workflow, which is what makes this safe
+    // to add to a timing-sensitive suite. E2E_ALT_BASE_URL in e2e.yml is what
+    // points the spec at it.
+    ...(process.env.CI
+      ? [
+          {
+            command: "bun run dev",
+            cwd: "../frontend",
+            url: "http://localhost:5173",
+            timeout: 120_000,
+            reuseExistingServer: false,
+          },
+        ]
+      : []),
   ],
 
   projects: [
@@ -73,7 +102,11 @@ export default defineConfig({
       // discoverability.spec.ts is excluded for a different reason: it deletes
       // every pin and saved view the shared admin user owns, and pins.spec.ts
       // and saved-views.spec.ts (both in this project) own those same records.
-      testIgnore: [/api-routes\.spec\.ts/, /discoverability\.spec\.ts/],
+      testIgnore: [
+        /api-routes\.spec\.ts/,
+        /discoverability\.spec\.ts/,
+        /route-inventory\.spec\.ts/,
+      ],
     },
     {
       name: "route-contract",
@@ -84,6 +117,20 @@ export default defineConfig({
       },
       // Run strictly after the main suite finishes so its tests can't
       // compete for backend rate-limit buckets or browser resources.
+      dependencies: ["chromium"],
+    },
+    {
+      // route-inventory walks every page under frontend/src/pages and asserts
+      // one HTTP outcome each -- ~200 tests. They use only the `request`
+      // fixture, so they are cheap, but that is exactly why api-routes.spec.ts
+      // was split out too: wizard-flows is timing-sensitive and should not
+      // share its runtime budget with a couple of hundred siblings.
+      name: "route-inventory",
+      testMatch: /route-inventory\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        storageState: "playwright/.auth/admin.json",
+      },
       dependencies: ["chromium"],
     },
     {

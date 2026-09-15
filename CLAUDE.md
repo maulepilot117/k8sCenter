@@ -170,7 +170,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization), `GET /cluster/dashboard-trends[?range=15m|1h|6h|24h]` (metric-card sparkline series incl. cluster network RX/TX Mbps; unknown/omitted range defaults to 1h; local cluster only)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache)
 - Multi-cluster: `GET/POST/DELETE /clusters`
-- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows,logs-search}`
+- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,flows,logs-search}` — five channels, not six. `alerts` was listed here and is permitted by the frontend's WS allowlist, but `routes.go` has never mounted it and nothing in the frontend connects to it. The allowlist entry survives as a verbatim behaviour port (R6); U11's `websocket-channels.spec.ts` covers it as the allowlisted-but-unserved case so a future change has to decide which side is wrong.
 
 **Auth flow:** `POST /auth/login` → JWT access token + httpOnly refresh cookie → `POST /auth/refresh` on 401.
 

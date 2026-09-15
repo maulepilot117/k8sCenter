@@ -16,6 +16,12 @@ export default defineConfig({
   // headers on every response (KTD3). Astro's own CSP feature stays off
   // for the same reason -- see frontend/main.ts today, ported in U5/U7.
   output: "server",
+  // 5173 rather than Astro's own 4321 default. That is the port `make
+  // dev-frontend` has always served on, the one CLAUDE.md documents, and the
+  // one Playwright's local (non-CI) webServer entry expects. The migration is
+  // meant to be invisible to anyone running the app, and a moved dev URL is
+  // the most visible thing there is.
+  server: { port: 5173 },
   adapter: node({ mode: "middleware" }),
   integrations: [preact()],
   vite: {

@@ -27,8 +27,13 @@ dev-db-stop:
 dev-backend:
 	cd backend && go run ./cmd/kubecenter --config ""
 
-dev-frontend:
-	cd frontend && deno task dev
+# Bun/Astro as of U11. The Fresh dev server is still runnable directly
+# (`cd frontend && deno task dev`) until U12 deletes the tree, but it binds the
+# same port 5173, so leaving both behind one command would mean whichever
+# started first silently wins and a developer could spend an afternoon testing
+# the stack they thought they had migrated off.
+dev-frontend: check-bun-version
+	cd frontend && bun run dev
 
 # Build
 build: build-backend build-frontend
@@ -36,8 +41,11 @@ build: build-backend build-frontend
 build-backend:
 	cd backend && go build -ldflags="$(LDFLAGS)" -o bin/kubecenter ./cmd/kubecenter
 
-build-frontend:
-	cd frontend && deno task build
+# The image, CI and the E2E harness all build with Bun as of U10/U11; this is
+# the same build, so that `make build-frontend` and what actually ships cannot
+# disagree. `deno task build` still works for the Fresh tree until U12.
+build-frontend: check-bun-version
+	cd frontend && bun run build
 
 # Testing
 test: test-backend test-frontend mobile-test

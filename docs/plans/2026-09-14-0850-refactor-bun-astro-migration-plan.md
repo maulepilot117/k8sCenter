@@ -817,7 +817,8 @@ The frontend is one component, but three contracts cross its edge and this migra
 - Covers R18. The WebSocket spec passes against both the dev server and the built server.
 - Covers R11. The route-contract spec still discovers more than ten `/v1/` paths, proving its scan reaches the new tree.
 - Covers AE1 / R11. The new route-inventory spec covers every category in U8's inventory, and each category meets its own expected outcome.
-- Covers AE2 / R4. Log tail, exec, alerts, flows and logs-search each stream in their own spec.
+- Covers AE2 / R4. Log tail, exec, flows and logs-search each get their own spec. `alerts` gets one too, but not a streaming one: U11 found the backend has never mounted `/api/v1/ws/alerts` — `routes.go` mounts `resources`, `flows`, `logs-search`, `logs` and `exec`, and nothing in the frontend connects to `alerts`. The allowlist entry is a verbatim behaviour port (R6), so it stays; the spec pins it as the allowlisted-but-unserved case, and CLAUDE.md's endpoint list, which also claimed six channels, is corrected. Deciding which side is wrong is out of scope for a migration at strict parity.
+- `flows` and `logs-search` cannot be proved to stream in the kind fixture — `flows` is only mounted when Hubble is discovered and `logs-search` 503s before upgrade with no Loki. Those two assert the unavailable path (socket opens, tears down, zero frames, close code in range and never 1006, which is `remapCloseCode`'s actual contract) rather than skipping.
 - Covers R6 / R18. A non-allowlisted WebSocket endpoint and a traversal payload are each refused identically under the dev server and the built server.
 - Covers R12. The five security headers are asserted on a page response, a static asset, and a 404.
 - The frontend CI job fails when `bun run check` fails.

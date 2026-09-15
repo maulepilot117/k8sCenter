@@ -48,17 +48,17 @@ jobs:
           go-version-file: backend/go.mod
           cache: true
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version: "~2"
+          bun-version-file: .bun-version
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: deno install
+        run: bun install --frozen-lockfile
 
       - name: Build frontend
         working-directory: frontend
-        run: deno task build
+        run: bun run build
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -113,6 +113,13 @@ jobs:
           CI: "true"
           E2E_BACKEND_COMMAND: "../backend/bin/kubecenter --config ''"
           KUBECENTER_DATABASE_URL: "postgresql://k8scenter:k8scenter@localhost:5432/k8scenter?sslmode=disable"
+          # The `astro dev` server playwright.config.ts starts alongside the
+          # built one in CI. websocket-rejection.spec.ts compares the two and
+          # fails if they answer a rejected upgrade differently -- which is the
+          # only real test of R18's claim that dev and prod share one WebSocket
+          # implementation. Without this the spec silently falls back to a
+          # source-level assertion.
+          E2E_ALT_BASE_URL: "http://localhost:5173"
         run: npx playwright test
 
       - name: Cleanup orphaned E2E resources

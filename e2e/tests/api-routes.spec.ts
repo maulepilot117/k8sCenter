@@ -15,7 +15,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, "../../frontend");
 
 // Directories we scan for string literals containing API paths.
-const SCAN_DIRS = ["islands", "lib", "routes", "components"];
+//
+// Repointed at the Astro tree during the Bun migration. The old Fresh
+// directories (islands/, lib/, routes/, components/) still exist until U12
+// deletes them, so scanning both would double-count the same literals out of
+// files that are on their way to being removed -- and, worse, would keep this
+// guard passing on the strength of the dead tree alone after the new one
+// stopped matching. src/ is the only tree the shipped server renders from.
+// The `paths.length > 10` assertion below is what fails loudly if this list
+// ever goes stale again.
+const SCAN_DIRS = [
+  "src/islands",
+  "src/lib",
+  "src/pages",
+  "src/components",
+  "src/layouts",
+  "server",
+];
 
 // Matches pure-literal "/v1/…" paths with no template expressions or params.
 // Drops entries containing ${}, ${, `:`, or spaces so dynamic paths like
@@ -45,7 +61,9 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   ".git",
+  ".astro",
   "static",
+  "public",
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -61,7 +79,11 @@ function walk(dir: string, out: string[] = []): string[] {
     const s = statSync(p);
     if (s.isDirectory()) {
       walk(p, out);
-    } else if (/\.(ts|tsx|js|jsx)$/.test(entry)) {
+      // .astro added with the Bun migration: a page's frontmatter is where a
+      // route-level fetch now lives, and it is plain TypeScript. Omitting the
+      // extension here would have quietly shrunk this guard's coverage to the
+      // islands alone.
+    } else if (/\.(ts|tsx|js|jsx|astro)$/.test(entry)) {
       out.push(p);
     }
   }
