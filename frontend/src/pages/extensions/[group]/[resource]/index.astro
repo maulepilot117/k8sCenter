@@ -1,0 +1,10 @@
+---
+import CRDResourceList from "../../../../islands/CRDResourceList.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <CRDResourceList client:load
+        group={(Astro.params.group as string)}
+        resource={(Astro.params.resource as string)}
+      />
+</ChromeLayout>

@@ -1,0 +1,137 @@
+import { useSignal } from "@preact/signals";
+import { useEffect } from "preact/hooks";
+import { IssuerTypeBadge } from "@/components/ui/CertificateBadges.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
+import { apiGet } from "@/lib/api.ts";
+import type { Issuer } from "@/lib/certmanager-types.ts";
+import { IS_BROWSER } from "@/src/lib/is-browser.ts";
+
+export default function IssuersList() {
+  const loading = useSignal(true);
+  const error = useSignal<string | null>(null);
+  const issuers = useSignal<Issuer[]>([]);
+
+  useEffect(() => {
+    if (!IS_BROWSER) return;
+
+    Promise.all([
+      apiGet<Issuer[]>("/v1/certificates/issuers"),
+      apiGet<Issuer[]>("/v1/certificates/clusterissuers"),
+    ])
+      .then(([nsRes, clusterRes]) => {
+        const ns = Array.isArray(nsRes.data) ? nsRes.data : [];
+        const cl = Array.isArray(clusterRes.data) ? clusterRes.data : [];
+        issuers.value = [...ns, ...cl];
+      })
+      .catch(() => {
+        error.value = "Failed to load issuers";
+      })
+      .finally(() => {
+        loading.value = false;
+      });
+  }, []);
+
+  if (!IS_BROWSER) return null;
+
+  return (
+    <div class="p-6">
+      <div class="flex items-start justify-between mb-1">
+        <h1 class="text-2xl font-bold text-text-primary">Issuers</h1>
+        <div class="flex gap-2">
+          <a
+            href="/security/certificates/issuers/new"
+            class="inline-flex items-center gap-2 rounded-md border border-border-primary px-3 py-1.5 text-sm font-medium text-text-primary hover:bg-hover"
+          >
+            Create Issuer
+          </a>
+          <a
+            href="/security/certificates/cluster-issuers/new"
+            class="inline-flex items-center gap-2 rounded-md bg-brand px-3 py-1.5 text-sm font-medium hover:bg-brand/90"
+            style={{ color: "var(--bg-base)" }}
+          >
+            Create ClusterIssuer
+          </a>
+        </div>
+      </div>
+      <p class="text-sm text-text-muted mb-6">
+        cert-manager Issuers and ClusterIssuers.
+      </p>
+
+      {loading.value && (
+        <div class="flex justify-center py-12">
+          <Spinner class="text-brand" />
+        </div>
+      )}
+
+      {error.value && <p class="text-sm text-danger py-4">{error.value}</p>}
+
+      {!loading.value && !error.value && issuers.value.length > 0 && (
+        <div class="overflow-x-auto rounded-lg border border-border-primary">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border-primary bg-surface">
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Name
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Scope
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Namespace
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Type
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Ready
+                </th>
+                <th class="px-3 py-2 text-left text-xs font-medium text-text-muted">
+                  Details
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-border-subtle">
+              {issuers.value.map((iss) => (
+                <tr key={iss.uid} class="hover:bg-hover/30">
+                  <td class="px-3 py-2 font-medium text-text-primary">
+                    {iss.name}
+                  </td>
+                  <td class="px-3 py-2 text-text-secondary">{iss.scope}</td>
+                  <td class="px-3 py-2 text-text-secondary">
+                    {iss.namespace || "\u2014"}
+                  </td>
+                  <td class="px-3 py-2">
+                    <IssuerTypeBadge type={iss.type} />
+                  </td>
+                  <td class="px-3 py-2">
+                    {iss.ready ? (
+                      <span class="text-success text-xs font-medium">
+                        Ready
+                      </span>
+                    ) : (
+                      <span class="text-danger text-xs font-medium">
+                        Not Ready
+                      </span>
+                    )}
+                  </td>
+                  <td class="px-3 py-2 text-text-secondary text-xs truncate max-w-[280px]">
+                    {iss.acmeServer || iss.reason || "\u2014"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!loading.value && !error.value && issuers.value.length === 0 && (
+        <div class="text-center py-12 rounded-lg border border-border-primary bg-bg-elevated">
+          <p class="text-text-muted">
+            No issuers found. Issuers will appear here once cert-manager is
+            installed and configured.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

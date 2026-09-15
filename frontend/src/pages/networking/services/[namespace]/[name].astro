@@ -1,0 +1,12 @@
+---
+import ResourceDetail from "../../../../islands/ResourceDetail.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <ResourceDetail client:load
+        kind="services"
+        title="Service"
+        namespace={(Astro.params.namespace as string)}
+        name={(Astro.params.name as string)}
+      />
+</ChromeLayout>

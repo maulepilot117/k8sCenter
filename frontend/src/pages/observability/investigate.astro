@@ -1,0 +1,15 @@
+---
+import DiagnosticWorkspace from "../../islands/DiagnosticWorkspace.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="p-6 space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold text-text-primary">Investigate</h1>
+          <p class="mt-1 text-sm text-text-secondary">
+            Automated diagnostics and blast radius analysis
+          </p>
+        </div>
+        <DiagnosticWorkspace client:load />
+      </div>
+</ChromeLayout>

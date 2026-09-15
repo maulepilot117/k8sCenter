@@ -1,115 +1,114 @@
-# Stage 1: Install dependencies and build (always on amd64 — Deno WASM loader
-# crashes under QEMU ARM64 emulation, but build output is arch-independent JS)
-FROM --platform=linux/amd64 denoland/deno:2.9.6 AS builder
+# syntax=docker/dockerfile:1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: install, build, and compile the launcher
+#
+# Runs on the BUILD platform, not the target: everything expensive here
+# (bun install, astro build) produces architecture-independent JavaScript, and
+# the one architecture-dependent artifact -- the compiled launcher -- is
+# cross-compiled by Bun in a single flag. That is strictly better than the
+# Deno image's `--platform=linux/amd64` pin, which existed because Deno's WASM
+# loader crashed under QEMU ARM64: there is no emulation here to crash.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73 AS builder
+
+ARG TARGETARCH
 
 WORKDIR /app
 
-# Copy dependency files first for layer caching
-COPY deno.json deno.lock* package.json* ./
-RUN deno install
+# Dependency files first, for layer caching. bunfig.toml carries the
+# machine-enforced 7-day supply-chain cooldown (KTD7); it must be present
+# before `bun install` or the gate silently does not apply.
+COPY package.json bun.lock bunfig.toml ./
+RUN bun install --frozen-lockfile
 
-# Copy source and build
+# Source, then the Astro build: dist/client/ (browser assets) and
+# dist/server/entry.mjs (the middleware-mode SSR handler).
 COPY . .
-RUN deno task build
+RUN bun run build
 
-# Cache all runtime dependencies (ensures no network fetches at startup)
-RUN deno cache _fresh/server.js || true
+# Pre-bundle the SSR entry in place so its externals are inlined (KTD6).
+#
+# Without this the launcher cannot load it at all: the emitted entry.mjs
+# imports bare specifiers such as `preact` that resolve only against
+# node_modules, and node_modules is exactly what must not reach the runtime
+# layer. `--target=bun` inlines them. Built to a temp path first because
+# `bun build` will not write over its own input.
+RUN bun build dist/server/entry.mjs \
+      --target=bun \
+      --outfile /tmp/entry.bundled.mjs \
+ && mv /tmp/entry.bundled.mjs dist/server/entry.mjs
 
-# Drop the build toolchain before it can reach the runtime image.
+# Compile the launcher.
 #
-# The build needs vite, postcss, tailwind and their dependency trees; the
-# server it produces does not. `deno task build` bundles every npm import into
-# _fresh/, leaving jsr:@fresh/core and node: builtins as the only bare
-# specifiers in the output. Shipping the toolchain anyway handed Trivy a set of
-# packages the running container cannot even load — five HIGH CVEs across
-# browserslist, nanoid and postcss, none reachable at runtime, all of them
-# release-blocking. Deleting the toolchain removes that entire class instead of
-# chasing each new advisory with a version bump.
+# This is the half of the server that CAN be compiled. server/prod.ts and
+# everything it imports statically (dispatch, static, ws-proxy, headers, ws)
+# are embedded in the binary; dist/server/entry.mjs deliberately is not,
+# because @astrojs/node resolves its own asset directory by walking
+# import.meta.url for a literal `server` path segment and a compiled binary's
+# virtual path has none. The launcher imports it from disk instead (KTD6).
 #
-# Two directories hold it, and both have to go or the scanner still finds it:
-#   /app/node_modules  — the npm tree `deno install` materialises
-#   /deno-dir/npm      — Deno's own npm cache, a second copy of the same thing
-#
-# The esbuild binaries were already deleted here for exactly this reason (an
-# embedded Go binary that tripped Go stdlib CVEs). This generalises that
-# one-package fix to the toolchain it was part of.
-#
-# What must survive is the rest of /deno-dir — the jsr modules `deno serve`
-# resolves at startup. Only the npm subtree is removed.
-RUN rm -rf /app/node_modules /deno-dir/npm
+# BUN_COMPILE_TARGET defaults to the baseline x64 build, which runs on any
+# x86-64 CPU. The non-baseline `bun-linux-x64` build is faster but requires
+# AVX2 (Intel Haswell, 2013, and later) and aborts with "Illegal instruction"
+# on anything older. k8sCenter ships as a Helm chart onto clusters whose
+# hardware we do not choose, so the default is the one that always starts; an
+# operator who knows their nodes can pass --build-arg to take the faster path.
+# arm64 has no baseline variant.
+ARG BUN_COMPILE_TARGET=""
+RUN set -eux; \
+    target="${BUN_COMPILE_TARGET}"; \
+    if [ -z "$target" ]; then \
+      case "$TARGETARCH" in \
+        amd64) target="bun-linux-x64-baseline" ;; \
+        arm64) target="bun-linux-arm64" ;; \
+        *) echo "ERROR: unsupported TARGETARCH '$TARGETARCH'" >&2; exit 1 ;; \
+      esac; \
+    fi; \
+    echo "compiling launcher for $target"; \
+    bun build --compile --target="$target" server/prod.ts --outfile k8scenter-frontend
 
-# Security patch stage: overlay patched OS libraries onto distroless so Trivy
-# clears the open CVEs. Uses target platform so library arch paths match.
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: security patch overlay
 #
-#   libssl3t64 3.5.6-1~deb13u1 → 3.5.6-1~deb13u2   [pinned]
-#     Restored 2026-06-10, hours after being removed: the base caught up
-#     to deb13u1, then Debian rolled deb13u2 in trixie-security fixing
-#     CVE-2026-45447 (HIGH) + 14 lower CVEs, and the Trivy CRITICAL,HIGH
-#     gate failed on the now-stale base. Pin is bumped by hand whenever
-#     Debian rolls a new patch; the base-version assertion below fires
-#     when distroless catches up (= update or drop the patch). Debian's
-#     signed security pocket is exempt from the 7-day supply-chain
-#     cooldown (it IS the defense), so a fresh deb13uN pin is fine.
-#
-#   libc6                       → latest in trixie  [unpinned + 7-day gate]
-#     Pinning libc6 was the recurring failure source — Debian rolls
-#     glibc patches faster than we bump pins, and the missing version
-#     fails apt-get with exit 100. Unpinned install + a build-time gate
-#     that aborts if the installed version was uploaded <7 days ago
-#     (matching the global CLAUDE.md application-layer cooldown, even
-#     though Debian's signed security pocket is technically exempt —
-#     7 days of community catch-time is cheap defense in depth).
-#     The sed substitution that updates the distroless dpkg status.d
-#     entry is now dynamic: extracts base + installed versions at
-#     build time.
-FROM denoland/deno:distroless-2.9.6 AS runtime-base
-# debian:trixie (NOT -slim) — the slim variant ships
-# /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
-# stripping changelog.Debian.gz files. The 7-day cooldown gate below
-# reads libc6's changelog to determine its upload date, so we need the
-# changelogs intact. This is an intermediate build stage; the ~30 MB
-# size delta does not affect the final runtime image.
-FROM debian:trixie AS security-patch
-
-# Pull the base's dpkg status entries first so the consolidated RUN
-# below can read them. Single RUN keeps shell variables (version
-# strings, upload dates) reachable across the install + assertion +
-# sed-substitution steps.
-COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
-COPY --from=runtime-base /var/lib/dpkg/status.d/libc6 /tmp/libc6-orig
-
-# Consolidated RUN — install + cooldown gate + conditional patch, applied
-# uniformly to every package in the overlay.
-#
-# Nothing is version-pinned here, deliberately. A static pin plus a static
-# sed of the recorded version is what broke this stage before: the pin named
-# libssl3t64 3.5.6-1~deb13u2, the distroless base moved on to 3.5.7-1~deb13u2,
-# and the guard that noticed correctly refused to build rather than let the
-# sed record a downgrade. A pin only holds until the base catches up, and the
-# base catching up is the normal case, not an exception.
-#
-# So each package is handled the way libc6 always was: install whatever
-# Debian currently ships, compare it against what the base already has, and
-# patch only when Debian is genuinely ahead. When the base is level or ahead
-# the overlay is a no-op and the base's own status entry is passed through
-# unchanged, so the final image never records a version it does not have.
+# Carried over from the Deno image unchanged in shape, re-anchored on the new
+# base. Nothing is version-pinned: a static pin plus a static sed of the
+# recorded version is what broke this stage twice before (PRs #426, #428). A
+# pin only holds until the base catches up, and the base catching up is the
+# normal case, not an exception.
 #
 # Per package:
 #   1. Install unpinned, so a Debian patch roll cannot break the build.
-#   2. 7-day cooldown gate — abort if the installed version was uploaded less
+#   2. 7-day cooldown gate -- abort if the installed version was uploaded less
 #      than 7 days ago, matching the global application-layer cooldown.
 #      Debian's signed security pocket is technically exempt, but 7 days of
-#      community catch-time is cheap defense in depth. Source: the upload
-#      date in changelog.Debian.gz, which Debian Policy mandates on every
-#      binary .deb (--no-install-recommends does not skip it).
+#      community catch-time is cheap defense in depth. Source: the upload date
+#      in changelog.Debian.gz, which Debian Policy mandates on every binary
+#      .deb (--no-install-recommends does not skip it).
 #   3. Compare installed against the base's recorded version with
-#      dpkg --compare-versions, which understands epochs and ~-suffixes that
-#      a string comparison would get wrong.
-#   4. Ahead  -> copy the shared objects into /patch and rewrite the status
-#      entry to the installed version.
-#      Level or behind -> pass the base's status entry through untouched and
+#      dpkg --compare-versions, which understands epochs and ~-suffixes that a
+#      string comparison would get wrong.
+#   4. Ahead -> copy the shared objects into /patch and rewrite the status
+#      entry. Level or behind -> pass the base's entry through untouched and
 #      log a NOTE, so an operator reading the build log can see the stage is
 #      currently doing nothing for that package.
+#
+# This is why the runtime base is not a free choice (KTD6): distroless/cc is
+# Debian-derived, so it has dpkg status.d entries and changelog.Debian.gz to
+# compare against. A non-Debian base would mean rebuilding this gate from
+# scratch. distroless/base is not an option either -- it ships no libstdc++,
+# and Bun will not start without it.
+FROM gcr.io/distroless/cc-debian13@sha256:9b615fff20e1a4fad29c2b30562580b212c7dd5e2225236735cca0070ed11c78 AS runtime-base
+
+# debian:trixie (NOT -slim) -- the slim variant ships
+# /etc/dpkg/dpkg.cfg.d/docker-clean which path-excludes /usr/share/doc/*,
+# stripping the changelog.Debian.gz files the cooldown gate reads. This is an
+# intermediate build stage; the ~30 MB delta never reaches the final image.
+FROM debian:trixie AS security-patch
+
+COPY --from=runtime-base /var/lib/dpkg/status.d/libssl3t64 /tmp/libssl3t64-orig
+COPY --from=runtime-base /var/lib/dpkg/status.d/libc6 /tmp/libc6-orig
+
 RUN set -e && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -148,27 +147,59 @@ RUN set -e && \
       fi; \
     done
 
-# Stage 2: Production runtime (uses target platform — arm64 or amd64)
-# Use distroless variant to minimize OS-level CVEs (no shell, no package manager)
-FROM denoland/deno:distroless-2.9.6
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3: production runtime
+#
+# gcr.io/distroless/cc-debian13, pinned by immutable digest rather than tag
+# (R12). A tag-pinned base means rebuilding the same commit can resolve
+# different runtime bits, and an upstream tag compromise would bypass the
+# review every other dependency in this repo goes through. Digest bumps are
+# reviewed like any other pin and must clear the same 7-day cooldown -- the
+# digest below was published 2026-08-27.
+#
+# What the runtime layer contains: the compiled launcher, the pre-bundled SSR
+# entry, the browser assets, and bun.lock. No package manager, no shell, no
+# node_modules, no Bun toolchain. That is the same property the Deno image
+# achieved by deleting /app/node_modules and /deno-dir/npm after building, and
+# for the same reason -- shipping a toolchain the running container cannot
+# load still hands Trivy a set of packages to raise release-blocking CVEs on.
+# ─────────────────────────────────────────────────────────────────────────────
+FROM gcr.io/distroless/cc-debian13@sha256:9b615fff20e1a4fad29c2b30562580b212c7dd5e2225236735cca0070ed11c78
 
-# Overlay patched libraries (libssl3t64, libc6) and updated package metadata
+# Overlay patched libraries and their updated package metadata.
 COPY --from=security-patch /patch/usr/lib/ /usr/lib/
 COPY --from=security-patch /patch/libssl3t64-status /var/lib/dpkg/status.d/libssl3t64
 COPY --from=security-patch /patch/libc6-status /var/lib/dpkg/status.d/libc6
 
 WORKDIR /app
 
-# Copy built output, config, and cached dependencies
-COPY --from=builder /app/_fresh ./_fresh
-COPY --from=builder /app/deno.json ./
-COPY --from=builder /app/deno.lock* ./
-COPY --from=builder /app/package.json* ./
-COPY --from=builder /app/static ./static
+# The compiled launcher, and the two things it loads from disk rather than
+# from inside itself: the pre-bundled SSR entry (see KTD6 above) and the
+# browser assets, which are served dynamically by request path and so are a
+# copy, not an embed.
+COPY --from=builder /app/k8scenter-frontend ./k8scenter-frontend
+COPY --from=builder /app/dist/server/entry.mjs ./dist/server/entry.mjs
+COPY --from=builder /app/dist/client ./dist/client
 
-# Copy Deno cache from builder (includes ESM modules like Monaco)
-COPY --from=builder /deno-dir /deno-dir
+# bun.lock is the manifest Trivy reads to enumerate application packages,
+# mirroring the deno.lock copy it replaces. Without it the scan reports an
+# empty package set and the release gate passes while proving nothing. Bun's
+# text lockfile is what Trivy parses; the binary bun.lockb is not, which is
+# why CI asserts it is never committed.
+COPY --from=builder /app/bun.lock ./bun.lock
+
+# Numeric UID, matching runAsUser/runAsGroup 65534 in
+# helm/kubecenter/templates/deployment-frontend.yaml. Numeric rather than a
+# name so it does not depend on an /etc/passwd entry the base may or may not
+# carry, and explicit rather than inherited so a base image change cannot
+# silently move it away from the chart's value.
+USER 65534:65534
+
+# Where the launcher finds dist/. A compiled Bun binary's import.meta.url
+# points inside the binary, so the real root is passed in rather than derived
+# (see getAppRoot in server/prod.ts).
+ENV K8SCENTER_APP_ROOT=/app
 
 EXPOSE 8000
 
-CMD ["serve", "--allow-net", "--allow-read=.", "--allow-env=BACKEND_URL,LOG,PORT,HOSTNAME", "--port", "8000", "_fresh/server.js"]
+ENTRYPOINT ["/app/k8scenter-frontend"]

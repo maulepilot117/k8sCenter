@@ -1,0 +1,17 @@
+---
+// Astro auto-serves this page (with a 500 status) when an unhandled
+// exception occurs while rendering a request in production — the generic
+// "Something went wrong" branch of frontend/routes/_error.tsx's HttpError
+// check (the else/default case, since no HttpError with status 500 is
+// thrown deliberately anywhere). Also reached explicitly via
+// `context.rewrite("/500")` from src/middleware.ts when middleware's own
+// logic throws; Astro.response.status is set unconditionally below so
+// both paths land on the same status.
+import ChromeLayout from "../layouts/ChromeLayout.astro";
+import ErrorSurface from "../layouts/ErrorSurface.astro";
+
+Astro.response.status = 500;
+---
+<ChromeLayout title="k8sCenter — Something went wrong">
+  <ErrorSurface status={500} />
+</ChromeLayout>

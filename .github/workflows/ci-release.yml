@@ -248,6 +248,61 @@ jobs:
           sarif_file: trivy-frontend.sarif
           category: trivy-frontend
 
+      # The image scan above covers OS packages ONLY. Measured during U10:
+      # `trivy image` reports zero language-specific files for this image and
+      # never reads /app/bun.lock -- and it never read /app/deno.lock out of
+      # the Deno image this one replaces either, so the frontend's npm tree has
+      # not actually been scanned by anything. `trivy fs` on the same lockfile
+      # parses it correctly, so this is the step that makes that half of the
+      # gate real. See docs/solutions/frontend-bun-image.md.
+      - name: Scan frontend dependencies with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          scan-type: fs
+          scan-ref: frontend/bun.lock
+          format: sarif
+          output: trivy-frontend-deps.sarif
+          severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: ".trivyignore"
+
+      # A scan that finds no packages reports no findings and exits zero, which
+      # is precisely how the image scan has been passing while proving nothing.
+      # Re-run as JSON so the next step can assert the package set is non-empty
+      # and this one cannot do the same. exit-code 0 here: the step above is
+      # what gates on CVEs; this pass exists only to produce the inventory.
+      - name: Re-scan the lockfile as JSON for the inventory assertion
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          scan-type: fs
+          scan-ref: frontend/bun.lock
+          format: json
+          output: trivy-frontend-deps.json
+          list-all-pkgs: true
+          exit-code: "0"
+
+      - name: Assert the dependency scan read a non-empty package set
+        run: |
+          set -euo pipefail
+          COUNT=$(jq '[.Results[]?.Packages // [] | length] | add // 0' trivy-frontend-deps.json)
+          echo "packages read from frontend/bun.lock: ${COUNT}"
+          if [ "${COUNT}" -lt 20 ]; then
+            echo "ERROR: the lockfile scan found ${COUNT} packages." >&2
+            echo "  Either bun.lock stopped being parseable (check it is the text" >&2
+            echo "  lockfile, not bun.lockb) or the pinned Trivy dropped bun support." >&2
+            echo "  A scan of nothing is a failure, not a pass." >&2
+            exit 1
+          fi
+
+      - name: Upload dependency Trivy SARIF
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        if: always()
+        with:
+          sarif_file: trivy-frontend-deps.sarif
+          category: trivy-frontend-deps
+
       - name: Build & push frontend
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:

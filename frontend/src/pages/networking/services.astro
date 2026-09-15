@@ -1,0 +1,7 @@
+---
+import NetworkingDashboard from "../../islands/NetworkingDashboard.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <NetworkingDashboard client:load currentPath={Astro.url.pathname} />
+</ChromeLayout>

@@ -1,0 +1,15 @@
+# Machine-enforced supply-chain cooldown (CLAUDE.md, KTD7). Bun refuses to
+# install any package published less than 7 days ago. This does not replace
+# the out-of-band lockfile-age audit -- Bun issue #30525 reports the gate
+# being bypassed for versions already resident in bun.lock -- it only closes
+# the "install something brand new" hole.
+[install]
+minimumReleaseAge = 604800 # 7 days, in seconds
+
+# astro@7.3.2 (KTD1) was published 2026-09-08 and, as of this writing
+# (2026-09-14), has not yet cleared the 7-day window above. Its pin is a
+# separate, already-recorded user override of the cooldown rule (see the
+# plan's KTD1) -- it does not relax the gate for anything else. Drop this
+# exclusion once astro@7.3.2 turns 7 days old (2026-09-15) and the gate
+# would pass it on its own merits.
+minimumReleaseAgeExcludes = ["astro"]

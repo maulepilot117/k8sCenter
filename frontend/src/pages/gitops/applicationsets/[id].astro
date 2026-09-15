@@ -1,0 +1,9 @@
+---
+import GitOpsAppSetDetail from "../../../islands/GitOpsAppSetDetail.tsx";
+import ChromeLayout from "../../../layouts/ChromeLayout.astro";
+
+const id = decodeURIComponent(Astro.params.id as string);
+---
+<ChromeLayout>
+  <GitOpsAppSetDetail client:load id={id} />
+</ChromeLayout>

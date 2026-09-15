@@ -1,0 +1,9 @@
+---
+import SetupWizard from "../islands/SetupWizard.tsx";
+import ChromeLayout from "../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="min-h-screen bg-base">
+        <SetupWizard client:load />
+      </div>
+</ChromeLayout>

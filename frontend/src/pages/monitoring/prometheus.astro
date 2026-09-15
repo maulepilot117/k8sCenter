@@ -1,0 +1,20 @@
+---
+import PromQLAdminGate from "../../islands/PromQLAdminGate.tsx";
+import PromQLQuery from "../../islands/PromQLQuery.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="p-6 space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold text-text-primary">
+            Prometheus Query
+          </h1>
+          <p class="mt-1 text-sm text-text-secondary">
+            Run PromQL queries against the cluster's Prometheus instance
+          </p>
+        </div>
+        <PromQLAdminGate client:load>
+          <PromQLQuery client:load />
+        </PromQLAdminGate>
+      </div>
+</ChromeLayout>

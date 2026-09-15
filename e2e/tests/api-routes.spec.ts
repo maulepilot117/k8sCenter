@@ -15,7 +15,33 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FRONTEND_ROOT = path.resolve(__dirname, "../../frontend");
 
 // Directories we scan for string literals containing API paths.
-const SCAN_DIRS = ["islands", "lib", "routes", "components"];
+//
+// Repointed at the Astro tree during the Bun migration. The old Fresh
+// directories (islands/, lib/, routes/, components/) still exist until U12
+// deletes them, so scanning both would double-count the same literals out of
+// files that are on their way to being removed -- and, worse, would keep this
+// guard passing on the strength of the dead tree alone after the new one
+// stopped matching. src/ is the only tree the shipped server renders from.
+// The `paths.length > 10` assertion below is what fails loudly if this list
+// ever goes stale again.
+const SCAN_DIRS = [
+  // The Astro tree.
+  "src/islands",
+  "src/lib",
+  "src/pages",
+  "src/components",
+  "src/layouts",
+  "server",
+  // The pre-migration tree, until U12 deletes it. This is NOT redundant:
+  // the shipped client graph still reaches it -- 149 files under src/ import
+  // from @/lib/ and @/components/ -- and scanning src/ alone left 38 live
+  // "/v1/" literals unchecked, including /v1/auth/me and /v1/preferences/pins.
+  // Those are exactly the paths this guard exists to catch a rename in.
+  // Duplicates are harmless: results land in a Set.
+  "islands",
+  "lib",
+  "components",
+];
 
 // Matches pure-literal "/v1/…" paths with no template expressions or params.
 // Drops entries containing ${}, ${, `:`, or spaces so dynamic paths like
@@ -45,7 +71,9 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   ".git",
+  ".astro",
   "static",
+  "public",
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -61,7 +89,21 @@ function walk(dir: string, out: string[] = []): string[] {
     const s = statSync(p);
     if (s.isDirectory()) {
       walk(p, out);
-    } else if (/\.(ts|tsx|js|jsx)$/.test(entry)) {
+      // .astro added with the Bun migration: a page's frontmatter is where a
+      // route-level fetch now lives, and it is plain TypeScript. Omitting the
+      // extension here would have quietly shrunk this guard's coverage to the
+      // islands alone.
+      // Test files are excluded: a fixture string is not evidence that the
+      // frontend calls that path. server/rewrites_test.ts, for instance,
+      // asserts on the literal "/v1/extensions/resources/g/r/_/n" -- a
+      // synthetic input to the rewrite function, which the backend has no
+      // reason to mount and which this guard would otherwise report as a
+      // route mismatch forever.
+    } else if (
+      /\.(ts|tsx|js|jsx|astro)$/.test(entry) &&
+      !/_test\.(ts|tsx)$/.test(entry) &&
+      !/\.spec\.(ts|tsx)$/.test(entry)
+    ) {
       out.push(p);
     }
   }

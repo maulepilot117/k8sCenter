@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import { ApiError } from "./api.ts";
 import { PREFERENCE_REASONS, preferenceReason } from "./preferences.ts";
 
@@ -9,7 +9,7 @@ import { PREFERENCE_REASONS, preferenceReason } from "./preferences.ts";
 //
 // Importing lib/preferences.ts here is safe despite its client-only banner:
 // the banner is about SSR request handling, where the module-level auth token
-// in lib/api.ts would be shared across requests. Under `deno test` there is no
+// in lib/api.ts would be shared across requests. Under `bun test` there is no
 // request, and lib/cluster.ts gates its only side effect behind IS_BROWSER.
 
 function apiErrorWithReason(reason: string): ApiError {
@@ -18,41 +18,40 @@ function apiErrorWithReason(reason: string): ApiError {
   });
 }
 
-Deno.test("preferenceReason: returns every reason the server can emit", () => {
+test("preferenceReason: returns every reason the server can emit", () => {
   for (const reason of PREFERENCE_REASONS) {
-    assertEquals(preferenceReason(apiErrorWithReason(reason)), reason);
+    expect(preferenceReason(apiErrorWithReason(reason))).toBe(reason);
   }
 });
 
-Deno.test("preferenceReason: an unrecognized reason is undefined, not passed through", () => {
+test("preferenceReason: an unrecognized reason is undefined, not passed through", () => {
   // A reason code this build does not know must not reach a caller that would
   // switch on it. Undefined means "we cannot name this failure", which the
   // caller is required to say out loud.
-  assertEquals(preferenceReason(apiErrorWithReason("teapot")), undefined);
+  expect(preferenceReason(apiErrorWithReason("teapot"))).toBe(undefined);
 });
 
-Deno.test("preferenceReason: an error carrying no reason is undefined", () => {
-  assertEquals(preferenceReason(new ApiError(500, 500, "boom")), undefined);
+test("preferenceReason: an error carrying no reason is undefined", () => {
+  expect(preferenceReason(new ApiError(500, 500, "boom"))).toBe(undefined);
 });
 
-Deno.test("preferenceReason: a non-ApiError is undefined", () => {
+test("preferenceReason: a non-ApiError is undefined", () => {
   // The shapes a caller actually sees when the request never reached the
   // server: a dropped connection, and an aborted in-flight request.
-  assertEquals(preferenceReason(new TypeError("Failed to fetch")), undefined);
-  assertEquals(
+  expect(preferenceReason(new TypeError("Failed to fetch"))).toBe(undefined);
+  expect(
     preferenceReason(new DOMException("Aborted", "AbortError")),
-    undefined,
-  );
-  assertEquals(preferenceReason(undefined), undefined);
-  assertEquals(preferenceReason(null), undefined);
-  assertEquals(preferenceReason("database_unavailable"), undefined);
+  ).toBe(undefined);
+  expect(preferenceReason(undefined)).toBe(undefined);
+  expect(preferenceReason(null)).toBe(undefined);
+  expect(preferenceReason("database_unavailable")).toBe(undefined);
 });
 
-Deno.test("PREFERENCE_REASONS covers the handler's reason codes", () => {
+test("PREFERENCE_REASONS covers the handler's reason codes", () => {
   // Pinned to the WriteErrorWithReason call sites in
   // backend/internal/preferences/handler.go and types.go. Adding a reason
   // there without adding it here means the UI silently stops classifying it.
-  assertEquals([...PREFERENCE_REASONS].sort(), [
+  expect([...PREFERENCE_REASONS].sort()).toEqual([
     "already_pinned",
     "database_unavailable",
     "duplicate_name",

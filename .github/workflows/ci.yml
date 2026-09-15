@@ -116,24 +116,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          deno-version: v2.x
+          # .bun-version is the single source of truth for the runtime version
+          # (R9); pinning it here too would let CI and local drift apart.
+          bun-version-file: .bun-version
 
       - name: Install dependencies
-        run: deno install
+        # --frozen-lockfile so a lockfile that does not match package.json
+        # fails here rather than being silently rewritten in CI.
+        run: bun install --frozen-lockfile
 
-      - name: Lint
-        run: deno lint
+      # One command covers what four separate steps used to: Biome lint and
+      # format, `astro check` types, and the repo's own build-time guards
+      # (no /ws proxy in the dev config, no signal store on an SSR path, every
+      # island call site carries a client:* directive, the lockfile is the
+      # text one). See frontend/package.json.
+      - name: Check
+        run: bun run check
 
-      - name: Format check
-        run: deno fmt --check
-
-      - name: Type check
-        run: deno check
+      # New in the Bun port: the frontend has a real unit suite now, and
+      # nothing in CI ran it before.
+      - name: Test
+        run: bun test
 
       - name: Build
-        run: deno task build
+        run: bun run build
 
   rbac-guard:
     name: ClusterRole CRD grants
@@ -177,6 +185,16 @@ jobs:
         run: |
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/e11169d0656294827d65370a3c76a2325406da85/scripts/download-actionlint.bash) 1.7.5
           ./actionlint -color
+
+      - name: Check action pins
+        # Every third-party action must be pinned to a full commit SHA and be
+        # at least 7 days old. Both rules existed before; neither was enforced,
+        # which is the same gap KTD7 closed for Bun dependencies by moving the
+        # cooldown into bunfig.toml. A rule whose only backstop is a sentence
+        # in CLAUDE.md is one a PR can pass having silently skipped.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/check-action-pins.sh
 
   helm:
     name: Helm chart

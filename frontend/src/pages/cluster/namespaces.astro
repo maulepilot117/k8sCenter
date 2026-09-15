@@ -1,0 +1,12 @@
+---
+import ResourceTable from "../../islands/ResourceTable.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <ResourceTable client:load
+        kind="namespaces"
+        title="Namespaces"
+        clusterScoped
+        createHref="/cluster/namespaces/new"
+      />
+</ChromeLayout>

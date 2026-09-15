@@ -1,0 +1,15 @@
+---
+import AlertRulesIsland from "../../islands/AlertRulesPage.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <div class="p-6 space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold text-text-primary">Alert Rules</h1>
+          <p class="mt-1 text-sm text-text-secondary">
+            Manage PrometheusRule CRDs
+          </p>
+        </div>
+        <AlertRulesIsland client:load />
+      </div>
+</ChromeLayout>

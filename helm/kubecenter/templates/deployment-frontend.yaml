@@ -25,6 +25,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       automountServiceAccountToken: false
+      # Kubernetes injects <SVC>_SERVICE_HOST and <SVC>_SERVICE_PORT for every
+      # Service in this namespace by default. Under Deno those variables were
+      # unreachable anyway -- the runtime ran with --allow-env limited to
+      # BACKEND_URL, LOG, PORT and HOSTNAME, so a compromised dependency could
+      # not read them. Bun has no equivalent allowlist (R17), so the injection
+      # is turned off at the pod instead. BACKEND_URL is set explicitly below;
+      # nothing here has ever depended on a service link.
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

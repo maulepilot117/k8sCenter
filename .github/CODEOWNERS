@@ -7,3 +7,9 @@ frontend/           @maulepilot117
 helm/               @maulepilot117
 .github/workflows/  @maulepilot117
 e2e/                @maulepilot117
+
+# The frontend pod spec is the only backstop left for R17/R20 once the Deno
+# permission sandbox is gone (see docs/solutions/frontend-bun-image.md). A PR
+# that adds an environment variable, a volume, or a secret to this file, or
+# that flips enableServiceLinks back on, cannot merge without review.
+helm/kubecenter/templates/deployment-frontend.yaml  @maulepilot117

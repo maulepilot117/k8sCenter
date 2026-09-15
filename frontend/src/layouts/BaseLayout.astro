@@ -1,0 +1,50 @@
+---
+// Root HTML shell, ported from frontend/routes/_app.tsx (KD4 parity). Every
+// page and error surface in this app renders inside this layout — directly
+// (403/404/500) or via ChromeLayout.astro, which wraps it.
+import "../../assets/styles.css";
+import { ANTI_FLASH_SCRIPT } from "../lib/anti-flash-script.ts";
+
+interface Props {
+  title?: string;
+}
+
+const { title = "k8sCenter" } = Astro.props;
+---
+<html lang="en" class="h-full" style="background-color:#05080f">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title}</title>
+    <meta name="color-scheme" content="dark" />
+    <!-- Geist font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="preconnect"
+      href="https://fonts.gstatic.com"
+      crossorigin
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <!--
+      Apply saved animation prefs before render to prevent flash. SYNC: the
+      hardcoded #05080f background (html/body attributes below) must match
+      bgBase in shared/themes/liquid-glass.json and the styles.css
+      fallbacks.
+
+      is:inline is load-bearing: it stops Astro from bundling, deferring, or
+      relocating this script. Any of those would let the app's stylesheet
+      (imported above, and injected by Astro at build time after this
+      authored head content) apply before the theme/animation classes land
+      on <html> — reintroducing the flash this script exists to prevent.
+      See src/lib/anti-flash-script.ts for the byte-identical parity test
+      against the Fresh original.
+    -->
+    <script is:inline set:html={ANTI_FLASH_SCRIPT}></script>
+  </head>
+  <body class="h-full" style="background-color:#05080f">
+    <slot />
+  </body>
+</html>

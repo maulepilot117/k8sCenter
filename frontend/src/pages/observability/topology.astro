@@ -1,0 +1,29 @@
+---
+import NamespaceTopology from "../../islands/NamespaceTopology.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+const namespace = Astro.url.searchParams.get("namespace") ?? undefined;
+const overlayParam = Astro.url.searchParams.get("overlay");
+const defaultOverlay =
+  overlayParam === "mesh" || overlayParam === "eso-chain"
+    ? overlayParam
+    : "none";
+const focusedNodeId = Astro.url.searchParams.get("focus") ?? undefined;
+---
+<ChromeLayout>
+  <div class="p-6 space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold text-text-primary">
+            Resource Topology
+          </h1>
+          <p class="mt-1 text-sm text-text-secondary">
+            Dependency graph showing resource relationships and health
+          </p>
+        </div>
+        <NamespaceTopology client:load
+          namespace={namespace}
+          defaultOverlay={defaultOverlay}
+          focusedNodeId={focusedNodeId}
+        />
+      </div>
+</ChromeLayout>

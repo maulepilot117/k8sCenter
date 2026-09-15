@@ -1,0 +1,13 @@
+---
+import SchemaForm from "../../../../islands/SchemaForm.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+
+const { group, resource } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <SchemaForm client:load
+        group={group}
+        resource={resource}
+        mode="create"
+      />
+</ChromeLayout>

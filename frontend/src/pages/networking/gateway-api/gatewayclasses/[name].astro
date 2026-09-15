@@ -1,0 +1,9 @@
+---
+import GatewayClassDetail from "../../../../islands/GatewayClassDetail.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+
+const { name } = Astro.params as Record<string, string>;
+---
+<ChromeLayout>
+  <GatewayClassDetail client:load name={name} />
+</ChromeLayout>

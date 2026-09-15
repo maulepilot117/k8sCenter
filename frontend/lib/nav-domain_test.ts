@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import { getActiveDomain } from "./constants.ts";
 
 // The Security domain's routes are spread across three URL prefixes:
@@ -6,31 +6,31 @@ import { getActiveDomain } from "./constants.ts";
 // /security (Posture). getActiveDomain must resolve all of them to the
 // "security" domain so SecondaryNav renders the menu instead of an empty rail.
 
-Deno.test("getActiveDomain: /rbac/overview (security landing) -> security", () => {
-  assertEquals(getActiveDomain("/rbac/overview"), "security");
+test("getActiveDomain: /rbac/overview (security landing) -> security", () => {
+  expect(getActiveDomain("/rbac/overview")).toBe("security");
 });
 
-Deno.test("getActiveDomain: /rbac index -> security", () => {
-  assertEquals(getActiveDomain("/rbac"), "security");
+test("getActiveDomain: /rbac index -> security", () => {
+  expect(getActiveDomain("/rbac")).toBe("security");
 });
 
-Deno.test("getActiveDomain: /rbac/roles -> security", () => {
-  assertEquals(getActiveDomain("/rbac/roles"), "security");
+test("getActiveDomain: /rbac/roles -> security", () => {
+  expect(getActiveDomain("/rbac/roles")).toBe("security");
 });
 
-Deno.test("getActiveDomain: /admin/validatingwebhooks -> security", () => {
-  assertEquals(getActiveDomain("/admin/validatingwebhooks"), "security");
+test("getActiveDomain: /admin/validatingwebhooks -> security", () => {
+  expect(getActiveDomain("/admin/validatingwebhooks")).toBe("security");
 });
 
-Deno.test("getActiveDomain: /security/policies -> security", () => {
-  assertEquals(getActiveDomain("/security/policies"), "security");
+test("getActiveDomain: /security/policies -> security", () => {
+  expect(getActiveDomain("/security/policies")).toBe("security");
 });
 
 // Regression guards for sibling domains that must NOT be swallowed.
-Deno.test("getActiveDomain: /workloads/pods -> workloads", () => {
-  assertEquals(getActiveDomain("/workloads/pods"), "workloads");
+test("getActiveDomain: /workloads/pods -> workloads", () => {
+  expect(getActiveDomain("/workloads/pods")).toBe("workloads");
 });
 
-Deno.test("getActiveDomain: / -> overview", () => {
-  assertEquals(getActiveDomain("/"), "overview");
+test("getActiveDomain: / -> overview", () => {
+  expect(getActiveDomain("/")).toBe("overview");
 });

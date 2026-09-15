@@ -1,0 +1,7 @@
+---
+import SettingsDashboard from "../../islands/SettingsDashboard.tsx";
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <SettingsDashboard client:load currentPath={Astro.url.pathname} />
+</ChromeLayout>

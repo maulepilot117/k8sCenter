@@ -1,0 +1,13 @@
+---
+// Astro auto-serves this page (with a 404 status) for any unmatched route
+// — the "Page not found" branch of frontend/routes/_error.tsx's HttpError
+// check. Not reached through middleware.ts's rewrite path (that's the
+// 403 surface only); Astro's own routing invokes it directly.
+import ChromeLayout from "../layouts/ChromeLayout.astro";
+import ErrorSurface from "../layouts/ErrorSurface.astro";
+
+Astro.response.status = 404;
+---
+<ChromeLayout title="k8sCenter — Page not found">
+  <ErrorSurface status={404} />
+</ChromeLayout>

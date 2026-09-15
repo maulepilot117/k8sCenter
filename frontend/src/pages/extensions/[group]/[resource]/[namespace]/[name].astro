@@ -1,0 +1,13 @@
+---
+import SchemaForm from "../../../../../islands/SchemaForm.tsx";
+import ChromeLayout from "../../../../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <SchemaForm client:load
+        group={(Astro.params.group as string)}
+        resource={(Astro.params.resource as string)}
+        namespace={(Astro.params.namespace as string)}
+        name={(Astro.params.name as string)}
+        mode="edit"
+      />
+</ChromeLayout>

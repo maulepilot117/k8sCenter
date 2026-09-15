@@ -1,0 +1,59 @@
+---
+import FluxAlerts from "../../islands/FluxAlerts.tsx";
+import FluxProviders from "../../islands/FluxProviders.tsx";
+import FluxReceivers from "../../islands/FluxReceivers.tsx";
+// Outlier (U8 unit brief): branches on a query parameter server-side and
+// mounts one of three islands, with tab navigation by full page reload
+// (plain <a href="?tab=..."> links, not client-side routing). Preserving
+// that reload-based navigation — rather than "improving" it to client
+// routing — is a parity requirement (KD4/R3): Fresh rendered this the same
+// way, server-side, on every request.
+//
+// Ported from frontend/routes/gitops/notifications.tsx. That file also
+// declared a small `TabLink` helper component; Astro's frontmatter is plain
+// TS (no JSX), so it cannot host a JSX-returning helper the way a .tsx route
+// could. The three tab links are inlined below instead, each reproducing
+// TabLink's exact class/style ternary so the rendered markup is unchanged.
+import ChromeLayout from "../../layouts/ChromeLayout.astro";
+
+const tab = Astro.url.searchParams.get("tab") ?? "providers";
+---
+<ChromeLayout>
+  {/* Sub-tab bar */}
+  <div class="flex gap-1 px-6 pt-4 border-b" style={{ borderColor: "var(--border)" }}>
+    <a
+      href="?tab=providers"
+      class={`px-4 py-2 text-sm font-medium -mb-px ${tab === "providers" ? "border-b-2" : ""}`}
+      style={{
+        color: tab === "providers" ? "var(--accent)" : "var(--text-secondary)",
+        borderColor: tab === "providers" ? "var(--accent)" : "transparent",
+      }}
+    >
+      Providers
+    </a>
+    <a
+      href="?tab=alerts"
+      class={`px-4 py-2 text-sm font-medium -mb-px ${tab === "alerts" ? "border-b-2" : ""}`}
+      style={{
+        color: tab === "alerts" ? "var(--accent)" : "var(--text-secondary)",
+        borderColor: tab === "alerts" ? "var(--accent)" : "transparent",
+      }}
+    >
+      Alerts
+    </a>
+    <a
+      href="?tab=receivers"
+      class={`px-4 py-2 text-sm font-medium -mb-px ${tab === "receivers" ? "border-b-2" : ""}`}
+      style={{
+        color: tab === "receivers" ? "var(--accent)" : "var(--text-secondary)",
+        borderColor: tab === "receivers" ? "var(--accent)" : "transparent",
+      }}
+    >
+      Receivers
+    </a>
+  </div>
+  {/* Tab content */}
+  {tab === "providers" && <FluxProviders client:load />}
+  {tab === "alerts" && <FluxAlerts client:load />}
+  {tab === "receivers" && <FluxReceivers client:load />}
+</ChromeLayout>

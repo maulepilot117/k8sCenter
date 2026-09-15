@@ -170,7 +170,7 @@ All endpoints prefixed with `/api/v1`. Full list derivable from `backend/interna
 - Dashboard: `GET /cluster/dashboard-summary` (aggregated counts + utilization), `GET /cluster/dashboard-trends[?range=15m|1h|6h|24h]` (metric-card sparkline series incl. cluster network RX/TX Mbps; unknown/omitted range defaults to 1h; local cluster only)
 - Counts: `GET /resources/counts[?namespace=]` (batch resource counts from informer cache)
 - Multi-cluster: `GET/POST/DELETE /clusters`
-- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,alerts,flows,logs-search}`
+- WebSocket: `/ws/{resources,logs/:ns/:pod/:container,exec/:ns/:pod/:container,flows,logs-search}` — five channels, not six. `alerts` was listed here and is permitted by the frontend's WS allowlist, but `routes.go` has never mounted it and nothing in the frontend connects to it. The allowlist entry survives as a verbatim behaviour port (R6); U11's `websocket-channels.spec.ts` covers it as the allowlisted-but-unserved case so a future change has to decide which side is wrong.
 
 **Auth flow:** `POST /auth/login` → JWT access token + httpOnly refresh cookie → `POST /auth/refresh` on 401.
 
@@ -298,6 +298,18 @@ Credentials: provided by the operator at setup time. See `helm/kubecenter/values
 - [ ] Audit log captures all writes and secret accesses
 - [ ] CSP headers prevent XSS
 - [ ] Trivy scans images before GHCR push
+- [ ] **The frontend pod has no environment variable, volume, or secret beyond
+      `BACKEND_URL` (R17).** The Bun runtime has no equivalent to Deno's
+      `--allow-env` / `--allow-read`, so what a compromised frontend dependency
+      can read is bounded by what the pod is given, not by the runtime. The
+      compensating control is the frontend NetworkPolicy's egress rule
+      (kube-dns and the backend pod only), which `networkPolicy.enabled`
+      must stay true for. CODEOWNERS gates the Deployment template so this is
+      reviewed rather than assumed; see `docs/solutions/frontend-bun-image.md`.
+- [ ] **`enableServiceLinks: false` on the frontend pod (R20).** Kubernetes
+      otherwise injects a host and port variable for every Service in the
+      namespace, which the lost `--allow-env` allowlist used to make
+      unreadable.
 
 ---
 

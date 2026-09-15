@@ -1,0 +1,27 @@
+---
+// Outlier (U8 unit brief, KTD11): the operator-facing URL for this page is
+// `/extensions/:group/:resource/_/:name` — a cluster-scoped CRD resource,
+// substituting `_` for the namespace segment a namespaced resource would
+// carry (see src/islands/CRDResourceList.tsx, the one place that generates
+// this link shape). Astro treats any `_`-prefixed path segment under
+// src/pages/ as private and non-routable, so that literal path cannot be
+// expressed as a page file here.
+//
+// The fix lives in frontend/server/rewrites.ts: before Astro's router ever
+// sees the request, `applyClusterScopedCrdRewrite` rewrites the incoming
+// path from the `_` shape onto this file's routable `cluster-scoped`
+// segment (wired into both server/dispatch.ts's prod chain and
+// server/dev-plugin.ts's dev chain, so dev and prod never diverge). The
+// browser's address bar never changes — only the internal dispatch target
+// does.
+import SchemaForm from "../../../../../islands/SchemaForm.tsx";
+import ChromeLayout from "../../../../../layouts/ChromeLayout.astro";
+---
+<ChromeLayout>
+  <SchemaForm client:load
+        group={(Astro.params.group as string)}
+        resource={(Astro.params.resource as string)}
+        name={(Astro.params.name as string)}
+        mode="edit"
+      />
+</ChromeLayout>

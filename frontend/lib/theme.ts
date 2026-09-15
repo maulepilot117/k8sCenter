@@ -2,7 +2,12 @@
 // `initTheme()` in lib/themes.ts calls `applyTheme()` on TopBarV2 mount
 // so the persisted choice is applied at page load.
 import { signal } from "@preact/signals";
-import { IS_BROWSER } from "fresh/runtime";
+
+// Inlined rather than imported from "fresh/runtime" — see lib/nav.ts for why:
+// this file is shared by both the Fresh tree and the Astro/Bun port, and the
+// bare specifier would otherwise resolve to the always-false test shim under
+// Astro. Value-neutral for Fresh: identical to @fresh/core's own IS_BROWSER.
+const IS_BROWSER = typeof document !== "undefined";
 
 const STORAGE_KEY = "kc.theme";
 export type ThemeMode = "dark" | "light";

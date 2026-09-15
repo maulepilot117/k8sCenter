@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { expect, test } from "bun:test";
 import type { CapabilityOperationId, ReasonCode } from "./capability-types.ts";
 import { CAPABILITY_OPERATION_IDS, REASON_CODES } from "./capability-types.ts";
 
@@ -44,23 +44,24 @@ function operationIdIsArrayElement(
   return x;
 }
 
-Deno.test("ReasonCode union type-checks as identical to the REASON_CODES runtime array", () => {
+test("ReasonCode union type-checks as identical to the REASON_CODES runtime array", () => {
   for (const code of REASON_CODES) {
-    assertEquals(reasonCodeArrayElementIsReasonCode(code), code);
-    assertEquals(reasonCodeIsArrayElement(code), code);
+    expect(reasonCodeArrayElementIsReasonCode(code)).toBe(code);
+    expect(reasonCodeIsArrayElement(code)).toBe(code);
   }
 });
 
-Deno.test("CapabilityOperationId union type-checks as identical to the CAPABILITY_OPERATION_IDS runtime array", () => {
+test("CapabilityOperationId union type-checks as identical to the CAPABILITY_OPERATION_IDS runtime array", () => {
   for (const id of CAPABILITY_OPERATION_IDS) {
-    assertEquals(operationIdArrayElementIsOperationId(id), id);
-    assertEquals(operationIdIsArrayElement(id), id);
+    expect(operationIdArrayElementIsOperationId(id)).toBe(id);
+    expect(operationIdIsArrayElement(id)).toBe(id);
   }
 });
 
-Deno.test("REASON_CODES matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
-  assertEquals(
+test("REASON_CODES matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
+  expect(
     [...REASON_CODES].sort(),
+  ).toEqual(
     [
       "authz_namespace_scoped",
       "authz_unknown",
@@ -75,13 +76,13 @@ Deno.test("REASON_CODES matches the expected literal set (self-consistency; Go p
       "unreachable",
       "unsupported_platform",
     ],
-    "REASON_CODES changed — update this expectation, and note Go-side parity is verified separately by backend/internal/server/capability_parity_test.go",
   );
 });
 
-Deno.test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
-  assertEquals(
+test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
+  expect(
     [...CAPABILITY_OPERATION_IDS].sort(),
+  ).toEqual(
     [
       "dashboard.summary",
       "eso.write",
@@ -95,6 +96,5 @@ Deno.test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consi
       "yaml.export",
       "yaml.validate",
     ],
-    "CAPABILITY_OPERATION_IDS changed — update this expectation, and note Go-side parity is verified separately by backend/internal/server/capability_parity_test.go",
   );
 });

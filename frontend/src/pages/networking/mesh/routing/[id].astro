@@ -1,0 +1,9 @@
+---
+import MeshRouteDetail from "../../../../islands/MeshRouteDetail.tsx";
+import ChromeLayout from "../../../../layouts/ChromeLayout.astro";
+
+const id = decodeURIComponent(Astro.params.id as string);
+---
+<ChromeLayout>
+  <MeshRouteDetail client:load id={id} />
+</ChromeLayout>
