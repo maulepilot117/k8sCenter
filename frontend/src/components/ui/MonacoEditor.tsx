@@ -219,8 +219,15 @@ export function MonacoEditor({
   }
 
   if (failed.value) {
+    // EDITOR_ROOT_CLASS here too, for the same reason as the placeholder
+    // above. This branch renders on a post-mount Monaco load failure, by
+    // which point the root is a live node whose props *do* get diffed -- so
+    // a bare `relative` would strip the border and background off the box
+    // at the exact moment it falls back to a plain textarea. Before
+    // hydration it is stranded behind the SSR class and renders nothing at
+    // all, which is why it read as harmless.
     return (
-      <div style={{ height }} class="relative">
+      <div style={{ height }} class={EDITOR_ROOT_CLASS}>
         <textarea
           value={value}
           onInput={(e) => onChange?.((e.target as HTMLTextAreaElement).value)}

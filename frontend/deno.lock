@@ -1687,6 +1687,7 @@
         "npm:@astrojs/node@^11.1.5",
         "npm:@astrojs/preact@^6.0.5",
         "npm:@babel/core@^7.29.6",
+        "npm:@babel/parser@7.29.8",
         "npm:@biomejs/biome@2.5.12",
         "npm:@codemirror/commands@^6.10.3",
         "npm:@codemirror/lang-yaml@^6.1.2",
