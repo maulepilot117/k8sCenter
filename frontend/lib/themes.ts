@@ -3,7 +3,7 @@
 // Liquid Glass is the single design language. All color tokens live in
 // shared/themes/liquid-glass.json and reach the browser as static :root
 // CSS variables via frontend/assets/themes.generated.css (regenerate with
-// `deno task theme-gen`; CI enforces parity via `make check-themes`).
+// `make theme-gen`; CI enforces parity via `make check-themes`).
 //
 // Light/dark mode is owned by lib/theme.ts (applyTheme / toggleTheme).
 // This module only clears the persisted theme id left behind by the retired

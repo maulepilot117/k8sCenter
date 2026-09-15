@@ -4,7 +4,7 @@ import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type {
   LimitConfig,
   ResourcePair,
-} from "@/islands/NamespaceLimitsWizard.tsx";
+} from "@/src/islands/NamespaceLimitsWizard.tsx";
 
 interface LimitRangeValuesStepProps {
   limits: LimitConfig;

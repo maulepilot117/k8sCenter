@@ -1,7 +1,7 @@
 import { useSignal } from "@preact/signals";
 import type { Signal } from "@preact/signals";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
-import type { QuotaConfig } from "@/islands/NamespaceLimitsWizard.tsx";
+import type { QuotaConfig } from "@/src/islands/NamespaceLimitsWizard.tsx";
 
 interface QuotaValuesStepProps {
   quota: QuotaConfig;

@@ -46,12 +46,35 @@ test("the committed dev-plugin.ts has no /ws proxy or rewrite (passes as committ
   expect(sourceHasWsProxy(source)).toBe(false);
 });
 
-test("frontend/vite.config.ts DOES define a /ws proxy -- proving the detector works -- but the guard's file list must never scan it (Fresh tree exemption)", () => {
-  const source = readFileSync(
-    new URL("../vite.config.ts", import.meta.url),
-    "utf-8",
-  );
-  expect(sourceHasWsProxy(source)).toBe(true);
+/**
+ * The positive control: the detector must fire on the real thing.
+ *
+ * This read frontend/vite.config.ts directly until U12 deleted it, which is
+ * the right check while that file exists and a broken test the moment it does
+ * not. The block below is frozen verbatim from it -- the Fresh dev server's
+ * own /ws proxy, the configuration this guard exists to stop anyone
+ * recreating in astro.config.mjs (R18: dev and prod must not diverge on /ws
+ * again). Freezing it keeps the control rather than letting it disappear with
+ * its source; the synthetic cases below cover shapes, this one covers the
+ * exact text that was actually shipped.
+ */
+const FRESH_VITE_WS_PROXY = [
+  'import { defineConfig } from "vite";',
+  "export default defineConfig({",
+  "  server: {",
+  "    proxy: {",
+  '      "/ws": {',
+  '        target: "ws://localhost:8080",',
+  "        ws: true,",
+  '        rewrite: (path) => path.replace(/^\\/ws/, "/api"),',
+  "      },",
+  "    },",
+  "  },",
+  "});",
+].join(String.fromCharCode(10));
+
+test("the detector fires on the Fresh dev server's real /ws proxy (frozen at U12)", () => {
+  expect(sourceHasWsProxy(FRESH_VITE_WS_PROXY)).toBe(true);
 });
 
 // --- the shape the previous pattern could not see (review finding #8) ---

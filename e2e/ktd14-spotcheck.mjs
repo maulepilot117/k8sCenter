@@ -1,9 +1,29 @@
 /**
  * KTD14 visual spot-check: Fresh (Deno) vs Astro (Bun) render parity.
  *
+ * SUPERSEDED BY U12 -- the Fresh half of this comparison no longer exists.
+ *
+ * U12 deleted frontend/routes and frontend/islands, so FRESH_ORIGIN cannot be
+ * served from a checkout of main any more. To run this again, build the Fresh
+ * tree from the last commit that had it:
+ *
+ *     git worktree add ../k8scenter-fresh <commit-before-U12>
+ *     cd ../k8scenter-fresh/frontend && deno task build
+ *     deno serve --port 8100 _fresh/server.js
+ *
+ * It is kept rather than deleted for two reasons. --control mode does not need
+ * the Fresh tree at all: it captures one origin against itself and reports the
+ * noise floor, which is what tells you whether a diff percentage means
+ * anything. And the class of defect it found is now covered going forward by
+ * frontend/server/check-placeholder-root-parity.ts, which was written from
+ * this harness's findings -- so this file is the provenance of that guard's
+ * baseline.
+ *
  * Plan: docs/plans/2026-09-14-0850-refactor-bun-astro-migration-plan.md
  *   U12 step 1b -- "Run the visual spot-check across the 49 navigation-reachable
  *   pages (KTD14) before deleting. It can only run while both trees exist."
+ *   Done: 47/50 pixel-identical, max residual 0.104%, equal to the
+ *   Fresh-vs-Fresh control. See the 2026-09-15 session log.
  *
  * WHY THIS EXISTS AND WHY IT IS NOT A PLAYWRIGHT SPEC
  *

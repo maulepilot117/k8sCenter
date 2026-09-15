@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
-import { MonacoEditor } from "@/components/ui/MonacoEditor.tsx";
+import { MonacoEditor } from "@/src/components/ui/MonacoEditor.tsx";
 import { apiPostRaw } from "@/lib/api.ts";
 import { wizardBusy } from "@/lib/wizard-busy.ts";
 import { Button } from "@/components/ui/Button.tsx";

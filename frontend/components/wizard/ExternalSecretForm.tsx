@@ -7,7 +7,7 @@ import { esoApi } from "@/lib/eso-api.ts";
 import type {
   ExternalSecretWizardForm,
   ExternalSecretWizardStoreOption,
-} from "@/islands/ExternalSecretWizard.tsx";
+} from "@/src/islands/ExternalSecretWizard.tsx";
 
 interface ExternalSecretFormProps {
   form: ExternalSecretWizardForm;

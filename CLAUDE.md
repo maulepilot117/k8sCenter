@@ -16,7 +16,7 @@ You are operating within a constrained context window and strict system prompts.
 
 4. FORCED VERIFICATION: Your internal tools mark file writes as successful even if the code does not compile. Before declaring a task complete or pushing, you MUST run the repo-canonical checks REPO-WIDE (not scoped to changed files):
 
-- Frontend: `cd frontend && deno task check` — runs `deno fmt --check . && deno lint . && deno check` across the whole tree, identical to CI (which now runs fmt + lint + check + build).
+- Frontend: `cd frontend && bun run check` — runs Biome lint + format, `astro check`, and the repo's standing guards across the whole tree, identical to CI (which also runs `bun test` and `bun run build`).
 - Backend: `cd backend && go vet ./... && go test ./...`
 
 Scoped checks (single file or directory) MISS pre-existing issues in sibling files that CI will flag. Always run the repo-wide form before push. Fix ALL resulting errors. If a check is unavailable, state that explicitly instead of claiming success.
@@ -66,13 +66,13 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 | Layer | Technology |
 |---|---|
 | Backend API | Go 1.26, chi router, client-go v0.35.2 |
-| Frontend | Deno 2.x, Fresh 2.x (Preact), Tailwind v4, Monaco Editor |
+| Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4, Monaco Editor |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack subchart) |
 | Auth | JWT (HMAC-SHA256) + OIDC / LDAP / local (Argon2id, PostgreSQL-backed) |
-| Deployment | Helm 3.x, distroless containers (Go), Deno slim (frontend) |
+| Deployment | Helm 3.x, distroless containers (Go), Bun slim (frontend) |
 | E2E Tests | Playwright (Node.js) in `e2e/` directory |
-| CI | GitHub Actions — go vet/test, deno lint/build, Trivy scanning, E2E with kind |
+| CI | GitHub Actions — go vet/test, `bun run check`/test/build, Trivy scanning, E2E with kind |
 
 ---
 
@@ -104,7 +104,7 @@ k8scenter/
 │       ├── yaml/             # YAML validate, apply (SSA), diff, export
 │       ├── audit/            # PostgreSQL audit logger
 │       └── websocket/        # Hub + Client (fan-out, RBAC revalidation)
-├── frontend/                 # Deno 2.x + Fresh 2.x
+├── frontend/                 # Bun 1.4.x + Astro 7.x
 │   ├── routes/               # File-system routing (50+ pages)
 │   ├── islands/              # Interactive islands (ResourceTable, wizards, etc.)
 │   ├── components/           # UI components, wizard steps, k8s detail overviews
@@ -133,7 +133,7 @@ k8scenter/
 - **Fuzz the parse seams.** Pure functions that turn attacker-influenceable input (CRD `unstructured`, bytes, untrusted strings) into typed values get an in-package `*_fuzz_test.go` + a nightly `fuzz.yml` matrix row. Conventions (oracle taxonomy, teeth-via-mutation seeds, `-list` drift guard, hermetic): `docs/solutions/backend-resilience-conventions.md`.
 - **CRD-discovered features** (policy, gitops, certmanager, servicemesh, externalsecrets) follow a common pattern: 5min discovery cache → singleflight + 30s read cache → per-user RBAC filtering via `CanAccessGroupResource`.
 
-### Frontend (Deno/Fresh)
+### Frontend (Bun/Astro)
 - **Islands architecture strictly enforced.** Only interactive components are islands. Everything else is SSR HTML.
 - **All API calls through `lib/api.ts`.** Handles auth token injection, error parsing, X-Cluster-ID header.
 - **Wizard pattern:** WizardStepper shell → steps → YAML preview → server-side apply.
@@ -220,7 +220,7 @@ make helm-lint / helm-template                    # Helm validation
 make check-dashboards                             # Verify Grafana JSON sync
 ```
 
-**Fresh 2.x config notes:** `jsx: "precompile"`, `nodeModulesDir: "manual"` (required for Vite), `jsr:` and `npm:` specifiers only, no `fresh.config.ts` or `tailwind.config.ts` (Tailwind v4 is CSS-first).
+**Astro 7.x config notes:** `output: "server"` with `@astrojs/node` in **middleware mode** — `frontend/server/prod.ts` owns the socket so it can also own WebSocket upgrades and security headers (KTD2/KTD3). Dev serves on 5173, not Astro's 4321 default. No `tailwind.config.ts` (Tailwind v4 is CSS-first). `@codemirror/*` and `preact`/`@preact/signals-core` must stay in `vite.resolve.dedupe` — two resolved copies break signal and `Facet` identity checks.
 
 ---
 

@@ -52,7 +52,7 @@ backend:
     logFormat: json     # json, text
     clusterID: local
 
-# -- Frontend (Deno/Fresh SSR)
+# -- Frontend (Bun/Astro SSR)
 frontend:
   enabled: true
   image:

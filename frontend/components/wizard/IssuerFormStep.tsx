@@ -1,7 +1,7 @@
 import { LE_PROD_ACME, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
-import type { IssuerWizardForm } from "@/islands/IssuerWizard.tsx";
+import type { IssuerWizardForm } from "@/src/islands/IssuerWizard.tsx";
 
 interface IssuerFormStepProps {
   scope: "namespaced" | "cluster";

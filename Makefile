@@ -27,11 +27,9 @@ dev-db-stop:
 dev-backend:
 	cd backend && go run ./cmd/kubecenter --config ""
 
-# Bun/Astro as of U11. The Fresh dev server is still runnable directly
-# (`cd frontend && deno task dev`) until U12 deletes the tree, but it binds the
-# same port 5173, so leaving both behind one command would mean whichever
-# started first silently wins and a developer could spend an afternoon testing
-# the stack they thought they had migrated off.
+# Bun/Astro. U12 deleted the Fresh tree, so this is now the only frontend
+# dev server; it still binds 5173, the port CLAUDE.md documents and
+# Playwright's local webServer entry expects.
 dev-frontend: check-bun-version
 	cd frontend && bun run dev
 
@@ -41,9 +39,9 @@ build: build-backend build-frontend
 build-backend:
 	cd backend && go build -ldflags="$(LDFLAGS)" -o bin/kubecenter ./cmd/kubecenter
 
-# The image, CI and the E2E harness all build with Bun as of U10/U11; this is
-# the same build, so that `make build-frontend` and what actually ships cannot
-# disagree. `deno task build` still works for the Fresh tree until U12.
+# The image, CI and the E2E harness all build with Bun; this is the same
+# build, so that `make build-frontend` and what actually ships cannot
+# disagree.
 build-frontend: check-bun-version
 	cd frontend && bun run build
 
@@ -74,7 +72,7 @@ test-e2e-ui:
 	cd e2e && npx playwright test --ui
 
 # Single source of truth for the Bun version (U3 step 3b, R1). Local
-# tooling, the frontend Dockerfile builder (once it moves off Deno) and both
+# tooling, the frontend Dockerfile builder and both
 # Bun-using CI workflows are meant to read this file instead of each naming
 # a version, so they can't silently drift apart. Only mobile-ci.yml
 # currently pins a Bun version in CI, and it does so independently
@@ -104,14 +102,13 @@ lint: check-bun-version lint-backend lint-frontend mobile-analyze check-themes
 lint-backend:
 	cd backend && go vet ./...
 
-# deno lint/fmt/check still gate the Fresh tree (frontend/routes, islands,
-# components, lib, main.ts, ...) until U12 deletes frontend/deno.json.
-# `bun run check` (KTD9: Biome for lint+format, `astro check` for types)
-# gates the surface already ported to Bun/Astro — see the scope note in
-# frontend/astro.config.mjs and frontend/tsconfig.json. It widens as U7
-# through U9 move files into frontend/src.
+# `bun run check` is the whole frontend gate as of U12: Biome for lint and
+# format, `astro check` for types, and the repo's standing guards (KTD9).
+# The `deno lint && deno fmt --check` pair that ran alongside it covered the
+# Fresh tree, which U12 deleted; tsconfig.json's include list widened to
+# lib/ and components/ in the same change so nothing lost its type checker
+# along with it.
 lint-frontend: check-bun-version
-	cd frontend && deno lint && deno fmt --check
 	cd frontend && bun run check
 
 # Docker
@@ -140,4 +137,4 @@ check-dashboards:
 
 # Clean
 clean:
-	rm -rf backend/bin frontend/_fresh
+	rm -rf backend/bin frontend/dist

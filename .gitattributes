@@ -6,5 +6,5 @@
 
 # Source + config files use LF everywhere. CI runs on Linux (LF); without this,
 # a Windows checkout (core.autocrlf=true) presents CRLF working-tree files that
-# `deno fmt --check` rejects, and risks committing CRLF that breaks CI.
+# Biome's format check rejects, and risks committing CRLF that breaks CI.
 * text=auto eol=lf

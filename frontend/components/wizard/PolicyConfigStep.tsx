@@ -3,7 +3,7 @@ import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import { getTemplate } from "@/lib/policy-templates.ts";
 import type { ParamField } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
-import type { PolicyWizardForm } from "@/islands/PolicyWizard.tsx";
+import type { PolicyWizardForm } from "@/src/islands/PolicyWizard.tsx";
 
 function CloseIcon() {
   return (

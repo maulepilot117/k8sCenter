@@ -58,12 +58,21 @@ for (const file of [
   });
 }
 
-test("forkedTwins covers islands and components, not just lib", () => {
+/**
+ * This asserted on `islands/YamlEditor.tsx` and `islands/NamespaceTopology.tsx`
+ * until U12 deleted frontend/islands/, which made a twin there impossible by
+ * construction. The point of the test is unchanged -- FORKED_ROOTS must cover
+ * more than `lib`, because the seven dead imports that prompted this guard
+ * pointed at components as well -- so it now makes that point with the
+ * components twins that do still exist. `islands` stays in FORKED_ROOTS: it
+ * costs one skipped directory and it is the shape of the next fork.
+ */
+test("forkedTwins covers components, not just lib", () => {
   const twins = forkedTwins();
   expect(twins.has("lib/cluster.ts")).toBe(true);
-  expect(twins.has("islands/YamlEditor.tsx")).toBe(true);
-  expect(twins.has("islands/NamespaceTopology.tsx")).toBe(true);
   expect(twins.has("components/ui/Logo.tsx")).toBe(true);
+  expect(twins.has("components/k8s/detail/index.tsx")).toBe(true);
+  expect([...twins].some((t) => t.startsWith("components/"))).toBe(true);
   // Type-only and frozen-data twins are exempt by explicit name.
   expect(twins.has("lib/eso-types.ts")).toBe(false);
 });

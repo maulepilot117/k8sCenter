@@ -1,6 +1,6 @@
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { Signal } from "@preact/signals";
-import type { FormState } from "@/islands/NamespaceLimitsWizard.tsx";
+import type { FormState } from "@/src/islands/NamespaceLimitsWizard.tsx";
 import type { PresetKey } from "@/lib/namespace-presets.ts";
 import { PRESETS } from "@/lib/namespace-presets.ts";
 

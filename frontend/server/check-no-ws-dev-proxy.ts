@@ -57,8 +57,8 @@ function main(): void {
     );
     for (const f of offenders) console.error(`  ${f}`);
     console.error(
-      "WebSocket upgrades must go through frontend/server/ws-proxy.ts in both dev and " +
-        "prod (R18). frontend/vite.config.ts is exempt until U12 deletes the Fresh tree.",
+      "WebSocket upgrades must go through frontend/server/ws-proxy.ts in " +
+        "both dev and prod (R18).",
     );
     process.exit(1);
   }

@@ -1,7 +1,7 @@
 import type { K8sResource, Service } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { KeyValueTable } from "./KeyValueTable.tsx";
-import { MeshGoldenSignals } from "@/components/mesh/GoldenSignals.tsx";
+import { MeshGoldenSignals } from "@/src/components/mesh/GoldenSignals.tsx";
 
 export function ServiceOverview({ resource }: { resource: K8sResource }) {
   const s = resource as Service;

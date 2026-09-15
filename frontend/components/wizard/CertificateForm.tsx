@@ -2,7 +2,7 @@ import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
 import type { Issuer } from "@/lib/certmanager-types.ts";
-import type { CertificateWizardForm } from "@/islands/CertificateWizard.tsx";
+import type { CertificateWizardForm } from "@/src/islands/CertificateWizard.tsx";
 
 interface CertificateFormProps {
   form: CertificateWizardForm;

@@ -1,34 +1,33 @@
 /**
- * Reads BACKEND_URL from whichever runtime's env API is actually present.
+ * Reads BACKEND_URL from the runtime's env API.
  *
- * `typeof Deno !== "undefined"` used to be the sole check here, which is
- * correct under Fresh/Deno but silently false under Bun/Node — `Deno` is
- * simply never defined there, so the ternary fell through to the
- * hardcoded localhost default and ignored the `BACKEND_URL` env var the
- * Helm chart sets on the frontend Deployment (R13). Bun's server needs the
- * `process.env` branch too.
+ * This carried a `Deno.env.get` branch ahead of the `process.env` one while
+ * both trees existed. U12 removed it with the Fresh tree: Bun is the only
+ * runtime that loads this module now, and a dead branch reading a global
+ * nothing defines is worse than no branch at all -- it reads as support for
+ * a runtime that is no longer tested.
  *
- * Both runtime globals are read through `globalThis` with a local cast,
- * rather than the bare `Deno`/`process` identifiers, so this file
- * type-checks under `deno check` (no Node lib/types loaded) and under
- * `astro check` (no Deno ambient types loaded) alike — neither program has
- * to know about the other runtime's globals.
+ * `process` is still reached through `globalThis` with a local cast rather
+ * than the bare identifier. This module is imported by islands as well as by
+ * the server, and the browser bundle has no `process`; the optional-chained
+ * read returns undefined there instead of throwing, which is what lets the
+ * hardcoded default below stand in.
+ *
+ * The value matters: the Helm chart sets BACKEND_URL on the frontend
+ * Deployment (R13), and it is the one environment variable that pod is given
+ * at all (R17).
  */
 export function readBackendUrlFromEnv(): string | undefined {
   const g = globalThis as unknown as {
-    Deno?: { env: { get(key: string): string | undefined } };
     process?: { env?: Record<string, string | undefined> };
   };
-  if (g.Deno) {
-    return g.Deno.env.get("BACKEND_URL");
-  }
-  if (g.process?.env) {
-    return g.process.env.BACKEND_URL;
-  }
-  return undefined;
+  return g.process?.env?.BACKEND_URL;
 }
 
-/** Backend API base URL. In dev, the BFF proxy forwards to this. */
+/**
+ * Backend API base URL. In dev, the Astro dev server's plugin proxies to
+ * this; in production, frontend/server/prod.ts does.
+ */
 export const BACKEND_URL = readBackendUrlFromEnv() ?? "http://localhost:8080";
 
 /**
