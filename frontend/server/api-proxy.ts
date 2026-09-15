@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { BACKEND_URL } from "@/lib/constants.ts";
+import { hasTraversal } from "./path-safety.ts";
 
 /**
  * The catch-all BFF proxy to the Go backend (U6), ported unchanged (R5)
@@ -53,13 +54,18 @@ export function isApiProxyPath(pathname: string): boolean {
 
 /**
  * Validates the backend-relative path (already stripped of the leading
- * "/api/") -- only allow v1/-prefixed paths, no traversal. Checks both
- * literal and URL-encoded traversal sequences. Split out from the request
- * handler below so the SSRF guard itself is unit-testable without a real
- * IncomingMessage/ServerResponse pair.
+ * "/api/") -- only allow v1/-prefixed paths, no traversal. Split out from
+ * the request handler below so the SSRF guard itself is unit-testable
+ * without a real IncomingMessage/ServerResponse pair.
+ *
+ * The traversal rule lives in ./path-safety.ts and is shared with the
+ * WebSocket guard, which enforces the same thing. It checks the raw path and
+ * every decoding of it, so a double-encoded `%252e%252e` -- which contains no
+ * literal `..`, `//` or `%2e` and therefore passed the previous raw-only
+ * check -- is refused.
  */
 export function isValidBackendPath(backendPath: string): boolean {
-  return backendPath.startsWith("v1/") && !/\.\.|\/\/|%2e/i.test(backendPath);
+  return backendPath.startsWith("v1/") && !hasTraversal(backendPath);
 }
 
 /** Matches the two OIDC callback paths whose 302 the browser must follow itself. */

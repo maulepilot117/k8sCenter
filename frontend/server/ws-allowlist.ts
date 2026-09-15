@@ -7,6 +7,8 @@
  * directly, without a socket.
  */
 
+import { hasTraversal } from "./path-safety.ts";
+
 export type WsPathCheck =
   | { ok: true; path: string }
   | { ok: false; status: 400 | 404; reason: WsPathRejection };
@@ -47,7 +49,7 @@ export function checkWsPath(rawUrl: string): WsPathCheck {
   }
   const path = match[1];
 
-  if (!path.startsWith("v1/") || /\.\.|\/\/|%2e/i.test(path)) {
+  if (!path.startsWith("v1/") || hasTraversal(path)) {
     return { ok: false, status: 400, reason: "invalid" };
   }
 
