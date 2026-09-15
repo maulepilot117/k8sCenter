@@ -113,7 +113,7 @@ export default function IconRail({ currentPath }: IconRailProps) {
     // shared RAIL_NAV_STYLE is what makes the two impossible to drift apart:
     // when this placeholder omitted display/align-items/z-index/overflow, the
     // rail rendered unstyled and the active-item indicator escaped its
-    // overflow:hidden clip. See docs/solutions/frontend-bun-image.md.
+    // overflow:hidden clip.
     return <nav class="glass-bar" style={RAIL_NAV_STYLE} />;
   }
 

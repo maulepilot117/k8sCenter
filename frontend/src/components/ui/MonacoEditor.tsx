@@ -10,8 +10,17 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * `relative` is load-bearing, not cosmetic: Monaco positions .view-lines and
  * .monaco-scrollable-element absolutely, and they resolve against the nearest
  * positioned ancestor. Without it they escape the editor box entirely.
+ *
+ * `bg-base` is what the SSR placeholder painted before these two roots were
+ * reconciled. It has to stay on the shared class: the placeholder has no
+ * children, so between first paint and hydration the bordered box would
+ * otherwise show whatever the parent container paints, then snap to base once
+ * the loading overlay mounts. The hydrated root pays nothing for it — Monaco
+ * paints over it, and the failed-load branch swaps in a textarea that carries
+ * its own background.
  */
-const EDITOR_ROOT_CLASS = "relative rounded-md border border-border-primary";
+const EDITOR_ROOT_CLASS =
+  "relative bg-base rounded-md border border-border-primary";
 
 export interface MonacoEditorProps {
   /** Initial YAML content */
