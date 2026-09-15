@@ -29,10 +29,10 @@ backend/**/testdata/fuzz/
 coverage.out
 coverage.html
 
-# Deno / Fresh frontend
+# Bun / Astro frontend
 frontend/node_modules/
-frontend/_fresh/
 frontend/.vite/
+frontend/.astro/
 frontend/dist/
 frontend/npm/
 frontend/remote/
@@ -84,9 +84,6 @@ e2e/test-results/
 # e2e/ktd14-spotcheck.mjs). The numbers get recorded in the U12 plan entry;
 # the images are scratch.
 e2e/ktd14-out/
-
-# Theme generator runtime cache
-tools/theme-gen/deno.lock
 
 # Misc
 *.log

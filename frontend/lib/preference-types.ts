@@ -42,9 +42,9 @@ export const SAVED_VIEW_STATUS_FILTERS = [
 export const SAVED_VIEW_SORT_KEYS = ["name", "namespace", "age"] as const;
 export const SAVED_VIEW_SORT_DIRS = ["asc", "desc"] as const;
 
-export type StatusFilter = typeof SAVED_VIEW_STATUS_FILTERS[number];
-export type SortKey = typeof SAVED_VIEW_SORT_KEYS[number];
-export type SortDir = typeof SAVED_VIEW_SORT_DIRS[number];
+export type StatusFilter = (typeof SAVED_VIEW_STATUS_FILTERS)[number];
+export type SortKey = (typeof SAVED_VIEW_SORT_KEYS)[number];
+export type SortDir = (typeof SAVED_VIEW_SORT_DIRS)[number];
 
 const DEFAULT_STATUS_FILTER: StatusFilter = "all";
 const DEFAULT_SORT_KEY: SortKey = "name";
@@ -136,9 +136,10 @@ export function captureViewState(s: TableViewState): SavedViewConfig {
  * unsupported sortKey to "name" would violate R3 (missing observations must
  * not appear healthy).
  */
-export function applyViewState(
-  c: SavedViewConfig,
-): { state: TableViewState; warnings: string[] } {
+export function applyViewState(c: SavedViewConfig): {
+  state: TableViewState;
+  warnings: string[];
+} {
   const warnings: string[] = [];
 
   if (!isSupportedSavedViewSchema(c.schemaVersion)) {

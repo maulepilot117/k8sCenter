@@ -9,18 +9,25 @@ interface CardProps {
   glass?: boolean;
 }
 
-export function Card(
-  { title, children, class: className, glass = false }: CardProps,
-) {
+export function Card({
+  title,
+  children,
+  class: className,
+  glass = false,
+}: CardProps) {
   return (
     <div
       class={`${glass ? "glass rounded-2xl" : "rounded-lg border"} p-6 ${
         className ?? ""
       }`}
-      style={glass ? undefined : {
-        background: "var(--bg-surface)",
-        borderColor: "var(--border-subtle)",
-      }}
+      style={
+        glass
+          ? undefined
+          : {
+              background: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+            }
+      }
     >
       {title && (
         <h3

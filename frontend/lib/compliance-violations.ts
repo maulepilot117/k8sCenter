@@ -69,10 +69,11 @@ export function failingPolicies(
     }
   }
   return [...groups.values()]
-    .sort((a, b) =>
-      Number(b.blocking) - Number(a.blocking) ||
-      b.count - a.count ||
-      a.policy.localeCompare(b.policy)
+    .sort(
+      (a, b) =>
+        Number(b.blocking) - Number(a.blocking) ||
+        b.count - a.count ||
+        a.policy.localeCompare(b.policy),
     )
     .slice(0, limit);
 }
@@ -86,9 +87,10 @@ export function worstResources(
   limit: number,
 ): NormalizedViolation[] {
   return [...violations]
-    .sort((a, b) =>
-      severityRank(a.severity) - severityRank(b.severity) ||
-      Number(b.blocking) - Number(a.blocking)
+    .sort(
+      (a, b) =>
+        severityRank(a.severity) - severityRank(b.severity) ||
+        Number(b.blocking) - Number(a.blocking),
     )
     .slice(0, limit);
 }

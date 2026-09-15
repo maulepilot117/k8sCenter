@@ -193,14 +193,15 @@ export const POLICY_TEMPLATES: PolicyTemplateInfo[] = [
 export function getTemplatesByCategory(): Map<string, PolicyTemplateInfo[]> {
   const grouped = new Map<string, PolicyTemplateInfo[]>();
   for (const cat of POLICY_CATEGORIES) {
-    grouped.set(cat, POLICY_TEMPLATES.filter((t) => t.category === cat));
+    grouped.set(
+      cat,
+      POLICY_TEMPLATES.filter((t) => t.category === cat),
+    );
   }
   return grouped;
 }
 
 /** Find a template by ID. */
-export function getTemplate(
-  id: string,
-): PolicyTemplateInfo | undefined {
+export function getTemplate(id: string): PolicyTemplateInfo | undefined {
   return POLICY_TEMPLATES.find((t) => t.id === id);
 }

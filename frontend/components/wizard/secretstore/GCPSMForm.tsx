@@ -138,7 +138,7 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
 
   function patchWI(patch: Partial<GCPSMWorkloadIdentitySpec>) {
     const auth = (spec.auth as Record<string, unknown>) ?? {};
-    const block = (auth["workloadIdentity"] as Record<string, unknown>) ?? {};
+    const block = (auth.workloadIdentity as Record<string, unknown>) ?? {};
     onUpdateSpec({
       ...spec,
       auth: { ...auth, workloadIdentity: { ...block, ...patch } },
@@ -147,9 +147,9 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
 
   function patchSARef(patch: { name?: string; key?: string }) {
     const auth = (spec.auth as Record<string, unknown>) ?? {};
-    const block = (auth["secretRef"] as Record<string, unknown>) ?? {};
+    const block = (auth.secretRef as Record<string, unknown>) ?? {};
     const existing =
-      (block["secretAccessKeySecretRef"] as Record<string, unknown>) ?? {};
+      (block.secretAccessKeySecretRef as Record<string, unknown>) ?? {};
     onUpdateSpec({
       ...spec,
       auth: {
@@ -178,20 +178,22 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
           required
           value={getStr(spec, "projectID")}
           onInput={(e) =>
-            patchTop("projectID", (e.target as HTMLInputElement).value)}
+            patchTop("projectID", (e.target as HTMLInputElement).value)
+          }
           placeholder="my-gcp-project"
           description="GCP project ID where your secrets are stored."
-          error={errors["projectID"]}
+          error={errors.projectID}
         />
         <Input
           id="gcpsm-location"
           label="Location (optional)"
           value={getStr(spec, "location")}
           onInput={(e) =>
-            patchTop("location", (e.target as HTMLInputElement).value)}
+            patchTop("location", (e.target as HTMLInputElement).value)
+          }
           placeholder="us-central1"
           description="Regional endpoint. Leave blank to use the global endpoint."
-          error={errors["location"]}
+          error={errors.location}
         />
       </div>
 
@@ -199,7 +201,9 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
       <div class="space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <div class="grid gap-2 sm:grid-cols-3">
           {AUTH_METHODS.map((m) => {
@@ -222,7 +226,7 @@ export function GCPSMForm({ spec, errors, onUpdateSpec }: GCPSMFormProps) {
             );
           })}
         </div>
-        {errors["auth"] && <p class="text-sm text-danger">{errors["auth"]}</p>}
+        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
@@ -273,9 +277,11 @@ interface WorkloadIdentityFieldsProps {
   onPatch: (patch: Partial<GCPSMWorkloadIdentitySpec>) => void;
 }
 
-function WorkloadIdentityFields(
-  { block, errors, onPatch }: WorkloadIdentityFieldsProps,
-) {
+function WorkloadIdentityFields({
+  block,
+  errors,
+  onPatch,
+}: WorkloadIdentityFieldsProps) {
   const saRef = (block.serviceAccountRef as ServiceAccountRef) ?? {};
   const clusterLocation = (block.clusterLocation as string) ?? "";
   const clusterName = (block.clusterName as string) ?? "";
@@ -299,8 +305,10 @@ function WorkloadIdentityFields(
           onInput={(e) => patchSARefName((e.target as HTMLInputElement).value)}
           placeholder="eso-gcp-sa"
           description="The Kubernetes ServiceAccount annotated with the GCP service account email via Workload Identity."
-          error={errors["auth.workloadIdentity.serviceAccountRef.name"] ??
-            errors["auth.workloadIdentity.serviceAccountRef"]}
+          error={
+            errors["auth.workloadIdentity.serviceAccountRef.name"] ??
+            errors["auth.workloadIdentity.serviceAccountRef"]
+          }
         />
       </div>
       <div>
@@ -317,9 +325,10 @@ function WorkloadIdentityFields(
             value={clusterLocation}
             onInput={(e) =>
               onPatch({
-                clusterLocation: (e.target as HTMLInputElement).value ||
-                  undefined,
-              })}
+                clusterLocation:
+                  (e.target as HTMLInputElement).value || undefined,
+              })
+            }
             placeholder="us-central1"
             error={errors["auth.workloadIdentity.clusterLocation"]}
           />
@@ -330,7 +339,8 @@ function WorkloadIdentityFields(
             onInput={(e) =>
               onPatch({
                 clusterName: (e.target as HTMLInputElement).value || undefined,
-              })}
+              })
+            }
             placeholder="my-cluster"
             error={errors["auth.workloadIdentity.clusterName"]}
           />
@@ -340,9 +350,10 @@ function WorkloadIdentityFields(
             value={clusterProjectID}
             onInput={(e) =>
               onPatch({
-                clusterProjectID: (e.target as HTMLInputElement).value ||
-                  undefined,
-              })}
+                clusterProjectID:
+                  (e.target as HTMLInputElement).value || undefined,
+              })
+            }
             placeholder="my-infra-project"
             error={errors["auth.workloadIdentity.clusterProjectID"]}
           />
@@ -359,9 +370,8 @@ interface SAKeyFieldsProps {
 }
 
 function SAKeyFields({ block, errors, onPatchRef }: SAKeyFieldsProps) {
-  const sakRef = (
-    (block.secretAccessKeySecretRef as Record<string, unknown>) ?? {}
-  ) as { name?: string; key?: string };
+  const sakRef = ((block.secretAccessKeySecretRef as Record<string, unknown>) ??
+    {}) as { name?: string; key?: string };
 
   return (
     <div class="rounded-md border border-border-primary p-4 space-y-3">
@@ -379,7 +389,8 @@ function SAKeyFields({ block, errors, onPatchRef }: SAKeyFieldsProps) {
           required
           value={sakRef.name ?? ""}
           onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })}
+            onPatchRef({ name: (e.target as HTMLInputElement).value })
+          }
           placeholder="gcp-sa-key"
           error={errors["auth.secretRef.secretAccessKeySecretRef.name"]}
         />
@@ -389,7 +400,8 @@ function SAKeyFields({ block, errors, onPatchRef }: SAKeyFieldsProps) {
           required
           value={sakRef.key ?? ""}
           onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })}
+            onPatchRef({ key: (e.target as HTMLInputElement).value })
+          }
           placeholder="key.json"
           description="The key within the Secret holding the SA JSON content."
           error={errors["auth.secretRef.secretAccessKeySecretRef.key"]}

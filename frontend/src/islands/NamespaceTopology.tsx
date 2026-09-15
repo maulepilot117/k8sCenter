@@ -849,7 +849,7 @@ export default function NamespaceTopology({
                   font-family="var(--font-sans, sans-serif)"
                 >
                   {node.name.length > 20
-                    ? node.name.substring(0, 18) + "..."
+                    ? `${node.name.substring(0, 18)}...`
                     : node.name}
                 </text>
               </g>

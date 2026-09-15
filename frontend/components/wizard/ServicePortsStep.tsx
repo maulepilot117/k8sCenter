@@ -2,8 +2,8 @@ import { Input } from "@/components/ui/Input.tsx";
 import { KeyValueListEditor } from "@/components/ui/KeyValueListEditor.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-import type { LabelEntry } from "@/lib/wizard-types.ts";
 import { PROTOCOL_OPTIONS } from "@/lib/wizard-constants.ts";
+import type { LabelEntry } from "@/lib/wizard-types.ts";
 
 interface PortEntry {
   name: string;
@@ -28,8 +28,8 @@ export function ServicePortsStep({
   errors,
   onChange,
 }: ServicePortsProps) {
-  const showNodePort = serviceType === "NodePort" ||
-    serviceType === "LoadBalancer";
+  const showNodePort =
+    serviceType === "NodePort" || serviceType === "LoadBalancer";
 
   const updatePort = (
     index: number,
@@ -50,7 +50,10 @@ export function ServicePortsStep({
   };
 
   const removePort = (index: number) => {
-    onChange("ports", ports.filter((_, i) => i !== index));
+    onChange(
+      "ports",
+      ports.filter((_, i) => i !== index),
+    );
   };
 
   const updateSelector = (
@@ -68,7 +71,10 @@ export function ServicePortsStep({
   };
 
   const removeSelector = (index: number) => {
-    onChange("selector", selector.filter((_, i) => i !== index));
+    onChange(
+      "selector",
+      selector.filter((_, i) => i !== index),
+    );
   };
 
   return (
@@ -79,8 +85,9 @@ export function ServicePortsStep({
           Labels used to match target pods. Must match at least one pod's
           labels.
         </p>
-        {errors.selector && <p class="text-sm text-danger">{errors.selector}
-        </p>}
+        {errors.selector && (
+          <p class="text-sm text-danger">{errors.selector}</p>
+        )}
         <KeyValueListEditor
           label="Pod Selector"
           entries={selector}
@@ -104,7 +111,8 @@ export function ServicePortsStep({
                 label={i === 0 ? "Name" : undefined}
                 value={port.name}
                 onInput={(e) =>
-                  updatePort(i, "name", (e.target as HTMLInputElement).value)}
+                  updatePort(i, "name", (e.target as HTMLInputElement).value)
+                }
                 placeholder="http"
               />
             </div>
@@ -117,8 +125,9 @@ export function ServicePortsStep({
                   updatePort(
                     i,
                     "port",
-                    parseInt((e.target as HTMLInputElement).value) || 0,
-                  )}
+                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  )
+                }
                 placeholder="80"
                 min={1}
                 max={65535}
@@ -134,8 +143,9 @@ export function ServicePortsStep({
                   updatePort(
                     i,
                     "targetPort",
-                    parseInt((e.target as HTMLInputElement).value) || 0,
-                  )}
+                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  )
+                }
                 placeholder="8080"
                 min={1}
                 max={65535}
@@ -151,7 +161,8 @@ export function ServicePortsStep({
                     i,
                     "protocol",
                     (e.target as HTMLSelectElement).value,
-                  )}
+                  )
+                }
                 options={PROTOCOL_OPTIONS}
               />
             </div>
@@ -165,8 +176,9 @@ export function ServicePortsStep({
                     updatePort(
                       i,
                       "nodePort",
-                      parseInt((e.target as HTMLInputElement).value) || 0,
-                    )}
+                      parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                    )
+                  }
                   placeholder="30080"
                   min={30000}
                   max={32767}

@@ -1,13 +1,13 @@
-import { age } from "@/lib/format.ts";
-import type { Schedule } from "@/lib/velero-types.ts";
+import { Button } from "@/components/ui/Button.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
   type Column,
   type Row,
 } from "@/components/ui/ResourceTable.tsx";
-import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
+import { age } from "@/lib/format.ts";
+import type { Schedule } from "@/lib/velero-types.ts";
 
 const SCHEDULES_COLUMNS: Column[] = [
   { key: "name", label: "Name", width: "2fr" },
@@ -18,13 +18,15 @@ const SCHEDULES_COLUMNS: Column[] = [
   { key: "actions", label: "", width: "80px" },
 ];
 
-export function SchedulesResourceTable(
-  { schedules, deleting, onDelete }: {
-    schedules: Schedule[];
-    deleting: string | null;
-    onDelete: (ns: string, name: string) => void;
-  },
-) {
+export function SchedulesResourceTable({
+  schedules,
+  deleting,
+  onDelete,
+}: {
+  schedules: Schedule[];
+  deleting: string | null;
+  onDelete: (ns: string, name: string) => void;
+}) {
   if (schedules.length === 0) {
     return (
       <div
@@ -48,9 +50,7 @@ export function SchedulesResourceTable(
     cells: {
       name: (
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <StatusDot
-            status={phaseTone(s.paused ? "Paused" : s.phase)}
-          />
+          <StatusDot status={phaseTone(s.paused ? "Paused" : s.phase)} />
           <div>
             <div
               style={{
@@ -108,9 +108,7 @@ export function SchedulesResourceTable(
         </span>
       ),
       actions: (
-        <div
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div onClick={(e) => e.stopPropagation()}>
           <Button
             type="button"
             variant="ghost"
@@ -126,10 +124,6 @@ export function SchedulesResourceTable(
   }));
 
   return (
-    <ResourceTable
-      columns={SCHEDULES_COLUMNS}
-      rows={rows}
-      chevron={false}
-    />
+    <ResourceTable columns={SCHEDULES_COLUMNS} rows={rows} chevron={false} />
   );
 }

@@ -33,16 +33,14 @@ export function ScaleDialog({
           Scale {resourceName}
         </h3>
         <div class="mt-4">
-          <label class="block text-sm text-text-secondary">
-            Replicas
-          </label>
+          <label class="block text-sm text-text-secondary">Replicas</label>
           <input
             type="number"
             min="0"
             max="1000"
             value={value}
             onInput={(e) => {
-              const raw = parseInt((e.target as HTMLInputElement).value);
+              const raw = parseInt((e.target as HTMLInputElement).value, 10);
               onValueChange(
                 Number.isNaN(raw) ? 0 : Math.min(Math.max(raw, 0), 1000),
               );

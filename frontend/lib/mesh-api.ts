@@ -39,21 +39,15 @@ export const meshApi = {
 
   /** Traffic-routing CRDs across both meshes; `?namespace=` scopes the list. */
   routes: (opts?: NamespaceScope) =>
-    apiGet<RoutingResponse>(
-      `/v1/mesh/routing${namespaceQueryString(opts)}`,
-    ),
+    apiGet<RoutingResponse>(`/v1/mesh/routing${namespaceQueryString(opts)}`),
 
   /** Single route detail. Bare TrafficRoute, no enveloping `status` field. */
   route: (id: string) =>
-    apiGet<TrafficRoute>(
-      `/v1/mesh/routing/${encodeURIComponent(id)}`,
-    ),
+    apiGet<TrafficRoute>(`/v1/mesh/routing/${encodeURIComponent(id)}`),
 
   /** Per-workload mTLS posture; `?namespace=` narrows scope. */
   mtls: (opts?: NamespaceScope) =>
-    apiGet<MTLSPostureResponse>(
-      `/v1/mesh/mtls${namespaceQueryString(opts)}`,
-    ),
+    apiGet<MTLSPostureResponse>(`/v1/mesh/mtls${namespaceQueryString(opts)}`),
 
   /** Per-service golden signals (RPS, error rate, latency quantiles).
    *  Wired in Phase C; consumed by Phase D's service-detail integration. */

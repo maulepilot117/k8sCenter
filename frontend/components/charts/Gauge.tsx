@@ -12,17 +12,15 @@ interface GaugeProps {
 }
 
 /** Radial progress ring. Used for cluster health, utilization headlines. */
-export default function Gauge(
-  {
-    value,
-    size = 132,
-    thickness = 11,
-    color = "var(--success)",
-    track = "var(--border-subtle)",
-    label,
-    sublabel,
-  }: GaugeProps,
-) {
+export default function Gauge({
+  value,
+  size = 132,
+  thickness = 11,
+  color = "var(--success)",
+  track = "var(--border-subtle)",
+  label,
+  sublabel,
+}: GaugeProps) {
   const cx = size / 2;
   const r = cx - thickness / 2 - 1;
   const circ = 2 * Math.PI * r;

@@ -1,5 +1,5 @@
-import type { HealthStatus, SyncStatus } from "@/lib/gitops-types.ts";
 import { ColorBadge } from "@/components/ui/PolicyBadges.tsx";
+import type { HealthStatus, SyncStatus } from "@/lib/gitops-types.ts";
 
 /** Shared color maps for GitOps UI */
 export const TOOL_COLORS: Record<string, string> = {

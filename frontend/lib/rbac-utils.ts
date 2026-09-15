@@ -9,7 +9,7 @@ export function resolveRoleHref(
   roleRefName: string,
   namespace?: string,
 ): string {
-  const kindKey = roleRefKind.toLowerCase() + "s"; // ClusterRole → clusterroles
+  const kindKey = `${roleRefKind.toLowerCase()}s`; // ClusterRole → clusterroles
   const path = RESOURCE_DETAIL_PATHS[kindKey];
   if (!path) return "#";
   return CLUSTER_SCOPED_KINDS.has(kindKey)

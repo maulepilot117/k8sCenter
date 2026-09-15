@@ -16,12 +16,12 @@ interface ContainerResourcesTableProps {
  * Shows resource requests and limits per container.
  * Renders nothing if no containers have resource specifications.
  */
-export function ContainerResourcesTable(
-  { containers }: ContainerResourcesTableProps,
-) {
+export function ContainerResourcesTable({
+  containers,
+}: ContainerResourcesTableProps) {
   // Only show if at least one container has resource specs
-  const hasResources = containers.some((c) =>
-    c.resources?.requests || c.resources?.limits
+  const hasResources = containers.some(
+    (c) => c.resources?.requests || c.resources?.limits,
   );
   if (!hasResources) return null;
 

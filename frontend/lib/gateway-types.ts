@@ -181,6 +181,6 @@ export type GatewayListData =
   | { kind: "gateways"; items: GatewaySummary[] }
   | { kind: "httproutes"; items: HTTPRouteSummary[] }
   | {
-    kind: "grpcroutes" | "tcproutes" | "tlsroutes" | "udproutes";
-    items: RouteSummary[];
-  };
+      kind: "grpcroutes" | "tcproutes" | "tlsroutes" | "udproutes";
+      items: RouteSummary[];
+    };

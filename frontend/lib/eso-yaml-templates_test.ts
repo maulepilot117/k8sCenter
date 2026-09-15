@@ -43,9 +43,7 @@ test("each template parses and roots to kind: SecretStore apiVersion v1", () => 
     } catch (err) {
       throw new Error(`template ${key} failed to parse: ${err}`);
     }
-    expect(
-      parsed !== null && typeof parsed === "object",
-    ).toBe(true);
+    expect(parsed !== null && typeof parsed === "object").toBe(true);
     const obj = parsed as Record<string, unknown>;
     expect(obj.kind).toBe("SecretStore");
     expect(obj.apiVersion).toBe("external-secrets.io/v1");
@@ -60,13 +58,9 @@ test("each template's spec.provider key matches the registry key", () => {
   for (const [registryKey, tpl] of Object.entries(ESO_YAML_TEMPLATES)) {
     const parsed = yamlParse(tpl.yaml) as Record<string, unknown>;
     const spec = parsed.spec as Record<string, unknown> | undefined;
-    expect(
-      spec !== undefined && typeof spec === "object",
-    ).toBe(true);
+    expect(spec !== undefined && typeof spec === "object").toBe(true);
     const provider = spec?.provider as Record<string, unknown> | undefined;
-    expect(
-      provider !== undefined && typeof provider === "object",
-    ).toBe(true);
+    expect(provider !== undefined && typeof provider === "object").toBe(true);
     const providerKeys = Object.keys(provider ?? {});
     expect(providerKeys.length).toBe(1);
     expect(providerKeys[0]).toBe(registryKey);

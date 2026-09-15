@@ -53,8 +53,20 @@ import { resolveImportPath } from "./check-no-signal-store-in-ssr.ts";
 
 const FRONTEND_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
-/** The old-tree directories that were forked into `src/`. */
-const FORKED_ROOTS = ["lib", "islands", "components"] as const;
+/**
+ * The old-tree directories that were forked into `src/`.
+ *
+ * Exported so a test can assert this scope directly. Asserting it through
+ * whichever twins happen to exist in the tree is what made the previous two
+ * versions of that test rot: it named an `islands/` twin until U12 deleted
+ * that directory, then a `components/` twin until the same unit's follow-up
+ * deleted the last one. The set of directories is the invariant; which files
+ * currently sit in them is not.
+ *
+ * `islands` stays listed although `frontend/islands/` is gone: the entry costs
+ * one `existsSync` and it is the shape of the next fork.
+ */
+export const FORKED_ROOTS = ["lib", "islands", "components"] as const;
 
 /**
  * Forked twins that hold no module-scope state — types and frozen data.
@@ -146,17 +158,17 @@ export function valueImportsOf(absFile: string): string[] {
  * Twins are `<root>/x` that also exist as `src/<root>/x`, at any depth, for
  * every forked root — not just top-level `.ts` under `lib/`.
  */
-export function forkedTwins(): Set<string> {
+export function forkedTwins(frontendDir: string = FRONTEND_DIR): Set<string> {
   const twins = new Set<string>();
   for (const root of FORKED_ROOTS) {
-    const srcRoot = join(FRONTEND_DIR, "src", root);
+    const srcRoot = join(frontendDir, "src", root);
     if (!existsSync(srcRoot)) continue;
     for (const srcFile of walk(srcRoot)) {
       if (/_test\.tsx?$/.test(srcFile)) continue;
       const suffix = relative(srcRoot, srcFile);
-      const oldFile = join(FRONTEND_DIR, root, suffix);
+      const oldFile = join(frontendDir, root, suffix);
       if (!existsSync(oldFile)) continue;
-      const key = rel(oldFile);
+      const key = relative(frontendDir, oldFile).split("\\").join("/");
       if (STATELESS_TWINS.has(key)) continue;
       twins.add(key);
     }

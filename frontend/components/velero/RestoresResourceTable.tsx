@@ -1,12 +1,12 @@
-import { age } from "@/lib/format.ts";
-import type { Restore } from "@/lib/velero-types.ts";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
   type Column,
   type Row,
 } from "@/components/ui/ResourceTable.tsx";
-import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
+import { age } from "@/lib/format.ts";
+import type { Restore } from "@/lib/velero-types.ts";
 
 const RESTORES_COLUMNS: Column[] = [
   { key: "name", label: "Name", width: "2fr" },
@@ -61,9 +61,7 @@ export function RestoresResourceTable({ restores }: { restores: Restore[] }) {
       ),
       status: <StatusBadge label={r.phase} tone={phaseTone(r.phase)} />,
       backup: (
-        <span
-          style={{ fontSize: "13px", color: "var(--text-muted)" }}
-        >
+        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
           {r.backupName || r.scheduleName || "—"}
         </span>
       ),
@@ -89,8 +87,8 @@ export function RestoresResourceTable({ restores }: { restores: Restore[] }) {
           {r.itemsRestored}/{r.totalItems}
         </span>
       ),
-      issues: (r.warnings > 0 || r.errors > 0)
-        ? (
+      issues:
+        r.warnings > 0 || r.errors > 0 ? (
           <span
             style={{
               fontSize: "13px",
@@ -100,13 +98,8 @@ export function RestoresResourceTable({ restores }: { restores: Restore[] }) {
           >
             {r.warnings}W/{r.errors}E
           </span>
-        )
-        : (
-          <span
-            style={{ fontSize: "13px", color: "var(--success)" }}
-          >
-            0
-          </span>
+        ) : (
+          <span style={{ fontSize: "13px", color: "var(--success)" }}>0</span>
         ),
     },
   }));

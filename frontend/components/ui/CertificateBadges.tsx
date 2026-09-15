@@ -1,5 +1,5 @@
-import type { CertStatus, Issuer } from "@/lib/certmanager-types.ts";
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+import type { CertStatus, Issuer } from "@/lib/certmanager-types.ts";
 
 const STATUS_COLORS: Record<CertStatus, string> = {
   Ready: "var(--success)",
@@ -40,9 +40,7 @@ export function IssuerTypeBadge({ type }: { type: Issuer["type"] }) {
 }
 
 /** Renders a badge showing days remaining until certificate expiry. */
-export function ExpiryBadge(
-  { daysRemaining }: { daysRemaining?: number },
-) {
+export function ExpiryBadge({ daysRemaining }: { daysRemaining?: number }) {
   if (daysRemaining === undefined || daysRemaining === null) {
     return <span class="text-xs text-text-muted">&mdash;</span>;
   }

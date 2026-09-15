@@ -7,9 +7,11 @@ interface ResourceIconProps {
   size?: number;
 }
 
-export function ResourceIcon(
-  { kind, class: className, size = 20 }: ResourceIconProps,
-) {
+export function ResourceIcon({
+  kind,
+  class: className,
+  size = 20,
+}: ResourceIconProps) {
   const icon = icons[kind] ?? icons.default;
   return (
     <svg

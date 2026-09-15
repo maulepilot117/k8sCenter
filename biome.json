@@ -13,7 +13,9 @@
       "frontend/tsconfig.json",
       "frontend/package.json",
       "frontend/src/**",
-      "frontend/server/**"
+      "frontend/server/**",
+      "frontend/lib/**",
+      "frontend/components/**"
     ]
   },
   "formatter": {

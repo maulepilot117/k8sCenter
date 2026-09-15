@@ -39,10 +39,7 @@ function scoreItem(item: SearchItem, query: string): number {
   return 0;
 }
 
-export function fuzzySearch(
-  items: SearchItem[],
-  query: string,
-): SearchItem[] {
+export function fuzzySearch(items: SearchItem[], query: string): SearchItem[] {
   if (!query.trim()) {
     return items.slice(0, 8);
   }

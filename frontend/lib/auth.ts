@@ -5,13 +5,13 @@
  */
 import { computed, signal } from "@preact/signals";
 import { api, getAccessToken, onForbidden, setAccessToken } from "@/lib/api.ts";
-import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
-import { selectedNamespace } from "@/lib/namespace.ts";
 import {
   LOCAL_CLUSTER_ID,
   LOCAL_GENERATION,
   switchCluster,
 } from "@/lib/cluster.ts";
+import type { RBACSummary, UserInfo } from "@/lib/k8s-types.ts";
+import { selectedNamespace } from "@/lib/namespace.ts";
 
 /** Reactive user state. */
 const userSignal = signal<UserInfo | null>(null);

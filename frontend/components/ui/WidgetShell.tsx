@@ -15,9 +15,13 @@ interface WidgetShellProps {
  * Every metric/list widget on a dashboard should use this so headers,
  * spacing, and type stay identical across the app.
  */
-export default function WidgetShell(
-  { title, action, children, padding = 20, style }: WidgetShellProps,
-) {
+export default function WidgetShell({
+  title,
+  action,
+  children,
+  padding = 20,
+  style,
+}: WidgetShellProps) {
   return (
     <GlassCard padding={padding} style={style}>
       {(title || action) && (
@@ -30,20 +34,20 @@ export default function WidgetShell(
             marginBottom: "14px",
           }}
         >
-          {title
-            ? (
-              <h3
-                style={{
-                  margin: 0,
-                  fontSize: "14px",
-                  fontWeight: 650,
-                  color: "var(--text-primary)",
-                }}
-              >
-                {title}
-              </h3>
-            )
-            : <span />}
+          {title ? (
+            <h3
+              style={{
+                margin: 0,
+                fontSize: "14px",
+                fontWeight: 650,
+                color: "var(--text-primary)",
+              }}
+            >
+              {title}
+            </h3>
+          ) : (
+            <span />
+          )}
           {action}
         </div>
       )}

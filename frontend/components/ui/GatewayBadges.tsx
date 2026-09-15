@@ -1,9 +1,10 @@
 export function ProtocolBadge({ protocol }: { protocol: string }) {
-  const colorClass = protocol === "HTTPS" || protocol === "TLS"
-    ? "text-success bg-success/10"
-    : protocol === "HTTP"
-    ? "text-brand bg-brand/10"
-    : "text-text-secondary bg-surface";
+  const colorClass =
+    protocol === "HTTPS" || protocol === "TLS"
+      ? "text-success bg-success/10"
+      : protocol === "HTTP"
+        ? "text-brand bg-brand/10"
+        : "text-text-secondary bg-surface";
 
   return (
     <span

@@ -6,9 +6,12 @@ interface StepperProps {
 }
 
 /** Numeric +/- stepper (replicas, ports, counts). */
-export default function Stepper(
-  { value, min = 1, max = 99, onChange }: StepperProps,
-) {
+export default function Stepper({
+  value,
+  min = 1,
+  max = 99,
+  onChange,
+}: StepperProps) {
   const btn = {
     width: "42px",
     height: "40px",

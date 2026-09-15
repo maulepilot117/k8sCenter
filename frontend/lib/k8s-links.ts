@@ -25,7 +25,7 @@ export function resourceHref(
   const lower = kind.toLowerCase();
   const plural = RESOURCE_DETAIL_PATHS[lower]
     ? lower
-    : KIND_PLURALS[lower] ?? lower + "s";
+    : (KIND_PLURALS[lower] ?? `${lower}s`);
   const basePath = RESOURCE_DETAIL_PATHS[plural];
   if (!basePath || !name) return null;
   return namespace

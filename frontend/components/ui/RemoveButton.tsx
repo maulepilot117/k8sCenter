@@ -8,9 +8,11 @@ interface RemoveButtonProps {
  * Shared"X" icon button for removing items from lists.
  * Used across wizard step components for labels, ports, env vars, selectors.
  */
-export function RemoveButton(
-  { onClick, title = "Remove", class: className }: RemoveButtonProps,
-) {
+export function RemoveButton({
+  onClick,
+  title = "Remove",
+  class: className,
+}: RemoveButtonProps) {
   return (
     <button
       type="button"

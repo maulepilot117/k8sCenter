@@ -70,7 +70,7 @@ k8sCenter is a web-based Kubernetes management platform that delivers vCenter-le
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack subchart) |
 | Auth | JWT (HMAC-SHA256) + OIDC / LDAP / local (Argon2id, PostgreSQL-backed) |
-| Deployment | Helm 3.x, distroless containers (Go), Bun slim (frontend) |
+| Deployment | Helm 3.x, distroless containers (Go + frontend; the frontend image ships the compiled server and no Bun toolchain, shell or package manager) |
 | E2E Tests | Playwright (Node.js) in `e2e/` directory |
 | CI | GitHub Actions — go vet/test, `bun run check`/test/build, Trivy scanning, E2E with kind |
 
@@ -105,10 +105,22 @@ k8scenter/
 │       ├── audit/            # PostgreSQL audit logger
 │       └── websocket/        # Hub + Client (fan-out, RBAC revalidation)
 ├── frontend/                 # Bun 1.4.x + Astro 7.x
-│   ├── routes/               # File-system routing (50+ pages)
-│   ├── islands/              # Interactive islands (ResourceTable, wizards, etc.)
-│   ├── components/           # UI components, wizard steps, k8s detail overviews
-│   └── lib/                  # API client, auth, WebSocket, constants, hooks
+│   ├── src/
+│   │   ├── pages/            # File-system routing (189 .astro pages)
+│   │   ├── layouts/          # BaseLayout, ChromeLayout, error surfaces
+│   │   ├── islands/          # Interactive islands (ResourceTable, wizards, etc.)
+│   │   ├── components/       # Components ported alongside their island
+│   │   └── lib/              # Signal stores (cluster, ws, namespace, pins)
+│   ├── components/           # Shared UI components, wizard steps, k8s detail
+│   │                         #   overviews. NOT pre-migration leftovers — the
+│   │                         #   src/ tree imports ~107 of these via `@/`.
+│   ├── lib/                  # API client, auth, constants, types, hooks.
+│   │                         #   cluster/ws/namespace here are one-line
+│   │                         #   re-exports of their src/lib twin — keep them
+│   │                         #   that way (see check-no-duplicate-lib-state).
+│   └── server/               # Bun/Astro runtime: prod.ts, dev-plugin.ts,
+│                             #   api-proxy, ws-proxy, headers, and the
+│                             #   check-*.ts build guards `bun run check` runs
 ├── helm/kubecenter/          # Helm chart (templates, monitoring ConfigMaps, dashboards)
 ├── e2e/                      # Playwright E2E tests
 ├── plans/                    # Implementation plans (per-step markdown)
@@ -321,6 +333,7 @@ When compacting this conversation, always preserve:
 - Agent Directives 1–10 (Pre-Work, Code Quality, Context Management, Edit Safety) and the Model Routing block
 - The current task's modified file paths and any in-flight test results / verification command output
 - User preferences expressed in this session (e.g., scope confirmations, explicit "skip X" decisions)
+- **`frontend/server/placeholder-root-parity-baseline.json` is a record, not an escape hatch.** Its entries are divergences inherited verbatim from the pre-migration Fresh tree. Adding an entry to make `bun run check` pass silences the only detector this defect class has. The fix is to hoist the root's attributes into one constant both returns use.
 
 Drop freely: historical Build Progress phase descriptions (1–13 are reference, not active state); Roadmap items already checked off; verbose tool-result transcripts that have been summarised.
 

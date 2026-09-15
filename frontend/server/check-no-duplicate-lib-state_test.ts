@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  FORKED_ROOTS,
   findDuplicateLibState,
   forkedTwins,
   valueImportsOf,
@@ -59,20 +66,50 @@ for (const file of [
 }
 
 /**
- * This asserted on `islands/YamlEditor.tsx` and `islands/NamespaceTopology.tsx`
- * until U12 deleted frontend/islands/, which made a twin there impossible by
- * construction. The point of the test is unchanged -- FORKED_ROOTS must cover
- * more than `lib`, because the seven dead imports that prompted this guard
- * pointed at components as well -- so it now makes that point with the
- * components twins that do still exist. `islands` stays in FORKED_ROOTS: it
- * costs one skipped directory and it is the shape of the next fork.
+ * The scope assertion, made against FORKED_ROOTS rather than against whichever
+ * twins exist today.
+ *
+ * Two earlier versions of this test rotted the same way. It named
+ * `islands/YamlEditor.tsx` until U12 deleted `frontend/islands/`, then
+ * `components/ui/Logo.tsx` and `components/k8s/detail/index.tsx` until U12's
+ * follow-up deleted the last `components/` twins. Each rewrite re-pinned it to
+ * tree contents and bought one commit of life.
+ *
+ * What the guard must cover is the three forked directories -- the seven dead
+ * imports that prompted it pointed at components as well as lib. That is a
+ * property of the guard, so assert it on the guard. Whether a twin currently
+ * exists in any of them is the tree's business and changes without notice.
  */
-test("forkedTwins covers components, not just lib", () => {
+test("FORKED_ROOTS covers every directory that was forked into src/", () => {
+  expect([...FORKED_ROOTS].sort()).toEqual(["components", "islands", "lib"]);
+});
+
+/**
+ * And the behavioural half: forkedTwins() must actually walk each of those
+ * roots, not just the first. Driven over a fixture tree so it stays true
+ * whatever the real tree holds.
+ */
+test("forkedTwins walks every FORKED_ROOT, not just lib", () => {
+  const dir = mkdtempSync(join(tmpdir(), "k8sc-roots-"));
+  for (const root of FORKED_ROOTS) {
+    mkdirSync(join(dir, root), { recursive: true });
+    mkdirSync(join(dir, "src", root), { recursive: true });
+    writeFileSync(join(dir, root, "probe.ts"), "export const x = 1;\n");
+    writeFileSync(join(dir, "src", root, "probe.ts"), "export const x = 1;\n");
+  }
+  const found = forkedTwins(dir);
+  for (const root of FORKED_ROOTS) {
+    expect(found.has(`${root}/probe.ts`)).toBe(true);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** The real tree still has its lib twins, and the exemptions still hold. */
+test("the real tree's known twins and exemptions are unchanged", () => {
   const twins = forkedTwins();
   expect(twins.has("lib/cluster.ts")).toBe(true);
-  expect(twins.has("components/ui/Logo.tsx")).toBe(true);
-  expect(twins.has("components/k8s/detail/index.tsx")).toBe(true);
-  expect([...twins].some((t) => t.startsWith("components/"))).toBe(true);
+  expect(twins.has("lib/ws.ts")).toBe(true);
+  expect(twins.has("lib/namespace.ts")).toBe(true);
   // Type-only and frozen-data twins are exempt by explicit name.
   expect(twins.has("lib/eso-types.ts")).toBe(false);
 });

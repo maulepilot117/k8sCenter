@@ -42,7 +42,7 @@ export const REASON_CODES = [
   "db_unavailable",
 ] as const;
 
-export type ReasonCode = typeof REASON_CODES[number];
+export type ReasonCode = (typeof REASON_CODES)[number];
 
 /**
  * Operation ids currently published by the capabilities endpoint.
@@ -67,7 +67,7 @@ export const CAPABILITY_OPERATION_IDS = [
   "eso.write",
 ] as const;
 
-export type CapabilityOperationId = typeof CAPABILITY_OPERATION_IDS[number];
+export type CapabilityOperationId = (typeof CAPABILITY_OPERATION_IDS)[number];
 
 /**
  * One operation's six-dimension capability row.

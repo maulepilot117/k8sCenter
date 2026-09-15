@@ -23,9 +23,12 @@ interface StepRailProps {
  * (replaces the former standalone `WizardStepper`). The two orientations keep
  * their distinct, pre-existing visuals — this is dedup, not a redesign.
  */
-export default function StepRail(
-  { steps, current, onStep, orientation = "vertical" }: StepRailProps,
-) {
+export default function StepRail({
+  steps,
+  current,
+  onStep,
+  orientation = "vertical",
+}: StepRailProps) {
   if (orientation === "horizontal") {
     return (
       <nav class="flex items-center justify-center mb-8">
@@ -52,8 +55,8 @@ export default function StepRail(
                     isCurrent
                       ? "bg-brand/10 text-brand border border-brand/30"
                       : isCompleted
-                      ? "text-brand hover:bg-brand/5 cursor-pointer"
-                      : "text-text-muted cursor-default"
+                        ? "text-brand hover:bg-brand/5 cursor-pointer"
+                        : "text-text-muted cursor-default"
                   }`}
                 >
                   <span
@@ -61,30 +64,32 @@ export default function StepRail(
                       isCurrent
                         ? "bg-brand"
                         : isCompleted
-                        ? "bg-brand"
-                        : "bg-elevated text-text-muted"
+                          ? "bg-brand"
+                          : "bg-elevated text-text-muted"
                     }`}
-                    style={(isCurrent || isCompleted)
-                      ? { color: "var(--bg-base)" }
-                      : undefined}
+                    style={
+                      isCurrent || isCompleted
+                        ? { color: "var(--bg-base)" }
+                        : undefined
+                    }
                   >
-                    {isCompleted
-                      ? (
-                        <svg
-                          class="w-3.5 h-3.5"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          stroke="currentColor"
-                          stroke-width="3"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            d="M5 13l4 4L19 7"
-                          />
-                        </svg>
-                      )
-                      : index + 1}
+                    {isCompleted ? (
+                      <svg
+                        class="w-3.5 h-3.5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        stroke-width="3"
+                      >
+                        <path
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          d="M5 13l4 4L19 7"
+                        />
+                      </svg>
+                    ) : (
+                      index + 1
+                    )}
                   </span>
                   <span class="hidden sm:inline">{step.label}</span>
                 </button>
@@ -110,11 +115,8 @@ export default function StepRail(
       }}
     >
       {steps.map((s, i) => {
-        const status = i < current
-          ? "done"
-          : i === current
-          ? "active"
-          : "upcoming";
+        const status =
+          i < current ? "done" : i === current ? "active" : "upcoming";
         return (
           <button
             key={s.label}
@@ -143,37 +145,39 @@ export default function StepRail(
                 justifyContent: "center",
                 fontSize: "12px",
                 fontWeight: 700,
-                background: status === "done"
-                  ? "var(--accent)"
-                  : status === "active"
-                  ? "var(--accent-dim)"
-                  : "var(--bg-elevated)",
-                color: status === "done"
-                  ? "var(--text-on-accent)"
-                  : status === "active"
-                  ? "var(--accent)"
-                  : "var(--text-muted)",
+                background:
+                  status === "done"
+                    ? "var(--accent)"
+                    : status === "active"
+                      ? "var(--accent-dim)"
+                      : "var(--bg-elevated)",
+                color:
+                  status === "done"
+                    ? "var(--text-on-accent)"
+                    : status === "active"
+                      ? "var(--accent)"
+                      : "var(--text-muted)",
                 border: `1.5px solid ${
                   status === "active" ? "var(--accent)" : "var(--border-subtle)"
                 }`,
               }}
             >
-              {status === "done"
-                ? (
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 20 20"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.4"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path d="M4 10l4 4 8-8" />
-                  </svg>
-                )
-                : i + 1}
+              {status === "done" ? (
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M4 10l4 4 8-8" />
+                </svg>
+              ) : (
+                i + 1
+              )}
             </span>
             <span
               style={{
@@ -186,17 +190,16 @@ export default function StepRail(
                 style={{
                   fontSize: "13px",
                   fontWeight: 600,
-                  color: status === "upcoming"
-                    ? "var(--text-muted)"
-                    : "var(--text-primary)",
+                  color:
+                    status === "upcoming"
+                      ? "var(--text-muted)"
+                      : "var(--text-primary)",
                 }}
               >
                 {s.label}
               </span>
               {s.sub && (
-                <span
-                  style={{ fontSize: "11px", color: "var(--text-muted)" }}
-                >
+                <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                   {s.sub}
                 </span>
               )}

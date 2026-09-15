@@ -1,5 +1,5 @@
-import { useEffect, useMemo } from "preact/hooks";
 import { useSignal } from "@preact/signals";
+import { useEffect, useMemo } from "preact/hooks";
 
 interface GaugeRingProps {
   value: number; // 0-100
@@ -107,11 +107,11 @@ export function GaugeRing({
             fontFamily: "var(--font-mono, monospace)",
             ...(valueGradient
               ? {
-                background:
-                  "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent",
-              }
+                  background:
+                    "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                }
               : { color: "var(--text-primary)" }),
           }}
         >

@@ -1,22 +1,22 @@
-import type { Deployment, K8sResource } from "@/lib/k8s-types.ts";
 import { age } from "@/lib/format.ts";
-import { InfoGrid } from "./InfoGrid.tsx";
-import type { InfoGridItem } from "./InfoGrid.tsx";
+import type { Deployment, K8sResource } from "@/lib/k8s-types.ts";
 import { ConditionsGrid, SectionTitle } from "./ConditionsGrid.tsx";
+import type { InfoGridItem } from "./InfoGrid.tsx";
+import { InfoGrid } from "./InfoGrid.tsx";
 import { VulnerabilityLink } from "./VulnerabilityLink.tsx";
 
 function parseCpuMillis(val: string | undefined): number {
   if (!val || val === "-") return 0;
-  if (val.endsWith("m")) return parseInt(val);
+  if (val.endsWith("m")) return parseInt(val, 10);
   return parseFloat(val) * 1000;
 }
 
 function parseMemMi(val: string | undefined): number {
   if (!val || val === "-") return 0;
-  if (val.endsWith("Mi")) return parseInt(val);
+  if (val.endsWith("Mi")) return parseInt(val, 10);
   if (val.endsWith("Gi")) return parseFloat(val) * 1024;
   if (val.endsWith("Ki")) return parseFloat(val) / 1024;
-  return parseInt(val) / (1024 * 1024);
+  return parseInt(val, 10) / (1024 * 1024);
 }
 
 export function DeploymentOverview({ resource }: { resource: K8sResource }) {
@@ -27,12 +27,12 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
   const availableCondition = dep.status?.conditions?.find(
     (c) => c.type === "Available",
   );
-  const statusText = availableCondition?.status === "True"
-    ? "Available"
-    : availableCondition?.reason ?? "Unavailable";
-  const statusColor = availableCondition?.status === "True"
-    ? "var(--success)"
-    : "var(--warning)";
+  const statusText =
+    availableCondition?.status === "True"
+      ? "Available"
+      : (availableCondition?.reason ?? "Unavailable");
+  const statusColor =
+    availableCondition?.status === "True" ? "var(--success)" : "var(--warning)";
 
   const items: InfoGridItem[] = [
     {
@@ -45,9 +45,10 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
               height: "7px",
               borderRadius: "50%",
               background: statusColor,
-              boxShadow: availableCondition?.status === "True"
-                ? "0 0 6px var(--success-dim)"
-                : undefined,
+              boxShadow:
+                availableCondition?.status === "True"
+                  ? "0 0 6px var(--success-dim)"
+                  : undefined,
             }}
           />
           {statusText}
@@ -65,9 +66,9 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
     {
       label: "Created",
       value: dep.metadata.creationTimestamp
-        ? `${dep.metadata.creationTimestamp} (${
-          age(dep.metadata.creationTimestamp)
-        })`
+        ? `${dep.metadata.creationTimestamp} (${age(
+            dep.metadata.creationTimestamp,
+          )})`
         : "-",
     },
     {
@@ -89,9 +90,7 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
     {
       label: "Image",
       value: (
-        <span style={{ fontSize: "11px" }}>
-          {containers[0]?.image ?? "-"}
-        </span>
+        <span style={{ fontSize: "11px" }}>{containers[0]?.image ?? "-"}</span>
       ),
     },
   ];
@@ -119,33 +118,36 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
             const ports = container.ports as
               | { containerPort?: number; protocol?: string }[]
               | undefined;
-            const portsStr = ports && ports.length > 0
-              ? ports.map((p) =>
-                `${p.containerPort ?? "?"}/${p.protocol ?? "TCP"}`
-              ).join(", ")
-              : "-";
+            const portsStr =
+              ports && ports.length > 0
+                ? ports
+                    .map(
+                      (p) => `${p.containerPort ?? "?"}/${p.protocol ?? "TCP"}`,
+                    )
+                    .join(", ")
+                : "-";
             const cpuReq = c.resources?.requests?.cpu ?? "-";
             const cpuLim = c.resources?.limits?.cpu ?? "-";
             const memReq = c.resources?.requests?.memory ?? "-";
             const memLim = c.resources?.limits?.memory ?? "-";
 
-            const hasCpuBoth = c.resources?.requests?.cpu &&
-              c.resources?.limits?.cpu;
-            const hasMemBoth = c.resources?.requests?.memory &&
-              c.resources?.limits?.memory;
+            const hasCpuBoth =
+              c.resources?.requests?.cpu && c.resources?.limits?.cpu;
+            const hasMemBoth =
+              c.resources?.requests?.memory && c.resources?.limits?.memory;
             const showBars = hasCpuBoth || hasMemBoth;
 
             const cpuReqMillis = parseCpuMillis(c.resources?.requests?.cpu);
             const cpuLimMillis = parseCpuMillis(c.resources?.limits?.cpu);
-            const cpuPercent = cpuLimMillis > 0
-              ? Math.min(100, (cpuReqMillis / cpuLimMillis) * 100)
-              : 0;
+            const cpuPercent =
+              cpuLimMillis > 0
+                ? Math.min(100, (cpuReqMillis / cpuLimMillis) * 100)
+                : 0;
 
             const memReqMi = parseMemMi(c.resources?.requests?.memory);
             const memLimMi = parseMemMi(c.resources?.limits?.memory);
-            const memPercent = memLimMi > 0
-              ? Math.min(100, (memReqMi / memLimMi) * 100)
-              : 0;
+            const memPercent =
+              memLimMi > 0 ? Math.min(100, (memReqMi / memLimMi) * 100) : 0;
 
             return (
               <div
@@ -316,9 +318,7 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
   );
 }
 
-function ContainerDetail(
-  { label, value }: { label: string; value: string },
-) {
+function ContainerDetail({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
       <span

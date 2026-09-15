@@ -10,12 +10,13 @@ import type { JSX } from "preact";
  * <Skeleton class="h-24 w-full rounded-lg" /> // card placeholder
  * <Skeleton class="rounded-lg" style={{ gridColumn: "span 6" }} /> // grid cell
  */
-export function Skeleton(
-  { class: className = "", style }: {
-    class?: string;
-    style?: JSX.CSSProperties;
-  },
-) {
+export function Skeleton({
+  class: className = "",
+  style,
+}: {
+  class?: string;
+  style?: JSX.CSSProperties;
+}) {
   return (
     <div
       class={`animate-pulse rounded ${className}`}
@@ -27,9 +28,13 @@ export function Skeleton(
 /**
  * Table skeleton — renders rows of placeholder content matching a table layout.
  */
-export function TableSkeleton(
-  { rows = 5, cols = 4 }: { rows?: number; cols?: number },
-) {
+export function TableSkeleton({
+  rows = 5,
+  cols = 4,
+}: {
+  rows?: number;
+  cols?: number;
+}) {
   return (
     <div class="space-y-2">
       {/* Header */}

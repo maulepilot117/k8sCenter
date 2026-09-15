@@ -7,6 +7,11 @@
 import { selectedCluster } from "@/lib/cluster.ts";
 import type { APIError, APIResponse } from "@/lib/k8s-types.ts";
 import type {
+  LimitsStatus,
+  NamespaceLimits,
+  NamespaceSummary,
+} from "@/lib/limits-types.ts";
+import type {
   AppNotification,
   NotifChannel,
   NotifChannelInput,
@@ -14,11 +19,6 @@ import type {
   NotifRule,
   NotifRuleInput,
 } from "@/lib/notif-center-types.ts";
-import type {
-  LimitsStatus,
-  NamespaceLimits,
-  NamespaceSummary,
-} from "@/lib/limits-types.ts";
 
 /** In-memory access token. Never stored in localStorage. */
 let accessToken: string | null = null;
@@ -240,9 +240,7 @@ export async function api<T>(
     // non-admin carrying a non-local X-Cluster-ID. Without this guard that is
     // a self-feeding loop: one unthrottled request per round-trip, forever,
     // against an endpoint with no rate limit.
-    if (
-      res.status === 403 && on403Callback && !path.startsWith("/v1/auth/")
-    ) {
+    if (res.status === 403 && on403Callback && !path.startsWith("/v1/auth/")) {
       on403Callback();
     }
     throw new ApiError(

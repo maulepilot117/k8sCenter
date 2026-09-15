@@ -1,7 +1,7 @@
 import { Input } from "@/components/ui/Input.tsx";
 import { Select } from "@/components/ui/Select.tsx";
-import type { ProbeState } from "@/lib/wizard-types.ts";
 import { MAX_PROBE_PATH_LENGTH } from "@/lib/wizard-constants.ts";
+import type { ProbeState } from "@/lib/wizard-types.ts";
 
 interface StrategyState {
   type: string;
@@ -51,9 +51,7 @@ function ProbeSection({
           onChange={onToggle}
           class="rounded border-border-primary"
         />
-        <span class="text-sm font-medium text-text-secondary">
-          {label}
-        </span>
+        <span class="text-sm font-medium text-text-secondary">{label}</span>
       </div>
       {probe && (
         <div class="ml-6 space-y-3 border-l-2 border-border-primary pl-4">
@@ -61,7 +59,8 @@ function ProbeSection({
             label="Type"
             value={probe.type}
             onChange={(e) =>
-              onUpdate("type", (e.target as HTMLSelectElement).value)}
+              onUpdate("type", (e.target as HTMLSelectElement).value)
+            }
             options={PROBE_TYPE_OPTIONS}
           />
           {probe.type === "http" && (
@@ -69,7 +68,8 @@ function ProbeSection({
               label="Path"
               value={probe.path}
               onInput={(e) =>
-                onUpdate("path", (e.target as HTMLInputElement).value)}
+                onUpdate("path", (e.target as HTMLInputElement).value)
+              }
               placeholder="/healthz"
               maxLength={MAX_PROBE_PATH_LENGTH}
             />
@@ -81,8 +81,9 @@ function ProbeSection({
             onInput={(e) =>
               onUpdate(
                 "port",
-                parseInt((e.target as HTMLInputElement).value) || 0,
-              )}
+                parseInt((e.target as HTMLInputElement).value, 10) || 0,
+              )
+            }
             placeholder="8080"
             min={1}
             max={65535}
@@ -91,14 +92,17 @@ function ProbeSection({
             <Input
               label="Initial Delay (s)"
               type="number"
-              value={probe.initialDelaySeconds
-                ? String(probe.initialDelaySeconds)
-                : ""}
+              value={
+                probe.initialDelaySeconds
+                  ? String(probe.initialDelaySeconds)
+                  : ""
+              }
               onInput={(e) =>
                 onUpdate(
                   "initialDelaySeconds",
-                  parseInt((e.target as HTMLInputElement).value) || 0,
-                )}
+                  parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                )
+              }
               placeholder="0"
               min={0}
             />
@@ -109,8 +113,9 @@ function ProbeSection({
               onInput={(e) =>
                 onUpdate(
                   "periodSeconds",
-                  parseInt((e.target as HTMLInputElement).value) || 0,
-                )}
+                  parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                )
+              }
               placeholder="10"
               min={1}
             />
@@ -155,7 +160,8 @@ export function DeploymentResourcesStep({
             label="CPU Request"
             value={cpuRequest}
             onInput={(e) =>
-              onChange("cpuRequest", (e.target as HTMLInputElement).value)}
+              onChange("cpuRequest", (e.target as HTMLInputElement).value)
+            }
             placeholder="100m"
             error={errors["resources.requestCpu"]}
           />
@@ -163,7 +169,8 @@ export function DeploymentResourcesStep({
             label="CPU Limit"
             value={cpuLimit}
             onInput={(e) =>
-              onChange("cpuLimit", (e.target as HTMLInputElement).value)}
+              onChange("cpuLimit", (e.target as HTMLInputElement).value)
+            }
             placeholder="500m"
             error={errors["resources.limitCpu"]}
           />
@@ -171,7 +178,8 @@ export function DeploymentResourcesStep({
             label="Memory Request"
             value={memoryRequest}
             onInput={(e) =>
-              onChange("memoryRequest", (e.target as HTMLInputElement).value)}
+              onChange("memoryRequest", (e.target as HTMLInputElement).value)
+            }
             placeholder="128Mi"
             error={errors["resources.requestMemory"]}
           />
@@ -179,7 +187,8 @@ export function DeploymentResourcesStep({
             label="Memory Limit"
             value={memoryLimit}
             onInput={(e) =>
-              onChange("memoryLimit", (e.target as HTMLInputElement).value)}
+              onChange("memoryLimit", (e.target as HTMLInputElement).value)
+            }
             placeholder="512Mi"
             error={errors["resources.limitMemory"]}
           />
@@ -188,9 +197,7 @@ export function DeploymentResourcesStep({
 
       {/* Health Probes */}
       <div class="space-y-4">
-        <h3 class="text-sm font-medium text-text-secondary">
-          Health Probes
-        </h3>
+        <h3 class="text-sm font-medium text-text-secondary">Health Probes</h3>
         <ProbeSection
           label="Liveness Probe"
           probe={livenessProbe}
@@ -198,7 +205,8 @@ export function DeploymentResourcesStep({
             onChange(
               "livenessProbe",
               livenessProbe === null ? { ...defaultProbe } : null,
-            )}
+            )
+          }
           onUpdate={(field, value) => {
             if (livenessProbe) {
               onChange("livenessProbe", { ...livenessProbe, [field]: value });
@@ -212,7 +220,8 @@ export function DeploymentResourcesStep({
             onChange(
               "readinessProbe",
               readinessProbe === null ? { ...defaultProbe } : null,
-            )}
+            )
+          }
           onUpdate={(field, value) => {
             if (readinessProbe) {
               onChange("readinessProbe", { ...readinessProbe, [field]: value });
@@ -223,16 +232,15 @@ export function DeploymentResourcesStep({
 
       {/* Update Strategy */}
       <div class="space-y-3">
-        <h3 class="text-sm font-medium text-text-secondary">
-          Update Strategy
-        </h3>
+        <h3 class="text-sm font-medium text-text-secondary">Update Strategy</h3>
         <Select
           value={strategy.type}
           onChange={(e) =>
             onChange("strategy", {
               ...strategy,
               type: (e.target as HTMLSelectElement).value,
-            })}
+            })
+          }
           options={STRATEGY_OPTIONS}
         />
         {strategy.type === "RollingUpdate" && (
@@ -244,7 +252,8 @@ export function DeploymentResourcesStep({
                 onChange("strategy", {
                   ...strategy,
                   maxSurge: (e.target as HTMLInputElement).value,
-                })}
+                })
+              }
               placeholder="25%"
             />
             <Input
@@ -254,7 +263,8 @@ export function DeploymentResourcesStep({
                 onChange("strategy", {
                   ...strategy,
                   maxUnavailable: (e.target as HTMLInputElement).value,
-                })}
+                })
+              }
               placeholder="25%"
             />
           </div>

@@ -59,9 +59,10 @@ export function ConditionsGrid({ conditions }: ConditionsGridProps) {
               gridTemplateColumns: "140px 60px 1fr 80px",
               gap: "12px",
               padding: "10px 14px",
-              borderBottom: i < conditions.length - 1
-                ? "1px solid var(--border-subtle)"
-                : "none",
+              borderBottom:
+                i < conditions.length - 1
+                  ? "1px solid var(--border-subtle)"
+                  : "none",
               fontSize: "12px",
               alignItems: "center",
               cursor: "default",

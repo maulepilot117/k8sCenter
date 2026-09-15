@@ -55,7 +55,10 @@ export function DeploymentNetworkStep({
   };
 
   const removePort = (index: number) => {
-    onChange("ports", ports.filter((_, i) => i !== index));
+    onChange(
+      "ports",
+      ports.filter((_, i) => i !== index),
+    );
   };
 
   const updateEnvVar = (
@@ -77,7 +80,10 @@ export function DeploymentNetworkStep({
   };
 
   const removeEnvVar = (index: number) => {
-    onChange("envVars", envVars.filter((_, i) => i !== index));
+    onChange(
+      "envVars",
+      envVars.filter((_, i) => i !== index),
+    );
   };
 
   return (
@@ -94,7 +100,8 @@ export function DeploymentNetworkStep({
                 label={i === 0 ? "Name" : undefined}
                 value={port.name}
                 onInput={(e) =>
-                  updatePort(i, "name", (e.target as HTMLInputElement).value)}
+                  updatePort(i, "name", (e.target as HTMLInputElement).value)
+                }
                 placeholder="http"
               />
             </div>
@@ -107,8 +114,9 @@ export function DeploymentNetworkStep({
                   updatePort(
                     i,
                     "containerPort",
-                    parseInt((e.target as HTMLInputElement).value) || 0,
-                  )}
+                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  )
+                }
                 placeholder="80"
                 min={1}
                 max={65535}
@@ -124,7 +132,8 @@ export function DeploymentNetworkStep({
                     i,
                     "protocol",
                     (e.target as HTMLSelectElement).value,
-                  )}
+                  )
+                }
                 options={PROTOCOL_OPTIONS}
               />
             </div>
@@ -158,11 +167,8 @@ export function DeploymentNetworkStep({
                 label={i === 0 ? "Name" : undefined}
                 value={env.name}
                 onInput={(e) =>
-                  updateEnvVar(
-                    i,
-                    "name",
-                    (e.target as HTMLInputElement).value,
-                  )}
+                  updateEnvVar(i, "name", (e.target as HTMLInputElement).value)
+                }
                 placeholder="MY_VAR"
                 error={errors[`envVars[${i}].name`]}
               />
@@ -172,64 +178,68 @@ export function DeploymentNetworkStep({
                 label={i === 0 ? "Source" : undefined}
                 value={env.type}
                 onChange={(e) =>
-                  updateEnvVar(
-                    i,
-                    "type",
-                    (e.target as HTMLSelectElement).value,
-                  )}
+                  updateEnvVar(i, "type", (e.target as HTMLSelectElement).value)
+                }
                 options={ENV_TYPE_OPTIONS}
               />
             </div>
-            {env.type === "literal"
-              ? (
+            {env.type === "literal" ? (
+              <div class="flex-1">
+                <Input
+                  label={i === 0 ? "Value" : undefined}
+                  value={env.value}
+                  onInput={(e) =>
+                    updateEnvVar(
+                      i,
+                      "value",
+                      (e.target as HTMLInputElement).value,
+                    )
+                  }
+                  placeholder="value"
+                />
+              </div>
+            ) : (
+              <>
                 <div class="flex-1">
                   <Input
-                    label={i === 0 ? "Value" : undefined}
-                    value={env.value}
+                    label={
+                      i === 0
+                        ? env.type === "configmap"
+                          ? "ConfigMap"
+                          : "Secret"
+                        : undefined
+                    }
+                    value={env.ref}
                     onInput={(e) =>
                       updateEnvVar(
                         i,
-                        "value",
+                        "ref",
                         (e.target as HTMLInputElement).value,
-                      )}
-                    placeholder="value"
+                      )
+                    }
+                    placeholder={
+                      env.type === "configmap"
+                        ? "configmap-name"
+                        : "secret-name"
+                    }
                   />
                 </div>
-              )
-              : (
-                <>
-                  <div class="flex-1">
-                    <Input
-                      label={i === 0
-                        ? (env.type === "configmap" ? "ConfigMap" : "Secret")
-                        : undefined}
-                      value={env.ref}
-                      onInput={(e) =>
-                        updateEnvVar(
-                          i,
-                          "ref",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      placeholder={env.type === "configmap"
-                        ? "configmap-name"
-                        : "secret-name"}
-                    />
-                  </div>
-                  <div class="w-28">
-                    <Input
-                      label={i === 0 ? "Key" : undefined}
-                      value={env.key}
-                      onInput={(e) =>
-                        updateEnvVar(
-                          i,
-                          "key",
-                          (e.target as HTMLInputElement).value,
-                        )}
-                      placeholder="data-key"
-                    />
-                  </div>
-                </>
-              )}
+                <div class="w-28">
+                  <Input
+                    label={i === 0 ? "Key" : undefined}
+                    value={env.key}
+                    onInput={(e) =>
+                      updateEnvVar(
+                        i,
+                        "key",
+                        (e.target as HTMLInputElement).value,
+                      )
+                    }
+                    placeholder="data-key"
+                  />
+                </div>
+              </>
+            )}
             <RemoveButton
               onClick={() => removeEnvVar(i)}
               title="Remove env var"

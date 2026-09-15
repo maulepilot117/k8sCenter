@@ -43,9 +43,9 @@ export const esoApi = {
   /** Single ExternalSecret with drift resolution. */
   getExternalSecret: (namespace: string, name: string) =>
     apiGet<ExternalSecret>(
-      `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${
-        pathParam(name)
-      }`,
+      `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${pathParam(
+        name,
+      )}`,
     ),
 
   /** ClusterExternalSecrets — cluster-scoped, permissive-read RBAC. */
@@ -78,9 +78,7 @@ export const esoApi = {
 
   /** Single ClusterSecretStore. */
   getClusterStore: (name: string) =>
-    apiGet<SecretStore>(
-      `/v1/externalsecrets/clusterstores/${pathParam(name)}`,
-    ),
+    apiGet<SecretStore>(`/v1/externalsecrets/clusterstores/${pathParam(name)}`),
 
   /** PushSecrets — read-only in v1. */
   listPushSecrets: (namespace?: string) =>
@@ -91,9 +89,9 @@ export const esoApi = {
   /** Single PushSecret. */
   getPushSecret: (namespace: string, name: string) =>
     apiGet<PushSecret>(
-      `/v1/externalsecrets/pushsecrets/${pathParam(namespace)}/${
-        pathParam(name)
-      }`,
+      `/v1/externalsecrets/pushsecrets/${pathParam(namespace)}/${pathParam(
+        name,
+      )}`,
     ),
 
   // --- Phase E force-sync + bulk refresh ----------------------------------
@@ -101,17 +99,17 @@ export const esoApi = {
   /** Force-sync a single ExternalSecret. 202 on success, 409 already_refreshing. */
   forceSyncExternalSecret: (namespace: string, name: string) =>
     apiPost<{ status: string }>(
-      `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${
-        pathParam(name)
-      }/force-sync`,
+      `/v1/externalsecrets/externalsecrets/${pathParam(namespace)}/${pathParam(
+        name,
+      )}/force-sync`,
     ),
 
   /** Resolve the visible scope for a per-store bulk refresh. */
   resolveStoreScope: (namespace: string, name: string) =>
     apiGet<BulkScopeResponse>(
-      `/v1/externalsecrets/stores/${pathParam(namespace)}/${
-        pathParam(name)
-      }/refresh-scope`,
+      `/v1/externalsecrets/stores/${pathParam(namespace)}/${pathParam(
+        name,
+      )}/refresh-scope`,
     ),
 
   /** Resolve the visible scope for a per-cluster-store bulk refresh. */
@@ -123,9 +121,9 @@ export const esoApi = {
   /** Resolve the visible scope for a per-namespace bulk refresh. */
   resolveNamespaceScope: (namespace: string) =>
     apiGet<BulkScopeResponse>(
-      `/v1/externalsecrets/refresh-namespace/${
-        pathParam(namespace)
-      }/refresh-scope`,
+      `/v1/externalsecrets/refresh-namespace/${pathParam(
+        namespace,
+      )}/refresh-scope`,
     ),
 
   /**
@@ -143,22 +141,21 @@ export const esoApi = {
     let path: string;
     if (action === "refresh_store") {
       const t = target as { namespace: string; name: string };
-      path = `/v1/externalsecrets/stores/${pathParam(t.namespace)}/${
-        pathParam(t.name)
-      }/refresh-all`;
+      path = `/v1/externalsecrets/stores/${pathParam(t.namespace)}/${pathParam(
+        t.name,
+      )}/refresh-all`;
     } else if (action === "refresh_cluster_store") {
       const t = target as { name: string };
-      path = `/v1/externalsecrets/clusterstores/${
-        pathParam(t.name)
-      }/refresh-all`;
+      path = `/v1/externalsecrets/clusterstores/${pathParam(
+        t.name,
+      )}/refresh-all`;
     } else {
       const t = target as { namespace: string };
       path = `/v1/externalsecrets/refresh-namespace/${pathParam(t.namespace)}`;
     }
-    return apiPost<{ jobId: string; targetCount: number }>(
-      path,
-      { targetUIDs },
-    );
+    return apiPost<{ jobId: string; targetCount: number }>(path, {
+      targetUIDs,
+    });
   },
 
   /** Poll a bulk refresh job by id. */
@@ -172,9 +169,9 @@ export const esoApi = {
    *  shape rather than status code. */
   getStoreMetrics: (namespace: string, name: string) =>
     apiGet<StoreMetrics>(
-      `/v1/externalsecrets/stores/${pathParam(namespace)}/${
-        pathParam(name)
-      }/metrics`,
+      `/v1/externalsecrets/stores/${pathParam(namespace)}/${pathParam(
+        name,
+      )}/metrics`,
     ),
 
   getClusterStoreMetrics: (name: string) =>
@@ -197,9 +194,9 @@ export const esoApi = {
   ) => {
     const qs = prefix ? `?prefix=${encodeURIComponent(prefix)}` : "";
     return apiGet<PathDiscoveryResponse>(
-      `/v1/externalsecrets/stores/${pathParam(namespace)}/${
-        pathParam(name)
-      }/paths${qs}`,
+      `/v1/externalsecrets/stores/${pathParam(namespace)}/${pathParam(
+        name,
+      )}/paths${qs}`,
       signal,
     );
   },

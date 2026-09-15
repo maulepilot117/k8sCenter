@@ -1,8 +1,10 @@
 import type { ParentRef } from "@/lib/gateway-types.ts";
 
-export default function ParentGatewaysTable(
-  { parentRefs }: { parentRefs?: ParentRef[] },
-) {
+export default function ParentGatewaysTable({
+  parentRefs,
+}: {
+  parentRefs?: ParentRef[];
+}) {
   if (!parentRefs || parentRefs.length === 0) {
     return null;
   }
@@ -49,11 +51,13 @@ export default function ParentGatewaysTable(
                 </td>
                 <td class="px-4 py-2 text-sm">
                   <span
-                    class={ref.status === "Accepted"
-                      ? "text-success"
-                      : ref.status
-                      ? "text-danger"
-                      : "text-text-muted"}
+                    class={
+                      ref.status === "Accepted"
+                        ? "text-success"
+                        : ref.status
+                          ? "text-danger"
+                          : "text-text-muted"
+                    }
                   >
                     {ref.status || "-"}
                   </span>

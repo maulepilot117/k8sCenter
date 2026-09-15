@@ -1,6 +1,6 @@
+import { useSignal } from "@preact/signals";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import { useSignal } from "@preact/signals";
 
 export interface ConfirmDialogProps {
   title: string;
@@ -47,8 +47,9 @@ export function ConfirmDialog({
       const focusTarget = el.querySelector<HTMLElement>(
         "[data-autofocus], input",
       );
-      (focusTarget ?? el.querySelector<HTMLElement>("button:last-of-type"))
-        ?.focus();
+      (
+        focusTarget ?? el.querySelector<HTMLElement>("button:last-of-type")
+      )?.focus();
     }
 
     return () => globalThis.removeEventListener("keydown", handler);
@@ -68,17 +69,11 @@ export function ConfirmDialog({
         class="glass-elevated w-full max-w-md rounded-2xl p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3
-          id={titleId}
-          class="text-lg font-semibold text-text-primary"
-        >
+        <h3 id={titleId} class="text-lg font-semibold text-text-primary">
           {title}
         </h3>
         {message && (
-          <p
-            id={descId}
-            class="mt-2 text-sm text-text-secondary"
-          >
+          <p id={descId} class="mt-2 text-sm text-text-secondary">
             {message}
           </p>
         )}
@@ -92,7 +87,8 @@ export function ConfirmDialog({
               type="text"
               value={input.value}
               onInput={(e) =>
-                input.value = (e.target as HTMLInputElement).value}
+                (input.value = (e.target as HTMLInputElement).value)
+              }
               class="mt-1 w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
               placeholder={typeToConfirm}
             />

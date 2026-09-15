@@ -12,9 +12,7 @@ export function Field({
 }) {
   return (
     <div>
-      <dt class="text-xs font-medium text-text-muted">
-        {label}
-      </dt>
+      <dt class="text-xs font-medium text-text-muted">{label}</dt>
       <dd
         class={`mt-0.5 text-sm text-text-primary break-all ${
           mono ? "font-mono text-xs" : ""

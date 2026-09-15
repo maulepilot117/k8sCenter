@@ -1,5 +1,5 @@
-import { getPhaseCategory } from "@/lib/velero-types.ts";
 import type { StatusValue } from "@/components/ui/StatusDot.tsx";
+import { getPhaseCategory } from "@/lib/velero-types.ts";
 
 /** Map Velero phase string → canonical StatusDot status. */
 export function phaseTone(phase: string): StatusValue {

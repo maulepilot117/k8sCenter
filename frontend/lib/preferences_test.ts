@@ -39,9 +39,9 @@ test("preferenceReason: a non-ApiError is undefined", () => {
   // The shapes a caller actually sees when the request never reached the
   // server: a dropped connection, and an aborted in-flight request.
   expect(preferenceReason(new TypeError("Failed to fetch"))).toBe(undefined);
-  expect(
-    preferenceReason(new DOMException("Aborted", "AbortError")),
-  ).toBe(undefined);
+  expect(preferenceReason(new DOMException("Aborted", "AbortError"))).toBe(
+    undefined,
+  );
   expect(preferenceReason(undefined)).toBe(undefined);
   expect(preferenceReason(null)).toBe(undefined);
   expect(preferenceReason("database_unavailable")).toBe(undefined);

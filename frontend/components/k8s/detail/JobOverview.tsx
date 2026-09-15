@@ -1,6 +1,6 @@
-import type { Job, K8sResource } from "@/lib/k8s-types.ts";
-import { age } from "@/lib/format.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import { age } from "@/lib/format.ts";
+import type { Job, K8sResource } from "@/lib/k8s-types.ts";
 import { ConditionsTable } from "./ConditionsTable.tsx";
 
 export function JobOverview({ resource }: { resource: K8sResource }) {
@@ -29,13 +29,13 @@ export function JobOverview({ resource }: { resource: K8sResource }) {
           <Field label="Failed" value={String(status.failed ?? 0)} />
           <Field
             label="Start Time"
-            value={status.startTime ? age(status.startTime) + " ago" : "-"}
+            value={status.startTime ? `${age(status.startTime)} ago` : "-"}
           />
           <Field
             label="Completion Time"
-            value={status.completionTime
-              ? age(status.completionTime) + " ago"
-              : "-"}
+            value={
+              status.completionTime ? `${age(status.completionTime)} ago` : "-"
+            }
           />
         </div>
       </div>

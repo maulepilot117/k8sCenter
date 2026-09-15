@@ -226,13 +226,19 @@ export function MonacoEditor({
     // at the exact moment it falls back to a plain textarea. Before
     // hydration it is stranded behind the SSR class and renders nothing at
     // all, which is why it read as harmless.
+    //
+    // The textarea carries no chrome of its own. It fills a wrapper that
+    // already draws the border, background and radius, so repeating them here
+    // drew two 1px borders of the same colour one pixel apart -- which is not
+    // what this fallback looked like before the migration, and this change is
+    // required to render identically to it.
     return (
       <div style={{ height }} class={EDITOR_ROOT_CLASS}>
         <textarea
           value={value}
           onInput={(e) => onChange?.((e.target as HTMLTextAreaElement).value)}
           readOnly={readOnly}
-          class="w-full h-full bg-base text-text-primary font-mono text-sm p-4 rounded-md border border-border-primary resize-none focus:outline-none focus:ring-2 focus:ring-brand"
+          class="w-full h-full bg-transparent text-text-primary font-mono text-sm p-4 resize-none focus:outline-none focus:ring-2 focus:ring-brand"
           spellcheck={false}
         />
       </div>

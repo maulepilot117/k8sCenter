@@ -134,13 +134,10 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
     });
   }
 
-  function patchSecretKeyRef(
-    leafKey: string,
-    patch: SecretKeyRef,
-  ) {
+  function patchSecretKeyRef(leafKey: string, patch: SecretKeyRef) {
     // leafKey is "accessKeyIDSecretRef" or "secretAccessKeySecretRef".
     const auth = (spec.auth as Record<string, unknown>) ?? {};
-    const topBlock = (auth["secretRef"] as Record<string, unknown>) ?? {};
+    const topBlock = (auth.secretRef as Record<string, unknown>) ?? {};
     const existing = (topBlock[leafKey] as SecretKeyRef) ?? {};
     onUpdateSpec({
       ...spec,
@@ -169,25 +166,31 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
           required
           value={getStr(spec, "region")}
           onInput={(e) =>
-            patchTop("region", (e.target as HTMLInputElement).value)}
+            patchTop("region", (e.target as HTMLInputElement).value)
+          }
           placeholder="us-east-1"
           description="AWS region where Parameter Store is accessed."
-          error={errors["region"]}
+          error={errors.region}
         />
         <Input
           id="awsps-role"
-          label={method.value === "jwt"
-            ? "IAM role ARN"
-            : "Assume-role ARN (optional)"}
+          label={
+            method.value === "jwt"
+              ? "IAM role ARN"
+              : "Assume-role ARN (optional)"
+          }
           required={method.value === "jwt"}
           value={getStr(spec, "role")}
           onInput={(e) =>
-            patchTop("role", (e.target as HTMLInputElement).value)}
+            patchTop("role", (e.target as HTMLInputElement).value)
+          }
           placeholder="arn:aws:iam::123456789012:role/my-role"
-          description={method.value === "jwt"
-            ? "Role ARN bound to the service account via IRSA annotation."
-            : "IAM role to assume before reading parameters. Leave blank to use the pod's identity directly."}
-          error={errors["role"]}
+          description={
+            method.value === "jwt"
+              ? "Role ARN bound to the service account via IRSA annotation."
+              : "IAM role to assume before reading parameters. Leave blank to use the pod's identity directly."
+          }
+          error={errors.role}
         />
       </div>
 
@@ -195,7 +198,9 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
       <div class="space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <div class="grid gap-2 sm:grid-cols-2">
           {AUTH_METHODS.map((m) => {
@@ -218,7 +223,7 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
             );
           })}
         </div>
-        {errors["auth"] && <p class="text-sm text-danger">{errors["auth"]}</p>}
+        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
@@ -234,9 +239,11 @@ export function AWSPSForm({ spec, errors, onUpdateSpec }: AWSPSFormProps) {
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
           onPatchAccessKey={(patch) =>
-            patchSecretKeyRef("accessKeyIDSecretRef", patch)}
+            patchSecretKeyRef("accessKeyIDSecretRef", patch)
+          }
           onPatchSecretKey={(patch) =>
-            patchSecretKeyRef("secretAccessKeySecretRef", patch)}
+            patchSecretKeyRef("secretAccessKeySecretRef", patch)
+          }
         />
       )}
     </div>
@@ -303,10 +310,12 @@ interface StaticCredsAuthFieldsProps {
   onPatchSecretKey: (patch: SecretKeyRef) => void;
 }
 
-function StaticCredsAuthFields(
-  { block, errors, onPatchAccessKey, onPatchSecretKey }:
-    StaticCredsAuthFieldsProps,
-) {
+function StaticCredsAuthFields({
+  block,
+  errors,
+  onPatchAccessKey,
+  onPatchSecretKey,
+}: StaticCredsAuthFieldsProps) {
   // Typed reads via AWSPSAuthSpec.secretRef shape.
   const srBlock = block as {
     accessKeyIDSecretRef?: SecretKeyRef;
@@ -330,7 +339,8 @@ function StaticCredsAuthFields(
             onInput={(e) =>
               onPatchAccessKey({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="aws-creds"
             error={errors["auth.secretRef.accessKeyIDSecretRef.name"]}
           />
@@ -340,7 +350,8 @@ function StaticCredsAuthFields(
             required
             value={akRef.key ?? ""}
             onInput={(e) =>
-              onPatchAccessKey({ key: (e.target as HTMLInputElement).value })}
+              onPatchAccessKey({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="access-key-id"
             error={errors["auth.secretRef.accessKeyIDSecretRef.key"]}
           />
@@ -359,7 +370,8 @@ function StaticCredsAuthFields(
             onInput={(e) =>
               onPatchSecretKey({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="aws-creds"
             error={errors["auth.secretRef.secretAccessKeySecretRef.name"]}
           />
@@ -369,7 +381,8 @@ function StaticCredsAuthFields(
             required
             value={sakRef.key ?? ""}
             onInput={(e) =>
-              onPatchSecretKey({ key: (e.target as HTMLInputElement).value })}
+              onPatchSecretKey({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="secret-access-key"
             error={errors["auth.secretRef.secretAccessKeySecretRef.key"]}
           />

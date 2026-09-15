@@ -35,11 +35,11 @@ export function KpiTile({ label, value, color, href }: KpiTileProps) {
     </WidgetShell>
   );
 
-  return href
-    ? (
-      <a href={href} style={{ display: "contents", textDecoration: "none" }}>
-        {inner}
-      </a>
-    )
-    : inner;
+  return href ? (
+    <a href={href} style={{ display: "contents", textDecoration: "none" }}>
+      {inner}
+    </a>
+  ) : (
+    inner
+  );
 }

@@ -966,7 +966,7 @@ export default function ClusterTopology() {
           const href = getNodeHref(node);
           const truncated =
             node.label.length > 15
-              ? node.label.slice(0, 14) + "\u2026"
+              ? `${node.label.slice(0, 14)}\u2026`
               : node.label;
           const isHovered = tooltip.value?.nodeId === node.id;
           const r = node.size / 2;

@@ -5,9 +5,12 @@ interface SummaryRingProps {
   color: string;
 }
 
-export function SummaryRing(
-  { value, max, size = 40, color }: SummaryRingProps,
-) {
+export function SummaryRing({
+  value,
+  max,
+  size = 40,
+  color,
+}: SummaryRingProps) {
   const strokeWidth = 4;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;

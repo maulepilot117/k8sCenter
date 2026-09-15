@@ -37,12 +37,16 @@ interface ResourceTableProps {
  *
  * Compose cells with status pills / dots from your existing components.
  */
-export default function ResourceTable(
-  { columns, rows, chevron = true, sortKey, sortDir, onSort }:
-    ResourceTableProps,
-) {
-  const grid = columns.map((c) => c.width ?? "1fr").join(" ") +
-    (chevron ? " 40px" : "");
+export default function ResourceTable({
+  columns,
+  rows,
+  chevron = true,
+  sortKey,
+  sortDir,
+  onSort,
+}: ResourceTableProps) {
+  const grid =
+    columns.map((c) => c.width ?? "1fr").join(" ") + (chevron ? " 40px" : "");
 
   return (
     <div
@@ -77,9 +81,13 @@ export default function ResourceTable(
             <span
               key={c.key}
               role="columnheader"
-              aria-sort={active
-                ? (sortDir === "asc" ? "ascending" : "descending")
-                : undefined}
+              aria-sort={
+                active
+                  ? sortDir === "asc"
+                    ? "ascending"
+                    : "descending"
+                  : undefined
+              }
               onClick={canSort ? () => onSort(c.key) : undefined}
               style={{
                 textAlign: c.align ?? "left",
@@ -108,14 +116,13 @@ export default function ResourceTable(
           key={r.id}
           role="row"
           onClick={r.onClick}
-          onMouseEnter={(
-            e,
-          ) => ((e.currentTarget as HTMLElement).style.background =
-            "var(--bg-hover)")}
-          onMouseLeave={(
-            e,
-          ) => ((e.currentTarget as HTMLElement).style.background =
-            "transparent")}
+          onMouseEnter={(e) =>
+            ((e.currentTarget as HTMLElement).style.background =
+              "var(--bg-hover)")
+          }
+          onMouseLeave={(e) =>
+            ((e.currentTarget as HTMLElement).style.background = "transparent")
+          }
           style={{
             display: "grid",
             gridTemplateColumns: grid,

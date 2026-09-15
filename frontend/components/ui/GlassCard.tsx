@@ -18,10 +18,14 @@ interface GlassCardProps {
  * editors, terminals) should stay solid on var(--bg-surface) for GPU cost and
  * WCAG contrast — see ResourceTable.
  */
-export default function GlassCard(
-  { children, tier = "surface", padding = 20, radius = 18, style, class: cls }:
-    GlassCardProps,
-) {
+export default function GlassCard({
+  children,
+  tier = "surface",
+  padding = 20,
+  radius = 18,
+  style,
+  class: cls,
+}: GlassCardProps) {
   const pad = typeof padding === "number" ? `${padding}px` : padding;
   return (
     <div

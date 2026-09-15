@@ -70,13 +70,15 @@ test("singleSecretStoreHref returns null when action=failed", () => {
 
 test("singleSecretStoreHref returns null when summary.failed > 0 even with create result", () => {
   const href = singleSecretStoreHref({
-    results: [{
-      index: 0,
-      kind: "SecretStore",
-      name: "vault-store",
-      namespace: "default",
-      action: "created",
-    }],
+    results: [
+      {
+        index: 0,
+        kind: "SecretStore",
+        name: "vault-store",
+        namespace: "default",
+        action: "created",
+      },
+    ],
     summary: {
       total: 1,
       created: 1,

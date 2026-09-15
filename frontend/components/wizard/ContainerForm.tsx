@@ -1,6 +1,6 @@
 import { Input } from "@/components/ui/Input.tsx";
-import { Select } from "@/components/ui/Select.tsx";
 import { RemoveButton } from "@/components/ui/RemoveButton.tsx";
+import { Select } from "@/components/ui/Select.tsx";
 import {
   PROTOCOL_OPTIONS,
   WIZARD_INPUT_CLASS,
@@ -60,7 +60,10 @@ export function ContainerForm({
   };
 
   const removePort = (index: number) => {
-    onChange("ports", ports.filter((_, i) => i !== index));
+    onChange(
+      "ports",
+      ports.filter((_, i) => i !== index),
+    );
   };
 
   // --- Env var helpers ---
@@ -102,7 +105,10 @@ export function ContainerForm({
   };
 
   const removeEnvVar = (index: number) => {
-    onChange("envVars", envVars.filter((_, i) => i !== index));
+    onChange(
+      "envVars",
+      envVars.filter((_, i) => i !== index),
+    );
   };
 
   const ENV_SOURCE_OPTIONS = [
@@ -122,7 +128,8 @@ export function ContainerForm({
           type="text"
           value={image}
           onInput={(e) =>
-            onChange("image", (e.target as HTMLInputElement).value)}
+            onChange("image", (e.target as HTMLInputElement).value)
+          }
           placeholder="nginx:latest"
           class={WIZARD_INPUT_CLASS}
         />
@@ -138,7 +145,8 @@ export function ContainerForm({
           type="text"
           value={command}
           onInput={(e) =>
-            onChange("command", (e.target as HTMLInputElement).value)}
+            onChange("command", (e.target as HTMLInputElement).value)
+          }
           placeholder="e.g. /bin/sh -c (space-separated)"
           class={WIZARD_INPUT_CLASS}
         />
@@ -156,7 +164,8 @@ export function ContainerForm({
           type="text"
           value={args}
           onInput={(e) =>
-            onChange("args", (e.target as HTMLInputElement).value)}
+            onChange("args", (e.target as HTMLInputElement).value)
+          }
           placeholder='e.g. echo"hello world" (space-separated)'
           class={WIZARD_INPUT_CLASS}
         />
@@ -181,8 +190,9 @@ export function ContainerForm({
                   updatePort(
                     i,
                     "containerPort",
-                    parseInt((e.target as HTMLInputElement).value) || 0,
-                  )}
+                    parseInt((e.target as HTMLInputElement).value, 10) || 0,
+                  )
+                }
                 placeholder="80"
                 min={1}
                 max={65535}
@@ -198,7 +208,8 @@ export function ContainerForm({
                     i,
                     "protocol",
                     (e.target as HTMLSelectElement).value,
-                  )}
+                  )
+                }
                 options={PROTOCOL_OPTIONS}
               />
             </div>
@@ -238,7 +249,8 @@ export function ContainerForm({
                       i,
                       "name",
                       (e.target as HTMLInputElement).value,
-                    )}
+                    )
+                  }
                   placeholder="MY_VAR"
                   error={errors[`envVars[${i}].name`]}
                 />
@@ -248,67 +260,72 @@ export function ContainerForm({
                   label={i === 0 ? "Source" : undefined}
                   value={source}
                   onChange={(e) =>
-                    changeEnvSource(
-                      i,
-                      (e.target as HTMLSelectElement).value,
-                    )}
+                    changeEnvSource(i, (e.target as HTMLSelectElement).value)
+                  }
                   options={ENV_SOURCE_OPTIONS}
                 />
               </div>
-              {source === "literal"
-                ? (
+              {source === "literal" ? (
+                <div class="flex-1">
+                  <Input
+                    label={i === 0 ? "Value" : undefined}
+                    value={env.value}
+                    onInput={(e) =>
+                      updateEnvVar(
+                        i,
+                        "value",
+                        (e.target as HTMLInputElement).value,
+                      )
+                    }
+                    placeholder="value"
+                  />
+                </div>
+              ) : (
+                <>
                   <div class="flex-1">
                     <Input
-                      label={i === 0 ? "Value" : undefined}
-                      value={env.value}
+                      label={
+                        i === 0
+                          ? source === "configmap"
+                            ? "ConfigMap"
+                            : "Secret"
+                          : undefined
+                      }
+                      value={
+                        source === "configmap"
+                          ? env.configMapRef
+                          : env.secretRef
+                      }
                       onInput={(e) =>
                         updateEnvVar(
                           i,
-                          "value",
+                          source === "configmap" ? "configMapRef" : "secretRef",
                           (e.target as HTMLInputElement).value,
-                        )}
-                      placeholder="value"
+                        )
+                      }
+                      placeholder={
+                        source === "configmap"
+                          ? "configmap-name"
+                          : "secret-name"
+                      }
                     />
                   </div>
-                )
-                : (
-                  <>
-                    <div class="flex-1">
-                      <Input
-                        label={i === 0
-                          ? (source === "configmap" ? "ConfigMap" : "Secret")
-                          : undefined}
-                        value={source === "configmap"
-                          ? env.configMapRef
-                          : env.secretRef}
-                        onInput={(e) =>
-                          updateEnvVar(
-                            i,
-                            source === "configmap"
-                              ? "configMapRef"
-                              : "secretRef",
-                            (e.target as HTMLInputElement).value,
-                          )}
-                        placeholder={source === "configmap"
-                          ? "configmap-name"
-                          : "secret-name"}
-                      />
-                    </div>
-                    <div class="w-28">
-                      <Input
-                        label={i === 0 ? "Key" : undefined}
-                        value={env.key}
-                        onInput={(e) =>
-                          updateEnvVar(
-                            i,
-                            "key",
-                            (e.target as HTMLInputElement).value,
-                          )}
-                        placeholder="data-key"
-                      />
-                    </div>
-                  </>
-                )}
+                  <div class="w-28">
+                    <Input
+                      label={i === 0 ? "Key" : undefined}
+                      value={env.key}
+                      onInput={(e) =>
+                        updateEnvVar(
+                          i,
+                          "key",
+                          (e.target as HTMLInputElement).value,
+                        )
+                      }
+                      placeholder="data-key"
+                    />
+                  </div>
+                </>
+              )}
               <RemoveButton
                 onClick={() => removeEnvVar(i)}
                 title="Remove env var"
@@ -335,14 +352,13 @@ export function ContainerForm({
         </label>
         <div class="grid grid-cols-2 gap-4">
           <div class="space-y-1">
-            <label class="block text-xs text-text-muted">
-              CPU Request
-            </label>
+            <label class="block text-xs text-text-muted">CPU Request</label>
             <input
               type="text"
               value={requestCpu}
               onInput={(e) =>
-                onChange("requestCpu", (e.target as HTMLInputElement).value)}
+                onChange("requestCpu", (e.target as HTMLInputElement).value)
+              }
               placeholder="100m"
               class={WIZARD_INPUT_CLASS}
             />
@@ -351,16 +367,13 @@ export function ContainerForm({
             )}
           </div>
           <div class="space-y-1">
-            <label class="block text-xs text-text-muted">
-              Memory Request
-            </label>
+            <label class="block text-xs text-text-muted">Memory Request</label>
             <input
               type="text"
               value={requestMemory}
-              onInput={(e) => onChange(
-                "requestMemory",
-                (e.target as HTMLInputElement).value,
-              )}
+              onInput={(e) =>
+                onChange("requestMemory", (e.target as HTMLInputElement).value)
+              }
               placeholder="128Mi"
               class={WIZARD_INPUT_CLASS}
             />
@@ -369,14 +382,13 @@ export function ContainerForm({
             )}
           </div>
           <div class="space-y-1">
-            <label class="block text-xs text-text-muted">
-              CPU Limit
-            </label>
+            <label class="block text-xs text-text-muted">CPU Limit</label>
             <input
               type="text"
               value={limitCpu}
               onInput={(e) =>
-                onChange("limitCpu", (e.target as HTMLInputElement).value)}
+                onChange("limitCpu", (e.target as HTMLInputElement).value)
+              }
               placeholder="500m"
               class={WIZARD_INPUT_CLASS}
             />
@@ -385,14 +397,13 @@ export function ContainerForm({
             )}
           </div>
           <div class="space-y-1">
-            <label class="block text-xs text-text-muted">
-              Memory Limit
-            </label>
+            <label class="block text-xs text-text-muted">Memory Limit</label>
             <input
               type="text"
               value={limitMemory}
               onInput={(e) =>
-                onChange("limitMemory", (e.target as HTMLInputElement).value)}
+                onChange("limitMemory", (e.target as HTMLInputElement).value)
+              }
               placeholder="256Mi"
               class={WIZARD_INPUT_CLASS}
             />

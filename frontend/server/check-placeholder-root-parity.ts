@@ -7,8 +7,8 @@ import { parse } from "@babel/parser";
  * Standing guard for the SSR-placeholder / hydrated-root divergence.
  *
  * Preact's hydration pass matches the server-rendered element and recurses
- * into its children *without re-applying that element's own props*. For an
- * island written in the usual shape
+ * into its children *without re-applying that element's own props* -- it sets
+ * event handlers and nothing else. For an island written in the usual shape
  *
  *     if (!IS_BROWSER) return <div class="p-6" />;   // SSR placeholder
  *     ...
@@ -21,37 +21,66 @@ import { parse } from "@babel/parser";
  * server renders the placeholder, `astro check` and `bun test` never mount
  * anything, and the E2E suite asserts behaviour rather than computed style.
  *
- * Two of these shipped and were caught only by KTD14's one-time screenshot
- * comparison (see IconRail.tsx and MonacoEditor.tsx, both of which now hoist
- * the root's attributes into a shared constant). This guard exists because
- * that comparison cannot be run again after U12: it diffs the Fresh tree
- * against the Astro tree, and U12 deletes the Fresh tree.
+ * Two of these shipped (see IconRail.tsx and MonacoEditor.tsx, both of which
+ * now hoist the root's attributes into a shared constant) and were caught only
+ * by KTD14's one-time screenshot comparison. This guard exists because that
+ * comparison cannot be run after U12, which deleted the tree it diffed
+ * against.
  *
- * It also could not have found these on its own. The Fresh tree carries the
- * byte-identical placeholders (`islands/CRDResourceList.tsx:168` emits the
- * same `minHeight: "400px"` root as its `src/` twin), so a cross-tree diff
- * cancels the defect out on both sides. Only the divergences the *port*
- * introduced were visible to it. The baseline below is that blind spot,
- * written down.
+ * It also could not have found these on its own. The Fresh tree carried the
+ * byte-identical placeholders, so a cross-tree diff cancelled the defect out
+ * on both sides. Only the divergences the *port* introduced were visible to
+ * it. The baseline is that blind spot, written down.
  *
- * A tag mismatch between the two roots is deliberately not a finding. Preact
+ * ## What counts as a root
+ *
+ * A return's root is the first node that becomes a real DOM element:
+ *
+ * - A plain lowercase JSX element is its own root.
+ * - A fragment has no DOM node, but Preact flattens it and matches its
+ *   children positionally, so the fragment's first element child is the node
+ *   that can be stranded. The walk descends into it.
+ * - A conditional (`cond ? <a/> : <b/>`) can render either branch, so both are
+ *   candidate roots and each is compared.
+ * - A capitalised name is a component; its own root is checked when that
+ *   component is visited, so it yields no candidate here.
+ *
+ * A tag mismatch between two candidates is deliberately not a finding. Preact
  * discards and recreates an element whose type changed, and a freshly created
- * element gets a full prop diff -- so `<div>` placeholder into `<section>`
+ * element gets a full prop diff -- so a `<div>` placeholder into a `<section>`
  * root is wasteful but correct. Only same-tag pairs can strand props.
+ *
+ * ## Which props are compared
+ *
+ * All of them, minus the ones hydration does apply. `class`/`className` and
+ * `style` are the ones that have bitten, but nothing about the mechanism is
+ * specific to them: `id`, `role`, `aria-*`, `data-*`, `title`, `tabIndex` and
+ * `hidden` strand exactly the same way, and an `aria-live` that never reaches
+ * the DOM is an accessibility defect no screenshot diff would show. Event
+ * handlers (`on*`) are excluded because hydration is precisely what attaches
+ * them; `key` and `ref` are not DOM attributes.
  *
  * ## The baseline
  *
- * The pre-existing divergences live in placeholder-root-parity-baseline.json,
- * one entry each. They are inherited from the Fresh tree rather than
- * introduced by the migration, and fixing them would change what the app
- * renders -- which is precisely what U12 is required to prove it has *not*
- * done. They are a tracked backlog, not an exemption in principle.
+ * Pre-existing divergences live in placeholder-root-parity-baseline.json, one
+ * entry each. They are inherited from the Fresh tree rather than introduced by
+ * the migration, and fixing them would change what the app renders -- which is
+ * precisely what U12 is required to prove it has *not* done. They are a
+ * tracked backlog, not an exemption in principle.
  *
  * The baseline is checked in both directions. An entry that no longer matches
  * anything fails the guard too, so a fixed divergence forces its record to be
- * deleted and the list can only shrink. Matching is on the source text of the
- * two roots rather than on line numbers, so an unrelated edit above does not
- * invalidate an entry, while editing the classes themselves does.
+ * deleted and the list can only shrink.
+ *
+ * An entry is keyed by its *occurrence* -- the component's ordinal in the
+ * file, the placeholder's ordinal within that component, the hydrated return's
+ * ordinal, and which candidate root of each -- as well as by the two roots'
+ * attributes. Keying on attributes alone let a newly added branch whose root
+ * text happened to match an existing entry inherit that entry's permission
+ * silently. Ordinals shift when a branch is added or reordered, which fails
+ * the guard and forces a fresh look; that is the intended cost. Line numbers
+ * are deliberately not part of the key -- an edit anywhere above would
+ * invalidate an entry for no reason -- and appear only in diagnostics.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,19 +90,42 @@ export const BASELINE_PATH = join(
   "placeholder-root-parity-baseline.json",
 );
 
-/** The roots this guard reads off a single JSX return. */
+/** Attribute names hydration applies itself, plus the two non-DOM props. */
+function isHydrationAppliedProp(name: string): boolean {
+  return (
+    /^on[A-Z]/.test(name) ||
+    name === "key" ||
+    name === "ref" ||
+    name === "dangerouslySetInnerHTML"
+  );
+}
+
+/** A candidate root element, and every prop of it hydration will not re-apply. */
 export interface RootShape {
   tag: string;
-  /** Source text of the `class`/`className` attribute value, or null. */
-  class: string | null;
-  /** Source text of the `style` attribute value, or null. */
-  style: string | null;
+  /** Attribute name -> source text of its value. `true` for a bare attribute. */
+  attrs: Record<string, string>;
+}
+
+/** Where in a component a divergence occurs. Stable under edits above it. */
+export interface Occurrence {
+  /** Index of the enclosing function among the file's functions. */
+  component: number;
+  /** Index of the placeholder return among the component's placeholders. */
+  placeholder: number;
+  /** Which candidate root of that return (fragments/conditionals yield more). */
+  placeholderRoot: number;
+  /** Index of the hydrated return among the component's non-placeholders. */
+  hydrated: number;
+  /** Which candidate root of that return. */
+  hydratedRoot: number;
 }
 
 export interface Divergence {
   /** Frontend-relative, forward-slashed. */
   file: string;
   tag: string;
+  at: Occurrence;
   placeholder: RootShape;
   hydrated: RootShape;
   /** 1-based line of the placeholder return, for the error message only. */
@@ -85,92 +137,149 @@ export interface Divergence {
 export interface BaselineEntry {
   file: string;
   tag: string;
-  placeholder: { class: string | null; style: string | null };
-  hydrated: { class: string | null; style: string | null };
+  at: Occurrence;
+  placeholder: { attrs: Record<string, string> };
+  hydrated: { attrs: Record<string, string> };
   note: string;
 }
 
 /**
- * Collapses runs of whitespace so a reformatted multi-line style object
- * compares equal to the same object on one line. Biome owns the formatting of
- * these files and can rewrap an object literal without anyone touching it;
- * that must not read as a new divergence.
+ * Collapses runs of whitespace so a reformatted multi-line object compares
+ * equal to the same object on one line, and drops a trailing comma before a
+ * closer. Biome owns the formatting of these files and can rewrap an object
+ * literal or add a trailing comma without anyone touching it; neither must
+ * read as a new divergence.
  */
 export function normalizeAttr(text: string | null): string | null {
   if (text === null) return null;
-  return (
-    text
-      .replace(/\s+/g, " ")
-      // A trailing comma before a closer is purely a consequence of whether
-      // the literal is wrapped across lines, which Biome decides. Without
-      // this, adding one property to a style object silently rewrites the key
-      // of an unrelated entry two lines away.
-      .replace(/,(\s*[}\])])/g, "$1")
-      .trim()
-  );
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/,(\s*[}\])])/g, "$1")
+    .trim();
 }
 
-function sameShape(
-  a: { class: string | null; style: string | null },
-  b: { class: string | null; style: string | null },
+function normalizeAttrs(attrs: Record<string, string>): string {
+  return Object.keys(attrs)
+    .sort()
+    .map((k) => `${k}=${normalizeAttr(attrs[k])}`)
+    .join("\u0001");
+}
+
+function sameAttrs(
+  a: Record<string, string>,
+  b: Record<string, string>,
 ): boolean {
-  return (
-    normalizeAttr(a.class) === normalizeAttr(b.class) &&
-    normalizeAttr(a.style) === normalizeAttr(b.style)
-  );
+  return normalizeAttrs(a) === normalizeAttrs(b);
+}
+
+/** `class` and `className` are the same DOM property; normalise the name. */
+function canonicalAttrName(name: string): string {
+  return name === "className" ? "class" : name;
 }
 
 /**
- * Reads the root element of a return argument. Returns null for anything that
- * is not a plain JSX element: a fragment (no root element exists in the DOM,
- * so nothing can be stranded), a component (`<Modal />` -- its own root is
- * checked when that component is itself visited), null, or a conditional.
+ * Every candidate root a return argument can produce. See the file banner for
+ * why a fragment and a conditional yield candidates rather than nothing.
  */
-export function describeRoot(node: unknown, code: string): RootShape | null {
-  // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
-  let n = node as any;
+// biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
+export function describeRoots(node: any, code: string): RootShape[] {
+  let n = node;
   while (
     n &&
-    (n.type === "TSAsExpression" || n.type === "TSNonNullExpression")
+    (n.type === "TSAsExpression" ||
+      n.type === "TSNonNullExpression" ||
+      n.type === "ParenthesizedExpression")
   ) {
     n = n.expression;
   }
-  if (!n || n.type !== "JSXElement") return null;
+  if (!n) return [];
+
+  // Either branch can render, so both are candidates.
+  if (n.type === "ConditionalExpression") {
+    return [
+      ...describeRoots(n.consequent, code),
+      ...describeRoots(n.alternate, code),
+    ];
+  }
+  // `cond && <div/>` renders the element or nothing; the element is the
+  // candidate. `a || <div/>` likewise.
+  if (n.type === "LogicalExpression") {
+    return [...describeRoots(n.left, code), ...describeRoots(n.right, code)];
+  }
+
+  // A fragment has no DOM node of its own. Preact flattens it and matches its
+  // children positionally, so the first element child is what can be stranded.
+  if (n.type === "JSXFragment") {
+    for (const child of n.children ?? []) {
+      if (child.type === "JSXText" && child.value.trim() === "") continue;
+      if (child.type === "JSXElement" || child.type === "JSXFragment") {
+        return describeRoots(child, code);
+      }
+      // A `{...}` expression as the first child could render anything; the
+      // walk cannot know what, so it reports no candidate rather than a wrong
+      // one. Recorded as a known limit in the guard's own docs.
+      return [];
+    }
+    return [];
+  }
+
+  if (n.type !== "JSXElement") return [];
 
   const name = n.openingElement.name;
-  // A member expression (`<Foo.Bar />`) or a namespaced name is a component,
-  // not an intrinsic element.
-  if (name.type !== "JSXIdentifier") return null;
+  // A member expression (`<Foo.Bar />`) or a namespaced name is a component.
+  if (name.type !== "JSXIdentifier") return [];
   const tag: string = name.name;
   // Capitalised means a component in JSX. Only lowercase intrinsics become a
   // real DOM node whose props hydration can strand.
-  if (tag[0] !== tag[0].toLowerCase()) return null;
+  if (tag[0] !== tag[0].toLowerCase()) return [];
 
-  let cls: string | null = null;
-  let style: string | null = null;
+  const attrs: Record<string, string> = {};
   for (const attr of n.openingElement.attributes) {
-    if (attr.type !== "JSXAttribute") continue;
-    const attrName = attr.name.name;
-    if (attrName === "class" || attrName === "className") {
-      cls = attr.value ? code.slice(attr.value.start, attr.value.end) : "true";
-    } else if (attrName === "style") {
-      style = attr.value
-        ? code.slice(attr.value.start, attr.value.end)
-        : "true";
+    if (attr.type === "JSXSpreadAttribute") {
+      // The spread's contents are unknowable statically. Record it verbatim so
+      // two identical spreads compare equal and a changed one is a finding,
+      // rather than silently comparing the props around it as if complete.
+      attrs[`...${code.slice(attr.argument.start, attr.argument.end)}`] =
+        "true";
+      continue;
     }
+    if (attr.type !== "JSXAttribute") continue;
+    const rawName = String(attr.name.name);
+    if (isHydrationAppliedProp(rawName)) continue;
+    attrs[canonicalAttrName(rawName)] = attr.value
+      ? code.slice(attr.value.start, attr.value.end)
+      : "true";
   }
-  return { tag, class: cls, style };
+  return [{ tag, attrs }];
 }
 
-/** True for the test expression `!IS_BROWSER`. */
+/**
+ * True when this `if` test gates an SSR placeholder.
+ *
+ * Matches a bare `!IS_BROWSER` and `!IS_BROWSER` appearing as an operand of a
+ * top-level `||` / `&&` chain. The compound form is not hypothetical: six
+ * islands ship `if (!IS_BROWSER || loading.value) return <placeholder/>;`, and
+ * matching only the bare form meant the walk skipped those components
+ * entirely -- reporting no divergence because it never looked.
+ */
 // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
-function isNotBrowser(test: any): boolean {
-  return (
-    test?.type === "UnaryExpression" &&
+export function isNotBrowser(test: any): boolean {
+  if (!test) return false;
+  if (
+    test.type === "UnaryExpression" &&
     test.operator === "!" &&
     test.argument?.type === "Identifier" &&
     test.argument.name === "IS_BROWSER"
-  );
+  ) {
+    return true;
+  }
+  if (
+    test.type === "LogicalExpression" &&
+    (test.operator === "||" || test.operator === "&&")
+  ) {
+    return isNotBrowser(test.left) || isNotBrowser(test.right);
+  }
+  return false;
 }
 
 const FUNCTION_TYPES = new Set([
@@ -242,7 +351,8 @@ export function findDivergencesInSource(
 
   const divergences: Divergence[] = [];
 
-  for (const fn of functions) {
+  for (let componentIndex = 0; componentIndex < functions.length; ) {
+    const fn = functions[componentIndex];
     // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
     const placeholderReturns: any[] = [];
     // biome-ignore lint/suspicious/noExplicitAny: untyped Babel AST
@@ -261,30 +371,48 @@ export function findDivergencesInSource(
       }
     });
 
+    const currentComponent = componentIndex;
+    componentIndex += 1;
     if (placeholderReturns.length === 0) continue;
+
     const placeholderSet = new Set(placeholderReturns);
+    const hydratedReturns = allReturns.filter((r) => !placeholderSet.has(r));
 
-    for (const placeholder of placeholderReturns) {
-      const phRoot = describeRoot(placeholder.argument, code);
-      if (!phRoot) continue;
+    for (let pi = 0; pi < placeholderReturns.length; pi++) {
+      const placeholder = placeholderReturns[pi];
+      const phRoots = describeRoots(placeholder.argument, code);
 
-      for (const hydrated of allReturns) {
-        if (placeholderSet.has(hydrated)) continue;
-        const hyRoot = describeRoot(hydrated.argument, code);
-        if (!hyRoot) continue;
-        // Different tag: Preact recreates the node and diffs all props onto
-        // it, so nothing is stranded.
-        if (hyRoot.tag !== phRoot.tag) continue;
-        if (sameShape(phRoot, hyRoot)) continue;
+      for (let pr = 0; pr < phRoots.length; pr++) {
+        const phRoot = phRoots[pr];
 
-        divergences.push({
-          file,
-          tag: phRoot.tag,
-          placeholder: phRoot,
-          hydrated: hyRoot,
-          placeholderLine: placeholder.loc.start.line,
-          hydratedLine: hydrated.loc.start.line,
-        });
+        for (let hi = 0; hi < hydratedReturns.length; hi++) {
+          const hydrated = hydratedReturns[hi];
+          const hyRoots = describeRoots(hydrated.argument, code);
+
+          for (let hr = 0; hr < hyRoots.length; hr++) {
+            const hyRoot = hyRoots[hr];
+            // Different tag: Preact recreates the node and diffs all props
+            // onto it, so nothing is stranded.
+            if (hyRoot.tag !== phRoot.tag) continue;
+            if (sameAttrs(phRoot.attrs, hyRoot.attrs)) continue;
+
+            divergences.push({
+              file,
+              tag: phRoot.tag,
+              at: {
+                component: currentComponent,
+                placeholder: pi,
+                placeholderRoot: pr,
+                hydrated: hi,
+                hydratedRoot: hr,
+              },
+              placeholder: phRoot,
+              hydrated: hyRoot,
+              placeholderLine: placeholder.loc.start.line,
+              hydratedLine: hydrated.loc.start.line,
+            });
+          }
+        }
       }
     }
   }
@@ -305,14 +433,21 @@ function walkTsx(dirAbs: string, out: string[]): void {
 }
 
 /**
- * Every component file the guard covers: the Astro tree only. `islands/` and
- * `components/` at the frontend root are the Fresh tree, which U12 deletes;
- * baselining them would leave dead entries behind the moment it goes.
+ * Every component file the guard covers.
+ *
+ * The whole of `src/` and the whole of the shared `components/` tree, rather
+ * than a hardcoded list of subdirectories. The first version named
+ * `src/islands` and `src/components` on the premise that `components/` at the
+ * frontend root was part of the Fresh tree U12 deletes. It is not -- it is
+ * shared infrastructure that survives, and 124 of its files render inside
+ * Astro islands, so they were outside the only detector this defect class has.
+ * Walking the trees rather than a list also means a future `src/layouts` or
+ * `src/widgets` is covered without anyone remembering to add it.
  */
 export function defaultSourceFiles(root: string = FRONTEND_ROOT): string[] {
   const files: string[] = [];
-  walkTsx(join(root, "src", "islands"), files);
-  walkTsx(join(root, "src", "components"), files);
+  walkTsx(join(root, "src"), files);
+  walkTsx(join(root, "components"), files);
   return files.sort();
 }
 
@@ -341,31 +476,31 @@ export interface Reconciliation {
 }
 
 /**
- * The identity of a divergence: which file, which tag, and the two roots'
- * attribute text. Deliberately not the line numbers -- an edit anywhere above
- * would otherwise invalidate an entry, while an edit to the classes
- * themselves must.
+ * The identity of a divergence: which file, which occurrence within it, which
+ * tag, and the two roots' attributes.
  *
- * One component can produce the same key several times, because a placeholder
- * is compared against every one of the component's hydrated returns and a
- * loading branch and an error branch often carry the same root. Those are one
- * fact about one placeholder, not several, so they collapse to a single
- * baseline entry.
+ * The occurrence is what stops a newly added branch from inheriting an
+ * existing entry's permission. Without it the key was file + tag + attribute
+ * text, so a second placeholder/hydrated pair in an already-baselined file
+ * whose roots happened to read the same was suppressed with no new entry and
+ * no stale entry -- the one hole that let a real regression through a guard
+ * that reported success.
  */
 export function divergenceKey(d: {
   file: string;
   tag: string;
-  placeholder: { class: string | null; style: string | null };
-  hydrated: { class: string | null; style: string | null };
+  at: Occurrence;
+  placeholder: { attrs: Record<string, string> };
+  hydrated: { attrs: Record<string, string> };
 }): string {
   return [
     d.file,
     d.tag,
-    normalizeAttr(d.placeholder.class),
-    normalizeAttr(d.placeholder.style),
-    normalizeAttr(d.hydrated.class),
-    normalizeAttr(d.hydrated.style),
-  ].join(" ");
+    `${d.at.component}:${d.at.placeholder}.${d.at.placeholderRoot}` +
+      `->${d.at.hydrated}.${d.at.hydratedRoot}`,
+    normalizeAttrs(d.placeholder.attrs),
+    normalizeAttrs(d.hydrated.attrs),
+  ].join("\u0000");
 }
 
 export function reconcile(
@@ -379,14 +514,7 @@ export function reconcile(
   for (const d of divergences) {
     const key = divergenceKey(d);
     seen.add(key);
-    // Report each distinct shape once, however many hydrated returns it was
-    // compared against.
-    if (
-      !baselineKeys.has(key) &&
-      !unbaselined.some((u) => divergenceKey(u) === key)
-    ) {
-      unbaselined.push(d);
-    }
+    if (!baselineKeys.has(key)) unbaselined.push(d);
   }
 
   return {
@@ -395,11 +523,10 @@ export function reconcile(
   };
 }
 
-function describe(shape: { class: string | null; style: string | null }) {
-  const parts: string[] = [];
-  parts.push(`class=${shape.class ?? "(none)"}`);
-  parts.push(`style=${normalizeAttr(shape.style) ?? "(none)"}`);
-  return parts.join(" ");
+function describe(shape: { attrs: Record<string, string> }): string {
+  const keys = Object.keys(shape.attrs).sort();
+  if (keys.length === 0) return "(no attributes)";
+  return keys.map((k) => `${k}=${normalizeAttr(shape.attrs[k])}`).join(" ");
 }
 
 function main(): void {
@@ -422,21 +549,30 @@ function main(): void {
       );
     }
     console.error(
-      "\nHoist the root's class/style into one constant used by both " +
-        "returns, so the two cannot drift apart (see IconRail.tsx's " +
-        "RAIL_NAV_STYLE or MonacoEditor.tsx's EDITOR_ROOT_CLASS). Do not " +
-        "add an entry to placeholder-root-parity-baseline.json for new " +
-        "code -- that file records what the Fresh tree already shipped.",
+      "\nHoist the root's attributes into one constant used by both returns, " +
+        "so the two cannot drift apart (see IconRail.tsx's RAIL_NAV_STYLE or " +
+        "MonacoEditor.tsx's EDITOR_ROOT_CLASS). Do not add an entry to " +
+        "placeholder-root-parity-baseline.json for new code -- that file " +
+        "records what the pre-migration tree already shipped, and an entry " +
+        "there silences the only detector this defect class has.",
     );
   }
 
   if (stale.length > 0) {
     console.error(
       "\nPlaceholder/hydrated root parity guard: baseline entries that no " +
-        "longer match anything. If you fixed one, delete its entry:\n",
+        "longer match anything. If you fixed one, delete its entry. If you " +
+        "added or reordered a return branch, the occurrence it names has " +
+        "moved -- re-check the divergence is still the inherited one before " +
+        "updating the entry:\n",
     );
     for (const e of stale) {
-      console.error(`  ${e.file}  <${e.tag}>`);
+      console.error(
+        `  ${e.file}  <${e.tag}>  (occurrence ${
+          `${e.at.component}:${e.at.placeholder}.${e.at.placeholderRoot}` +
+          `->${e.at.hydrated}.${e.at.hydratedRoot}`
+        })`,
+      );
       console.error(`    placeholder: ${describe(e.placeholder)}`);
       console.error(`    hydrated:    ${describe(e.hydrated)}`);
     }

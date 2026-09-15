@@ -26,21 +26,23 @@ import { CAPABILITY_OPERATION_IDS, REASON_CODES } from "./capability-types.ts";
 // test cannot make (Go only ever reads this file's source text, never the
 // TS type system).
 function reasonCodeArrayElementIsReasonCode(
-  x: typeof REASON_CODES[number],
+  x: (typeof REASON_CODES)[number],
 ): ReasonCode {
   return x;
 }
-function reasonCodeIsArrayElement(x: ReasonCode): typeof REASON_CODES[number] {
+function reasonCodeIsArrayElement(
+  x: ReasonCode,
+): (typeof REASON_CODES)[number] {
   return x;
 }
 function operationIdArrayElementIsOperationId(
-  x: typeof CAPABILITY_OPERATION_IDS[number],
+  x: (typeof CAPABILITY_OPERATION_IDS)[number],
 ): CapabilityOperationId {
   return x;
 }
 function operationIdIsArrayElement(
   x: CapabilityOperationId,
-): typeof CAPABILITY_OPERATION_IDS[number] {
+): (typeof CAPABILITY_OPERATION_IDS)[number] {
   return x;
 }
 
@@ -59,42 +61,34 @@ test("CapabilityOperationId union type-checks as identical to the CAPABILITY_OPE
 });
 
 test("REASON_CODES matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
-  expect(
-    [...REASON_CODES].sort(),
-  ).toEqual(
-    [
-      "authz_namespace_scoped",
-      "authz_unknown",
-      "cluster_unknown",
-      "credentials_invalid",
-      "db_unavailable",
-      "discovery_missing",
-      "discovery_unavailable",
-      "forbidden",
-      "ok",
-      "stale_observation",
-      "unreachable",
-      "unsupported_platform",
-    ],
-  );
+  expect([...REASON_CODES].sort()).toEqual([
+    "authz_namespace_scoped",
+    "authz_unknown",
+    "cluster_unknown",
+    "credentials_invalid",
+    "db_unavailable",
+    "discovery_missing",
+    "discovery_unavailable",
+    "forbidden",
+    "ok",
+    "stale_observation",
+    "unreachable",
+    "unsupported_platform",
+  ]);
 });
 
 test("CAPABILITY_OPERATION_IDS matches the expected literal set (self-consistency; Go parity is checked in capability_parity_test.go)", () => {
-  expect(
-    [...CAPABILITY_OPERATION_IDS].sort(),
-  ).toEqual(
-    [
-      "dashboard.summary",
-      "eso.write",
-      "flows.stream",
-      "logs.search",
-      "logs.stream",
-      "pod.exec",
-      "resources.counts",
-      "yaml.apply",
-      "yaml.diff",
-      "yaml.export",
-      "yaml.validate",
-    ],
-  );
+  expect([...CAPABILITY_OPERATION_IDS].sort()).toEqual([
+    "dashboard.summary",
+    "eso.write",
+    "flows.stream",
+    "logs.search",
+    "logs.stream",
+    "pod.exec",
+    "resources.counts",
+    "yaml.apply",
+    "yaml.diff",
+    "yaml.export",
+    "yaml.validate",
+  ]);
 });

@@ -1,8 +1,8 @@
-import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { Signal } from "@preact/signals";
-import type { FormState } from "@/src/islands/NamespaceLimitsWizard.tsx";
 import type { PresetKey } from "@/lib/namespace-presets.ts";
 import { PRESETS } from "@/lib/namespace-presets.ts";
+import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
+import type { FormState } from "@/src/islands/NamespaceLimitsWizard.tsx";
 
 interface NamespacePresetStepProps {
   form: FormState;
@@ -46,14 +46,14 @@ export function NamespacePresetStep({
         <select
           value={form.namespace}
           onChange={(e) =>
-            onUpdateField(
-              "namespace",
-              (e.target as HTMLSelectElement).value,
-            )}
+            onUpdateField("namespace", (e.target as HTMLSelectElement).value)
+          }
           class={WIZARD_INPUT_CLASS}
         >
           {namespaces.value.map((ns) => (
-            <option key={ns} value={ns}>{ns}</option>
+            <option key={ns} value={ns}>
+              {ns}
+            </option>
           ))}
         </select>
         {errors.value.namespace && (
@@ -150,10 +150,8 @@ export function NamespacePresetStep({
           type="text"
           value={form.quotaName}
           onInput={(e) =>
-            onUpdateField(
-              "quotaName",
-              (e.target as HTMLInputElement).value,
-            )}
+            onUpdateField("quotaName", (e.target as HTMLInputElement).value)
+          }
           class={WIZARD_INPUT_CLASS}
           placeholder="e.g. default-quota"
         />
@@ -189,7 +187,8 @@ export function NamespacePresetStep({
             onUpdateField(
               "limitRangeName",
               (e.target as HTMLInputElement).value,
-            )}
+            )
+          }
           class={WIZARD_INPUT_CLASS}
           placeholder="e.g. default-limits"
         />

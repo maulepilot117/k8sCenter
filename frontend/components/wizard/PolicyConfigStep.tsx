@@ -1,18 +1,13 @@
 import { useCallback } from "preact/hooks";
-import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
-import { getTemplate } from "@/lib/policy-templates.ts";
 import type { ParamField } from "@/lib/policy-templates.ts";
+import { getTemplate } from "@/lib/policy-templates.ts";
 import type { EngineStatus } from "@/lib/policy-types.ts";
+import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { PolicyWizardForm } from "@/src/islands/PolicyWizard.tsx";
 
 function CloseIcon() {
   return (
-    <svg
-      class="w-4 h-4"
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-    >
+    <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
       <path
         stroke-linecap="round"
         stroke-linejoin="round"
@@ -31,12 +26,7 @@ interface PolicyConfigStepProps {
   onUpdateParam: (key: string, value: unknown) => void;
 }
 
-const TARGET_KIND_OPTIONS = [
-  "Pod",
-  "Deployment",
-  "StatefulSet",
-  "DaemonSet",
-];
+const TARGET_KIND_OPTIONS = ["Pod", "Deployment", "StatefulSet", "DaemonSet"];
 
 const KYVERNO_ACTIONS = [
   { value: "Enforce", label: "Enforce" },
@@ -58,36 +48,46 @@ export function PolicyConfigStep({
 }: PolicyConfigStepProps) {
   const template = getTemplate(form.templateId);
 
-  const kyvernoAvailable = engineStatus?.detected === "kyverno" ||
+  const kyvernoAvailable =
+    engineStatus?.detected === "kyverno" || engineStatus?.detected === "both";
+  const gatekeeperAvailable =
+    engineStatus?.detected === "gatekeeper" ||
     engineStatus?.detected === "both";
-  const gatekeeperAvailable = engineStatus?.detected === "gatekeeper" ||
-    engineStatus?.detected === "both";
-  const singleEngine = engineStatus?.detected === "kyverno" ||
+  const singleEngine =
+    engineStatus?.detected === "kyverno" ||
     engineStatus?.detected === "gatekeeper";
 
-  const actionOptions = form.engine === "gatekeeper"
-    ? GATEKEEPER_ACTIONS
-    : KYVERNO_ACTIONS;
+  const actionOptions =
+    form.engine === "gatekeeper" ? GATEKEEPER_ACTIONS : KYVERNO_ACTIONS;
 
-  const toggleTargetKind = useCallback((kind: string) => {
-    const current = form.targetKinds;
-    if (current.includes(kind)) {
-      onUpdate("targetKinds", current.filter((k) => k !== kind));
-    } else {
-      onUpdate("targetKinds", [...current, kind]);
-    }
-  }, [form.targetKinds, onUpdate]);
+  const toggleTargetKind = useCallback(
+    (kind: string) => {
+      const current = form.targetKinds;
+      if (current.includes(kind)) {
+        onUpdate(
+          "targetKinds",
+          current.filter((k) => k !== kind),
+        );
+      } else {
+        onUpdate("targetKinds", [...current, kind]);
+      }
+    },
+    [form.targetKinds, onUpdate],
+  );
 
   const addExcludedNamespace = useCallback(() => {
     onUpdate("excludedNamespaces", [...form.excludedNamespaces, ""]);
   }, [form.excludedNamespaces, onUpdate]);
 
-  const removeExcludedNamespace = useCallback((index: number) => {
-    onUpdate(
-      "excludedNamespaces",
-      form.excludedNamespaces.filter((_, i) => i !== index),
-    );
-  }, [form.excludedNamespaces, onUpdate]);
+  const removeExcludedNamespace = useCallback(
+    (index: number) => {
+      onUpdate(
+        "excludedNamespaces",
+        form.excludedNamespaces.filter((_, i) => i !== index),
+      );
+    },
+    [form.excludedNamespaces, onUpdate],
+  );
 
   const updateExcludedNamespace = useCallback(
     (index: number, value: string) => {
@@ -105,45 +105,43 @@ export function PolicyConfigStep({
         <label class="block text-sm font-medium text-text-primary mb-2">
           Policy Engine
         </label>
-        {singleEngine
-          ? (
-            <p class="text-sm text-text-secondary">
-              Auto-selected:{" "}
-              <span class="font-medium text-text-primary capitalize">
-                {engineStatus?.detected}
-              </span>
-            </p>
-          )
-          : (
-            <div class="flex gap-4">
-              {kyvernoAvailable && (
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="engine"
-                    value="kyverno"
-                    checked={form.engine === "kyverno"}
-                    onChange={() => onUpdate("engine", "kyverno")}
-                    class="accent-brand"
-                  />
-                  <span class="text-sm text-text-primary">Kyverno</span>
-                </label>
-              )}
-              {gatekeeperAvailable && (
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="engine"
-                    value="gatekeeper"
-                    checked={form.engine === "gatekeeper"}
-                    onChange={() => onUpdate("engine", "gatekeeper")}
-                    class="accent-brand"
-                  />
-                  <span class="text-sm text-text-primary">Gatekeeper</span>
-                </label>
-              )}
-            </div>
-          )}
+        {singleEngine ? (
+          <p class="text-sm text-text-secondary">
+            Auto-selected:{" "}
+            <span class="font-medium text-text-primary capitalize">
+              {engineStatus?.detected}
+            </span>
+          </p>
+        ) : (
+          <div class="flex gap-4">
+            {kyvernoAvailable && (
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="engine"
+                  value="kyverno"
+                  checked={form.engine === "kyverno"}
+                  onChange={() => onUpdate("engine", "kyverno")}
+                  class="accent-brand"
+                />
+                <span class="text-sm text-text-primary">Kyverno</span>
+              </label>
+            )}
+            {gatekeeperAvailable && (
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="engine"
+                  value="gatekeeper"
+                  checked={form.engine === "gatekeeper"}
+                  onChange={() => onUpdate("engine", "gatekeeper")}
+                  class="accent-brand"
+                />
+                <span class="text-sm text-text-primary">Gatekeeper</span>
+              </label>
+            )}
+          </div>
+        )}
         {errors.engine && (
           <p class="text-sm text-danger mt-1">{errors.engine}</p>
         )}
@@ -159,7 +157,8 @@ export function PolicyConfigStep({
           class={WIZARD_INPUT_CLASS}
           value={form.name}
           onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)}
+            onUpdate("name", (e.target as HTMLInputElement).value)
+          }
           placeholder="disallow-privileged"
         />
         {errors.name && <p class="text-sm text-danger mt-1">{errors.name}</p>}
@@ -174,11 +173,14 @@ export function PolicyConfigStep({
           class={WIZARD_INPUT_CLASS}
           value={form.action}
           onChange={(e) =>
-            onUpdate("action", (e.target as HTMLSelectElement).value)}
+            onUpdate("action", (e.target as HTMLSelectElement).value)
+          }
         >
           <option value="">Select action...</option>
           {actionOptions.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
           ))}
         </select>
         {errors.action && (
@@ -231,14 +233,14 @@ export function PolicyConfigStep({
                   updateExcludedNamespace(
                     i,
                     (e.target as HTMLInputElement).value,
-                  )}
+                  )
+                }
                 placeholder="namespace"
               />
               <button
                 type="button"
                 class="text-text-muted hover:text-danger shrink-0"
-                onClick={() =>
-                  removeExcludedNamespace(i)}
+                onClick={() => removeExcludedNamespace(i)}
               >
                 <CloseIcon />
               </button>
@@ -264,7 +266,8 @@ export function PolicyConfigStep({
           rows={3}
           value={form.description}
           onInput={(e) =>
-            onUpdate("description", (e.target as HTMLTextAreaElement).value)}
+            onUpdate("description", (e.target as HTMLTextAreaElement).value)
+          }
           placeholder="Policy description..."
         />
       </div>

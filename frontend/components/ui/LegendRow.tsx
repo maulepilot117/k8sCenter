@@ -6,9 +6,7 @@ export interface LegendRowProps {
 
 export function LegendRow({ color, label, count }: LegendRowProps) {
   return (
-    <div
-      style={{ display: "flex", alignItems: "center", gap: "7px" }}
-    >
+    <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
       <span
         style={{
           width: "8px",

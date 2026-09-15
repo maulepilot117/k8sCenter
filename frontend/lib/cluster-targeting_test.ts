@@ -10,8 +10,8 @@ import {
   setAccessToken,
 } from "./api.ts";
 import {
-  clusterEpoch,
   type ClusterTarget,
+  clusterEpoch,
   currentTarget,
   LOCAL_CLUSTER_ID,
   LOCAL_GENERATION,
@@ -75,9 +75,7 @@ function stubFetch(
       return Promise.reject(new DOMException("Aborted", "AbortError"));
     }
     const make = responses[index];
-    return Promise.resolve(
-      make ? make() : new Response("{}", { status: 200 }),
-    );
+    return Promise.resolve(make ? make() : new Response("{}", { status: 200 }));
   }) as typeof globalThis.fetch;
 
   return {
@@ -130,9 +128,7 @@ test("switchCluster bumps epoch after writing id and generation", () => {
   dispose();
 
   expect(clusterEpoch.value).toBe(before + 1);
-  expect(
-    seen.length - notificationsBefore,
-  ).toBe(1);
+  expect(seen.length - notificationsBefore).toBe(1);
   const last = seen[seen.length - 1];
   expect(last.epoch).toBe(before + 1);
   expect(last.id).toBe("cluster-b");
@@ -328,10 +324,9 @@ test("a legacy id with no generation is restored under the unknown sentinel", ()
   // the retargeting this module exists to prevent. The sentinel keeps the
   // selection while still forcing a cache miss, because it can never equal a
   // real generation ("local", or an RFC3339 timestamp).
-  const store = new Map<string, string>([[
-    "k8scenter.selectedCluster",
-    "cluster-a",
-  ]]);
+  const store = new Map<string, string>([
+    ["k8scenter.selectedCluster", "cluster-a"],
+  ]);
   const storage = { getItem: (k: string) => store.get(k) ?? null };
 
   expect(readPersistedTarget(storage)).toEqual({
@@ -411,9 +406,13 @@ test("apiPost forwards a targeting object and still serializes its body", async 
 
   try {
     await apiPost("/v1/resources/pods", { a: 1 });
-    await apiPost("/v1/resources/nodes", { b: 2 }, {
-      clusterId: "cluster-pinned",
-    });
+    await apiPost(
+      "/v1/resources/nodes",
+      { b: 2 },
+      {
+        clusterId: "cluster-pinned",
+      },
+    );
 
     expect(calls[0].clusterHeader).toBe("cluster-a");
     expect(calls[0].body).toBe(JSON.stringify({ a: 1 }));

@@ -1,13 +1,15 @@
 import type { ComponentChildren } from "preact";
 
 /** Label + optional hint wrapper used by every wizard/form field. */
-export default function Field(
-  { label, hint, children }: {
-    label: string;
-    hint?: string;
-    children: ComponentChildren;
-  },
-) {
+export default function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: ComponentChildren;
+}) {
   return (
     <div>
       <label

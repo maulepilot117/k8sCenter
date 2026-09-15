@@ -318,22 +318,70 @@ test.describe("Route inventory", () => {
   });
 });
 /**
- * The "port completeness" describe block lived here until U12.
+ * Port completeness, against a frozen manifest rather than a second tree.
  *
- * It walked frontend/routes and asserted every Fresh route had an Astro
- * counterpart -- the one check that could notice a route the port never
- * created, since the inventory above is derived from the Astro tree and so
- * cannot miss what was never there. It was only ever checkable while both
- * trees existed, and its own comment said to delete it with them.
+ * The inventory above is derived from the Astro tree, so it cannot notice a
+ * route the port never created, and its floors cannot notice one deleted
+ * later: removing an Astro page shrinks `routes` and removes that page's
+ * generated test, and `> 185` against 189 still passes. Up to three
+ * production routes could vanish with the suite green.
  *
- * Its last run, immediately before frontend/routes was deleted:
+ * The check that closed that hole walked `frontend/routes` and needed both
+ * trees on disk. U12 deleted the Fresh tree, and the first attempt at this
+ * replaced the test with a comment recording its last result -- which records
+ * history but enforces nothing.
  *
- *     Fresh page routes:      186
- *     Astro page routes:      189
- *     Missing counterparts:     0
- *
- * That is the number recorded rather than the test kept, because there is no
- * longer a second tree to derive it from. The 189 routes are inventoried and
- * asserted by the suite above; completeness against the pre-migration tree is
- * now a historical fact, not a standing gate.
+ * `e2e/fixtures/pre-migration-routes.json` is that tree's route list, frozen
+ * from 5b98284a before the deletion. It needs no second tree, it cannot drift
+ * with the Astro tree because it is not derived from it, and a route dropped
+ * at any point after the migration fails here. Adding routes is free; losing
+ * one is not.
  */
+test.describe("port completeness", () => {
+  const manifest = JSON.parse(
+    readFileSync(
+      path.resolve(__dirname, "../fixtures/pre-migration-routes.json"),
+      "utf8",
+    ),
+  ) as { routes: string[]; generatedFrom: string };
+
+  /**
+   * Deliberate remaps, by name. Astro reserves "_"-prefixed paths under
+   * src/pages, so KTD11's cluster-scoped extension route is served at
+   * "cluster-scoped/[name]" and frontend/server/rewrites.ts maps the
+   * operator-facing "_" URL onto it. The URL an operator types is unchanged,
+   * which is what R19 requires; only the file name moved. An allowlist and not
+   * a loosened comparison: anything else that stops matching is a dropped
+   * route and must fail.
+   */
+  const DELIBERATE_REMAPS: Record<string, string> = {
+    "extensions/[group]/[resource]/_/[name]":
+      "extensions/[group]/[resource]/cluster-scoped/[name]",
+  };
+
+  test("the frozen manifest is intact", () => {
+    expect(
+      manifest.routes.length,
+      "pre-migration-routes.json looks truncated -- it recorded 186 routes",
+    ).toBe(186);
+    expect(manifest.generatedFrom).toBe("5b98284a");
+  });
+
+  test("every pre-migration route still has an Astro page", () => {
+    // `r.file` is already PAGES_ROOT-relative and forward-slashed.
+    const ported = new Set(
+      routes.map((r) => r.file.replace(/\.astro$/, "").replace(/\/index$/, "")),
+    );
+
+    const missing = manifest.routes
+      .map((r) => DELIBERATE_REMAPS[r] ?? r)
+      .filter((r) => !ported.has(r) && !ported.has(r === "" ? "index" : r))
+      .sort();
+
+    expect(
+      missing,
+      "these routes existed before the migration and have no Astro page -- " +
+        "they were dropped: " + missing.join(", "),
+    ).toEqual([]);
+  });
+});

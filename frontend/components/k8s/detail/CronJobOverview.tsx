@@ -1,7 +1,7 @@
+import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import { age } from "@/lib/format.ts";
 import type { CronJob, K8sResource } from "@/lib/k8s-types.ts";
 import { statusColor } from "@/lib/status-colors.ts";
-import { age } from "@/lib/format.ts";
-import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 
 export function CronJobOverview({ resource }: { resource: K8sResource }) {
   const cj = resource as CronJob;
@@ -19,9 +19,7 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Schedule" value={spec.schedule} mono />
           <div>
-            <dt class="text-xs font-medium text-text-muted">
-              Suspend
-            </dt>
+            <dt class="text-xs font-medium text-text-muted">Suspend</dt>
             <dd class="mt-0.5">
               <span
                 class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
@@ -45,9 +43,11 @@ export function CronJobOverview({ resource }: { resource: K8sResource }) {
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field
             label="Last Schedule"
-            value={status?.lastScheduleTime
-              ? age(status.lastScheduleTime) + " ago"
-              : "-"}
+            value={
+              status?.lastScheduleTime
+                ? `${age(status.lastScheduleTime)} ago`
+                : "-"
+            }
           />
           <Field label="Active Jobs" value={String(activeJobs)} />
         </div>

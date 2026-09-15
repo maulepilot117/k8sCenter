@@ -6,9 +6,11 @@ interface SearchBarProps {
   placeholder?: string;
 }
 
-export function SearchBar(
-  { value, onInput, placeholder = "Search resources..." }: SearchBarProps,
-) {
+export function SearchBar({
+  value,
+  onInput,
+  placeholder = "Search resources...",
+}: SearchBarProps) {
   return (
     <div class="relative">
       <svg
@@ -26,7 +28,8 @@ export function SearchBar(
         type="text"
         value={value}
         onInput={(e: JSX.TargetedEvent<HTMLInputElement>) =>
-          onInput(e.currentTarget.value)}
+          onInput(e.currentTarget.value)
+        }
         placeholder={placeholder}
         data-search-input
         class="w-full rounded-md border py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-brand"

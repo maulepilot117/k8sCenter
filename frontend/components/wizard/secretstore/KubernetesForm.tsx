@@ -112,9 +112,11 @@ function emptyMethodSpec(m: KubernetesAuthMethod): Record<string, unknown> {
   }
 }
 
-export function KubernetesForm(
-  { spec, errors, onUpdateSpec }: KubernetesFormProps,
-) {
+export function KubernetesForm({
+  spec,
+  errors,
+  onUpdateSpec,
+}: KubernetesFormProps) {
   const method = useSignal<KubernetesAuthMethod | "">(detectMethod(spec));
 
   function patchTop(field: string, value: string) {
@@ -179,12 +181,10 @@ export function KubernetesForm(
       {/* Contextual banner — explains what this provider does */}
       <div class="rounded-md border border-border-primary bg-surface/50 p-4 text-sm text-text-muted">
         The Kubernetes provider reads Secrets from{" "}
-        <span class="font-medium text-text-secondary">another namespace</span>
-        {" "}
+        <span class="font-medium text-text-secondary">another namespace</span>{" "}
         (or cluster) via service-account impersonation. Set{" "}
-        <span class="font-mono text-xs">Remote namespace</span>{" "}
-        to the source namespace, then choose how ESO authenticates to that
-        apiserver.
+        <span class="font-mono text-xs">Remote namespace</span> to the source
+        namespace, then choose how ESO authenticates to that apiserver.
       </div>
 
       {/* Remote namespace — most important field, shown prominently */}
@@ -195,10 +195,11 @@ export function KubernetesForm(
           required
           value={getStr(spec, "remoteNamespace")}
           onInput={(e) =>
-            patchTop("remoteNamespace", (e.target as HTMLInputElement).value)}
+            patchTop("remoteNamespace", (e.target as HTMLInputElement).value)
+          }
           placeholder="secrets-ns"
           description="Namespace in the source cluster where Secrets live. Defaults to 'default' in ESO when omitted."
-          error={errors["remoteNamespace"]}
+          error={errors.remoteNamespace}
         />
       </div>
 
@@ -213,7 +214,8 @@ export function KubernetesForm(
             label="Apiserver URL (optional)"
             value={(srv.url as string) ?? ""}
             onInput={(e) =>
-              patchServer({ url: (e.target as HTMLInputElement).value })}
+              patchServer({ url: (e.target as HTMLInputElement).value })
+            }
             placeholder="https://apiserver.example.com:6443"
             description="Leave blank to use the in-cluster apiserver. Must use https."
             error={errors["server.url"]}
@@ -223,7 +225,8 @@ export function KubernetesForm(
             label="CA bundle (base64, optional)"
             value={(srv.caBundle as string) ?? ""}
             onInput={(e) =>
-              patchServer({ caBundle: (e.target as HTMLInputElement).value })}
+              patchServer({ caBundle: (e.target as HTMLInputElement).value })
+            }
             placeholder="LS0tLS1CRUdJTi…"
             description="Base64-encoded CA bundle for the target apiserver. Leave blank to use the cluster's default CA."
             error={errors["server.caBundle"]}
@@ -235,7 +238,9 @@ export function KubernetesForm(
       <div class="space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <div class="grid gap-2 sm:grid-cols-3">
           {AUTH_METHODS.map((m) => {
@@ -258,7 +263,7 @@ export function KubernetesForm(
             );
           })}
         </div>
-        {errors["auth"] && <p class="text-sm text-danger">{errors["auth"]}</p>}
+        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
@@ -281,9 +286,11 @@ export function KubernetesForm(
           block={getAuthBlock(spec, "cert")}
           errors={errors}
           onPatchClientCert={(patch) =>
-            patchSecretRef("cert", "clientCert", patch)}
+            patchSecretRef("cert", "clientCert", patch)
+          }
           onPatchClientKey={(patch) =>
-            patchSecretRef("cert", "clientKey", patch)}
+            patchSecretRef("cert", "clientKey", patch)
+          }
         />
       )}
     </div>
@@ -298,9 +305,11 @@ interface ServiceAccountAuthFieldsProps {
   onPatch: (patch: Record<string, unknown>) => void;
 }
 
-function ServiceAccountAuthFields(
-  { block, errors, onPatch }: ServiceAccountAuthFieldsProps,
-) {
+function ServiceAccountAuthFields({
+  block,
+  errors,
+  onPatch,
+}: ServiceAccountAuthFieldsProps) {
   const name = (block.name as string) ?? "";
   const audiences = (block.audiences as string[] | undefined) ?? [];
   const audiencesStr = audiences.join(", ");
@@ -314,7 +323,10 @@ function ServiceAccountAuthFields(
       onPatch(rest);
     } else {
       onPatch({
-        audiences: trimmed.split(",").map((s) => s.trim()).filter(Boolean),
+        audiences: trimmed
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
       });
     }
   }
@@ -329,7 +341,8 @@ function ServiceAccountAuthFields(
           required
           value={name}
           onInput={(e) =>
-            onPatch({ name: (e.target as HTMLInputElement).value })}
+            onPatch({ name: (e.target as HTMLInputElement).value })
+          }
           placeholder="eso-reader"
           description="The SA in the source namespace whose token ESO presents to the apiserver."
           error={errors["auth.serviceAccount.name"]}
@@ -339,7 +352,8 @@ function ServiceAccountAuthFields(
           label="Token audiences (optional)"
           value={audiencesStr}
           onInput={(e) =>
-            handleAudiencesInput((e.target as HTMLInputElement).value)}
+            handleAudiencesInput((e.target as HTMLInputElement).value)
+          }
           placeholder="https://kubernetes.default.svc"
           description="Comma-separated list. Leave blank for the default cluster audience."
           error={errors["auth.serviceAccount.audiences"]}
@@ -369,7 +383,8 @@ function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
           required
           value={ref.name ?? ""}
           onInput={(e) =>
-            onPatchRef({ name: (e.target as HTMLInputElement).value })}
+            onPatchRef({ name: (e.target as HTMLInputElement).value })
+          }
           placeholder="k8s-token"
           error={errors["auth.token.bearerToken.name"]}
         />
@@ -379,7 +394,8 @@ function TokenAuthFields({ block, errors, onPatchRef }: TokenAuthFieldsProps) {
           required
           value={ref.key ?? ""}
           onInput={(e) =>
-            onPatchRef({ key: (e.target as HTMLInputElement).value })}
+            onPatchRef({ key: (e.target as HTMLInputElement).value })
+          }
           placeholder="token"
           error={errors["auth.token.bearerToken.key"]}
         />
@@ -395,9 +411,12 @@ interface CertAuthFieldsProps {
   onPatchClientKey: (patch: SecretRef) => void;
 }
 
-function CertAuthFields(
-  { block, errors, onPatchClientCert, onPatchClientKey }: CertAuthFieldsProps,
-) {
+function CertAuthFields({
+  block,
+  errors,
+  onPatchClientCert,
+  onPatchClientKey,
+}: CertAuthFieldsProps) {
   const clientCert = (block.clientCert as SecretRef) ?? {};
   const clientKey = (block.clientKey as SecretRef) ?? {};
   return (
@@ -415,7 +434,8 @@ function CertAuthFields(
             onInput={(e) =>
               onPatchClientCert({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="k8s-client-cert"
             error={errors["auth.cert.clientCert.name"]}
           />
@@ -425,7 +445,8 @@ function CertAuthFields(
             required
             value={clientCert.key ?? ""}
             onInput={(e) =>
-              onPatchClientCert({ key: (e.target as HTMLInputElement).value })}
+              onPatchClientCert({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="tls.crt"
             error={errors["auth.cert.clientCert.key"]}
           />
@@ -440,7 +461,8 @@ function CertAuthFields(
             required
             value={clientKey.name ?? ""}
             onInput={(e) =>
-              onPatchClientKey({ name: (e.target as HTMLInputElement).value })}
+              onPatchClientKey({ name: (e.target as HTMLInputElement).value })
+            }
             placeholder="k8s-client-key"
             error={errors["auth.cert.clientKey.name"]}
           />
@@ -450,7 +472,8 @@ function CertAuthFields(
             required
             value={clientKey.key ?? ""}
             onInput={(e) =>
-              onPatchClientKey({ key: (e.target as HTMLInputElement).value })}
+              onPatchClientKey({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="tls.key"
             error={errors["auth.cert.clientKey.key"]}
           />

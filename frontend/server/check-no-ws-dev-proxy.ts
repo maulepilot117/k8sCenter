@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -9,12 +9,23 @@ import { fileURLToPath } from "node:url";
  * allowlist and traversal guard in dev) was reintroducible precisely
  * because nothing detected it — this is that detector.
  *
- * Scope note (U5's second scope correction): this guard scans only the
- * Astro/Bun dev configuration (astro.config.mjs and this directory's own
- * dev-plugin.ts) — it must NOT flag frontend/vite.config.ts, which is the
- * Fresh tree's dev proxy and is still required there until U12 deletes
- * that tree. Widen FILES_TO_SCAN to the whole frontend once the Fresh tree
- * — and its vite.config.ts — is gone.
+ * Scope: the dev-configuration surface, derived rather than listed. That is
+ * every root-level `astro.config.*` / `vite.config.*`, plus every
+ * `*-plugin.ts` in this directory -- because `astro.config.mjs` loads a plugin
+ * array, so a `/ws` proxy added in a new sibling plugin module is as much a
+ * dev/prod divergence as one written into the config itself, and a hardcoded
+ * two-entry list would not see it.
+ *
+ * Deriving the list rather than naming it is the point. The list was
+ * `["../astro.config.mjs", "./dev-plugin.ts"]` with a note saying to widen it
+ * once the Fresh tree's own vite.config.ts was deleted; the tree was deleted
+ * and the list was not widened, because nothing failed when it wasn't.
+ * `filesToScan` is exported and asserted so a silently empty or mis-globbed
+ * result fails loudly instead of passing vacuously.
+ *
+ * The scan deliberately stops short of the whole frontend: `server/ws-proxy.ts`
+ * and `server/ws-allowlist.ts` contain `/ws` literals precisely because they
+ * are the sanctioned path, and flagging them would make the guard useless.
  */
 
 // Matches a "/ws" (or "/ws/") proxy key anywhere in the scanned config.
@@ -37,14 +48,54 @@ export function sourceHasWsProxy(source: string): boolean {
   return WS_PROXY_KEY_PATTERN.test(source) || WS_REWRITE_PATTERN.test(source);
 }
 
-const FILES_TO_SCAN = ["../astro.config.mjs", "./dev-plugin.ts"];
+const HERE = dirname(fileURLToPath(import.meta.url));
+const FRONTEND_ROOT = resolve(HERE, "..");
+
+/** A root-level build/dev config: `astro.config.mjs`, `vite.config.ts`, ... */
+const ROOT_CONFIG_PATTERN = /^(astro|vite)\.config\.(m?[jt]s|cjs)$/;
+/** A dev-server plugin module that `astro.config.mjs` can load. */
+const PLUGIN_PATTERN = /-plugin\.tsx?$/;
+
+/**
+ * The dev-configuration surface, resolved from disk. Exported so a test can
+ * assert what it actually contains -- an empty or mis-globbed list would
+ * otherwise report success having scanned nothing.
+ */
+export function filesToScan(
+  frontendRoot: string = FRONTEND_ROOT,
+  serverDir: string = HERE,
+): string[] {
+  const found: string[] = [];
+  if (existsSync(frontendRoot)) {
+    for (const entry of readdirSync(frontendRoot)) {
+      if (ROOT_CONFIG_PATTERN.test(entry))
+        found.push(join(frontendRoot, entry));
+    }
+  }
+  if (existsSync(serverDir)) {
+    for (const entry of readdirSync(serverDir)) {
+      if (PLUGIN_PATTERN.test(entry) && !entry.endsWith("_test.ts")) {
+        found.push(join(serverDir, entry));
+      }
+    }
+  }
+  return found.sort();
+}
 
 function main(): void {
-  const here = dirname(fileURLToPath(import.meta.url));
+  const targets = filesToScan();
   const offenders: string[] = [];
 
-  for (const rel of FILES_TO_SCAN) {
-    const abs = join(here, rel);
+  // A scan that found nothing to scan is a broken guard, not a passing one.
+  if (targets.length === 0) {
+    console.error(
+      "R18 guard: found no dev-configuration files to scan. The guard cannot " +
+        "pass vacuously -- check FRONTEND_ROOT and the config/plugin patterns.",
+    );
+    process.exit(1);
+  }
+
+  for (const abs of targets) {
     const source = readFileSync(abs, "utf-8");
     if (sourceHasWsProxy(source)) {
       offenders.push(abs);

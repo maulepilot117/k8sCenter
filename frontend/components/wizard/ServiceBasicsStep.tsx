@@ -42,7 +42,10 @@ export function ServiceBasicsStep({
   };
 
   const removeLabel = (index: number) => {
-    onChange("labels", labels.filter((_, i) => i !== index));
+    onChange(
+      "labels",
+      labels.filter((_, i) => i !== index),
+    );
   };
 
   return (
@@ -68,7 +71,8 @@ export function ServiceBasicsStep({
         label="Service Type"
         value={type}
         onChange={(e) =>
-          onChange("type", (e.target as HTMLSelectElement).value)}
+          onChange("type", (e.target as HTMLSelectElement).value)
+        }
         options={SERVICE_TYPE_OPTIONS}
         error={errors.type}
       />

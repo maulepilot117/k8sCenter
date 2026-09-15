@@ -620,10 +620,12 @@ export function getActiveDomain(path: string): string | null {
 
   for (const s of _ALL_SECTIONS) {
     if (s.href === "/" && path === "/") return s.id;
-    if (s.href !== "/" && path.startsWith("/" + s.id)) return s.id;
+    if (s.href !== "/" && path.startsWith(`/${s.id}`)) return s.id;
     if (
       s.groups?.some((g) =>
-        g.items.some((it) => path === it.href || path.startsWith(it.href + "/"))
+        g.items.some(
+          (it) => path === it.href || path.startsWith(`${it.href}/`),
+        ),
       )
     ) {
       return s.id;

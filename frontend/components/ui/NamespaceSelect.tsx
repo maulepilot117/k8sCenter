@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
-import { apiPost } from "@/lib/api.ts";
 import { Button } from "@/components/ui/Button.tsx";
+import { apiPost } from "@/lib/api.ts";
 import { NS_NAME_REGEX } from "@/lib/wizard-constants.ts";
 
 interface NamespaceSelectProps {
@@ -12,10 +12,13 @@ interface NamespaceSelectProps {
   onNamespaceCreated?: (ns: string) => void;
 }
 
-export function NamespaceSelect(
-  { value, namespaces, error, onChange, onNamespaceCreated }:
-    NamespaceSelectProps,
-) {
+export function NamespaceSelect({
+  value,
+  namespaces,
+  error,
+  onChange,
+  onNamespaceCreated,
+}: NamespaceSelectProps) {
   const showCreate = useSignal(false);
   const newName = useSignal("");
   const creating = useSignal(false);
@@ -60,9 +63,8 @@ export function NamespaceSelect(
       onChange(name);
       onNamespaceCreated?.(name);
     } catch (err: unknown) {
-      createError.value = err instanceof Error
-        ? err.message
-        : "Failed to create namespace";
+      createError.value =
+        err instanceof Error ? err.message : "Failed to create namespace";
     } finally {
       creating.value = false;
     }
@@ -82,7 +84,11 @@ export function NamespaceSelect(
             : "border-border-primary focus:border-brand focus:ring-brand/50 border-border-primary bg-surface text-text-primary"
         }`}
       >
-        {namespaces.map((ns) => <option key={ns} value={ns}>{ns}</option>)}
+        {namespaces.map((ns) => (
+          <option key={ns} value={ns}>
+            {ns}
+          </option>
+        ))}
         <option value="__create__">+ Create New Namespace</option>
       </select>
       {error && <p class="text-sm text-danger">{error}</p>}
@@ -94,7 +100,8 @@ export function NamespaceSelect(
               type="text"
               value={newName.value}
               onInput={(e) =>
-                newName.value = (e.target as HTMLInputElement).value}
+                (newName.value = (e.target as HTMLInputElement).value)
+              }
               placeholder="new-namespace"
               maxLength={63}
               class="flex-1 rounded-md border border-border-primary bg-surface px-3 py-1.5 text-sm text-text-primary"
@@ -126,9 +133,7 @@ export function NamespaceSelect(
             </button>
           </div>
           {createError.value && (
-            <p class="mt-1 text-sm text-danger">
-              {createError.value}
-            </p>
+            <p class="mt-1 text-sm text-danger">{createError.value}</p>
           )}
         </div>
       )}

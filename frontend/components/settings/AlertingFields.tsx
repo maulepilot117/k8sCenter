@@ -15,19 +15,17 @@ interface AlertingFieldsProps {
   onDirty?: () => void;
 }
 
-export function AlertingFields(
-  {
-    alertEnabled,
-    smtpHost,
-    smtpPort,
-    smtpUser,
-    smtpPass,
-    smtpFrom,
-    alertRate,
-    alertRecipients,
-    onDirty,
-  }: AlertingFieldsProps,
-) {
+export function AlertingFields({
+  alertEnabled,
+  smtpHost,
+  smtpPort,
+  smtpUser,
+  smtpPass,
+  smtpFrom,
+  alertRate,
+  alertRecipients,
+  onDirty,
+}: AlertingFieldsProps) {
   return (
     <>
       <div class="mb-4 flex items-center gap-3">
@@ -62,7 +60,7 @@ export function AlertingFields(
           <TextField
             value={String(smtpPort.value)}
             onInput={(v) => {
-              smtpPort.value = parseInt(v) || 587;
+              smtpPort.value = parseInt(v, 10) || 587;
               onDirty?.();
             }}
           />
@@ -102,7 +100,7 @@ export function AlertingFields(
             <TextField
               value={String(alertRate.value)}
               onInput={(v) => {
-                alertRate.value = parseInt(v) || 5;
+                alertRate.value = parseInt(v, 10) || 5;
                 onDirty?.();
               }}
             />
@@ -110,10 +108,7 @@ export function AlertingFields(
         )}
         {alertRecipients && (
           <div class="sm:col-span-2">
-            <Field
-              label="Recipients"
-              hint="Comma-separated email addresses"
-            >
+            <Field label="Recipients" hint="Comma-separated email addresses">
               <TextField
                 value={alertRecipients.value}
                 onInput={(v) => {

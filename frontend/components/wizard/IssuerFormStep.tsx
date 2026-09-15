@@ -1,6 +1,6 @@
-import { LE_PROD_ACME, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
+import { LE_PROD_ACME, LE_STAGING_ACME } from "@/lib/wizard-constants.ts";
 import type { IssuerWizardForm } from "@/src/islands/IssuerWizard.tsx";
 
 interface IssuerFormStepProps {
@@ -29,7 +29,8 @@ export function IssuerFormStep({
           required
           value={form.name}
           onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)}
+            onUpdate("name", (e.target as HTMLInputElement).value)
+          }
           placeholder={scope === "cluster" ? "letsencrypt-prod" : "my-issuer"}
           error={errors.name}
         />
@@ -84,7 +85,8 @@ export function IssuerFormStep({
               required
               value={form.acme.server}
               onInput={(e) =>
-                onUpdateAcme("server", (e.target as HTMLInputElement).value)}
+                onUpdateAcme("server", (e.target as HTMLInputElement).value)
+              }
               placeholder="https://acme-v02.api.letsencrypt.org/directory"
               description="Must be an HTTPS URL. Private and loopback addresses are rejected."
               error={errors["acme.server"]}
@@ -99,7 +101,8 @@ export function IssuerFormStep({
               type="email"
               value={form.acme.email}
               onInput={(e) =>
-                onUpdateAcme("email", (e.target as HTMLInputElement).value)}
+                onUpdateAcme("email", (e.target as HTMLInputElement).value)
+              }
               placeholder="admin@example.com"
               error={errors["acme.email"]}
             />
@@ -112,7 +115,8 @@ export function IssuerFormStep({
                 onUpdateAcme(
                   "privateKeySecretRefName",
                   (e.target as HTMLInputElement).value,
-                )}
+                )
+              }
               placeholder="letsencrypt-account"
               description="Name of the Secret cert-manager will create to hold the account key."
               error={errors["acme.privateKeySecretRefName"]}
@@ -127,7 +131,8 @@ export function IssuerFormStep({
               onUpdateAcme(
                 "ingressClassName",
                 (e.target as HTMLInputElement).value,
-              )}
+              )
+            }
             placeholder="nginx"
             description="Ingress class used for HTTP01 challenges. Leave blank to use the default class."
           />

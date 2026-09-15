@@ -73,14 +73,16 @@ export function Tabs({ tabs, activeTab, onTabChange }: TabsProps) {
               class={`cursor-pointer px-4 py-2.5 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                 isActive ? "border-b-2" : ""
               }`}
-              style={isActive
-                ? {
-                  borderColor: "var(--accent)",
-                  color: "var(--accent)",
-                }
-                : {
-                  color: "var(--text-secondary)",
-                }}
+              style={
+                isActive
+                  ? {
+                      borderColor: "var(--accent)",
+                      color: "var(--accent)",
+                    }
+                  : {
+                      color: "var(--text-secondary)",
+                    }
+              }
             >
               {tab.label}
             </button>
