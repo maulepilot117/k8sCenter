@@ -80,6 +80,10 @@ e2e/playwright/.auth/
 e2e/playwright-report/
 e2e/blob-report/
 e2e/test-results/
+# KTD14 spot-check output: ~150 MB of screenshots per run (see
+# e2e/ktd14-spotcheck.mjs). The numbers get recorded in the U12 plan entry;
+# the images are scratch.
+e2e/ktd14-out/
 
 # Theme generator runtime cache
 tools/theme-gen/deno.lock
