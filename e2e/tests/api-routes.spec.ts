@@ -93,7 +93,17 @@ function walk(dir: string, out: string[] = []): string[] {
       // route-level fetch now lives, and it is plain TypeScript. Omitting the
       // extension here would have quietly shrunk this guard's coverage to the
       // islands alone.
-    } else if (/\.(ts|tsx|js|jsx|astro)$/.test(entry)) {
+      // Test files are excluded: a fixture string is not evidence that the
+      // frontend calls that path. server/rewrites_test.ts, for instance,
+      // asserts on the literal "/v1/extensions/resources/g/r/_/n" -- a
+      // synthetic input to the rewrite function, which the backend has no
+      // reason to mount and which this guard would otherwise report as a
+      // route mismatch forever.
+    } else if (
+      /\.(ts|tsx|js|jsx|astro)$/.test(entry) &&
+      !/_test\.(ts|tsx)$/.test(entry) &&
+      !/\.spec\.(ts|tsx)$/.test(entry)
+    ) {
       out.push(p);
     }
   }
