@@ -205,8 +205,8 @@ test.describe("Route inventory", () => {
     expect(
       routes.length,
       `no .astro pages found under ${PAGES_ROOT} -- PAGES_ROOT is stale`,
-    ).toBeGreaterThan(150);
-    expect(rendering.length).toBeGreaterThan(150);
+    ).toBeGreaterThan(185);
+    expect(rendering.length).toBeGreaterThan(175);
     // Six today (U8's inventory). A floor rather than an equality so adding
     // a seventh redirect is not a test failure; losing one is.
     expect(redirects.length).toBeGreaterThanOrEqual(6);
@@ -315,5 +315,90 @@ test.describe("Route inventory", () => {
     const res = await request.get(underscored, { maxRedirects: 0 });
     expect(res.status()).toBe(200);
     expect(res.headers()["content-type"]).toContain("text/html");
+  });
+});
+
+/**
+ * Port completeness, checkable only while both trees exist.
+ *
+ * The inventory above is derived from the Astro tree, so it cannot notice a
+ * route the port never created -- a floor of "more than 150" against 189
+ * pages tolerated 39 silently dropped routes. The Fresh tree is still on
+ * disk until U12, which makes this the one window in which completeness is a
+ * mechanical fact rather than an assumption. When U12 deletes frontend/routes
+ * this test stops finding a source tree and should be deleted with it.
+ */
+test.describe("port completeness", () => {
+  const FRESH_ROOT = path.resolve(__dirname, "../../frontend/routes");
+
+  /** Fresh route file -> the URL it served, using Fresh's own conventions. */
+  function freshRouteUrls(): string[] {
+    const urls: string[] = [];
+    const walk = (dir: string) => {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry);
+        if (fs.statSync(full).isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.tsx$/.test(entry)) continue;
+        if (entry.startsWith("_")) continue; // _app, _error, _layout
+        const relPath = path
+          .relative(FRESH_ROOT, full)
+          .split(path.sep)
+          .join("/");
+        // api/ and ws/ are server handlers, not pages.
+        if (relPath.startsWith("api/") || relPath.startsWith("ws/")) continue;
+        urls.push(relPath.replace(/\.tsx$/, "").replace(/\/index$/, ""));
+      }
+    };
+    walk(FRESH_ROOT);
+    return urls;
+  }
+
+  test("every Fresh route has an Astro counterpart", () => {
+    const fresh = freshRouteUrls();
+    test.skip(
+      fresh.length === 0,
+      "frontend/routes is gone -- U12 landed; delete this describe block",
+    );
+    expect(fresh.length).toBeGreaterThan(150);
+
+    const ported = new Set(
+      routes.map((r) =>
+        path
+          .relative(PAGES_ROOT, r.file)
+          .split(path.sep)
+          .join("/")
+          .replace(/\.astro$/, "")
+          .replace(/\/index$/, ""),
+      ),
+    );
+
+    // Deliberate remaps, by name. Astro reserves "_"-prefixed paths under
+    // src/pages, so KTD11's cluster-scoped extension route is served at
+    // "cluster-scoped/[name]" and frontend/server/rewrites.ts maps the
+    // operator-facing "_" URL onto it. The URL an operator types is
+    // unchanged, which is what R19 requires; only the file name moved.
+    // An allowlist and not a loosened comparison: anything else that stops
+    // matching is a dropped route and must fail.
+    const DELIBERATE_REMAPS = new Set([
+      "extensions/[group]/[resource]/_/[name]",
+    ]);
+
+    const missing = fresh
+      .filter((f) => !ported.has(f) && !DELIBERATE_REMAPS.has(f))
+      .sort();
+    expect(
+      missing,
+      "these Fresh routes have no Astro page -- the port dropped them: " +
+        missing.join(", "),
+    ).toEqual([]);
   });
 });

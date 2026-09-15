@@ -3,6 +3,7 @@ import {
   decodeBearerSubprotocol,
   encodeBearerSubprotocol,
   findBearerInSubprotocols,
+  isHeaderSafeToken,
   parseSubprotocolHeader,
   selectWsSubprotocol,
   WS_AUTH_BEARER_PROTOCOL_PREFIX,
@@ -107,4 +108,52 @@ test("selectWsSubprotocol never selects the credential-bearing value, even alone
 test("selectWsSubprotocol selects nothing when the sentinel wasn't offered", () => {
   expect(selectWsSubprotocol(new Set(["some-other-protocol"]))).toBe(false);
   expect(selectWsSubprotocol(new Set())).toBe(false);
+});
+
+// --- header-injection defence (review finding #3) ---
+//
+// The decoded credential is attacker-chosen: anyone who can reach the exec
+// endpoint picks the bytes, authenticated or not, and they end up in
+// `Bearer ${token}` on the bridge's outbound upgrade. A CR or LF there splits
+// that header; a byte the client library refuses instead throws from inside
+// the server's 'upgrade' listener, which is an uncaughtException.
+
+test("a decoded credential carrying CRLF is refused", () => {
+  const hostile = encodeBearerSubprotocol("a\r\nX-Injected: 1");
+  expect(decodeBearerSubprotocol(hostile)).toBeUndefined();
+  expect(
+    findBearerInSubprotocols(`${hostile}, ${WS_AUTH_SENTINEL_PROTOCOL}`),
+  ).toBeUndefined();
+});
+
+for (const [label, bad] of [
+  ["bare CR", "a\rb"],
+  ["bare LF", "a\nb"],
+  ["NUL", "a\u0000b"],
+  ["space", "a b"],
+  ["tab", "a\tb"],
+  ["DEL", "a\u007fb"],
+  ["non-Latin-1", "a\u00e9b"],
+] as const) {
+  test(`a decoded credential containing ${label} is refused`, () => {
+    expect(
+      decodeBearerSubprotocol(encodeBearerSubprotocol(bad)),
+    ).toBeUndefined();
+  });
+}
+
+test("a realistic JWT still round-trips", () => {
+  const jwt =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+    "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFkbWluIn0." +
+    "-_9RmTfSg7mcJQ0lFhbYYvTBcHZMxK8VpQ2n4rYd3Ws";
+  expect(decodeBearerSubprotocol(encodeBearerSubprotocol(jwt))).toBe(jwt);
+});
+
+test("isHeaderSafeToken accepts visible ASCII and nothing else", () => {
+  let visible = "";
+  for (let c = 0x21; c <= 0x7e; c++) visible += String.fromCharCode(c);
+  expect(isHeaderSafeToken(visible)).toBe(true);
+  expect(isHeaderSafeToken("")).toBe(false);
+  expect(isHeaderSafeToken("ok\u0080")).toBe(false);
 });

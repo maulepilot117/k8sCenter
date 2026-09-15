@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import NamespaceTopology from "@/islands/NamespaceTopology.tsx";
+import NamespaceTopology from "@/src/islands/NamespaceTopology.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 export default function ESOChainPage() {

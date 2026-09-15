@@ -103,6 +103,16 @@ done < <(grep -rhE '^\s*(-\s+)?uses:' "$WORKFLOW_DIR")
 
 failures=$((unpinned + too_new + unknown))
 
+# A supply-chain gate that verified nothing must not report success. A renamed
+# workflow directory, or a grep that matched no `uses:` line, would otherwise
+# print "passed: 0 distinct action pins" and exit 0 -- forever, silently.
+if [ "$failures" -eq 0 ] && [ "$checked" -eq 0 ] && [ "$unpinned" -eq 0 ]; then
+  echo "ERROR: no action references found under $WORKFLOW_DIR." >&2
+  echo "  This check verified nothing. Either the path is wrong or the" >&2
+  echo "  workflows moved; a gate that scans an empty set is not a pass." >&2
+  exit 1
+fi
+
 if [ "$failures" -gt 0 ]; then
   echo
   echo "Action pin check FAILED: ${unpinned} unpinned, ${too_new} inside the" \

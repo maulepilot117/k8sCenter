@@ -1,7 +1,6 @@
 import { useEffect } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
-import YamlEditor from "@/islands/YamlEditor.tsx";
 import type { TemplateOnlyProvider } from "@/lib/eso-types.ts";
 import {
   ESO_YAML_TEMPLATES,
@@ -9,6 +8,7 @@ import {
 } from "@/lib/eso-yaml-templates.ts";
 import { singleSecretStoreHref } from "@/lib/secretstore-template-nav.ts";
 import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
+import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 interface Props {

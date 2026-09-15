@@ -1,7 +1,8 @@
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type { Signal } from "@preact/signals";
-import type { FormState, PresetKey } from "@/islands/NamespaceLimitsWizard.tsx";
-import { PRESETS } from "@/islands/NamespaceLimitsWizard.tsx";
+import type { FormState } from "@/islands/NamespaceLimitsWizard.tsx";
+import type { PresetKey } from "@/lib/namespace-presets.ts";
+import { PRESETS } from "@/lib/namespace-presets.ts";
 
 interface NamespacePresetStepProps {
   form: FormState;

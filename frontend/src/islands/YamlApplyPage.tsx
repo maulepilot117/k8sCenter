@@ -3,8 +3,8 @@ import type * as preact from "preact";
 import { useCallback, useEffect } from "preact/hooks";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner.tsx";
-import YamlEditor from "@/islands/YamlEditor.tsx";
 import { type ApplyResponse, useYamlApply } from "@/lib/yaml-apply.ts";
+import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const PLACEHOLDER_YAML = `# Paste or type your Kubernetes YAML here.

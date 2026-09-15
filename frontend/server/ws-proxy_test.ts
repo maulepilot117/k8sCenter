@@ -12,6 +12,7 @@ import {
   HANDSHAKE_TIMEOUT_MS,
   handleWsHttpRequest,
   IDLE_TIMEOUT_MS,
+  KEEPALIVE_PING_MS,
   MAX_QUEUE_BYTES,
   MAX_QUEUE_MESSAGES,
 } from "./ws-proxy.ts";
@@ -412,24 +413,43 @@ test("a backend that never completes the handshake closes the connection once th
 
 // --- idle timeout ---
 
-test("an idle established connection closes once the idle timeout elapses", async () => {
+test("a connection whose peer stops answering is reaped at the idle bound", async () => {
+  // This replaces an earlier test that asserted a live-but-silent connection
+  // closes at the bound. That was the defect, not the contract: the backend
+  // keeps every channel alive with ping frames and sends no periodic data, so
+  // "silent" described healthy resource watches, log tails and terminals, and
+  // the bridge dropped them on a 60-second loop. "Idle" now means the peer
+  // stopped answering, which is what the bound was added to catch.
+  //
+  // A raw socket is the peer that never answers: it completes the handshake
+  // and then ignores every ping frame the bridge sends.
   const backend = await startStubBackend();
   cleanups.push(backend.close);
   const { server, port } = await startProxy(backend.port, {
-    idleTimeoutMs: 150,
+    idleTimeoutMs: 300,
   });
   cleanups.push(() => server.close());
 
-  const client = new WebSocket(`ws://127.0.0.1:${port}/ws/v1/ws/resources`);
-  cleanups.push(() => client.close());
-  await new Promise<void>((res) =>
-    client.addEventListener("open", () => res()),
+  const { socket, statusLine } = await rawUpgradeRequest(
+    port,
+    "/ws/v1/ws/resources",
   );
+  cleanups.push(() => socket.destroy());
+  expect(statusLine).toContain("101");
 
-  const ev = await new Promise<CloseEvent>((res) => {
-    client.addEventListener("close", (e) => res(e));
+  const closedByServer = await new Promise<boolean>((res) => {
+    const timer = setTimeout(() => res(false), 3_000);
+    socket.on("close", () => {
+      clearTimeout(timer);
+      res(true);
+    });
+    socket.on("end", () => {
+      clearTimeout(timer);
+      res(true);
+    });
   });
-  expect(ev.code).toBe(1000);
+
+  expect(closedByServer).toBe(true);
 });
 
 // --- exec Bearer header forwarding ---
@@ -707,4 +727,97 @@ test("ownUnmatchedPaths defaults on, so production still rejects a non-/ws/ upgr
   const { statusLine } = await rawUpgradeRequest(port, "/anything-else");
   expect(statusLine).toContain("404");
   expect(backend.upgradeAttempts).toBe(0);
+});
+
+// --- liveness, not chattiness (review finding #1) ---
+//
+// The suite already asserts that a silent connection DOES close at the idle
+// bound. Nothing asserted the invariant that actually matters in production:
+// a healthy connection with no application traffic must SURVIVE. The backend
+// keeps every channel alive with a ping every 54s and sends no periodic data,
+// so counting only data frames force-disconnected every quiet resource watch,
+// log tail and pod terminal on a 60-second loop. The Fresh bridge had no idle
+// timeout at all, so that was a regression against the stack being replaced.
+
+test("a healthy but silent connection survives well past the idle bound", async () => {
+  const backend = await startStubBackend();
+  cleanups.push(backend.close);
+  // Idle bound far below the test's lifetime; the bridge's own keepalive ping
+  // is what has to keep resetting it. A browser (and `ws`) answers a ping
+  // frame automatically, so no application traffic is involved.
+  const { server, port } = await startProxy(backend.port, {
+    idleTimeoutMs: 300,
+  });
+  cleanups.push(() => server.close());
+
+  const client = new WebSocket(`ws://127.0.0.1:${port}/ws/v1/ws/resources`);
+  cleanups.push(() => client.close());
+  let closeCode: number | null = null;
+  client.addEventListener("close", (ev) => {
+    closeCode = (ev as CloseEvent).code;
+  });
+  await new Promise<void>((res) =>
+    client.addEventListener("open", () => res()),
+  );
+
+  // Drive the bridge's ping loop by hand at a cadence inside the bound, the
+  // way KEEPALIVE_PING_MS does in production, and send nothing else.
+  const start = Date.now();
+  while (Date.now() - start < 900) {
+    await new Promise((res) => setTimeout(res, 100));
+    if (closeCode !== null) break;
+  }
+
+  expect(closeCode).toBeNull();
+  expect(client.readyState).toBe(WebSocket.OPEN);
+});
+
+test("the keepalive cadence stays inside the idle bound", () => {
+  // The invariant the test above depends on: if these ever cross, a healthy
+  // connection is reaped before it can prove it is alive.
+  expect(KEEPALIVE_PING_MS).toBeLessThan(IDLE_TIMEOUT_MS);
+});
+
+// --- the 'upgrade' listener must never throw (review finding #3) ---
+
+/** HTTP line terminator, built without escapes so no tooling can mangle it. */
+const CRLF = String.fromCharCode(13, 10);
+
+test("a bridge failure leaves the server serving instead of exiting", async () => {
+  const server = createServer();
+  // A malformed backend URL makes bridgeConnection's WebSocket constructor
+  // throw synchronously, inside the 'upgrade' listener -- where an escaping
+  // throw is an uncaughtException and node's default for that is to exit.
+  attachWsProxy(server, { backendUrl: "not-a-valid-url" });
+  const port = await new Promise<number>((res) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      res(typeof address === "object" && address ? address.port : 0);
+    });
+  });
+  cleanups.push(() => server.close());
+
+  // Fire the upgrade that throws. It gets no HTTP response -- the socket is
+  // destroyed -- so do not wait on one.
+  const doomed = connect(port, "127.0.0.1", () => {
+    doomed.write(
+      [
+        "GET /ws/v1/ws/resources HTTP/1.1",
+        "Host: 127.0.0.1",
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version: 13",
+        "",
+        "",
+      ].join(CRLF),
+    );
+  });
+  doomed.on("error", () => {});
+  cleanups.push(() => doomed.destroy());
+  await new Promise((res) => setTimeout(res, 150));
+
+  // The assertion: the process is still here and the server still answers.
+  const { statusLine } = await rawUpgradeRequest(port, "/ws/v1/ws/nope");
+  expect(statusLine).toContain("404");
 });

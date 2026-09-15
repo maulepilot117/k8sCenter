@@ -30,7 +30,16 @@ export const onRequest = defineMiddleware(async (context, next) => {
   let response: Response;
   try {
     response = await next();
-  } catch {
+  } catch (err) {
+    // Bind and log it. The defects this catch exists for are middleware-
+    // internal, and swallowing the only evidence of them means a 500 in
+    // production leaves no server-side trace at all. Matches the
+    // console.error convention already used in server/api-proxy.ts.
+    console.error(
+      "[middleware] unhandled error rendering",
+      context.url.pathname,
+      err,
+    );
     return context.rewrite("/500");
   }
 

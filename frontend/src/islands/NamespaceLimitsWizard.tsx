@@ -15,54 +15,10 @@ import { initialNamespace } from "@/src/lib/namespace.ts";
 // Shared types & constants — exported for step components
 // ---------------------------------------------------------------------------
 
-export const PRESETS = {
-  small: {
-    label: "Small",
-    description: "For development or small workloads",
-    quota: { cpuHard: "2", memoryHard: "4Gi", podsHard: 10 },
-    limits: {
-      containerDefault: { cpu: "100m", memory: "128Mi" },
-      containerDefaultRequest: { cpu: "50m", memory: "64Mi" },
-      containerMax: { cpu: "1", memory: "2Gi" },
-      containerMin: { cpu: "10m", memory: "8Mi" },
-    },
-  },
-  standard: {
-    label: "Standard",
-    description: "For typical production workloads",
-    quota: { cpuHard: "8", memoryHard: "16Gi", podsHard: 20 },
-    limits: {
-      containerDefault: { cpu: "250m", memory: "256Mi" },
-      containerDefaultRequest: { cpu: "100m", memory: "128Mi" },
-      containerMax: { cpu: "2", memory: "4Gi" },
-      containerMin: { cpu: "10m", memory: "8Mi" },
-    },
-  },
-  large: {
-    label: "Large",
-    description: "For resource-intensive workloads",
-    quota: { cpuHard: "32", memoryHard: "64Gi", podsHard: 100 },
-    limits: {
-      containerDefault: { cpu: "500m", memory: "512Mi" },
-      containerDefaultRequest: { cpu: "250m", memory: "256Mi" },
-      containerMax: { cpu: "4", memory: "8Gi" },
-      containerMin: { cpu: "10m", memory: "8Mi" },
-    },
-  },
-  custom: {
-    label: "Custom",
-    description: "Configure all values manually",
-    quota: { cpuHard: "4", memoryHard: "8Gi", podsHard: 20 },
-    limits: {
-      containerDefault: { cpu: "200m", memory: "256Mi" },
-      containerDefaultRequest: { cpu: "100m", memory: "128Mi" },
-      containerMax: { cpu: "2", memory: "4Gi" },
-      containerMin: { cpu: "10m", memory: "8Mi" },
-    },
-  },
-} as const;
+// PRESETS and PresetKey moved to lib/namespace-presets.ts so the shared
+// preset step can import them without importing this island back.
 
-export type PresetKey = keyof typeof PRESETS;
+import { PRESETS, type PresetKey } from "@/lib/namespace-presets.ts";
 
 export interface ResourcePair {
   cpu: string;

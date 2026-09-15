@@ -1,9 +1,9 @@
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
-import NetworkPolicyWizard from "@/islands/NetworkPolicyWizard.tsx";
 import FlowViewer from "@/src/islands/FlowViewer.tsx";
 import IngressWizard from "@/src/islands/IngressWizard.tsx";
 import NetworkOverview from "@/src/islands/NetworkOverview.tsx";
+import NetworkPolicyWizard from "@/src/islands/NetworkPolicyWizard.tsx";
 import ResourceTable from "@/src/islands/ResourceTable.tsx";
 import ServiceWizard from "@/src/islands/ServiceWizard.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";

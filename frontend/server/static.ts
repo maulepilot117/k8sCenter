@@ -45,6 +45,21 @@ export interface StaticResolution {
 }
 
 /**
+ * Memoised `realpathSync` for the client directory.
+ *
+ * Keyed by the input path so a test that points the handler at a temp
+ * directory is not served another directory's cached answer.
+ */
+const realClientDirCache = new Map<string, string>();
+function realClientDir(dir: string): string {
+  const hit = realClientDirCache.get(dir);
+  if (hit !== undefined) return hit;
+  const resolvedReal = realpathSync(dir);
+  realClientDirCache.set(dir, resolvedReal);
+  return resolvedReal;
+}
+
+/**
  * Pure path-resolution + containment logic (no response I/O), so tests can
  * exercise it directly against a fixture directory.
  */
@@ -95,7 +110,11 @@ export function resolveStaticFile(
   let clientDirReal: string;
   try {
     real = realpathSync(target);
-    clientDirReal = realpathSync(clientDirResolved);
+    // The client directory's real path is fixed for the life of the process,
+    // so it is resolved once and memoised rather than re-walked on every
+    // static request. This sits on the per-navigation hot path: the built
+    // site emits 200-odd hashed chunks and the chrome mounts eight islands.
+    clientDirReal = realClientDir(clientDirResolved);
   } catch {
     return { status: 404 };
   }
@@ -174,7 +193,18 @@ export function createStaticHandler(clientDirAbs: string) {
       return true;
     }
 
-    createReadStream(filePath).pipe(res);
+    // An 'error' listener is not optional here. The status line is already
+    // written, so a read failure after this point (EACCES, EMFILE, a file
+    // unlinked between statSync and open) has nowhere to be reported -- and
+    // an unhandled stream 'error' is an uncaughtException on a non-request
+    // stack, which ends the process for every user. Mirrors the rule this
+    // repo already applies to background goroutines on the backend.
+    const stream = createReadStream(filePath);
+    stream.on("error", (err) => {
+      console.error("[static] read failed after headers were sent:", err);
+      res.destroy();
+    });
+    stream.pipe(res);
     return true;
   };
 }

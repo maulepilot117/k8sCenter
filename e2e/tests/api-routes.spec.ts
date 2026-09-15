@@ -25,12 +25,22 @@ const FRONTEND_ROOT = path.resolve(__dirname, "../../frontend");
 // The `paths.length > 10` assertion below is what fails loudly if this list
 // ever goes stale again.
 const SCAN_DIRS = [
+  // The Astro tree.
   "src/islands",
   "src/lib",
   "src/pages",
   "src/components",
   "src/layouts",
   "server",
+  // The pre-migration tree, until U12 deletes it. This is NOT redundant:
+  // the shipped client graph still reaches it -- 149 files under src/ import
+  // from @/lib/ and @/components/ -- and scanning src/ alone left 38 live
+  // "/v1/" literals unchecked, including /v1/auth/me and /v1/preferences/pins.
+  // Those are exactly the paths this guard exists to catch a rename in.
+  // Duplicates are harmless: results land in a Set.
+  "islands",
+  "lib",
+  "components",
 ];
 
 // Matches pure-literal "/v1/…" paths with no template expressions or params.

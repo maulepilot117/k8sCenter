@@ -192,6 +192,37 @@ function expectNoCredentialInUrl(probe: WsProbe, token: string) {
 }
 
 /**
+ * The same assertion, against a URL the APPLICATION built.
+ *
+ * `expectNoCredentialInUrl` above checks `probe.url`, which `probeWs`
+ * constructs from this file's own literal -- so it restates the test's input
+ * and cannot fail no matter what the app does. That is worth keeping as a
+ * guard on the probe itself, but it is not evidence about the product.
+ *
+ * `page.on("websocket")` observes every socket the page actually opens, so
+ * this one fails if the island ever puts the credential back in the query
+ * string. That is the property the whole subprotocol design exists for.
+ */
+async function expectAppOpensCredentialFreeSockets(
+  page: Page,
+  token: string,
+  open: () => Promise<void>,
+): Promise<string[]> {
+  const urls: string[] = [];
+  page.on("websocket", (ws) => urls.push(ws.url()));
+  await open();
+  for (const url of urls) {
+    expect(url, "the app must not put a credential in a WS URL").not.toContain(
+      "?",
+    );
+    expect(url).not.toContain(token);
+    expect(url).not.toContain("access_token");
+    expect(url).not.toContain(WS_AUTH_BEARER_PROTOCOL_PREFIX);
+  }
+  return urls;
+}
+
+/**
  * The shape a channel takes when the backend does not serve it: the bridge
  * accepts the client handshake immediately (it cannot know yet whether the
  * backend leg will succeed), then tears the socket down when its own
@@ -434,4 +465,43 @@ test.describe("WebSocket channels", () => {
     expectChannelUnavailable(probe, "logs-search");
     expectNoCredentialInUrl(probe, accessToken as string);
   });
+});
+
+/**
+ * The exec credential, as the product actually sends it.
+ *
+ * Everything else in this file drives a probe socket the spec builds itself.
+ * This one drives the real terminal island and watches what the browser
+ * opens, because the credential-in-URL claim is only worth anything when it
+ * is measured on the application's own URL.
+ */
+test("the pod terminal opens a socket with no credential in its URL", async ({
+  page,
+}) => {
+  const accessToken = await page.evaluate(() =>
+    globalThis.localStorage.getItem("kc.accessToken"),
+  );
+  test.skip(!accessToken, "no access token in this session");
+
+  const urls = await expectAppOpensCredentialFreeSockets(
+    page,
+    accessToken as string,
+    async () => {
+      // The pod does not exist in the kind fixture; the island still builds
+      // and opens the socket, which is the part under test.
+      await page.goto(
+        `/workloads/pods/${NAMESPACE}/${POD}?tab=terminal`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await page.waitForTimeout(2_000);
+    },
+  );
+
+  const exec = urls.filter((u) => u.includes("/ws/v1/ws/exec/"));
+  expect(
+    exec.length,
+    "the terminal island did not open an exec socket -- if the tab moved, " +
+      "update this test rather than deleting it: it is the only place the " +
+      "app's own URL is checked",
+  ).toBeGreaterThan(0);
 });

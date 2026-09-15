@@ -29,6 +29,13 @@ export const MAX_QUEUE_MESSAGES = 32;
 export const MAX_QUEUE_BYTES = 256 * 1024;
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
 export const IDLE_TIMEOUT_MS = 60_000;
+/**
+ * How often the bridge pings the browser to prove the connection is alive.
+ *
+ * Comfortably under IDLE_TIMEOUT_MS so a healthy peer always answers before
+ * the idle bound expires, and not so frequent that it is noise.
+ */
+export const KEEPALIVE_PING_MS = 20_000;
 
 const OPEN = 1;
 const CONNECTING = 0;
@@ -184,15 +191,30 @@ export function attachWsProxy(
         : undefined;
 
       wss.handleUpgrade(req, socket, head, (clientWs) => {
-        bridgeConnection(clientWs, check.path, {
-          backendUrl: options.backendUrl ?? getBackendUrl(),
-          authHeader,
-          maxQueueMessages: options.maxQueueMessages ?? MAX_QUEUE_MESSAGES,
-          maxQueueBytes: options.maxQueueBytes ?? MAX_QUEUE_BYTES,
-          handshakeTimeoutMs:
-            options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
-          idleTimeoutMs: options.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
-        });
+        // An 'upgrade' listener runs outside any request-scoped error
+        // handling: a throw here is an uncaughtException, and node's default
+        // for that is to exit. One malformed upgrade would take down the
+        // whole frontend for every user. Everything below this line is
+        // reachable from an unauthenticated request, so it is contained.
+        try {
+          bridgeConnection(clientWs, check.path, {
+            backendUrl: options.backendUrl ?? getBackendUrl(),
+            authHeader,
+            maxQueueMessages: options.maxQueueMessages ?? MAX_QUEUE_MESSAGES,
+            maxQueueBytes: options.maxQueueBytes ?? MAX_QUEUE_BYTES,
+            handshakeTimeoutMs:
+              options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS,
+            idleTimeoutMs: options.idleTimeoutMs ?? IDLE_TIMEOUT_MS,
+          });
+        } catch (err) {
+          console.error("[ws-proxy] failed to bridge upgrade:", err);
+          try {
+            clientWs.close(1011, "bridge failed");
+          } catch {
+            /* the socket may already be unusable; destroying it is enough */
+          }
+          socket.destroy();
+        }
       });
     },
   );
@@ -280,12 +302,17 @@ function bridgeConnection(
   let closed = false;
   let idleTimer: ReturnType<typeof setTimeout>;
   let handshakeTimer: ReturnType<typeof setTimeout> | null = null;
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   const clearTimers = () => {
     clearTimeout(idleTimer);
     if (handshakeTimer) {
       clearTimeout(handshakeTimer);
       handshakeTimer = null;
+    }
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
     }
   };
 
@@ -313,6 +340,21 @@ function bridgeConnection(
     }
   };
 
+  /**
+   * Restart the idle countdown.
+   *
+   * "Idle" has to mean "nobody is there", not "nobody has spoken recently".
+   * The backend keeps every channel alive with a ping control frame every
+   * 54s and sends no periodic data of its own, so counting only data frames
+   * declared a perfectly healthy connection dead at 60s -- and then again
+   * 60s after each reconnect. A quiet resource watch, a log tail on a silent
+   * pod, an open terminal between keystrokes: all of them dropped on a loop.
+   * The Fresh bridge had no idle timeout at all, so this was a regression
+   * against the stack being replaced, not merely a rough edge.
+   *
+   * Control frames now count, on both legs. A genuinely dead peer stops
+   * answering pings too, so the bound still does the job it was added for.
+   */
   const resetIdle = () => {
     clearTimeout(idleTimer);
     idleTimer = setTimeout(
@@ -321,6 +363,34 @@ function bridgeConnection(
     );
   };
   resetIdle();
+
+  // Liveness, not chattiness.
+  //
+  // The backend's own ping frames travel on the backend leg, where the
+  // browser-standard WebSocket API gives no visibility into control frames
+  // at all -- so the bridge cannot observe them and must not depend on
+  // them. Instead it proves liveness itself: ping the browser on a cadence
+  // well inside the idle bound and count the reply. Browsers answer a ping
+  // frame automatically, so a healthy connection resets the timer whether or
+  // not anyone is sending data, and a peer that has vanished stops replying
+  // and is still reaped on schedule.
+  clientWs.on("ping", resetIdle);
+  clientWs.on("pong", resetIdle);
+  // The cadence is derived from the bound, never fixed: a caller that lowers
+  // idleTimeoutMs (the tests do) must still get a ping inside it, or the
+  // keepalive cannot do its job and a healthy socket is reaped anyway.
+  const keepalivePeriod = Math.max(
+    50,
+    Math.min(KEEPALIVE_PING_MS, Math.floor(opts.idleTimeoutMs / 3)),
+  );
+  keepaliveTimer = setInterval(() => {
+    if (closed || clientWs.readyState !== OPEN) return;
+    try {
+      clientWs.ping();
+    } catch {
+      /* a socket mid-teardown will be reaped by the idle bound */
+    }
+  }, keepalivePeriod);
 
   handshakeTimer = setTimeout(() => {
     if (backendSocket.readyState !== OPEN) {

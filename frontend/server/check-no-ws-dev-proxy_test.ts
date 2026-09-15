@@ -53,3 +53,38 @@ test("frontend/vite.config.ts DOES define a /ws proxy -- proving the detector wo
   );
   expect(sourceHasWsProxy(source)).toBe(true);
 });
+
+// --- the shape the previous pattern could not see (review finding #8) ---
+
+test("a /ws entry that is not the first proxy key is still caught", () => {
+  // The old pattern anchored on `proxy: {` then scanned [^}]*, which stops at
+  // the first closing brace -- so /ws behind any sibling entry was invisible.
+  // That is the realistic reintroduction, not the contrived one.
+  const config = [
+    "export default {",
+    "  server: {",
+    "    proxy: {",
+    '      "/api": { target: "http://localhost:8080", changeOrigin: true },',
+    '      "/ws": { target: "ws://localhost:8080", ws: true },',
+    "    },",
+    "  },",
+    "};",
+  ].join(String.fromCharCode(10));
+  expect(sourceHasWsProxy(config)).toBe(true);
+});
+
+test("a trailing-slash /ws/ key is caught", () => {
+  expect(sourceHasWsProxy('proxy: { "/ws/": { ws: true } }')).toBe(true);
+});
+
+test("a single-quoted /ws key is caught", () => {
+  expect(sourceHasWsProxy("proxy: { '/ws': { ws: true } }")).toBe(true);
+});
+
+test("an unrelated config is still clean", () => {
+  expect(
+    sourceHasWsProxy(
+      "export default { integrations: [], vite: { plugins: [] } };",
+    ),
+  ).toBe(false);
+});

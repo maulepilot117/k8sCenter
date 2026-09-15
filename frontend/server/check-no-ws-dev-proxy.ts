@@ -17,7 +17,17 @@ import { fileURLToPath } from "node:url";
  * — and its vite.config.ts — is gone.
  */
 
-const WS_PROXY_KEY_PATTERN = /proxy\s*:\s*\{[^}]*["'`]\/ws["'`]\s*:/s;
+// Matches a "/ws" (or "/ws/") proxy key anywhere in the scanned config.
+//
+// The previous form anchored on `proxy: {` and then scanned `[^}]*`, which
+// cannot cross a preceding entry's closing brace -- so it found the key only
+// when /ws happened to be the FIRST proxy entry, and a realistic
+// `proxy: { "/api": {...}, "/ws": {...} }` sailed through. The guard exists
+// to catch exactly that reintroduction, and it did not. Dropping the prefix
+// requirement costs nothing here: these config files contain no other
+// "/ws"-keyed object, and a false positive is a loud, cheap failure while a
+// false negative silently un-does R18.
+const WS_PROXY_KEY_PATTERN = /["'`]\/ws\/?["'`]\s*:/;
 // Bounded lookahead (not comma-terminated) so this also catches /ws showing
 // up as the rewrite *target* (e.g. `path.replace(/^\/socket/, "/ws")`), not
 // just as the rewritten-from source.

@@ -4,11 +4,11 @@ import { stringify as yamlStringify } from "yaml";
 import { Button } from "@/components/ui/Button.tsx";
 import { KindBadge, MeshBadge } from "@/components/ui/MeshBadges.tsx";
 import { Spinner } from "@/components/ui/Spinner.tsx";
-import YamlEditor from "@/islands/YamlEditor.tsx";
 import { ApiError } from "@/lib/api.ts";
 import { resourceHref } from "@/lib/k8s-links.ts";
 import { meshApi } from "@/lib/mesh-api.ts";
 import type { TrafficRoute } from "@/lib/mesh-types.ts";
+import YamlEditor from "@/src/islands/YamlEditor.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 export default function MeshRouteDetail({ id }: { id: string }) {

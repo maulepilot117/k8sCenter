@@ -4,9 +4,9 @@ import { MonitoringFields } from "@/components/settings/MonitoringFields.tsx";
 import { settingsInputClass } from "@/components/settings/shared.ts";
 import { Button } from "@/components/ui/Button.tsx";
 import { ErrorBanner } from "@/components/ui/ErrorBanner.tsx";
-import { Logo } from "@/components/ui/Logo.tsx";
 import StepRail from "@/components/wizard/StepRail.tsx";
 import { apiPut, setAccessToken } from "@/lib/api.ts";
+import { Logo } from "@/src/components/ui/Logo.tsx";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
 const STEPS = [

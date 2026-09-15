@@ -66,10 +66,31 @@ export function decodeBearerSubprotocol(protocol: string): string | undefined {
   if (!encoded) return undefined;
   try {
     const token = new TextDecoder().decode(base64UrlToBytes(encoded));
-    return token || undefined;
+    if (!token || !isHeaderSafeToken(token)) return undefined;
+    return token;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * True only for a credential that is safe to place in an HTTP header value.
+ *
+ * The bytes here are attacker-supplied: anyone who can reach the exec
+ * endpoint chooses them, authenticated or not. They end up interpolated into
+ * `Bearer ${token}` on the bridge's outbound upgrade, so a CR or LF would
+ * split that header and let the caller append headers of their own to the
+ * request the backend sees. A byte the client library refuses outright is no
+ * better -- it throws from inside the server's `upgrade` listener, where an
+ * uncaught exception takes the whole frontend process down.
+ *
+ * Visible ASCII (0x21-0x7e) admits every real credential this carries -- a
+ * JWT is base64url plus dots -- and excludes CR, LF, NUL, space, DEL and
+ * everything non-Latin-1. Rejecting rather than sanitising is deliberate: a
+ * credential that needed stripping was not a credential we issued.
+ */
+export function isHeaderSafeToken(token: string): boolean {
+  return /^[!-~]+$/.test(token);
 }
 
 /** Splits a raw `Sec-WebSocket-Protocol` header value into trimmed tokens. */
