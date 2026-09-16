@@ -18,9 +18,7 @@ interface Session {
   id: number;
   container: string;
   shell: string;
-  // deno-lint-ignore no-explicit-any
   terminal: any;
-  // deno-lint-ignore no-explicit-any
   fitAddon: any;
   ws: WebSocket | null;
   connected: boolean;

@@ -40,9 +40,7 @@ export interface MonacoEditorProps {
 }
 
 // Monaco types — loaded dynamically, so we use `any` for the instance refs
-// deno-lint-ignore no-explicit-any
 type MonacoEditorInstance = any;
-// deno-lint-ignore no-explicit-any
 type MonacoModule = any;
 
 /**

@@ -113,7 +113,6 @@ export function DeploymentOverview({ resource }: { resource: K8sResource }) {
         <div style={{ marginBottom: "20px" }}>
           <SectionTitle title="Containers" />
           {containers.map((c) => {
-            // deno-lint-ignore no-explicit-any
             const container = c as any;
             const ports = container.ports as
               | { containerPort?: number; protocol?: string }[]
