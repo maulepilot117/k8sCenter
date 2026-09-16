@@ -1,4 +1,13 @@
 import { expect, test } from "bun:test";
+// Importing the widget modules is what registers them, and registration is
+// what gives the invariants below something to check. Without these imports
+// every invariant iterates an empty registry and passes vacuously, so a
+// malformed widget would ship green. Each new widget module belongs here.
+import "@/components/dashboard/widgets/ClusterHealthWidget.tsx";
+import "@/components/dashboard/widgets/CpuTileWidget.tsx";
+import "@/components/dashboard/widgets/MemoryTileWidget.tsx";
+import "@/components/dashboard/widgets/NetworkTileWidget.tsx";
+import "@/components/dashboard/widgets/PodsTileWidget.tsx";
 import {
   allWidgets,
   getWidget,
