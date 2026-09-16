@@ -17,24 +17,23 @@ import type { ClusterHealth } from "@/lib/score-color.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 
-// ─── Wire types (unchanged from original) ────────────────────────────────────
+// ─── Wire types ──────────────────────────────────────────────────────────────
+//
+// These declare only the fields this island actually reads, not the full
+// response bodies. The endpoints return more (cluster info also carries
+// kubernetesVersion and a kubecenter build block; both payloads carry service
+// counts, and trends carries a node series plus its window/step echo) — those
+// are dropped here rather than declared-and-ignored.
 
 interface ClusterInfoData {
   clusterID: string;
-  kubernetesVersion: string;
   platform: string;
   nodeCount: number;
-  kubecenter: {
-    version: string;
-    commit: string;
-    buildDate: string;
-  };
 }
 
 interface DashboardSummary {
   nodes: { total: number; ready: number };
   pods: { total: number; running: number; pending: number; failed: number };
-  services: { total: number };
   alerts: { active: number; critical: number };
   cpu: {
     percentage: number;
@@ -58,9 +57,7 @@ interface DashboardSummary {
 // back the metric-card sparklines. Any series may be empty when Prometheus or
 // kube-state-metrics is unavailable; the cards then render no sparkline.
 interface DashboardTrends {
-  nodes: number[] | null;
   pods: number[] | null;
-  services: number[] | null;
   cpu: number[] | null;
   memory: number[] | null;
   // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
@@ -68,8 +65,6 @@ interface DashboardTrends {
   // whichever time-range tab is active.
   networkRx: number[] | null;
   networkTx: number[] | null;
-  window: string;
-  step: string;
 }
 
 const REFRESH_INTERVAL = 60_000;
@@ -93,7 +88,6 @@ export default function DashboardV2() {
   // shows a window the data hasn't caught up to yet.
   const timeRange = useSignal<TimeRange>("1h");
   const trendsPeriod = useSignal<TimeRange>("1h");
-  const syncedAgo = useSignal<string>("");
   // Cancels the prior in-flight tab-switch trends fetch so a slower earlier
   // response can't land after a newer one and clobber trends.value out of order.
   const tabAbort = useRef<AbortController | null>(null);
@@ -105,7 +99,6 @@ export default function DashboardV2() {
     );
     if (summaryRes.data) {
       summary.value = summaryRes.data;
-      syncedAgo.value = "just now";
     }
   }
 
@@ -289,39 +282,33 @@ export default function DashboardV2() {
   const memDelta = lastDelta(t?.memory);
   const podDelta = lastDelta(t?.pods);
 
-  // Pod donut segments
+  // Pod donut segments.
+  //
+  // The guard is the sum of the three plotted counts, not pods.total. Donut
+  // divides by the summed segment values, so an all-zero set collapses every
+  // conic-gradient stop to `0% 0%` and the last color floods the whole ring —
+  // an empty cluster would draw a solid red donut. Summing the plotted values
+  // also covers a cluster whose pods are all in phases this donut doesn't plot
+  // (Succeeded, Unknown), where pods.total is non-zero but every segment is 0.
+  //
+  // Donut renders value and color only, so no label is passed; segment order
+  // matches the legend rendered alongside it below.
   const podRunning = s?.pods.running ?? 0;
   const podPending = s?.pods.pending ?? 0;
   const podFailed = s?.pods.failed ?? 0;
-  const podTotal = podCount || 1;
   const donutSegments: DonutSegment[] =
-    podTotal > 0
+    podRunning + podPending + podFailed > 0
       ? [
-          {
-            value: podRunning,
-            color: "var(--success)",
-            label: "Running",
-          },
-          {
-            value: podPending,
-            color: "var(--warning)",
-            label: "Pending",
-          },
-          {
-            value: podFailed,
-            color: "var(--error)",
-            label: "Failed",
-          },
+          { value: podRunning, color: "var(--success)" },
+          { value: podPending, color: "var(--warning)" },
+          { value: podFailed, color: "var(--error)" },
         ]
       : [{ value: 1, color: "var(--border-subtle)" }];
 
-  // Synced label
-  const syncedLabel = syncedAgo.value ? `synced ${syncedAgo.value}` : "";
   const subtitleParts = [
     clusterName,
     `${nodeCount} node${nodeCount !== 1 ? "s" : ""}`,
     `${podCount} pods`,
-    ...(syncedLabel ? [syncedLabel] : []),
   ].join(" · ");
 
   return (
