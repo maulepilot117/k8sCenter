@@ -1,13 +1,17 @@
 import { expect, test } from "bun:test";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 // Importing the widget modules is what registers them, and registration is
-// what gives the invariants below something to check. Without these imports
+// what gives the invariants below something to check. Without registration
 // every invariant iterates an empty registry and passes vacuously, so a
-// malformed widget would ship green. Each new widget module belongs here.
-import "@/components/dashboard/widgets/ClusterHealthWidget.tsx";
-import "@/components/dashboard/widgets/CpuTileWidget.tsx";
-import "@/components/dashboard/widgets/MemoryTileWidget.tsx";
-import "@/components/dashboard/widgets/NetworkTileWidget.tsx";
-import "@/components/dashboard/widgets/PodsTileWidget.tsx";
+// malformed widget would ship green.
+//
+// The manifest is the single import list, shared with the production render
+// path so the two cannot register different sets. The drift guard at the
+// bottom of this file checks it against the directory, so adding a widget
+// file without listing it fails here rather than silently shrinking what the
+// invariants cover.
+import "@/components/dashboard/widgets/index.ts";
 import {
   allWidgets,
   getWidget,
@@ -28,10 +32,10 @@ import {
 // the palette renders. Every invariant below exists because breaking it
 // produces a layout that cannot be rendered, stored, or restored.
 //
-// Most invariants iterate the registered set, which is empty until D4/D5
-// register the extracted widgets -- they pass vacuously today and gain teeth
-// then. Each one collects offenders rather than asserting per widget, so a
-// failure names the widget instead of only the assertion that tripped.
+// Most invariants iterate the registered set, which the manifest import above
+// populates with every shipped widget. Each one collects offenders rather than
+// asserting per widget, so a failure names the widget instead of only the
+// assertion that tripped.
 //
 // READ BEFORE ADDING A COUNT ASSERTION: `bun test` shares module state across
 // test files in one run (verified, not assumed), and the registry is
@@ -190,4 +194,42 @@ test("RETIRED_WIDGET_IDS cannot be mutated at runtime", () => {
 
 test("isRetiredWidgetId: a live id is not retired", () => {
   expect(isRetiredWidgetId("cluster-health")).toBe(false);
+});
+
+test("optionalSources is always a subset of sources", () => {
+  // An optional source that is not declared in `sources` is never fetched, so
+  // the widget would render forever against a source nobody requested.
+  const offenders: string[] = [];
+  for (const w of allWidgets()) {
+    for (const k of w.optionalSources ?? []) {
+      if (!w.sources.includes(k)) {
+        offenders.push(`${w.id} marks ${k} optional but does not declare it`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+test("every widget module is listed in the manifest", () => {
+  // The drift guard. Registration is an import side effect, so a widget file
+  // the manifest does not import registers nothing -- and every invariant
+  // above would keep passing while covering one widget fewer than the
+  // codebase contains. That is the vacuous-pass failure this suite exists to
+  // prevent, narrowed to "widgets someone forgot to list".
+  const dir = join(
+    import.meta.dir,
+    "..",
+    "..",
+    "components",
+    "dashboard",
+    "widgets",
+  );
+  const modules = readdirSync(dir).filter(
+    (f) => f.endsWith(".tsx") && !f.endsWith("_test.tsx"),
+  );
+  const manifest = readFileSync(join(dir, "index.ts"), "utf8");
+
+  expect(modules.length).toBeGreaterThan(0);
+  const missing = modules.filter((f) => !manifest.includes(`"./${f}"`));
+  expect(missing).toEqual([]);
 });

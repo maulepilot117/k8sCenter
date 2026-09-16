@@ -4,10 +4,7 @@ import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { WidgetProps } from "@/lib/dashboard/types.ts";
-import type {
-  ClusterInfoData,
-  DashboardSummary,
-} from "@/lib/dashboard/wire-types.ts";
+import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
 
 /**
@@ -19,9 +16,12 @@ import { healthStatusColor } from "@/lib/score-color.ts";
  */
 function ClusterHealth({ mode }: WidgetProps) {
   const s = dashboardData.state<DashboardSummary>("dashboard-summary").data;
-  const info = dashboardData.state<ClusterInfoData>("cluster-info").data;
 
-  const nodeCount = s?.nodes.total ?? info?.nodeCount ?? 0;
+  // The island wrote `s?.nodes.total ?? info?.nodeCount ?? 0`, but that
+  // cluster-info fallback cannot fire here: WidgetHost guarantees the summary
+  // is non-null before render, and `0 ?? x` is `0` under nullish coalescing,
+  // so the second operand is unreachable for every value nodes.total can take.
+  const nodeCount = s?.nodes.total ?? 0;
   const nodesReady = s?.nodes.ready ?? 0;
   // Workloads degraded: approximate from pods failed, as the island did.
   const workloadsDegraded = s?.pods.failed ?? 0;
@@ -91,7 +91,11 @@ registerWidget({
   title: "Cluster Health",
   family: "cluster",
   scopes: ["overview"],
-  sources: ["dashboard-summary", "cluster-info"],
+  // Summary only. Declaring cluster-info gated the card on an endpoint whose
+  // value it never read -- handleClusterInfo 500s whenever the discovery call
+  // is unreachable, while the summary keeps serving from the informer cache,
+  // and the island drew the gauge right through that.
+  sources: ["dashboard-summary"],
   minW: 3,
   minH: 4,
   defaultW: 4,
