@@ -58,7 +58,7 @@ export default function LogViewer({
   const loading = useSignal(true);
   const autoScroll = useSignal(true);
   const preRefs = useRef<(HTMLPreElement | null)[]>([]);
-  // deno-lint-ignore no-explicit-any -- ansi_up has no TypeScript types in npm package
+  // ansi_up ships no TypeScript types in its npm package.
   const ansiUpRef = useRef<any>(null);
 
   // WS refs — tracked separately from signal to avoid storing non-serializable objects in signals
@@ -93,7 +93,6 @@ export default function LogViewer({
       // synthesized a default from the CJS build; Astro's does not. Prefer
       // the named export, keep both old fallbacks for whichever shape a
       // future bundler/version produces.
-      // deno-lint-ignore no-explicit-any -- ansi_up export varies by bundler
       const AnsiUp = (mod as any).AnsiUp ?? (mod as any).default ?? mod;
       const instance = new AnsiUp();
       instance.use_classes = true;
@@ -424,7 +423,7 @@ export default function LogViewer({
         }}
         class="h-[600px] overflow-auto rounded-lg bg-base p-4 font-mono text-xs leading-5 text-text-primary"
         onScroll={() => handleScroll(tabIdx)}
-        // deno-lint-ignore react-no-danger -- ANSI color rendering requires innerHTML; input is escaped by ansi_up
+        // ANSI colour rendering requires innerHTML; input is escaped by ansi_up.
         dangerouslySetInnerHTML={{ __html: renderLogContent(tabIdx) }}
       />
     );

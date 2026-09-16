@@ -109,7 +109,6 @@ export default function YamlPreview({ yaml }: Props) {
           overflowX: "auto",
         }}
         // YAML content is generated from form state, not user input — safe to render
-        // deno-lint-ignore react-no-danger
         dangerouslySetInnerHTML={{ __html: highlighted }}
       />
     </div>

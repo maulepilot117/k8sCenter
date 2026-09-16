@@ -45,8 +45,7 @@ body {
    The generator (tools/theme-gen/main.ts) is the canonical source for both
    web (this CSS) and mobile (mobile/lib/theme/themes.g.dart). Do not edit
    theme colours here — change shared/themes/<id>.json and run
-   `make check-themes` (or `deno run -A tools/theme-gen/main.ts`).
-   SYNC: --bg-base values are duplicated in routes/_app.tsx (inline script). */
+   `make check-themes` (or `bun run tools/theme-gen/main.ts --check`). */
 @import "./themes.generated.css";
 
 /* ── Bridge CSS variables into Tailwind v4 ── */

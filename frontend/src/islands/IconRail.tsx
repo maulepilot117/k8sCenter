@@ -1,4 +1,3 @@
-// deno-lint-ignore-file react-no-danger
 import { useSignal } from "@preact/signals";
 import { useEffect } from "preact/hooks";
 import type { DomainSection } from "@/lib/constants.ts";
