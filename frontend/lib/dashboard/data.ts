@@ -112,7 +112,14 @@ export function createSourceCache(
           s.value = { ...s.value, loading: false };
           return;
         }
-        s.value = { data: null, error: messageOf(err), loading: false };
+        // Keep whatever we last had. A 60s refresh that hits a transient 500
+        // must not discard a working widget: an operator watching a cluster
+        // degrade loses the dashboard at exactly the moment the backend gets
+        // unreliable. The error rides alongside the stale data, and WidgetHost
+        // renders the data with an inline error rather than an error page.
+        // On a first fetch there is nothing to keep, so this is still null and
+        // the widget shows the error on its own.
+        s.value = { data: s.value.data, error: messageOf(err), loading: false };
       })
       .finally(() => {
         inFlight.delete(key);

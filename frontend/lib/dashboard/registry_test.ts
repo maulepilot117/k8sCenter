@@ -154,6 +154,21 @@ test("registerWidget: a duplicate id throws", () => {
   );
 });
 
+test("registerWidget: a definition without normal is rejected", () => {
+  // Enforced at the runtime boundary, not only by the invariant test above.
+  // pickMode returns "normal" for an empty mode list (undefined would be
+  // worse), so a widget lacking it would receive a mode it does not implement.
+  expect(() =>
+    registerWidget(defFixture("fixture-no-normal", { modes: ["compact"] })),
+  ).toThrow('must implement the "normal" display mode');
+  expect(() =>
+    registerWidget(defFixture("fixture-empty-modes", { modes: [] })),
+  ).toThrow('must implement the "normal" display mode');
+  // Rejected means not registered, not registered-then-flagged.
+  expect(getWidget("fixture-no-normal")).toBeUndefined();
+  expect(getWidget("fixture-empty-modes")).toBeUndefined();
+});
+
 test("RETIRED_WIDGET_IDS cannot be mutated at runtime", () => {
   // Retirement is permanent. Note this is a frozen array, not a frozen Set:
   // Object.freeze does not prevent Set.prototype.add, so a Set here would

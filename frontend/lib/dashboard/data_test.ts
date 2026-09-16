@@ -71,6 +71,48 @@ test("state: a failure is a readable error, not a swallowed promise", async () =
   expect(s.error).toBe("boom");
 });
 
+test("state: a refresh failure keeps the last good data alongside the error", async () => {
+  // The dashboard must not go blank because one 60s refresh hit a transient
+  // 500. WidgetHost renders stale data with an inline error; wiping it would
+  // remove the view an operator needs exactly when the backend is unreliable.
+  let attempt = 0;
+  const cache = createSourceCache({
+    "dashboard-summary": () => {
+      attempt++;
+      return attempt === 1
+        ? Promise.resolve("good")
+        : Promise.reject(new Error("boom"));
+    },
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+  expect(cache.state("dashboard-summary").data).toBe("good");
+
+  cache.refresh();
+  await cache.settled();
+
+  const s = cache.state("dashboard-summary");
+  expect(s.data).toBe("good");
+  expect(s.error).toBe("boom");
+  expect(s.loading).toBe(false);
+});
+
+test("state: a first-fetch failure has no data to keep", async () => {
+  // The complement: preserving prior data must not invent any when the very
+  // first attempt fails, or a widget would render an empty shell instead of
+  // the error.
+  const cache = createSourceCache({
+    "dashboard-summary": () => Promise.reject(new Error("boom")),
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  await cache.settled();
+
+  expect(cache.state("dashboard-summary").data).toBeNull();
+  expect(cache.state("dashboard-summary").error).toBe("boom");
+});
+
 test("state: loading is true while in flight and false after", async () => {
   const d = deferred<string>();
   const cache = createSourceCache({ "dashboard-summary": () => d.promise });
