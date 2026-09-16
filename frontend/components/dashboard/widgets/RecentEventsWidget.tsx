@@ -1,28 +1,9 @@
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
+import { asEventList, formatEventLabel } from "@/lib/dashboard/event-format.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import { age } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
-
-/**
- * Short forms for the noisiest resource kinds, so an event row reads
- * `deploy/api` rather than `deployment/api`.
- *
- * Module scope, not inside the row loop: the island rebuilt this object once
- * per event on every render.
- */
-const KIND_ABBR: Record<string, string> = {
-  deployment: "deploy",
-  service: "svc",
-  replicaset: "rs",
-  statefulset: "sts",
-  daemonset: "ds",
-  persistentvolumeclaim: "pvc",
-  horizontalpodautoscaler: "hpa",
-  configmap: "cm",
-  serviceaccount: "sa",
-  networkpolicy: "netpol",
-};
 
 /**
  * The ten most recent cluster events, newest first.
@@ -30,11 +11,13 @@ const KIND_ABBR: Record<string, string> = {
  * Lifted from the pre-registry DashboardV2 card.
  */
 function RecentEvents() {
-  const raw = dashboardData.state<K8sEvent[]>("recent-events").data;
-  // The island guarded with Array.isArray before assigning, because an
-  // endpoint returning no body leaves `data` undefined rather than null and
-  // the host's gate only rejects null. Same guard, same reason.
-  const events = Array.isArray(raw) ? raw : [];
+  // asEventList carries the island's Array.isArray guard: an endpoint
+  // returning no body leaves `data` undefined rather than null, and the host's
+  // gate only rejects null. Both it and formatEventLabel are unit-tested in
+  // lib/dashboard/event-format_test.ts.
+  const events = asEventList(
+    dashboardData.state<K8sEvent[]>("recent-events").data,
+  );
 
   return (
     <WidgetShell
@@ -87,11 +70,7 @@ function RecentEvents() {
         <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
           {events.map((evt, idx) => {
             const isWarning = evt.type === "Warning";
-            const kind = evt.involvedObject?.kind?.toLowerCase() ?? "";
-            const prefix = KIND_ABBR[kind] ?? kind;
-            const resourceLabel = evt.involvedObject?.name
-              ? `${prefix}/${evt.involvedObject.name}`
-              : "";
+            const resourceLabel = formatEventLabel(evt);
 
             return (
               <div
