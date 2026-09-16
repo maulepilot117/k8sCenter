@@ -11,61 +11,15 @@ import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { api } from "@/lib/api.ts";
-import { age, percentile } from "@/lib/format.ts";
+import type {
+  ClusterInfoData,
+  DashboardSummary,
+  DashboardTrends,
+} from "@/lib/dashboard/wire-types.ts";
+import { age, lastDelta, percentile } from "@/lib/format.ts";
 import type { K8sEvent } from "@/lib/k8s-types.ts";
-import type { ClusterHealth } from "@/lib/score-color.ts";
 import { healthStatusColor } from "@/lib/score-color.ts";
 import { IS_BROWSER } from "@/src/lib/is-browser.ts";
-
-// ─── Wire types ──────────────────────────────────────────────────────────────
-//
-// These declare only the fields this island actually reads, not the full
-// response bodies. The endpoints return more (cluster info also carries
-// kubernetesVersion and a kubecenter build block; both payloads carry service
-// counts, and trends carries a node series plus its window/step echo) — those
-// are dropped here rather than declared-and-ignored.
-
-interface ClusterInfoData {
-  clusterID: string;
-  platform: string;
-  nodeCount: number;
-}
-
-interface DashboardSummary {
-  nodes: { total: number; ready: number };
-  pods: { total: number; running: number; pending: number; failed: number };
-  alerts: { active: number; critical: number };
-  cpu: {
-    percentage: number;
-    used: string;
-    total: string;
-    requests: string;
-    limits: string;
-  } | null;
-  memory: {
-    percentage: number;
-    used: string;
-    total: string;
-    requests: string;
-    limits: string;
-  } | null;
-  health?: ClusterHealth;
-}
-
-// DashboardTrends mirrors the backend payload from GET
-// /v1/cluster/dashboard-trends — short historical series (oldest→newest) that
-// back the metric-card sparklines. Any series may be empty when Prometheus or
-// kube-state-metrics is unavailable; the cards then render no sparkline.
-interface DashboardTrends {
-  pods: number[] | null;
-  cpu: number[] | null;
-  memory: number[] | null;
-  // Cluster-wide network throughput in Mbps (oldest→newest). The Network I/O
-  // tile derives its displayed RX/TX p95 from these series, so the value tracks
-  // whichever time-range tab is active.
-  networkRx: number[] | null;
-  networkTx: number[] | null;
-}
 
 const REFRESH_INTERVAL = 60_000;
 
@@ -268,16 +222,6 @@ export default function DashboardV2() {
   const netTxP95 = percentile(t?.networkTx, 95);
 
   // Delta: compare last vs second-to-last in trend series (null when unavailable)
-  function lastDelta(series: number[] | null | undefined): number | null {
-    if (!series || series.length < 2) return null;
-    const last = series[series.length - 1];
-    const prev = series[series.length - 2];
-    if (!Number.isFinite(last) || !Number.isFinite(prev) || prev === 0) {
-      return null;
-    }
-    return Math.round(((last - prev) / prev) * 100);
-  }
-
   const cpuDelta = lastDelta(t?.cpu);
   const memDelta = lastDelta(t?.memory);
   const podDelta = lastDelta(t?.pods);

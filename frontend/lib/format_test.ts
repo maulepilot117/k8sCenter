@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatMbps, percentile } from "./format.ts";
+import { formatMbps, lastDelta, percentile } from "./format.ts";
 
 // --- percentile ---
 
@@ -60,4 +60,46 @@ test("formatMbps: < 100 keeps one decimal", () => {
   expect(formatMbps(1.23)).toBe("1.2");
   expect(formatMbps(99.95)).toBe("100");
   expect(formatMbps(0)).toBe("0");
+});
+
+// --- lastDelta ---
+
+test("lastDelta: null, undefined or a too-short series has no delta", () => {
+  expect(lastDelta(null)).toBeNull();
+  expect(lastDelta(undefined)).toBeNull();
+  expect(lastDelta([])).toBeNull();
+  expect(lastDelta([5])).toBeNull();
+});
+
+test("lastDelta: is a percent change, not a difference", () => {
+  // MetricTile renders this number followed by a literal "%", so a pod count
+  // of 10 rising to 13 must read 30, not 3.
+  expect(lastDelta([10, 13])).toBe(30);
+  expect(lastDelta([40, 44])).toBe(10);
+  expect(lastDelta([100, 103])).toBe(3);
+});
+
+test("lastDelta: uses only the final two samples", () => {
+  expect(lastDelta([999, 1, 2])).toBe(100);
+});
+
+test("lastDelta: a fall is negative", () => {
+  expect(lastDelta([10, 5])).toBe(-50);
+});
+
+test("lastDelta: rounds to a whole percent", () => {
+  expect(lastDelta([3, 4])).toBe(33);
+});
+
+test("lastDelta: a previous sample of zero has no delta", () => {
+  // Not Infinity, and not 100: there is no meaningful percent change from
+  // nothing, so the tile renders no delta rather than a misleading one.
+  expect(lastDelta([0, 5])).toBeNull();
+  expect(lastDelta([0, 0])).toBeNull();
+});
+
+test("lastDelta: a non-finite endpoint has no delta", () => {
+  expect(lastDelta([1, Number.NaN])).toBeNull();
+  expect(lastDelta([Number.NaN, 1])).toBeNull();
+  expect(lastDelta([1, Number.POSITIVE_INFINITY])).toBeNull();
 });
