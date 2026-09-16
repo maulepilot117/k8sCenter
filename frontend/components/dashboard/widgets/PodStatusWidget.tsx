@@ -152,6 +152,7 @@ registerWidget({
   minH: 4,
   defaultW: 5,
   defaultH: 6,
-  modes: ["compact", "normal"],
+  // Normal only -- one rendering in the island; see NodesWidget.
+  modes: ["normal"],
   render: () => <PodStatus />,
 });

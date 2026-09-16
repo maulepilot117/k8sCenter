@@ -71,8 +71,9 @@ registerWidget({
   minH: 4,
   defaultW: 7,
   defaultH: 6,
-  // A time-series chart needs width to be readable at all; there is no useful
-  // compact rendering, so pickMode falls upward to normal in a small box.
-  modes: ["normal", "expanded"],
+  // Normal only -- one rendering in the island; see NodesWidget. A chart
+  // needs width to be readable, but "expanded" would have to render
+  // something different to be worth declaring.
+  modes: ["normal"],
   render: () => <ResourceUtilization />,
 });

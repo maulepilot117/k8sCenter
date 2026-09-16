@@ -115,6 +115,10 @@ registerWidget({
   minH: 4,
   defaultW: 4,
   defaultH: 6,
-  modes: ["compact", "normal"],
+  // Normal only: this card has one rendering. `modes` declares what a
+  // widget actually implements, and a compact variant would be new UI that
+  // D5's verbatim-extraction rule forbids. pickMode falls back toward
+  // normal from both directions, so a small box still renders correctly.
+  modes: ["normal"],
   render: () => <Nodes />,
 });
