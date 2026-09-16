@@ -48,6 +48,17 @@ export function registerWidget(def: WidgetDef): void {
   if (isRetiredWidgetId(def.id)) {
     throw new Error(`widget id ${def.id} is retired and cannot be reused`);
   }
+  // The registry test asserts this too, but the test suite is not the runtime:
+  // a definition registered from anywhere must satisfy it. pickMode falls back
+  // toward "normal" from both directions and returns it for an empty mode list
+  // rather than undefined, so a widget missing "normal" would be handed a mode
+  // it does not implement -- the one thing the display-mode contract promises
+  // cannot happen.
+  if (!def.modes.includes("normal")) {
+    throw new Error(
+      `widget ${def.id} must implement the "normal" display mode`,
+    );
+  }
   widgets.set(def.id, def);
 }
 

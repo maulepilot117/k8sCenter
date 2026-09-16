@@ -1,5 +1,5 @@
 import { useSignal } from "@preact/signals";
-import { useEffect, useRef } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
@@ -28,7 +28,11 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   const width = useSignal(0);
   const height = useSignal(0);
 
-  useEffect(() => {
+  // Layout, not plain, effect: useEffect runs after the browser paints, so the
+  // widget would paint once at 0x0 (that is, "compact") and then flip to its
+  // real mode. For a widget whose compact and normal renderings differ, that
+  // is a visible flash on every mount.
+  useLayoutEffect(() => {
     if (!IS_BROWSER) return;
     const el = box.current;
     if (!el) return;
@@ -56,11 +60,28 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   }, []);
 
   const states = def.sources.map((k) => dashboardData.state(k));
-  // A widget is loading only while it has nothing to show. Once any source has
-  // landed, a background refresh must not blank the widget out.
-  const loading =
-    states.some((s) => s.loading) && states.every((s) => s.data === null);
+  // One rule, three properties:
+  //
+  //   1. A widget is rendered only when EVERY source it declared has data, so
+  //      `render` never receives a null source. Half the catalog declares two
+  //      sources that come from separate endpoints with different latencies,
+  //      so "the first one landed" is the common case, not an edge case, and
+  //      a widget author writing `t.cpu.length` would get a crash rather than
+  //      a type error.
+  //   2. A failure is shown as soon as the widget cannot render, even while a
+  //      sibling source is still in flight. Gating on loading first would hide
+  //      a known error behind the slower sibling's skeleton -- and `api()`
+  //      applies no request timeout, so a stalled sibling makes that durable.
+  //   3. Stale data outranks an error. The cache keeps the last good value
+  //      across a failed refresh, so a transient 500 leaves the widget
+  //      rendered with an inline error instead of replacing it with an error
+  //      page. That is the view an operator needs most while a cluster is
+  //      degrading.
+  //
+  // Idle (never requested -- the consumer calls `ensure`, not this component)
+  // and in-flight both land on the skeleton, so they never need distinguishing.
   const failure = states.find((s) => s.error !== null);
+  const renderable = states.every((s) => s.data !== null);
 
   const mode = pickMode(def.modes, width.value, height.value);
 
@@ -72,10 +93,24 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
       data-widget-mode={mode}
       style={{ height: "100%", minWidth: 0, minHeight: 0 }}
     >
-      {loading ? (
-        // Sized to the widget box: a bare <Skeleton /> carries no height class
-        // and would render an invisible zero-height div.
-        <Skeleton class="h-full w-full rounded-lg" />
+      {renderable ? (
+        <>
+          {failure && (
+            <div
+              data-testid="widget-stale"
+              title={failure.error ?? undefined}
+              style={{
+                padding: "4px 8px",
+                fontSize: "11px",
+                lineHeight: 1.4,
+                color: "var(--warning)",
+              }}
+            >
+              Showing last known data — refresh failed.
+            </div>
+          )}
+          {def.render({ mode, params })}
+        </>
       ) : failure ? (
         <div
           data-testid="widget-error"
@@ -90,7 +125,9 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
           <div style={{ opacity: 0.75, marginTop: "4px" }}>{failure.error}</div>
         </div>
       ) : (
-        def.render({ mode, params })
+        // Sized to the widget box: a bare <Skeleton /> carries no height class
+        // and would render an invisible zero-height div.
+        <Skeleton class="h-full w-full rounded-lg" />
       )}
     </div>
   );
