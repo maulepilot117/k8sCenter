@@ -80,7 +80,24 @@ export interface WidgetDef {
   title: string;
   family: WidgetFamily;
   scopes: DashboardScope[];
+  /** Every source this widget reads. The cache fetches all of them. */
   sources: DataSourceKey[];
+  /**
+   * The subset of `sources` the widget can render without.
+   *
+   * Every source a widget lists is another way for it to disappear, because
+   * WidgetHost renders only once the sources it depends on have data. A metric
+   * tile needs its summary value but merely decorates with a trend series, so
+   * gating the whole tile on the trend endpoint makes a slow or failed
+   * secondary request blank a number the primary endpoint already returned.
+   * The pre-registry island fetched under Promise.allSettled and rendered
+   * whatever arrived, so gating on everything is also a fidelity break.
+   *
+   * A source named here may be null at render time, and the widget must
+   * tolerate that. Sources NOT named here are guaranteed non-null when
+   * `render` is called. Omitted means every source is required.
+   */
+  optionalSources?: DataSourceKey[];
   /** Smallest the editor will let the user resize this widget. */
   minW: number;
   minH: number;

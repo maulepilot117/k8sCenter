@@ -59,20 +59,33 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
     };
   }, []);
 
+  const optional = def.optionalSources ?? [];
   const states = def.sources.map((k) => dashboardData.state(k));
-  // One rule, three properties:
+  const requiredStates = def.sources
+    .filter((k) => !optional.includes(k))
+    .map((k) => dashboardData.state(k));
+
+  // One rule, four properties:
   //
-  //   1. A widget is rendered only when EVERY source it declared has data, so
-  //      `render` never receives a null source. Half the catalog declares two
-  //      sources that come from separate endpoints with different latencies,
-  //      so "the first one landed" is the common case, not an edge case, and
-  //      a widget author writing `t.cpu.length` would get a crash rather than
-  //      a type error.
-  //   2. A failure is shown as soon as the widget cannot render, even while a
+  //   1. A widget is rendered once every source it DEPENDS on has data, so
+  //      `render` never receives a null required source. Half the catalog
+  //      declares two sources from separate endpoints with different
+  //      latencies, so "the first one landed" is the common case, not an edge
+  //      case, and a widget author writing `t.cpu.length` would get a crash
+  //      rather than a type error.
+  //   2. A source the widget declared optional does not gate it. Gating on
+  //      every declared source made each one another way for the widget to
+  //      disappear: a slow or failed trend request blanked a percentage the
+  //      summary endpoint had already returned, where the pre-registry island
+  //      rendered it with no sparkline. An optional source may be null at
+  //      render, and the widget is written to tolerate that.
+  //   3. A failure is shown as soon as the widget cannot render, even while a
   //      sibling source is still in flight. Gating on loading first would hide
   //      a known error behind the slower sibling's skeleton -- and `api()`
   //      applies no request timeout, so a stalled sibling makes that durable.
-  //   3. Stale data outranks an error. The cache keeps the last good value
+  //      Only a REQUIRED source's failure blocks; an optional one shows the
+  //      inline notice beside a rendered widget.
+  //   4. Stale data outranks an error. The cache keeps the last good value
   //      across a failed refresh, so a transient 500 leaves the widget
   //      rendered with an inline error instead of replacing it with an error
   //      page. That is the view an operator needs most while a cluster is
@@ -81,7 +94,8 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   // Idle (never requested -- the consumer calls `ensure`, not this component)
   // and in-flight both land on the skeleton, so they never need distinguishing.
   const failure = states.find((s) => s.error !== null);
-  const renderable = states.every((s) => s.data !== null);
+  const blockingFailure = requiredStates.find((s) => s.error !== null);
+  const renderable = requiredStates.every((s) => s.data !== null);
 
   const mode = pickMode(def.modes, width.value, height.value);
 
@@ -111,7 +125,7 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
           )}
           {def.render({ mode, params })}
         </>
-      ) : failure ? (
+      ) : blockingFailure ? (
         <div
           data-testid="widget-error"
           style={{
@@ -122,7 +136,9 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
           }}
         >
           {def.title} could not be loaded.
-          <div style={{ opacity: 0.75, marginTop: "4px" }}>{failure.error}</div>
+          <div style={{ opacity: 0.75, marginTop: "4px" }}>
+            {blockingFailure.error}
+          </div>
         </div>
       ) : (
         // Sized to the widget box: a bare <Skeleton /> carries no height class

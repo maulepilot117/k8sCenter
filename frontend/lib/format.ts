@@ -43,3 +43,26 @@ export function formatMbps(v: number): string {
   if (v >= 100) return Math.round(v).toString();
   return (Math.round(v * 10) / 10).toString();
 }
+
+/**
+ * Percent change between the last two samples of a series, rounded, or null
+ * when the series cannot produce one.
+ *
+ * This is a **percent**, not a difference, because its only consumer is
+ * MetricTile's delta prop, which renders the number it is given followed by a
+ * literal "%". Returning a raw difference would make a pod count of 10 rising
+ * to 13 display as "3%" instead of "30%".
+ *
+ * A previous sample of 0 yields null rather than Infinity: there is no
+ * meaningful percent change from nothing, and the tile renders no delta at all
+ * rather than a misleading one.
+ */
+export function lastDelta(series: number[] | null | undefined): number | null {
+  if (!series || series.length < 2) return null;
+  const last = series[series.length - 1];
+  const prev = series[series.length - 2];
+  if (!Number.isFinite(last) || !Number.isFinite(prev) || prev === 0) {
+    return null;
+  }
+  return Math.round(((last - prev) / prev) * 100);
+}
