@@ -1,7 +1,7 @@
-import type { DonutSegment } from "@/components/charts/Donut.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
+import { podStatusSegments } from "@/lib/dashboard/pod-status.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
 import type { DashboardSummary } from "@/lib/dashboard/wire-types.ts";
 
@@ -21,23 +21,10 @@ function PodStatus() {
   const podPending = s?.pods.pending ?? 0;
   const podFailed = s?.pods.failed ?? 0;
 
-  // The guard is the sum of the three plotted counts, not pods.total. Donut
-  // divides by the summed segment values, so an all-zero set collapses every
-  // conic-gradient stop to `0% 0%` and the last color floods the whole ring --
-  // an empty cluster would draw a solid red donut. Summing the plotted values
-  // also covers a cluster whose pods are all in phases this donut doesn't plot
-  // (Succeeded, Unknown), where pods.total is non-zero but every segment is 0.
-  //
-  // Donut renders value and color only, so no label is passed; segment order
-  // matches the legend rendered alongside it below.
-  const donutSegments: DonutSegment[] =
-    podRunning + podPending + podFailed > 0
-      ? [
-          { value: podRunning, color: "var(--success)" },
-          { value: podPending, color: "var(--warning)" },
-          { value: podFailed, color: "var(--error)" },
-        ]
-      : [{ value: 1, color: "var(--border-subtle)" }];
+  // Segment derivation lives in lib/dashboard/pod-status.ts so the guard it
+  // carries is unit-tested. It has already regressed into a user-visible bug
+  // once, and this repo has no component test harness.
+  const donutSegments = podStatusSegments(podRunning, podPending, podFailed);
 
   return (
     <WidgetShell title="Pod Status">

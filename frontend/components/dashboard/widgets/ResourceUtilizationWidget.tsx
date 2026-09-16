@@ -67,6 +67,13 @@ registerWidget({
   family: "cluster",
   scopes: ["overview"],
   sources: ["dashboard-trends"],
+  // Optional, matching the metric tiles. Gating on trends replaced the whole
+  // card with "Resource Utilization could not be loaded." where the island
+  // rendered ResourceAreaChart's own empty state -- a fidelity break on the
+  // error path, which the D5b visual comparison exercises the happy path of
+  // and would never catch. ResourceAreaChart already takes `null` for both
+  // series, so the chart renders its placeholder exactly as before.
+  optionalSources: ["dashboard-trends"],
   minW: 4,
   minH: 4,
   defaultW: 7,

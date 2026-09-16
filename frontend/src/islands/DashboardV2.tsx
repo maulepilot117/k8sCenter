@@ -1,7 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import BarRow from "@/components/charts/BarRow.tsx";
-import type { DonutSegment } from "@/components/charts/Donut.tsx";
 import Donut from "@/components/charts/Donut.tsx";
 import Gauge from "@/components/charts/Gauge.tsx";
 import { ResourceAreaChart } from "@/components/charts/ResourceAreaChart.tsx";
@@ -11,6 +10,7 @@ import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { api } from "@/lib/api.ts";
+import { podStatusSegments } from "@/lib/dashboard/pod-status.ts";
 import type {
   ClusterInfoData,
   DashboardSummary,
@@ -228,26 +228,12 @@ export default function DashboardV2() {
 
   // Pod donut segments.
   //
-  // The guard is the sum of the three plotted counts, not pods.total. Donut
-  // divides by the summed segment values, so an all-zero set collapses every
-  // conic-gradient stop to `0% 0%` and the last color floods the whole ring —
-  // an empty cluster would draw a solid red donut. Summing the plotted values
-  // also covers a cluster whose pods are all in phases this donut doesn't plot
-  // (Succeeded, Unknown), where pods.total is non-zero but every segment is 0.
-  //
-  // Donut renders value and color only, so no label is passed; segment order
-  // matches the legend rendered alongside it below.
+  // Same derivation the extracted pod-status widget uses, so the two cannot
+  // drift while both render. The guard it carries is unit-tested there.
   const podRunning = s?.pods.running ?? 0;
   const podPending = s?.pods.pending ?? 0;
   const podFailed = s?.pods.failed ?? 0;
-  const donutSegments: DonutSegment[] =
-    podRunning + podPending + podFailed > 0
-      ? [
-          { value: podRunning, color: "var(--success)" },
-          { value: podPending, color: "var(--warning)" },
-          { value: podFailed, color: "var(--error)" },
-        ]
-      : [{ value: 1, color: "var(--border-subtle)" }];
+  const donutSegments = podStatusSegments(podRunning, podPending, podFailed);
 
   const subtitleParts = [
     clusterName,
