@@ -37,6 +37,11 @@ registerWidget({
   family: "cluster",
   scopes: ["overview"],
   sources: ["dashboard-summary", "dashboard-trends"],
+  // The trend series only decorates this tile with a sparkline and a delta;
+  // the headline number comes from the summary. Gating on trends would let a
+  // slow or failed trend request blank a memory percentage the summary endpoint
+  // already returned, which the pre-registry island never did.
+  optionalSources: ["dashboard-trends"],
   minW: 2,
   minH: 2,
   defaultW: 3,
