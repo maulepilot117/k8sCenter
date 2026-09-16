@@ -18,4 +18,7 @@ import "./ClusterHealthWidget.tsx";
 import "./CpuTileWidget.tsx";
 import "./MemoryTileWidget.tsx";
 import "./NetworkTileWidget.tsx";
+import "./NodesWidget.tsx";
+import "./PodStatusWidget.tsx";
 import "./PodsTileWidget.tsx";
+import "./ResourceUtilizationWidget.tsx";
