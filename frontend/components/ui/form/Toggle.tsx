@@ -1,7 +1,11 @@
 /** iOS-style switch. Booleans in wizards/settings (expose, enable, etc.). */
-export default function Toggle(
-  { checked, onChange }: { checked: boolean; onChange: (v: boolean) => void },
-) {
+export default function Toggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
     <button
       type="button"

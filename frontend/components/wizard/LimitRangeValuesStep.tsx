@@ -1,10 +1,10 @@
-import { useSignal } from "@preact/signals";
 import type { Signal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
 import type {
   LimitConfig,
   ResourcePair,
-} from "@/islands/NamespaceLimitsWizard.tsx";
+} from "@/src/islands/NamespaceLimitsWizard.tsx";
 
 interface LimitRangeValuesStepProps {
   limits: LimitConfig;
@@ -121,22 +121,23 @@ export function LimitRangeValuesStep({
                       key,
                       "cpu",
                       (e.target as HTMLInputElement).value,
-                    )}
+                    )
+                  }
                   class={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 250m"
                 />
                 {key === "containerDefault" &&
                   errors.value.containerDefaultCpu && (
-                  <p
-                    style={{
-                      marginTop: "3px",
-                      fontSize: "10px",
-                      color: "var(--error)",
-                    }}
-                  >
-                    {errors.value.containerDefaultCpu}
-                  </p>
-                )}
+                    <p
+                      style={{
+                        marginTop: "3px",
+                        fontSize: "10px",
+                        color: "var(--error)",
+                      }}
+                    >
+                      {errors.value.containerDefaultCpu}
+                    </p>
+                  )}
               </div>
               <div>
                 <label
@@ -151,29 +152,31 @@ export function LimitRangeValuesStep({
                 </label>
                 <input
                   type="text"
-                  value={(limits[key] as ResourcePair | undefined)?.memory ??
-                    ""}
+                  value={
+                    (limits[key] as ResourcePair | undefined)?.memory ?? ""
+                  }
                   onInput={(e) =>
                     onUpdateResourcePair(
                       key,
                       "memory",
                       (e.target as HTMLInputElement).value,
-                    )}
+                    )
+                  }
                   class={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 256Mi"
                 />
                 {key === "containerDefault" &&
                   errors.value.containerDefaultMemory && (
-                  <p
-                    style={{
-                      marginTop: "3px",
-                      fontSize: "10px",
-                      color: "var(--error)",
-                    }}
-                  >
-                    {errors.value.containerDefaultMemory}
-                  </p>
-                )}
+                    <p
+                      style={{
+                        marginTop: "3px",
+                        fontSize: "10px",
+                        color: "var(--error)",
+                      }}
+                    >
+                      {errors.value.containerDefaultMemory}
+                    </p>
+                  )}
               </div>
             </div>
           </div>
@@ -341,7 +344,8 @@ export function LimitRangeValuesStep({
                     onUpdateLimits(
                       "pvcMinStorage",
                       (e.target as HTMLInputElement).value || undefined,
-                    )}
+                    )
+                  }
                   class={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 1Gi"
                 />
@@ -364,7 +368,8 @@ export function LimitRangeValuesStep({
                     onUpdateLimits(
                       "pvcMaxStorage",
                       (e.target as HTMLInputElement).value || undefined,
-                    )}
+                    )
+                  }
                   class={WIZARD_INPUT_CLASS}
                   placeholder="e.g. 100Gi"
                 />

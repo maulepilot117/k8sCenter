@@ -11,22 +11,19 @@ interface InputProps extends JSX.InputHTMLAttributes<HTMLInputElement> {
   description?: string;
 }
 
-export function Input(
-  {
-    label,
-    error,
-    required,
-    description,
-    id,
-    class: className,
-    ...props
-  }: InputProps,
-) {
+export function Input({
+  label,
+  error,
+  required,
+  description,
+  id,
+  class: className,
+  ...props
+}: InputProps) {
   const inputId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
   const errorId = error && inputId ? `${inputId}-error` : undefined;
   const descId = description && inputId ? `${inputId}-desc` : undefined;
-  const describedBy = [descId, errorId].filter(Boolean).join(" ") ||
-    undefined;
+  const describedBy = [descId, errorId].filter(Boolean).join(" ") || undefined;
 
   return (
     <div class="space-y-1">
@@ -38,14 +35,14 @@ export function Input(
           >
             {label}
           </label>
-          {
-            /* Asterisk rendered as a sibling — kept OUT of the <label> so the
+          {/* Asterisk rendered as a sibling — kept OUT of the <label> so the
               accessible/visible label text is exactly the `label` prop (some
               test frameworks match label text including descendants).
-              aria-required on the input announces required-ness for AT. */
-          }
+              aria-required on the input announces required-ness for AT. */}
           {required && (
-            <span aria-hidden="true" class="text-sm text-danger">*</span>
+            <span aria-hidden="true" class="text-sm text-danger">
+              *
+            </span>
           )}
         </div>
       )}
@@ -62,9 +59,15 @@ export function Input(
         {...props}
       />
       {description && (
-        <p id={descId} class="text-xs text-text-muted">{description}</p>
+        <p id={descId} class="text-xs text-text-muted">
+          {description}
+        </p>
       )}
-      {error && <p id={errorId} class="text-sm text-danger">{error}</p>}
+      {error && (
+        <p id={errorId} class="text-sm text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

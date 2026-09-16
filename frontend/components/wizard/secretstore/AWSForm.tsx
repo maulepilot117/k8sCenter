@@ -157,20 +157,22 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
           required
           value={getStr(spec, "region")}
           onInput={(e) =>
-            patchTop("region", (e.target as HTMLInputElement).value)}
+            patchTop("region", (e.target as HTMLInputElement).value)
+          }
           placeholder="us-east-1"
           description="The AWS region where your secrets are stored."
-          error={errors["region"]}
+          error={errors.region}
         />
         <Input
           id="aws-role"
           label="Assume-role ARN (optional)"
           value={getStr(spec, "role")}
           onInput={(e) =>
-            patchTop("role", (e.target as HTMLInputElement).value)}
+            patchTop("role", (e.target as HTMLInputElement).value)
+          }
           placeholder="arn:aws:iam::123456789012:role/my-role"
           description="IAM role to assume before fetching secrets. Leave blank to use the pod's own identity."
-          error={errors["role"]}
+          error={errors.role}
         />
       </div>
 
@@ -178,7 +180,9 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
       <div class="space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Authentication method
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <div class="grid gap-2 sm:grid-cols-2">
           {AUTH_METHODS.map((m) => {
@@ -201,7 +205,7 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
             );
           })}
         </div>
-        {errors["auth"] && <p class="text-sm text-danger">{errors["auth"]}</p>}
+        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
       </div>
 
       {/* Auth-method-specific fields */}
@@ -217,9 +221,11 @@ export function AWSForm({ spec, errors, onUpdateSpec }: AWSFormProps) {
           block={getAuthBlock(spec, "secretRef")}
           errors={errors}
           onPatchAccessKeyRef={(patch) =>
-            patchSecretKeyRef("secretRef", "accessKeyIDSecretRef", patch)}
+            patchSecretKeyRef("secretRef", "accessKeyIDSecretRef", patch)
+          }
           onPatchSecretKeyRef={(patch) =>
-            patchSecretKeyRef("secretRef", "secretAccessKeySecretRef", patch)}
+            patchSecretKeyRef("secretRef", "secretAccessKeySecretRef", patch)
+          }
         />
       )}
     </div>
@@ -268,7 +274,8 @@ function JWTAuthFields({ block, errors, onPatch }: JWTAuthFieldsProps) {
               ...saRef,
               name: (e.target as HTMLInputElement).value,
             },
-          })}
+          })
+        }
         placeholder="my-service-account"
         description="The Kubernetes ServiceAccount whose projected token is exchanged for AWS credentials."
         error={errors["auth.jwt.serviceAccountRef.name"]}
@@ -284,14 +291,12 @@ interface StaticCredAuthFieldsProps {
   onPatchSecretKeyRef: (patch: SecretKeyRef) => void;
 }
 
-function StaticCredAuthFields(
-  {
-    block,
-    errors,
-    onPatchAccessKeyRef,
-    onPatchSecretKeyRef,
-  }: StaticCredAuthFieldsProps,
-) {
+function StaticCredAuthFields({
+  block,
+  errors,
+  onPatchAccessKeyRef,
+  onPatchSecretKeyRef,
+}: StaticCredAuthFieldsProps) {
   const akRef = (block.accessKeyIDSecretRef as SecretKeyRef) ?? {};
   const sakRef = (block.secretAccessKeySecretRef as SecretKeyRef) ?? {};
   return (
@@ -309,7 +314,8 @@ function StaticCredAuthFields(
             onInput={(e) =>
               onPatchAccessKeyRef({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="aws-credentials"
             error={errors["auth.secretRef.accessKeyIDSecretRef.name"]}
           />
@@ -321,7 +327,8 @@ function StaticCredAuthFields(
             onInput={(e) =>
               onPatchAccessKeyRef({
                 key: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="access-key-id"
             error={errors["auth.secretRef.accessKeyIDSecretRef.key"]}
           />
@@ -340,7 +347,8 @@ function StaticCredAuthFields(
             onInput={(e) =>
               onPatchSecretKeyRef({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="aws-credentials"
             error={errors["auth.secretRef.secretAccessKeySecretRef.name"]}
           />
@@ -352,7 +360,8 @@ function StaticCredAuthFields(
             onInput={(e) =>
               onPatchSecretKeyRef({
                 key: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="secret-access-key"
             error={errors["auth.secretRef.secretAccessKeySecretRef.key"]}
           />

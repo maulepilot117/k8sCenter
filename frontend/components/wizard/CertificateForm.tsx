@@ -1,8 +1,8 @@
 import { Input } from "@/components/ui/Input.tsx";
-import { Select } from "@/components/ui/Select.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
+import { Select } from "@/components/ui/Select.tsx";
 import type { Issuer } from "@/lib/certmanager-types.ts";
-import type { CertificateWizardForm } from "@/islands/CertificateWizard.tsx";
+import type { CertificateWizardForm } from "@/src/islands/CertificateWizard.tsx";
 
 interface CertificateFormProps {
   form: CertificateWizardForm;
@@ -31,9 +31,8 @@ export function CertificateForm({
   const issuerOptionValue = (iss: Issuer) =>
     `${iss.scope === "Cluster" ? "ClusterIssuer" : "Issuer"}:${iss.name}`;
 
-  const sizeOptions = form.privateKey.algorithm === "ECDSA"
-    ? ECDSA_SIZES
-    : RSA_SIZES;
+  const sizeOptions =
+    form.privateKey.algorithm === "ECDSA" ? ECDSA_SIZES : RSA_SIZES;
 
   const clusterIssuers = issuers.filter((i) => i.scope === "Cluster");
   const namespacedIssuers = issuers.filter((i) => i.scope === "Namespaced");
@@ -47,7 +46,8 @@ export function CertificateForm({
           required
           value={form.name}
           onInput={(e) =>
-            onUpdate("name", (e.target as HTMLInputElement).value)}
+            onUpdate("name", (e.target as HTMLInputElement).value)
+          }
           placeholder="example-com-tls"
           error={errors.name}
         />
@@ -66,7 +66,8 @@ export function CertificateForm({
         required
         value={form.secretName}
         onInput={(e) =>
-          onUpdate("secretName", (e.target as HTMLInputElement).value)}
+          onUpdate("secretName", (e.target as HTMLInputElement).value)
+        }
         placeholder="example-com-tls"
         description="Secret where cert-manager will write the issued TLS certificate and private key."
         error={errors.secretName}
@@ -78,10 +79,8 @@ export function CertificateForm({
         required
         value={form.issuerRefValue}
         onChange={(e) =>
-          onUpdate(
-            "issuerRefValue",
-            (e.target as HTMLSelectElement).value,
-          )}
+          onUpdate("issuerRefValue", (e.target as HTMLSelectElement).value)
+        }
         disabled={issuersLoading}
         error={errors.issuerRef}
       >
@@ -113,7 +112,8 @@ export function CertificateForm({
         label="DNS Names"
         value={form.dnsNamesInput}
         onInput={(e) =>
-          onUpdate("dnsNamesInput", (e.target as HTMLInputElement).value)}
+          onUpdate("dnsNamesInput", (e.target as HTMLInputElement).value)
+        }
         placeholder="example.com, www.example.com"
         description="Comma-separated. At least one of DNS Names or Common Name is required."
         error={errors.dnsNames}
@@ -124,7 +124,8 @@ export function CertificateForm({
         label="Common Name"
         value={form.commonName}
         onInput={(e) =>
-          onUpdate("commonName", (e.target as HTMLInputElement).value)}
+          onUpdate("commonName", (e.target as HTMLInputElement).value)
+        }
         placeholder="example.com"
       />
 
@@ -140,7 +141,8 @@ export function CertificateForm({
               label="Duration"
               value={form.duration}
               onInput={(e) =>
-                onUpdate("duration", (e.target as HTMLInputElement).value)}
+                onUpdate("duration", (e.target as HTMLInputElement).value)
+              }
               placeholder="2160h"
               description="Default 2160h (90 days)."
               error={errors.duration}
@@ -150,10 +152,8 @@ export function CertificateForm({
               label="Renew Before"
               value={form.renewBefore}
               onInput={(e) =>
-                onUpdate(
-                  "renewBefore",
-                  (e.target as HTMLInputElement).value,
-                )}
+                onUpdate("renewBefore", (e.target as HTMLInputElement).value)
+              }
               placeholder="360h"
               description="Default 360h (15 days)."
               error={errors.renewBefore}
@@ -169,7 +169,8 @@ export function CertificateForm({
                 onUpdatePrivateKey(
                   "algorithm",
                   (e.target as HTMLSelectElement).value,
-                )}
+                )
+              }
               options={PRIVATE_KEY_ALGORITHMS.map((a) => ({
                 value: a,
                 label: a,
@@ -183,7 +184,8 @@ export function CertificateForm({
                 onUpdatePrivateKey(
                   "size",
                   Number((e.target as HTMLSelectElement).value),
-                )}
+                )
+              }
               disabled={form.privateKey.algorithm === "Ed25519"}
               options={sizeOptions.map((s) => ({
                 value: String(s),
@@ -198,7 +200,8 @@ export function CertificateForm({
                 onUpdatePrivateKey(
                   "rotationPolicy",
                   (e.target as HTMLSelectElement).value,
-                )}
+                )
+              }
               options={ROTATION_POLICIES.map((p) => ({ value: p, label: p }))}
             />
           </div>
@@ -209,10 +212,8 @@ export function CertificateForm({
                 type="checkbox"
                 checked={form.isCA}
                 onChange={(e) =>
-                  onUpdate(
-                    "isCA",
-                    (e.target as HTMLInputElement).checked,
-                  )}
+                  onUpdate("isCA", (e.target as HTMLInputElement).checked)
+                }
               />
               <span>Issue as CA certificate (isCA: true)</span>
             </label>

@@ -24,10 +24,7 @@ export interface ClusterHealth {
 // scoreColor returns a CSS custom-property color string for a 0–100 numeric
 // compliance/health score.  The thresholds and the "alerts" accent case are
 // intentionally identical to the original in health-score.ts (R12).
-export function scoreColor(
-  score: number,
-  category?: string,
-): string {
+export function scoreColor(score: number, category?: string): string {
   if (score >= 90) {
     return category === "alerts" ? "var(--accent)" : "var(--success)";
   }

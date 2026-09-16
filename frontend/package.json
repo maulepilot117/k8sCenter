@@ -11,7 +11,7 @@
     "lint": "biome lint ../",
     "fmt": "biome format --write ../",
     "fmt:check": "biome format ../",
-    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts && bun run server/check-no-signal-store-in-ssr.ts && bun run server/check-island-hydration-directives.ts && bun run server/check-lockfile-is-text.ts && bun run server/check-no-duplicate-lib-state.ts"
+    "check": "biome check ../ && astro check && bun run server/check-no-ws-dev-proxy.ts && bun run server/check-no-signal-store-in-ssr.ts && bun run server/check-island-hydration-directives.ts && bun run server/check-lockfile-is-text.ts && bun run server/check-no-duplicate-lib-state.ts && bun run server/check-placeholder-root-parity.ts"
   },
   "dependencies": {
     "astro": "7.3.2",
@@ -42,6 +42,7 @@
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.10",
+    "@babel/parser": "7.29.8",
     "@biomejs/biome": "2.5.12",
     "@types/bun": "1.4.1",
     "@types/ws": "^8.18.1",

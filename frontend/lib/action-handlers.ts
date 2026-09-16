@@ -55,7 +55,7 @@ export function getVisibleActions(
   const all = ACTIONS_BY_KIND[kind] ?? [];
   if (!rbac) return all; // Permissions not loaded — show all (optimistic)
   return all.filter((actionId) =>
-    canPerform(rbac, kind, ACTION_VERB_MAP[actionId], namespace)
+    canPerform(rbac, kind, ACTION_VERB_MAP[actionId], namespace),
   );
 }
 

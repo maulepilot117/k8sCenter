@@ -36,7 +36,8 @@ export interface ESOTemplate {
 
 const akeylessTemplate: ESOTemplate = {
   displayName: "Akeyless",
-  notes: "Akeyless Vault SaaS / self-hosted gateway. Authenticate via JWT, " +
+  notes:
+    "Akeyless Vault SaaS / self-hosted gateway. Authenticate via JWT, " +
     "Kubernetes, or static access ID + access key. Free-text item path; " +
     "Akeyless paths are slash-separated (e.g. `/apps/prod/db-password`).",
   docsURL: "https://external-secrets.io/latest/provider/akeyless/",
@@ -78,8 +79,7 @@ const bitwardenTemplate: ESOTemplate = {
     "a project; the ExternalSecret references secrets by UUID, not by name.",
   docsURL:
     "https://external-secrets.io/latest/provider/bitwarden-secrets-manager/",
-  yaml:
-    `# Source: https://external-secrets.io/latest/provider/bitwarden-secrets-manager/
+  yaml: `# Source: https://external-secrets.io/latest/provider/bitwarden-secrets-manager/
 apiVersion: external-secrets.io/v1
 kind: SecretStore
 metadata:
@@ -145,7 +145,8 @@ spec:
 
 const infisicalTemplate: ESOTemplate = {
   displayName: "Infisical",
-  notes: "Infisical Cloud or self-hosted. Authenticate via Universal Auth " +
+  notes:
+    "Infisical Cloud or self-hosted. Authenticate via Universal Auth " +
     "(machine identity client ID + secret). The store binds to a single " +
     "Infisical project + environment + secrets path.",
   docsURL: "https://external-secrets.io/latest/provider/infisical/",
@@ -176,7 +177,8 @@ spec:
 
 const pulumiTemplate: ESOTemplate = {
   displayName: "Pulumi ESC",
-  notes: "Pulumi Environments, Secrets & Configuration. Authenticate with a " +
+  notes:
+    "Pulumi Environments, Secrets & Configuration. Authenticate with a " +
     "Pulumi access token. Each ExternalSecret references a path inside a " +
     "named environment — see Pulumi ESC's `pulumi env` CLI for path syntax.",
   docsURL: "https://external-secrets.io/latest/provider/pulumi/",
@@ -229,7 +231,8 @@ spec:
 
 const keeperTemplate: ESOTemplate = {
   displayName: "Keeper Secrets Manager",
-  notes: "Keeper Secrets Manager. Authenticate with a base64-encoded KSM " +
+  notes:
+    "Keeper Secrets Manager. Authenticate with a base64-encoded KSM " +
     "configuration blob (generated via `ksm config export --format json | base64`). " +
     "Records are referenced by record UID.",
   docsURL: "https://external-secrets.io/latest/provider/keepersecurity/",
@@ -312,7 +315,8 @@ spec:
 
 const alibabaTemplate: ESOTemplate = {
   displayName: "Alibaba Cloud KMS",
-  notes: "Alibaba Cloud Key Management Service Secret. Authenticate with " +
+  notes:
+    "Alibaba Cloud Key Management Service Secret. Authenticate with " +
     "AccessKey ID + AccessKey secret stored in a Kubernetes Secret. References " +
     "are by Alibaba secret name within the configured region.",
   docsURL: "https://external-secrets.io/latest/provider/alibaba/",

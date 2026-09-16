@@ -1,13 +1,13 @@
 import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
+import { Button } from "@/components/ui/Button.tsx";
 import { Input } from "@/components/ui/Input.tsx";
 import { NamespaceSelect } from "@/components/ui/NamespaceSelect.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { esoApi } from "@/lib/eso-api.ts";
 import type {
   ExternalSecretWizardForm,
   ExternalSecretWizardStoreOption,
-} from "@/islands/ExternalSecretWizard.tsx";
+} from "@/src/islands/ExternalSecretWizard.tsx";
 
 interface ExternalSecretFormProps {
   form: ExternalSecretWizardForm;
@@ -81,7 +81,7 @@ export function ExternalSecretForm({
   // typeahead. Cancels any in-flight request via abortRef, increments fetchSeq
   // for stale-response guards, and always drives the same discovery state.
   function fetchPaths(prefix?: string) {
-    if (!selectedStore || selectedStore.kind !== "SecretStore") return;
+    if (selectedStore?.kind !== "SecretStore") return;
 
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
@@ -124,7 +124,7 @@ export function ExternalSecretForm({
   // kubernetes-provider store flips `supported=true` and seeds an initial
   // (prefix-empty) listing; other providers report `supported=false`.
   useEffect(() => {
-    if (!selectedStore || selectedStore.kind !== "SecretStore") {
+    if (selectedStore?.kind !== "SecretStore") {
       // ClusterSecretStore + missing store: typeahead off until the user picks
       // a namespaced store. ClusterSecretStores can't be probed by this
       // endpoint (it requires a namespace).
@@ -151,7 +151,8 @@ export function ExternalSecretForm({
     onPathFieldTouched(index);
 
     if (
-      !discovery.value.supported || !selectedStore ||
+      !discovery.value.supported ||
+      !selectedStore ||
       selectedStore.kind !== "SecretStore"
     ) {
       return;
@@ -191,7 +192,8 @@ export function ExternalSecretForm({
           required
           value={form.name}
           onInput={(e) =>
-            handleNameChange((e.target as HTMLInputElement).value)}
+            handleNameChange((e.target as HTMLInputElement).value)
+          }
           placeholder="my-app-config"
           error={errors.name}
         />
@@ -221,7 +223,8 @@ export function ExternalSecretForm({
                 (e.target as HTMLSelectElement).value as
                   | "SecretStore"
                   | "ClusterSecretStore",
-              )}
+              )
+            }
           >
             <option value="SecretStore">SecretStore</option>
             <option value="ClusterSecretStore">ClusterSecretStore</option>
@@ -234,18 +237,21 @@ export function ExternalSecretForm({
             class="block text-sm font-medium text-text-secondary"
           >
             Store
-            <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+            <span aria-hidden="true" class="text-danger ml-0.5">
+              *
+            </span>
           </label>
           <select
             id="es-store-name"
             class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary"
             value={form.storeRefName}
             onChange={(e) =>
-              onUpdate("storeRefName", (e.target as HTMLSelectElement).value)}
+              onUpdate("storeRefName", (e.target as HTMLSelectElement).value)
+            }
             aria-invalid={errors["storeRef.name"] ? "true" : undefined}
-            aria-describedby={errors["storeRef.name"]
-              ? "es-store-name-error"
-              : undefined}
+            aria-describedby={
+              errors["storeRef.name"] ? "es-store-name-error" : undefined
+            }
             disabled={storesLoading}
           >
             <option value="">
@@ -279,10 +285,7 @@ export function ExternalSecretForm({
           required
           value={form.targetSecretName}
           onInput={(e) => {
-            onUpdate(
-              "targetSecretName",
-              (e.target as HTMLInputElement).value,
-            );
+            onUpdate("targetSecretName", (e.target as HTMLInputElement).value);
             onUpdate("targetSecretNameTouched", true);
           }}
           placeholder={form.name || "my-app-config"}
@@ -294,10 +297,8 @@ export function ExternalSecretForm({
           label="Refresh interval"
           value={form.refreshInterval}
           onInput={(e) =>
-            onUpdate(
-              "refreshInterval",
-              (e.target as HTMLInputElement).value,
-            )}
+            onUpdate("refreshInterval", (e.target as HTMLInputElement).value)
+          }
           placeholder="1h"
           description="Go duration. Leave blank to use ESO's default. Use `0` to disable polling."
           error={errors.refreshInterval}
@@ -343,7 +344,8 @@ export function ExternalSecretForm({
                     idx,
                     "secretKey",
                     (e.target as HTMLInputElement).value,
-                  )}
+                  )
+                }
                 placeholder="DB_PASSWORD"
                 error={errors[`data[${idx}].secretKey`]}
               />
@@ -356,7 +358,8 @@ export function ExternalSecretForm({
                     idx,
                     "property",
                     (e.target as HTMLInputElement).value,
-                  )}
+                  )
+                }
                 placeholder="db_password"
                 description="Sub-key inside the remote object. Leave blank to use the whole value."
               />
@@ -367,24 +370,29 @@ export function ExternalSecretForm({
                 class="block text-sm font-medium text-text-secondary"
               >
                 Remote key
-                <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+                <span aria-hidden="true" class="text-danger ml-0.5">
+                  *
+                </span>
               </label>
               <input
                 id={`es-data-${idx}-key`}
                 type="text"
-                list={discovery.value.supported
-                  ? `es-data-${idx}-paths`
-                  : undefined}
+                list={
+                  discovery.value.supported ? `es-data-${idx}-paths` : undefined
+                }
                 value={item.key}
                 onInput={(e) =>
-                  handlePathInput(idx, (e.target as HTMLInputElement).value)}
-                placeholder={discovery.value.supported
-                  ? "Start typing to search…"
-                  : "secret/data/myapp"}
+                  handlePathInput(idx, (e.target as HTMLInputElement).value)
+                }
+                placeholder={
+                  discovery.value.supported
+                    ? "Start typing to search…"
+                    : "secret/data/myapp"
+                }
                 class="block w-full rounded-md border border-border-primary bg-surface px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-brand/50"
-                aria-invalid={errors[`data[${idx}].remoteRef.key`]
-                  ? "true"
-                  : undefined}
+                aria-invalid={
+                  errors[`data[${idx}].remoteRef.key`] ? "true" : undefined
+                }
                 aria-describedby={`es-data-${idx}-hint`}
               />
               {discovery.value.supported && (
@@ -398,14 +406,14 @@ export function ExternalSecretForm({
                 {discovery.value.loading
                   ? "Loading paths…"
                   : discovery.value.error
-                  ? discovery.value.error
-                  : discovery.value.supported
-                  ? discovery.value.paths.length === 0
-                    ? "No paths found in this namespace"
-                    : `${discovery.value.paths.length} path${
-                      discovery.value.paths.length === 1 ? "" : "s"
-                    } available`
-                  : FREE_TEXT_HELPER}
+                    ? discovery.value.error
+                    : discovery.value.supported
+                      ? discovery.value.paths.length === 0
+                        ? "No paths found in this namespace"
+                        : `${discovery.value.paths.length} path${
+                            discovery.value.paths.length === 1 ? "" : "s"
+                          } available`
+                      : FREE_TEXT_HELPER}
               </p>
               {errors[`data[${idx}].remoteRef.key`] && (
                 <p class="text-sm text-danger">

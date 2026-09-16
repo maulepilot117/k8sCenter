@@ -14,24 +14,21 @@ interface SelectProps extends JSX.SelectHTMLAttributes<HTMLSelectElement> {
   children?: ComponentChildren;
 }
 
-export function Select(
-  {
-    label,
-    error,
-    required,
-    description,
-    id,
-    options,
-    children,
-    class: className,
-    ...props
-  }: SelectProps,
-) {
+export function Select({
+  label,
+  error,
+  required,
+  description,
+  id,
+  options,
+  children,
+  class: className,
+  ...props
+}: SelectProps) {
   const selectId = id ?? label?.toLowerCase().replace(/\s+/g, "-");
   const errorId = error && selectId ? `${selectId}-error` : undefined;
   const descId = description && selectId ? `${selectId}-desc` : undefined;
-  const describedBy = [descId, errorId].filter(Boolean).join(" ") ||
-    undefined;
+  const describedBy = [descId, errorId].filter(Boolean).join(" ") || undefined;
 
   return (
     <div class="space-y-1">
@@ -45,7 +42,9 @@ export function Select(
           </label>
           {/* Asterisk rendered as a sibling — see Input.tsx for rationale. */}
           {required && (
-            <span aria-hidden="true" class="text-sm text-danger">*</span>
+            <span aria-hidden="true" class="text-sm text-danger">
+              *
+            </span>
           )}
         </div>
       )}
@@ -63,16 +62,22 @@ export function Select(
       >
         {options
           ? options.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))
           : children}
       </select>
       {description && (
-        <p id={descId} class="text-xs text-text-muted">{description}</p>
+        <p id={descId} class="text-xs text-text-muted">
+          {description}
+        </p>
       )}
-      {error && <p id={errorId} class="text-sm text-danger">{error}</p>}
+      {error && (
+        <p id={errorId} class="text-sm text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

@@ -5,9 +5,11 @@ interface SegmentedProps {
 }
 
 /** Inline segmented control for 2–3 short choices (e.g. Service type). */
-export default function Segmented(
-  { value, options, onChange }: SegmentedProps,
-) {
+export default function Segmented({
+  value,
+  options,
+  onChange,
+}: SegmentedProps) {
   return (
     <div
       style={{

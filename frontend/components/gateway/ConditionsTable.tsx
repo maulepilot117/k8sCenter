@@ -3,12 +3,14 @@ import type { Condition } from "@/lib/gateway-types.ts";
 function formatTime(ts?: string): string {
   if (!ts) return "-";
   const d = new Date(ts);
-  return d.toLocaleDateString() + " " + d.toLocaleTimeString();
+  return `${d.toLocaleDateString()} ${d.toLocaleTimeString()}`;
 }
 
-export default function ConditionsTable(
-  { conditions }: { conditions?: Condition[] },
-) {
+export default function ConditionsTable({
+  conditions,
+}: {
+  conditions?: Condition[];
+}) {
   if (!conditions || conditions.length === 0) {
     return null;
   }
@@ -45,11 +47,13 @@ export default function ConditionsTable(
                 </td>
                 <td class="px-4 py-2 text-sm">
                   <span
-                    class={c.status === "True"
-                      ? "text-success"
-                      : c.status === "False"
-                      ? "text-danger"
-                      : "text-warning"}
+                    class={
+                      c.status === "True"
+                        ? "text-success"
+                        : c.status === "False"
+                          ? "text-danger"
+                          : "text-warning"
+                    }
                   >
                     {c.status}
                   </span>

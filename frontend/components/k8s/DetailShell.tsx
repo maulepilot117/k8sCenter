@@ -28,20 +28,18 @@ interface DetailShellProps {
  * split with a live-metrics rail. Use for ALL 37 detail views so the header,
  * tabs, and rail are pixel-identical everywhere.
  */
-export default function DetailShell(
-  {
-    icon,
-    title,
-    subtitle,
-    status,
-    actions,
-    tabs,
-    active,
-    onTab,
-    rail,
-    children,
-  }: DetailShellProps,
-) {
+export default function DetailShell({
+  icon,
+  title,
+  subtitle,
+  status,
+  actions,
+  tabs,
+  active,
+  onTab,
+  rail,
+  children,
+}: DetailShellProps) {
   return (
     <div style={{ maxWidth: "1480px", margin: "0 auto" }}>
       <GlassCard padding={20} style={{ marginBottom: "var(--grid-gap, 20px)" }}>
@@ -149,21 +147,21 @@ export default function DetailShell(
         </div>
       </GlassCard>
 
-      {rail
-        ? (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1fr) 300px",
-              gap: "var(--grid-gap, 20px)",
-              alignItems: "start",
-            }}
-          >
-            <div style={{ minWidth: 0 }}>{children}</div>
-            {rail}
-          </div>
-        )
-        : children}
+      {rail ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) 300px",
+            gap: "var(--grid-gap, 20px)",
+            alignItems: "start",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>{children}</div>
+          {rail}
+        </div>
+      ) : (
+        children
+      )}
     </div>
   );
 }

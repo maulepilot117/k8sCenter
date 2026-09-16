@@ -45,9 +45,7 @@ function getStr(spec: Record<string, unknown>, key: string): string {
   return typeof v === "string" ? v : "";
 }
 
-function getTokenRef(
-  spec: Record<string, unknown>,
-): Record<string, string> {
+function getTokenRef(spec: Record<string, unknown>): Record<string, string> {
   const auth = spec.auth as Record<string, unknown> | undefined;
   const secretRef = auth?.secretRef as Record<string, unknown> | undefined;
   const tokenRef = secretRef?.connectTokenSecretRef as
@@ -72,7 +70,7 @@ function rowsToVaultsMap(rows: VaultEntry[]): Record<string, number> {
   for (const row of rows) {
     if (row.name.trim() === "") continue;
     const p = parseInt(row.priority, 10);
-    out[row.name.trim()] = isNaN(p) ? 1 : p;
+    out[row.name.trim()] = Number.isNaN(p) ? 1 : p;
   }
   return out;
 }
@@ -81,9 +79,11 @@ function rowsToVaultsMap(rows: VaultEntry[]): Record<string, number> {
 // Component
 // ---------------------------------------------------------------------------
 
-export function OnePasswordForm(
-  { spec, errors, onUpdateSpec }: OnePasswordFormProps,
-) {
+export function OnePasswordForm({
+  spec,
+  errors,
+  onUpdateSpec,
+}: OnePasswordFormProps) {
   // Vault rows managed locally as strings to preserve the in-progress input
   // before it's converted to a number. Initialised once from spec; subsequent
   // spec changes come back through onUpdateSpec.
@@ -103,8 +103,7 @@ export function OnePasswordForm(
     const auth = (spec.auth as Record<string, unknown>) ?? {};
     const secretRef = (auth.secretRef as Record<string, unknown>) ?? {};
     const existing =
-      (secretRef.connectTokenSecretRef as Record<string, string>) ??
-        {};
+      (secretRef.connectTokenSecretRef as Record<string, string>) ?? {};
     onUpdateSpec({
       ...spec,
       auth: {
@@ -125,7 +124,7 @@ export function OnePasswordForm(
 
   function updateRow(idx: number, patch: Partial<VaultEntry>) {
     const updated = rows.value.map((r, i) =>
-      i === idx ? { ...r, ...patch } : r
+      i === idx ? { ...r, ...patch } : r,
     );
     commitRows(updated);
   }
@@ -156,24 +155,27 @@ export function OnePasswordForm(
         required
         value={getStr(spec, "connectHost")}
         onInput={(e) =>
-          patchTop("connectHost", (e.target as HTMLInputElement).value)}
+          patchTop("connectHost", (e.target as HTMLInputElement).value)
+        }
         placeholder="https://connect.example.com:8080"
         description="Must use https. Private and in-cluster addresses are accepted."
-        error={errors["connectHost"]}
+        error={errors.connectHost}
       />
 
       {/* Connect token secret reference */}
       <div class="rounded-md border border-border-primary p-4 space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Connect token Secret reference
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <p class="text-xs text-text-muted">
           Reference to the Kubernetes Secret that holds the 1Password Connect
           API token (
           <code class="font-mono">auth.secretRef.connectTokenSecretRef</code>).
         </p>
-        {errors["auth"] && <p class="text-sm text-danger">{errors["auth"]}</p>}
+        {errors.auth && <p class="text-sm text-danger">{errors.auth}</p>}
         {errors["auth.secretRef"] && (
           <p class="text-sm text-danger">{errors["auth.secretRef"]}</p>
         )}
@@ -189,7 +191,8 @@ export function OnePasswordForm(
             required
             value={tokenRef.name ?? ""}
             onInput={(e) =>
-              patchTokenRef({ name: (e.target as HTMLInputElement).value })}
+              patchTokenRef({ name: (e.target as HTMLInputElement).value })
+            }
             placeholder="op-connect-token"
             error={errors["auth.secretRef.connectTokenSecretRef.name"]}
           />
@@ -199,7 +202,8 @@ export function OnePasswordForm(
             required
             value={tokenRef.key ?? ""}
             onInput={(e) =>
-              patchTokenRef({ key: (e.target as HTMLInputElement).value })}
+              patchTokenRef({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="token"
             description="The key within the Secret that contains the token value."
             error={errors["auth.secretRef.connectTokenSecretRef.key"]}
@@ -211,16 +215,16 @@ export function OnePasswordForm(
       <div class="rounded-md border border-border-primary p-4 space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Vaults
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <p class="text-xs text-text-muted">
           Map each 1Password vault name to a search priority. ESO searches
           vaults in ascending priority order (lower number = searched first). At
           least one entry is required.
         </p>
-        {errors["vaults"] && (
-          <p class="text-sm text-danger">{errors["vaults"]}</p>
-        )}
+        {errors.vaults && <p class="text-sm text-danger">{errors.vaults}</p>}
 
         <div class="space-y-2">
           {/* Header row */}
@@ -246,7 +250,8 @@ export function OnePasswordForm(
                 onInput={(e) =>
                   updateRow(idx, {
                     name: (e.target as HTMLInputElement).value,
-                  })}
+                  })
+                }
                 placeholder="production"
               />
               <Input
@@ -256,7 +261,8 @@ export function OnePasswordForm(
                 onInput={(e) =>
                   updateRow(idx, {
                     priority: (e.target as HTMLInputElement).value,
-                  })}
+                  })
+                }
                 placeholder="1"
               />
               <button

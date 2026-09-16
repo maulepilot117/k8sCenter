@@ -108,16 +108,14 @@ export interface Deployment extends K8sResource {
     selector: { matchLabels?: Record<string, string> };
     template?: {
       spec?: {
-        containers?: Array<
-          {
-            name: string;
-            image: string;
-            resources?: {
-              requests?: Record<string, string>;
-              limits?: Record<string, string>;
-            };
-          }
-        >;
+        containers?: Array<{
+          name: string;
+          image: string;
+          resources?: {
+            requests?: Record<string, string>;
+            limits?: Record<string, string>;
+          };
+        }>;
       };
     };
     strategy?: {
@@ -201,14 +199,12 @@ export interface Service extends K8sResource {
   spec: {
     type: string;
     clusterIP?: string;
-    ports?: Array<
-      {
-        port: number;
-        targetPort?: number | string;
-        protocol?: string;
-        name?: string;
-      }
-    >;
+    ports?: Array<{
+      port: number;
+      targetPort?: number | string;
+      protocol?: string;
+      name?: string;
+    }>;
     selector?: Record<string, string>;
   };
 }

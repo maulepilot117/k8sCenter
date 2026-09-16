@@ -8,9 +8,11 @@ interface YamlViewProps {
   fontSize?: number;
 }
 
-export default function YamlView(
-  { text, maxHeight = 440, fontSize = 12.5 }: YamlViewProps,
-) {
+export default function YamlView({
+  text,
+  maxHeight = 440,
+  fontSize = 12.5,
+}: YamlViewProps) {
   const lines = text.split("\n").map((line, i) => {
     const lead = line.match(/^\s*/)?.[0].length ?? 0;
     let rest = line.slice(lead);
@@ -20,7 +22,9 @@ export default function YamlView(
       rest = rest.slice(2);
     }
     const ci = rest.indexOf(":");
-    let key = "", sep = "", val = "";
+    let key = "",
+      sep = "",
+      val = "";
     if (ci >= 0) {
       key = rest.slice(0, ci);
       sep = ":";

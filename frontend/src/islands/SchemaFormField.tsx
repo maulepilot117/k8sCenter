@@ -112,7 +112,7 @@ export default function SchemaFormField(props: SchemaFormFieldProps) {
             const num = Number(v);
             onChange(
               path,
-              v !== "" && !isNaN(num) && String(num) === v ? num : v,
+              v !== "" && !Number.isNaN(num) && String(num) === v ? num : v,
             );
           }}
         />

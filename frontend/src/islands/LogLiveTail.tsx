@@ -176,7 +176,7 @@ export default function LogLiveTail(props: LogLiveTailProps) {
               <span class="min-w-[140px] shrink-0 text-text-muted">
                 {(() => {
                   try {
-                    const ms = parseInt(entry.timestamp) / 1_000_000;
+                    const ms = parseInt(entry.timestamp, 10) / 1_000_000;
                     return new Date(ms).toISOString().slice(11, 23);
                   } catch {
                     return "";

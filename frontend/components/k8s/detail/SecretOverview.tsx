@@ -1,10 +1,10 @@
-import type { K8sResource, Secret } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import type { K8sResource, Secret } from "@/lib/k8s-types.ts";
 
 export function SecretOverview({ resource }: { resource: K8sResource }) {
   const s = resource as Secret;
   const entries = Object.entries(s.data ?? {}).sort(([a], [b]) =>
-    a.localeCompare(b)
+    a.localeCompare(b),
   );
 
   return (

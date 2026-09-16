@@ -1,5 +1,5 @@
-import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { formatMbps } from "@/lib/format.ts";
 
 export interface NetworkTileProps {
@@ -14,15 +14,19 @@ export interface NetworkTileProps {
   href?: string;
 }
 
-function Row(
-  { arrow, label, value, data, color }: {
-    arrow: string;
-    label: string;
-    value: number;
-    data?: number[] | null;
-    color: string;
-  },
-) {
+function Row({
+  arrow,
+  label,
+  value,
+  data,
+  color,
+}: {
+  arrow: string;
+  label: string;
+  value: number;
+  data?: number[] | null;
+  color: string;
+}) {
   return (
     <div
       style={{
@@ -81,9 +85,14 @@ function Row(
 // the selected time window plus a sparkline. It replaces the former Alerts tile
 // in the dashboard's 2×2 metric grid; critical-alert visibility lives on the
 // Cluster Health card.
-export function NetworkTile(
-  { rxP95, txP95, rxData, txData, period, href }: NetworkTileProps,
-) {
+export function NetworkTile({
+  rxP95,
+  txP95,
+  rxData,
+  txData,
+  period,
+  href,
+}: NetworkTileProps) {
   const inner = (
     <WidgetShell padding={16}>
       <div

@@ -41,7 +41,8 @@ export function KeyValueListEditor({
           <Input
             value={entry.key}
             onInput={(e) =>
-              onUpdate(i, "key", (e.target as HTMLInputElement).value)}
+              onUpdate(i, "key", (e.target as HTMLInputElement).value)
+            }
             placeholder={keyPlaceholder}
             class="flex-1"
           />
@@ -49,7 +50,8 @@ export function KeyValueListEditor({
           <Input
             value={entry.value}
             onInput={(e) =>
-              onUpdate(i, "value", (e.target as HTMLInputElement).value)}
+              onUpdate(i, "value", (e.target as HTMLInputElement).value)
+            }
             placeholder={valuePlaceholder}
             class="flex-1"
           />

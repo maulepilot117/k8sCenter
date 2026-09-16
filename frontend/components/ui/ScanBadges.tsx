@@ -1,5 +1,7 @@
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+
 export { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
+
 import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 
 export const SCANNER_COLORS: Record<string, string> = {
@@ -11,8 +13,8 @@ export const SCANNER_COLORS: Record<string, string> = {
 export function CVESeverityBadge({ severity }: { severity: string }) {
   const key = severity.toLowerCase();
   const color = SEVERITY_COLORS[key] ?? "var(--text-muted)";
-  const label = severity.charAt(0).toUpperCase() +
-    severity.slice(1).toLowerCase();
+  const label =
+    severity.charAt(0).toUpperCase() + severity.slice(1).toLowerCase();
   return <ColorBadge label={label} color={color} />;
 }
 
@@ -48,9 +50,15 @@ export function ScannerBadge({ scanner }: { scanner: string }) {
   );
 }
 
-export function SeverityCount(
-  { label, count, color }: { label: string; count: number; color: string },
-) {
+export function SeverityCount({
+  label,
+  count,
+  color,
+}: {
+  label: string;
+  count: number;
+  color: string;
+}) {
   if (count === 0) return null;
   return (
     <span

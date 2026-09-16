@@ -1,6 +1,8 @@
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+
 export { ColorBadge } from "@/components/ui/ColorBadge.tsx";
 export { SEVERITY_COLORS, SEVERITY_ORDER } from "@/lib/badge-colors.ts";
+
 import { SEVERITY_COLORS } from "@/lib/badge-colors.ts";
 
 export const ENGINE_COLORS: Record<string, string> = {

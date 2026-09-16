@@ -54,7 +54,7 @@ Native iOS and Android oncall companion for k8sCenter — full read-side parity 
 [![Download on the App Store](https://developer.apple.com/assets/elements/badges/download-on-the-app-store.svg)](https://apps.apple.com/app/k8scenter)
 [![Get it on Google Play](https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png)](https://play.google.com/store/apps/details?id=io.kubecenter.kubecenter)
 
-Source under [`mobile/`](mobile/). Build setup and release runbook in [`mobile/docs/RELEASE.md`](mobile/docs/RELEASE.md). Privacy policy at [`mobile/docs/APP_PRIVACY.md`](mobile/docs/APP_PRIVACY.md) and on the web at [/privacy](frontend/routes/privacy.tsx).
+Source under [`mobile/`](mobile/). Build setup and release runbook in [`mobile/docs/RELEASE.md`](mobile/docs/RELEASE.md). Privacy policy at [`mobile/docs/APP_PRIVACY.md`](mobile/docs/APP_PRIVACY.md) and on the web at [/privacy](frontend/src/pages/privacy.astro).
 
 ## Architecture
 
@@ -63,7 +63,7 @@ Kubernetes Cluster
 +-----------------------------------------------------------+
 |  +----------+     +-----------+     +------------+        |
 |  | Frontend  |---->|  Backend  |---->| PostgreSQL |        |
-|  | Deno/Fresh|     |  Go 1.26  |     +------------+        |
+|  | Bun/Astro |     |  Go 1.26  |     +------------+        |
 |  | :8000     |     |  :8080    |                           |
 |  +----------+     +-----+-----+                           |
 |                         |                                  |
@@ -79,7 +79,7 @@ Kubernetes Cluster
 | Layer | Technology |
 |---|---|
 | Backend API | Go 1.26, chi router, client-go v0.35.2 |
-| Frontend | Deno 2.x, Fresh 2.x (Preact), Tailwind v4 |
+| Frontend | Bun 1.4.x, Astro 7.x (Preact islands), Tailwind v4 |
 | Database | PostgreSQL (pgx/v5, golang-migrate) |
 | Monitoring | Prometheus + Grafana (kube-prometheus-stack) |
 | Logs | Loki (LogQL proxy, namespace enforcement) |
@@ -93,7 +93,7 @@ Kubernetes Cluster
 
 ### Prerequisites
 
-- Go 1.26+, Deno 2.x+, Docker, Helm 3.x, kubectl
+- Go 1.26+, Bun 1.4.x (see `.bun-version`), Docker, Helm 3.x, kubectl
 - [kind](https://kind.sigs.k8s.io/) or k3s for local development
 
 ### Local Development
@@ -130,8 +130,8 @@ helm install kubecenter ./helm/kubecenter \
 
 ```bash
 make build          # Build backend + frontend
-make test           # Run all tests (Go + Deno)
-make lint           # Lint both (go vet + deno lint/fmt)
+make test           # Run all tests (Go + Bun)
+make lint           # Lint both (go vet + bun run check)
 make test-e2e       # Playwright E2E (95 tests against kind)
 make docker-build   # Container images
 make helm-lint      # Validate Helm chart

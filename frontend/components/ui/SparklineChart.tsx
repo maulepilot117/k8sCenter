@@ -13,9 +13,12 @@ interface SparklineChartProps {
 // container provides; preserveAspectRatio="none" stretches it horizontally.
 const VIEW_W = 100;
 
-export function SparklineChart(
-  { data, color, width, height = 28 }: SparklineChartProps,
-) {
+export function SparklineChart({
+  data,
+  color,
+  width,
+  height = 28,
+}: SparklineChartProps) {
   // Use Math.random instead of crypto.randomUUID — the latter requires
   // a secure context (HTTPS) and fails on HTTP-only deployments (homelab).
   const gradientId = useMemo(
@@ -45,9 +48,9 @@ export function SparklineChart(
   });
 
   const polyline = points.join(" ");
-  const areaPath = `M0,${height} L${
-    points.map((p) => `${p}`).join(" L")
-  } L${w},${height} Z`;
+  const areaPath = `M0,${height} L${points
+    .map((p) => `${p}`)
+    .join(" L")} L${w},${height} Z`;
 
   return (
     <svg

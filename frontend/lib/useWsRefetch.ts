@@ -26,11 +26,16 @@ export function useWsRefetch(
     };
 
     const unsubs = subscriptions.map(([id, kind, ns]) =>
-      subscribe(id, kind, ns, onEvent)
+      subscribe(id, kind, ns, onEvent),
     );
 
     return () => {
-      unsubs.forEach((fn) => fn());
+      // Statement body, not an expression body: forEach discards whatever the
+      // callback returns, so returning each unsubscribe's result reads as a
+      // value someone intended to use.
+      unsubs.forEach((fn) => {
+        fn();
+      });
       if (refetchTimer.current !== null) clearTimeout(refetchTimer.current);
     };
   }, []);

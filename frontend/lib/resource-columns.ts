@@ -4,6 +4,9 @@
  */
 import type { ComponentChildren } from "preact";
 import { h } from "preact";
+import type { Column } from "@/components/ui/DataTable.tsx";
+import { StatusDot, type StatusValue } from "@/components/ui/StatusDot.tsx";
+import { age } from "@/lib/format.ts";
 import type {
   ClusterRole,
   ClusterRoleBinding,
@@ -11,8 +14,8 @@ import type {
   CronJob,
   DaemonSet,
   Deployment,
-  Endpoints,
   EndpointSlice,
+  Endpoints,
   HorizontalPodAutoscaler,
   Ingress,
   Job,
@@ -34,19 +37,19 @@ import type {
   StatefulSet,
   StorageClass,
 } from "@/lib/k8s-types.ts";
-import type { Column } from "@/components/ui/DataTable.tsx";
 import { statusColor } from "@/lib/status-colors.ts";
-import { age } from "@/lib/format.ts";
-import { StatusDot, type StatusValue } from "@/components/ui/StatusDot.tsx";
 
 // Helper to create a StatusBadge lazily (avoids importing island in server context)
 function badge(text: string): ComponentChildren {
-  return h("span", {
-    class:
-      `inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-        statusColor(text)
-      }`,
-  }, text);
+  return h(
+    "span",
+    {
+      class: `inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
+        text,
+      )}`,
+    },
+    text,
+  );
 }
 
 // Shared columns
@@ -69,23 +72,31 @@ function styledName(
   name: string,
   status: StatusValue = "neutral",
 ): ComponentChildren {
-  return h("span", {
-    style: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "7px",
-    },
-  }, [
-    h(StatusDot, { status, size: 6 }),
-    h("span", {
+  return h(
+    "span",
+    {
       style: {
-        color: "var(--accent)",
-        fontFamily: "var(--font-mono, monospace)",
-        fontWeight: 500,
-        fontSize: "13px",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "7px",
       },
-    }, name),
-  ]);
+    },
+    [
+      h(StatusDot, { status, size: 6 }),
+      h(
+        "span",
+        {
+          style: {
+            color: "var(--accent)",
+            fontFamily: "var(--font-mono, monospace)",
+            fontWeight: 500,
+            fontSize: "13px",
+          },
+        },
+        name,
+      ),
+    ],
+  );
 }
 
 const nameCol: Column<K8sResource> = {
@@ -96,26 +107,34 @@ const nameCol: Column<K8sResource> = {
 };
 
 function styledNamespace(ns: string): ComponentChildren {
-  return h("span", {
-    style: {
-      fontFamily: "var(--font-mono, monospace)",
-      fontSize: "11px",
-      padding: "2px 6px",
-      background: "var(--bg-base)",
-      borderRadius: "4px",
-      color: "var(--text-secondary)",
+  return h(
+    "span",
+    {
+      style: {
+        fontFamily: "var(--font-mono, monospace)",
+        fontSize: "11px",
+        padding: "2px 6px",
+        background: "var(--bg-base)",
+        borderRadius: "4px",
+        color: "var(--text-secondary)",
+      },
     },
-  }, ns);
+    ns,
+  );
 }
 
 function styledAge(timestamp: string): ComponentChildren {
-  return h("span", {
-    style: {
-      fontFamily: "var(--font-mono, monospace)",
-      fontSize: "12px",
-      color: "var(--text-secondary)",
+  return h(
+    "span",
+    {
+      style: {
+        fontFamily: "var(--font-mono, monospace)",
+        fontSize: "12px",
+        color: "var(--text-secondary)",
+      },
     },
-  }, age(timestamp));
+    age(timestamp),
+  );
 }
 
 function styledBadge(
@@ -145,29 +164,33 @@ function styledBadge(
     },
   };
   const c = colors[status];
-  return h("span", {
-    style: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "5px",
-      padding: "3px 10px",
-      borderRadius: "12px",
-      fontSize: "11px",
-      fontWeight: 500,
-      background: c.bg,
-      color: c.text,
-    },
-  }, [
-    h("span", {
+  return h(
+    "span",
+    {
       style: {
-        width: "6px",
-        height: "6px",
-        borderRadius: "50%",
-        background: c.dot,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "5px",
+        padding: "3px 10px",
+        borderRadius: "12px",
+        fontSize: "11px",
+        fontWeight: 500,
+        background: c.bg,
+        color: c.text,
       },
-    }),
-    text,
-  ]);
+    },
+    [
+      h("span", {
+        style: {
+          width: "6px",
+          height: "6px",
+          borderRadius: "50%",
+          background: c.dot,
+        },
+      }),
+      text,
+    ],
+  );
 }
 
 function styledReplicaDots(
@@ -178,59 +201,73 @@ function styledReplicaDots(
   const dots = [];
   for (let i = 0; i < desired; i++) {
     const isReady = i < ready;
-    dots.push(h("div", {
-      key: i,
-      style: {
-        width: "8px",
-        height: "8px",
-        borderRadius: "2px",
-        background: isReady
-          ? "var(--success)"
-          : (available !== undefined && i < available
-            ? "var(--warning)"
-            : "var(--error)"),
-      },
-    }));
+    dots.push(
+      h("div", {
+        key: i,
+        style: {
+          width: "8px",
+          height: "8px",
+          borderRadius: "2px",
+          background: isReady
+            ? "var(--success)"
+            : available !== undefined && i < available
+              ? "var(--warning)"
+              : "var(--error)",
+        },
+      }),
+    );
   }
   return h(
     "div",
     { style: { display: "flex", alignItems: "center", gap: "6px" } },
     [
       h("div", { style: { display: "flex", gap: "3px" } }, dots),
-      h("span", {
-        style: {
-          fontSize: "12px",
-          fontFamily: "var(--font-mono, monospace)",
-          color: "var(--text-secondary)",
+      h(
+        "span",
+        {
+          style: {
+            fontSize: "12px",
+            fontFamily: "var(--font-mono, monospace)",
+            color: "var(--text-secondary)",
+          },
         },
-      }, `${ready}/${desired}`),
+        `${ready}/${desired}`,
+      ),
     ],
   );
 }
 
 function styledImage(image: string): ComponentChildren {
-  return h("span", {
-    style: {
-      fontFamily: "var(--font-mono, monospace)",
-      fontSize: "11px",
-      color: "var(--text-muted)",
-      maxWidth: "200px",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-      display: "block",
+  return h(
+    "span",
+    {
+      style: {
+        fontFamily: "var(--font-mono, monospace)",
+        fontSize: "11px",
+        color: "var(--text-muted)",
+        maxWidth: "200px",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        display: "block",
+      },
     },
-  }, image);
+    image,
+  );
 }
 
 function styledMono(text: string): ComponentChildren {
-  return h("span", {
-    style: {
-      fontFamily: "var(--font-mono, monospace)",
-      fontSize: "12px",
-      color: "var(--text-secondary)",
+  return h(
+    "span",
+    {
+      style: {
+        fontFamily: "var(--font-mono, monospace)",
+        fontSize: "12px",
+        color: "var(--text-secondary)",
+      },
     },
-  }, text);
+    text,
+  );
 }
 
 // ---- Per-resource column sets ----
@@ -242,11 +279,12 @@ const podColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const phase = (r as Pod).status?.phase ?? "Unknown";
-      const status: StatusValue = (phase === "Running" || phase === "Succeeded")
-        ? "success"
-        : phase === "Pending"
-        ? "warning"
-        : "error";
+      const status: StatusValue =
+        phase === "Running" || phase === "Succeeded"
+          ? "success"
+          : phase === "Pending"
+            ? "warning"
+            : "error";
       return styledName(r.metadata.name, status);
     },
   },
@@ -312,11 +350,12 @@ const deploymentColumns: Column<K8sResource>[] = [
       const dep = r as Deployment;
       const available = dep.status?.availableReplicas ?? 0;
       const replicas = dep.spec?.replicas ?? 0;
-      const status: StatusValue = (available === 0 && replicas > 0)
-        ? "error"
-        : available < replicas
-        ? "warning"
-        : "success";
+      const status: StatusValue =
+        available === 0 && replicas > 0
+          ? "error"
+          : available < replicas
+            ? "warning"
+            : "success";
       return styledName(r.metadata.name, status);
     },
   },
@@ -382,11 +421,12 @@ const statefulsetColumns: Column<K8sResource>[] = [
       const s = r as StatefulSet;
       const ready = s.status?.readyReplicas ?? 0;
       const desired = s.spec?.replicas ?? 0;
-      const status: StatusValue = (ready === 0 && desired > 0)
-        ? "error"
-        : ready < desired
-        ? "warning"
-        : "success";
+      const status: StatusValue =
+        ready === 0 && desired > 0
+          ? "error"
+          : ready < desired
+            ? "warning"
+            : "success";
       return styledName(r.metadata.name, status);
     },
   },
@@ -425,9 +465,7 @@ const statefulsetColumns: Column<K8sResource>[] = [
     label: "Image",
     render: (r) => {
       const s = r as StatefulSet;
-      return styledImage(
-        s.spec?.template?.spec?.containers?.[0]?.image ?? "-",
-      );
+      return styledImage(s.spec?.template?.spec?.containers?.[0]?.image ?? "-");
     },
   },
   {
@@ -447,11 +485,12 @@ const daemonsetColumns: Column<K8sResource>[] = [
       const ds = r as DaemonSet;
       const ready = ds.status?.numberReady ?? 0;
       const desired = ds.status?.desiredNumberScheduled ?? 0;
-      const status: StatusValue = (ready === 0 && desired > 0)
-        ? "error"
-        : ready < desired
-        ? "warning"
-        : "success";
+      const status: StatusValue =
+        ready === 0 && desired > 0
+          ? "error"
+          : ready < desired
+            ? "warning"
+            : "success";
       return styledName(r.metadata.name, status);
     },
   },
@@ -585,9 +624,7 @@ const ingressColumns: Column<K8sResource>[] = [
     render: (r) => {
       const lb = (r as Ingress).status?.loadBalancer?.ingress;
       if (!lb?.length) return styledMono("-");
-      return styledMono(
-        lb.map((i) => i.ip ?? i.hostname ?? "").join(", "),
-      );
+      return styledMono(lb.map((i) => i.ip ?? i.hostname ?? "").join(", "));
     },
   },
   {
@@ -714,11 +751,12 @@ const pvcColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const phase = (r as PersistentVolumeClaim).status?.phase ?? "Pending";
-      const status: StatusValue = phase === "Bound"
-        ? "success"
-        : phase === "Pending"
-        ? "warning"
-        : "error";
+      const status: StatusValue =
+        phase === "Bound"
+          ? "success"
+          : phase === "Pending"
+            ? "warning"
+            : "error";
       return styledName(r.metadata.name, status);
     },
   },
@@ -751,9 +789,7 @@ const pvcColumns: Column<K8sResource>[] = [
     key: "storageClass",
     label: "Storage Class",
     render: (r) =>
-      styledMono(
-        (r as PersistentVolumeClaim).spec?.storageClassName ?? "-",
-      ),
+      styledMono((r as PersistentVolumeClaim).spec?.storageClassName ?? "-"),
   },
   {
     key: "age",
@@ -773,10 +809,10 @@ const jobColumns: Column<K8sResource>[] = [
       const status: StatusValue = j.status?.completionTime
         ? "success"
         : (j.status?.failed ?? 0) > 0
-        ? "error"
-        : (j.status?.active ?? 0) > 0
-        ? "info"
-        : "warning";
+          ? "error"
+          : (j.status?.active ?? 0) > 0
+            ? "info"
+            : "warning";
       return styledName(r.metadata.name, status);
     },
   },
@@ -884,21 +920,25 @@ const networkpolicyColumns: Column<K8sResource>[] = [
       if (!labels || Object.keys(labels).length === 0) {
         return styledMono("All pods");
       }
-      const text = Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(
-        ", ",
-      );
-      return h("span", {
-        style: {
-          fontFamily: "var(--font-mono, monospace)",
-          fontSize: "12px",
-          color: "var(--text-secondary)",
-          maxWidth: "200px",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          display: "block",
+      const text = Object.entries(labels)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
+      return h(
+        "span",
+        {
+          style: {
+            fontFamily: "var(--font-mono, monospace)",
+            fontSize: "12px",
+            color: "var(--text-secondary)",
+            maxWidth: "200px",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            display: "block",
+          },
         },
-      }, text);
+        text,
+      );
     },
   },
   {
@@ -909,9 +949,7 @@ const networkpolicyColumns: Column<K8sResource>[] = [
       return h(
         "span",
         { style: { display: "flex", gap: "4px" } },
-        types.map(
-          (t) => styledBadge(t, t === "Ingress" ? "info" : "warning"),
-        ),
+        types.map((t) => styledBadge(t, t === "Ingress" ? "info" : "warning")),
       );
     },
   },
@@ -1071,11 +1109,12 @@ const replicasetColumns: Column<K8sResource>[] = [
       const rs = r as ReplicaSet;
       const ready = rs.status?.readyReplicas ?? 0;
       const desired = rs.spec?.replicas ?? 0;
-      const status: StatusValue = (ready === 0 && desired > 0)
-        ? "error"
-        : ready < desired
-        ? "warning"
-        : "success";
+      const status: StatusValue =
+        ready === 0 && desired > 0
+          ? "error"
+          : ready < desired
+            ? "warning"
+            : "success";
       return styledName(r.metadata.name, status);
     },
   },
@@ -1123,19 +1162,20 @@ const endpointColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const ep = r as Endpoints;
-      const readyCount = ep.subsets?.reduce(
-        (s, sub) => s + (sub.addresses?.length ?? 0),
-        0,
-      ) ?? 0;
-      const notReadyCount = ep.subsets?.reduce(
-        (s, sub) => s + (sub.notReadyAddresses?.length ?? 0),
-        0,
-      ) ?? 0;
-      const status: StatusValue = readyCount === 0 && notReadyCount > 0
-        ? "error"
-        : notReadyCount > 0
-        ? "warning"
-        : "success";
+      const readyCount =
+        ep.subsets?.reduce((s, sub) => s + (sub.addresses?.length ?? 0), 0) ??
+        0;
+      const notReadyCount =
+        ep.subsets?.reduce(
+          (s, sub) => s + (sub.notReadyAddresses?.length ?? 0),
+          0,
+        ) ?? 0;
+      const status: StatusValue =
+        readyCount === 0 && notReadyCount > 0
+          ? "error"
+          : notReadyCount > 0
+            ? "warning"
+            : "success";
       return styledName(r.metadata.name, status);
     },
   },
@@ -1150,10 +1190,9 @@ const endpointColumns: Column<K8sResource>[] = [
     label: "Addresses",
     render: (r) => {
       const ep = r as Endpoints;
-      const count = ep.subsets?.reduce(
-        (sum, s) => sum + (s.addresses?.length ?? 0),
-        0,
-      ) ?? 0;
+      const count =
+        ep.subsets?.reduce((sum, s) => sum + (s.addresses?.length ?? 0), 0) ??
+        0;
       return styledMono(String(count));
     },
   },
@@ -1175,18 +1214,20 @@ const hpaColumns: Column<K8sResource>[] = [
       const hpa = r as HorizontalPodAutoscaler;
       const metrics = hpa.spec?.metrics;
       if (!metrics?.length) return "-";
-      return metrics.map((m) => {
-        if (m.resource?.target?.averageUtilization) {
-          const current = hpa.status?.currentMetrics?.find(
-            (cm) => cm.resource?.name === m.resource?.name,
-          );
-          const currentVal = current?.resource?.current?.averageUtilization;
-          return `${
-            currentVal ?? "<unknown>"
-          }%/${m.resource.target.averageUtilization}%`;
-        }
-        return m.type;
-      }).join(", ");
+      return metrics
+        .map((m) => {
+          if (m.resource?.target?.averageUtilization) {
+            const current = hpa.status?.currentMetrics?.find(
+              (cm) => cm.resource?.name === m.resource?.name,
+            );
+            const currentVal = current?.resource?.current?.averageUtilization;
+            return `${
+              currentVal ?? "<unknown>"
+            }%/${m.resource.target.averageUtilization}%`;
+          }
+          return m.type;
+        })
+        .join(", ");
     },
   },
   {
@@ -1217,11 +1258,12 @@ const pvColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const phase = (r as PersistentVolume).status?.phase ?? "Available";
-      const status: StatusValue = (phase === "Available" || phase === "Bound")
-        ? "success"
-        : phase === "Released"
-        ? "warning"
-        : "error";
+      const status: StatusValue =
+        phase === "Available" || phase === "Bound"
+          ? "success"
+          : phase === "Released"
+            ? "warning"
+            : "error";
       return styledName(r.metadata.name, status);
     },
   },
@@ -1235,9 +1277,7 @@ const pvColumns: Column<K8sResource>[] = [
     key: "accessModes",
     label: "Access Modes",
     render: (r) =>
-      styledMono(
-        (r as PersistentVolume).spec?.accessModes?.join(", ") ?? "-",
-      ),
+      styledMono((r as PersistentVolume).spec?.accessModes?.join(", ") ?? "-"),
   },
   {
     key: "reclaimPolicy",
@@ -1427,13 +1467,10 @@ const endpointsliceColumns: Column<K8sResource>[] = [
     sortable: true,
     render: (r) => {
       const eps = (r as EndpointSlice).endpoints ?? [];
-      const allReady = eps.length > 0 &&
-        eps.every((e) => e.conditions?.ready !== false);
-      const status: StatusValue = eps.length === 0
-        ? "neutral"
-        : allReady
-        ? "success"
-        : "warning";
+      const allReady =
+        eps.length > 0 && eps.every((e) => e.conditions?.ready !== false);
+      const status: StatusValue =
+        eps.length === 0 ? "neutral" : allReady ? "success" : "warning";
       return styledName(r.metadata.name, status);
     },
   },
@@ -1446,11 +1483,7 @@ const endpointsliceColumns: Column<K8sResource>[] = [
   {
     key: "addressType",
     label: "Address Type",
-    render: (r) =>
-      styledBadge(
-        (r as EndpointSlice).addressType ?? "-",
-        "info",
-      ),
+    render: (r) => styledBadge((r as EndpointSlice).addressType ?? "-", "info"),
   },
   {
     key: "ports",
@@ -1489,14 +1522,18 @@ const ciliumnetworkpolicyColumns: Column<K8sResource>[] = [
     key: "endpointSelector",
     label: "Endpoint Selector",
     render: (r) => {
-      const spec = (r as K8sResource & {
-        spec?: {
-          endpointSelector?: { matchLabels?: Record<string, string> };
-        };
-      }).spec;
+      const spec = (
+        r as K8sResource & {
+          spec?: {
+            endpointSelector?: { matchLabels?: Record<string, string> };
+          };
+        }
+      ).spec;
       const labels = spec?.endpointSelector?.matchLabels;
       if (!labels || Object.keys(labels).length === 0) return "All";
-      return Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(", ");
+      return Object.entries(labels)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(", ");
     },
     class: "max-w-xs truncate",
   },
@@ -1504,17 +1541,21 @@ const ciliumnetworkpolicyColumns: Column<K8sResource>[] = [
     key: "rules",
     label: "Rules",
     render: (r) => {
-      const spec = (r as K8sResource & {
-        spec?: {
-          ingress?: unknown[];
-          ingressDeny?: unknown[];
-          egress?: unknown[];
-          egressDeny?: unknown[];
-        };
-      }).spec;
-      const count = (spec?.ingress?.length ?? 0) +
+      const spec = (
+        r as K8sResource & {
+          spec?: {
+            ingress?: unknown[];
+            ingressDeny?: unknown[];
+            egress?: unknown[];
+            egressDeny?: unknown[];
+          };
+        }
+      ).spec;
+      const count =
+        (spec?.ingress?.length ?? 0) +
         (spec?.ingressDeny?.length ?? 0) +
-        (spec?.egress?.length ?? 0) + (spec?.egressDeny?.length ?? 0);
+        (spec?.egress?.length ?? 0) +
+        (spec?.egressDeny?.length ?? 0);
       return String(count);
     },
   },

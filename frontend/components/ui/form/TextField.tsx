@@ -9,24 +9,27 @@ interface TextFieldProps {
   type?: "text" | "password";
 }
 
-export default function TextField(
-  { value, onInput, placeholder, mono, width = "100%", type = "text" }:
-    TextFieldProps,
-) {
+export default function TextField({
+  value,
+  onInput,
+  placeholder,
+  mono,
+  width = "100%",
+  type = "text",
+}: TextFieldProps) {
   return (
     <input
       type={type}
       value={value}
       placeholder={placeholder}
       onInput={(e) => onInput((e.target as HTMLInputElement).value)}
-      onFocus={(
-        e,
-      ) => ((e.currentTarget as HTMLElement).style.borderColor =
-        "var(--accent)")}
-      onBlur={(
-        e,
-      ) => ((e.currentTarget as HTMLElement).style.borderColor =
-        "var(--border-subtle)")}
+      onFocus={(e) =>
+        ((e.currentTarget as HTMLElement).style.borderColor = "var(--accent)")
+      }
+      onBlur={(e) =>
+        ((e.currentTarget as HTMLElement).style.borderColor =
+          "var(--border-subtle)")
+      }
       style={{
         width,
         padding: "10px 12px",

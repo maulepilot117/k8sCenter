@@ -87,9 +87,9 @@ test("applyViewState: a cluster-scoped view restores an empty namespace", () => 
 });
 
 test("captureViewState: stamps the current schema version", () => {
-  expect(
-    captureViewState(viewState()).schemaVersion,
-  ).toBe(SAVED_VIEW_SCHEMA_VERSION);
+  expect(captureViewState(viewState()).schemaVersion).toBe(
+    SAVED_VIEW_SCHEMA_VERSION,
+  );
 });
 
 test("applyViewState: unsupported sortKey degrades to name and reports a warning", () => {
@@ -164,16 +164,14 @@ test("classifyPin: an error outcome is unknown, never ok or missing", () => {
   // backend is unreachable (R3).
   const stored = pin();
   expect(classifyPin(stored, { status: "error" })).toBe("unknown");
-  expect(
-    classifyPin(stored, { status: "error", liveUid: stored.uid }),
-  ).toBe("unknown");
+  expect(classifyPin(stored, { status: "error", liveUid: stored.uid })).toBe(
+    "unknown",
+  );
 });
 
 test("classifyPin: same uid returns ok", () => {
   const stored = pin();
-  expect(
-    classifyPin(stored, { status: "ok", liveUid: stored.uid }),
-  ).toBe("ok");
+  expect(classifyPin(stored, { status: "ok", liveUid: stored.uid })).toBe("ok");
 });
 
 test("classifyPin: different uid returns replaced", () => {
@@ -209,9 +207,9 @@ test("classifyPin: a failed lookup is unknown, not missing", () => {
 
 test("classifyPin: an unsupported pin schema is unknown, never ok", () => {
   const stored = pin({ schemaVersion: 2 });
-  expect(
-    classifyPin(stored, { status: "ok", liveUid: stored.uid }),
-  ).toBe("unknown");
+  expect(classifyPin(stored, { status: "ok", liveUid: stored.uid })).toBe(
+    "unknown",
+  );
 });
 
 test("classifyPin: an unsupported schema still reports missing and forbidden", () => {
@@ -238,27 +236,25 @@ test("isSupportedSavedViewSchema / isSupportedPinSchema gate on the current vers
 // each other would prove nothing: both copies live in this repo, and the one
 // that matters is the server's.
 test("SAVED_VIEW_STATUS_FILTERS matches the Go allowedStatusFilters", () => {
-  expect(
-    [...SAVED_VIEW_STATUS_FILTERS].sort(),
-  ).toEqual(
-    ["all", "failed", "pending", "progressing", "running"],
-  );
+  expect([...SAVED_VIEW_STATUS_FILTERS].sort()).toEqual([
+    "all",
+    "failed",
+    "pending",
+    "progressing",
+    "running",
+  ]);
 });
 
 test("SAVED_VIEW_SORT_KEYS matches the Go allowedSortKeys", () => {
-  expect(
-    [...SAVED_VIEW_SORT_KEYS].sort(),
-  ).toEqual(
-    ["age", "name", "namespace"],
-  );
+  expect([...SAVED_VIEW_SORT_KEYS].sort()).toEqual([
+    "age",
+    "name",
+    "namespace",
+  ]);
 });
 
 test("SAVED_VIEW_SORT_DIRS matches the Go allowedSortDirs", () => {
-  expect(
-    [...SAVED_VIEW_SORT_DIRS].sort(),
-  ).toEqual(
-    ["asc", "desc"],
-  );
+  expect([...SAVED_VIEW_SORT_DIRS].sort()).toEqual(["asc", "desc"]);
 });
 
 test("schema versions, ceilings and bounds match their Go constants", () => {

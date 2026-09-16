@@ -10,9 +10,13 @@ interface MonitoringFieldsProps {
   onDirty?: () => void;
 }
 
-export function MonitoringFields(
-  { promUrl, grafUrl, grafToken, monNs, onDirty }: MonitoringFieldsProps,
-) {
+export function MonitoringFields({
+  promUrl,
+  grafUrl,
+  grafToken,
+  monNs,
+  onDirty,
+}: MonitoringFieldsProps) {
   return (
     <div class="grid gap-4 sm:grid-cols-2">
       <Field label="Prometheus URL">

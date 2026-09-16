@@ -1,12 +1,14 @@
 type SelectOption = string | { value: string; label: string };
 
-export default function Select(
-  { value, options, onChange }: {
-    value: string;
-    options: SelectOption[];
-    onChange: (v: string) => void;
-  },
-) {
+export default function Select({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: SelectOption[];
+  onChange: (v: string) => void;
+}) {
   return (
     <select
       value={value}
@@ -25,9 +27,15 @@ export default function Select(
       }}
     >
       {options.map((o) =>
-        typeof o === "string"
-          ? <option key={o} value={o}>{o}</option>
-          : <option key={o.value} value={o.value}>{o.label}</option>
+        typeof o === "string" ? (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ) : (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ),
       )}
     </select>
   );

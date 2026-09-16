@@ -43,25 +43,27 @@ export function CodeBlock({
       </button>
 
       <pre class="overflow-x-auto p-4 text-sm leading-relaxed">
- <code>
- {lines.map((line, i) => (
- <div key={i} class="flex">
- {showLineNumbers && (
- <span
- class="select-none pr-4 text-right text-text-muted"
- style={{ minWidth: `${lineNumWidth + 1}ch` }}
- >
- {i + 1}
- </span>
- )}
- <span class="flex-1">
- {language ==="yaml"
- ? highlightYaml(line)
- : <span class="text-text-primary">{line}</span>}
- </span>
- </div>
- ))}
- </code>
+        <code>
+          {lines.map((line, i) => (
+            <div key={i} class="flex">
+              {showLineNumbers && (
+                <span
+                  class="select-none pr-4 text-right text-text-muted"
+                  style={{ minWidth: `${lineNumWidth + 1}ch` }}
+                >
+                  {i + 1}
+                </span>
+              )}
+              <span class="flex-1">
+                {language === "yaml" ? (
+                  highlightYaml(line)
+                ) : (
+                  <span class="text-text-primary">{line}</span>
+                )}
+              </span>
+            </div>
+          ))}
+        </code>
       </pre>
     </div>
   );
@@ -96,7 +98,7 @@ function highlightYaml(line: string): preact.JSX.Element {
       <span>
         <span class="text-text-primary">{indent}</span>
         <span class="text-warning">{dash}</span>
-        {highlightValue("" + rest)}
+        {highlightValue(`${rest}`)}
       </span>
     );
   }

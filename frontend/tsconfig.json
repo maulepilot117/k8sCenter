@@ -6,15 +6,11 @@
       // Recreates deno.json's `"@/": "./"` import-map entry (U3 approach
       // step 2) now that Astro/Bun resolve `@/` from real dependency
       // resolution rather than an import map.
-      "@/*": ["./*"],
-      // U4 test-only shim: `lib/cluster.ts` imports `fresh/runtime`, a jsr:
-      // specifier only Deno's import map (deno.json) can resolve. Bun has
-      // no import map, so `bun test` needs this redirect to load
-      // cluster.ts (and api.ts, which imports it). Real Deno/Fresh builds
-      // are unaffected — deno.json's import map still wins there. Remove
-      // this entry, and lib/__shims__/fresh-runtime.ts, once cluster.ts
-      // stops importing fresh/runtime.
-      "fresh/runtime": ["./lib/__shims__/fresh-runtime.ts"]
+      "@/*": ["./*"]
+      // U4's `fresh/runtime` shim entry lived here until U12. Its only
+      // consumers were the Fresh tree and the six modules that shipped with
+      // it; `lib/cluster.ts` is now a one-line re-export of its src twin and
+      // imports nothing.
     },
     "jsx": "preserve",
     "jsxImportSource": "preact",
@@ -25,13 +21,20 @@
     // *_test.ts files entered this project via "include" below.
     "types": ["bun-types"]
   },
-  // Scoped to what has actually been ported off Fresh/Deno (see the U3
-  // check-gate scope note in astro.config.mjs). frontend/routes, islands,
-  // components, lib, main.ts etc. still import `fresh` / `fresh/runtime`
-  // (jsr: specifiers) and are type-checked by `deno check` until U12
-  // deletes deno.json. This include list widens as U7 through U9 move
-  // files into src/. "server" was added in U5: it is Bun/Astro-only
-  // runtime code with no Deno equivalent, so it is type-checked here
-  // rather than by `deno check` (see deno.json's matching exclude entry).
-  "include": ["src", "astro.config.mjs", "server", "../tools/theme-gen/main.ts"]
+  // U12 widened this to "lib" and "components". While both trees existed the
+  // list was deliberately scoped to what had been ported, because `deno
+  // check` still gated the rest; deleting deno.json takes that second
+  // checker away. Everything reachable from src was already checked (TS
+  // follows imports regardless of "include"), but a file no page happens to
+  // import would have been checked by nothing at all -- which is how dead
+  // code rots into something that no longer compiles when someone revives
+  // it. Naming the directories makes the whole frontend one program again.
+  "include": [
+    "src",
+    "lib",
+    "components",
+    "server",
+    "astro.config.mjs",
+    "../tools/theme-gen/main.ts"
+  ]
 }

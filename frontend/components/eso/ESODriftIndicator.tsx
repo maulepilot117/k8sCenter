@@ -1,5 +1,5 @@
-import type { DriftStatus, DriftUnknownReason } from "@/lib/eso-types.ts";
 import { DriftBadge } from "@/components/eso/ESOBadges.tsx";
+import type { DriftStatus, DriftUnknownReason } from "@/lib/eso-types.ts";
 
 /** Per-reason hint text rendered next to the badge. The reason field is
  * populated only on the detail endpoint; list rows leave driftStatus as
@@ -26,9 +26,7 @@ interface ESODriftIndicatorProps {
  * coloured badge inline with explanatory text. When status=Drifted, also
  * renders a disabled "Revert" stub — Phase E (Unit 14) will replace the stub
  * with a real force-sync handler. */
-export function ESODriftIndicator(
-  { status, reason }: ESODriftIndicatorProps,
-) {
+export function ESODriftIndicator({ status, reason }: ESODriftIndicatorProps) {
   return (
     <div class="flex flex-col gap-1.5">
       <div class="flex items-center gap-2">
@@ -40,8 +38,7 @@ export function ESODriftIndicator(
         )}
         {status === "Unknown" && reason && (
           <span class="text-xs text-text-muted">
-            {REASON_HINTS[reason] ??
-              "Drift state is currently unknown."}
+            {REASON_HINTS[reason] ?? "Drift state is currently unknown."}
           </span>
         )}
         {status === "InSync" && (

@@ -1,5 +1,5 @@
-import type { K8sResource, Node } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import type { K8sResource, Node } from "@/lib/k8s-types.ts";
 import { ConditionsTable } from "./ConditionsTable.tsx";
 
 export function NodeOverview({ resource }: { resource: K8sResource }) {
@@ -116,9 +116,7 @@ export function NodeOverview({ resource }: { resource: K8sResource }) {
                     <td class="px-3 py-1.5 text-text-secondary">
                       {t.value ?? "-"}
                     </td>
-                    <td class="px-3 py-1.5 text-text-secondary">
-                      {t.effect}
-                    </td>
+                    <td class="px-3 py-1.5 text-text-secondary">{t.effect}</td>
                   </tr>
                 ))}
               </tbody>

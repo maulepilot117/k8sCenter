@@ -62,15 +62,15 @@ interface ResourceDetailProps {
 const VALID_TABS = new Set(["overview", "yaml", "events", "metrics"]);
 
 function pluralize(s: string): string {
-  if (s.endsWith("y") && !s.endsWith("ey")) return s.slice(0, -1) + "ies";
+  if (s.endsWith("y") && !s.endsWith("ey")) return `${s.slice(0, -1)}ies`;
   if (
     s.endsWith("s") ||
     s.endsWith("x") ||
     s.endsWith("ch") ||
     s.endsWith("sh")
   )
-    return s + "es";
-  return s + "s";
+    return `${s}es`;
+  return `${s}s`;
 }
 
 /** A condition shape shared across Deployment, Job, and other resource statuses. */

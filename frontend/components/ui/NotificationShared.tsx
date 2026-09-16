@@ -1,12 +1,12 @@
 import type { Signal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
-import { wsStatus } from "@/lib/ws.ts";
-import { SearchBar } from "@/components/ui/SearchBar.tsx";
-import { Spinner } from "@/components/ui/Spinner.tsx";
 import { Button } from "@/components/ui/Button.tsx";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog.tsx";
+import { SearchBar } from "@/components/ui/SearchBar.tsx";
+import { Spinner } from "@/components/ui/Spinner.tsx";
 import type { EventSourceRef } from "@/lib/notification-types.ts";
 import { PAGE_SIZE } from "@/lib/notification-types.ts";
+import { wsStatus } from "@/lib/ws.ts";
 
 // ---------------------------------------------------------------------------
 // NotificationPageHeader
@@ -53,11 +53,7 @@ export function NotificationPageHeader({
               >
                 Create {kind}
               </Button>
-              <Button
-                variant="ghost"
-                onClick={onRefresh}
-                disabled={refreshing}
-              >
+              <Button variant="ghost" onClick={onRefresh} disabled={refreshing}>
                 {refreshing ? "Refreshing..." : "Refresh"}
               </Button>
             </>
@@ -351,9 +347,7 @@ export function NotificationFormShell({
 
         {error && <p class="text-sm text-danger mb-3">{error}</p>}
 
-        <div class="space-y-3">
-          {children}
-        </div>
+        <div class="space-y-3">{children}</div>
 
         <div class="mt-6 flex justify-end gap-3">
           <button
@@ -373,8 +367,8 @@ export function NotificationFormShell({
             {submitting
               ? "..."
               : title.startsWith("Edit")
-              ? "Update"
-              : "Create"}
+                ? "Update"
+                : "Create"}
           </button>
         </div>
       </div>
@@ -470,9 +464,7 @@ export function CountBadge({ items, label }: CountBadgeProps) {
   const count = items.length;
   if (count === 0) return <span class="text-xs text-text-muted">-</span>;
 
-  const tooltip = items
-    .map((i) => `${i.kind}/${i.name}`)
-    .join("\n");
+  const tooltip = items.map((i) => `${i.kind}/${i.name}`).join("\n");
 
   return (
     <span

@@ -14,13 +14,12 @@ function buildSeriesPath(data: number[]): { line: string; area: string } {
   const x = (i: number) =>
     CHART_PAD + (i * (CHART_W - 2 * CHART_PAD)) / (n - 1);
   const y = (v: number) =>
-    CHART_H - CHART_PAD -
-    ((v - min) / range) * (CHART_H - 2 * CHART_PAD);
+    CHART_H - CHART_PAD - ((v - min) / range) * (CHART_H - 2 * CHART_PAD);
   const pts = data.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
   const line = `M${pts.join(" L")}`;
-  const area = `${line} L${x(n - 1).toFixed(1)},${
-    (CHART_H - CHART_PAD).toFixed(1)
-  } L${x(0).toFixed(1)},${(CHART_H - CHART_PAD).toFixed(1)} Z`;
+  const area = `${line} L${x(n - 1).toFixed(1)},${(CHART_H - CHART_PAD).toFixed(
+    1,
+  )} L${x(0).toFixed(1)},${(CHART_H - CHART_PAD).toFixed(1)} Z`;
   return { line, area };
 }
 
@@ -33,15 +32,16 @@ export interface ResourceAreaChartProps {
   memData: number[] | null;
 }
 
-export function ResourceAreaChart(
-  { cpuData, memData }: ResourceAreaChartProps,
-) {
+export function ResourceAreaChart({
+  cpuData,
+  memData,
+}: ResourceAreaChartProps) {
   const cpuPath = useMemo(
-    () => cpuData && cpuData.length >= 2 ? buildSeriesPath(cpuData) : null,
+    () => (cpuData && cpuData.length >= 2 ? buildSeriesPath(cpuData) : null),
     [cpuData],
   );
   const memPath = useMemo(
-    () => memData && memData.length >= 2 ? buildSeriesPath(memData) : null,
+    () => (memData && memData.length >= 2 ? buildSeriesPath(memData) : null),
     [memData],
   );
 

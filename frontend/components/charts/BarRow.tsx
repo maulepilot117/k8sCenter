@@ -10,10 +10,14 @@ interface BarRowProps {
 }
 
 /** Labeled horizontal progress bar. Namespace usage, node capacity, quotas. */
-export default function BarRow(
-  { label, value, max = 100, suffix, color = "var(--accent)", labelWidth = 96 }:
-    BarRowProps,
-) {
+export default function BarRow({
+  label,
+  value,
+  max = 100,
+  suffix,
+  color = "var(--accent)",
+  labelWidth = 96,
+}: BarRowProps) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   return (
     <div

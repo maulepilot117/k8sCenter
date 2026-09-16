@@ -1,5 +1,5 @@
-import { useSignal } from "@preact/signals";
 import type { Signal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { apiGet } from "@/lib/api.ts";
 
@@ -73,9 +73,8 @@ export function usePoll<T>(
           }
         }
       } catch (err) {
-        error.value = err instanceof Error
-          ? err.message
-          : "Failed to fetch data";
+        error.value =
+          err instanceof Error ? err.message : "Failed to fetch data";
         failureCount.current++;
 
         // Pause polling after consecutive failures
@@ -105,7 +104,8 @@ export function usePoll<T>(
     // Resume polling on visibility change after failure pause
     const onVisibilityChange = () => {
       if (
-        !document.hidden && intervalRef.current === null &&
+        !document.hidden &&
+        intervalRef.current === null &&
         !stoppedRef.current
       ) {
         failureCount.current = 0;

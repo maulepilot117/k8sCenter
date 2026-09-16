@@ -1,8 +1,10 @@
 import type { BackendRef } from "@/lib/gateway-types.ts";
 
-export default function BackendRefsTable(
-  { backendRefs }: { backendRefs?: BackendRef[] },
-) {
+export default function BackendRefsTable({
+  backendRefs,
+}: {
+  backendRefs?: BackendRef[];
+}) {
   if (!backendRefs || backendRefs.length === 0) {
     return null;
   }
@@ -41,16 +43,16 @@ export default function BackendRefsTable(
               <tr key={i}>
                 <td class="px-4 py-2 text-sm text-text-muted">{ref.kind}</td>
                 <td class="px-4 py-2 text-sm">
-                  {ref.resolved && ref.kind === "Service"
-                    ? (
-                      <a
-                        href={`/networking/services/${ref.namespace}/${ref.name}`}
-                        class="text-brand hover:underline"
-                      >
-                        {ref.name}
-                      </a>
-                    )
-                    : <span class="text-text-primary">{ref.name}</span>}
+                  {ref.resolved && ref.kind === "Service" ? (
+                    <a
+                      href={`/networking/services/${ref.namespace}/${ref.name}`}
+                      class="text-brand hover:underline"
+                    >
+                      {ref.name}
+                    </a>
+                  ) : (
+                    <span class="text-text-primary">{ref.name}</span>
+                  )}
                 </td>
                 <td class="px-4 py-2 text-sm text-text-secondary">
                   {ref.namespace || "-"}

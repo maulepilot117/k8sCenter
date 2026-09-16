@@ -1,7 +1,7 @@
-import { useSignal } from "@preact/signals";
 import type { Signal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { WIZARD_INPUT_CLASS } from "@/lib/wizard-constants.ts";
-import type { QuotaConfig } from "@/islands/NamespaceLimitsWizard.tsx";
+import type { QuotaConfig } from "@/src/islands/NamespaceLimitsWizard.tsx";
 
 interface QuotaValuesStepProps {
   quota: QuotaConfig;
@@ -51,10 +51,8 @@ export function QuotaValuesStep({
             type="text"
             value={quota.cpuHard}
             onInput={(e) =>
-              onUpdateQuota(
-                "cpuHard",
-                (e.target as HTMLInputElement).value,
-              )}
+              onUpdateQuota("cpuHard", (e.target as HTMLInputElement).value)
+            }
             class={WIZARD_INPUT_CLASS}
             placeholder="e.g. 8 or 8000m"
           />
@@ -86,10 +84,8 @@ export function QuotaValuesStep({
             type="text"
             value={quota.memoryHard}
             onInput={(e) =>
-              onUpdateQuota(
-                "memoryHard",
-                (e.target as HTMLInputElement).value,
-              )}
+              onUpdateQuota("memoryHard", (e.target as HTMLInputElement).value)
+            }
             class={WIZARD_INPUT_CLASS}
             placeholder="e.g. 16Gi"
           />
@@ -127,8 +123,9 @@ export function QuotaValuesStep({
           onInput={(e) =>
             onUpdateQuota(
               "podsHard",
-              parseInt((e.target as HTMLInputElement).value) || 1,
-            )}
+              parseInt((e.target as HTMLInputElement).value, 10) || 1,
+            )
+          }
           class={WIZARD_INPUT_CLASS}
         />
         {errors.value.podsHard && (
@@ -237,8 +234,9 @@ export function QuotaValuesStep({
                   onInput={(e) => {
                     const v = parseInt(
                       (e.target as HTMLInputElement).value,
+                      10,
                     );
-                    onUpdateQuota(field, isNaN(v) ? undefined : v);
+                    onUpdateQuota(field, Number.isNaN(v) ? undefined : v);
                   }}
                   class={WIZARD_INPUT_CLASS}
                   placeholder="No limit"
@@ -266,7 +264,8 @@ export function QuotaValuesStep({
                 onUpdateQuota(
                   "gpuHard",
                   (e.target as HTMLInputElement).value || undefined,
-                )}
+                )
+              }
               class={WIZARD_INPUT_CLASS}
               placeholder="e.g. 1 (nvidia.com/gpu)"
             />
@@ -310,8 +309,12 @@ export function QuotaValuesStep({
                   onInput={(e) => {
                     const v = parseInt(
                       (e.target as HTMLInputElement).value,
+                      10,
                     );
-                    onUpdateQuota("warnThreshold", isNaN(v) ? undefined : v);
+                    onUpdateQuota(
+                      "warnThreshold",
+                      Number.isNaN(v) ? undefined : v,
+                    );
                   }}
                   class={WIZARD_INPUT_CLASS}
                   placeholder="80"
@@ -336,10 +339,11 @@ export function QuotaValuesStep({
                   onInput={(e) => {
                     const v = parseInt(
                       (e.target as HTMLInputElement).value,
+                      10,
                     );
                     onUpdateQuota(
                       "criticalThreshold",
-                      isNaN(v) ? undefined : v,
+                      Number.isNaN(v) ? undefined : v,
                     );
                   }}
                   class={WIZARD_INPUT_CLASS}

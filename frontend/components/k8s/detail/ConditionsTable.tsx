@@ -1,5 +1,5 @@
-import { statusColor } from "@/lib/status-colors.ts";
 import { age } from "@/lib/format.ts";
+import { statusColor } from "@/lib/status-colors.ts";
 
 interface Condition {
   type: string;
@@ -50,9 +50,9 @@ export function ConditionsTable({ conditions }: ConditionsTableProps) {
                 </td>
                 <td class="px-3 py-1.5">
                   <span
-                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                      statusColor(c.status)
-                    }`}
+                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
+                      c.status,
+                    )}`}
                   >
                     {c.status}
                   </span>

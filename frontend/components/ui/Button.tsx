@@ -50,9 +50,10 @@ export function Button({
   ...props
 }: ButtonProps) {
   const varStyle = variantStyles[variant];
-  const mergedStyle = typeof style === "string"
-    ? varStyle
-    : { ...varStyle, ...(style as Record<string, string> | undefined) };
+  const mergedStyle =
+    typeof style === "string"
+      ? varStyle
+      : { ...varStyle, ...(style as Record<string, string> | undefined) };
 
   return (
     <button

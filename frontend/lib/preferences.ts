@@ -12,7 +12,7 @@
  * cluster at request time, and sets X-Requested-With on every non-GET. None
  * of those may be set here.
  */
-import { api, type ApiError } from "@/lib/api.ts";
+import { type ApiError, api } from "@/lib/api.ts";
 import type {
   PinConfig,
   PreferenceRecord,
@@ -34,11 +34,13 @@ export const preferencesApi = {
     config: SavedViewConfig,
     signal?: AbortSignal,
   ): Promise<SavedViewRecord> =>
-    (await api<SavedViewRecord>(VIEWS, {
-      method: "POST",
-      body: JSON.stringify({ name, config }),
-      signal,
-    })).data,
+    (
+      await api<SavedViewRecord>(VIEWS, {
+        method: "POST",
+        body: JSON.stringify({ name, config }),
+        signal,
+      })
+    ).data,
 
   updateView: async (
     id: string,
@@ -47,11 +49,13 @@ export const preferencesApi = {
     config: SavedViewConfig,
     signal?: AbortSignal,
   ): Promise<SavedViewRecord> =>
-    (await api<SavedViewRecord>(`${VIEWS}/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      body: JSON.stringify({ name, revision, config }),
-      signal,
-    })).data,
+    (
+      await api<SavedViewRecord>(`${VIEWS}/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ name, revision, config }),
+        signal,
+      })
+    ).data,
 
   // DELETE answers 204; api() yields `{data: undefined}` for it.
   deleteView: async (id: string, signal?: AbortSignal): Promise<void> => {
@@ -69,11 +73,13 @@ export const preferencesApi = {
     config: PinConfig,
     signal?: AbortSignal,
   ): Promise<PinRecord> =>
-    (await api<PinRecord>(PINS, {
-      method: "POST",
-      body: JSON.stringify({ name, config }),
-      signal,
-    })).data,
+    (
+      await api<PinRecord>(PINS, {
+        method: "POST",
+        body: JSON.stringify({ name, config }),
+        signal,
+      })
+    ).data,
 
   deletePin: async (id: string, signal?: AbortSignal): Promise<void> => {
     await api<void>(`${PINS}/${encodeURIComponent(id)}`, {
@@ -106,7 +112,7 @@ export const PREFERENCE_REASONS = [
   "identity_too_long",
 ] as const;
 
-export type PreferenceReason = typeof PREFERENCE_REASONS[number];
+export type PreferenceReason = (typeof PREFERENCE_REASONS)[number];
 
 /**
  * Narrows an unknown error to a preference reason code.
@@ -122,6 +128,6 @@ export function preferenceReason(e: unknown): PreferenceReason | undefined {
     return undefined;
   }
   return (PREFERENCE_REASONS as readonly string[]).includes(reason)
-    ? reason as PreferenceReason
+    ? (reason as PreferenceReason)
     : undefined;
 }

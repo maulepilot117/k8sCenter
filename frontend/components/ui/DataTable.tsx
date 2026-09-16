@@ -45,9 +45,9 @@ export function DataTable<T>({
                     ? "cursor-pointer select-none hover:text-text-primary"
                     : ""
                 } ${col.class ?? ""}`}
-                onClick={col.sortable && onSort
-                  ? () => onSort(col.key)
-                  : undefined}
+                onClick={
+                  col.sortable && onSort ? () => onSort(col.key) : undefined
+                }
               >
                 <span class="inline-flex items-center gap-1">
                   {col.label}
@@ -63,44 +63,42 @@ export function DataTable<T>({
           </tr>
         </thead>
         <tbody class="divide-y divide-border-subtle">
-          {data.length === 0
-            ? (
-              <tr>
-                <td
-                  colSpan={totalCols}
-                  class="px-4 py-12 text-center text-sm text-text-muted"
-                >
-                  {emptyMessage}
-                </td>
+          {data.length === 0 ? (
+            <tr>
+              <td
+                colSpan={totalCols}
+                class="px-4 py-12 text-center text-sm text-text-muted"
+              >
+                {emptyMessage}
+              </td>
+            </tr>
+          ) : (
+            data.map((item) => (
+              <tr
+                key={rowKey(item)}
+                class={`transition-colors hover:bg-hover ${
+                  onRowClick ? "cursor-pointer" : ""
+                }`}
+                onClick={onRowClick ? () => onRowClick(item) : undefined}
+              >
+                {columns.map((col) => (
+                  <td
+                    key={col.key}
+                    class={`px-4 py-3 text-text-secondary ${col.class ?? ""}`}
+                  >
+                    {col.render
+                      ? col.render(item)
+                      : String(
+                          (item as Record<string, unknown>)[col.key] ?? "",
+                        )}
+                  </td>
+                ))}
+                {renderRowActions && (
+                  <td class="px-4 py-3 text-right">{renderRowActions(item)}</td>
+                )}
               </tr>
-            )
-            : (
-              data.map((item) => (
-                <tr
-                  key={rowKey(item)}
-                  class={`transition-colors hover:bg-hover ${
-                    onRowClick ? "cursor-pointer" : ""
-                  }`}
-                  onClick={onRowClick ? () => onRowClick(item) : undefined}
-                >
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      class={`px-4 py-3 text-text-secondary ${col.class ?? ""}`}
-                    >
-                      {col.render ? col.render(item) : String(
-                        (item as Record<string, unknown>)[col.key] ?? "",
-                      )}
-                    </td>
-                  ))}
-                  {renderRowActions && (
-                    <td class="px-4 py-3 text-right">
-                      {renderRowActions(item)}
-                    </td>
-                  )}
-                </tr>
-              ))
-            )}
+            ))
+          )}
         </tbody>
       </table>
     </div>

@@ -1,5 +1,5 @@
-import type { K8sResource, RoleBinding } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import type { K8sResource, RoleBinding } from "@/lib/k8s-types.ts";
 import { resolveRoleHref } from "@/lib/rbac-utils.ts";
 
 export function RoleBindingOverview({ resource }: { resource: K8sResource }) {
@@ -20,8 +20,8 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
           <Field label="Kind" value={roleRef?.kind ?? "-"} />
           <Field
             label="Name"
-            value={roleRef?.name
-              ? (
+            value={
+              roleRef?.name ? (
                 <a
                   href={resolveRoleHref(
                     roleRef.kind,
@@ -32,10 +32,10 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
                 >
                   {roleRef.name}
                 </a>
-              )
-              : (
+              ) : (
                 "-"
-              )}
+              )
+            }
           />
           <Field
             label="API Group"
@@ -66,9 +66,7 @@ export function BindingDetail({ resource }: { resource: K8sResource }) {
               <tbody class="divide-y divide-border-subtle">
                 {subjects.map((s, i) => (
                   <tr key={i}>
-                    <td class="px-3 py-1.5 text-text-secondary">
-                      {s.kind}
-                    </td>
+                    <td class="px-3 py-1.5 text-text-secondary">{s.kind}</td>
                     <td class="px-3 py-1.5 font-medium text-text-secondary">
                       {s.name}
                     </td>

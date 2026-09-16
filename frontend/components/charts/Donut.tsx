@@ -15,9 +15,12 @@ interface DonutProps {
 }
 
 /** Status donut via conic-gradient (cheap, no SVG arcs). Pod/workload status. */
-export default function Donut(
-  { segments, size = 108, thickness = 15, center }: DonutProps,
-) {
+export default function Donut({
+  segments,
+  size = 108,
+  thickness = 15,
+  center,
+}: DonutProps) {
   const total = segments.reduce((a, s) => a + s.value, 0) || 1;
   let acc = 0;
   const stops = segments

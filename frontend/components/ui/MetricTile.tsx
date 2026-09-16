@@ -1,5 +1,5 @@
-import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
+import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
 export interface MetricTileProps {
   label: string;
@@ -11,10 +11,15 @@ export interface MetricTileProps {
   href?: string;
 }
 
-export function MetricTile(
-  { label, value, unit, delta, sparkData, sparkColor = "var(--accent)", href }:
-    MetricTileProps,
-) {
+export function MetricTile({
+  label,
+  value,
+  unit,
+  delta,
+  sparkData,
+  sparkColor = "var(--accent)",
+  href,
+}: MetricTileProps) {
   const inner = (
     <WidgetShell padding={16}>
       <div
@@ -85,11 +90,7 @@ export function MetricTile(
       </div>
       {sparkData && sparkData.length >= 2 && (
         <div style={{ marginTop: "10px" }}>
-          <SparklineChart
-            data={sparkData}
-            color={sparkColor}
-            height={30}
-          />
+          <SparklineChart data={sparkData} color={sparkColor} height={30} />
         </div>
       )}
     </WidgetShell>

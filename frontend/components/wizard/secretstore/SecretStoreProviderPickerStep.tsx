@@ -151,8 +151,7 @@ export function SecretStoreProviderPickerStep({
               return;
             }
             if (templateOnly) {
-              globalThis.location.href =
-                `/external-secrets/stores/new-from-template?template=${p.id}`;
+              globalThis.location.href = `/external-secrets/stores/new-from-template?template=${p.id}`;
             }
           };
           return (
@@ -167,31 +166,25 @@ export function SecretStoreProviderPickerStep({
                 active
                   ? "border-brand bg-brand/5"
                   : clickable
-                  ? "border-border-primary bg-surface hover:border-border-emphasis"
-                  : "border-border-primary bg-surface opacity-60 cursor-not-allowed"
+                    ? "border-border-primary bg-surface hover:border-border-emphasis"
+                    : "border-border-primary bg-surface opacity-60 cursor-not-allowed"
               }`}
             >
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium text-text-primary">{p.title}</span>
-                {active
-                  ? (
-                    <span class="text-xs font-medium text-brand whitespace-nowrap">
-                      Selected
-                    </span>
-                  )
-                  : templateOnly
-                  ? (
-                    <span class="text-xs font-medium text-text-muted whitespace-nowrap">
-                      template
-                    </span>
-                  )
-                  : !ready
-                  ? (
-                    <span class="text-xs font-medium text-text-muted whitespace-nowrap">
-                      coming soon
-                    </span>
-                  )
-                  : null}
+                {active ? (
+                  <span class="text-xs font-medium text-brand whitespace-nowrap">
+                    Selected
+                  </span>
+                ) : templateOnly ? (
+                  <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                    template
+                  </span>
+                ) : !ready ? (
+                  <span class="text-xs font-medium text-text-muted whitespace-nowrap">
+                    coming soon
+                  </span>
+                ) : null}
               </div>
               <p class="mt-2 text-sm text-text-muted">{p.description}</p>
             </button>

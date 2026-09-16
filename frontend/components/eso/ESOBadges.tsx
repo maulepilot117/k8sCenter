@@ -1,5 +1,5 @@
-import type { DriftStatus, Status, ThresholdSource } from "@/lib/eso-types.ts";
 import { ColorBadge } from "@/components/ui/ColorBadge.tsx";
+import type { DriftStatus, Status, ThresholdSource } from "@/lib/eso-types.ts";
 
 /** Status enum → CSS custom property color. Six values cover the lifecycle:
  * Synced (success), SyncFailed (danger), Refreshing (accent), Stale (warning),

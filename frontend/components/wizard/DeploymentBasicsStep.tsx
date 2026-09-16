@@ -37,7 +37,10 @@ export function DeploymentBasicsStep({
   };
 
   const removeLabel = (index: number) => {
-    onChange("labels", labels.filter((_, i) => i !== index));
+    onChange(
+      "labels",
+      labels.filter((_, i) => i !== index),
+    );
   };
 
   return (
@@ -75,9 +78,9 @@ export function DeploymentBasicsStep({
         onInput={(e) =>
           onChange(
             "replicas",
-            parseInt((e.target as HTMLInputElement).value) ||
-              0,
-          )}
+            parseInt((e.target as HTMLInputElement).value, 10) || 0,
+          )
+        }
         min={0}
         max={1000}
         error={errors.replicas}

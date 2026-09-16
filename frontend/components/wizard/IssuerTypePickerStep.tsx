@@ -1,4 +1,4 @@
-import type { IssuerType } from "@/islands/IssuerWizard.tsx";
+import type { IssuerType } from "@/src/islands/IssuerWizard.tsx";
 
 interface IssuerTypePickerStepProps {
   selected: IssuerType | "";

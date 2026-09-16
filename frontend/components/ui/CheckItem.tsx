@@ -5,11 +5,12 @@ export interface CheckItemProps {
 }
 
 export function CheckItem({ label, value, status }: CheckItemProps) {
-  const color = status === "success"
-    ? "var(--success)"
-    : status === "warning"
-    ? "var(--warning)"
-    : "var(--error)";
+  const color =
+    status === "success"
+      ? "var(--success)"
+      : status === "warning"
+        ? "var(--warning)"
+        : "var(--error)";
   return (
     <div
       style={{

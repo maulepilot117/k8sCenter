@@ -4,32 +4,32 @@
 export type CiliumBGPResponse =
   | { configured: false }
   | {
-    configured: true;
-    peers: BGPPeerStatus[];
-  };
+      configured: true;
+      peers: BGPPeerStatus[];
+    };
 
 export type CiliumIPAMResponse =
   | { configured: false }
   | {
-    configured: true;
-    mode: string;
-    podCIDRs: string[];
-    allocated: number;
-    available: number;
-    total: number;
-    exhaustionRisk: string;
-    perNode: NodeIPAM[];
-  };
+      configured: true;
+      mode: string;
+      podCIDRs: string[];
+      allocated: number;
+      available: number;
+      total: number;
+      exhaustionRisk: string;
+      perNode: NodeIPAM[];
+    };
 
 export type CiliumSubsystemsResponse =
   | { configured: false }
   | {
-    configured: true;
-    encryption: EncryptionInfo;
-    mesh: MeshInfo;
-    clusterMesh: ClusterMeshInfo;
-    endpoints: EndpointCounts;
-  };
+      configured: true;
+      encryption: EncryptionInfo;
+      mesh: MeshInfo;
+      clusterMesh: ClusterMeshInfo;
+      endpoints: EndpointCounts;
+    };
 
 export interface BGPPeerStatus {
   node: string;
@@ -109,12 +109,12 @@ export interface EndpointCounts {
 export type CiliumConnectivityResponse =
   | { configured: false }
   | {
-    configured: true;
-    execEnabled: boolean;
-    nodes: NodeConnectivity[];
-    collectedAt?: string;
-    partial?: boolean;
-  };
+      configured: true;
+      execEnabled: boolean;
+      nodes: NodeConnectivity[];
+      collectedAt?: string;
+      partial?: boolean;
+    };
 
 export interface NodeConnectivity {
   nodeName: string;

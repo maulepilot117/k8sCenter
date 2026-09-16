@@ -22,11 +22,11 @@ export function notifActionUrl(
       return "/gitops/applications";
     case "diagnostic":
       if (n.resourceNamespace && n.resourceKind && n.resourceName) {
-        return `/observability/investigate?namespace=${
-          encodeURIComponent(n.resourceNamespace)
-        }&kind=${encodeURIComponent(n.resourceKind)}&name=${
-          encodeURIComponent(n.resourceName)
-        }`;
+        return `/observability/investigate?namespace=${encodeURIComponent(
+          n.resourceNamespace,
+        )}&kind=${encodeURIComponent(n.resourceKind)}&name=${encodeURIComponent(
+          n.resourceName,
+        )}`;
       }
       return "/observability/investigate";
     case "scan":
@@ -37,18 +37,18 @@ export function notifActionUrl(
       return opts.isAdmin ? "/admin/audit" : null;
     case "limits":
       if (n.resourceNamespace) {
-        return `/governance/limits/namespaces/${
-          encodeURIComponent(n.resourceNamespace)
-        }`;
+        return `/governance/limits/namespaces/${encodeURIComponent(
+          n.resourceNamespace,
+        )}`;
       }
       return "/governance/limits";
     case "velero":
       return "/governance/backups";
     case "certmanager":
       if (n.resourceNamespace && n.resourceName) {
-        return `/security/certificates/${
-          encodeURIComponent(n.resourceNamespace)
-        }/${encodeURIComponent(n.resourceName)}`;
+        return `/security/certificates/${encodeURIComponent(
+          n.resourceNamespace,
+        )}/${encodeURIComponent(n.resourceName)}`;
       }
       return "/security/certificates";
     case "external_secrets":
@@ -58,9 +58,9 @@ export function notifActionUrl(
       // "externalsecret.<EventKind>"; the navigation only needs the ES
       // coordinates so we ignore the kind suffix and link to the detail page.
       if (n.resourceNamespace && n.resourceName) {
-        return `/external-secrets/external-secrets/${
-          encodeURIComponent(n.resourceNamespace)
-        }/${encodeURIComponent(n.resourceName)}`;
+        return `/external-secrets/external-secrets/${encodeURIComponent(
+          n.resourceNamespace,
+        )}/${encodeURIComponent(n.resourceName)}`;
       }
       return "/external-secrets/dashboard";
     default: {

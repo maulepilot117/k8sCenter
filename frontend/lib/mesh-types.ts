@@ -14,12 +14,7 @@ export type MTLSState = "active" | "inactive" | "mixed" | "unmeshed";
 export type MTLSSource = "policy" | "metric" | "default";
 
 /** Resolved Istio PeerAuthentication mode; empty for Linkerd workloads. */
-export type IstioMTLSMode =
-  | ""
-  | "STRICT"
-  | "PERMISSIVE"
-  | "DISABLE"
-  | "UNSET";
+export type IstioMTLSMode = "" | "STRICT" | "PERMISSIVE" | "DISABLE" | "UNSET";
 
 /** Scope of the winning PeerAuthentication. Empty for Linkerd / UNSET / metric-driven. */
 export type MTLSSourceDetail = "" | "workload" | "namespace" | "mesh";

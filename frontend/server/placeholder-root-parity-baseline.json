@@ -1,0 +1,434 @@
+[
+  {
+    "file": "src/components/ui/CodeMirrorEditor.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"h-full bg-base rounded-md border border-border-primary\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"h-full w-full\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (components/ui/CodeMirrorEditor.tsx:106 -> 111, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/CRDResourceList.tsx",
+    "tag": "div",
+    "at": {
+      "component": 3,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {}
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CRDResourceList.tsx:168 -> 172, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/CRDResourceList.tsx",
+    "tag": "div",
+    "at": {
+      "component": 3,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"flex flex-col h-full\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CRDResourceList.tsx:168 -> 208, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/ClusterTopology.tsx",
+    "tag": "div",
+    "at": {
+      "component": 7,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"220px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{\n          display: \"flex\",\n          alignItems: \"center\",\n          justifyContent: \"center\",\n          height: \"100%\",\n          minHeight: \"220px\",\n          color: \"var(--text-muted)\",\n          fontSize: \"13px\",\n        }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/ClusterTopology.tsx:813 -> 817, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/ClusterTopology.tsx",
+    "tag": "div",
+    "at": {
+      "component": 7,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"220px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{\n          display: \"flex\",\n          alignItems: \"center\",\n          justifyContent: \"center\",\n          height: \"100%\",\n          minHeight: \"220px\",\n          color: \"var(--text-muted)\",\n          fontSize: \"13px\",\n        }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/ClusterTopology.tsx:813 -> 817, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/ClusterTopology.tsx",
+    "tag": "div",
+    "at": {
+      "component": 7,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 2,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"220px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{\n        position: \"relative\",\n        width: \"100%\",\n        height: \"100%\",\n        minHeight: \"220px\",\n      }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/ClusterTopology.tsx:813 -> 914, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/CniOverview.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"animate-pulse h-40 bg-elevated rounded-lg\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"md:col-span-2\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CniOverview.tsx:52 -> 61, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/CniOverview.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"animate-pulse h-40 bg-elevated rounded-lg\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"md:col-span-2\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CniOverview.tsx:52 -> 61, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/DashboardV2.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {}
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/DashboardV2.tsx:192 -> 198, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/DashboardV2.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {}
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/DashboardV2.tsx:192 -> 198, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/ExtensionsHub.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{ padding: \"0\" }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/ExtensionsHub.tsx:42 -> 82, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/ExtensionsHub.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{ display: \"flex\", flexDirection: \"column\", height: \"100%\" }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/ExtensionsHub.tsx:42 -> 107, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/NamespaceCreator.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"p-6\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"p-6 max-w-lg\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/NamespaceCreator.tsx:23 -> 90, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/PromQLAdminGate.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"rounded-lg border border-border bg-surface p-6 text-sm text-text-secondary\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"rounded-lg border border-warning/40 bg-warning/5 p-6 space-y-3\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/PromQLAdminGate.tsx:28 -> 50, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SchemaForm.tsx",
+    "tag": "div",
+    "at": {
+      "component": 12,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {}
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SchemaForm.tsx:523 -> 529, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SchemaForm.tsx",
+    "tag": "div",
+    "at": {
+      "component": 12,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 1,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{\n          padding: \"32px\",\n          textAlign: \"center\",\n          color: \"var(--text-muted)\",\n        }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SchemaForm.tsx:523 -> 542, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SchemaForm.tsx",
+    "tag": "div",
+    "at": {
+      "component": 12,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 2,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "style": "{{ minHeight: \"400px\" }}"
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{ maxWidth: \"800px\" }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SchemaForm.tsx:523 -> 579, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SnapshotList.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 0,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"p-6\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"animate-pulse space-y-4\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SnapshotList.tsx:88 -> 92, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SnapshotList.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 2,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"p-6\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "style": "{{\n          background: \"var(--error-dim)\",\n          border: \"1px solid var(--error)\",\n          borderRadius: \"var(--radius)\",\n          padding: \"20px 24px\",\n          display: \"flex\",\n          alignItems: \"flex-start\",\n          gap: \"14px\",\n        }}"
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SnapshotList.tsx:88 -> 104, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  },
+  {
+    "file": "src/islands/SnapshotList.tsx",
+    "tag": "div",
+    "at": {
+      "component": 0,
+      "placeholder": 0,
+      "placeholderRoot": 0,
+      "hydrated": 3,
+      "hydratedRoot": 0
+    },
+    "placeholder": {
+      "attrs": {
+        "class": "\"p-6\""
+      }
+    },
+    "hydrated": {
+      "attrs": {
+        "class": "\"space-y-4\""
+      }
+    },
+    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/SnapshotList.tsx:88 -> 198, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
+  }
+]

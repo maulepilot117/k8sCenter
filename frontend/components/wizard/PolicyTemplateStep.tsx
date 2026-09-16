@@ -1,19 +1,19 @@
+import { EngineBadge, SeverityBadge } from "@/components/ui/PolicyBadges.tsx";
+import type { PolicyTemplateInfo } from "@/lib/policy-templates.ts";
 import {
   getTemplatesByCategory,
   POLICY_CATEGORIES,
 } from "@/lib/policy-templates.ts";
-import type { PolicyTemplateInfo } from "@/lib/policy-templates.ts";
-import { SeverityBadge } from "@/components/ui/PolicyBadges.tsx";
-import { EngineBadge } from "@/components/ui/PolicyBadges.tsx";
 
 interface PolicyTemplateStepProps {
   selectedId: string;
   onSelect: (id: string) => void;
 }
 
-export function PolicyTemplateStep(
-  { selectedId, onSelect }: PolicyTemplateStepProps,
-) {
+export function PolicyTemplateStep({
+  selectedId,
+  onSelect,
+}: PolicyTemplateStepProps) {
   const grouped = getTemplatesByCategory();
 
   return (

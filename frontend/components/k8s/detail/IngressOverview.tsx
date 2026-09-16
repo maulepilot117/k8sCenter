@@ -1,5 +1,5 @@
-import type { Ingress, K8sResource } from "@/lib/k8s-types.ts";
 import { Field, SectionHeader } from "@/components/ui/Field.tsx";
+import type { Ingress, K8sResource } from "@/lib/k8s-types.ts";
 
 function formatBackend(backend: unknown): string {
   const b = backend as Record<string, unknown>;

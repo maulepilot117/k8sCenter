@@ -1,6 +1,6 @@
+import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import type { K8sResource, Pod } from "@/lib/k8s-types.ts";
 import { statusColor } from "@/lib/status-colors.ts";
-import { Field, SectionHeader } from "@/components/ui/Field.tsx";
 import { ConditionsTable } from "./ConditionsTable.tsx";
 import { ContainerResourcesTable } from "./ContainerResourcesTable.tsx";
 import { VulnerabilityLink } from "./VulnerabilityLink.tsx";
@@ -46,14 +46,12 @@ export function PodOverview({ resource }: { resource: K8sResource }) {
         <SectionHeader>Summary</SectionHeader>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div>
-            <dt class="text-xs font-medium text-text-muted">
-              Phase
-            </dt>
+            <dt class="text-xs font-medium text-text-muted">Phase</dt>
             <dd class="mt-0.5">
               <span
-                class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                  statusColor(status?.phase)
-                }`}
+                class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
+                  status?.phase,
+                )}`}
               >
                 {status?.phase}
               </span>
@@ -94,8 +92,8 @@ export function PodOverview({ resource }: { resource: K8sResource }) {
               </thead>
               <tbody class="divide-y divide-border-subtle">
                 {spec.containers.map((c) => {
-                  const cs = status?.containerStatuses?.find((s) =>
-                    s.name === c.name
+                  const cs = status?.containerStatuses?.find(
+                    (s) => s.name === c.name,
                   );
                   const stateLabel = cs ? containerStateLabel(cs.state) : "-";
                   const stateVar = cs
@@ -111,9 +109,9 @@ export function PodOverview({ resource }: { resource: K8sResource }) {
                       </td>
                       <td class="px-3 py-1.5">
                         <span
-                          class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${
-                            statusColor(stateVar)
-                          }`}
+                          class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${statusColor(
+                            stateVar,
+                          )}`}
                         >
                           {stateLabel}
                         </span>

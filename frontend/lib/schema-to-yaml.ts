@@ -19,7 +19,7 @@ export function escapeHtml(s: string): string {
 function quoteString(val: string): string {
   if (val === "") return '""';
   if (NEEDS_QUOTE.test(val)) {
-    return '"' + val.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    return `"${val.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
   }
   return val;
 }
@@ -28,9 +28,11 @@ function isEmptyValue(val: unknown): boolean {
   if (val === undefined || val === null || val === "") return true;
   if (Array.isArray(val) && val.length === 0) return true;
   if (
-    typeof val === "object" && !Array.isArray(val) &&
+    typeof val === "object" &&
+    !Array.isArray(val) &&
     Object.keys(val as Record<string, unknown>).length === 0
-  ) return true;
+  )
+    return true;
   return false;
 }
 
@@ -53,18 +55,18 @@ function serializeValue(val: unknown, indent: number): string {
         );
         if (objLines.length > 0) {
           // First key on same line as dash
-          lines.push(pad + "- " + objLines[0].trimStart());
+          lines.push(`${pad}- ${objLines[0].trimStart()}`);
           for (let i = 1; i < objLines.length; i++) {
-            lines.push(pad + "  " + objLines[i].trimStart());
+            lines.push(`${pad}  ${objLines[i].trimStart()}`);
           }
         } else {
-          lines.push(pad + "- {}");
+          lines.push(`${pad}- {}`);
         }
       } else {
-        lines.push(pad + "- " + serializeValue(item, indent + 1));
+        lines.push(`${pad}- ${serializeValue(item, indent + 1)}`);
       }
     }
-    return "\n" + lines.join("\n");
+    return `\n${lines.join("\n")}`;
   }
 
   if (typeof val === "object") {
@@ -72,7 +74,7 @@ function serializeValue(val: unknown, indent: number): string {
     const keys = Object.keys(obj);
     if (keys.length === 0) return "{}";
     const lines = serializeObject(obj, indent);
-    return "\n" + lines.join("\n");
+    return `\n${lines.join("\n")}`;
   }
 
   return String(val);
@@ -88,9 +90,9 @@ function serializeObject(
     if (isEmptyValue(val)) continue;
     const serialized = serializeValue(val, indent + 1);
     if (serialized.startsWith("\n")) {
-      lines.push(pad + quoteString(key) + ":" + serialized);
+      lines.push(`${pad + quoteString(key)}:${serialized}`);
     } else {
-      lines.push(pad + quoteString(key) + ": " + serialized);
+      lines.push(`${pad + quoteString(key)}: ${serialized}`);
     }
   }
   return lines;
@@ -129,12 +131,15 @@ export function safeDeepSet(
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
     if (
-      part === "__proto__" || part === "constructor" || part === "prototype"
+      part === "__proto__" ||
+      part === "constructor" ||
+      part === "prototype"
     ) {
       return result; // abort without modifying
     }
     if (
-      !(part in current) || typeof current[part] !== "object" ||
+      !(part in current) ||
+      typeof current[part] !== "object" ||
       current[part] === null
     ) {
       // Check if next segment is numeric — create array instead of object
@@ -150,7 +155,8 @@ export function safeDeepSet(
 
   const lastKey = parts[parts.length - 1];
   if (
-    lastKey === "__proto__" || lastKey === "constructor" ||
+    lastKey === "__proto__" ||
+    lastKey === "constructor" ||
     lastKey === "prototype"
   ) {
     return result;
@@ -178,23 +184,23 @@ export function formStateToYaml(
   spec: Record<string, unknown>,
 ): string {
   const lines: string[] = [];
-  lines.push("apiVersion: " + quoteString(apiVersion));
-  lines.push("kind: " + quoteString(kind));
+  lines.push(`apiVersion: ${quoteString(apiVersion)}`);
+  lines.push(`kind: ${quoteString(kind)}`);
   lines.push("metadata:");
-  lines.push("  name: " + quoteString(metadata.name || ""));
+  lines.push(`  name: ${quoteString(metadata.name || "")}`);
   if (metadata.namespace) {
-    lines.push("  namespace: " + quoteString(metadata.namespace));
+    lines.push(`  namespace: ${quoteString(metadata.namespace)}`);
   }
   if (metadata.labels && Object.keys(metadata.labels).length > 0) {
     lines.push("  labels:");
     for (const [k, v] of Object.entries(metadata.labels)) {
-      if (k) lines.push("    " + quoteString(k) + ": " + quoteString(v));
+      if (k) lines.push(`    ${quoteString(k)}: ${quoteString(v)}`);
     }
   }
   if (metadata.annotations && Object.keys(metadata.annotations).length > 0) {
     lines.push("  annotations:");
     for (const [k, v] of Object.entries(metadata.annotations)) {
-      if (k) lines.push("    " + quoteString(k) + ": " + quoteString(v));
+      if (k) lines.push(`    ${quoteString(k)}: ${quoteString(v)}`);
     }
   }
 
@@ -204,5 +210,5 @@ export function formStateToYaml(
     lines.push(...specLines);
   }
 
-  return lines.join("\n") + "\n";
+  return `${lines.join("\n")}\n`;
 }

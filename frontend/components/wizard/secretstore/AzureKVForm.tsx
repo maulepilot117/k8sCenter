@@ -81,7 +81,8 @@ const AUTH_TYPES: {
 function detectAuthType(spec: Record<string, unknown>): AzureKVAuthType | "" {
   const v = spec.authType;
   if (
-    v === "ManagedIdentity" || v === "ServicePrincipal" ||
+    v === "ManagedIdentity" ||
+    v === "ServicePrincipal" ||
     v === "WorkloadIdentity"
   ) {
     return v;
@@ -170,17 +171,20 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
         required
         value={getStr(spec, "vaultUrl")}
         onInput={(e) =>
-          patchTop("vaultUrl", (e.target as HTMLInputElement).value)}
+          patchTop("vaultUrl", (e.target as HTMLInputElement).value)
+        }
         placeholder="https://my-vault.vault.azure.net"
         description="Must use https. Typically ends in .vault.azure.net."
-        error={errors["vaultUrl"]}
+        error={errors.vaultUrl}
       />
 
       {/* Auth type picker */}
       <div class="space-y-3">
         <h3 class="text-sm font-semibold text-text-primary">
           Authentication type
-          <span aria-hidden="true" class="text-danger ml-0.5">*</span>
+          <span aria-hidden="true" class="text-danger ml-0.5">
+            *
+          </span>
         </h3>
         <div class="grid gap-2 sm:grid-cols-3">
           {AUTH_TYPES.map((t) => {
@@ -203,8 +207,8 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
             );
           })}
         </div>
-        {errors["authType"] && (
-          <p class="text-sm text-danger">{errors["authType"]}</p>
+        {errors.authType && (
+          <p class="text-sm text-danger">{errors.authType}</p>
         )}
       </div>
 
@@ -224,7 +228,8 @@ export function AzureKVForm({ spec, errors, onUpdateSpec }: AzureKVFormProps) {
           onPatchTenantId={(v) => patchTop("tenantId", v)}
           onPatchClientId={(patch) => patchAuthSecretRef("clientId", patch)}
           onPatchClientSecret={(patch) =>
-            patchAuthSecretRef("clientSecret", patch)}
+            patchAuthSecretRef("clientSecret", patch)
+          }
         />
       )}
       {authType.value === "WorkloadIdentity" && (
@@ -248,9 +253,11 @@ interface ManagedIdentityFieldsProps {
   onPatchIdentityId: (v: string) => void;
 }
 
-function ManagedIdentityFields(
-  { identityId, errors, onPatchIdentityId }: ManagedIdentityFieldsProps,
-) {
+function ManagedIdentityFields({
+  identityId,
+  errors,
+  onPatchIdentityId,
+}: ManagedIdentityFieldsProps) {
   return (
     <div class="rounded-md border border-border-primary p-4 space-y-3">
       <h4 class="text-sm font-medium text-text-primary">Managed Identity</h4>
@@ -266,7 +273,7 @@ function ManagedIdentityFields(
         onInput={(e) => onPatchIdentityId((e.target as HTMLInputElement).value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Leave blank to use the AKS-default managed identity."
-        error={errors["identityId"]}
+        error={errors.identityId}
       />
     </div>
   );
@@ -281,16 +288,14 @@ interface ServicePrincipalFieldsProps {
   onPatchClientSecret: (patch: SecretRef) => void;
 }
 
-function ServicePrincipalFields(
-  {
-    tenantId,
-    authSecretRef,
-    errors,
-    onPatchTenantId,
-    onPatchClientId,
-    onPatchClientSecret,
-  }: ServicePrincipalFieldsProps,
-) {
+function ServicePrincipalFields({
+  tenantId,
+  authSecretRef,
+  errors,
+  onPatchTenantId,
+  onPatchClientId,
+  onPatchClientSecret,
+}: ServicePrincipalFieldsProps) {
   const clientId = (authSecretRef.clientId as SecretRef) ?? {};
   const clientSecret = (authSecretRef.clientSecret as SecretRef) ?? {};
   return (
@@ -305,7 +310,7 @@ function ServicePrincipalFields(
         onInput={(e) => onPatchTenantId((e.target as HTMLInputElement).value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Azure AD tenant ID (Directory ID)."
-        error={errors["tenantId"]}
+        error={errors.tenantId}
       />
 
       <div>
@@ -319,7 +324,8 @@ function ServicePrincipalFields(
             required
             value={clientId.name ?? ""}
             onInput={(e) =>
-              onPatchClientId({ name: (e.target as HTMLInputElement).value })}
+              onPatchClientId({ name: (e.target as HTMLInputElement).value })
+            }
             placeholder="azure-sp-secret"
             error={errors["authSecretRef.clientId.name"]}
           />
@@ -329,7 +335,8 @@ function ServicePrincipalFields(
             required
             value={clientId.key ?? ""}
             onInput={(e) =>
-              onPatchClientId({ key: (e.target as HTMLInputElement).value })}
+              onPatchClientId({ key: (e.target as HTMLInputElement).value })
+            }
             placeholder="client-id"
             error={errors["authSecretRef.clientId.key"]}
           />
@@ -349,7 +356,8 @@ function ServicePrincipalFields(
             onInput={(e) =>
               onPatchClientSecret({
                 name: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="azure-sp-secret"
             error={errors["authSecretRef.clientSecret.name"]}
           />
@@ -361,7 +369,8 @@ function ServicePrincipalFields(
             onInput={(e) =>
               onPatchClientSecret({
                 key: (e.target as HTMLInputElement).value,
-              })}
+              })
+            }
             placeholder="client-secret"
             error={errors["authSecretRef.clientSecret.key"]}
           />
@@ -379,15 +388,13 @@ interface WorkloadIdentityFieldsProps {
   onPatchSaName: (name: string) => void;
 }
 
-function WorkloadIdentityFields(
-  {
-    tenantId,
-    saName,
-    errors,
-    onPatchTenantId,
-    onPatchSaName,
-  }: WorkloadIdentityFieldsProps,
-) {
+function WorkloadIdentityFields({
+  tenantId,
+  saName,
+  errors,
+  onPatchTenantId,
+  onPatchSaName,
+}: WorkloadIdentityFieldsProps) {
   return (
     <div class="rounded-md border border-border-primary p-4 space-y-3">
       <h4 class="text-sm font-medium text-text-primary">Workload Identity</h4>
@@ -400,7 +407,7 @@ function WorkloadIdentityFields(
         onInput={(e) => onPatchTenantId((e.target as HTMLInputElement).value)}
         placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
         description="Azure AD tenant ID (Directory ID)."
-        error={errors["tenantId"]}
+        error={errors.tenantId}
       />
       <Input
         id="azurekv-wi-sa-name"

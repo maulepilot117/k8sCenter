@@ -30,11 +30,15 @@ const MAP: Record<Tone, { color: string; bg: string }> = {
 };
 
 /** Pill badge for resource status (Available / Degraded / Failed / …). */
-export default function StatusBadge(
-  { label, tone = "neutral" }: { label: string; tone?: Tone | StatusValue },
-) {
-  const resolved: Tone = CANONICAL_TO_TONE[tone as StatusValue] ??
-    (tone as Tone);
+export default function StatusBadge({
+  label,
+  tone = "neutral",
+}: {
+  label: string;
+  tone?: Tone | StatusValue;
+}) {
+  const resolved: Tone =
+    CANONICAL_TO_TONE[tone as StatusValue] ?? (tone as Tone);
   const t = MAP[resolved];
   return (
     <span

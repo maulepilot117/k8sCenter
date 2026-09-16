@@ -11,32 +11,30 @@ interface SparklineProps {
 }
 
 /** Responsive single-series sparkline. Scales to its container width. */
-export default function Sparkline(
-  {
-    data,
-    width = 130,
-    height = 34,
-    stroke = "var(--accent)",
-    fill,
-    strokeWidth = 1.8,
-    normalize = true,
-  }: SparklineProps,
-) {
+export default function Sparkline({
+  data,
+  width = 130,
+  height = 34,
+  stroke = "var(--accent)",
+  fill,
+  strokeWidth = 1.8,
+  normalize = true,
+}: SparklineProps) {
   if (!data.length) return null;
   const pad = 3;
   const n = data.length;
   const min = normalize ? Math.min(...data) : 0;
   const max = normalize ? Math.max(...data) : 100;
-  const range = (max - min) || 1;
+  const range = max - min || 1;
   const x = (i: number) => pad + (i * (width - 2 * pad)) / (n - 1);
   const y = (v: number) =>
     height - pad - ((v - min) / range) * (height - 2 * pad);
-  const line = data.map((v, i) =>
-    `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`
-  ).join(" ");
-  const area = `${line} L${x(n - 1).toFixed(1)} ${height - pad} L${
-    x(0).toFixed(1)
-  } ${height - pad} Z`;
+  const line = data
+    .map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(v).toFixed(1)}`)
+    .join(" ");
+  const area = `${line} L${x(n - 1).toFixed(1)} ${height - pad} L${x(0).toFixed(
+    1,
+  )} ${height - pad} Z`;
 
   return (
     <svg

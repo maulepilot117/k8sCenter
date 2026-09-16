@@ -1,13 +1,13 @@
-import { age } from "@/lib/format.ts";
-import type { Backup } from "@/lib/velero-types.ts";
+import { Button } from "@/components/ui/Button.tsx";
+import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import ResourceTable, {
   type Column,
   type Row,
 } from "@/components/ui/ResourceTable.tsx";
-import StatusBadge from "@/components/ui/glass/StatusBadge.tsx";
 import { StatusDot } from "@/components/ui/StatusDot.tsx";
-import { Button } from "@/components/ui/Button.tsx";
 import { phaseTone } from "@/components/velero/velero-utils.ts";
+import { age } from "@/lib/format.ts";
+import type { Backup } from "@/lib/velero-types.ts";
 
 const BACKUPS_COLUMNS: Column[] = [
   { key: "name", label: "Name", width: "2fr" },
@@ -19,13 +19,15 @@ const BACKUPS_COLUMNS: Column[] = [
   { key: "actions", label: "", width: "120px" },
 ];
 
-export function BackupsResourceTable(
-  { backups, deleting, onDelete }: {
-    backups: Backup[];
-    deleting: string | null;
-    onDelete: (ns: string, name: string) => void;
-  },
-) {
+export function BackupsResourceTable({
+  backups,
+  deleting,
+  onDelete,
+}: {
+  backups: Backup[];
+  deleting: string | null;
+  onDelete: (ns: string, name: string) => void;
+}) {
   if (backups.length === 0) {
     return (
       <div
@@ -69,9 +71,7 @@ export function BackupsResourceTable(
       ),
       status: <StatusBadge label={b.phase} tone={phaseTone(b.phase)} />,
       schedule: (
-        <span
-          style={{ fontSize: "13px", color: "var(--text-muted)" }}
-        >
+        <span style={{ fontSize: "13px", color: "var(--text-muted)" }}>
           {b.scheduleName || "—"}
         </span>
       ),
@@ -97,8 +97,8 @@ export function BackupsResourceTable(
           {b.itemsBackedUp}/{b.totalItems}
         </span>
       ),
-      issues: (b.warnings > 0 || b.errors > 0)
-        ? (
+      issues:
+        b.warnings > 0 || b.errors > 0 ? (
           <span
             style={{
               fontSize: "13px",
@@ -108,13 +108,8 @@ export function BackupsResourceTable(
           >
             {b.warnings}W/{b.errors}E
           </span>
-        )
-        : (
-          <span
-            style={{ fontSize: "13px", color: "var(--success)" }}
-          >
-            0
-          </span>
+        ) : (
+          <span style={{ fontSize: "13px", color: "var(--success)" }}>0</span>
         ),
       actions: (
         <div
@@ -141,10 +136,6 @@ export function BackupsResourceTable(
   }));
 
   return (
-    <ResourceTable
-      columns={BACKUPS_COLUMNS}
-      rows={rows}
-      chevron={false}
-    />
+    <ResourceTable columns={BACKUPS_COLUMNS} rows={rows} chevron={false} />
   );
 }
