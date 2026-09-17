@@ -6,6 +6,7 @@ import {
   moveItem,
   overlaps,
   resizeItem,
+  resolveRenderable,
 } from "./grid.ts";
 import type { LayoutItem } from "./types.ts";
 import { DASHBOARD_COLUMNS } from "./types.ts";
@@ -475,6 +476,73 @@ describe("layoutHeight", () => {
 
   test("an empty layout has height 0", () => {
     expect(layoutHeight([])).toBe(0);
+  });
+});
+
+describe("resolveRenderable", () => {
+  // `item()` above builds ids as `w-<instanceId>`, so a lookup that answers
+  // for "w-a" resolves the item created as item("a", ...).
+  const lookup = (known: string[]) => (id: string) =>
+    known.includes(id) ? { id } : undefined;
+
+  test("pairs each item with the definition its id resolves to", () => {
+    const resolved = resolveRenderable(
+      [item("a", 0, 0, 3, 2), item("b", 3, 0, 3, 2)],
+      lookup(["w-a", "w-b"]),
+    );
+
+    expect(resolved.map((r) => r.item.instanceId)).toEqual(["a", "b"]);
+    expect(resolved.map((r) => r.def.id)).toEqual(["w-a", "w-b"]);
+  });
+
+  test("skips an item whose id no definition answers for", () => {
+    const resolved = resolveRenderable(
+      [item("a", 0, 0, 3, 2), item("gone", 3, 0, 3, 2)],
+      lookup(["w-a"]),
+    );
+
+    expect(resolved.map((r) => r.item.instanceId)).toEqual(["a"]);
+  });
+
+  test("a skipped item leaves no rows behind", () => {
+    // "gone" occupies rows 2-3 between two known widgets. Dropping it has to
+    // reclaim those rows, or the grid renders an empty band where it was.
+    const resolved = resolveRenderable(
+      [
+        item("top", 0, 0, 3, 2),
+        item("gone", 0, 2, 3, 2),
+        item("bot", 0, 4, 3, 2),
+      ],
+      lookup(["w-top", "w-bot"]),
+    );
+
+    expect(shape(resolved.map((r) => r.item))).toEqual(["bot@0,2", "top@0,0"]);
+    expect(layoutHeight(resolved.map((r) => r.item))).toBe(4);
+  });
+
+  test("skipping every item yields an empty layout of height 0", () => {
+    const resolved = resolveRenderable([item("a", 0, 0, 3, 2)], lookup([]));
+
+    expect(resolved).toEqual([]);
+    expect(layoutHeight(resolved.map((r) => r.item))).toBe(0);
+  });
+
+  test("returns reading order, whatever order it is given", () => {
+    const resolved = resolveRenderable(
+      [item("c", 0, 4, 3, 2), item("b", 4, 0, 3, 2), item("a", 0, 0, 3, 2)],
+      lookup(["w-a", "w-b", "w-c"]),
+    );
+
+    expect(resolved.map((r) => r.item.instanceId)).toEqual(["a", "b", "c"]);
+  });
+
+  test("does not mutate its input", () => {
+    const items = [item("a", 0, 2, 3, 2), item("gone", 0, 0, 3, 2)];
+    const before = structuredClone(items);
+
+    resolveRenderable(items, lookup(["w-a"]));
+
+    expect(items).toEqual(before);
   });
 });
 

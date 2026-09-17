@@ -1,3 +1,4 @@
+import { useCellFillHeight } from "@/components/ui/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { formatMbps } from "@/lib/format.ts";
@@ -71,7 +72,7 @@ function Row({
       >
         Mbps
       </span>
-      <div style={{ flex: 1, minWidth: "40px" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         {data && data.length >= 2 && (
           <SparklineChart data={data} color={color} height={22} />
         )}
@@ -93,6 +94,7 @@ export function NetworkTile({
   period,
   href,
 }: NetworkTileProps) {
+  const fillHeight = useCellFillHeight();
   const inner = (
     <WidgetShell padding={16}>
       <div
@@ -147,7 +149,12 @@ export function NetworkTile({
     return (
       <a
         href={href}
-        style={{ textDecoration: "none", color: "inherit", display: "block" }}
+        style={{
+          textDecoration: "none",
+          color: "inherit",
+          display: "block",
+          ...fillHeight,
+        }}
       >
         {inner}
       </a>

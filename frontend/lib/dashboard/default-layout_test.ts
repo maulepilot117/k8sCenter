@@ -2,13 +2,8 @@ import { expect, test } from "bun:test";
 // Registers the shipped widgets. Same manifest the render path imports, so
 // these checks see exactly the set the dashboard renders.
 import "@/components/dashboard/widgets/index.ts";
-import {
-  DEFAULT_OVERVIEW_LAYOUT,
-  defaultItem,
-  type FlexCell,
-  flexSlotIds,
-  OVERVIEW_FLEX_ROWS,
-} from "./default-layout.ts";
+import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
+import { byReadingOrder, compact } from "./grid.ts";
 import { allWidgets, getWidget } from "./registry.ts";
 import { DASHBOARD_COLUMNS, DASHBOARD_MAX_ITEMS } from "./types.ts";
 
@@ -91,43 +86,20 @@ test("default layout: within the item cap", () => {
   expect(items.length).toBeLessThanOrEqual(DASHBOARD_MAX_ITEMS);
 });
 
-// The shell renders OVERVIEW_FLEX_ROWS, not the layout's coordinates. These
-// hold the two together until P2 renders the layout directly: a widget in the
-// layout with no flex slot would otherwise never appear, silently.
-
-test("flex rows: render every default-layout widget exactly once", () => {
-  const ids = flexSlotIds(OVERVIEW_FLEX_ROWS);
-  expect(new Set(ids).size).toBe(ids.length);
-  expect([...ids].sort()).toEqual(items.map((i) => i.id).sort());
+// The grid applies gravity to every layout it renders. A default that is not
+// already at rest would visibly jump on first paint and would not survive a
+// save/load round trip unchanged.
+test("default layout: is already compact", () => {
+  expect(compact(items)).toEqual([...items].sort(byReadingOrder));
 });
 
-test("flex rows: every slot has a skeleton height", () => {
-  const cells = OVERVIEW_FLEX_ROWS.flat();
-  const slots = cells.flatMap((c) => ("tiles" in c ? c.tiles : [c]));
-  expect(slots.filter((s) => !s.placeholder).map((s) => s.id)).toEqual([]);
-});
-
-test("flexSlotIds: flattens tile blocks in render order", () => {
-  const rows: FlexCell[][] = [
-    [
-      { id: "a", flex: "1", placeholder: "1px" },
-      {
-        flex: "1",
-        tiles: [
-          { id: "b", placeholder: "1px" },
-          { id: "c", placeholder: "1px" },
-        ],
-      },
-    ],
-    [{ id: "d", flex: "1", placeholder: "1px" }],
-  ];
-  expect(flexSlotIds(rows)).toEqual(["a", "b", "c", "d"]);
-});
-
-test("defaultItem: returns the placement for a known id", () => {
-  expect(defaultItem("nodes").instanceId).toBe("d-nodes");
-});
-
-test("defaultItem: throws for an id the layout does not contain", () => {
-  expect(() => defaultItem("no-such-widget")).toThrow(/no-such-widget/);
+test("default layout: the four metric tiles form an equal 2x2 block", () => {
+  const tiles = ["cpu-tile", "memory-tile", "pods-tile", "network-tile"].map(
+    (id) => items.find((i) => i.id === id),
+  );
+  const sizes = new Set(tiles.map((t) => `${t?.w}x${t?.h}`));
+  expect(sizes.size).toBe(1);
+  const xs = new Set(tiles.map((t) => t?.x));
+  const ys = new Set(tiles.map((t) => t?.y));
+  expect([xs.size, ys.size]).toEqual([2, 2]);
 });

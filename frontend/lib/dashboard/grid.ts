@@ -45,7 +45,9 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-function byReadingOrder(p: LayoutItem, q: LayoutItem): number {
+/** Sorts by row, then column: the order results come back in, and the order
+ * keyboard and screen-reader traversal follow. */
+export function byReadingOrder(p: LayoutItem, q: LayoutItem): number {
   return p.y - q.y || p.x - q.x;
 }
 
@@ -295,4 +297,44 @@ export function cellFromPoint(
 /** Number of rows the layout occupies. */
 export function layoutHeight(items: readonly LayoutItem[]): number {
   return items.reduce((max, i) => Math.max(max, i.y + i.h), 0);
+}
+
+/** A layout item paired with the widget definition it resolved to. */
+export interface Renderable<TDef> {
+  item: LayoutItem;
+  def: TDef;
+}
+
+/**
+ * Pairs each item with its widget definition, drops the ones no definition
+ * answers for, and returns what is left compacted, in reading order.
+ *
+ * A stored layout can name a widget this build does not have -- a retired id,
+ * or one from a newer release. Skipping it is the display half of that
+ * contract (telling the user belongs to the editor). Gravity runs after the
+ * skip, not before, or the dropped widget would leave its rows behind as an
+ * empty band: the grid's own rule 1 says everything falls as far up as it can,
+ * and a hole is not the canonical form of a layout.
+ *
+ * The lookup is a parameter rather than an import so this stays a pure
+ * function of its inputs, which is what makes the skip testable at all.
+ */
+export function resolveRenderable<TDef>(
+  items: readonly LayoutItem[],
+  lookup: (id: string) => TDef | undefined,
+): Renderable<TDef>[] {
+  const byInstance = new Map<string, TDef>();
+  const known: LayoutItem[] = [];
+
+  for (const it of items) {
+    const def = lookup(it.id);
+    if (def === undefined) continue;
+    byInstance.set(it.instanceId, def);
+    known.push(it);
+  }
+
+  return compact(known).flatMap((item) => {
+    const def = byInstance.get(item.instanceId);
+    return def === undefined ? [] : [{ item, def }];
+  });
 }

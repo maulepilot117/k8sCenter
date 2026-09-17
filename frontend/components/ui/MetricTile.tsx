@@ -1,3 +1,4 @@
+import { useCellFillHeight } from "@/components/ui/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
@@ -20,6 +21,7 @@ export function MetricTile({
   sparkColor = "var(--accent)",
   href,
 }: MetricTileProps) {
+  const fillHeight = useCellFillHeight();
   const inner = (
     <WidgetShell padding={16}>
       <div
@@ -100,7 +102,12 @@ export function MetricTile({
     return (
       <a
         href={href}
-        style={{ textDecoration: "none", color: "inherit", display: "block" }}
+        style={{
+          textDecoration: "none",
+          color: "inherit",
+          display: "block",
+          ...fillHeight,
+        }}
       >
         {inner}
       </a>

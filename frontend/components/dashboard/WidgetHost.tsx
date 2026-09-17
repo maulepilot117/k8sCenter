@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
-import { useLayoutEffect, useRef } from "preact/hooks";
+import { useContext, useLayoutEffect, useRef } from "preact/hooks";
+import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
@@ -9,14 +10,6 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 interface WidgetHostProps {
   def: WidgetDef;
   params?: Record<string, string>;
-  /**
-   * Height of the loading skeleton, for a host in a content-height slot.
-   *
-   * Omit it on the grid, where the cell has a height and the skeleton fills
-   * it. A flex slot sized by its content has no height to fill, so there the
-   * skeleton would be 0px and the page would load as empty space, then jump.
-   */
-  placeholderHeight?: string;
 }
 
 /**
@@ -31,11 +24,7 @@ interface WidgetHostProps {
  * which is a pure function with unit tests, because this repo has no component
  * test harness.
  */
-export default function WidgetHost({
-  def,
-  params = {},
-  placeholderHeight,
-}: WidgetHostProps) {
+export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   const box = useRef<HTMLDivElement | null>(null);
   const width = useSignal(0);
   const height = useSignal(0);
@@ -114,6 +103,9 @@ export default function WidgetHost({
   const renderable = requiredStates.every((s) => s.data !== null);
 
   const mode = pickMode(def.modes, width.value, height.value);
+  // In a grid cell the stale notice takes its natural height and the widget
+  // takes the rest, so a card that fills its space still fits the cell.
+  const fill = useContext(CellFillContext);
 
   return (
     <div
@@ -126,7 +118,12 @@ export default function WidgetHost({
       data-widget-state={
         renderable ? "ready" : blockingFailure ? "error" : "loading"
       }
-      style={{ height: "100%", minWidth: 0, minHeight: 0 }}
+      style={{
+        height: "100%",
+        minWidth: 0,
+        minHeight: 0,
+        ...(fill ? { display: "flex", flexDirection: "column" } : {}),
+      }}
     >
       {renderable ? (
         <>
@@ -144,7 +141,13 @@ export default function WidgetHost({
               Showing last known data — refresh failed.
             </div>
           )}
-          {def.render({ mode, params })}
+          {fill ? (
+            <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+              {def.render({ mode, params })}
+            </div>
+          ) : (
+            def.render({ mode, params })
+          )}
         </>
       ) : blockingFailure ? (
         <div
@@ -162,12 +165,9 @@ export default function WidgetHost({
           </div>
         </div>
       ) : (
-        // Sized to the widget box: a bare <Skeleton /> carries no height class
-        // and would render an invisible zero-height div.
-        <Skeleton
-          class="h-full w-full rounded-lg"
-          style={placeholderHeight ? { height: placeholderHeight } : undefined}
-        />
+        // Sized to the widget box, which the grid cell gives a height: a bare
+        // <Skeleton /> carries no height class and would render zero-height.
+        <Skeleton class="h-full w-full rounded-lg" />
       )}
     </div>
   );
