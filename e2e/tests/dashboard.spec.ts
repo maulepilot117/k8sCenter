@@ -61,11 +61,101 @@ test.describe("Dashboard widget registry", () => {
       "d-active-alerts",
     ]);
 
-    // Every cell spans the single column.
-    const lefts = await page
-      .getByTestId("grid-item")
-      .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)));
-    expect(new Set(lefts).size).toBe(1);
+    // One column means one cell per row, each spanning the grid: matching
+    // left edges alone would also pass if two full-width cells shared a row
+    // and overlapped, so assert the stack directly.
+    const cells = await page.getByTestId("grid-item").evaluateAll((els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        const parent = (el.parentElement as HTMLElement).getBoundingClientRect();
+        return {
+          left: Math.round(r.left),
+          top: Math.round(r.top),
+          bottom: Math.round(r.bottom),
+          width: Math.round(r.width),
+          gridWidth: Math.round(parent.width),
+        };
+      }),
+    );
+
+    expect(new Set(cells.map((c) => c.left)).size).toBe(1);
+    for (const [i, cell] of cells.entries()) {
+      // Full grid width, allowing a pixel of rounding.
+      expect(Math.abs(cell.width - cell.gridWidth), `cell ${i} width`).toBeLessThanOrEqual(1);
+      if (i > 0) {
+        const previous = cells[i - 1];
+        expect(cell.top, `cell ${i} starts below cell ${i - 1}`).toBeGreaterThanOrEqual(previous.bottom);
+      }
+    }
+  });
+
+  test("a card fills its grid cell and never scrolls sideways", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "wide",
+    );
+
+    // The cell-fill contract: the card takes the whole cell (so a short widget
+    // does not leave a ragged hole) and clips instead of scrolling sideways (a
+    // horizontal scrollbar inside a card is how the too-narrow tile showed up).
+    const cells = await page.getByTestId("grid-item").evaluateAll((els) =>
+      els.map((el) => ({
+        id: el.getAttribute("data-instance-id"),
+        height: Math.round(el.getBoundingClientRect().height),
+        cardHeight: Math.round(
+          (el.firstElementChild as HTMLElement).getBoundingClientRect().height,
+        ),
+        overflowX: el.scrollWidth - el.clientWidth,
+      })),
+    );
+
+    expect(cells).toHaveLength(10);
+    for (const cell of cells) {
+      expect(Math.abs(cell.cardHeight - cell.height), `${cell.id} fills its cell`).toBeLessThanOrEqual(1);
+      expect(cell.overflowX, `${cell.id} overflows horizontally`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test("the grid mode follows its own width across the breakpoint", async ({
+    page,
+  }) => {
+    const grid = page.getByTestId("dashboard-grid");
+    // Read the mode the grid chose and the width it chose it from. The
+    // threshold is the grid's own width, not the viewport's, so the test
+    // derives the expected mode from the measurement rather than from a
+    // viewport size that depends on the sidebar.
+    const observed = async () => {
+      // Settle the ResizeObserver before reading both halves together.
+      await expect(grid).toHaveAttribute("data-grid-mode", /narrow|wide/);
+      return await grid.evaluate((el) => ({
+        mode: el.getAttribute("data-grid-mode"),
+        width: el.clientWidth,
+      }));
+    };
+
+    // 1280 leaves the grid just wide enough for twelve columns; 1240 does not.
+    // Both sit within ~40px of the 900px threshold, which is where a mode that
+    // fed back into its own width would stick or flicker.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+    const wide = await observed();
+    expect(wide.mode).toBe(wide.width < 900 ? "narrow" : "wide");
+
+    await page.setViewportSize({ width: 1240, height: 900 });
+    const narrower = await observed();
+    expect(narrower.mode).toBe(narrower.width < 900 ? "narrow" : "wide");
+
+    // Back to the starting width: the same width must give the same mode, or
+    // the collapse is one-way.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const again = await observed();
+    expect(again.width).toBe(wide.width);
+    expect(again.mode).toBe(wide.mode);
   });
 
   test("every default widget renders through the registry", async ({

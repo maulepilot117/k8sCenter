@@ -3,7 +3,7 @@ import type { JSX } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
 import { CellFillContext } from "@/components/ui/cell-fill.ts";
-import { byReadingOrder, layoutHeight } from "@/lib/dashboard/grid.ts";
+import { layoutHeight, resolveRenderable } from "@/lib/dashboard/grid.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
@@ -95,19 +95,11 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
     return () => ro.disconnect();
   }, []);
 
-  // An unknown id is skipped rather than rendered (spec D-7); telling the user
-  // a widget was dropped is P4's job, on the editor surface. Filtered once so
-  // a skipped item neither renders nor reserves rows in the wide grid.
-  const renderable = items.value.flatMap((item) => {
-    const def = getWidget(item.id);
-    return def ? [{ item, def }] : [];
-  });
-  // One column follows reading order, which is also the keyboard and
-  // screen-reader order. The wide grid places items by coordinates, but DOM
-  // order still matters for tab order, so it is reading order there too.
-  const ordered = [...renderable].sort((p, q) =>
-    byReadingOrder(p.item, q.item),
-  );
+  // Unknown ids are skipped and their rows reclaimed, and what is left comes
+  // back in reading order -- which is also the keyboard and screen-reader
+  // order. The wide grid places items by coordinates, but DOM order still
+  // decides tab order, so it renders in that order too.
+  const ordered = resolveRenderable(items.value, getWidget);
 
   const style: JSX.CSSProperties = narrow.value
     ? {
@@ -121,7 +113,7 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
         gridTemplateColumns: `repeat(${DASHBOARD_COLUMNS}, minmax(0, 1fr))`,
         // An explicit row count keeps the grid tall enough for the lowest
         // widget. Implicit rows would make a drop below the last row clamp.
-        gridTemplateRows: `repeat(${Math.max(1, layoutHeight(renderable.map((r) => r.item)))}, ${DASHBOARD_ROW_HEIGHT}px)`,
+        gridTemplateRows: `repeat(${Math.max(1, layoutHeight(ordered.map((r) => r.item)))}, ${DASHBOARD_ROW_HEIGHT}px)`,
         gap: `${DASHBOARD_GRID_GAP}px`,
       };
 
