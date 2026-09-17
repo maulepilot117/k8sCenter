@@ -195,44 +195,50 @@ export default function DashboardGrid({
     dragging.value = instanceId;
 
     const before = items.value;
-    const origin = cellFromPoint(
-      event.clientX,
-      event.clientY,
-      metricsFrom(el.getBoundingClientRect()),
-    );
-
-    const onMove = (ev: PointerEvent) => {
-      const cell = cellFromPoint(
+    // Measured per call, not once: the page can scroll under a captured
+    // pointer, which moves the grid's top without any resize.
+    const cellAt = (ev: { clientX: number; clientY: number }) =>
+      cellFromPoint(
         ev.clientX,
         ev.clientY,
         metricsFrom(el.getBoundingClientRect()),
       );
+
+    const origin = cellAt(event);
+    let last = origin;
+
+    const onMove = (ev: PointerEvent) => {
+      const cell = cellAt(ev);
+      // A cell is tens of pixels wide, so most moves land where the last one
+      // did. Re-resolving the layout for those would re-render every widget
+      // to produce the layout it already has.
+      if (cell.x === last.x && cell.y === last.y) return;
+      last = cell;
       const to = dragTarget(start, origin, cell);
       items.value = moveItem(items.value, instanceId, to.x, to.y);
     };
 
+    // One controller for the whole session: aborting it drops every listener
+    // below, so there is no teardown list to keep in step with the setup.
+    const session = new AbortController();
     const end = (restore: boolean) => {
       if (restore) items.value = before;
       dragging.value = null;
       handle.releasePointerCapture(event.pointerId);
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onCancel);
-      globalThis.removeEventListener("keydown", onKeyDown);
+      session.abort();
     };
-    const onUp = () => end(false);
+    const listen = { signal: session.signal };
+
+    handle.addEventListener("pointermove", onMove, listen);
+    handle.addEventListener("pointerup", () => end(false), listen);
     // pointercancel is an interruption, not a drop: the OS took the pointer
     // (a system gesture, a touch turned into a scroll), so the layout the
     // user never released goes back to where it was.
-    const onCancel = () => end(true);
+    handle.addEventListener("pointercancel", () => end(true), listen);
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") end(true);
     };
-
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onCancel);
-    globalThis.addEventListener("keydown", onKeyDown);
+    globalThis.addEventListener("keydown", onKeyDown, listen);
   }
 
   // Unknown ids are skipped and their rows reclaimed, and what is left comes
