@@ -252,6 +252,35 @@ describe("moveItem", () => {
       expect(shape(moveItem(once, "a", 0, 5))).toEqual(shape(once));
     });
   });
+
+  test("re-applying the same move to its own result changes nothing", () => {
+    // A drag calls moveItem on the current layout at every pointermove, so a
+    // result that is not a fixed point makes the widget jump while the
+    // pointer is still. Here a single resolve pass lifts b above c and a, and
+    // a second pass would push it back down to row 2.
+    const layout = [
+      item("b", 8, 0, 3, 1),
+      item("c", 7, 1, 2, 1),
+      item("a", 5, 2, 3, 1),
+    ];
+    const once = moveItem(layout, "b", 4, 2);
+    expect(moveItem(once, "b", 4, 2)).toEqual(once);
+  });
+
+  test("dragging away and back need not restore the original layout", () => {
+    // Documented behavior, pinned so a change to it is deliberate: each step
+    // resolves against the current layout, so neighbors displaced on the way
+    // keep their new order. A caller that must restore holds the pre-drag
+    // layout (every function leaves its input untouched).
+    // Dragging b up one row lifts it above a; dragging it back to row 2 is a
+    // downward move short of a's new bottom edge, so it settles on top.
+    const start = [item("a", 8, 0, 3, 2), item("b", 10, 2, 1, 1)];
+    const away = moveItem(start, "b", 10, 1);
+    expect(shape(away)).toEqual(["a@8,1", "b@10,0"]);
+    const back = moveItem(away, "b", 10, 2);
+    expect(shape(back)).toEqual(["a@8,1", "b@10,0"]);
+    expect(shape(back)).not.toEqual(shape(start));
+  });
 });
 
 describe("resizeItem", () => {
@@ -308,14 +337,51 @@ describe("resizeItem", () => {
   });
 
   test("a non-finite size is a no-op", () => {
-    const [out] = resizeItem(
-      [item("a", 0, 0, 3, 2)],
+    for (const [w, h] of [
+      [Number.NaN, 4],
+      [Number.POSITIVE_INFINITY, 4],
+      [4, Number.NaN],
+      [4, Number.POSITIVE_INFINITY],
+    ]) {
+      const [out] = resizeItem([item("a", 0, 0, 3, 2)], "a", w, h, bounds);
+      expect([out.w, out.h], `w=${w} h=${h}`).toEqual([3, 2]);
+    }
+  });
+
+  test("returns items in reading order, not processing order", () => {
+    // Shrinking a lets b rise to row 0, where b's larger x reads after c.
+    const out = resizeItem(
+      [item("a", 0, 0, 4, 4), item("c", 0, 4, 2, 2), item("b", 2, 4, 2, 2)],
       "a",
-      Number.NaN,
-      4,
+      2,
+      2,
       bounds,
     );
-    expect([out.w, out.h]).toEqual([3, 2]);
+    expect(out.map((i) => i.instanceId)).toEqual(["a", "b", "c"]);
+  });
+
+  test("a resize can change the item's row, so handlers must read it back", () => {
+    // Narrowing a off the item it rested on lets gravity lift it. A resize
+    // handler that computes height from a y captured at drag start would then
+    // stop tracking the pointer; it must use the resized item's current y.
+    const out = resizeItem(
+      [item("base", 0, 0, 2, 3), item("a", 0, 3, 6, 2)],
+      "a",
+      4,
+      2,
+      bounds,
+    );
+    expect(out.find((i) => i.instanceId === "a")?.y).toBe(3);
+    const narrowed = resizeItem(out, "a", 4, 2, bounds);
+    expect(narrowed).toEqual(out);
+    const off = resizeItem(
+      [item("base", 0, 0, 2, 3), item("a", 2, 3, 6, 2)],
+      "a",
+      4,
+      2,
+      bounds,
+    );
+    expect(off.find((i) => i.instanceId === "a")?.y).toBe(0);
   });
 
   test("an unknown instanceId is a no-op", () => {
@@ -383,6 +449,21 @@ describe("cellFromPoint", () => {
     };
     expect(cellFromPoint(50, 50, degenerate)).toEqual({ x: 0, y: 0 });
   });
+
+  test("an infinite measured size is guarded", () => {
+    for (const bad of [
+      { cellWidth: Number.POSITIVE_INFINITY, rowHeight: 40 },
+      { cellWidth: 80, rowHeight: Number.POSITIVE_INFINITY },
+    ]) {
+      const metrics = { left: 0, top: 0, gap: 16, ...bad };
+      expect(cellFromPoint(500, 500, metrics)).toEqual({ x: 0, y: 0 });
+    }
+  });
+
+  test("a point in the gap below a row still belongs to that row", () => {
+    // rowHeight 40 + gap 16 = 56; y offsets 40..55 are the gap under row 0.
+    expect(cellFromPoint(100, 50 + 55, METRICS).y).toBe(0);
+  });
 });
 
 describe("layoutHeight", () => {
@@ -413,7 +494,7 @@ describe("invariants under random operations", () => {
     };
   }
 
-  test("no overlap, nothing lost, nothing outside the grid, input untouched", () => {
+  test("no overlap, nothing lost, in-grid, input untouched, stable when re-applied", () => {
     const rand = rng(0xd6);
     const int = (lo: number, hi: number) =>
       lo + Math.floor(rand() * (hi - lo + 1));
@@ -440,13 +521,19 @@ describe("invariants under random operations", () => {
         const before = JSON.stringify(layout);
         const isMove = rand() < 0.5;
         const requestedX = int(-3, 14);
-        const targetW = layout.find((i) => i.instanceId === target)?.w ?? 0;
-        const next = isMove
-          ? moveItem(layout, target, requestedX, int(-3, 25))
-          : resizeItem(layout, target, int(0, 14), int(0, 8), {
-              minW: 1,
-              minH: 1,
-            });
+        const requestedY = int(-3, 25);
+        const requestedW = int(0, 14);
+        const requestedH = int(0, 8);
+        const bounds = { minW: 1, minH: 1 };
+        const before_ = layout.find((i) => i.instanceId === target);
+        const targetW = before_?.w ?? 0;
+        const targetX = before_?.x ?? 0;
+        // The same call a drag or resize handler repeats on every pointermove.
+        const apply = (from: readonly LayoutItem[]) =>
+          isMove
+            ? moveItem(from, target, requestedX, requestedY)
+            : resizeItem(from, target, requestedW, requestedH, bounds);
+        const next = apply(layout);
 
         const where = `round ${round} step ${step}`;
         expect(JSON.stringify(layout), `${where}: input mutated`).toBe(before);
@@ -464,15 +551,38 @@ describe("invariants under random operations", () => {
         expect(shape(compact(next)), `${where}: not compact`).toEqual(
           shape(next),
         );
+        const changed = next.find((i) => i.instanceId === target);
         if (isMove) {
           // Rule 3: the moved item keeps its requested column.
           const expectedX = Math.min(
             DASHBOARD_COLUMNS - targetW,
             Math.max(0, Math.round(requestedX)),
           );
-          const moved = next.find((i) => i.instanceId === target);
-          expect(moved?.x, `${where}: moved item x`).toBe(expectedX);
+          expect(changed?.x, `${where}: moved item x`).toBe(expectedX);
+        } else {
+          // A resize applies the requested size, clamped, and never moves x.
+          const expectedW = Math.max(
+            1,
+            Math.min(
+              DASHBOARD_COLUMNS - targetX,
+              Math.max(bounds.minW, requestedW),
+            ),
+          );
+          const expectedH = Math.max(1, bounds.minH, requestedH);
+          expect(
+            [changed?.x, changed?.w, changed?.h],
+            `${where}: resized item`,
+          ).toEqual([targetX, expectedW, expectedH]);
         }
+        expect(
+          next.map((i) => i.instanceId),
+          `${where}: not in reading order`,
+        ).toEqual(
+          [...next]
+            .sort((p, q) => p.y - q.y || p.x - q.x)
+            .map((i) => i.instanceId),
+        );
+        expect(apply(next), `${where}: unstable when re-applied`).toEqual(next);
         layout = next;
       }
     }
