@@ -101,11 +101,15 @@ export default function WidgetHost({
   //      across a failed refresh, so a transient 500 leaves the widget
   //      rendered with an inline error instead of replacing it with an error
   //      page. That is the view an operator needs most while a cluster is
-  //      degrading.
+  //      degrading. The notice claims last-known data, so it appears only
+  //      when the failed source still holds some: an optional source that
+  //      failed before ever loading (trends on a remote cluster, which the
+  //      backend rejects) has nothing stale to show, and the widget renders
+  //      without it, as the pre-registry island did.
   //
   // Idle (never requested -- the consumer calls `ensure`, not this component)
   // and in-flight both land on the skeleton, so they never need distinguishing.
-  const failure = states.find((s) => s.error !== null);
+  const failure = states.find((s) => s.error !== null && s.data !== null);
   const blockingFailure = requiredStates.find((s) => s.error !== null);
   const renderable = requiredStates.every((s) => s.data !== null);
 
@@ -117,6 +121,11 @@ export default function WidgetHost({
       data-testid="widget-host"
       data-widget-id={def.id}
       data-widget-mode={mode}
+      // Which of the three branches below rendered. Lets a test tell a loaded
+      // widget from a skeleton, which the host element alone cannot.
+      data-widget-state={
+        renderable ? "ready" : blockingFailure ? "error" : "loading"
+      }
       style={{ height: "100%", minWidth: 0, minHeight: 0 }}
     >
       {renderable ? (

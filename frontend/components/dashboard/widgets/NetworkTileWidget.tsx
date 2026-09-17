@@ -1,7 +1,6 @@
 import { NetworkTile } from "@/components/ui/NetworkTile.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { registerWidget } from "@/lib/dashboard/registry.ts";
-import type { WidgetProps } from "@/lib/dashboard/types.ts";
 import type { DashboardTrends } from "@/lib/dashboard/wire-types.ts";
 import { percentile } from "@/lib/format.ts";
 
@@ -12,17 +11,16 @@ const DEFAULT_RANGE = "1h";
  * Cluster network throughput: RX/TX p95 over the active window, derived from
  * the trend series so the value tracks whichever time-range tab is selected.
  *
- * `period` is only a label, and it comes in through `params.range` because a
- * widget has no access to the island's tab state.
- *
- * **Contract for the unit that renders this**: pass the range the displayed
- * trend data actually belongs to, not the tab the user just clicked. The
- * pre-registry island kept two separate signals for exactly this reason — they
- * diverge while a tab-switch fetch is in flight, and labelling the old data
- * with the new window states a window the data has not caught up to yet.
+ * The period label is the range the displayed series was fetched under, read
+ * from the same cache entry as the series, not the tab the user just clicked.
+ * The two diverge while a tab-switch fetch is in flight, and labelling the old
+ * data with the new window states a window the data has not caught up to yet.
+ * Reading it here rather than taking it as a param means no host -- the flex
+ * shell today, the grid in P2 -- has to know this widget needs it.
  */
-function NetworkTileWidget({ params }: WidgetProps) {
-  const t = dashboardData.state<DashboardTrends>("dashboard-trends").data;
+function NetworkTileWidget() {
+  const trends = dashboardData.state<DashboardTrends>("dashboard-trends");
+  const t = trends.data;
 
   return (
     <NetworkTile
@@ -30,7 +28,7 @@ function NetworkTileWidget({ params }: WidgetProps) {
       txP95={percentile(t?.networkTx, 95)}
       rxData={t?.networkRx}
       txData={t?.networkTx}
-      period={params.range ?? DEFAULT_RANGE}
+      period={trends.range ?? DEFAULT_RANGE}
       href="/cluster/nodes"
     />
   );
@@ -49,5 +47,5 @@ registerWidget({
   defaultW: 3,
   defaultH: 3,
   modes: ["compact", "normal"],
-  render: (props) => <NetworkTileWidget {...props} />,
+  render: () => <NetworkTileWidget />,
 });

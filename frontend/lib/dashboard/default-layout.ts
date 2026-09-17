@@ -71,6 +71,84 @@ export const DEFAULT_OVERVIEW_LAYOUT: DashboardLayoutConfig = {
   ],
 };
 
+/** One widget in a pre-registry flex row. */
+export interface FlexSlot {
+  id: string;
+  /** CSS `flex` shorthand. Omitted for a tile inside the 2x2 block. */
+  flex?: string;
+  minWidth?: string;
+  /** Skeleton height while loading: the flex slot has no height to fill. */
+  placeholder: string;
+}
+
+/** A row cell: one widget, or the 2x2 metric tile block that shares a cell. */
+export type FlexCell = FlexSlot | { flex: string; tiles: FlexSlot[] };
+
+/**
+ * The pre-registry flex rows, as data, so the shell renders them in a loop
+ * and a unit test can hold them to DEFAULT_OVERVIEW_LAYOUT. Written as JSX,
+ * a widget added to the layout but not given a slot would pass every unit
+ * test and simply not appear.
+ *
+ * Temporary by design: P2 renders DEFAULT_OVERVIEW_LAYOUT through the grid
+ * and deletes this.
+ */
+export const OVERVIEW_FLEX_ROWS: readonly FlexCell[][] = [
+  [
+    {
+      id: "cluster-health",
+      flex: "2 1 320px",
+      minWidth: "280px",
+      placeholder: "200px",
+    },
+    {
+      flex: "3 1 380px",
+      tiles: [
+        { id: "cpu-tile", placeholder: "120px" },
+        { id: "memory-tile", placeholder: "120px" },
+        { id: "pods-tile", placeholder: "120px" },
+        { id: "network-tile", placeholder: "120px" },
+      ],
+    },
+  ],
+  [
+    {
+      id: "resource-utilization",
+      flex: "3 1 380px",
+      minWidth: "280px",
+      placeholder: "160px",
+    },
+    {
+      id: "pod-status",
+      flex: "2 1 240px",
+      minWidth: "200px",
+      placeholder: "160px",
+    },
+  ],
+  [
+    { id: "nodes", flex: "2 1 260px", minWidth: "220px", placeholder: "200px" },
+    {
+      id: "recent-events",
+      flex: "3 1 300px",
+      minWidth: "240px",
+      placeholder: "200px",
+    },
+    {
+      id: "active-alerts",
+      flex: "2 1 240px",
+      minWidth: "200px",
+      placeholder: "200px",
+    },
+  ],
+];
+
+/** Every widget id the flex rows render, in render order. */
+export function flexSlotIds(rows: readonly FlexCell[][]): string[] {
+  return rows
+    .flat()
+    .flatMap((c) => ("tiles" in c ? c.tiles : [c]).map((s) => s.id));
+}
+
 /**
  * The default layout's placement of a widget id.
  *

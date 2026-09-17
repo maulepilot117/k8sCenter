@@ -9,6 +9,9 @@ import { dashboardData } from "@/lib/dashboard/data.ts";
 import {
   DEFAULT_OVERVIEW_LAYOUT,
   defaultItem,
+  type FlexSlot,
+  flexSlotIds,
+  OVERVIEW_FLEX_ROWS,
 } from "@/lib/dashboard/default-layout.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type { DataSourceKey } from "@/lib/dashboard/types.ts";
@@ -48,40 +51,22 @@ const SOURCES: DataSourceKey[] = [
  * One widget in its pre-registry flex slot.
  *
  * Placement stays the old flex rows so this unit is visually identical to the
- * page it replaces; the twelve-column grid arrives with P2. `placeholder` is
- * the skeleton height the old page-level loading state used for this slot.
+ * page it replaces; the twelve-column grid arrives with P2.
  */
-function Slot(props: {
-  id: string;
-  flex?: string;
-  minWidth?: string;
-  placeholder: string;
-}) {
-  const item = defaultItem(props.id);
+function Slot({ slot }: { slot: FlexSlot }) {
+  const item = defaultItem(slot.id);
   const def = getWidget(item.id);
   if (!def) return null;
-
-  // The network tile labels its p95 with a window. It must name the window the
-  // displayed data belongs to, which lags the selected tab while a fetch is in
-  // flight -- not the tab itself. Read only here: reading the signal
-  // subscribes, and every other slot would re-render on each trends update.
-  const params: Record<string, string> = { ...item.params };
-  if (props.id === "network-tile") {
-    const range = dashboardData.state("dashboard-trends").range;
-    if (range) params.range = range;
-  }
 
   const host = (
     <WidgetHost
       def={def}
-      params={params}
-      placeholderHeight={props.placeholder}
+      params={item.params}
+      placeholderHeight={slot.placeholder}
     />
   );
-  if (!props.flex) return host;
-  return (
-    <div style={{ flex: props.flex, minWidth: props.minWidth }}>{host}</div>
-  );
+  if (!slot.flex) return host;
+  return <div style={{ flex: slot.flex, minWidth: slot.minWidth }}>{host}</div>;
 }
 
 export default function DashboardV2() {
@@ -198,63 +183,35 @@ export default function DashboardV2() {
         </div>
       </div>
 
-      <div style={{ ...ROW_STYLE, marginBottom: ROW_GAP }}>
-        <Slot
-          id="cluster-health"
-          flex="2 1 320px"
-          minWidth="280px"
-          placeholder="200px"
-        />
+      {OVERVIEW_FLEX_ROWS.map((row, i) => (
         <div
+          key={flexSlotIds([row])[0]}
           style={{
-            flex: "3 1 380px",
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: ROW_GAP,
+            ...ROW_STYLE,
+            marginBottom: i < OVERVIEW_FLEX_ROWS.length - 1 ? ROW_GAP : 0,
           }}
         >
-          <Slot id="cpu-tile" placeholder="120px" />
-          <Slot id="memory-tile" placeholder="120px" />
-          <Slot id="pods-tile" placeholder="120px" />
-          <Slot id="network-tile" placeholder="120px" />
+          {row.map((cell) =>
+            "tiles" in cell ? (
+              <div
+                key={cell.tiles[0].id}
+                style={{
+                  flex: cell.flex,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: ROW_GAP,
+                }}
+              >
+                {cell.tiles.map((t) => (
+                  <Slot key={t.id} slot={t} />
+                ))}
+              </div>
+            ) : (
+              <Slot key={cell.id} slot={cell} />
+            ),
+          )}
         </div>
-      </div>
-
-      <div style={{ ...ROW_STYLE, marginBottom: ROW_GAP }}>
-        <Slot
-          id="resource-utilization"
-          flex="3 1 380px"
-          minWidth="280px"
-          placeholder="160px"
-        />
-        <Slot
-          id="pod-status"
-          flex="2 1 240px"
-          minWidth="200px"
-          placeholder="160px"
-        />
-      </div>
-
-      <div style={ROW_STYLE}>
-        <Slot
-          id="nodes"
-          flex="2 1 260px"
-          minWidth="220px"
-          placeholder="200px"
-        />
-        <Slot
-          id="recent-events"
-          flex="3 1 300px"
-          minWidth="240px"
-          placeholder="200px"
-        />
-        <Slot
-          id="active-alerts"
-          flex="2 1 240px"
-          minWidth="200px"
-          placeholder="200px"
-        />
-      </div>
+      ))}
     </div>
   );
 }
