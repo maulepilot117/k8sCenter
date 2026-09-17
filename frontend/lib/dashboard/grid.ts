@@ -22,7 +22,11 @@
  * `instanceId`, never by index.
  */
 import type { LayoutItem } from "./types.ts";
-import { DASHBOARD_COLUMNS } from "./types.ts";
+import {
+  DASHBOARD_COLUMNS,
+  DASHBOARD_GRID_GAP,
+  DASHBOARD_ROW_HEIGHT,
+} from "./types.ts";
 
 /** The smallest size a resize may produce. */
 export interface Bounds {
@@ -291,6 +295,51 @@ export function cellFromPoint(
   return {
     x: clamp(Math.floor((px - m.left) / colStride), 0, DASHBOARD_COLUMNS - 1),
     y: Math.max(0, Math.floor((py - m.top) / rowStride)),
+  };
+}
+
+/**
+ * Derives the grid's cell geometry from its measured box.
+ *
+ * The columns share whatever the gaps leave, so the cell width follows the
+ * container and only the row height is fixed. A container narrower than its
+ * own gaps yields a negative cell width; that is left as measured, because
+ * `cellFromPoint` is where "not laid out yet" is decided and a clamp here
+ * would hide it.
+ */
+export function metricsFrom(rect: {
+  left: number;
+  top: number;
+  width: number;
+}): GridMetrics {
+  const gap = DASHBOARD_GRID_GAP;
+  return {
+    left: rect.left,
+    top: rect.top,
+    cellWidth: (rect.width - gap * (DASHBOARD_COLUMNS - 1)) / DASHBOARD_COLUMNS,
+    rowHeight: DASHBOARD_ROW_HEIGHT,
+    gap,
+  };
+}
+
+/**
+ * Where a dragged item should sit, given where it started and how far the
+ * pointer has travelled in cells.
+ *
+ * Translating the item by the pointer's displacement, rather than putting its
+ * corner under the pointer, is what lets a drag start anywhere on the title
+ * bar without the widget jumping. `start` is the item's position when the drag
+ * began, not its current one: the item can be lifted by gravity mid-drag, and
+ * feeding that back in would make the widget walk away from the pointer.
+ */
+export function dragTarget(
+  start: { x: number; y: number },
+  origin: { x: number; y: number },
+  cell: { x: number; y: number },
+): { x: number; y: number } {
+  return {
+    x: start.x + (cell.x - origin.x),
+    y: start.y + (cell.y - origin.y),
   };
 }
 
