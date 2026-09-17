@@ -326,3 +326,328 @@ test("startRefresh: a second start replaces the first rather than stacking", asy
   await new Promise((r) => globalThis.setTimeout(r, 40));
   expect(calls).toBe(afterStop);
 });
+
+test("range: a range change while in flight supersedes the older request", async () => {
+  // Regression guard. ensure() used to skip any key already in flight, so
+  // clicking 6h then 24h before 6h answered never requested 24h at all: the
+  // tab read 24h, the chart showed 6h, and every refresh re-requested 6h.
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const signals = new Map<string, AbortSignal>();
+  const requested: string[] = [];
+  const cache = createSourceCache({
+    "dashboard-trends": (signal, range) => {
+      requested.push(range);
+      const d = deferred<string>();
+      pending.set(range, d);
+      signals.set(range, signal);
+      signal.addEventListener("abort", () => {
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+
+  expect(requested).toEqual(["6h", "24h"]);
+  expect(signals.get("6h")?.aborted).toBe(true);
+  expect(signals.get("24h")?.aborted).toBe(false);
+
+  pending.get("24h")?.resolve("24h-data");
+  await cache.settled();
+
+  // The later range is what refresh re-requests from here on.
+  cache.refresh();
+  expect(requested).toEqual(["6h", "24h", "24h"]);
+  pending.get("24h")?.resolve("24h-data");
+  await cache.settled();
+  expect(cache.state("dashboard-trends").data).toBe("24h-data");
+});
+
+test("range: a superseded response that lands late is discarded", async () => {
+  // A fetcher that ignores its signal, or a response already on the wire when
+  // abort fired, must not put the old range's data back over the new one.
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (_signal, range) => {
+      const d = deferred<string>();
+      pending.set(range, d);
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  pending.get("24h")?.resolve("24h-data");
+  pending.get("6h")?.resolve("6h-data");
+  await cache.settled();
+
+  const s = cache.state("dashboard-trends");
+  expect(s.data).toBe("24h-data");
+  expect(s.range).toBe("24h");
+  expect(s.loading).toBe(false);
+});
+
+test("settled: waits for a superseded request that is still on the wire", async () => {
+  // A cancelled request whose fetcher has not honoured its signal yet is
+  // still a live request. settled() returning early would let a caller treat
+  // the cache as quiet while a response is outstanding.
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (_signal, range) => {
+      const d = deferred<string>();
+      pending.set(range, d);
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  pending.get("24h")?.resolve("24h-data");
+
+  let done = false;
+  const wait = cache.settled().then(() => {
+    done = true;
+  });
+  await new Promise((r) => globalThis.setTimeout(r, 10));
+  expect(done).toBe(false);
+
+  pending.get("6h")?.resolve("6h-data");
+  await wait;
+  expect(done).toBe(true);
+});
+
+test("refresh: does not stack a request on a superseded one still in flight", async () => {
+  const requested: string[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (_signal, range) => {
+      requested.push(range);
+      const d = deferred<string>();
+      pending.set(range, d);
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  pending.get("24h")?.resolve("24h-data");
+  await new Promise((r) => globalThis.setTimeout(r, 0));
+
+  cache.refresh();
+  expect(requested).toEqual(["6h", "24h"]);
+
+  pending.get("6h")?.resolve("6h-data");
+  await cache.settled();
+  cache.refresh();
+  expect(requested).toEqual(["6h", "24h", "24h"]);
+  pending.get("24h")?.resolve("again");
+  await cache.settled();
+});
+
+test("abort: an ensure in the same tick as abort still fetches the key", async () => {
+  // Regression guard. An effect cleanup calls abort() and the next effect
+  // calls ensure() immediately. A signalled request still looked in flight,
+  // so that ensure was skipped; the rejection then forgot the range, and with
+  // no data and no recorded range nothing ever retried the key.
+  let calls = 0;
+  const cache = createSourceCache({
+    "dashboard-summary": (signal) => {
+      calls++;
+      return new Promise((res, rej) => {
+        signal.addEventListener("abort", () => {
+          rej(new DOMException("Aborted", "AbortError"));
+        });
+        globalThis.setTimeout(() => res("data"), 5);
+      });
+    },
+  });
+
+  cache.ensure(["dashboard-summary"], "1h");
+  cache.abort();
+  cache.ensure(["dashboard-summary"], "1h");
+  expect(calls).toBe(2);
+
+  await cache.settled();
+  expect(cache.state("dashboard-summary").data).toBe("data");
+});
+
+test("abort: an aborted range change hands the key back to the data's range", async () => {
+  // 1h has landed; a switch to 6h is torn down before it answers. The
+  // recorded range must go back to 1h, or the next ensure(6h) is skipped and
+  // the tab names a window the chart is not showing.
+  const requested: string[] = [];
+  const cache = createSourceCache({
+    "dashboard-trends": (signal, range) => {
+      requested.push(range);
+      if (range === "1h") return Promise.resolve("1h-data");
+      return new Promise((res, rej) => {
+        signal.addEventListener("abort", () => {
+          rej(new DOMException("Aborted", "AbortError"));
+        });
+        globalThis.setTimeout(() => res(`${range}-data`), 5);
+      });
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await cache.settled();
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.abort();
+  await cache.settled();
+
+  expect(cache.state("dashboard-trends").range).toBe("1h");
+  expect(cache.state("dashboard-trends").loading).toBe(false);
+
+  cache.ensure(["dashboard-trends"], "6h");
+  expect(requested).toEqual(["1h", "6h", "6h"]);
+  await cache.settled();
+  expect(cache.state("dashboard-trends").range).toBe("6h");
+});
+
+test("range: a superseded request's abort leaves the newer one loading", async () => {
+  // The older request rejects with AbortError. Its handler must not clear
+  // loading or forget the range out from under the request replacing it.
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (signal, range) => {
+      const d = deferred<string>();
+      pending.set(range, d);
+      signal.addEventListener("abort", () => {
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  await pending.get("6h")?.promise.catch(() => {});
+  await Promise.resolve();
+
+  expect(cache.state("dashboard-trends").loading).toBe(true);
+  cache.abort();
+  await cache.settled();
+});
+
+test("range: same-range ensure while in flight still issues one request", async () => {
+  let calls = 0;
+  const d = deferred<string>();
+  const cache = createSourceCache({
+    "dashboard-trends": () => {
+      calls++;
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "6h");
+  expect(calls).toBe(1);
+  d.resolve("x");
+  await cache.settled();
+});
+
+test("state.range: names the window the data covers, not the one requested", async () => {
+  // The network tile labels its p95 with this. While a tab switch is in
+  // flight the displayed series still belongs to the old window.
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (_signal, range) => {
+      const d = deferred<string>();
+      pending.set(range, d);
+      return d.promise;
+    },
+  });
+
+  expect(cache.state("dashboard-trends").range).toBeNull();
+
+  cache.ensure(["dashboard-trends"], "1h");
+  expect(cache.state("dashboard-trends").range).toBeNull();
+  pending.get("1h")?.resolve("1h-data");
+  await cache.settled();
+  expect(cache.state("dashboard-trends").range).toBe("1h");
+
+  cache.ensure(["dashboard-trends"], "6h");
+  expect(cache.state("dashboard-trends").range).toBe("1h");
+  pending.get("6h")?.resolve("6h-data");
+  await cache.settled();
+  expect(cache.state("dashboard-trends").range).toBe("6h");
+});
+
+test("state.range: a failed fetch keeps the range of the data it kept", async () => {
+  let attempt = 0;
+  const cache = createSourceCache({
+    "dashboard-trends": (_s, range) => {
+      attempt++;
+      return attempt === 1
+        ? Promise.resolve(range)
+        : Promise.reject(new Error("boom"));
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "1h");
+  await cache.settled();
+  cache.ensure(["dashboard-trends"], "6h");
+  await cache.settled();
+
+  const s = cache.state("dashboard-trends");
+  expect(s.data).toBe("1h");
+  expect(s.range).toBe("1h");
+  expect(s.error).toBe("boom");
+});
+
+test("range: a superseded request settling does not un-track its replacement", async () => {
+  // If the older request's cleanup removed whatever entry the key now holds,
+  // it would drop the newer in-flight request, and the next refresh tick --
+  // which skips only keys it can see in flight -- would issue a duplicate.
+  let calls = 0;
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (signal, range) => {
+      calls++;
+      const d = deferred<string>();
+      pending.set(range, d);
+      signal.addEventListener("abort", () => {
+        d.reject(new DOMException("Aborted", "AbortError"));
+      });
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  await pending.get("6h")?.promise.catch(() => {});
+  await new Promise((r) => globalThis.setTimeout(r, 0));
+
+  cache.refresh();
+  expect(calls).toBe(2);
+
+  cache.abort();
+  await cache.settled();
+});
+
+test("startRefresh: a tick waits while a superseded request is still on the wire", async () => {
+  const requested: string[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<string>>>();
+  const cache = createSourceCache({
+    "dashboard-trends": (_signal, range) => {
+      requested.push(range);
+      const d = deferred<string>();
+      pending.set(range, d);
+      return d.promise;
+    },
+  });
+
+  cache.ensure(["dashboard-trends"], "6h");
+  cache.ensure(["dashboard-trends"], "24h");
+  pending.get("24h")?.resolve("24h-data");
+
+  const stop = cache.startRefresh(5);
+  await new Promise((r) => globalThis.setTimeout(r, 40));
+  stop();
+  expect(requested).toEqual(["6h", "24h"]);
+
+  pending.get("6h")?.resolve("6h-data");
+  await cache.settled();
+});
