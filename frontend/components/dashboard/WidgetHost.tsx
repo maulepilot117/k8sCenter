@@ -1,5 +1,6 @@
 import { useSignal } from "@preact/signals";
-import { useLayoutEffect, useRef } from "preact/hooks";
+import { useContext, useLayoutEffect, useRef } from "preact/hooks";
+import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";
@@ -114,6 +115,9 @@ export default function WidgetHost({
   const renderable = requiredStates.every((s) => s.data !== null);
 
   const mode = pickMode(def.modes, width.value, height.value);
+  // In a grid cell the stale notice takes its natural height and the widget
+  // takes the rest, so a card that fills its space still fits the cell.
+  const fill = useContext(CellFillContext);
 
   return (
     <div
@@ -126,7 +130,12 @@ export default function WidgetHost({
       data-widget-state={
         renderable ? "ready" : blockingFailure ? "error" : "loading"
       }
-      style={{ height: "100%", minWidth: 0, minHeight: 0 }}
+      style={{
+        height: "100%",
+        minWidth: 0,
+        minHeight: 0,
+        ...(fill ? { display: "flex", flexDirection: "column" } : {}),
+      }}
     >
       {renderable ? (
         <>
@@ -144,7 +153,13 @@ export default function WidgetHost({
               Showing last known data — refresh failed.
             </div>
           )}
-          {def.render({ mode, params })}
+          {fill ? (
+            <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+              {def.render({ mode, params })}
+            </div>
+          ) : (
+            def.render({ mode, params })
+          )}
         </>
       ) : blockingFailure ? (
         <div

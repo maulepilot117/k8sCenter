@@ -1,3 +1,5 @@
+import { useContext } from "preact/hooks";
+import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { formatMbps } from "@/lib/format.ts";
@@ -93,6 +95,7 @@ export function NetworkTile({
   period,
   href,
 }: NetworkTileProps) {
+  const fill = useContext(CellFillContext);
   const inner = (
     <WidgetShell padding={16}>
       <div
@@ -147,7 +150,14 @@ export function NetworkTile({
     return (
       <a
         href={href}
-        style={{ textDecoration: "none", color: "inherit", display: "block" }}
+        style={{
+          textDecoration: "none",
+          color: "inherit",
+          display: "block",
+          // Passes a dashboard grid cell's height through to the card, which
+          // fills it (see CellFillContext); content-height everywhere else.
+          ...(fill ? { height: "100%" } : {}),
+        }}
       >
         {inner}
       </a>

@@ -1,4 +1,6 @@
 import type { ComponentChildren, JSX } from "preact";
+import { useContext } from "preact/hooks";
+import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 
 interface WidgetShellProps {
@@ -22,8 +24,32 @@ export default function WidgetShell({
   padding = 20,
   style,
 }: WidgetShellProps) {
+  // In a dashboard grid cell the card takes the cell's height, keeps its title
+  // row fixed, and scrolls the body when the content is taller than the cell.
+  const fill = useContext(CellFillContext);
+  const body = fill ? (
+    <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
+      {children}
+    </div>
+  ) : (
+    children
+  );
+
   return (
-    <GlassCard padding={padding} style={style}>
+    <GlassCard
+      padding={padding}
+      style={
+        fill
+          ? {
+              height: "100%",
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              ...style,
+            }
+          : style
+      }
+    >
       {(title || action) && (
         <div
           style={{
@@ -32,6 +58,7 @@ export default function WidgetShell({
             justifyContent: "space-between",
             gap: "12px",
             marginBottom: "14px",
+            flexShrink: 0,
           }}
         >
           {title ? (
@@ -51,7 +78,7 @@ export default function WidgetShell({
           {action}
         </div>
       )}
-      {children}
+      {body}
     </GlassCard>
   );
 }
