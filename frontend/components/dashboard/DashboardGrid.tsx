@@ -3,7 +3,7 @@ import type { JSX } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
 import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
-import { layoutHeight } from "@/lib/dashboard/grid.ts";
+import { byReadingOrder, layoutHeight } from "@/lib/dashboard/grid.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
   DashboardLayoutConfig,
@@ -94,7 +94,7 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
   // One column follows reading order, which is also the keyboard and
   // screen-reader order. The wide grid places items by coordinates, but DOM
   // order still matters for tab order, so it is reading order there too.
-  const ordered = [...items.value].sort((p, q) => p.y - q.y || p.x - q.x);
+  const ordered = [...items.value].sort(byReadingOrder);
 
   const style: JSX.CSSProperties = narrow.value
     ? {

@@ -45,7 +45,9 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-function byReadingOrder(p: LayoutItem, q: LayoutItem): number {
+/** Sorts by row, then column: the order results come back in, and the order
+ * keyboard and screen-reader traversal follow. */
+export function byReadingOrder(p: LayoutItem, q: LayoutItem): number {
   return p.y - q.y || p.x - q.x;
 }
 

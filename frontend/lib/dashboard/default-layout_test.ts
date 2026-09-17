@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 // these checks see exactly the set the dashboard renders.
 import "@/components/dashboard/widgets/index.ts";
 import { DEFAULT_OVERVIEW_LAYOUT } from "./default-layout.ts";
-import { compact } from "./grid.ts";
+import { byReadingOrder, compact } from "./grid.ts";
 import { allWidgets, getWidget } from "./registry.ts";
 import { DASHBOARD_COLUMNS, DASHBOARD_MAX_ITEMS } from "./types.ts";
 
@@ -90,9 +90,7 @@ test("default layout: within the item cap", () => {
 // already at rest would visibly jump on first paint and would not survive a
 // save/load round trip unchanged.
 test("default layout: is already compact", () => {
-  expect(compact(items)).toEqual(
-    [...items].sort((p, q) => p.y - q.y || p.x - q.x),
-  );
+  expect(compact(items)).toEqual([...items].sort(byReadingOrder));
 });
 
 test("default layout: the four metric tiles form an equal 2x2 block", () => {

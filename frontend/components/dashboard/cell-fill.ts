@@ -1,4 +1,6 @@
+import type { JSX } from "preact";
 import { createContext } from "preact";
+import { useContext } from "preact/hooks";
 
 /**
  * True inside a dashboard grid cell, where the cell -- not the content -- sets
@@ -11,3 +13,12 @@ import { createContext } from "preact";
  * the space the layout gave it.
  */
 export const CellFillContext = createContext(false);
+
+/**
+ * Height for an element that wraps a widget card from outside it, such as a
+ * tile's link. In a grid cell the wrapper must pass the cell's height through,
+ * or the card's own fill has nothing to fill; elsewhere it adds nothing.
+ */
+export function useCellFillHeight(): JSX.CSSProperties {
+  return useContext(CellFillContext) ? { height: "100%" } : {};
+}

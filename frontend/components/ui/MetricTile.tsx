@@ -1,5 +1,4 @@
-import { useContext } from "preact/hooks";
-import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
+import { useCellFillHeight } from "@/components/dashboard/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 
@@ -22,7 +21,7 @@ export function MetricTile({
   sparkColor = "var(--accent)",
   href,
 }: MetricTileProps) {
-  const fill = useContext(CellFillContext);
+  const fillHeight = useCellFillHeight();
   const inner = (
     <WidgetShell padding={16}>
       <div
@@ -107,9 +106,7 @@ export function MetricTile({
           textDecoration: "none",
           color: "inherit",
           display: "block",
-          // Passes a dashboard grid cell's height through to the card, which
-          // fills it (see CellFillContext); content-height everywhere else.
-          ...(fill ? { height: "100%" } : {}),
+          ...fillHeight,
         }}
       >
         {inner}
