@@ -3,7 +3,7 @@ import { createContext } from "preact";
 import { useContext } from "preact/hooks";
 
 /**
- * True inside a dashboard grid cell, where the cell -- not the content -- sets
+ * True inside a layout cell (today, the dashboard grid), where the cell -- not the content -- sets
  * the widget's height.
  *
  * Cards are content-height everywhere else in the app, and WidgetShell is used

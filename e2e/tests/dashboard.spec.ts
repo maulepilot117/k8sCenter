@@ -33,6 +33,41 @@ test.describe("Dashboard widget registry", () => {
   const widget = (page: Page, id: string) =>
     page.locator(`[data-widget-id="${id}"]`);
 
+  test("a narrow grid collapses to one column in reading order", async ({
+    page,
+  }) => {
+    // Well under the 900px grid-width breakpoint once the sidebar is counted.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await page.goto("/");
+
+    const grid = page.getByTestId("dashboard-grid");
+    await expect(grid).toHaveAttribute("data-grid-mode", "narrow");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    // DOM order is the keyboard and screen-reader order: row, then column.
+    const order = await page
+      .getByTestId("grid-item")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("data-instance-id")));
+    expect(order).toEqual([
+      "d-cluster-health",
+      "d-cpu-tile",
+      "d-memory-tile",
+      "d-pods-tile",
+      "d-network-tile",
+      "d-resource-utilization",
+      "d-pod-status",
+      "d-nodes",
+      "d-recent-events",
+      "d-active-alerts",
+    ]);
+
+    // Every cell spans the single column.
+    const lefts = await page
+      .getByTestId("grid-item")
+      .evaluateAll((els) => els.map((el) => Math.round(el.getBoundingClientRect().left)));
+    expect(new Set(lefts).size).toBe(1);
+  });
+
   test("every default widget renders through the registry", async ({
     page,
   }) => {

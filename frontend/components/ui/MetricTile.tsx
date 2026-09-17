@@ -1,4 +1,4 @@
-import { useCellFillHeight } from "@/components/dashboard/cell-fill.ts";
+import { useCellFillHeight } from "@/components/ui/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 

@@ -1,6 +1,6 @@
 import type { ComponentChildren, JSX } from "preact";
 import { useContext } from "preact/hooks";
-import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
+import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import GlassCard from "@/components/ui/GlassCard.tsx";
 
 interface WidgetShellProps {
@@ -28,7 +28,16 @@ export default function WidgetShell({
   // row fixed, and scrolls the body when the content is taller than the cell.
   const fill = useContext(CellFillContext);
   const body = fill ? (
-    <div style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
+    <div
+      style={{
+        flex: "1 1 auto",
+        minHeight: 0,
+        overflowY: "auto",
+        // overflowY alone makes overflow-x compute to auto too; a card body
+        // must never scroll sideways, so narrow content clips instead.
+        overflowX: "hidden",
+      }}
+    >
       {children}
     </div>
   ) : (

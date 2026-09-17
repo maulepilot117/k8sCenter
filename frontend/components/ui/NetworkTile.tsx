@@ -1,4 +1,4 @@
-import { useCellFillHeight } from "@/components/dashboard/cell-fill.ts";
+import { useCellFillHeight } from "@/components/ui/cell-fill.ts";
 import { SparklineChart } from "@/components/ui/SparklineChart.tsx";
 import WidgetShell from "@/components/ui/WidgetShell.tsx";
 import { formatMbps } from "@/lib/format.ts";
@@ -72,7 +72,7 @@ function Row({
       >
         Mbps
       </span>
-      <div style={{ flex: 1, minWidth: "40px" }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
         {data && data.length >= 2 && (
           <SparklineChart data={data} color={color} height={22} />
         )}

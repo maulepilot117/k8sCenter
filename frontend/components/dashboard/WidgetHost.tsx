@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import { useContext, useLayoutEffect, useRef } from "preact/hooks";
-import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
+import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 import { dashboardData } from "@/lib/dashboard/data.ts";
 import { pickMode } from "@/lib/dashboard/display-mode.ts";

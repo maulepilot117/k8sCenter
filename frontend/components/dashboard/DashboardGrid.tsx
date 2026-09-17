@@ -1,8 +1,8 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useLayoutEffect, useRef } from "preact/hooks";
-import { CellFillContext } from "@/components/dashboard/cell-fill.ts";
 import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
+import { CellFillContext } from "@/components/ui/cell-fill.ts";
 import { byReadingOrder, layoutHeight } from "@/lib/dashboard/grid.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
@@ -22,8 +22,12 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
  * width, not the viewport's: the sidebar takes a large share of a narrow
  * viewport, and twelve columns in the ~440px left at a 768px window would be
  * about 22px each.
+ *
+ * 900, not 768: the narrowest widget in the default layout is a three-column
+ * metric tile, and the Network I/O tile's value, unit and sparkline need about
+ * 170px of content. Three columns only give that from a grid of about 885px.
  */
-export const NARROW_GRID_WIDTH = 768;
+export const NARROW_GRID_WIDTH = 900;
 
 interface GridItemProps {
   item: LayoutItem;
@@ -91,10 +95,19 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
     return () => ro.disconnect();
   }, []);
 
+  // An unknown id is skipped rather than rendered (spec D-7); telling the user
+  // a widget was dropped is P4's job, on the editor surface. Filtered once so
+  // a skipped item neither renders nor reserves rows in the wide grid.
+  const renderable = items.value.flatMap((item) => {
+    const def = getWidget(item.id);
+    return def ? [{ item, def }] : [];
+  });
   // One column follows reading order, which is also the keyboard and
   // screen-reader order. The wide grid places items by coordinates, but DOM
   // order still matters for tab order, so it is reading order there too.
-  const ordered = [...items.value].sort(byReadingOrder);
+  const ordered = [...renderable].sort((p, q) =>
+    byReadingOrder(p.item, q.item),
+  );
 
   const style: JSX.CSSProperties = narrow.value
     ? {
@@ -108,7 +121,7 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
         gridTemplateColumns: `repeat(${DASHBOARD_COLUMNS}, minmax(0, 1fr))`,
         // An explicit row count keeps the grid tall enough for the lowest
         // widget. Implicit rows would make a drop below the last row clamp.
-        gridTemplateRows: `repeat(${Math.max(1, layoutHeight(items.value))}, ${DASHBOARD_ROW_HEIGHT}px)`,
+        gridTemplateRows: `repeat(${Math.max(1, layoutHeight(renderable.map((r) => r.item)))}, ${DASHBOARD_ROW_HEIGHT}px)`,
         gap: `${DASHBOARD_GRID_GAP}px`,
       };
 
@@ -119,20 +132,14 @@ export default function DashboardGrid({ initial }: DashboardGridProps) {
       data-grid-mode={narrow.value ? "narrow" : "wide"}
       style={style}
     >
-      {ordered.map((item) => {
-        const def = getWidget(item.id);
-        // An unknown id is skipped rather than rendered (spec D-7). Telling the
-        // user a widget was dropped is P4's job, on the editor surface.
-        if (!def) return null;
-        return (
-          <GridItem
-            key={item.instanceId}
-            item={item}
-            def={def}
-            narrow={narrow.value}
-          />
-        );
-      })}
+      {ordered.map(({ item, def }) => (
+        <GridItem
+          key={item.instanceId}
+          item={item}
+          def={def}
+          narrow={narrow.value}
+        />
+      ))}
     </div>
   );
 }
