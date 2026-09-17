@@ -148,6 +148,8 @@ export default function DashboardGrid({
   const narrow = useSignal(false);
   const dragging = useSignal<string | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
+  /** Ends the drag in flight, if there is one. Set for the session's life. */
+  const endDrag = useRef<((restore: boolean) => void) | null>(null);
 
   // Layout effect, so the first paint already uses the right mode rather than
   // flashing twelve squeezed columns on a narrow screen.
@@ -163,6 +165,15 @@ export default function DashboardGrid({
     measure();
     return () => ro.disconnect();
   }, []);
+
+  // A drag cannot outlive the mode that offered the handle. Leaving edit mode
+  // or collapsing to one column unmounts the handle under the pointer, and a
+  // session nobody can finish would keep the widget lifted and hold the
+  // pre-drag layout for the next Escape to apply. The user did not drop it,
+  // so the layout goes back.
+  useLayoutEffect(() => {
+    if (!editable || narrow.value) endDrag.current?.(true);
+  }, [editable, narrow.value]);
 
   /**
    * Runs one drag from pointerdown to release.
@@ -181,17 +192,34 @@ export default function DashboardGrid({
     const handle = event.currentTarget;
     const start = items.value.find((i) => i.instanceId === instanceId);
     // Not editable, one-column mode (where x and y carry no meaning), a
-    // secondary button, or an item that is no longer there: not a drag.
-    if (!editable || narrow.value || event.button !== 0 || !el || !start) {
+    // secondary button, an item that is no longer there, or a drag already in
+    // flight: not a drag. Two concurrent sessions -- two fingers on two
+    // handles -- would each hold their own pre-drag layout, and whichever one
+    // was cancelled would restore over the other's work.
+    if (
+      !editable ||
+      narrow.value ||
+      event.button !== 0 ||
+      !el ||
+      !start ||
+      dragging.value !== null
+    ) {
       return;
     }
 
     // Suppress the browser's own text selection and image dragging, which
     // otherwise fight the pointer session.
     event.preventDefault();
-    // Pointer capture is what keeps the drag alive when the cursor outruns
-    // the handle; without it a fast drag drops the widget mid-flight.
-    handle.setPointerCapture(event.pointerId);
+    // Capture keeps the events aimed at the handle while the cursor outruns
+    // it. It is an enhancement, not the session: the listeners below are on
+    // the window, so a pointer the user agent will not let us capture still
+    // drags. Capturing an already-released pointer throws, and losing the
+    // drag over that would be worse than losing the capture.
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Nothing to do: the session runs uncaptured.
+    }
     dragging.value = instanceId;
 
     const before = items.value;
@@ -222,19 +250,54 @@ export default function DashboardGrid({
     // below, so there is no teardown list to keep in step with the setup.
     const session = new AbortController();
     const end = (restore: boolean) => {
+      // Abort first. Releasing a pointer the user agent has already
+      // deactivated throws, and a throw after this point would leave the
+      // session's listeners attached -- including the keydown one, which
+      // holds the pre-drag layout and would revert the dashboard on some
+      // unrelated Escape minutes later.
+      session.abort();
+      endDrag.current = null;
       if (restore) items.value = before;
       dragging.value = null;
-      handle.releasePointerCapture(event.pointerId);
-      session.abort();
+      if (handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
     };
+    endDrag.current = end;
     const listen = { signal: session.signal };
+    /** Runs `fn` only for this session's pointer: another finger is not this
+     * drag. The window's listener map is untyped, so the narrowing lives
+     * here rather than at four call sites. */
+    const forThisPointer =
+      (fn: (ev: PointerEvent) => void) =>
+      (ev: Event): void => {
+        const pointer = ev as PointerEvent;
+        if (pointer.pointerId === event.pointerId) fn(pointer);
+      };
 
-    handle.addEventListener("pointermove", onMove, listen);
-    handle.addEventListener("pointerup", () => end(false), listen);
+    // The session belongs to the pointer, not to the handle: the handle is
+    // rendered only while the grid is editable and wide, so a mid-drag flip
+    // of either -- Space on the still-focused "Edit layout" button, or a zoom
+    // that crosses the breakpoint -- unmounts it. Listening on the window
+    // means the drag still ends when the element that started it is gone.
+    globalThis.addEventListener("pointermove", forThisPointer(onMove), listen);
+    globalThis.addEventListener(
+      "pointerup",
+      forThisPointer(() => end(false)),
+      listen,
+    );
     // pointercancel is an interruption, not a drop: the OS took the pointer
     // (a system gesture, a touch turned into a scroll), so the layout the
     // user never released goes back to where it was.
-    handle.addEventListener("pointercancel", () => end(true), listen);
+    globalThis.addEventListener(
+      "pointercancel",
+      forThisPointer(() => end(true)),
+      listen,
+    );
+    // Losing capture without a pointerup is the same interruption, and it is
+    // what the handle unmounting mid-drag looks like. Fired after pointerup on
+    // a normal drop, by which point the session has already aborted.
+    handle.addEventListener("lostpointercapture", () => end(true), listen);
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") end(true);
     };

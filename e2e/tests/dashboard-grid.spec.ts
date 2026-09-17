@@ -99,6 +99,8 @@ test.describe("Dashboard grid drag", () => {
     expect(at(after, "d-active-alerts").width).toBe(alerts.width);
     expect(overlapping(after)).toEqual([]);
     expect(after).toHaveLength(10);
+    // The drop ended the session.
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
   });
 
   test("a drag never leaves two widgets on the same cell", async ({ page }) => {
@@ -132,10 +134,13 @@ test.describe("Dashboard grid drag", () => {
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    // Mid-drag, so the layout has already moved under the pointer.
     await expect(
       page.locator('[data-instance-id="d-active-alerts"]'),
     ).toHaveAttribute("data-dragging", "true");
+    // The widget has actually moved: without this the test could certify a
+    // restore that had nothing to restore.
+    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
+
     await page.keyboard.press("Escape");
     await page.mouse.up();
 
@@ -146,6 +151,75 @@ test.describe("Dashboard grid drag", () => {
     expect(at(after, "d-active-alerts").x).toBe(alerts.x);
     expect(at(after, "d-active-alerts").y).toBe(alerts.y);
     expect(after).toEqual(before);
+  });
+
+  test("an interrupted pointer puts the layout back", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    const alerts = at(before, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
+
+    // What the OS taking the pointer looks like to the page: a system
+    // gesture, or a touch the browser decided was a scroll. Chrome gives a
+    // mouse drag pointerId 1.
+    await handle(page, "d-active-alerts").evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent("pointercancel", { pointerId: 1, bubbles: true }),
+      );
+    });
+
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+    expect(await cells(page)).toEqual(before);
+    await page.mouse.up();
+  });
+
+  test("a drag survives the handle disappearing under it", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+
+    // "Edit layout" still has focus, so Space toggles edit mode off and every
+    // handle unmounts mid-drag -- including the one the pointer is captured
+    // by. The session must still end rather than leave the grid stuck.
+    await page.keyboard.press("Space");
+    await page.mouse.up();
+
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+
+    // And the session is really over: a later Escape cannot revert the page.
+    const settled = await cells(page);
+    await page.keyboard.press("Escape");
+    expect(await cells(page)).toEqual(settled);
+  });
+
+  test("one column offers no handles to drag", async ({ page }) => {
+    // Well under the 900px grid-width breakpoint once the sidebar is counted.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    const grid = page.getByTestId("dashboard-grid");
+    await expect(grid).toHaveAttribute("data-grid-mode", "narrow");
+    await page.getByTestId("edit-layout").click();
+    await expect(grid).toHaveAttribute("data-grid-editable", "true");
+
+    // Edit mode is on, but a single column has no columns to drag between.
+    await expect(page.getByTestId("drag-handle")).toHaveCount(0);
   });
 
   test("outside edit mode there is nothing to drag", async ({ page }) => {
@@ -183,6 +257,8 @@ test.describe("Dashboard grid drag", () => {
       y: alerts.y + 8,
     });
     const moved = await cells(page);
+    // The drag produced a different layout, so "kept" below means something.
+    expect(at(moved, "d-active-alerts").x).not.toBe(alerts.x);
 
     // "Done" ends editing; it is not a cancel. Persistence is P3, so this
     // layout lives until reload.
