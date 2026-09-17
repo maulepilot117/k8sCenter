@@ -430,6 +430,40 @@ test("a streamed request body reaches the backend intact", async () => {
   expect(received).toBe(parts.join(""));
 });
 
+// The test above passes with or without `duplex` because Bun's fetch does not
+// require it. Node's does, and `astro dev` runs the proxy under Node: dropping
+// it broke every POST in development (login returned 502) while this suite
+// stayed green. So the option itself is asserted on the fetch call.
+test("a request with a body is sent with duplex: half; one without is not", async () => {
+  const realFetch = globalThis.fetch;
+  const seen: Array<{ method?: string; duplex?: unknown }> = [];
+  globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+    seen.push({
+      method: init?.method,
+      duplex: (init as { duplex?: unknown } | undefined)?.duplex,
+    });
+    return new Response("ok");
+  }) as typeof fetch;
+  cleanups.push(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const proxy = await startProxyServer({ backendUrl: "http://127.0.0.1:1" });
+  cleanups.push(proxy.close);
+
+  await rawRequest(`${proxy.url}/api/v1/auth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  await rawRequest(`${proxy.url}/api/v1/pods`);
+
+  expect(seen).toEqual([
+    { method: "POST", duplex: "half" },
+    { method: "GET", duplex: undefined },
+  ]);
+});
+
 // --- security headers on handler-constructed error responses ---
 
 test("the five security headers are present on a proxy pass-through response", async () => {
