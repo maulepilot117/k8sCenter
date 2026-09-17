@@ -82,7 +82,7 @@ export function compact(items: readonly LayoutItem[]): LayoutItem[] {
     }
     settled.push({ ...it, y });
   }
-  return settled;
+  return settled.sort(byReadingOrder);
 }
 
 /**
@@ -130,13 +130,21 @@ function resolve(
  * A non-finite coordinate is a no-op: a pointer read before layout yields NaN,
  * and a NaN in the layout makes every later comparison false, which silently
  * disables collision handling for that item.
+ *
+ * Moving down past an item below only takes effect once the requested y
+ * reaches that item's bottom edge. A smaller downward move overlaps it during
+ * the push phase, gets pushed underneath the anchor, and gravity lifts the
+ * anchor back on top during compaction -- so the net effect settles back to
+ * where it started. That's intentional: it is what keeps a drag stable when
+ * moveItem is re-applied to the current layout on every pointermove (as the
+ * planned D8 drag does). A keyboard step that should pass the item below has
+ * to compute that landing row itself rather than relying on a one-cell nudge.
  */
 export function moveItem(
   items: readonly LayoutItem[],
   instanceId: string,
   x: number,
   y: number,
-  columns: number = DASHBOARD_COLUMNS,
 ): LayoutItem[] {
   const target = items.find((i) => i.instanceId === instanceId);
   if (!target || !Number.isFinite(x) || !Number.isFinite(y)) {
@@ -145,7 +153,7 @@ export function moveItem(
 
   return resolve(items, {
     ...target,
-    x: clamp(Math.round(x), 0, Math.max(0, columns - target.w)),
+    x: clamp(Math.round(x), 0, Math.max(0, DASHBOARD_COLUMNS - target.w)),
     y: Math.max(0, Math.round(y)),
   });
 }
@@ -165,7 +173,6 @@ export function resizeItem(
   w: number,
   h: number,
   bounds: Bounds,
-  columns: number = DASHBOARD_COLUMNS,
 ): LayoutItem[] {
   const target = items.find((i) => i.instanceId === instanceId);
   if (!target || !Number.isFinite(w) || !Number.isFinite(h)) {
@@ -174,7 +181,10 @@ export function resizeItem(
 
   return resolve(items, {
     ...target,
-    w: Math.max(1, clamp(Math.round(w), bounds.minW, columns - target.x)),
+    w: Math.max(
+      1,
+      clamp(Math.round(w), bounds.minW, DASHBOARD_COLUMNS - target.x),
+    ),
     h: Math.max(1, bounds.minH, Math.round(h)),
   });
 }
@@ -184,17 +194,27 @@ export function cellFromPoint(
   px: number,
   py: number,
   m: GridMetrics,
-  columns: number = DASHBOARD_COLUMNS,
 ): { x: number; y: number } {
+  // Before first layout the grid reports zero-size cells, and a container
+  // narrower than its own gaps can report a negative cellWidth. Either
+  // divides into Infinity/NaN, or -- undetected -- a nonzero cell out of a
+  // zero-size grid; `!(x > 0)` rejects zero, negative, and NaN alike. A NaN
+  // or wrong coordinate would otherwise propagate into the layout.
+  if (
+    !(m.cellWidth > 0) ||
+    !(m.rowHeight > 0) ||
+    !Number.isFinite(m.left) ||
+    !Number.isFinite(m.top) ||
+    !Number.isFinite(m.gap)
+  ) {
+    return { x: 0, y: 0 };
+  }
+
   const colStride = m.cellWidth + m.gap;
   const rowStride = m.rowHeight + m.gap;
 
-  // Before first layout the grid reports zero-size cells. Dividing by that
-  // yields Infinity or NaN, and a NaN coordinate propagates into the layout.
-  if (colStride <= 0 || rowStride <= 0) return { x: 0, y: 0 };
-
   return {
-    x: clamp(Math.floor((px - m.left) / colStride), 0, columns - 1),
+    x: clamp(Math.floor((px - m.left) / colStride), 0, DASHBOARD_COLUMNS - 1),
     y: Math.max(0, Math.floor((py - m.top) / rowStride)),
   };
 }

@@ -104,6 +104,14 @@ describe("compact", () => {
     expect(overlapping(out)).toEqual([]);
     expect(shape(out)).toEqual(["a@0,0", "b@2,3"]);
   });
+
+  test("returns items in reading order, not input/processing order", () => {
+    // a is processed first (smaller pre-compaction y), but both land at y=0,
+    // where b (smaller x) reads first. Array order is asserted directly
+    // because shape() sorts and would hide an ordering regression.
+    const out = compact([item("a", 6, 0, 3, 2), item("b", 0, 5, 3, 2)]);
+    expect(out.map((i) => i.instanceId)).toEqual(["b", "a"]);
+  });
 });
 
 describe("moveItem", () => {
@@ -208,6 +216,41 @@ describe("moveItem", () => {
     const input = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 2)];
     moveItem(input, "b", 0, 0);
     expect(shape(input)).toEqual(["a@0,0", "b@0,2"]);
+  });
+
+  test("returns items in reading order, not processing order", () => {
+    // z is untouched and never overlaps the mover, but the mover (a) is
+    // requested well below z's row; both settle back to y 0 since neither
+    // blocks the other, and a's smaller x must sort it first.
+    const out = moveItem(
+      [item("z", 8, 0, 4, 2), item("a", 0, 5, 4, 2)],
+      "a",
+      0,
+      10,
+    );
+    expect(out.map((i) => i.instanceId)).toEqual(["a", "z"]);
+  });
+
+  describe("a downward move into an occupied column", () => {
+    // a(0,0,4,2) sits above b(0,2,4,3). Moving a down by one cell overlaps b,
+    // b is pushed underneath a during the push phase, and gravity lifts a
+    // back on top during compaction -- the move is undone. Only once the
+    // requested y reaches b's bottom edge (2 + 3 = 5) does a actually land
+    // below b.
+    const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+
+    test("a smaller downward move settles back", () => {
+      expect(shape(moveItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@0,2"]);
+    });
+
+    test("reaching the item's bottom edge passes it", () => {
+      expect(shape(moveItem(layout, "a", 0, 5))).toEqual(["a@0,3", "b@0,0"]);
+    });
+
+    test("is stable under re-application", () => {
+      const once = moveItem(layout, "a", 0, 5);
+      expect(shape(moveItem(once, "a", 0, 5))).toEqual(shape(once));
+    });
   });
 });
 
@@ -316,16 +359,29 @@ describe("cellFromPoint", () => {
     expect(cellFromPoint(99999, 50, METRICS).x).toBe(DASHBOARD_COLUMNS - 1);
   });
 
-  test("x is clamped to a narrower grid's last column", () => {
-    // The one-column collapse at narrow widths renders the same layout on a
-    // grid with fewer columns.
-    expect(cellFromPoint(99999, 50, METRICS, 1).x).toBe(0);
-  });
-
   test("a zero-width cell does not produce NaN or Infinity", () => {
     // Guards the first paint, when the grid has been mounted but not laid out.
     const degenerate = { left: 0, top: 0, cellWidth: 0, rowHeight: 0, gap: 0 };
     expect(cellFromPoint(10, 10, degenerate)).toEqual({ x: 0, y: 0 });
+  });
+
+  test("a zero cellWidth with a nonzero gap does not produce a nonzero cell", () => {
+    // colStride = cellWidth + gap = 16, which is > 0 even though the grid has
+    // no width -- the guard must check cellWidth itself, not the stride.
+    const degenerate = { left: 0, top: 0, cellWidth: 0, rowHeight: 0, gap: 16 };
+    expect(cellFromPoint(50, 50, degenerate)).toEqual({ x: 0, y: 0 });
+  });
+
+  test("a negative cellWidth from a container narrower than its gaps is guarded", () => {
+    // (0 - 16 * 11) / 12, the width a zero-width grid computes per cell.
+    const degenerate = {
+      left: 0,
+      top: 0,
+      cellWidth: -14.67,
+      rowHeight: 40,
+      gap: 16,
+    };
+    expect(cellFromPoint(50, 50, degenerate)).toEqual({ x: 0, y: 0 });
   });
 });
 
@@ -382,13 +438,15 @@ describe("invariants under random operations", () => {
       for (let step = 0; step < 25; step++) {
         const target = layout[int(0, layout.length - 1)].instanceId;
         const before = JSON.stringify(layout);
-        const next =
-          rand() < 0.5
-            ? moveItem(layout, target, int(-3, 14), int(-3, 25))
-            : resizeItem(layout, target, int(0, 14), int(0, 8), {
-                minW: 1,
-                minH: 1,
-              });
+        const isMove = rand() < 0.5;
+        const requestedX = int(-3, 14);
+        const targetW = layout.find((i) => i.instanceId === target)?.w ?? 0;
+        const next = isMove
+          ? moveItem(layout, target, requestedX, int(-3, 25))
+          : resizeItem(layout, target, int(0, 14), int(0, 8), {
+              minW: 1,
+              minH: 1,
+            });
 
         const where = `round ${round} step ${step}`;
         expect(JSON.stringify(layout), `${where}: input mutated`).toBe(before);
@@ -406,6 +464,15 @@ describe("invariants under random operations", () => {
         expect(shape(compact(next)), `${where}: not compact`).toEqual(
           shape(next),
         );
+        if (isMove) {
+          // Rule 3: the moved item keeps its requested column.
+          const expectedX = Math.min(
+            DASHBOARD_COLUMNS - targetW,
+            Math.max(0, Math.round(requestedX)),
+          );
+          const moved = next.find((i) => i.instanceId === target);
+          expect(moved?.x, `${where}: moved item x`).toBe(expectedX);
+        }
         layout = next;
       }
     }
