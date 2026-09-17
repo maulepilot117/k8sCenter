@@ -174,46 +174,6 @@
     "note": "Inherited verbatim from the pre-migration Fresh tree (islands/CniOverview.tsx:52 -> 61, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
   },
   {
-    "file": "src/islands/DashboardV2.tsx",
-    "tag": "div",
-    "at": {
-      "component": 0,
-      "placeholder": 0,
-      "placeholderRoot": 0,
-      "hydrated": 0,
-      "hydratedRoot": 0
-    },
-    "placeholder": {
-      "attrs": {
-        "style": "{{ minHeight: \"400px\" }}"
-      }
-    },
-    "hydrated": {
-      "attrs": {}
-    },
-    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/DashboardV2.tsx:192 -> 198, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
-  },
-  {
-    "file": "src/islands/DashboardV2.tsx",
-    "tag": "div",
-    "at": {
-      "component": 0,
-      "placeholder": 0,
-      "placeholderRoot": 0,
-      "hydrated": 1,
-      "hydratedRoot": 0
-    },
-    "placeholder": {
-      "attrs": {
-        "style": "{{ minHeight: \"400px\" }}"
-      }
-    },
-    "hydrated": {
-      "attrs": {}
-    },
-    "note": "Inherited verbatim from the pre-migration Fresh tree (islands/DashboardV2.tsx:192 -> 198, deleted by U12). The port did not introduce it, and a cross-tree diff could not see it."
-  },
-  {
     "file": "src/islands/ExtensionsHub.tsx",
     "tag": "div",
     "at": {

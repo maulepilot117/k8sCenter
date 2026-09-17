@@ -9,6 +9,14 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 interface WidgetHostProps {
   def: WidgetDef;
   params?: Record<string, string>;
+  /**
+   * Height of the loading skeleton, for a host in a content-height slot.
+   *
+   * Omit it on the grid, where the cell has a height and the skeleton fills
+   * it. A flex slot sized by its content has no height to fill, so there the
+   * skeleton would be 0px and the page would load as empty space, then jump.
+   */
+  placeholderHeight?: string;
 }
 
 /**
@@ -23,7 +31,11 @@ interface WidgetHostProps {
  * which is a pure function with unit tests, because this repo has no component
  * test harness.
  */
-export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
+export default function WidgetHost({
+  def,
+  params = {},
+  placeholderHeight,
+}: WidgetHostProps) {
   const box = useRef<HTMLDivElement | null>(null);
   const width = useSignal(0);
   const height = useSignal(0);
@@ -89,11 +101,15 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   //      across a failed refresh, so a transient 500 leaves the widget
   //      rendered with an inline error instead of replacing it with an error
   //      page. That is the view an operator needs most while a cluster is
-  //      degrading.
+  //      degrading. The notice claims last-known data, so it appears only
+  //      when the failed source still holds some: an optional source that
+  //      failed before ever loading (trends on a remote cluster, which the
+  //      backend rejects) has nothing stale to show, and the widget renders
+  //      without it, as the pre-registry island did.
   //
   // Idle (never requested -- the consumer calls `ensure`, not this component)
   // and in-flight both land on the skeleton, so they never need distinguishing.
-  const failure = states.find((s) => s.error !== null);
+  const failure = states.find((s) => s.error !== null && s.data !== null);
   const blockingFailure = requiredStates.find((s) => s.error !== null);
   const renderable = requiredStates.every((s) => s.data !== null);
 
@@ -105,6 +121,11 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
       data-testid="widget-host"
       data-widget-id={def.id}
       data-widget-mode={mode}
+      // Which of the three branches below rendered. Lets a test tell a loaded
+      // widget from a skeleton, which the host element alone cannot.
+      data-widget-state={
+        renderable ? "ready" : blockingFailure ? "error" : "loading"
+      }
       style={{ height: "100%", minWidth: 0, minHeight: 0 }}
     >
       {renderable ? (
@@ -143,7 +164,10 @@ export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
       ) : (
         // Sized to the widget box: a bare <Skeleton /> carries no height class
         // and would render an invisible zero-height div.
-        <Skeleton class="h-full w-full rounded-lg" />
+        <Skeleton
+          class="h-full w-full rounded-lg"
+          style={placeholderHeight ? { height: placeholderHeight } : undefined}
+        />
       )}
     </div>
   );
