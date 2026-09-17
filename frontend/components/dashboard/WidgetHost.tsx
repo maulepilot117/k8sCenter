@@ -10,14 +10,6 @@ import { IS_BROWSER } from "@/src/lib/is-browser.ts";
 interface WidgetHostProps {
   def: WidgetDef;
   params?: Record<string, string>;
-  /**
-   * Height of the loading skeleton, for a host in a content-height slot.
-   *
-   * Omit it on the grid, where the cell has a height and the skeleton fills
-   * it. A flex slot sized by its content has no height to fill, so there the
-   * skeleton would be 0px and the page would load as empty space, then jump.
-   */
-  placeholderHeight?: string;
 }
 
 /**
@@ -32,11 +24,7 @@ interface WidgetHostProps {
  * which is a pure function with unit tests, because this repo has no component
  * test harness.
  */
-export default function WidgetHost({
-  def,
-  params = {},
-  placeholderHeight,
-}: WidgetHostProps) {
+export default function WidgetHost({ def, params = {} }: WidgetHostProps) {
   const box = useRef<HTMLDivElement | null>(null);
   const width = useSignal(0);
   const height = useSignal(0);
@@ -177,12 +165,9 @@ export default function WidgetHost({
           </div>
         </div>
       ) : (
-        // Sized to the widget box: a bare <Skeleton /> carries no height class
-        // and would render an invisible zero-height div.
-        <Skeleton
-          class="h-full w-full rounded-lg"
-          style={placeholderHeight ? { height: placeholderHeight } : undefined}
-        />
+        // Sized to the widget box, which the grid cell gives a height: a bare
+        // <Skeleton /> carries no height class and would render zero-height.
+        <Skeleton class="h-full w-full rounded-lg" />
       )}
     </div>
   );

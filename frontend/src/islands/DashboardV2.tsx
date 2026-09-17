@@ -1,18 +1,12 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
 import { useEffect } from "preact/hooks";
-import WidgetHost from "@/components/dashboard/WidgetHost.tsx";
+import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
 import "@/components/dashboard/widgets/index.ts";
 import { dashboardData } from "@/lib/dashboard/data.ts";
-import {
-  DEFAULT_OVERVIEW_LAYOUT,
-  defaultItem,
-  type FlexSlot,
-  flexSlotIds,
-  OVERVIEW_FLEX_ROWS,
-} from "@/lib/dashboard/default-layout.ts";
+import { DEFAULT_OVERVIEW_LAYOUT } from "@/lib/dashboard/default-layout.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type { DataSourceKey } from "@/lib/dashboard/types.ts";
 import type {
@@ -28,13 +22,6 @@ type TimeRange = (typeof TIME_RANGES)[number];
 // the server-rendered root's props, so the two must not diverge.
 const ROOT_STYLE: JSX.CSSProperties = { minHeight: "400px" };
 
-const ROW_GAP = "var(--grid-gap, 16px)";
-const ROW_STYLE: JSX.CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: ROW_GAP,
-};
-
 // Every source the default layout's widgets read, plus the two the header
 // reads for its subtitle.
 const SOURCES: DataSourceKey[] = [
@@ -46,28 +33,6 @@ const SOURCES: DataSourceKey[] = [
     ),
   ]),
 ];
-
-/**
- * One widget in its pre-registry flex slot.
- *
- * Placement stays the old flex rows so this unit is visually identical to the
- * page it replaces; the twelve-column grid arrives with P2.
- */
-function Slot({ slot }: { slot: FlexSlot }) {
-  const item = defaultItem(slot.id);
-  const def = getWidget(item.id);
-  if (!def) return null;
-
-  const host = (
-    <WidgetHost
-      def={def}
-      params={item.params}
-      placeholderHeight={slot.placeholder}
-    />
-  );
-  if (!slot.flex) return host;
-  return <div style={{ flex: slot.flex, minWidth: slot.minWidth }}>{host}</div>;
-}
 
 export default function DashboardV2() {
   const timeRange = useSignal<TimeRange>("1h");
@@ -183,35 +148,7 @@ export default function DashboardV2() {
         </div>
       </div>
 
-      {OVERVIEW_FLEX_ROWS.map((row, i) => (
-        <div
-          key={flexSlotIds([row])[0]}
-          style={{
-            ...ROW_STYLE,
-            marginBottom: i < OVERVIEW_FLEX_ROWS.length - 1 ? ROW_GAP : 0,
-          }}
-        >
-          {row.map((cell) =>
-            "tiles" in cell ? (
-              <div
-                key={cell.tiles[0].id}
-                style={{
-                  flex: cell.flex,
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: ROW_GAP,
-                }}
-              >
-                {cell.tiles.map((t) => (
-                  <Slot key={t.id} slot={t} />
-                ))}
-              </div>
-            ) : (
-              <Slot key={cell.id} slot={cell} />
-            ),
-          )}
-        </div>
-      ))}
+      <DashboardGrid initial={DEFAULT_OVERVIEW_LAYOUT} />
     </div>
   );
 }
