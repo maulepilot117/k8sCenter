@@ -81,6 +81,7 @@ export interface SourceCache {
 /** One live request. Each carries its own controller so a single superseded
  * request can be cancelled without tearing down its siblings. */
 interface InFlight {
+  key: DataSourceKey;
   promise: Promise<void>;
   range: string;
   controller: AbortController;
@@ -94,6 +95,15 @@ export function createSourceCache(
   /** The range each key was last requested under, so a range change is
    * detectable without refetching range-insensitive sources. */
   const fetchedRange = new Map<string, string>();
+  /**
+   * Requests that were cancelled -- superseded by a range change, or torn down
+   * by abort() -- but have not settled yet. They no longer own their key's
+   * state, but they are still on the wire: a fetcher that is slow to honour
+   * its signal (api() waiting on a shared token refresh, say) is a live
+   * request, and forgetting it would let settled() return early and a
+   * refresh tick stack a second request on top of it.
+   */
+  const retired = new Set<InFlight>();
   let refreshTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
   function sig(key: DataSourceKey): Signal<SourceState> {
@@ -115,6 +125,7 @@ export function createSourceCache(
 
     const controller = new AbortController();
     const entry: InFlight = {
+      key,
       promise: Promise.resolve(),
       range,
       controller,
@@ -133,18 +144,10 @@ export function createSourceCache(
       .catch((err) => {
         if (!current()) return;
         if (isAbort(err) || controller.signal.aborted) {
-          // Teardown, not failure. Leave the previous value in place and say
-          // nothing -- an abort banner would be noise on every navigation.
-          //
-          // But if the abort landed before any data ever did, forget the range
-          // too. fetchedRange is written before the await, so leaving it set
-          // would make the next ensure() treat this key as already fetched,
-          // skip it, and leave the widget blank permanently. That is what an
-          // unmount/remount faster than the first response looks like.
-          if (s.value.data === null) {
-            fetchedRange.delete(key);
-          }
-          s.value = { ...s.value, loading: false };
+          // Teardown, not failure: an abort banner would be noise on every
+          // navigation. abort() normally retires the entry before this runs,
+          // so reaching here means the fetcher aborted on its own.
+          settleAborted(key);
           return;
         }
         // Keep whatever we last had. A 60s refresh that hits a transient 500
@@ -159,9 +162,43 @@ export function createSourceCache(
       })
       .finally(() => {
         if (current()) inFlight.delete(key);
+        retired.delete(entry);
       });
 
     inFlight.set(key, entry);
+  }
+
+  /**
+   * Cancels a request and takes it off its key, so it can no longer write the
+   * key's state. It stays tracked in `retired` until it actually settles.
+   */
+  function retire(entry: InFlight): void {
+    inFlight.delete(entry.key);
+    retired.add(entry);
+    entry.controller.abort();
+  }
+
+  /**
+   * After an abort, the recorded range must describe the data on screen, not
+   * the request that never finished. fetchedRange is written before the
+   * await, so leaving the aborted range in place breaks both ways:
+   *
+   * - With no data, the next ensure() thinks the key is already fetched and
+   *   skips it, and refresh() has nothing to re-request, so the widget stays
+   *   blank for good. That is an unmount/remount faster than the first
+   *   response.
+   * - With data from another range, the next ensure() for the aborted range
+   *   is skipped, and the tab names a window the chart does not show until a
+   *   refresh tick happens to fetch it.
+   */
+  function settleAborted(key: DataSourceKey): void {
+    const s = sig(key);
+    if (s.value.range === null) {
+      fetchedRange.delete(key);
+    } else {
+      fetchedRange.set(key, s.value.range);
+    }
+    s.value = { ...s.value, loading: false };
   }
 
   const cache: SourceCache = {
@@ -185,8 +222,7 @@ export function createSourceCache(
           // reads 24h, the chart shows 6h, and every refresh re-requests 6h
           // because that is the range recorded. The pre-registry island
           // cancelled the earlier tab fetch for the same reason.
-          inFlight.delete(key);
-          pending.controller.abort();
+          retire(pending);
           run(key, range);
           continue;
         }
@@ -198,14 +234,25 @@ export function createSourceCache(
     },
 
     refresh(): void {
+      const busy = new Set<string>(inFlight.keys());
+      for (const entry of retired) busy.add(entry.key);
       for (const [key, range] of [...fetchedRange.entries()]) {
-        if (inFlight.has(key)) continue;
+        if (busy.has(key)) continue;
         run(key as DataSourceKey, range);
       }
     },
 
     abort(): void {
-      for (const entry of inFlight.values()) entry.controller.abort();
+      // Settled here, synchronously, rather than in each request's rejection
+      // handler. The caller's very next line is often an ensure() -- an effect
+      // cleanup followed by the next effect -- and a request that is merely
+      // signalled still looks in flight to it, so that ensure() would skip
+      // the key and the rejection would then forget its range: a widget left
+      // blank that no refresh ever retries.
+      for (const entry of [...inFlight.values()]) {
+        retire(entry);
+        settleAborted(entry.key);
+      }
     },
 
     startRefresh(intervalMs: number = DASHBOARD_REFRESH_MS): () => void {
@@ -227,8 +274,10 @@ export function createSourceCache(
     },
 
     async settled(): Promise<void> {
-      while (inFlight.size > 0) {
-        await Promise.allSettled([...inFlight.values()].map((e) => e.promise));
+      while (inFlight.size > 0 || retired.size > 0) {
+        await Promise.allSettled(
+          [...inFlight.values(), ...retired].map((e) => e.promise),
+        );
       }
     },
   };
