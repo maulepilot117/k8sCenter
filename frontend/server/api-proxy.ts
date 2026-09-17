@@ -14,12 +14,7 @@ import { hasTraversal } from "./path-safety.ts";
  *  - the `v1/` prefix requirement + traversal regex (SSRF guard)
  *  - the 30s timeout and the 504-timeout / 502-other-failure split
  *  - manual handling of the two OIDC redirect paths (redirect: "manual")
- *
- * Dropped deliberately (see U6 in the migration plan): the
- * `duplex: "half"` cast Deno's fetch needed for a streamed request body.
- * A spike measured a streamed body reaching a backend stub identically
- * with and without it under Bun 1.4.2 -- it is Node-fetch-specific dead
- * code here, not a portability hedge.
+ *  - `duplex: "half"` on a streamed request body (see the fetch call)
  */
 
 /** Headers to forward from client to backend. */
@@ -156,6 +151,13 @@ export async function handleApiProxy(
       body: hasBody
         ? (Readable.toWeb(req) as unknown as ReadableStream)
         : undefined,
+      // Required for a stream body under Node, where `astro dev` runs this
+      // module (the astro bin is a node script): without it Node's fetch
+      // throws "duplex option is required when sending a body", and every
+      // POST -- login included -- comes back 502. Bun, which runs the built
+      // server, accepts it and behaves identically, so a Bun-only test can
+      // never see its absence; the stubbed-fetch test pins it instead.
+      ...(hasBody ? { duplex: "half" as const } : {}),
       redirect: manualRedirect ? "manual" : "follow",
       signal: AbortSignal.timeout(timeoutMs),
     });
