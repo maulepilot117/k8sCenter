@@ -49,18 +49,18 @@ function byReadingOrder(p: LayoutItem, q: LayoutItem): number {
   return p.y - q.y || p.x - q.x;
 }
 
-export function overlaps(a: LayoutItem, b: LayoutItem): boolean {
-  return !(
-    a.x + a.w <= b.x ||
-    b.x + b.w <= a.x ||
-    a.y + a.h <= b.y ||
-    b.y + b.h <= a.y
-  );
-}
-
-/** True when a and b share any column. */
+/** True when a and b share any column. Touching edges share none. */
 function sharesColumn(a: LayoutItem, b: LayoutItem): boolean {
   return !(a.x + a.w <= b.x || b.x + b.w <= a.x);
+}
+
+/** True when a and b share any row. Touching edges share none. */
+function sharesRow(a: LayoutItem, b: LayoutItem): boolean {
+  return !(a.y + a.h <= b.y || b.y + b.h <= a.y);
+}
+
+export function overlaps(a: LayoutItem, b: LayoutItem): boolean {
+  return sharesColumn(a, b) && sharesRow(a, b);
 }
 
 /**
