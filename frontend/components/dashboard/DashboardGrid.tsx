@@ -10,8 +10,10 @@ import {
   layoutHeight,
   metricsFrom,
   moveItem,
+  resizeItemBy,
   resizeItemToCell,
   resolveRenderable,
+  stepItem,
 } from "@/lib/dashboard/grid.ts";
 import { getWidget } from "@/lib/dashboard/registry.ts";
 import type {
@@ -57,8 +59,8 @@ const DRAG_HANDLE_HEIGHT = 40;
  *
  * The drawn grip is 16px because anything larger reads as a widget of its own
  * in a card corner, but WCAG 2.2 AA Target Size (Minimum) wants 24px and the
- * mobile app was held to that bar in M5 PR-5h. So the button is 24 and the
- * grip is painted in its bottom-right 16.
+ * mobile app was held to that bar in M5 PR-5h. So the pointer target is 24 and
+ * the grip is painted in its bottom-right 16.
  *
  * 24 here and 40 for the drag handle also have to fit one above the other
  * without touching, which 2.5.8 requires of adjacent targets. That holds as
@@ -69,8 +71,31 @@ const DRAG_HANDLE_HEIGHT = 40;
 const RESIZE_HANDLE_SIZE = 24;
 const RESIZE_GRIP_SIZE = 16;
 
+/**
+ * The focus ring for a grid item. Utilities rather than an inline style,
+ * because `:focus-visible` has no inline form -- and an arrangeable widget with
+ * no visible focus indicator is a keyboard path nobody can follow.
+ */
+const ITEM_FOCUS_RING =
+  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
+
 /** What a pointer session is doing. Only one runs at a time. */
 type SessionKind = "drag" | "resize";
+
+/**
+ * A placed widget's accessible name: what it is, and where it sits.
+ *
+ * Position belongs in the name because on this surface it is the only thing
+ * the user is changing. It is also announced through the grid's live region
+ * after a key press, since a name that changes under an already-focused
+ * element is not reliably re-read.
+ */
+function describePlacement(item: LayoutItem, def: WidgetDef): string {
+  return (
+    `${def.title}, column ${item.x + 1} of ${DASHBOARD_COLUMNS}, ` +
+    `row ${item.y + 1}, ${item.w} wide, ${item.h} tall`
+  );
+}
 
 interface GridItemProps {
   item: LayoutItem;
@@ -78,22 +103,24 @@ interface GridItemProps {
   /** One-column mode: keep the height, discard x and w. */
   narrow: boolean;
   /**
-   * Whether this item offers its drag and resize handles. Narrower than the
-   * grid's own `editable`: one column has nothing to arrange, so the grid
-   * gates this on being wide as well.
+   * Whether this item can be arranged: the handles are rendered, the item is a
+   * tab stop, and it takes the arrow keys. Narrower than the grid's own
+   * `editable`: one column has nothing to arrange, so the grid gates this on
+   * being wide as well.
    */
-  handlesVisible: boolean;
+  arrangeable: boolean;
   /** True while this item is the one being dragged. */
   dragging: boolean;
   /** True while this item is the one being resized. */
   resizing: boolean;
   onDragStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
   onResizeStart: (event: JSX.TargetedPointerEvent<HTMLElement>) => void;
+  onKeyDown: (event: JSX.TargetedKeyboardEvent<HTMLElement>) => void;
 }
 
 /**
- * One positioned cell and, while editing, the two handles that move and size
- * it.
+ * One positioned cell and, while editing, the ways to move and size it: two
+ * pointer handles, and the item itself as a keyboard target.
  *
  * It provides CellFillContext, so the widget's card fills the cell and scrolls
  * its body instead of sizing to its content.
@@ -102,11 +129,12 @@ export function GridItem({
   item,
   def,
   narrow,
-  handlesVisible,
+  arrangeable,
   dragging,
   resizing,
   onDragStart,
   onResizeStart,
+  onKeyDown,
 }: GridItemProps) {
   const style: JSX.CSSProperties = narrow
     ? { gridColumn: "1 / -1", gridRow: `span ${item.h}` }
@@ -127,6 +155,25 @@ export function GridItem({
       data-instance-id={item.instanceId}
       data-dragging={dragging ? "true" : undefined}
       data-resizing={resizing ? "true" : undefined}
+      // The whole item is the widget's one tab stop while editing. The two
+      // handles below deliberately are not (see the note on the drag handle),
+      // and the widget's own content is inert, so a Tab through an editable
+      // grid stops once per widget rather than on every link inside every
+      // card.
+      //
+      // No tabindex at all outside edit mode, rather than -1: a -1 element is
+      // still focused by a click, which would ring a widget nobody can move.
+      tabIndex={arrangeable ? 0 : undefined}
+      // Arrow keys mean "move this widget" here, not "read the next line", so
+      // the item asks assistive technology for the raw keys instead of letting
+      // browse mode consume them. Only while editing -- the rest of the time
+      // the widget's content is meant to be browsed, and role="application"
+      // would take that away.
+      role={arrangeable ? "application" : undefined}
+      aria-roledescription={arrangeable ? "dashboard widget" : undefined}
+      aria-label={arrangeable ? describePlacement(item, def) : undefined}
+      onKeyDown={arrangeable ? onKeyDown : undefined}
+      class={ITEM_FOCUS_RING}
       style={{
         ...style,
         minWidth: 0,
@@ -136,21 +183,25 @@ export function GridItem({
         zIndex: dragging || resizing ? 2 : undefined,
       }}
     >
-      {handlesVisible && (
+      {arrangeable && (
         // The handle is the card's title row, not the whole card: several
         // widgets have links in their body, and a card-wide drag target would
-        // swallow those clicks. A button, not a bare div, so the handle is
-        // focusable -- D10 gives it arrow keys.
+        // swallow those clicks.
         //
         // It does cover the title row's own action slot, so the four widgets
         // with a header link ("View all", the utilization legend) cannot be
         // clicked while editing. That is the intended trade (decided
         // 2026-09-17): edit mode is for arranging, the whole row is one
         // predictable grab target, and leaving edit mode restores the links.
-        <button
-          type="button"
+        //
+        // A plain element, not a button. D8 made it one so that D10 could give
+        // it keys; D10 gave the keys to the item instead, because one tab stop
+        // that announces its geometry and moves is worth more than three that
+        // do nothing on Enter -- and a button that ignores Enter and Space is
+        // a promise to assistive technology this could not keep. What is left
+        // is a pointer affordance, which has no role and no name to expose.
+        <div
           data-testid="drag-handle"
-          aria-label={`Move ${def.title}`}
           onPointerDown={onDragStart}
           style={{
             position: "absolute",
@@ -158,8 +209,6 @@ export function GridItem({
             top: 0,
             height: `${DRAG_HANDLE_HEIGHT}px`,
             zIndex: 1,
-            padding: 0,
-            border: "none",
             background: "transparent",
             cursor: dragging ? "grabbing" : "grab",
             // Pointer events only; the browser's own touch scrolling would
@@ -168,15 +217,16 @@ export function GridItem({
           }}
         />
       )}
-      {handlesVisible && (
+      {arrangeable && (
         // The bottom-right corner, the one convention every resizable surface
         // shares. Drawn as two edges rather than a filled square so it reads
         // against whatever widget body it sits on, and kept small: it overlays
         // the card's own content, and the title row is the larger target.
-        <button
-          type="button"
+        //
+        // Pointer-only, like the drag handle: Shift and an arrow key on the
+        // item is the keyboard's resize.
+        <div
           data-testid="resize-handle"
-          aria-label={`Resize ${def.title}`}
           onPointerDown={onResizeStart}
           style={{
             position: "absolute",
@@ -185,9 +235,7 @@ export function GridItem({
             width: `${RESIZE_HANDLE_SIZE}px`,
             height: `${RESIZE_HANDLE_SIZE}px`,
             zIndex: 1,
-            padding: 0,
             background: "transparent",
-            border: "none",
             display: "grid",
             placeItems: "end",
             cursor: "se-resize",
@@ -204,17 +252,49 @@ export function GridItem({
               borderBottomRightRadius: "4px",
             }}
           />
-        </button>
+        </div>
       )}
-      <CellFillContext.Provider value={true}>
-        <WidgetHost def={def} params={item.params ?? {}} />
-      </CellFillContext.Provider>
+      <div
+        // Edit mode arranges widgets; it does not use them. Four of the ten
+        // default widgets are a link *around* the whole card, so without this
+        // a click anywhere below the title row navigates away from the layout
+        // being edited, and a Tab through the grid stops on every one of them.
+        // `inert` takes the subtree out of hit testing, the tab order and the
+        // accessibility tree in one attribute, which leaves the item itself as
+        // the widget's single tab stop. Leaving edit mode gives the links back.
+        inert={arrangeable}
+        // The cell's height has to reach the card through this wrapper, or the
+        // card's own fill has nothing to fill.
+        style={{ height: "100%", minWidth: 0, minHeight: 0 }}
+      >
+        <CellFillContext.Provider value={true}>
+          <WidgetHost def={def} params={item.params ?? {}} />
+        </CellFillContext.Provider>
+      </div>
     </div>
   );
 }
 
+/**
+ * What one arrow key asks for, as a whole-cell delta. Shift turns the same
+ * delta into a resize, which is why they are deltas rather than four handlers.
+ */
+const KEY_STEPS: Record<string, { dx: number; dy: number }> = {
+  ArrowLeft: { dx: -1, dy: 0 },
+  ArrowRight: { dx: 1, dy: 0 },
+  ArrowUp: { dx: 0, dy: -1 },
+  ArrowDown: { dx: 0, dy: 1 },
+};
+
 interface DashboardGridProps {
   initial: DashboardLayoutConfig;
+  /**
+   * Leaves edit mode. Escape on a focused widget is the keyboard's way out of
+   * it, and the mode is the caller's state, so the grid asks rather than sets.
+   * A caller should also put focus back where editing started: the item the
+   * user was on stops being a tab stop the moment this returns.
+   */
+  onExitEdit?: () => void;
   /**
    * Edit mode. Handles exist only while this is true: a monitoring dashboard
    * gets clicked through fast, and always-live handles over every title row
@@ -234,6 +314,7 @@ interface DashboardGridProps {
 export default function DashboardGrid({
   initial,
   editable = false,
+  onExitEdit,
 }: DashboardGridProps) {
   // Resolved once, on the way in, so the working copy is exactly what the grid
   // renders. The pointer sessions below read this signal while the DOM is laid
@@ -252,6 +333,9 @@ export default function DashboardGrid({
   const session = useSignal<{ kind: SessionKind; instanceId: string } | null>(
     null,
   );
+  /** What the live region is saying. Keyboard changes only: a pointer user is
+   * watching the thing they just moved. */
+  const announcement = useSignal("");
   const gridRef = useRef<HTMLDivElement | null>(null);
   /** Ends the session in flight, if there is one. Set for the grid's life. */
   const endSession = useRef<((restore: boolean) => void) | null>(null);
@@ -483,6 +567,55 @@ export default function DashboardGrid({
     });
   }
 
+  /**
+   * The keyboard's whole vocabulary on a focused widget: an arrow moves it one
+   * cell, Shift and an arrow sizes it by one, Escape leaves edit mode.
+   *
+   * It goes through the same two engines the pointer does, for the same reason
+   * D-10 gives: the island translates an input into a request and never
+   * positions anything itself. `stepItem` rather than `moveItem` because a
+   * one-cell downward request is absorbed by design -- see its own note.
+   */
+  function handleItemKey(
+    item: LayoutItem,
+    def: WidgetDef,
+    event: JSX.TargetedKeyboardEvent<HTMLElement>,
+  ) {
+    // A pointer session owns the keyboard while it runs: its Escape is a
+    // cancel, and an arrow would ask the engine for a second position while
+    // the pointer is still asking for the first.
+    if (session.value !== null) return;
+    // Ctrl, Alt and Meta with an arrow belong to the browser and the window
+    // manager -- back, forward, workspace switching. Shift is ours.
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onExitEdit?.();
+      return;
+    }
+
+    const step = KEY_STEPS[event.key];
+    if (!step) return;
+    // Without this the page scrolls out from under the widget being moved,
+    // which is the one thing the user is watching.
+    event.preventDefault();
+
+    items.value = event.shiftKey
+      ? resizeItemBy(items.value, item.instanceId, step.dx, step.dy, {
+          minW: def.minW,
+          minH: def.minH,
+        })
+      : stepItem(items.value, item.instanceId, step.dx, step.dy);
+
+    // Read back rather than predicted: the engine clamps, and a step that hit
+    // the grid edge or a declared minimum must not be announced as one that
+    // landed. An unchanged position produces the same string as last time,
+    // which a live region correctly says nothing about.
+    const moved = items.value.find((i) => i.instanceId === item.instanceId);
+    announcement.value = moved ? describePlacement(moved, def) : "";
+  }
+
   // Pairs each item with its definition and returns them in reading order --
   // which is also the keyboard and screen-reader order. The wide grid places
   // items by coordinates, but DOM order still decides tab order, so it renders
@@ -511,33 +644,50 @@ export default function DashboardGrid({
       };
 
   return (
-    <div
-      ref={gridRef}
-      data-testid="dashboard-grid"
-      data-grid-mode={narrow.value ? "narrow" : "wide"}
-      data-grid-editable={editable ? "true" : "false"}
-      style={style}
-    >
-      {ordered.map(({ item, def }) => (
-        <GridItem
-          key={item.instanceId}
-          item={item}
-          def={def}
-          narrow={narrow.value}
-          // One column has no columns to drag between and no width to size, so
-          // edit mode offers no handles there; D10's keyboard is the
-          // narrow-screen path.
-          handlesVisible={editable && !narrow.value}
-          dragging={
-            active?.kind === "drag" && active.instanceId === item.instanceId
-          }
-          resizing={
-            active?.kind === "resize" && active.instanceId === item.instanceId
-          }
-          onDragStart={(e) => startDrag(item.instanceId, e)}
-          onResizeStart={(e) => startResize(item.instanceId, def, e)}
-        />
-      ))}
-    </div>
+    <>
+      <div
+        ref={gridRef}
+        data-testid="dashboard-grid"
+        data-grid-mode={narrow.value ? "narrow" : "wide"}
+        data-grid-editable={editable ? "true" : "false"}
+        style={style}
+      >
+        {ordered.map(({ item, def }) => (
+          <GridItem
+            key={item.instanceId}
+            item={item}
+            def={def}
+            narrow={narrow.value}
+            // One column has no columns to move between and no width to size,
+            // and its order is the layout's own reading order rather than
+            // anything a user placed -- so there is nothing to arrange there
+            // by pointer or by key. Editing is a wide-grid surface; P3's
+            // stored layout is what a narrow screen renders.
+            arrangeable={editable && !narrow.value}
+            dragging={
+              active?.kind === "drag" && active.instanceId === item.instanceId
+            }
+            resizing={
+              active?.kind === "resize" && active.instanceId === item.instanceId
+            }
+            onDragStart={(e) => startDrag(item.instanceId, e)}
+            onResizeStart={(e) => startResize(item.instanceId, def, e)}
+            onKeyDown={(e) => handleItemKey(item, def, e)}
+          />
+        ))}
+      </div>
+      {/* Outside the grid, so an absolutely positioned child cannot take part
+          in its auto-placement. A widget's own name carries its position too,
+          but a name that changes under an already-focused element is not
+          reliably re-announced; this is. */}
+      <div
+        data-testid="grid-announcement"
+        role="status"
+        aria-live="polite"
+        class="sr-only"
+      >
+        {announcement.value}
+      </div>
+    </>
   );
 }

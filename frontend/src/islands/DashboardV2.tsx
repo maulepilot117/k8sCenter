@@ -1,6 +1,6 @@
 import { useSignal } from "@preact/signals";
 import type { JSX } from "preact";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import DashboardGrid from "@/components/dashboard/DashboardGrid.tsx";
 import { Skeleton } from "@/components/ui/Skeleton.tsx";
 // Registers every shipped widget before first render.
@@ -39,6 +39,11 @@ export default function DashboardV2() {
   // Edit mode is deliberately not persisted, and neither is the layout it
   // produces: P3 adds storage. Until then a reload is the way back.
   const editing = useSignal(false);
+  // Escape on a focused widget leaves edit mode, which takes that widget out
+  // of the tab order under the focus that is on it. Focus has to land
+  // somewhere deliberate, and where editing started is the only place the user
+  // asked for.
+  const editButton = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!IS_BROWSER) return;
@@ -114,6 +119,7 @@ export default function DashboardV2() {
 
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <button
+            ref={editButton}
             type="button"
             data-testid="edit-layout"
             aria-pressed={editing.value}
@@ -180,6 +186,10 @@ export default function DashboardV2() {
       <DashboardGrid
         initial={DEFAULT_OVERVIEW_LAYOUT}
         editable={editing.value}
+        onExitEdit={() => {
+          editing.value = false;
+          editButton.current?.focus();
+        }}
       />
     </div>
   );

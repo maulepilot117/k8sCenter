@@ -239,6 +239,54 @@ export function moveItem(
 }
 
 /**
+ * Moves one item by a single keyboard step: one whole cell, in one direction.
+ *
+ * Three of the four directions are ordinary `moveItem` requests. Down is not.
+ * `moveItem` documents that a downward request short of the neighbour's bottom
+ * edge settles back where it started -- the push puts the neighbour under the
+ * anchor, and gravity lifts the anchor back on top. That is what keeps a
+ * pointer drag stable as the pointer crosses a neighbour, and it is exactly
+ * wrong for a key press, which has no later event to correct it: the widget
+ * would simply not move, however many times the user pressed the key.
+ *
+ * So a downward step asks for successively lower rows and takes the first one
+ * the engine honors, which lands the item directly below whatever it was asked
+ * to pass. `moveItem` never places an item lower than asked, so that is also
+ * the smallest downward move available -- the step stays a step. The scan is
+ * bounded by the layout's own height, below which nothing can block; an item
+ * already at the bottom of its column stack finds no row that changes anything
+ * and correctly stays where it is.
+ *
+ * `dx` and `dy` are a single arrow key, so at most one is non-zero. A request
+ * that moves sideways is honored as asked and never escalated: a column change
+ * is always applied, so "nothing happened" cannot be a downward absorption.
+ */
+export function stepItem(
+  items: readonly LayoutItem[],
+  instanceId: string,
+  dx: number,
+  dy: number,
+): LayoutItem[] {
+  const target = items.find((i) => i.instanceId === instanceId);
+  if (!target || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+    return items.map((i) => ({ ...i }));
+  }
+
+  const col = Math.round(dx);
+  const row = Math.round(dy);
+  const first = moveItem(items, instanceId, target.x + col, target.y + row);
+  if (col !== 0 || row <= 0) return first;
+  if (findTarget(first, instanceId).y > target.y) return first;
+
+  const floor = layoutHeight(items);
+  for (let y = target.y + row + 1; y <= floor; y++) {
+    const next = moveItem(items, instanceId, target.x, y);
+    if (findTarget(next, instanceId).y > target.y) return next;
+  }
+  return first;
+}
+
+/**
  * Resizes one item to (w, h), snapped to whole cells, clamped to its declared
  * minimum and to the right edge, and resolves the result. x never changes: a
  * resize that also shifts the item reads as a bug.
@@ -271,6 +319,26 @@ export function resizeItem(
     w: Math.max(1, clamp(width, bounds.minW, DASHBOARD_COLUMNS - t.x)),
     h: height,
   }));
+}
+
+/**
+ * Resizes one item by a whole cell in one direction -- a keyboard resize step.
+ *
+ * Thin on purpose. The clamping, the fixed x and the settling are all
+ * `resizeItem`'s; this exists so a caller never has to read an item's current
+ * size in order to change it, which is the same split the pointer path gets
+ * from `resizeItemToCell`.
+ */
+export function resizeItemBy(
+  items: readonly LayoutItem[],
+  instanceId: string,
+  dw: number,
+  dh: number,
+  bounds: Bounds,
+): LayoutItem[] {
+  const target = items.find((i) => i.instanceId === instanceId);
+  if (!target) return items.map((i) => ({ ...i }));
+  return resizeItem(items, instanceId, target.w + dw, target.h + dh, bounds);
 }
 
 /**

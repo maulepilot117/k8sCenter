@@ -8,8 +8,10 @@ import {
   moveItem,
   overlaps,
   resizeItem,
+  resizeItemBy,
   resizeItemToCell,
   resolveRenderable,
+  stepItem,
 } from "./grid.ts";
 import type { LayoutItem } from "./types.ts";
 import { DASHBOARD_COLUMNS } from "./types.ts";
@@ -287,6 +289,104 @@ describe("moveItem", () => {
   });
 });
 
+describe("stepItem", () => {
+  /** The stepped item, so a test can read the size a move must not change. */
+  const only = (items: readonly LayoutItem[], instanceId: string) => {
+    const found = items.find((i) => i.instanceId === instanceId);
+    if (!found) throw new Error(`no item ${instanceId}`);
+    return found;
+  };
+
+  // Rows are where gravity left them, not where a test wished them: a lone
+  // item always compacts to row 0, so these layouts state the row they end in.
+  test("an arrow moves one cell", () => {
+    const layout = [item("a", 4, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", 1, 0))).toEqual(["a@5,0"]);
+    expect(shape(stepItem(layout, "a", -1, 0))).toEqual(["a@3,0"]);
+  });
+
+  test("a step never resizes what it moves", () => {
+    const moved = only(stepItem([item("a", 4, 0, 3, 2)], "a", 1, 0), "a");
+    expect([moved.w, moved.h]).toEqual([3, 2]);
+  });
+
+  test("the grid's edges stop a step rather than wrapping it", () => {
+    // Left edge, right edge (12 columns, so a 3-wide item stops at 9), top.
+    expect(shape(stepItem([item("a", 0, 0, 3, 2)], "a", -1, 0))).toEqual([
+      "a@0,0",
+    ]);
+    expect(shape(stepItem([item("a", 9, 0, 3, 2)], "a", 1, 0))).toEqual([
+      "a@9,0",
+    ]);
+    expect(shape(stepItem([item("a", 4, 0, 3, 2)], "a", 0, -1))).toEqual([
+      "a@4,0",
+    ]);
+  });
+
+  test("a sideways step displaces the neighbour it lands on downward", () => {
+    const layout = [item("a", 0, 0, 3, 2), item("b", 3, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", 1, 0))).toEqual(["a@1,0", "b@3,2"]);
+  });
+
+  test("an upward step passes the item above", () => {
+    const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+    expect(shape(stepItem(layout, "b", 0, -1))).toEqual(["a@0,3", "b@0,0"]);
+  });
+
+  describe("a downward step", () => {
+    // The case moveItem documents as absorbed: asking for one row down puts b
+    // under a during the push, and gravity lifts a straight back on top. A
+    // drag survives that -- the next pointermove asks again from further down
+    // -- but a key press has no next event, so stepItem has to find the row
+    // that actually lands.
+    test("passes the item below instead of doing nothing", () => {
+      const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+      expect(shape(moveItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@0,2"]);
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,3", "b@0,0"]);
+    });
+
+    test("passes one neighbour, not the whole stack", () => {
+      const layout = [
+        item("a", 0, 0, 4, 2),
+        item("b", 0, 2, 4, 2),
+        item("c", 0, 4, 4, 2),
+      ];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual([
+        "a@0,2",
+        "b@0,0",
+        "c@0,4",
+      ]);
+    });
+
+    test("does nothing when there is nothing below to pass", () => {
+      const layout = [item("a", 0, 0, 4, 2), item("b", 6, 0, 4, 2)];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@6,0"]);
+    });
+
+    test("only passes a neighbour that shares a column", () => {
+      // b is directly below a's rows but two columns clear of it, so a has
+      // nothing to pass and gravity holds it at the top.
+      const layout = [item("a", 0, 0, 4, 2), item("b", 6, 2, 4, 2)];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@6,0"]);
+    });
+  });
+
+  test("an unknown item leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const out = stepItem(layout, "nope", 1, 0);
+    expect(out).toEqual(layout);
+    expect(out).not.toBe(layout);
+  });
+
+  test("a non-finite step leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", Number.NaN, 0))).toEqual(["a@0,0"]);
+    expect(shape(stepItem(layout, "a", 0, Number.POSITIVE_INFINITY))).toEqual([
+      "a@0,0",
+    ]);
+  });
+});
+
 describe("resizeItem", () => {
   const bounds = { minW: 2, minH: 2 };
 
@@ -393,6 +493,45 @@ describe("resizeItem", () => {
     expect(shape(resizeItem(input, "ghost", 6, 6, bounds))).toEqual(
       shape(input),
     );
+  });
+});
+
+describe("resizeItemBy", () => {
+  const size = (items: readonly LayoutItem[], instanceId: string) => {
+    const found = items.find((i) => i.instanceId === instanceId);
+    if (!found) throw new Error(`no item ${instanceId}`);
+    return [found.w, found.h];
+  };
+
+  test("grows and shrinks by whole cells", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const bounds = { minW: 1, minH: 1 };
+    expect(size(resizeItemBy(layout, "a", 1, 0, bounds), "a")).toEqual([4, 2]);
+    expect(size(resizeItemBy(layout, "a", 0, 1, bounds), "a")).toEqual([3, 3]);
+    expect(size(resizeItemBy(layout, "a", -1, -1, bounds), "a")).toEqual([
+      2, 1,
+    ]);
+  });
+
+  test("stops at the declared minimum", () => {
+    const layout = [item("a", 0, 0, 2, 3)];
+    const bounds = { minW: 2, minH: 3 };
+    expect(size(resizeItemBy(layout, "a", -1, 0, bounds), "a")).toEqual([2, 3]);
+    expect(size(resizeItemBy(layout, "a", 0, -1, bounds), "a")).toEqual([2, 3]);
+  });
+
+  test("stops at the grid's right edge", () => {
+    const layout = [item("a", 9, 0, 3, 2)];
+    expect(size(resizeItemBy(layout, "a", 1, 0, { minW: 1, minH: 1 }), "a"))
+      // 12 columns, starting at 9: three is all there is.
+      .toEqual([3, 2]);
+  });
+
+  test("an unknown item leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const out = resizeItemBy(layout, "nope", 1, 1, { minW: 1, minH: 1 });
+    expect(out).toEqual(layout);
+    expect(out).not.toBe(layout);
   });
 });
 
