@@ -209,7 +209,7 @@ function findTarget(
  * anchor back on top during compaction -- so the net effect settles back to
  * where it started. That's intentional: it is what keeps a drag stable when
  * moveItem is re-applied to the current layout on every pointermove (as the
- * planned D8 drag does). A keyboard step that should pass the item below has
+ * pointer drag does). A keyboard step that should pass the item below has
  * to compute that landing row itself rather than relying on a one-cell nudge.
  *
  * The result is a fixed point: calling moveItem again with the same request on
@@ -260,6 +260,22 @@ export function moveItem(
  * `dx` and `dy` are a single arrow key, so at most one is non-zero. A request
  * that moves sideways is honored as asked and never escalated: a column change
  * is always applied, so "nothing happened" cannot be a downward absorption.
+ *
+ * A sideways step changes the column it was asked for, and may change the row
+ * as well. Rule 1 is that everything falls as far up as it can after any
+ * change, so stepping out of the columns that were holding an item down lets
+ * gravity lift it -- possibly several rows, from one key press. This is not a
+ * keyboard quirk: the same press-and-drag one column over does the same thing,
+ * and a layout with a hole left where the item was is not the canonical form of
+ * itself, so there is no "keep the row" placement to offer that the next
+ * operation would not undo. Two consequences worth knowing:
+ *
+ *   - the step is not reversible key-for-key. Like `moveItem`, from which this
+ *     inherits it, stepping away and back can settle somewhere the layout has
+ *     not been; that behavior has its own test.
+ *   - the caller must announce where the item actually landed rather than
+ *     where it asked to go, which is why `DashboardGrid` reads the position
+ *     back out of the result instead of predicting it.
  */
 export function stepItem(
   items: readonly LayoutItem[],

@@ -19,6 +19,11 @@ export default function KeyboardShortcuts() {
     if (!IS_BROWSER) return;
 
     function handler(e: KeyboardEvent) {
+      // Someone closer to the key already acted on it. These are last-resort
+      // shortcuts on the window, so a component that consumed the key owns it:
+      // the dashboard grid, for one, takes Escape to leave edit mode and then
+      // puts focus on its own toggle, which the blur below would undo.
+      if (e.defaultPrevented) return;
       // Ignore when typing in inputs
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;

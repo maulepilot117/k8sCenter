@@ -581,13 +581,30 @@ export default function DashboardGrid({
     def: WidgetDef,
     event: JSX.TargetedKeyboardEvent<HTMLElement>,
   ) {
+    // Ctrl, Alt and Meta with an arrow belong to the browser and the window
+    // manager -- back, forward, workspace switching. Shift is ours. Checked
+    // before the session guard so a modified key is never swallowed there
+    // either.
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+
     // A pointer session owns the keyboard while it runs: its Escape is a
     // cancel, and an arrow would ask the engine for a second position while
     // the pointer is still asking for the first.
-    if (session.value !== null) return;
-    // Ctrl, Alt and Meta with an arrow belong to the browser and the window
-    // manager -- back, forward, workspace switching. Shift is ours.
-    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    //
+    // Still consumed, not just ignored. An arrow that keeps its default
+    // scrolls the box the grid sits in, and the session re-measures the grid
+    // from its bounding rect on every pointermove -- so the widget lands in a
+    // different cell with the pointer standing still. Escape is consumed for
+    // the same reason the branch below does it: to keep the global shortcut
+    // handler from blurring the widget that still has focus. Neither call
+    // stops propagation, so the session's own window listener still sees the
+    // Escape it cancels on.
+    if (session.value !== null) {
+      if (KEY_STEPS[event.key] || event.key === "Escape") {
+        event.preventDefault();
+      }
+      return;
+    }
 
     if (event.key === "Escape") {
       event.preventDefault();

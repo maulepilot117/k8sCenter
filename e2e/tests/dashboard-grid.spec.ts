@@ -1057,4 +1057,86 @@ test.describe("Dashboard grid keyboard", () => {
     await page.mouse.click(body.x, body.y);
     await expect(page).toHaveURL(/\/cluster\/nodes$/);
   });
+
+  test("Escape cancels a drag without stealing another widget's focus", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    // Focus one widget, then drag a different one. The session suppresses the
+    // press that would move focus, so the CPU tile keeps it throughout.
+    await widget(page, "d-cpu-tile").focus();
+    const before = await cells(page);
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+    expect(await focused(page)).toBe("d-cpu-tile");
+
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+
+    // The session's own Escape cancels the drag, so the layout goes back --
+    // the grid consumed the key without stopping it reaching that listener.
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+    expect(await cells(page)).toEqual(before);
+    // And the widget that was never part of the drag still has focus. The
+    // global shortcut handler blurs whatever is focused on Escape, so without
+    // the grid marking the key handled this lands on the document body.
+    expect(await focused(page)).toBe("d-cpu-tile");
+    // A drag cancel is not a way out of edit mode.
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "true",
+    );
+  });
+
+  test("an arrow key during a drag cannot scroll the grid away", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const scroll = () =>
+      page.evaluate(() => ({
+        main: document.querySelector("main")?.scrollTop ?? 0,
+        page: globalThis.scrollY,
+      }));
+
+    await widget(page, "d-cpu-tile").focus();
+    const before = await cells(page);
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    const scrolled = await scroll();
+
+    // The session owns the keyboard, so the arrow moves nothing -- but it must
+    // still be swallowed. The session re-measures the grid from its bounding
+    // rect on every pointermove, so a scroll here would drop the widget in a
+    // different cell with the pointer standing still.
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+
+    expect(await scroll()).toEqual(scrolled);
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+    await page.mouse.up();
+  });
+
+  test("a modified arrow key is left to the browser", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    await widget(page, "d-active-alerts").focus();
+
+    // Ctrl, Alt and Meta with an arrow belong to the browser and the window
+    // manager. Swallowing them would take back-navigation away from anyone
+    // who happened to be tabbed onto a widget.
+    await page.keyboard.press("Control+ArrowLeft");
+    await page.keyboard.press("Alt+ArrowRight");
+
+    expect(await cells(page)).toEqual(before);
+  });
 });
