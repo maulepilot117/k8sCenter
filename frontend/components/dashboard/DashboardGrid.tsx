@@ -216,11 +216,12 @@ export default function DashboardGrid({
     // Suppress the browser's own text selection and image dragging, which
     // otherwise fight the pointer session.
     event.preventDefault();
-    // Capture keeps the events aimed at the handle while the cursor outruns
+    // Capture aims the events at the handle for as long as the browser keeps
     // it. It is an enhancement, not the session: the listeners below are on
-    // the window, so a pointer the user agent will not let us capture still
-    // drags. Capturing an already-released pointer throws, and losing the
-    // drag over that would be worse than losing the capture.
+    // the window, so a pointer the user agent will not let us capture -- or
+    // takes back mid-drag -- still drags. Capturing an already-released
+    // pointer throws, and losing the drag over that would be worse than
+    // losing the capture.
     try {
       handle.setPointerCapture(event.pointerId);
     } catch {
@@ -300,10 +301,20 @@ export default function DashboardGrid({
       forThisPointer(() => end(true)),
       listen,
     );
-    // Losing capture without a pointerup is the same interruption, and it is
-    // what the handle unmounting mid-drag looks like. Fired after pointerup on
-    // a normal drop, by which point the session has already aborted.
-    handle.addEventListener("lostpointercapture", () => end(true), listen);
+    // Losing capture is only an interruption when the handle is gone. Chrome
+    // releases capture whenever the captured node moves in the DOM, and the
+    // first effective drag move does exactly that: the grid renders in
+    // reading order, so the dragged widget changes places among its siblings.
+    // Treating that as a cancel ended the drag a few milliseconds after it
+    // started. The session does not need capture to survive -- it listens on
+    // the window -- so capture is worth keeping only while it lasts.
+    handle.addEventListener(
+      "lostpointercapture",
+      () => {
+        if (!handle.isConnected) end(true);
+      },
+      listen,
+    );
     const onKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === "Escape") end(true);
     };

@@ -72,43 +72,16 @@ async function editableDashboard(page: Page) {
 }
 
 /**
- * TEMPORARY (2026-09-18): records every pointer event that could end a drag,
- * so a CI failure says which one fired. Remove once the mid-drag failure in
- * `Escape during a drag puts the layout back` is understood.
+ * Puts the pointer on `id`'s handle and reports where every cell sits.
+ *
+ * Reaching a widget near the bottom scrolls the page, which moves every other
+ * cell. Measuring after the hover is what keeps the drag targets below
+ * pointing at the cells their tests name.
  */
-async function recordDragEvents(page: Page) {
-  await page.evaluate(() => {
-    const log: string[] = [];
-    (window as unknown as { __dragLog: string[] }).__dragLog = log;
-    for (const type of [
-      "pointerdown",
-      "pointerup",
-      "pointercancel",
-      "lostpointercapture",
-      "gotpointercapture",
-      "dragstart",
-      "keydown",
-      "blur",
-      "visibilitychange",
-    ]) {
-      globalThis.addEventListener(
-        type,
-        (ev) => {
-          const target = ev.target as HTMLElement | null;
-          log.push(
-            `${Math.round(performance.now())} ${type} ${target?.dataset?.testid ?? target?.nodeName ?? "?"}`,
-          );
-        },
-        true,
-      );
-    }
-  });
+async function grab(page: Page, id: string): Promise<Cell[]> {
+  await handle(page, id).hover();
+  return await cells(page);
 }
-
-const dragLog = (page: Page): Promise<string[]> =>
-  page.evaluate(
-    () => (window as unknown as { __dragLog?: string[] }).__dragLog ?? [],
-  );
 
 /** Drags `id` by its handle to a point, in steps, so pointermove fires. */
 async function dragTo(page: Page, id: string, to: { x: number; y: number }) {
@@ -122,7 +95,7 @@ test.describe("Dashboard grid drag", () => {
   test("a widget follows the pointer into a new cell", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-active-alerts");
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
@@ -145,7 +118,7 @@ test.describe("Dashboard grid drag", () => {
   test("a drag never leaves two widgets on the same cell", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-nodes");
     const nodes = at(before, "d-nodes");
     // Straight onto the middle of the biggest widget, which the engine has to
     // displace downward rather than share a cell with.
@@ -166,21 +139,16 @@ test.describe("Dashboard grid drag", () => {
   test("Escape during a drag puts the layout back", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-active-alerts");
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
-    await recordDragEvents(page);
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    const midDrag = await page
-      .locator('[data-instance-id="d-active-alerts"]')
-      .getAttribute("data-dragging");
-    expect(
-      midDrag,
-      `drag ended before the assertion; events: ${(await dragLog(page)).join(" | ")}`,
-    ).toBe("true");
+    await expect(
+      page.locator('[data-instance-id="d-active-alerts"]'),
+    ).toHaveAttribute("data-dragging", "true");
     // The widget has actually moved: without this the test could certify a
     // restore that had nothing to restore.
     expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
@@ -200,18 +168,14 @@ test.describe("Dashboard grid drag", () => {
   test("an interrupted pointer puts the layout back", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-active-alerts");
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
-    await recordDragEvents(page);
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
-    expect(
-      at(await cells(page), "d-active-alerts").x,
-      `drag did not move the widget; events: ${(await dragLog(page)).join(" | ")}`,
-    ).not.toBe(alerts.x);
+    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
 
     // What the OS taking the pointer looks like to the page: a system
     // gesture, or a touch the browser decided was a scroll. Chrome gives a
@@ -230,12 +194,14 @@ test.describe("Dashboard grid drag", () => {
   test("a drag survives the handle disappearing under it", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-active-alerts");
+    const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
 
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
 
     // "Edit layout" still has focus, so Space toggles edit mode off and every
     // handle unmounts mid-drag -- including the one the pointer is captured
@@ -249,8 +215,12 @@ test.describe("Dashboard grid drag", () => {
     );
     await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
 
-    // And the session is really over: a later Escape cannot revert the page.
+    // The user never dropped it, so the layout goes back. Without this the
+    // test would also pass if the drag committed where it happened to be.
     const settled = await cells(page);
+    expect(settled).toEqual(before);
+
+    // And the session is really over: a later Escape cannot revert the page.
     await page.keyboard.press("Escape");
     expect(await cells(page)).toEqual(settled);
   });
@@ -297,7 +267,7 @@ test.describe("Dashboard grid drag", () => {
   }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    const before = await grab(page, "d-active-alerts");
     const alerts = at(before, "d-active-alerts");
     const health = at(before, "d-cluster-health");
     await dragTo(page, "d-active-alerts", {
