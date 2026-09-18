@@ -136,6 +136,27 @@ Rollback:
 
       DELETE FROM user_preferences WHERE kind = 'dashboard_layout';
 
+  IMPORTANT -- the refused rollback leaves the version table dirty. Recover
+  before restarting the backend:
+
+      The schema is untouched (PostgreSQL runs the down file's statements in
+      one implicit transaction, so the DROP CONSTRAINT rolls back with the
+      ADD that failed), but golang-migrate records the attempt before it
+      runs, so schema_migrations is left at version 18 with dirty = true
+      while the schema is really still at 19. The backend calls m.Up() on
+      start, which refuses on a dirty version, so the pod will crash-loop
+      until the version is corrected:
+
+          migrate -path <migrations> -database <url> force 19
+
+      or, equivalently, against the database directly:
+
+          UPDATE schema_migrations SET version = 19, dirty = false;
+
+      Do that first, then decide about the layout rows. The same applies in
+      reverse if you clear the rows and the rollback then succeeds: nothing
+      to force, because that run completes normally.
+
 Locking:
   Recreating a CHECK constraint takes ACCESS EXCLUSIVE on user_preferences
   while PostgreSQL validates the whole table. Milliseconds on a normal

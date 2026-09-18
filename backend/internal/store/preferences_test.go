@@ -990,11 +990,16 @@ func TestMigration_DashboardLayoutKind_RoundTrip(t *testing.T) {
 	defer pool.Close()
 
 	owner := testOwnerID(t)
+	// The kind is bound from the Go constant, not written into the SQL, so the
+	// constant is the thing under test. With the literal inline, a typo in
+	// PreferenceKindDashboardLayout would ship green: nothing else in the tree
+	// reads it yet.
+	layoutKind := string(PreferenceKindDashboardLayout)
 	insertLayout := func() error {
 		_, err := pool.Exec(ctx,
 			`INSERT INTO user_preferences (owner_id, kind, name, dedup_key, config)
-			 VALUES ($1, 'dashboard_layout', 'Overview', 'overview', $2::jsonb)`,
-			owner, `{"schemaVersion":1,"items":[]}`)
+			 VALUES ($1, $2, 'Overview', 'overview', $3::jsonb)`,
+			owner, layoutKind, `{"schemaVersion":1,"items":[]}`)
 		return err
 	}
 
@@ -1026,11 +1031,29 @@ func TestMigration_DashboardLayoutKind_RoundTrip(t *testing.T) {
 		t.Fatal("rolled back 000019 while a dashboard_layout row existed; the down migration would have to drop the row silently to succeed")
 	}
 	// The failed down leaves golang-migrate's version row dirty. The schema
-	// itself is untouched -- PostgreSQL runs the file's statements in one
-	// implicit transaction, so the DROP CONSTRAINT rolled back with the ADD
-	// that failed -- so forcing the version back to 19 states what is true
-	// rather than papering over a half-applied migration. Proven by the row
-	// still being there, and by the insert below still being accepted.
+	// itself should be untouched -- PostgreSQL runs the file's statements in
+	// one implicit transaction, so the DROP CONSTRAINT rolls back with the ADD
+	// that failed -- and forcing the version back to 19 is only honest if that
+	// holds. So check it here, before forcing anything.
+	//
+	// Nothing later in this test can stand in for this. The down migration
+	// opens with DROP CONSTRAINT IF EXISTS, which is idempotent, so a genuinely
+	// half-applied rollback would leave the table with no kind CHECK at all and
+	// every assertion below would still pass: the second rollback would
+	// succeed, the rejected insert would be rejected by the narrow CHECK it
+	// then adds, and the re-apply would widen it again.
+	var constraintDef string
+	if err := pool.QueryRow(ctx,
+		`SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		  WHERE conrelid = 'user_preferences'::regclass
+		    AND conname = 'user_preferences_kind_check'`).Scan(&constraintDef); err != nil {
+		t.Fatalf("reading the kind constraint after the refused rollback: %v", err)
+	}
+	if !strings.Contains(constraintDef, layoutKind) {
+		t.Fatalf("kind constraint after the refused rollback = %q; want it to still allow %q -- the failed down migration was not atomic, so the schema is half-applied and forcing the version would hide it",
+			constraintDef, layoutKind)
+	}
+
 	if err := m.Force(19); err != nil {
 		t.Fatalf("clearing the dirty version after the expected failure: %v", err)
 	}
