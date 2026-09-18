@@ -113,3 +113,30 @@ it races every other suite sharing the database.
 If you add a new table, prefer giving it an owner or cluster column so
 it falls under the normal unique-id isolation rule rather than becoming
 a second exception.
+
+------------------------------------------------------------------------
+000019_add_dashboard_layout_kind (Release G dashboard builder 2026-09-13)
+------------------------------------------------------------------------
+
+Adds 'dashboard_layout' to the user_preferences.kind CHECK. Additive: no
+columns change, nothing is backfilled, and no existing row is touched.
+
+Operator action required:
+  None on the way up.
+
+Rollback:
+  The down migration narrows the CHECK and WILL FAIL if any dashboard_layout
+  row still exists. This is deliberate -- a rollback that silently deleted
+  every user's dashboard is worse than one that stops. Inspect first:
+
+      SELECT owner_id, cluster_id, dedup_key, updated_at
+        FROM user_preferences WHERE kind = 'dashboard_layout';
+
+  and remove them explicitly if the rollback is intended:
+
+      DELETE FROM user_preferences WHERE kind = 'dashboard_layout';
+
+Locking:
+  Recreating a CHECK constraint takes ACCESS EXCLUSIVE on user_preferences
+  while PostgreSQL validates the whole table. Milliseconds on a normal
+  preferences table; use a maintenance window on a very large one.

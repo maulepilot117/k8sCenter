@@ -19,6 +19,10 @@ type PreferenceKind string
 const (
 	PreferenceKindSavedView PreferenceKind = "saved_view"
 	PreferenceKindPin       PreferenceKind = "pin"
+	// PreferenceKindDashboardLayout stores one layout per (owner, cluster,
+	// scope). dedup_key carries the scope, so the existing unique index on
+	// (owner_id, kind, cluster_id, dedup_key) is what enforces the "one".
+	PreferenceKindDashboardLayout PreferenceKind = "dashboard_layout"
 )
 
 // Sentinel errors. Handlers map these onto HTTP status + reason codes;

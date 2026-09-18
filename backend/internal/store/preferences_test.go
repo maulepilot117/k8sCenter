@@ -932,6 +932,145 @@ func TestPreferenceMigration_UpDownUp(t *testing.T) {
 	}
 }
 
+// TestMigration_DashboardLayoutKind_RoundTrip proves the CHECK actually
+// widened, and that the rollback refuses to destroy layouts silently.
+//
+// Like the test above it works on its own throwaway database rather than the
+// shared harness one, because it deliberately drives a migration failure and
+// leaves the version table dirty in the middle.
+func TestMigration_DashboardLayoutKind_RoundTrip(t *testing.T) {
+	baseURL := migrationTestBaseURL(t)
+	ctx := t.Context()
+
+	adminConn, err := pgx.Connect(ctx, baseURL)
+	if err != nil {
+		t.Fatalf("connecting to the test server: %v", err)
+	}
+	t.Cleanup(func() { adminConn.Close(context.Background()) })
+
+	dbName := "kc_migtest_" + randomSuffix(t)
+	quoted := pgx.Identifier{dbName}.Sanitize()
+	if _, err := adminConn.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+		if testDatabaseRequired(os.LookupEnv) {
+			t.Fatalf("creating throwaway database %s: %v", dbName, err)
+		}
+		t.Skipf("cannot CREATE DATABASE on this server (%v); skipping the migration round-trip", err)
+	}
+	t.Cleanup(func() {
+		if _, err := adminConn.Exec(context.Background(),
+			"DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
+			t.Errorf("dropping throwaway database %s: %v", dbName, err)
+		}
+	})
+
+	scratchURL := withDatabase(t, baseURL, dbName)
+
+	source, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		t.Fatalf("creating migration source: %v", err)
+	}
+	m, err := migrate.NewWithSourceInstance("iofs", source, scratchURL)
+	if err != nil {
+		t.Fatalf("creating migrator: %v", err)
+	}
+	defer m.Close()
+
+	if err := m.Migrate(18); err != nil {
+		t.Fatalf("migrating to 000018: %v", err)
+	}
+
+	pool, err := pgxpool.New(ctx, scratchURL)
+	if err != nil {
+		t.Fatalf("opening scratch pool: %v", err)
+	}
+	defer pool.Close()
+
+	owner := testOwnerID(t)
+	insertLayout := func() error {
+		_, err := pool.Exec(ctx,
+			`INSERT INTO user_preferences (owner_id, kind, name, dedup_key, config)
+			 VALUES ($1, 'dashboard_layout', 'Overview', 'overview', $2::jsonb)`,
+			owner, `{"schemaVersion":1,"items":[]}`)
+		return err
+	}
+
+	// A survivor from an existing kind. Every assertion about the rollback
+	// below means nothing unless something that is not a layout is present to
+	// be destroyed by a careless one.
+	survivor := testOwnerID(t)
+	store := NewPreferenceStore(pool)
+	if _, err := store.Create(ctx, savedView(survivor, "survives"), testMaxPerKind); err != nil {
+		t.Fatalf("seeding a saved view at 000018: %v", err)
+	}
+
+	// 1. At 000018 the kind is not allowed yet. Without this the test would
+	//    pass against a database where the CHECK had never been narrow.
+	if err := insertLayout(); err == nil {
+		t.Fatal("inserted a dashboard_layout row at 000018; the CHECK was already wide")
+	}
+
+	// 2. Widen it.
+	if err := m.Migrate(19); err != nil {
+		t.Fatalf("migrating 000018 -> 000019: %v", err)
+	}
+	if err := insertLayout(); err != nil {
+		t.Fatalf("inserting a dashboard_layout row after 000019: %v", err)
+	}
+
+	// 3. The rollback must refuse while a layout exists.
+	if err := m.Migrate(18); err == nil {
+		t.Fatal("rolled back 000019 while a dashboard_layout row existed; the down migration would have to drop the row silently to succeed")
+	}
+	// The failed down leaves golang-migrate's version row dirty. The schema
+	// itself is untouched -- PostgreSQL runs the file's statements in one
+	// implicit transaction, so the DROP CONSTRAINT rolled back with the ADD
+	// that failed -- so forcing the version back to 19 states what is true
+	// rather than papering over a half-applied migration. Proven by the row
+	// still being there, and by the insert below still being accepted.
+	if err := m.Force(19); err != nil {
+		t.Fatalf("clearing the dirty version after the expected failure: %v", err)
+	}
+
+	var layouts int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_preferences WHERE kind = 'dashboard_layout'`).Scan(&layouts); err != nil {
+		t.Fatalf("counting layouts after the refused rollback: %v", err)
+	}
+	if layouts != 1 {
+		t.Fatalf("dashboard_layout row count = %d after the refused rollback; want 1", layouts)
+	}
+
+	// 4. Remove the layouts, as NOTES.txt tells the operator to, and the same
+	//    rollback goes through.
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM user_preferences WHERE kind = 'dashboard_layout'`); err != nil {
+		t.Fatalf("deleting layouts before the rollback: %v", err)
+	}
+	if err := m.Migrate(18); err != nil {
+		t.Fatalf("rolling back 000019 with no layouts present: %v", err)
+	}
+	if err := insertLayout(); err == nil {
+		t.Error("dashboard_layout still accepted after the rollback; the CHECK did not narrow")
+	}
+
+	// 5. Re-apply. The unrelated row was never in scope for any of this.
+	if err := m.Migrate(19); err != nil {
+		t.Fatalf("re-applying 000019: %v", err)
+	}
+	if err := insertLayout(); err != nil {
+		t.Errorf("inserting a dashboard_layout row after re-applying 000019: %v", err)
+	}
+	var survived int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM user_preferences WHERE owner_id = $1 AND kind = 'saved_view'`,
+		survivor).Scan(&survived); err != nil {
+		t.Fatalf("counting the seeded saved view: %v", err)
+	}
+	if survived != 1 {
+		t.Errorf("seeded saved_view count = %d after down+up; want 1 -- the pair touched another kind", survived)
+	}
+}
+
 // migrationTestBaseURL returns the configured test database URL, applying the
 // same gating contract as testDB: skip without it, fail loudly when a real
 // database was demanded.
