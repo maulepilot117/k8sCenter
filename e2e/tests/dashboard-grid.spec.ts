@@ -1066,14 +1066,17 @@ test.describe("Dashboard grid keyboard", () => {
     // Focus one widget, then drag a different one. The session suppresses the
     // press that would move focus, so the CPU tile keeps it throughout.
     await widget(page, "d-cpu-tile").focus();
-    const before = await cells(page);
+    // Measured through `grab`, after the hover, for the reason that helper
+    // gives: reaching a widget near the bottom scrolls the page, which moves
+    // every cell this test then compares.
+    const before = await grab(page, "d-active-alerts");
     const health = at(before, "d-cluster-health");
+    expect(await focused(page)).toBe("d-cpu-tile");
 
     await handle(page, "d-active-alerts").hover();
     await page.mouse.down();
     await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
     await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
-    expect(await focused(page)).toBe("d-cpu-tile");
 
     await page.keyboard.press("Escape");
     await page.mouse.up();
@@ -1128,8 +1131,10 @@ test.describe("Dashboard grid keyboard", () => {
   test("a modified arrow key is left to the browser", async ({ page }) => {
     await editableDashboard(page);
 
-    const before = await cells(page);
+    // Focus first, then measure: focusing a widget near the bottom scrolls it
+    // into view, which moves every cell this test compares.
     await widget(page, "d-active-alerts").focus();
+    const before = await cells(page);
 
     // Ctrl, Alt and Meta with an arrow belong to the browser and the window
     // manager. Swallowing them would take back-navigation away from anyone
