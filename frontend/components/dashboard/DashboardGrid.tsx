@@ -94,6 +94,12 @@ export function GridItem({
         // widgets have links in their body, and a card-wide drag target would
         // swallow those clicks. A button, not a bare div, so the handle is
         // focusable -- D10 gives it arrow keys.
+        //
+        // It does cover the title row's own action slot, so the four widgets
+        // with a header link ("View all", the utilization legend) cannot be
+        // clicked while editing. That is the intended trade (decided
+        // 2026-09-17): edit mode is for arranging, the whole row is one
+        // predictable grab target, and leaving edit mode restores the links.
         <button
           type="button"
           data-testid="drag-handle"
