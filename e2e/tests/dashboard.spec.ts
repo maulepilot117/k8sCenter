@@ -124,17 +124,26 @@ test.describe("Dashboard widget registry", () => {
     page,
   }) => {
     const grid = page.getByTestId("dashboard-grid");
-    // Read the mode the grid chose and the width it chose it from. The
-    // threshold is the grid's own width, not the viewport's, so the test
+    // The threshold is the grid's own width, not the viewport's, so the test
     // derives the expected mode from the measurement rather than from a
-    // viewport size that depends on the sidebar.
+    // viewport size that depends on the sidebar. A resize reaches the grid
+    // through a ResizeObserver, which delivers on its own schedule, so read
+    // both halves together until they agree rather than once and hope.
     const observed = async () => {
-      // Settle the ResizeObserver before reading both halves together.
-      await expect(grid).toHaveAttribute("data-grid-mode", /narrow|wide/);
-      return await grid.evaluate((el) => ({
-        mode: el.getAttribute("data-grid-mode"),
-        width: el.clientWidth,
-      }));
+      let seen = { mode: "", width: 0 };
+      await expect
+        .poll(
+          async () => {
+            seen = await grid.evaluate((el) => ({
+              mode: el.getAttribute("data-grid-mode") ?? "",
+              width: el.clientWidth,
+            }));
+            return seen.mode === (seen.width < 900 ? "narrow" : "wide");
+          },
+          { message: `grid mode never matched its width: ${JSON.stringify(seen)}` },
+        )
+        .toBe(true);
+      return seen;
     };
 
     // 1280 leaves the grid just wide enough for twelve columns; 1240 does not.
@@ -144,11 +153,9 @@ test.describe("Dashboard widget registry", () => {
     await page.goto("/");
     await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
     const wide = await observed();
-    expect(wide.mode).toBe(wide.width < 900 ? "narrow" : "wide");
 
     await page.setViewportSize({ width: 1240, height: 900 });
-    const narrower = await observed();
-    expect(narrower.mode).toBe(narrower.width < 900 ? "narrow" : "wide");
+    await observed();
 
     // Back to the starting width: the same width must give the same mode, or
     // the collapse is one-way.
