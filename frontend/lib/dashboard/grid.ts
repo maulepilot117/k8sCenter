@@ -209,7 +209,7 @@ function findTarget(
  * anchor back on top during compaction -- so the net effect settles back to
  * where it started. That's intentional: it is what keeps a drag stable when
  * moveItem is re-applied to the current layout on every pointermove (as the
- * planned D8 drag does). A keyboard step that should pass the item below has
+ * pointer drag does). A keyboard step that should pass the item below has
  * to compute that landing row itself rather than relying on a one-cell nudge.
  *
  * The result is a fixed point: calling moveItem again with the same request on
@@ -236,6 +236,70 @@ export function moveItem(
     x: clamp(col, 0, Math.max(0, DASHBOARD_COLUMNS - t.w)),
     y: row,
   }));
+}
+
+/**
+ * Moves one item by a single keyboard step: one whole cell, in one direction.
+ *
+ * Three of the four directions are ordinary `moveItem` requests. Down is not.
+ * `moveItem` documents that a downward request short of the neighbour's bottom
+ * edge settles back where it started -- the push puts the neighbour under the
+ * anchor, and gravity lifts the anchor back on top. That is what keeps a
+ * pointer drag stable as the pointer crosses a neighbour, and it is exactly
+ * wrong for a key press, which has no later event to correct it: the widget
+ * would simply not move, however many times the user pressed the key.
+ *
+ * So a downward step asks for successively lower rows and takes the first one
+ * the engine honors, which lands the item directly below whatever it was asked
+ * to pass. `moveItem` never places an item lower than asked, so that is also
+ * the smallest downward move available -- the step stays a step. The scan is
+ * bounded by the layout's own height, below which nothing can block; an item
+ * already at the bottom of its column stack finds no row that changes anything
+ * and correctly stays where it is.
+ *
+ * `dx` and `dy` are a single arrow key, so at most one is non-zero. A request
+ * that moves sideways is honored as asked and never escalated: a column change
+ * is always applied, so "nothing happened" cannot be a downward absorption.
+ *
+ * A sideways step changes the column it was asked for, and may change the row
+ * as well. Rule 1 is that everything falls as far up as it can after any
+ * change, so stepping out of the columns that were holding an item down lets
+ * gravity lift it -- possibly several rows, from one key press. This is not a
+ * keyboard quirk: the same press-and-drag one column over does the same thing,
+ * and a layout with a hole left where the item was is not the canonical form of
+ * itself, so there is no "keep the row" placement to offer that the next
+ * operation would not undo. Two consequences worth knowing:
+ *
+ *   - the step is not reversible key-for-key. Like `moveItem`, from which this
+ *     inherits it, stepping away and back can settle somewhere the layout has
+ *     not been; that behavior has its own test.
+ *   - the caller must announce where the item actually landed rather than
+ *     where it asked to go, which is why `DashboardGrid` reads the position
+ *     back out of the result instead of predicting it.
+ */
+export function stepItem(
+  items: readonly LayoutItem[],
+  instanceId: string,
+  dx: number,
+  dy: number,
+): LayoutItem[] {
+  const target = items.find((i) => i.instanceId === instanceId);
+  if (!target || !Number.isFinite(dx) || !Number.isFinite(dy)) {
+    return items.map((i) => ({ ...i }));
+  }
+
+  const col = Math.round(dx);
+  const row = Math.round(dy);
+  const first = moveItem(items, instanceId, target.x + col, target.y + row);
+  if (col !== 0 || row <= 0) return first;
+  if (findTarget(first, instanceId).y > target.y) return first;
+
+  const floor = layoutHeight(items);
+  for (let y = target.y + row + 1; y <= floor; y++) {
+    const next = moveItem(items, instanceId, target.x, y);
+    if (findTarget(next, instanceId).y > target.y) return next;
+  }
+  return first;
 }
 
 /**
@@ -271,6 +335,26 @@ export function resizeItem(
     w: Math.max(1, clamp(width, bounds.minW, DASHBOARD_COLUMNS - t.x)),
     h: height,
   }));
+}
+
+/**
+ * Resizes one item by a whole cell in one direction -- a keyboard resize step.
+ *
+ * Thin on purpose. The clamping, the fixed x and the settling are all
+ * `resizeItem`'s; this exists so a caller never has to read an item's current
+ * size in order to change it, which is the same split the pointer path gets
+ * from `resizeItemToCell`.
+ */
+export function resizeItemBy(
+  items: readonly LayoutItem[],
+  instanceId: string,
+  dw: number,
+  dh: number,
+  bounds: Bounds,
+): LayoutItem[] {
+  const target = items.find((i) => i.instanceId === instanceId);
+  if (!target) return items.map((i) => ({ ...i }));
+  return resizeItem(items, instanceId, target.w + dw, target.h + dh, bounds);
 }
 
 /**

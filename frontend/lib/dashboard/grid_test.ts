@@ -8,8 +8,10 @@ import {
   moveItem,
   overlaps,
   resizeItem,
+  resizeItemBy,
   resizeItemToCell,
   resolveRenderable,
+  stepItem,
 } from "./grid.ts";
 import type { LayoutItem } from "./types.ts";
 import { DASHBOARD_COLUMNS } from "./types.ts";
@@ -287,6 +289,134 @@ describe("moveItem", () => {
   });
 });
 
+describe("stepItem", () => {
+  /** The stepped item, so a test can read the size a move must not change. */
+  const only = (items: readonly LayoutItem[], instanceId: string) => {
+    const found = items.find((i) => i.instanceId === instanceId);
+    if (!found) throw new Error(`no item ${instanceId}`);
+    return found;
+  };
+
+  // Rows are where gravity left them, not where a test wished them: a lone
+  // item always compacts to row 0, so these layouts state the row they end in.
+  test("an arrow moves one cell", () => {
+    const layout = [item("a", 4, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", 1, 0))).toEqual(["a@5,0"]);
+    expect(shape(stepItem(layout, "a", -1, 0))).toEqual(["a@3,0"]);
+  });
+
+  test("a step never resizes what it moves", () => {
+    const moved = only(stepItem([item("a", 4, 0, 3, 2)], "a", 1, 0), "a");
+    expect([moved.w, moved.h]).toEqual([3, 2]);
+  });
+
+  test("the grid's edges stop a step rather than wrapping it", () => {
+    // Left edge, right edge (12 columns, so a 3-wide item stops at 9), top.
+    expect(shape(stepItem([item("a", 0, 0, 3, 2)], "a", -1, 0))).toEqual([
+      "a@0,0",
+    ]);
+    expect(shape(stepItem([item("a", 9, 0, 3, 2)], "a", 1, 0))).toEqual([
+      "a@9,0",
+    ]);
+    expect(shape(stepItem([item("a", 4, 0, 3, 2)], "a", 0, -1))).toEqual([
+      "a@4,0",
+    ]);
+  });
+
+  test("a sideways step displaces the neighbour it lands on downward", () => {
+    const layout = [item("a", 0, 0, 3, 2), item("b", 3, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", 1, 0))).toEqual(["a@1,0", "b@3,2"]);
+  });
+
+  test("an upward step passes the item above", () => {
+    const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+    expect(shape(stepItem(layout, "b", 0, -1))).toEqual(["a@0,3", "b@0,0"]);
+  });
+
+  describe("a downward step", () => {
+    // The case moveItem documents as absorbed: asking for one row down puts b
+    // under a during the push, and gravity lifts a straight back on top. A
+    // drag survives that -- the next pointermove asks again from further down
+    // -- but a key press has no next event, so stepItem has to find the row
+    // that actually lands.
+    test("passes the item below instead of doing nothing", () => {
+      const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+      expect(shape(moveItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@0,2"]);
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,3", "b@0,0"]);
+    });
+
+    test("passes one neighbour, not the whole stack", () => {
+      const layout = [
+        item("a", 0, 0, 4, 2),
+        item("b", 0, 2, 4, 2),
+        item("c", 0, 4, 4, 2),
+      ];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual([
+        "a@0,2",
+        "b@0,0",
+        "c@0,4",
+      ]);
+    });
+
+    test("does nothing when there is nothing below to pass", () => {
+      const layout = [item("a", 0, 0, 4, 2), item("b", 6, 0, 4, 2)];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@6,0"]);
+    });
+
+    test("only passes a neighbour that shares a column", () => {
+      // b is directly below a's rows but two columns clear of it, so a has
+      // nothing to pass and gravity holds it at the top.
+      const layout = [item("a", 0, 0, 4, 2), item("b", 6, 2, 4, 2)];
+      expect(shape(stepItem(layout, "a", 0, 1))).toEqual(["a@0,0", "b@6,0"]);
+    });
+  });
+
+  describe("a sideways step obeys gravity like any other move", () => {
+    // Pinned because it surprises people, and because the alternative was
+    // considered and rejected: `a` is the only thing holding `b` down, so
+    // stepping `b` out of column 0 frees it and rule 1 lifts it to the top.
+    // Keeping the row would leave a hole, which is not a canonical layout, so
+    // the next operation would compact it away regardless.
+    const layout = [item("a", 0, 0, 1, 4), item("b", 0, 4, 2, 2)];
+
+    test("clearing the item that held it down lifts it several rows", () => {
+      expect(shape(stepItem(layout, "b", 1, 0))).toEqual(["a@0,0", "b@1,0"]);
+    });
+
+    test("stepping back is not an undo", () => {
+      // The same property moveItem documents: each step resolves against the
+      // current layout, so the pair does not round-trip.
+      const away = stepItem(layout, "b", 1, 0);
+      expect(shape(stepItem(away, "b", -1, 0))).toEqual(["a@0,2", "b@0,0"]);
+    });
+  });
+
+  test("a diagonal request is one combined move, never escalated", () => {
+    // The caller sends one arrow key, so this is out of contract -- pinned so
+    // an out-of-contract request stays a plain moveItem rather than picking up
+    // the downward scan, whose landing row would make no sense here.
+    const layout = [item("a", 0, 0, 4, 2), item("b", 0, 2, 4, 3)];
+    expect(shape(stepItem(layout, "a", 1, 1))).toEqual(
+      shape(moveItem(layout, "a", 1, 1)),
+    );
+  });
+
+  test("an unknown item leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const out = stepItem(layout, "nope", 1, 0);
+    expect(out).toEqual(layout);
+    expect(out).not.toBe(layout);
+  });
+
+  test("a non-finite step leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    expect(shape(stepItem(layout, "a", Number.NaN, 0))).toEqual(["a@0,0"]);
+    expect(shape(stepItem(layout, "a", 0, Number.POSITIVE_INFINITY))).toEqual([
+      "a@0,0",
+    ]);
+  });
+});
+
 describe("resizeItem", () => {
   const bounds = { minW: 2, minH: 2 };
 
@@ -393,6 +523,45 @@ describe("resizeItem", () => {
     expect(shape(resizeItem(input, "ghost", 6, 6, bounds))).toEqual(
       shape(input),
     );
+  });
+});
+
+describe("resizeItemBy", () => {
+  const size = (items: readonly LayoutItem[], instanceId: string) => {
+    const found = items.find((i) => i.instanceId === instanceId);
+    if (!found) throw new Error(`no item ${instanceId}`);
+    return [found.w, found.h];
+  };
+
+  test("grows and shrinks by whole cells", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const bounds = { minW: 1, minH: 1 };
+    expect(size(resizeItemBy(layout, "a", 1, 0, bounds), "a")).toEqual([4, 2]);
+    expect(size(resizeItemBy(layout, "a", 0, 1, bounds), "a")).toEqual([3, 3]);
+    expect(size(resizeItemBy(layout, "a", -1, -1, bounds), "a")).toEqual([
+      2, 1,
+    ]);
+  });
+
+  test("stops at the declared minimum", () => {
+    const layout = [item("a", 0, 0, 2, 3)];
+    const bounds = { minW: 2, minH: 3 };
+    expect(size(resizeItemBy(layout, "a", -1, 0, bounds), "a")).toEqual([2, 3]);
+    expect(size(resizeItemBy(layout, "a", 0, -1, bounds), "a")).toEqual([2, 3]);
+  });
+
+  test("stops at the grid's right edge", () => {
+    const layout = [item("a", 9, 0, 3, 2)];
+    expect(size(resizeItemBy(layout, "a", 1, 0, { minW: 1, minH: 1 }), "a"))
+      // 12 columns, starting at 9: three is all there is.
+      .toEqual([3, 2]);
+  });
+
+  test("an unknown item leaves the layout alone", () => {
+    const layout = [item("a", 0, 0, 3, 2)];
+    const out = resizeItemBy(layout, "nope", 1, 1, { minW: 1, minH: 1 });
+    expect(out).toEqual(layout);
+    expect(out).not.toBe(layout);
   });
 });
 
@@ -717,20 +886,42 @@ describe("invariants under random operations", () => {
       for (let step = 0; step < 25; step++) {
         const target = layout[int(0, layout.length - 1)].instanceId;
         const before = JSON.stringify(layout);
-        const isMove = rand() < 0.5;
+        // Four operations, not two: the keyboard's `stepItem` and
+        // `resizeItemBy` carry the same collision and gravity machinery as the
+        // pointer's pair, and this suite is the only thing that reaches the
+        // layouts nobody would hand-write.
+        const op = (["move", "resize", "step", "resizeBy"] as const)[int(0, 3)];
+        const isMove = op === "move";
         const requestedX = int(-3, 14);
         const requestedY = int(-3, 25);
         const requestedW = int(0, 14);
         const requestedH = int(0, 8);
+        // One axis at a time: a step is one arrow key, which is the only shape
+        // `stepItem` is specified for.
+        const stepDx = rand() < 0.5 ? (rand() < 0.5 ? -1 : 1) : 0;
+        const stepDy = stepDx === 0 ? (rand() < 0.5 ? -1 : 1) : 0;
+        const deltaW = int(-1, 1);
+        const deltaH = int(-1, 1);
         const bounds = { minW: 1, minH: 1 };
         const before_ = layout.find((i) => i.instanceId === target);
         const targetW = before_?.w ?? 0;
         const targetX = before_?.x ?? 0;
-        // The same call a drag or resize handler repeats on every pointermove.
-        const apply = (from: readonly LayoutItem[]) =>
-          isMove
-            ? moveItem(from, target, requestedX, requestedY)
-            : resizeItem(from, target, requestedW, requestedH, bounds);
+        // For move/resize, the same call a drag or resize handler repeats on
+        // every pointermove. The two keyboard operations are relative, so
+        // re-applying one is a second step, not the same request again -- the
+        // stability assertion below excludes them for that reason.
+        const apply = (from: readonly LayoutItem[]) => {
+          switch (op) {
+            case "move":
+              return moveItem(from, target, requestedX, requestedY);
+            case "resize":
+              return resizeItem(from, target, requestedW, requestedH, bounds);
+            case "step":
+              return stepItem(from, target, stepDx, stepDy);
+            case "resizeBy":
+              return resizeItemBy(from, target, deltaW, deltaH, bounds);
+          }
+        };
         const next = apply(layout);
 
         const where = `round ${round} step ${step}`;
@@ -750,7 +941,21 @@ describe("invariants under random operations", () => {
           shape(next),
         );
         const changed = next.find((i) => i.instanceId === target);
-        if (isMove) {
+        if (op === "step") {
+          // A step moves; it never resizes, and one arrow key moves one column
+          // at most. The row is gravity's business (see stepItem's note).
+          expect(
+            [changed?.w, changed?.h],
+            `${where}: stepped item resized`,
+          ).toEqual([before_?.w, before_?.h]);
+          expect(
+            Math.abs((changed?.x ?? 0) - targetX) <= 1,
+            `${where}: stepped item moved more than one column`,
+          ).toBe(true);
+        } else if (op === "resizeBy") {
+          // A resize sizes; x is the one coordinate it must leave alone.
+          expect(changed?.x, `${where}: resizeBy moved x`).toBe(targetX);
+        } else if (isMove) {
           // Rule 3: the moved item keeps its requested column.
           const expectedX = Math.min(
             DASHBOARD_COLUMNS - targetW,
@@ -780,7 +985,13 @@ describe("invariants under random operations", () => {
             .sort((p, q) => p.y - q.y || p.x - q.x)
             .map((i) => i.instanceId),
         );
-        expect(apply(next), `${where}: unstable when re-applied`).toEqual(next);
+        // Only the absolute operations are fixed points. A relative one asks
+        // for a further step, so re-applying it is a different request.
+        if (op === "move" || op === "resize") {
+          expect(apply(next), `${where}: unstable when re-applied`).toEqual(
+            next,
+          );
+        }
         layout = next;
       }
     }

@@ -829,3 +829,319 @@ test.describe("Dashboard grid resize", () => {
     await page.mouse.up();
   });
 });
+
+/**
+ * Keyboard operation. The mobile app was held to WCAG 2.2 AA in M5 PR-5h, so a
+ * dashboard that can only be arranged with a mouse would be a regression
+ * against a bar this project already set. These tests are also where the D9
+ * review's open question is pinned: edit mode is one tab stop per widget, the
+ * two handles are pointer affordances, and the widget's own content is inert
+ * while the layout is being arranged.
+ */
+test.describe("Dashboard grid keyboard", () => {
+  /** The instance id of whatever currently has focus, or the element's tag. */
+  const focused = (page: Page): Promise<string> =>
+    page.evaluate(() => {
+      const el = document.activeElement;
+      return (
+        el?.getAttribute("data-instance-id") ??
+        el?.getAttribute("data-testid") ??
+        el?.tagName ??
+        "none"
+      );
+    });
+
+  const widget = (page: Page, id: string) =>
+    page.locator(`[data-instance-id="${id}"]`);
+
+  test("a widget can be moved with the keyboard alone", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    const alerts = at(before, "d-active-alerts");
+
+    await widget(page, "d-active-alerts").focus();
+    await page.keyboard.press("ArrowLeft");
+
+    const after = await cells(page);
+    expect(at(after, "d-active-alerts").x).toBeLessThan(alerts.x);
+    // One cell, not a free-floating pixel offset, and a move is not a resize.
+    expect(at(after, "d-active-alerts").width).toBe(alerts.width);
+    expect(overlapping(after)).toEqual([]);
+    expect(after).toHaveLength(10);
+  });
+
+  test("a down arrow passes the widget below instead of doing nothing", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    const cpu = at(before, "d-cpu-tile");
+    const pods = at(before, "d-pods-tile");
+
+    // The CPU tile sits directly on the Pods tile, which is the case the
+    // engine deliberately absorbs for a pointer drag: a one-row request puts
+    // Pods underneath and gravity lifts CPU straight back on top. A key press
+    // has no second event to correct that, so this is the difference between
+    // `stepItem` and a bare `moveItem` being wired up.
+    await widget(page, "d-cpu-tile").focus();
+    await page.keyboard.press("ArrowDown");
+
+    const after = await cells(page);
+    expect(at(after, "d-cpu-tile").y).toBeGreaterThan(cpu.y);
+    expect(at(after, "d-pods-tile").y).toBeLessThan(pods.y);
+    // Down is down: neither widget went looking for another column.
+    expect(at(after, "d-cpu-tile").x).toBe(cpu.x);
+    expect(overlapping(after)).toEqual([]);
+  });
+
+  test("shift and an arrow resizes in whole cells", async ({ page }) => {
+    await editableDashboard(page);
+
+    const g = await geometry(page);
+    const before = await cells(page);
+    const cpu = at(before, "d-cpu-tile");
+
+    await widget(page, "d-cpu-tile").focus();
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.keyboard.press("Shift+ArrowDown");
+
+    // The CPU tile starts three by three.
+    const grown = await cells(page);
+    expectBlock(at(grown, "d-cpu-tile"), g, 4, 4, "keyboard-grown CPU tile");
+    // A resize sizes; x is the coordinate the engine promises to leave alone.
+    expect(at(grown, "d-cpu-tile").x).toBe(cpu.x);
+    expect(overlapping(grown)).toEqual([]);
+  });
+
+  test("a keyboard resize stops at the widget's declared minimum", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const g = await geometry(page);
+    await widget(page, "d-active-alerts").focus();
+    // Active Alerts declares minW 2 / minH 3 and starts 3 by 5, so this asks
+    // for far less than it is allowed to be.
+    for (let press = 0; press < 6; press++) {
+      await page.keyboard.press("Shift+ArrowLeft");
+      await page.keyboard.press("Shift+ArrowUp");
+    }
+
+    const after = await cells(page);
+    expectBlock(at(after, "d-active-alerts"), g, 2, 3, "clamped Active Alerts");
+    expect(overlapping(after)).toEqual([]);
+    expect(after).toHaveLength(10);
+  });
+
+  test("arrow keys never scroll the page out from under the widget", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    // The dashboard scrolls inside a fixed-height <main>, so that is what an
+    // unhandled arrow key would move -- taking the widget being arranged with
+    // it.
+    const scroll = () =>
+      page.evaluate(() => ({
+        main: document.querySelector("main")?.scrollTop ?? 0,
+        page: globalThis.scrollY,
+      }));
+
+    await widget(page, "d-cluster-health").focus();
+    const before = await scroll();
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+
+    expect(await scroll()).toEqual(before);
+  });
+
+  test("edit mode is one tab stop per widget", async ({ page }) => {
+    await editableDashboard(page);
+
+    // The handles are pointer affordances, not buttons: three tab stops per
+    // widget where only one of them answered the keyboard was the trade D10
+    // reversed.
+    await expect(page.getByTestId("drag-handle")).toHaveCount(10);
+    expect(
+      await page
+        .getByTestId("drag-handle")
+        .evaluateAll((els) => [...new Set(els.map((el) => el.tagName))]),
+    ).toEqual(["DIV"]);
+
+    // Reading order: Cluster Health (0,0), then the CPU tile (6,0). Nothing
+    // focusable sits between them -- not a handle, not the links inside the
+    // health card.
+    await widget(page, "d-cluster-health").focus();
+    expect(await focused(page)).toBe("d-cluster-health");
+    await page.keyboard.press("Tab");
+    expect(await focused(page)).toBe("d-cpu-tile");
+  });
+
+  test("a widget announces which cell it landed in", async ({ page }) => {
+    await editableDashboard(page);
+
+    // Active Alerts starts in column 10 of 12 (x = 9), so one step left is 9.
+    await widget(page, "d-active-alerts").focus();
+    await expect(widget(page, "d-active-alerts")).toHaveAttribute(
+      "aria-label",
+      /^Active Alerts, column 10 of 12, row \d+, 3 wide, 5 tall$/,
+    );
+
+    await page.keyboard.press("ArrowLeft");
+
+    await expect(widget(page, "d-active-alerts")).toHaveAttribute(
+      "aria-label",
+      /^Active Alerts, column 9 of 12,/,
+    );
+    // The name alone is not enough: a label that changes under an element that
+    // already has focus is not reliably re-read.
+    await expect(page.getByTestId("grid-announcement")).toHaveText(
+      /^Active Alerts, column 9 of 12,/,
+    );
+  });
+
+  test("Escape leaves edit mode and hands focus back to the toggle", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    await widget(page, "d-active-alerts").focus();
+    await page.keyboard.press("Escape");
+
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    // The widget stops being a tab stop the moment edit mode ends, so focus
+    // has to land somewhere deliberate rather than on the document.
+    expect(await focused(page)).toBe("edit-layout");
+  });
+
+  test("outside edit mode a widget is not a tab stop at all", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.locator('[data-widget-state="ready"]')).toHaveCount(10);
+
+    await expect(
+      page.locator('[data-testid="grid-item"][tabindex]'),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[data-testid="grid-item"][aria-label]'),
+    ).toHaveCount(0);
+  });
+
+  test("editing suspends the widget's own links and gives them back", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await cells(page);
+    const cpu = at(before, "d-cpu-tile");
+    // The metric tiles are a link *around* the whole card, so without the
+    // content being inert a click anywhere below the title row would navigate
+    // away from the layout being arranged.
+    const body = { x: cpu.x + 20, y: cpu.y + Math.round(cpu.height / 2) };
+
+    await page.mouse.click(body.x, body.y);
+    await expect(page).toHaveURL(/\/$/);
+
+    await page.getByTestId("edit-layout").click();
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    // And the tile is a link again the moment editing ends.
+    await page.mouse.click(body.x, body.y);
+    await expect(page).toHaveURL(/\/cluster\/nodes$/);
+  });
+
+  test("Escape cancels a drag without stealing another widget's focus", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    // Focus one widget, then drag a different one. The session suppresses the
+    // press that would move focus, so the CPU tile keeps it throughout.
+    await widget(page, "d-cpu-tile").focus();
+    // Measured through `grab`, after the hover, for the reason that helper
+    // gives: reaching a widget near the bottom scrolls the page, which moves
+    // every cell this test then compares.
+    const before = await grab(page, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+    expect(await focused(page)).toBe("d-cpu-tile");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+
+    // The session's own Escape cancels the drag, so the layout goes back --
+    // the grid consumed the key without stopping it reaching that listener.
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+    expect(await cells(page)).toEqual(before);
+    // And the widget that was never part of the drag still has focus. The
+    // global shortcut handler blurs whatever is focused on Escape, so without
+    // the grid marking the key handled this lands on the document body.
+    expect(await focused(page)).toBe("d-cpu-tile");
+    // A drag cancel is not a way out of edit mode.
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "true",
+    );
+  });
+
+  test("an arrow key during a drag cannot scroll the grid away", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const scroll = () =>
+      page.evaluate(() => ({
+        main: document.querySelector("main")?.scrollTop ?? 0,
+        page: globalThis.scrollY,
+      }));
+
+    await widget(page, "d-cpu-tile").focus();
+    const before = await cells(page);
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    const scrolled = await scroll();
+
+    // The session owns the keyboard, so the arrow moves nothing -- but it must
+    // still be swallowed. The session re-measures the grid from its bounding
+    // rect on every pointermove, so a scroll here would drop the widget in a
+    // different cell with the pointer standing still.
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+
+    expect(await scroll()).toEqual(scrolled);
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+    await page.mouse.up();
+  });
+
+  test("a modified arrow key is left to the browser", async ({ page }) => {
+    await editableDashboard(page);
+
+    // Focus first, then measure: focusing a widget near the bottom scrolls it
+    // into view, which moves every cell this test compares.
+    await widget(page, "d-active-alerts").focus();
+    const before = await cells(page);
+
+    // Ctrl, Alt and Meta with an arrow belong to the browser and the window
+    // manager. Swallowing them would take back-navigation away from anyone
+    // who happened to be tabbed onto a widget.
+    await page.keyboard.press("Control+ArrowLeft");
+    await page.keyboard.press("Alt+ArrowRight");
+
+    expect(await cells(page)).toEqual(before);
+  });
+});
