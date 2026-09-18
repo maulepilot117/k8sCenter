@@ -1,10 +1,11 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/base.ts";
 
-// Drag behaviour on the dashboard's snapping grid. The geometry itself is unit
-// tested in frontend/lib/dashboard/grid_test.ts; these tests prove the island
-// routes the pointer through that engine instead of positioning widgets
-// itself, and that the pointer session starts and ends where it should.
+// Drag and resize behaviour on the dashboard's snapping grid. The geometry
+// itself is unit tested in frontend/lib/dashboard/grid_test.ts; these tests
+// prove the island routes the pointer through that engine instead of
+// positioning widgets itself, and that the pointer session starts and ends
+// where it should.
 
 interface Cell {
   id: string;
@@ -54,6 +55,9 @@ const at = (items: Cell[], id: string): Cell => {
 
 const handle = (page: Page, id: string) =>
   page.locator(`[data-instance-id="${id}"] [data-testid="drag-handle"]`);
+
+const corner = (page: Page, id: string) =>
+  page.locator(`[data-instance-id="${id}"] [data-testid="resize-handle"]`);
 
 /** Loads the dashboard with every widget rendered, then enters edit mode. */
 async function editableDashboard(page: Page) {
@@ -105,6 +109,77 @@ async function dragTo(page: Page, id: string, to: { x: number; y: number }) {
   await page.mouse.down();
   await page.mouse.move(to.x, to.y, { steps: 12 });
   await page.mouse.up();
+}
+
+/** Puts the pointer on `id`'s corner grip and reports where every cell sits. */
+async function grabCorner(page: Page, id: string): Promise<Cell[]> {
+  await corner(page, id).hover();
+  return await cells(page);
+}
+
+/** Drags `id`'s corner grip to a point, in steps, so pointermove fires. */
+async function resizeTo(page: Page, id: string, to: { x: number; y: number }) {
+  await corner(page, id).hover();
+  await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 12 });
+  await page.mouse.up();
+}
+
+/**
+ * The live grid's cell geometry in CSS pixels, so a test can express a resize
+ * as "two columns wider" rather than as a pixel count that only holds at one
+ * viewport size. Mirrors `metricsFrom` in frontend/lib/dashboard/grid.ts; the
+ * constants are DASHBOARD_COLUMNS, _GRID_GAP and _ROW_HEIGHT from
+ * frontend/lib/dashboard/types.ts, which this project cannot import.
+ */
+async function geometry(page: Page) {
+  const width = await page
+    .getByTestId("dashboard-grid")
+    .evaluate((el) => el.getBoundingClientRect().width);
+  const columns = 12;
+  const gap = 16;
+  const rowHeight = 40;
+  return {
+    gap,
+    rowHeight,
+    cellWidth: (width - gap * (columns - 1)) / columns,
+  };
+}
+
+type Geometry = Awaited<ReturnType<typeof geometry>>;
+
+/** The on-screen size of a w-by-h block of cells, the gaps between included. */
+function blockSize(g: Geometry, w: number, h: number) {
+  return {
+    width: g.cellWidth * w + g.gap * (w - 1),
+    height: g.rowHeight * h + g.gap * (h - 1),
+  };
+}
+
+/**
+ * Asserts a measured size is the one `blockSize` predicts.
+ *
+ * Within half a cell, not to the pixel: bounding boxes round to whole pixels,
+ * a column is a fraction of the container, and a widget growing can add the
+ * page's scroll bar, which moves every column edge a little. Half a cell still
+ * tells six columns from five or seven, which is what these tests are about.
+ */
+function expectBlock(
+  got: Cell,
+  g: Geometry,
+  w: number,
+  h: number,
+  what: string,
+) {
+  const want = blockSize(g, w, h);
+  expect(
+    Math.abs(got.width - want.width),
+    `${what}: width should be ${w} columns`,
+  ).toBeLessThanOrEqual(g.cellWidth / 2);
+  expect(
+    Math.abs(got.height - want.height),
+    `${what}: height should be ${h} rows`,
+  ).toBeLessThanOrEqual(g.rowHeight / 2);
 }
 
 test.describe("Dashboard grid drag", () => {
@@ -340,8 +415,10 @@ test.describe("Dashboard grid drag", () => {
     await page.getByTestId("edit-layout").click();
     await expect(grid).toHaveAttribute("data-grid-editable", "true");
 
-    // Edit mode is on, but a single column has no columns to drag between.
+    // Edit mode is on, but a single column has no columns to drag between and
+    // no width to size: every widget is already full width.
     await expect(page.getByTestId("drag-handle")).toHaveCount(0);
+    await expect(page.getByTestId("resize-handle")).toHaveCount(0);
   });
 
   test("outside edit mode there is nothing to drag", async ({ page }) => {
@@ -353,6 +430,7 @@ test.describe("Dashboard grid drag", () => {
       "false",
     );
     await expect(page.getByTestId("drag-handle")).toHaveCount(0);
+    await expect(page.getByTestId("resize-handle")).toHaveCount(0);
 
     // A press-and-drag across a title row must leave the layout alone: the
     // dashboard is a monitoring surface first.
@@ -391,5 +469,140 @@ test.describe("Dashboard grid drag", () => {
     );
     await expect(page.getByTestId("drag-handle")).toHaveCount(0);
     expect(await cells(page)).toEqual(moved);
+  });
+});
+
+test.describe("Dashboard grid resize", () => {
+  test("a widget resizes from its bottom-right corner in whole cells", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+    const memory = at(before, "d-memory-tile");
+
+    // The CPU tile is three columns by three rows. Two cells right and two
+    // rows down makes it five by five.
+    await resizeTo(page, "d-cpu-tile", {
+      x: cpu.x + cpu.width + 2 * (g.cellWidth + g.gap),
+      y: cpu.y + cpu.height + 2 * (g.rowHeight + g.gap),
+    });
+
+    const grown = await cells(page);
+    expectBlock(at(grown, "d-cpu-tile"), g, 5, 5, "grown CPU tile");
+    // A resize sizes, it does not move: x is the one coordinate the engine
+    // promises to leave alone.
+    expect(at(grown, "d-cpu-tile").x).toBe(cpu.x);
+    // Growing displaces downward only, so the Memory tile beside it gives way
+    // without leaving its column.
+    expect(at(grown, "d-memory-tile").y).toBeGreaterThan(memory.y);
+    expect(at(grown, "d-memory-tile").x).toBe(memory.x);
+    expect(overlapping(grown)).toEqual([]);
+    expect(grown).toHaveLength(10);
+    // The release ended the session.
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+
+    // Back to three by three: the corner goes to the cell it started on. What
+    // the grow pushed down, gravity lifts again.
+    await resizeTo(page, "d-cpu-tile", {
+      x: cpu.x + cpu.width - 8,
+      y: cpu.y + cpu.height - 8,
+    });
+
+    const shrunk = await cells(page);
+    expectBlock(at(shrunk, "d-cpu-tile"), g, 3, 3, "shrunk CPU tile");
+    expect(at(shrunk, "d-memory-tile").y).toBe(memory.y);
+    expect(shrunk).toEqual(before);
+  });
+
+  test("a resize stops at the widget's declared minimum", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-active-alerts");
+    const g = await geometry(page);
+    const alerts = at(before, "d-active-alerts");
+
+    // Active Alerts is three by five and declares minW 2 / minH 3. Dragging
+    // its corner to the top-left of the viewport asks for a negative size in
+    // both directions -- as far past the minimum as a pointer can get. The
+    // clamp is what stops a user producing a widget too small to render its
+    // own content, and it comes from the registry, not from the island.
+    await resizeTo(page, "d-active-alerts", { x: 4, y: 4 });
+
+    const after = await cells(page);
+    expectBlock(at(after, "d-active-alerts"), g, 2, 3, "clamped Active Alerts");
+    // However far left the pointer went, the widget did not follow it.
+    expect(at(after, "d-active-alerts").x).toBe(alerts.x);
+    expect(overlapping(after)).toEqual([]);
+    expect(after).toHaveLength(10);
+  });
+
+  test("Escape during a resize puts the layout back", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+
+    await corner(page, "d-cpu-tile").hover();
+    await page.mouse.down();
+    await page.mouse.move(
+      cpu.x + cpu.width + 2 * (g.cellWidth + g.gap),
+      cpu.y + cpu.height + 2 * (g.rowHeight + g.gap),
+      { steps: 12 },
+    );
+    await expect(
+      page.locator('[data-instance-id="d-cpu-tile"]'),
+    ).toHaveAttribute("data-resizing", "true");
+    // The widget has actually grown: without this the test could certify a
+    // restore that had nothing to restore.
+    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(
+      cpu.width,
+    );
+
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+    expect(await cells(page)).toEqual(before);
+  });
+
+  test("a drag cannot start while a resize is in flight", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+
+    await corner(page, "d-cpu-tile").hover();
+    await page.mouse.down();
+    await page.mouse.move(
+      cpu.x + cpu.width + 2 * (g.cellWidth + g.gap),
+      cpu.y + cpu.height,
+      { steps: 12 },
+    );
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(1);
+
+    // A second finger lands on another widget's drag handle. One session at a
+    // time whatever its kind: each holds its own pre-session layout, so a
+    // second one could restore over the first one's work.
+    await handle(page, "d-nodes").evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: 99,
+          isPrimary: false,
+          button: 0,
+          buttons: 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(1);
+    await page.mouse.up();
   });
 });
