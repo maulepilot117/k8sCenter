@@ -186,6 +186,11 @@ export default function DashboardGrid({
     return () => ro.disconnect();
   }, []);
 
+  // A drag cannot outlive the grid either. Nothing unmounts DashboardGrid
+  // today short of a navigation, which tears down the listeners anyway, but a
+  // session that outlived its grid would go on moving a layout nobody renders.
+  useLayoutEffect(() => () => endDrag.current?.(true), []);
+
   // A drag cannot outlive the mode that offered the handle. Leaving edit mode
   // or collapsing to one column unmounts the handle under the pointer, and a
   // session nobody can finish would keep the widget lifted and hold the
@@ -333,6 +338,11 @@ export default function DashboardGrid({
       if (ev.key === "Escape") end(true);
     };
     globalThis.addEventListener("keydown", onKeyDown, listen);
+    // Switching windows mid-drag can take the pointer with neither a
+    // pointerup nor a pointercancel: the button comes up over something else
+    // entirely. Without this the widget stays lifted and follows the cursor
+    // with no button held, and only Escape gets out of it.
+    globalThis.addEventListener("blur", () => end(true), listen);
   }
 
   // Unknown ids are skipped and their rows reclaimed, and what is left comes

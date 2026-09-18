@@ -80,8 +80,24 @@ async function editableDashboard(page: Page) {
  */
 async function grab(page: Page, id: string): Promise<Cell[]> {
   await handle(page, id).hover();
+  // Record the id of whichever pointer starts the next drag, so a test that
+  // has to name it does not have to guess.
+  await page.evaluate(() => {
+    globalThis.addEventListener(
+      "pointerdown",
+      (ev) => {
+        (globalThis as unknown as { __pointerId: number }).__pointerId = (
+          ev as PointerEvent
+        ).pointerId;
+      },
+      { capture: true, once: true },
+    );
+  });
   return await cells(page);
 }
+
+/** The instance ids in DOM order, which is the layout's reading order. */
+const order = (items: Cell[]): string[] => items.map((c) => c.id);
 
 /** Drags `id` by its handle to a point, in steps, so pointermove fires. */
 async function dragTo(page: Page, id: string, to: { x: number; y: number }) {
@@ -178,13 +194,17 @@ test.describe("Dashboard grid drag", () => {
     expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
 
     // What the OS taking the pointer looks like to the page: a system
-    // gesture, or a touch the browser decided was a scroll. Chrome gives a
-    // mouse drag pointerId 1.
-    await handle(page, "d-active-alerts").evaluate((el) => {
+    // gesture, or a touch the browser decided was a scroll. The cancel has to
+    // name the pointer that started the drag, which the page recorded rather
+    // than this test assuming it.
+    const pointerId = await page.evaluate(
+      () => (globalThis as unknown as { __pointerId: number }).__pointerId,
+    );
+    await handle(page, "d-active-alerts").evaluate((el, id) => {
       el.dispatchEvent(
-        new PointerEvent("pointercancel", { pointerId: 1, bubbles: true }),
+        new PointerEvent("pointercancel", { pointerId: id, bubbles: true }),
       );
-    });
+    }, pointerId);
 
     await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
     expect(await cells(page)).toEqual(before);
@@ -223,6 +243,90 @@ test.describe("Dashboard grid drag", () => {
     // And the session is really over: a later Escape cannot revert the page.
     await page.keyboard.press("Escape");
     expect(await cells(page)).toEqual(settled);
+  });
+
+  test("collapsing to one column mid-drag puts the layout back", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await grab(page, "d-active-alerts");
+    const alerts = at(before, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+    expect(at(await cells(page), "d-active-alerts").x).not.toBe(alerts.x);
+
+    // The window narrows under the drag. One column has no columns to drag
+    // between, so the session ends -- and the user never dropped it, so the
+    // layout goes back.
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "narrow",
+    );
+    await page.mouse.up();
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+
+    // Back to a wide grid to read the layout in the terms the drag used.
+    // Reading order, not pixels: the viewport changed, and a committed drag
+    // would have put Active Alerts somewhere earlier in that order.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-mode",
+      "wide",
+    );
+    expect(order(await cells(page))).toEqual(order(before));
+  });
+
+  test("a second pointer cannot start its own drag", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grab(page, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down();
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+
+    // A second finger lands on another widget's handle. Each session keeps
+    // its own pre-drag layout, so a second one could restore over the first
+    // one's work; only one may run.
+    await handle(page, "d-nodes").evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: 99,
+          isPrimary: false,
+          button: 0,
+          buttons: 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(1);
+    await expect(
+      page.locator('[data-instance-id="d-active-alerts"][data-dragging="true"]'),
+    ).toHaveCount(1);
+    await page.mouse.up();
+  });
+
+  test("a non-primary button is not a drag", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grab(page, "d-active-alerts");
+    const health = at(before, "d-cluster-health");
+
+    await handle(page, "d-active-alerts").hover();
+    await page.mouse.down({ button: "middle" });
+    await page.mouse.move(health.x + 40, health.y + 40, { steps: 12 });
+
+    await expect(page.locator('[data-dragging="true"]')).toHaveCount(0);
+    await page.mouse.up({ button: "middle" });
+    expect(order(await cells(page))).toEqual(order(before));
   });
 
   test("one column offers no handles to drag", async ({ page }) => {
