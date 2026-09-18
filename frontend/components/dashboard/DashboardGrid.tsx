@@ -61,11 +61,10 @@ const DRAG_HANDLE_HEIGHT = 40;
  * grip is painted in its bottom-right 16.
  *
  * 24 here and 40 for the drag handle also have to fit one above the other
- * without touching, which 2.5.8 requires of adjacent targets. The smallest
- * `minH` any widget declares today is 2, which is a 96px card, so they are 32px
- * apart. A `minH: 1` widget would be a 40px card, and the grip would sit inside
- * the title row; `registry_test.ts` only guards `minH >= 1`, so that is an
- * invariant to keep in mind rather than one the types enforce.
+ * without touching, which 2.5.8 requires of adjacent targets. That holds as
+ * long as no widget declares `minH` below 2: a 2-row card is 96px, leaving the
+ * two 32px apart, while a 1-row card is 40px and would put the grip inside the
+ * title row. `registry_test.ts` enforces that floor, since the types cannot.
  */
 const RESIZE_HANDLE_SIZE = 24;
 const RESIZE_GRIP_SIZE = 16;
@@ -236,7 +235,19 @@ export default function DashboardGrid({
   initial,
   editable = false,
 }: DashboardGridProps) {
-  const items = useSignal<LayoutItem[]>(initial.items);
+  // Resolved once, on the way in, so the working copy is exactly what the grid
+  // renders. The pointer sessions below read this signal while the DOM is laid
+  // out from `resolveRenderable` of it, and the two have to share a coordinate
+  // frame: that helper drops items whose widget id this build does not have and
+  // re-compacts the survivors, so an unresolved copy would put every item below
+  // a skipped one a row away from where the user is pointing. Normalizing here
+  // rather than per render also means the drop happens once, which is the
+  // display half of the unknown-id contract (telling the user belongs to the
+  // editor). Today's only caller passes the default layout, where this is a
+  // no-op; P3's stored layouts are what make it matter.
+  const items = useSignal<LayoutItem[]>(
+    resolveRenderable(initial.items, getWidget).map((r) => r.item),
+  );
   const narrow = useSignal(false);
   const session = useSignal<{ kind: SessionKind; instanceId: string } | null>(
     null,
@@ -472,19 +483,14 @@ export default function DashboardGrid({
     });
   }
 
-  // Unknown ids are skipped and their rows reclaimed, and what is left comes
-  // back in reading order -- which is also the keyboard and screen-reader
-  // order. The wide grid places items by coordinates, but DOM order still
-  // decides tab order, so it renders in that order too.
+  // Pairs each item with its definition and returns them in reading order --
+  // which is also the keyboard and screen-reader order. The wide grid places
+  // items by coordinates, but DOM order still decides tab order, so it renders
+  // in that order too.
   //
-  // The pointer sessions above read `items.value`, not this, so the two have to
-  // agree on where a widget is. They do today: the only layout this component
-  // is ever given is the default one, whose ids are all known and which is
-  // already compacted, so resolving it changes nothing. P3 brings stored
-  // layouts, which can name a retired widget -- and then every item below the
-  // skipped one renders a row above where `items.value` says it is, which is a
-  // different coordinate frame than the one the user is pointing at. P3 has to
-  // resolve once and keep the result, rather than resolve per render.
+  // The skip-and-recompact this also does has already happened, on the way into
+  // `items` above, so here it is idempotent and the layout the sessions read is
+  // the layout on screen.
   const ordered = resolveRenderable(items.value, getWidget);
   const active = session.value;
 

@@ -95,8 +95,13 @@ async function editableDashboard(page: Page) {
  */
 async function grab(page: Page, id: string): Promise<Cell[]> {
   await handle(page, id).hover();
-  // Record the id of whichever pointer starts the next drag, so a test that
-  // has to name it does not have to guess.
+  await recordNextPointerId(page);
+  return await cells(page);
+}
+
+/** Records the id of whichever pointer starts the next session, so a test that
+ * has to name it does not have to guess. */
+async function recordNextPointerId(page: Page) {
   await page.evaluate(() => {
     globalThis.addEventListener(
       "pointerdown",
@@ -108,8 +113,13 @@ async function grab(page: Page, id: string): Promise<Cell[]> {
       { capture: true, once: true },
     );
   });
-  return await cells(page);
 }
+
+/** The pointer id `recordNextPointerId` saw. */
+const startedPointerId = (page: Page): Promise<number> =>
+  page.evaluate(
+    () => (globalThis as unknown as { __pointerId: number }).__pointerId,
+  );
 
 /** The instance ids in DOM order, which is the layout's reading order. */
 const order = (items: Cell[]): string[] => items.map((c) => c.id);
@@ -125,6 +135,7 @@ async function dragTo(page: Page, id: string, to: { x: number; y: number }) {
 /** Puts the pointer on `id`'s corner grip and reports where every cell sits. */
 async function grabCorner(page: Page, id: string): Promise<Cell[]> {
   await corner(page, id).hover();
+  await recordNextPointerId(page);
   return await cells(page);
 }
 
@@ -302,9 +313,7 @@ test.describe("Dashboard grid drag", () => {
     // gesture, or a touch the browser decided was a scroll. The cancel has to
     // name the pointer that started the drag, which the page recorded rather
     // than this test assuming it.
-    const pointerId = await page.evaluate(
-      () => (globalThis as unknown as { __pointerId: number }).__pointerId,
-    );
+    const pointerId = await startedPointerId(page);
     await handle(page, "d-active-alerts").evaluate((el, id) => {
       el.dispatchEvent(
         new PointerEvent("pointercancel", { pointerId: id, bubbles: true }),
@@ -661,6 +670,130 @@ test.describe("Dashboard grid resize", () => {
       page.locator('[data-instance-id="d-cpu-tile"][data-resizing="true"]'),
     ).toHaveCount(1);
     await page.mouse.up();
+  });
+
+  test("a widget gravity lifts mid-resize and keeps its corner on the pointer", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    // Nothing in the default layout can be lifted by narrowing it: every
+    // widget's supports start at or left of its own column, so shortening it
+    // from the right never frees it. One resize first sets that up. Cluster
+    // Health is 6 rows and declares minH 4; shrinking it to 4 leaves Resource
+    // Utilization held at row 6 by the Pods tile alone, through column 6.
+    const start = await grabCorner(page, "d-cluster-health");
+    const g = await geometry(page);
+    await resizeTo(
+      page,
+      "d-cluster-health",
+      cornerCell(g, at(start, "d-cluster-health"), 5, 3),
+    );
+
+    const staged = await grabCorner(page, "d-resource-utilization");
+    const util = at(staged, "d-resource-utilization");
+    // Still where it was: shortening Cluster Health did not move it.
+    expect(util.y).toBe(at(start, "d-resource-utilization").y);
+
+    // Now narrow it off column 6. That drops the Pods tile as its support, so
+    // gravity lifts it two rows -- and the height being applied was measured
+    // from the row it occupied *before* the lift. Without re-aiming inside the
+    // same move, this lands 6x4 with its bottom edge two rows above the
+    // pointer, and only some later pointermove would have corrected it.
+    await resizeTo(page, "d-resource-utilization", cornerCell(g, util, 5, 3));
+
+    const after = await cells(page);
+    const lifted = at(after, "d-resource-utilization");
+    expect(lifted.y).toBeLessThan(util.y);
+    expectBlock(lifted, g, 6, 6, "lifted Resource Utilization");
+    expect(lifted.x).toBe(util.x);
+    // The plainest statement of the fix: the pointer was on the widget's own
+    // bottom row, so the bottom edge has not moved a pixel.
+    expect(lifted.y + lifted.height).toBe(util.y + util.height);
+    expect(overlapping(after)).toEqual([]);
+    expect(after).toHaveLength(10);
+  });
+
+  test("a widget grows to the grid's last column and no further", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-nodes");
+    const g = await geometry(page);
+    const nodes = at(before, "d-nodes");
+
+    // Nodes starts at column 0, four wide. Dragging its grip to the right edge
+    // of the window -- past the grid's own -- asks for the whole row.
+    await resizeTo(page, "d-nodes", {
+      x: page.viewportSize()!.width - 2,
+      y: nodes.y + nodes.height - 8,
+    });
+
+    const after = await cells(page);
+    expectBlock(at(after, "d-nodes"), g, 12, 5, "full-width Nodes");
+    expect(at(after, "d-nodes").x).toBe(nodes.x);
+    expect(overlapping(after)).toEqual([]);
+    expect(after).toHaveLength(10);
+  });
+
+  test("an interrupted pointer puts the layout back mid-resize", async ({
+    page,
+  }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+
+    await corner(page, "d-cpu-tile").hover();
+    await page.mouse.down();
+    const to = cornerCell(g, cpu, 4, 4);
+    await page.mouse.move(to.x, to.y, { steps: 12 });
+    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(cpu.width);
+
+    const pointerId = await startedPointerId(page);
+    await corner(page, "d-cpu-tile").evaluate((el, id) => {
+      el.dispatchEvent(
+        new PointerEvent("pointercancel", { pointerId: id, bubbles: true }),
+      );
+    }, pointerId);
+
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+    expect(await cells(page)).toEqual(before);
+    await page.mouse.up();
+  });
+
+  test("a resize survives the grip disappearing under it", async ({ page }) => {
+    await editableDashboard(page);
+
+    const before = await grabCorner(page, "d-cpu-tile");
+    const g = await geometry(page);
+    const cpu = at(before, "d-cpu-tile");
+
+    await corner(page, "d-cpu-tile").hover();
+    await page.mouse.down();
+    const to = cornerCell(g, cpu, 4, 4);
+    await page.mouse.move(to.x, to.y, { steps: 12 });
+    expect(at(await cells(page), "d-cpu-tile").width).toBeGreaterThan(cpu.width);
+
+    // "Edit layout" still has focus -- the session suppresses the press that
+    // would have moved it -- so Space toggles edit mode off and every handle
+    // unmounts, the grip under the pointer included.
+    await page.keyboard.press("Space");
+    await page.mouse.up();
+
+    await expect(page.getByTestId("dashboard-grid")).toHaveAttribute(
+      "data-grid-editable",
+      "false",
+    );
+    await expect(page.locator('[data-resizing="true"]')).toHaveCount(0);
+    // Never released, so the size goes back.
+    const settled = await cells(page);
+    expect(settled).toEqual(before);
+    // And the session is really over: a later Escape cannot revert the page.
+    await page.keyboard.press("Escape");
+    expect(await cells(page)).toEqual(settled);
   });
 
   test("a resize cannot start while a drag is in flight", async ({ page }) => {
