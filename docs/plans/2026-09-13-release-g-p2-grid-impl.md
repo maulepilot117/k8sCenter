@@ -896,8 +896,18 @@ arranged with a mouse is a regression against that bar. It is also the reason
 D-2 chose a hand-rolled grid: grid libraries handle this poorly.
 
 **Interfaces:**
-- Consumes: `moveItem`, `resizeItem`.
+- Consumes: `moveItem`, `resizeItemToCell` (or `resizeItem` directly, for a
+  keyboard step that names a size rather than a pointer cell).
 - Produces: focusable grid items with an `aria-label` describing position.
+
+> **Decide first (raised in D9 review):** D8 and D9 each left a focusable
+> `<button>` on every item, so edit mode already has two tab stops per widget --
+> twenty on the default layout. Step 1 below adds a third, and that one is the
+> only one that announces its geometry and takes the arrows, while the two
+> inside it do nothing on Enter or Space. Settle whether the handles become
+> `tabIndex={-1}` pointer-only affordances before writing Step 2. They were made
+> buttons in D8 specifically so D10 could give them keys, so this is a genuine
+> reversal to weigh, not an oversight to clean up.
 
 - [ ] **Step 1: Make each item focusable and self-describing**
 

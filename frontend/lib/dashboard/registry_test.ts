@@ -132,8 +132,23 @@ test("registry: nothing is wider than the grid", () => {
   for (const w of allWidgets()) {
     if (w.defaultW > 12) offenders.push(`${w.id} defaultW exceeds 12 columns`);
     if (w.minW < 1) offenders.push(`${w.id} minW below 1`);
-    if (w.minH < 1) offenders.push(`${w.id} minH below 1`);
   }
+  expect(offenders).toEqual([]);
+});
+
+test("registry: nothing is short enough to stack the editor's two handles", () => {
+  // A row is DASHBOARD_ROW_HEIGHT tall, so minH 1 is a 40px card -- exactly the
+  // height of the drag handle that covers the title row. The 24px resize grip
+  // in the bottom-right corner would then sit inside the drag handle's box,
+  // stealing its last 24px and putting two pointer targets on top of each
+  // other, which WCAG 2.2 AA Target Size (Minimum) forbids of adjacent targets.
+  //
+  // minH 2 is a 96px card, which leaves the two 32px apart. This is the
+  // invariant DashboardGrid.tsx's handle geometry depends on and the types
+  // cannot express.
+  const offenders = allWidgets()
+    .filter((w) => w.minH < 2)
+    .map((w) => `${w.id} minH below 2`);
   expect(offenders).toEqual([]);
 });
 

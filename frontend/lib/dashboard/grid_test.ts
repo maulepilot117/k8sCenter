@@ -8,6 +8,7 @@ import {
   moveItem,
   overlaps,
   resizeItem,
+  resizeItemToCell,
   resolveRenderable,
 } from "./grid.ts";
 import type { LayoutItem } from "./types.ts";
@@ -392,6 +393,80 @@ describe("resizeItem", () => {
     expect(shape(resizeItem(input, "ghost", 6, 6, bounds))).toEqual(
       shape(input),
     );
+  });
+});
+
+describe("resizeItemToCell", () => {
+  const bounds = { minW: 1, minH: 1 };
+  /** Where the item's bottom-right corner ended up. */
+  const corner = (items: readonly LayoutItem[], id: string) => {
+    const it = items.find((i) => i.instanceId === id)!;
+    return { x: it.x + it.w - 1, y: it.y + it.h - 1 };
+  };
+
+  test("the size is inclusive of the cell under the corner", () => {
+    const out = resizeItemToCell(
+      [item("a", 0, 0, 1, 1)],
+      "a",
+      { x: 2, y: 3 },
+      bounds,
+    );
+    const a = out.find((i) => i.instanceId === "a")!;
+    expect([a.w, a.h]).toEqual([3, 4]);
+  });
+
+  test("the corner cell an item already occupies leaves it unchanged", () => {
+    // `a` needs something above it, or gravity moves it and "unchanged" would
+    // be testing compaction rather than the resize.
+    const input = [item("top", 2, 0, 3, 1), item("a", 2, 1, 3, 2)];
+    const out = resizeItemToCell(input, "a", { x: 4, y: 2 }, bounds);
+    const a = out.find((i) => i.instanceId === "a")!;
+    expect([a.x, a.y, a.w, a.h]).toEqual([2, 1, 3, 2]);
+  });
+
+  test("a corner above and left of the item clamps to its minimum", () => {
+    const out = resizeItemToCell(
+      [item("a", 4, 4, 5, 5)],
+      "a",
+      { x: 0, y: 0 },
+      {
+        minW: 2,
+        minH: 3,
+      },
+    );
+    const a = out.find((i) => i.instanceId === "a")!;
+    expect([a.x, a.w, a.h]).toEqual([4, 2, 3]);
+  });
+
+  test("an item gravity lifts mid-resize still lands its corner on the cell", () => {
+    // `target` rests at y=4 under `blocker` (columns 2-5). Narrowing it to
+    // columns 0-1 frees it, so gravity lifts it to the top -- and the height
+    // that was just applied was measured from the y it had before the lift.
+    // Applying once leaves the corner at row 1 with the pointer on row 5;
+    // whether the user got that or the right answer would then depend on
+    // whether one more pointermove arrived before they let go.
+    const out = resizeItemToCell(
+      [item("blocker", 2, 0, 4, 4), item("target", 0, 4, 6, 2)],
+      "target",
+      { x: 1, y: 5 },
+      bounds,
+    );
+    expect(corner(out, "target")).toEqual({ x: 1, y: 5 });
+    expect(shape(out)).toEqual(["blocker@2,0", "target@0,0"]);
+  });
+
+  test("re-aiming at the same cell changes nothing", () => {
+    const input = [item("blocker", 2, 0, 4, 4), item("target", 0, 4, 6, 2)];
+    const cell = { x: 1, y: 5 };
+    const once = resizeItemToCell(input, "target", cell, bounds);
+    expect(resizeItemToCell(once, "target", cell, bounds)).toEqual(once);
+  });
+
+  test("an unknown instanceId is a no-op", () => {
+    const input = [item("a", 0, 0, 3, 2)];
+    expect(
+      shape(resizeItemToCell(input, "ghost", { x: 9, y: 9 }, bounds)),
+    ).toEqual(shape(input));
   });
 });
 
