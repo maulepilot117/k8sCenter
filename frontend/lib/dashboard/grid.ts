@@ -28,6 +28,12 @@ import {
   DASHBOARD_ROW_HEIGHT,
 } from "./types.ts";
 
+/** A whole-cell position on the grid: column, then row. */
+export interface Cell {
+  x: number;
+  y: number;
+}
+
 /** The smallest size a resize may produce. */
 export interface Bounds {
   minW: number;
@@ -268,11 +274,7 @@ export function resizeItem(
 }
 
 /** Translates a viewport point to a grid cell, clamped into the grid. */
-export function cellFromPoint(
-  px: number,
-  py: number,
-  m: GridMetrics,
-): { x: number; y: number } {
+export function cellFromPoint(px: number, py: number, m: GridMetrics): Cell {
   // Before first layout the grid reports zero-size cells, and a container
   // narrower than its own gaps can report a negative cellWidth. Either
   // divides into Infinity/NaN, or -- undetected -- a nonzero cell out of a
@@ -332,11 +334,7 @@ export function metricsFrom(rect: {
  * began, not its current one: the item can be lifted by gravity mid-drag, and
  * feeding that back in would make the widget walk away from the pointer.
  */
-export function dragTarget(
-  start: { x: number; y: number },
-  origin: { x: number; y: number },
-  cell: { x: number; y: number },
-): { x: number; y: number } {
+export function dragTarget(start: Cell, origin: Cell, cell: Cell): Cell {
   return {
     x: start.x + (cell.x - origin.x),
     y: start.y + (cell.y - origin.y),
